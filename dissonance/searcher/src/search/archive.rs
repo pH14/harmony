@@ -2373,7 +2373,7 @@ where
         self.tiers.last_key_value().map(|(progress, _)| *progress)
     }
 
-    pub(crate) fn resident_snapshot_entries(&self) -> impl Iterator<Item = (u64, &S)> {
+    pub(crate) fn resident_snapshot_entries(&self) -> impl Iterator<Item = (u64, &S)> + Clone {
         self.entries.iter().filter_map(|entry| {
             entry
                 .snapshot

@@ -81,6 +81,61 @@ fn map_charge<K, V>() -> Result<usize, ImageLimit> {
         .ok_or(ImageLimit)
 }
 
+pub(crate) struct LimitedBytes {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+impl LimitedBytes {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            exceeded: false,
+        }
+    }
+    pub(crate) fn finish(self) -> Vec<u8> {
+        self.bytes
+    }
+    pub(crate) fn exceeded(&self) -> bool {
+        self.exceeded
+    }
+}
+impl Write for LimitedBytes {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let len = self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .ok_or_else(|| io::Error::other(ImageLimit))?;
+        if len > self.limit {
+            self.exceeded = true;
+            return Err(io::Error::other(ImageLimit));
+        }
+        if len > self.bytes.capacity() {
+            let capacity = self
+                .bytes
+                .capacity()
+                .max(1024)
+                .saturating_mul(2)
+                .min(self.limit)
+                .max(len);
+            self.bytes
+                .try_reserve_exact(capacity - self.bytes.len())
+                .map_err(io::Error::other)?;
+            if self.bytes.capacity() > self.limit {
+                self.exceeded = true;
+                return Err(io::Error::other(ImageLimit));
+            }
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ByteCount(pub(crate) usize);
 impl Write for ByteCount {
@@ -183,5 +238,11 @@ mod tests {
             Ok(())
         });
         assert_eq!(postcard::to_allocvec(&stream).unwrap(), expected);
+        let mut out = LimitedBytes::new(expected.len());
+        postcard::to_io(&stream, &mut out).unwrap();
+        assert_eq!(out.finish(), expected);
+        let mut out = LimitedBytes::new(expected.len() - 1);
+        assert!(postcard::to_io(&stream, &mut out).is_err());
+        assert!(out.bytes.len() <= out.limit);
     }
 }

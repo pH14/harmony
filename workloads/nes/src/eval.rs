@@ -171,6 +171,7 @@ where
                 on_marks: request.checkpoint_on_progress,
                 on_top_progress: request.checkpoint_on_progress,
                 checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
             }
         });
     let config = CampaignConfig {

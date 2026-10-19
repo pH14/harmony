@@ -242,6 +242,7 @@ where
                 on_marks: false,
                 on_top_progress: false,
                 checkpoint_owner: options.checkpoint_owner.clone(),
+                max_image_bytes: 64 << 20,
             }),
             ..Default::default()
         },

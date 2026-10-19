@@ -22,14 +22,14 @@ use super::{
     finish_record, initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
     profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
     record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
-    retained_archive_indexes, stop_reservations_after_objective,
+    retained_archive_indexes, search_checkpoint_header, stop_reservations_after_objective,
     stop_reservations_after_work_budget, stream_header, with_coordinator_session,
     write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
 };
-use crate::search::checkpoint::{CheckpointReader, CheckpointWriter};
+use crate::search::checkpoint::{CheckpointReader, publisher::CheckpointPublisher};
 use crate::search::draw::{EnergyStrategy, MixtureDraw, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
 use crate::search::duration::DurationPolicies;
@@ -100,7 +100,6 @@ pub fn run_job<G: Workload>(
 pub struct CampaignCoordinator<'a, G: Workload> {
     workload: &'a G,
     config: &'a CampaignConfig<G>,
-    executable_identity: String,
     work_budget: Option<u64>,
     header: CampaignStreamHeader<DrawTableHeader>,
     origin_record: CampaignOriginRecord,
@@ -111,7 +110,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     rand: RomuDuoJrRand,
     draw_state: DrawTables<G::Action>,
     duration_policies: DurationPolicies<G::Key>,
-    checkpoints: Option<CheckpointWriter<<G::Key as ArchiveKey>::Progress>>,
+    checkpoints: Option<CheckpointPublisher<G::Snapshot, <G::Key as ArchiveKey>::Progress>>,
     reserved: u64,
     admitted: usize,
     planned_clock: u64,
@@ -283,8 +282,18 @@ where
         let checkpoints = options
             .checkpoints
             .map(|plan| {
-                CheckpointWriter::create(
+                CheckpointPublisher::create(
                     plan,
+                    search_checkpoint_header(
+                        workload,
+                        config,
+                        &executable_identity,
+                        "",
+                        0,
+                        0,
+                        0,
+                        0,
+                    ),
                     G::checkpoint_marks(&core.evidence),
                     core.archive.top_progress(),
                 )
@@ -293,7 +302,6 @@ where
         let mut coordinator = Self {
             workload,
             config,
-            executable_identity,
             work_budget,
             header,
             origin_record,
@@ -374,10 +382,14 @@ where
     }
 
     pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {
-        if self.pending.len() >= self.config.window {
-            return Ok(false);
-        }
-        self.reserve()
+        let result = (|| {
+            self.poll_persistence()?;
+            if self.pending.len() >= self.config.window {
+                return Ok(false);
+            }
+            self.reserve()
+        })();
+        self.handback_on_error(result)
     }
 
     pub fn plan(&mut self, limit: usize) -> Vec<JobSpec<G>> {
@@ -429,59 +441,91 @@ where
         reservation: usize,
         outcome: Result<(CampaignJobResult<G>, u64, String), String>,
     ) -> Result<(), Box<dyn Error>> {
-        self.workload.verify_integrity()?;
-        self.profile.receives = self.profile.receives.saturating_add(1);
-        self.running = self
-            .running
-            .checked_sub(1)
-            .ok_or("campaign worker replied without queued work")?;
-        let held = self.schedule.first().map(|(_, next)| *next) != Some(reservation);
-        self.idle_clock.update(
-            self.running,
-            if held {
-                IdleReason::AdmissionOrder
-            } else {
-                IdleReason::NoJob
-            },
-        );
-        let pending = self
-            .pending
-            .remove(&reservation)
-            .ok_or("campaign worker replied for an unknown reservation")?;
-        if self
-            .queued
-            .contains_key(&(pending.planned_finish, reservation))
-        {
-            return Err("campaign worker replied for a job that was never planned".into());
-        }
-        if self
-            .completed
-            .insert(
-                reservation,
-                CompletedJob {
-                    held_since: held.then(now),
-                    pending,
-                    outcome,
-                },
-            )
-            .is_some()
-        {
-            return Err("campaign worker completed one reservation twice".into());
-        }
-        while let Some(&(finish, reservation)) = self.schedule.first() {
+        let result = (|| {
+            self.poll_persistence()?;
             self.workload.verify_integrity()?;
-            let Some(completed) = self.completed.remove(&reservation) else {
-                break;
-            };
-            self.schedule.pop_first();
-            self.admit_completed(finish, reservation, completed)?;
-            self.reserve()?;
-            self.write_due_checkpoint()?;
-        }
-        if self.pending.is_empty() && !self.completed.is_empty() {
-            return Err("campaign reorder window ended with an admission gap".into());
+            self.profile.receives = self.profile.receives.saturating_add(1);
+            self.running = self
+                .running
+                .checked_sub(1)
+                .ok_or("campaign worker replied without queued work")?;
+            let held = self.schedule.first().map(|(_, next)| *next) != Some(reservation);
+            self.idle_clock.update(
+                self.running,
+                if held {
+                    IdleReason::AdmissionOrder
+                } else {
+                    IdleReason::NoJob
+                },
+            );
+            let pending = self
+                .pending
+                .remove(&reservation)
+                .ok_or("campaign worker replied for an unknown reservation")?;
+            if self
+                .queued
+                .contains_key(&(pending.planned_finish, reservation))
+            {
+                return Err("campaign worker replied for a job that was never planned".into());
+            }
+            if self
+                .completed
+                .insert(
+                    reservation,
+                    CompletedJob {
+                        held_since: held.then(now),
+                        pending,
+                        outcome,
+                    },
+                )
+                .is_some()
+            {
+                return Err("campaign worker completed one reservation twice".into());
+            }
+            while let Some(&(finish, reservation)) = self.schedule.first() {
+                self.workload.verify_integrity()?;
+                let Some(completed) = self.completed.remove(&reservation) else {
+                    break;
+                };
+                self.schedule.pop_first();
+                self.admit_completed(finish, reservation, completed)?;
+                self.reserve()?;
+                self.write_due_checkpoint()?;
+            }
+            if self.pending.is_empty() && !self.completed.is_empty() {
+                return Err("campaign reorder window ended with an admission gap".into());
+            }
+            Ok(())
+        })();
+        self.handback_on_error(result)
+    }
+
+    fn poll_persistence(&mut self) -> Result<(), Box<dyn Error>> {
+        if let Some(checkpoints) = self.checkpoints.as_mut() {
+            checkpoints.poll()?;
         }
         Ok(())
+    }
+
+    fn handback_on_error<T>(
+        &mut self,
+        result: Result<T, Box<dyn Error>>,
+    ) -> Result<T, Box<dyn Error>> {
+        if result.is_err() {
+            self.finish_persistence(result)
+        } else {
+            result
+        }
+    }
+
+    pub(crate) fn finish_persistence<T>(
+        &mut self,
+        result: Result<T, Box<dyn Error>>,
+    ) -> Result<T, Box<dyn Error>> {
+        match self.checkpoints.as_mut() {
+            Some(checkpoints) => checkpoints.finish(result),
+            None => result,
+        }
     }
 
     pub fn watch_admissions(&mut self) {
@@ -557,32 +601,34 @@ where
         mut self,
         workers: Vec<WorkerTelemetry>,
     ) -> Result<CampaignOutcome<G>, Box<dyn Error>> {
-        if !self.completed.is_empty() || !self.schedule.is_empty() {
-            return Err("campaign reorder window ended with an admission gap".into());
-        }
-        self.telemetry.completed_buffer = self.completed.telemetry;
-        if let Some(checkpoints) = self.checkpoints.as_mut() {
-            write_search_checkpoint(
-                self.workload,
-                self.config,
-                &self.executable_identity,
-                checkpoints,
-                "final",
-                &self.core,
-                &self.draw_state,
-                &self.duration_policies,
-                &self.rand,
-                &self.counters,
-                &self.profile,
-                self.reserved,
-                self.admitted,
-                self.planned_clock,
-                &self.schedule,
-                &self.pending,
-                &self.completed,
-                &self.spec_records,
-            )?;
-        }
+        let result = (|| {
+            if !self.completed.is_empty() || !self.schedule.is_empty() {
+                return Err("campaign reorder window ended with an admission gap".into());
+            }
+            self.telemetry.completed_buffer = self.completed.telemetry;
+            if let Some(checkpoints) = self.checkpoints.as_mut() {
+                write_search_checkpoint(
+                    self.workload,
+                    checkpoints,
+                    "final",
+                    &self.core,
+                    &self.draw_state,
+                    &self.duration_policies,
+                    &self.rand,
+                    &self.counters,
+                    &self.profile,
+                    self.reserved,
+                    self.admitted,
+                    self.planned_clock,
+                    &self.schedule,
+                    &self.pending,
+                    &self.completed,
+                    &self.spec_records,
+                )?;
+            }
+            Ok(())
+        })();
+        self.finish_persistence(result)?;
         let Self {
             workload,
             config,
@@ -707,8 +753,6 @@ where
         {
             write_search_checkpoint(
                 self.workload,
-                self.config,
-                &self.executable_identity,
                 checkpoints,
                 reason,
                 &self.core,
