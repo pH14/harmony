@@ -275,7 +275,7 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 9, and the sparse sidecar is version 11;
+The complete portable format is version 10, and the sparse sidecar is version 12;
 older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
 changed-page numbers and bytes to its sidecar; import verifies them before
 deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
@@ -387,9 +387,9 @@ advancing virtual time. Supported ports keep the same assigned durations once
 their ownership and any explicit width constraint have been validated.
 The modeled 8259 master and slave command and interrupt-mask ports accept only
 byte reads and writes; other widths fail before changing masks or virtual time.
-Every V-time-wired VMM maintains a v1 ordered normalized-event commitment:
+Every V-time-wired VMM maintains a v2 ordered-history commitment:
 `count` starts at zero with a zero digest; each completed normalized event
-advances a SHA-256 chain under `consonance.ordered-event-history.v1`, committing
+advances a tagged SHA-256 chain under `consonance.ordered-event-history.v2`, committing
 the preceding digest, checked cumulative count, event class, payload digest,
 virtual time after completion, and ordered interrupt deadline/vector pairs.
 Delivery outside an active guest-exit context is rejected before consuming the
@@ -402,14 +402,33 @@ an interrupt with its completing event is semantic; local trace event indexes,
 schedule indexes, backend debug strings, diagnostic
 checkpoint hashes, and session segment labels are excluded. Raw-only backend
 exits without semantic delivery do not consume a normalized ordinal. Count
-overflow fails the event.
+overflow fails the event. Completed Consonance-owned doorbell exchanges append
+separately tagged records binding canonical request kind, service, opcode,
+sequence and payload, plus response kind, identity, status and payload. Malformed
+frames bind their advertised length and observed bytes. Valid framing padding
+outside the decoded payload is not service semantics. The exchange digest uses
+`consonance.service-exchange.v1` with fixed-width fields and length-delimited
+payloads. The history count includes both normalized transport events and
+service completion records; diagnostic normalized ordinals and interrupt
+schedule placement still count only normalized transport/delivery events.
+
+Immediate exchanges are queued after their enclosing transport record. A
+request deferred at a control deadline or awaiting an external answer contributes
+no completed exchange until its response is written. Snapshots retain the raw
+deferred frame or decoded SDK question, sequence and coverage-ready count;
+completion reconstructs canonical request fields from this captured state,
+regardless of later writes to the guest request page. Replay, branch and imports
+restore that pending state and the history prefix. Count capacity is checked
+before publishing a response, rejected responses contribute no completion, and
+a consumed pending decision cannot complete twice. Service records charge no
+virtual time and do not inject timing events or change checkpoint placement.
 This is a constant-size history commitment, separate from logical VM state;
 the existing diagnostic log remains available independently.
 
 Fresh V-time wiring resets history. Capturing/hashing a snapshot and retiring
 its diagnostic trace do not advance or reset it. Replay and branch restore the
 captured commitment before continuation, regardless of local snapshot IDs or
-restore mode. Full portable snapshots (v9) and sparse sidecars (v11) retain its
+restore mode. Full portable snapshots (v10) and sparse sidecars (v12) retain its
 presence, count and digest independently of the logical state hash. Imports
 require a live validator and check availability against its V-time model before
 creating a handle. Restore also rejects a mismatch on the actual target.
