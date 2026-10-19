@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Debug, Default, clap::Args)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, clap::Args)]
 pub struct Destination {
     #[arg(long, conflicts_with = "out")]
     pub name: Option<String>,

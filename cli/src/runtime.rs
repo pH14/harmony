@@ -317,23 +317,50 @@ pub fn read_pair(c: &Consonance) -> Result<(Vec<u8>, Vec<u8>)> {
     let base_path = c.base_initramfs.as_ref().ok_or("missing base initramfs")?;
     let kernel = fs::read(kernel_path)?;
     let base = fs::read(base_path)?;
+    validate_pair_bytes(c, &kernel, &base)?;
+    Ok((kernel, base))
+}
+
+pub fn validate_pair_bytes(c: &Consonance, kernel: &[u8], base: &[u8]) -> Result<()> {
     if let Some(qualification) = &c.runtime_qualification {
-        if c.backend != Backend::Uml && digest(&kernel) != qualification.kernel_sha256 {
-            return Err(format!(
-                "runtime kernel {} changed after selection",
-                kernel_path.display()
-            )
-            .into());
+        if c.backend != Backend::Uml && digest(kernel) != qualification.kernel_sha256 {
+            return Err("runtime kernel changed after selection".into());
         }
-        if digest(&base) != qualification.base_initramfs_sha256 {
-            return Err(format!(
-                "runtime base {} changed after selection",
-                base_path.display()
-            )
-            .into());
+        if digest(base) != qualification.base_initramfs_sha256 {
+            return Err("runtime base changed after selection".into());
         }
     }
-    Ok((kernel, base))
+    Ok(())
+}
+
+pub fn validate_captured_runtime(
+    c: &Consonance,
+    kernel: &[u8],
+    base: &[u8],
+    manifest: Option<&[u8]>,
+) -> Result<()> {
+    validate_pair_bytes(c, kernel, base)?;
+    if let Some(qualification) = &c.runtime_qualification {
+        let manifest: RuntimeManifest =
+            serde_json::from_slice(manifest.ok_or("qualified prepared runtime has no manifest")?)?;
+        let kernel_name = if std::env::consts::ARCH == "aarch64" {
+            "Image"
+        } else {
+            "bzImage"
+        };
+        if manifest.version != 1
+            || manifest.architecture != std::env::consts::ARCH
+            || manifest.source_digest != SOURCE_DIGEST
+            || manifest.files.get(kernel_name) != Some(&qualification.kernel_sha256)
+            || manifest.files.get("initramfs-oci.cpio.gz")
+                != Some(&qualification.base_initramfs_sha256)
+        {
+            return Err("prepared runtime manifest differs from the selected platform".into());
+        }
+    } else if manifest.is_some() {
+        return Err("custom prepared runtime carries an unexpected manifest".into());
+    }
+    Ok(())
 }
 
 pub fn acquire(kind: &str, isa: &str, offline: bool) -> Result<PathBuf> {

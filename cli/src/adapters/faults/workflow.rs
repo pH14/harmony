@@ -125,7 +125,7 @@ fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
     ))
 }
 
-fn prepare_plain_staged(
+pub(crate) fn prepare_plain_staged(
     staged: &oci_support::image::StagedImage,
     request: &oci_support::bundle::LaunchRequest,
     mode: ExecutionMode,
@@ -178,6 +178,16 @@ pub fn report_code(report: &faults_workload::Report) -> u8 {
 pub fn search(c: Config, destination: Destination, offline: bool) -> Result<u8> {
     let c = configure(c, offline)?;
     let (artifacts, bundle, vocabulary) = prepare_faults(&c)?;
+    search_prepared(c, destination, artifacts, bundle, vocabulary)
+}
+
+pub fn search_prepared(
+    c: Config,
+    destination: Destination,
+    artifacts: Artifacts,
+    bundle: String,
+    vocabulary: FaultVocabulary,
+) -> Result<u8> {
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "search", Some(bundle), true)?;
     capture_runtime(&mut manifest, &out, &artifacts)?;
@@ -297,15 +307,44 @@ pub fn run(
     offline: bool,
     command: Vec<String>,
 ) -> Result<u8> {
-    let mut c = configure(config, offline)?;
-    if !command.is_empty() {
-        c.command = command;
-    }
-    if !c.command.is_empty() && (!c.nodes.is_empty() || actions.is_some()) {
-        return Err("command overrides cannot be combined with supervised scenarios; set nodes.NAME.command in TOML".into());
-    }
-    if actions.is_some() || !c.nodes.is_empty() {
-        let (artifacts, bundle, vocabulary) = prepare_faults(&c)?;
+    crate::preparation::execute(crate::adapters::Request {
+        operation: crate::adapters::Operation::Run,
+        config: config.shared()?,
+        destination,
+        actions,
+        repeat,
+        console,
+        offline,
+        command,
+        ..Default::default()
+    })
+}
+
+pub fn run_prepared(
+    c: Config,
+    request: crate::adapters::Request,
+    prepared: crate::handoff::Prepared,
+) -> Result<u8> {
+    let crate::adapters::Request {
+        destination,
+        actions,
+        repeat,
+        console,
+        ..
+    } = request;
+    let execution = prepared
+        .execution
+        .as_ref()
+        .ok_or("missing prepared execution")?;
+    let artifacts = Artifacts {
+        kernel: prepared.kernel.clone(),
+        initramfs: execution.initramfs(&prepared.base),
+    };
+    if let Some(bundle) = prepared.bundle {
+        let vocabulary = prepared
+            .vocabulary
+            .as_ref()
+            .ok_or("missing admitted vocabulary")?;
         let actions = match actions {
             Some(path) => {
                 faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?.actions
@@ -335,17 +374,6 @@ pub fn run(
             "--repeat requires an action scenario; use replay for recorded commands".into(),
         );
     }
-    let stage = tempfile::tempdir()?;
-    let staged =
-        oci_support::image::stage(c.image.as_deref().ok_or("missing image")?, stage.path())?;
-    let prepared = prepare_plain_staged(
-        &staged,
-        &oci_support::bundle::LaunchRequest::new(c.command.clone()),
-        super::execution_mode(c.backend),
-    )?;
-    let (kernel, base) = crate::runtime::read_pair(&c.runtime())?;
-    let initramfs = prepared.initramfs(&base);
-    let artifacts = Artifacts { kernel, initramfs };
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "run", None, true)?;
     capture_runtime(&mut manifest, &out, &artifacts)?;

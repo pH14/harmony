@@ -20,6 +20,7 @@ test = false
 consonance-host = []
 
 [dependencies]
+postcard = { version = "=1.1.3", default-features = false, features = ["alloc", "use-std"] }
 nes-workload = { version = "=0.1.0", path = "../workloads/nes", features = ["consonance"] }
 # CLI dispatch (whitelist: clap is bins-only; this crate is a binary).
 clap = { version = "4", features = ["derive"] }
@@ -48,5 +49,4 @@ nested-driver = { path = "../consonance/nested-driver", version = "=0.1.0", feat
 [lints]
 workspace = true
 
-[dev-dependencies]
-postcard = { version = "=1.1.3", default-features = false, features = ["alloc", "use-std"] }
+

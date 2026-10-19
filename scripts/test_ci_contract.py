@@ -397,6 +397,13 @@ class StructureTests(unittest.TestCase):
     def test_platform_runtime_key_excludes_workload_sources(self):
         self.assertFalse(any(path.startswith("workloads/") for path in self.runtime_inputs()))
 
+    def test_guarded_preparation_inputs_are_in_the_platform_key(self):
+        required = {"consonance/oci", "cli/src/oci", "cli/src/handoff.rs", "cli/src/preparation.rs",
+                    "cli/src/package.rs", "cli/src/host_identity.rs", "cli/src/lib.rs", "cli/src/guarded.rs", "cli/src/native.rs",
+                    "cli/src/bin/harmony-consonance-host.rs"}
+        self.assertTrue(required.issubset(self.runtime_inputs()))
+        self.assertNotIn("cli/src", self.runtime_inputs())
+
     def workspace_root(self, crate):
         for directory in (crate, *crate.parents):
             manifest = directory / "Cargo.toml"
