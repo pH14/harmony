@@ -144,7 +144,7 @@ VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
 `Session::event_history` and `SearchSession::event_history` return the cumulative
-v2 ordered-history record count and commitment through both in-process control and
+v3 ordered-history record count and commitment through both in-process control and
 worker transport. Snapshot replay, portable imports and cache imports restore
 the captured history; diagnostic trace retirement does not reset it. A backend
 without normalized history returns an explicit unavailable error. UML does not
@@ -153,8 +153,8 @@ supply this certificate.
 Completed service exchanges contribute records in addition to normalized
 transport events; this count is not a guest-exit or diagnostic-log count.
 
-Embedded complete portable snapshots use format version 10; sparse sidecars use
-version 12. Older embedded versions are rejected. The outer sparse archive layout
+Embedded complete portable snapshots use format version 11; sparse sidecars use
+version 13. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw

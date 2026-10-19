@@ -1277,6 +1277,27 @@ where
         }
     }
 
+    pub(crate) fn record_guest_completion(&mut self, result: &[u8]) -> Result<(), VmmError> {
+        if let Some(trace) = self.virtual_time_trace.as_mut() {
+            trace
+                .record_completion(result)
+                .map_err(|message| VmmError::ContractViolation(message.into()))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn complete_guest_read(&mut self, value: u64) -> Result<(), VmmError> {
+        self.backend.complete_read(value)?;
+        let mut result = [0; 9];
+        result[1..].copy_from_slice(&value.to_le_bytes());
+        self.record_guest_completion(&result)
+    }
+
+    pub(crate) fn complete_guest_fault(&mut self) -> Result<(), VmmError> {
+        self.backend.complete_fault()?;
+        self.record_guest_completion(&[1])
+    }
+
     fn service_exit(
         &mut self,
         exit: Exit<B::A>,
@@ -3926,6 +3947,66 @@ mod tests {
         let mut vmm = Vmm::new(configured_mock(exits), GuestRam::new(0x1000).unwrap());
         vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
         vmm
+    }
+
+    #[test]
+    fn read_completion_history_detects_reconverged_uart_answers() {
+        let mut observations = Vec::new();
+        for byte in [0x35, 0x71] {
+            let mut vmm = vtime_vmm(
+                vec![Exit::Arch(vmm_backend::X86Exit::Io {
+                    port: 0x3f8,
+                    size: 1,
+                    write: None,
+                })],
+                37,
+            );
+            vmm.inject_serial_input(&[byte]);
+            assert!(matches!(vmm.step().unwrap(), Step::Continued));
+            assert_eq!(
+                vmm.backend.completions(),
+                &[Completion::Read(u64::from(byte))]
+            );
+            observations.push((
+                vmm.state_hash().unwrap(),
+                vmm.event_history().unwrap(),
+                vmm.virtual_time_trace().unwrap().normalized_log().events[0].clone(),
+            ));
+        }
+        let (left_state, left_history, left_event) = &observations[0];
+        let (right_state, right_history, right_event) = &observations[1];
+        assert_eq!(left_state, right_state);
+        assert_eq!(left_history.count, right_history.count);
+        assert_eq!(left_event.class, right_event.class);
+        assert_eq!(left_event.vns_after, right_event.vns_after);
+        assert_eq!(left_event.interrupts, right_event.interrupts);
+        assert_ne!(left_event.payload_digest, right_event.payload_digest);
+        assert_ne!(left_history.digest, right_history.digest);
+    }
+
+    #[test]
+    fn read_completion_history_commits_resolved_cpuid_registers() {
+        let mut observations = Vec::new();
+        for cr4 in [0, 1 << 18] {
+            let mut vmm = vtime_vmm(
+                vec![Exit::Arch(vmm_backend::X86Exit::Cpuid {
+                    leaf: 1,
+                    subleaf: 0,
+                })],
+                37,
+            );
+            let mut state = vmm.backend.save().unwrap();
+            state.sregs.cr4 = cr4;
+            vmm.backend.set_state(state);
+            vmm.step().unwrap();
+            let mut state = vmm.backend.save().unwrap();
+            state.sregs.cr4 = 0;
+            vmm.backend.set_state(state);
+            observations.push((vmm.state_hash().unwrap(), vmm.event_history().unwrap()));
+        }
+        assert_eq!(observations[0].0, observations[1].0);
+        assert_eq!(observations[0].1.count, observations[1].1.count);
+        assert_ne!(observations[0].1.digest, observations[1].1.digest);
     }
 
     #[test]

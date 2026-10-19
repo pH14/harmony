@@ -243,7 +243,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         write: Option<u64>,
     ) -> Result<Step, VmmError> {
         if is_frozen_pmu_sysreg(sysreg) {
-            self.backend.complete_fault()?;
+            self.complete_guest_fault()?;
             return Ok(Step::Continued);
         }
         let ruled = matches!(
@@ -291,7 +291,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 let intid = gic
                     .active_interrupt()
                     .unwrap_or(vmm_backend::GicIntId::SPURIOUS.0);
-                self.backend.complete_read(u64::from(intid))?;
+                self.complete_guest_read(u64::from(intid))?;
                 Ok(Step::Continued)
             }
             (ICC_EOIR1_EL1, Some(intid)) => {
@@ -312,7 +312,8 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 Ok(Step::Continued)
             }
             (ICC_PMR_EL1, None) => {
-                self.backend.complete_read(u64::from(gic.pmr()))?;
+                let value = u64::from(gic.pmr());
+                self.complete_guest_read(value)?;
                 Ok(Step::Continued)
             }
             (ICC_PMR_EL1, Some(value)) => {
@@ -333,23 +334,23 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 Ok(Step::Continued)
             }
             (ICC_IGRPEN1_EL1, None) => {
-                self.backend
-                    .complete_read(u64::from(gic.group1_enabled()))?;
+                let value = u64::from(gic.group1_enabled());
+                self.complete_guest_read(value)?;
                 Ok(Step::Continued)
             }
             (ICC_BPR1_EL1 | ICC_CTLR_EL1, None) => {
-                self.backend.complete_read(0)?;
+                self.complete_guest_read(0)?;
                 Ok(Step::Continued)
             }
             (ICC_RPR_EL1, None) => {
-                self.backend.complete_read(0xff)?;
+                self.complete_guest_read(0xff)?;
                 Ok(Step::Continued)
             }
             (ICC_HPPIR1_EL1, None) => {
                 let intid = gic
                     .peek_interrupt()
                     .unwrap_or(vmm_backend::GicIntId::SPURIOUS.0);
-                self.backend.complete_read(u64::from(intid))?;
+                self.complete_guest_read(u64::from(intid))?;
                 Ok(Step::Continued)
             }
             _ => {
@@ -426,7 +427,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             return match write {
                 None => {
                     let v = self.devices.uart.read(offset) & mask;
-                    self.backend.complete_read(u64::from(v))?;
+                    self.complete_guest_read(u64::from(v))?;
                     Ok(Step::Continued)
                 }
                 Some(v) => {
@@ -515,7 +516,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     } else {
                         0
                     };
-                    self.backend.complete_read(u64::from(abi))?;
+                    self.complete_guest_read(u64::from(abi))?;
                     Ok(Step::Continued)
                 }
                 (0x010, Some(deadline)) => {
@@ -551,7 +552,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             if is_gicd_irouter_half(addr) {
                 return match write {
                     None => {
-                        self.backend.complete_read(0)?;
+                        self.complete_guest_read(0)?;
                         Ok(Step::Continued)
                     }
                     Some(0) => Ok(Step::Continued),
@@ -582,7 +583,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     } else {
                         u64::from(lo)
                     };
-                    self.backend.complete_read(value)?;
+                    self.complete_guest_read(value)?;
                     Ok(Step::Continued)
                 }
                 Some(v) => {
@@ -1374,6 +1375,32 @@ mod tests {
             .unwrap(),
         );
         vmm
+    }
+
+    #[test]
+    fn read_completion_history_detects_reconverged_arm_uart_answers() {
+        let mut observations = Vec::new();
+        for byte in [0x35, 0x71] {
+            let mut vmm = clocked_mock_vmm_with_exits(vec![
+                Exit::Common(CommonExit::Mmio {
+                    gpa: Gpa(PL011.0),
+                    size: 4,
+                    write: None,
+                }),
+                Exit::Common(CommonExit::Shutdown),
+            ]);
+            vmm.inject_serial_input(&[byte]);
+            assert!(matches!(vmm.step().unwrap(), Step::Continued));
+            assert_eq!(
+                vmm.backend.completions(),
+                &[Arm64MockCompletion::Read(u64::from(byte))]
+            );
+            vmm.step().unwrap();
+            observations.push((vmm.state_hash().unwrap(), vmm.event_history().unwrap()));
+        }
+        assert_eq!(observations[0].0, observations[1].0);
+        assert_eq!(observations[0].1.count, observations[1].1.count);
+        assert_ne!(observations[0].1.digest, observations[1].1.digest);
     }
 
     #[test]
