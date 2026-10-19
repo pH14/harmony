@@ -191,9 +191,53 @@ pub struct Store {
     page_verifications: std::cell::Cell<usize>,
 }
 
+enum VerifiedPages {
+    Dense(Vec<u64>),
+    Sparse {
+        ids: BTreeSet<NonZeroUsize>,
+        dense_words: Option<usize>,
+    },
+}
+impl VerifiedPages {
+    fn new(slots: usize, live: usize) -> Self {
+        let dense_words = (slots <= 8 * 1024 * 1024 && slots <= live.saturating_mul(8))
+            .then_some(slots.div_ceil(64));
+        Self::Sparse {
+            ids: BTreeSet::new(),
+            dense_words,
+        }
+    }
+
+    fn contains(&self, id: &NonZeroUsize) -> bool {
+        match self {
+            Self::Dense(words) => words[(id.get() - 1) / 64] & (1 << ((id.get() - 1) % 64)) != 0,
+            Self::Sparse { ids, .. } => ids.contains(id),
+        }
+    }
+
+    fn insert(&mut self, id: NonZeroUsize) {
+        match self {
+            Self::Dense(words) => words[(id.get() - 1) / 64] |= 1 << ((id.get() - 1) % 64),
+            Self::Sparse { ids, dense_words } => {
+                ids.insert(id);
+                if let Some(len) = *dense_words
+                    && ids.len() >= 64
+                    && ids.len() >= len
+                {
+                    let mut words = vec![0; len];
+                    for id in ids.iter() {
+                        words[(id.get() - 1) / 64] |= 1 << ((id.get() - 1) % 64);
+                    }
+                    *self = Self::Dense(words);
+                }
+            }
+        }
+    }
+}
+
 pub struct ReadTransaction<'store> {
     store: &'store Store,
-    verified_pages: BTreeSet<NonZeroUsize>,
+    verified_pages: VerifiedPages,
 }
 
 struct VerificationBatch<'a> {
@@ -272,7 +316,7 @@ impl Store {
     pub fn read_transaction(&self) -> ReadTransaction<'_> {
         ReadTransaction {
             store: self,
-            verified_pages: BTreeSet::new(),
+            verified_pages: VerifiedPages::new(self.pages.len(), self.page_index.len()),
         }
     }
 
@@ -369,7 +413,7 @@ impl Store {
         }
 
         let timing = self.verification_batch();
-        let mut verified_pages = BTreeSet::new();
+        let mut verified_pages = VerifiedPages::new(self.pages.len(), self.page_index.len());
         for (&gfn, &pref) in &inherited {
             self.page_entry(pref, gfn, &mut verified_pages)?;
         }
@@ -562,7 +606,7 @@ impl Store {
         &self,
         page: PageRef,
         gfn: u64,
-        verified_pages: &mut BTreeSet<NonZeroUsize>,
+        verified_pages: &mut VerifiedPages,
     ) -> Result<(&PageHash, &[u8; PAGE_SIZE]), StoreError> {
         self.note_verification(|t| t.page_requests = t.page_requests.saturating_add(1));
         let result = (|| match page {
@@ -609,11 +653,8 @@ impl Store {
         self.read_transaction().verify_snapshots(snaps)
     }
 
-    fn verified_snapshot_pages(
-        &self,
-        snap: SnapshotId,
-    ) -> Result<BTreeSet<NonZeroUsize>, StoreError> {
-        let mut verified_pages = BTreeSet::new();
+    fn verified_snapshot_pages(&self, snap: SnapshotId) -> Result<VerifiedPages, StoreError> {
+        let mut verified_pages = VerifiedPages::new(self.pages.len(), self.page_index.len());
         self.verify_snapshot_pages_into(snap, &mut verified_pages)?;
         Ok(verified_pages)
     }
@@ -621,7 +662,7 @@ impl Store {
     fn verify_snapshot_pages_into(
         &self,
         snap: SnapshotId,
-        verified_pages: &mut BTreeSet<NonZeroUsize>,
+        verified_pages: &mut VerifiedPages,
     ) -> Result<(), StoreError> {
         let _timing = self.verification_batch();
         let mut seen_gfns = BTreeSet::new();
@@ -1339,6 +1380,138 @@ impl DeltaBuilder<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verification_membership_promotes_at_threshold_without_losing_word_boundaries() {
+        let mut pages = VerifiedPages::new(128, 128);
+        for value in 1..64 {
+            let id = NonZeroUsize::new(value).unwrap();
+            assert!(!pages.contains(&id));
+            pages.insert(id);
+        }
+        assert!(matches!(pages, VerifiedPages::Sparse { .. }));
+        for value in 64..=128 {
+            let id = NonZeroUsize::new(value).unwrap();
+            assert!(!pages.contains(&id));
+            pages.insert(id);
+            assert!(pages.contains(&id));
+        }
+        assert!(matches!(pages, VerifiedPages::Dense(_)));
+        for value in 1..=128 {
+            assert!(pages.contains(&NonZeroUsize::new(value).unwrap()));
+        }
+        let fresh = VerifiedPages::new(128, 128);
+        assert!(!fresh.contains(&NonZeroUsize::new(128).unwrap()));
+        for (slots, live) in [(1024, 64), (usize::MAX, usize::MAX)] {
+            let mut sparse = VerifiedPages::new(slots, live);
+            for value in 1..=64 {
+                sparse.insert(NonZeroUsize::new(value).unwrap());
+            }
+            assert!(matches!(sparse, VerifiedPages::Sparse { .. }));
+        }
+    }
+
+    #[test]
+    fn verification_membership_waits_for_word_scaled_threshold() {
+        let mut pages = VerifiedPages::new(8192, 8192);
+        for value in 1..=127 {
+            let id = NonZeroUsize::new(value).unwrap();
+            assert!(!pages.contains(&id));
+            pages.insert(id);
+        }
+        assert!(matches!(pages, VerifiedPages::Sparse { .. }));
+        let last = NonZeroUsize::new(8192).unwrap();
+        assert!(!pages.contains(&last));
+        pages.insert(last);
+        assert!(matches!(&pages, VerifiedPages::Dense(words) if words.len() == 128));
+        for value in (1..=127).chain([8192]) {
+            assert!(pages.contains(&NonZeroUsize::new(value).unwrap()));
+        }
+        assert!(!pages.contains(&NonZeroUsize::new(128).unwrap()));
+        assert!(!pages.contains(&NonZeroUsize::new(8191).unwrap()));
+    }
+
+    #[test]
+    fn promoted_read_transactions_verify_aliases_once_and_recheck_after_corruption() {
+        let mut store = Store::new(cfg(512));
+        let mut builder = store.begin_base();
+        for gfn in 0..129 {
+            let data = [(gfn + 1) as u8; PAGE_SIZE];
+            builder.write_page(gfn, &data).unwrap();
+            builder.write_page(256 + gfn, &data).unwrap();
+        }
+        let snap = builder.seal(vec![]);
+        let before = store.verification_telemetry();
+        {
+            let mut read = store.read_transaction();
+            for gfn in 0..65 {
+                read.read_page(snap, gfn).unwrap();
+            }
+            read.verify_snapshots(&[snap, snap]).unwrap();
+            assert!(matches!(read.verified_pages, VerifiedPages::Dense(_)));
+        }
+        let first = store.verification_telemetry();
+        assert_eq!(first.resident_hashes - before.resident_hashes, 129);
+        store.read_transaction().verify_snapshots(&[snap]).unwrap();
+        assert_eq!(
+            store.verification_telemetry().resident_hashes - first.resident_hashes,
+            129
+        );
+        let PageRef::Data(id) = store.resolve(snap.0, 128) else {
+            panic!("resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[17] ^= 1;
+        assert!(matches!(
+            store.read_transaction().verify_snapshots(&[snap]),
+            Err(StoreError::PageIntegrity { gfn: 128 })
+        ));
+    }
+
+    #[test]
+    fn fresh_membership_handles_retained_high_slots_and_recycled_storage() {
+        let mut store = Store::new(cfg(129));
+        let mut builder = store.begin_base();
+        for gfn in 0..129 {
+            builder
+                .write_page(gfn, &[(gfn + 1) as u8; PAGE_SIZE])
+                .unwrap();
+        }
+        let original = builder.seal(vec![]);
+        store
+            .read_transaction()
+            .verify_snapshots(&[original])
+            .unwrap();
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[129; PAGE_SIZE]).unwrap();
+        let retained = builder.seal(vec![]);
+        store.release(original).unwrap();
+        store.gc();
+        assert_eq!(store.pages.len(), 129);
+        assert_eq!(store.page_index.len(), 1);
+        {
+            let mut read = store.read_transaction();
+            read.verify_snapshots(&[retained]).unwrap();
+            assert!(matches!(
+                read.verified_pages,
+                VerifiedPages::Sparse {
+                    dense_words: None,
+                    ..
+                }
+            ));
+        }
+        let mut builder = store.begin_base();
+        builder.write_page(1, &[233; PAGE_SIZE]).unwrap();
+        let recycled = builder.seal(vec![]);
+        assert_eq!(store.pages.len(), 129);
+        let before = store.verification_telemetry();
+        let mut read = store.read_transaction();
+        read.verify_snapshots(&[retained, recycled]).unwrap();
+        assert_eq!(read.read_page(recycled, 1).unwrap(), &[233; PAGE_SIZE]);
+        assert_eq!(
+            store.verification_telemetry().resident_hashes - before.resident_hashes,
+            2
+        );
+    }
 
     #[test]
     fn copy_telemetry_counts_only_executed_payload_copies() {
