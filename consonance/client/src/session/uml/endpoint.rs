@@ -127,7 +127,7 @@ impl EndpointDriver for UmlSession {
         let mut bytes = 0usize;
         let mut events = Vec::new();
         for event in session.events().iter().skip(usize::try_from(cursor)?) {
-            let size = 24usize
+            let size = 16usize
                 .checked_add(event.data.len())
                 .ok_or(EndpointProtocolError::Invalid("UML event length overflow"))?;
             if size > ENDPOINT_PAGE_LIMIT {
