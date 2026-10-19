@@ -183,7 +183,9 @@ reproduces the same failure using the identical retained executable and AMD cut:
 versus expected
 `44e55f8d96e950e7c063464974e03532032f32ebae03989de2337a2db47dd126`.
 Diagnostic source `e82aa7e03bb04fa0dbad1c84ce5c219e4ed8fd5e` retains
-the exact DONE state separately from that qualification binary. The difference
+the exact DONE state separately from that qualification binary. Direct AMD
+diagnostic results are retained by [run 39160291556](https://github.com/pH14/harmony/actions/runs/39160291556)
+and compared with the independently verified nested Intel reproduction. The difference
 is x87 FIP: Intel saves the post-cut `fstpl` address `0x4011ab` in CPU state,
 encoded VM state and the guest kernel's FPU image in RAM; the AMD expected
 state has zero. Changing only these three values in an offline diagnostic copy

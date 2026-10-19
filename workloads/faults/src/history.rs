@@ -644,7 +644,7 @@ mod tests {
             );
             for composition in [
                 execution_contract::Composition::RetainedLinuxContinuation9673,
-                execution_contract::Composition::UmlFaultsWholeState,
+                execution_contract::Composition::UmlWholeState,
             ] {
                 assert!(
                     receipt

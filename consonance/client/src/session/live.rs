@@ -296,6 +296,7 @@ impl Session {
         initramfs: &Path,
         config: SessionConfig,
     ) -> Result<Self, Box<dyn Error>> {
+        config.validate()?;
         let kernel_bytes = std::fs::read(kernel)
             .map_err(|error| format!("read kernel {}: {error}", kernel.display()))?;
         let initramfs_bytes = std::fs::read(initramfs)
@@ -1157,7 +1158,7 @@ mod tests {
     fn qualified_execution_is_refused_before_artifact_or_backend_admission() {
         for composition in [
             execution_contract::Composition::RetainedLinuxContinuation9673,
-            execution_contract::Composition::UmlFaultsWholeState,
+            execution_contract::Composition::UmlWholeState,
         ] {
             let config = SessionConfig::default()
                 .with_qualification(execution_contract::Requirement::Qualified(composition));
@@ -1167,6 +1168,17 @@ mod tests {
             let error = result.unwrap_err().to_string();
             assert!(error.contains("qualification refused"), "{error}");
             assert_eq!(entries, 0);
+            let config = SessionConfig::default()
+                .with_qualification(execution_contract::Requirement::Qualified(composition));
+            let missing = tempfile::tempdir().unwrap();
+            let error = Session::from_paths_with_config(
+                &missing.path().join("kernel"),
+                &missing.path().join("initramfs"),
+                config,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("qualification refused"), "{error}");
         }
     }
 

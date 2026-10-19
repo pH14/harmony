@@ -1857,7 +1857,7 @@ while True:
         let parent = tempfile::tempdir().unwrap();
         for composition in [
             execution_contract::Composition::RetainedLinuxContinuation9673,
-            execution_contract::Composition::UmlFaultsWholeState,
+            execution_contract::Composition::UmlWholeState,
         ] {
             let config = UmlLaunch {
                 qualification: execution_contract::Requirement::Qualified(composition),
