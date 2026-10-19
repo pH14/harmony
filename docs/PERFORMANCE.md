@@ -1,333 +1,91 @@
 # Performance
 
 How fast could a search run on a given chip, and where does the time go when
-it falls short? We estimate that ceiling from the native CPU time of the
-workload, then account for the gap using measurements of host overhead,
-repeated work, and worker utilization.
+it falls short? Estimate that ceiling from the native CPU time of the workload,
+then account for the gap using host overhead, repeated work and worker
+utilization. The cost ranges and arithmetic examples below are illustrative
+model assumptions, not a baseline for the current executable. Measure them for
+the chip, backend and workload being evaluated.
 
-The worked examples below are historical measurements, not a baseline for
-current executables. Integrity checks, snapshot handling and observation costs
-have changed since those runs. The [October 18 measurements](#october-18-2026-measurements)
-identify their exact prepared builds and distinguish measured work from proposed
-optimizations.
+## Measurement boundaries
 
-## October 18, 2026 measurements
+Measure a fixed logical job separately from a whole campaign. Restore,
+extension, capture and import exercise different paths. Report whether an
+extension uses a fused operation or separate apply and capture calls; their
+summed timings do not establish fused-operation throughput. Include creation,
+boot, prefix construction and final persistence in the campaign total, or
+state explicitly which phase excludes them.
 
-These experiments address the findings tracked in [#745](https://github.com/pH14/harmony/issues/745).
-The combined source builds were prepared branches when measured; individual
-changes ship through separate reviewed PRs. The four evidence groups below
-identify distinct builds and scopes. None compares old and new builds or establishes a general campaign speedup.
+A retained parent can restore without replaying historical actions. A missing
+parent may require an ancestor restore and reconstruction. Record the actual
+source, selected depth, reconstruction work and executing worker before
+interpreting locality or restore cost. A direct-target import experiment does
+not measure adaptive selection, admission or campaign effectiveness.
 
-### Retained parent depth
+### Counter ownership
 
-Source `0be4f443003edabb4860d81945587204672e6dab` was measured on an Intel
-Core Ultra 9 285HX with Linux KVM, the etcd workload, a 1 GiB guest and an
-8 GiB cache budget. Both modes used the same executable, one sample at each depth and no warmup.
-The IPC mode used actual worker processes and descriptor transfers. Boot and
-prefix construction were excluded from the phase timings.
+Cumulative work counters and live residency diagnostics answer different
+questions. Snapshot work counters without walking retained snapshots for
+ownership queries. Request residency diagnostics explicitly, and preserve an
+unknown charge as unavailable. Work collection still has a fixed guarded
+worker telemetry exchange; record that observer effect rather than subtracting
+an estimated cost from elapsed time.
 
-| Parent depth | Local restore ms | Worker restore ms | Local fresh import ms | Worker fresh import ms |
-|---:|---:|---:|---:|---:|
-| 1 | 240.279 | 266.193 | 697.479 | 731.707 |
-| 8 | 241.341 | 267.566 | 707.251 | 748.849 |
-| 32 | 242.591 | 266.733 | 719.560 | 761.850 |
-| 128 | 241.098 | 268.808 | 732.870 | 779.255 |
-| 1,024 | 245.129 | 271.708 | 779.723 | 825.282 |
+- Campaign target totals already include worker profiles. Shared index,
+  launcher and retired coordinator profiles have separate owners.
+- Sending and receiving a descriptor observe the same transfer. Extent
+  references, distinct backing allocations, FD handles, mapped views, copied
+  bytes and resident memory are distinct quantities. Repeated allocation
+  identity does not establish unique physical RAM or persistent registration.
+- Guard, SDK callback, VM run and import timers can nest. Concurrent worker
+  times cannot be added to obtain campaign wall time. Event shape witnesses
+  are subsets of opcode totals, not additional work or semantic outcomes.
+- Logical ticks and normalized history are separate from physical backend
+  entries. Callback counts describe actual callback sites, not an assumed
+  request-to-response ratio or successful response writes.
+- Report counter overflow, saturation and missing coverage. A successful run
+  with no reported errors does not qualify failing-path observation retention.
 
-Every restore and imported restore performed one endpoint restore, one
-observation and one whole-request hash of 1,073,741,824 RAM bytes. None replayed
-historical actions or fetched or decoded old SDK events. Imported restores also
-performed a separate portable-import target hash and full page validation.
-Complete snapshot, certificate, observation and normalized-history comparisons
-passed across the equivalent paths. There were no watchdogs, cache refusals or
-evictions in the ten samples.
+### Integrity and callback phases
 
-This confirms bounded historical restore work for these retained parents. It
-does not make every operation constant-time: imported payload, metadata and
-validation work can grow. At depth 1,024, an import copied 40,124,416 bytes into
-the worker Store and mapped 32 serialized ranges totaling 148,578,304 bytes.
-Those mappings and copies are separate from the one whole-request hash.
+Retained memory can change outside tracked writes. Fresh integrity checks must
+therefore remain at their operation boundaries. A cached digest or a previously
+verified page ID cannot authorize current bytes. A sealed executable file does
+not make private live code mappings immutable; matching live and backing read
+streams does not establish that either still matches admission.
 
-Diagnostic ownership queries in this build added RPCs and guard checks outside
-the timed phases. Its raw guard and transport counter deltas therefore do not
-isolate intrinsic restore cost. The prepared follow-up tracked in
-[#763](https://github.com/pH14/harmony/issues/763) separates
-work-counter snapshots from those residency queries. No inferred subtraction
-was used to manufacture corrected timings.
+A sparse import resolves its extent chain before importing it. Resident page
+verification occurs before the user service-factory callback and again after
+it. Keep the verification sets separate: the callback can change retained
+memory. Repeated resident hash bytes can represent these distinct fresh phases,
+not necessarily duplicate imports or amplification with parent depth. Measure
+phase-specific work before attributing a cause. A faster membership data
+structure may reduce bookkeeping while retaining every required page hash.
 
-### Fixed logical work with one and two workers
+### Comparable experiments
 
-Source `431ba486bb000f51761785584536ae2422549acf` includes the observation
-separation and coordinator-session cleanup. One run with one worker and one run
-with two workers used the same binary and etcd workload, seed 7, eight jobs, a
-fixed admission window of 16, no warmup, 1 GiB per guest and an 8 GiB shared
-cache budget.
-Both runs used coordinator CPU 0. The one-worker run used worker CPU 1; the
-two-worker run used worker CPUs 1 and 2. These were distinct physical cores in
-the same P-core group and NUMA node; the external observer used CPU 3.
+Bind raw results to source, executable, toolchain, lock files, workload inputs,
+backend and admission receipts. Preserve the complete typed stream and logical
+report. Compare equivalent paths within the same binary; a different build
+needs its own reference and cannot inherit an earlier replay oracle. Record
+host-only runtime qualification separately from an exact runtime-input match.
+Keep run records, measured tables and raw output outside the repository; put
+the numbers supporting a change and their limitations in its pull request.
 
-| Measurement | One worker | Two workers |
-|---|---:|---:|
-| Search wall time | 181.530 s | 105.205 s |
-| Campaign wall time | 209.273 s | 133.045 s |
-| Jobs | 8 | 8 (4 per worker) |
-| New logical guest ticks | 2,960 | 2,960 |
-| Completed-result buffer peak | 1 | 2 |
-| Observed owned-session PSS peak | 1,649,364 KiB | 2,743,499 KiB |
+Hold logical work, seed, admission window, RAM and cache budgets fixed when
+varying workers. Compare complete streams and logical reports, and record
+actual reservations and worker assignments. Measure parent reuse as well as
+root-only work. Distinguish performance from useful outcomes: a faster fixed
+job does not establish better search effectiveness. Independent campaigns on
+separate hosts do not preserve one campaign's global ordering.
 
-The complete output stream was byte-identical, and the entire logical report
-was equal. Normal correctness oracles remained enabled. Both external process
-supervisors reported exit zero, no timeout, no cleanup error and no owned
-leftovers; postflight checks found no remaining observed process identities or
-KVM users. An earlier calibration with leftover descendants was refused and
-was not used as the reference.
-
-All eight jobs started at the root and ran one new action lasting 4 to 1,024
-logical ticks. This fixed job is not the execution unit in the historical etcd
-worked example below; their rates are not comparable. No parent import,
-reconstruction or replay occurred, and no useful objective witness was found.
-The result tests fixed-work equivalence and provides one timing observation;
-it does not test adaptive descendant selection, parent locality, search
-effectiveness, NUMA routing or a larger job budget. Sequential run order,
-thermal state, caches and host load remain confounders. CPU 2 has no separate
-one-worker reference. PSS is a sampled contemporaneous sum, not an allocation bound or guaranteed peak; one final
-two-worker memory sample was unavailable after process exit. Unmapped cache
-memfd pages are outside process PSS, so it does not measure total cache memory
-or total host memory. The shared index charged 181,239,808 bytes in each run.
-
-### SDK callback attribution: a separate reference build
-
-Source `5978c157c91bc09d65a8d2cb4f868998d29be941` combines SDK dispatch
-attribution, local service answering and coordinator-session cleanup. Its one
-etcd run used one worker, seed 7, eight root jobs, a window of 16, no warmup,
-a 1 GiB guest and an 8 GiB cache. The jobs completed 2,960 logical ticks, with
-zero reported execution failures, guard errors or cache refusals. The strict
-external supervisor accepted exit zero, no timeout and no owned leftovers;
-postflight found no KVM users or remaining sampled process identities.
-
-This is a first reference for that new build: `oracle_compared=false`. Its full
-typed stream and logical report were retained, but there was no second arm and
-no equality comparison against the `431ba486` pair. Local service answering
-changes execution boundaries, so the timings must not be used as a cross-build
-speedup comparison. All jobs selected the root; no parent import, descendant
-locality or NUMA routing was measured.
-
-Worker 0 recorded 33,912 request callbacks and 35,190 response callbacks. The
-fixed opcode bins partitioned 165.147338 seconds of outer SDK guard callback
-time:
-
-| Callback class | Callback seconds | Share of worker callback time |
-|---|---:|---:|
-| Coverage | 136.186522 | 82.464% |
-| Event | 19.762110 | 11.966% |
-| Service | 9.193030 | 5.567% |
-| Pvclock | 0.005676 | 0.003% |
-| Event subset: state-shaped payload | 18.521066 | 11.215% |
-
-The last row is part of Event, not an additional bin. It comprises 3,861 requests
-with namespace 2, payload length 9 and first payload byte 0, matching the
-workload's state-publication encoding. It accounts for 93.720% of Event callback
-time. This shape does not identify individual registers or establish semantic
-completion. Twelve exact shape witnesses and zero overflow accounted for the
-complete Event partition. All fixed-bin deferred counts were zero. Service had
-1,278 requests and 2,556 response callbacks; counts describe actual callback
-sites, not an assumed one-response-per-request contract.
-
-The separately captured retired coordinator had an empty before profile and
-11.005412 seconds of SDK callbacks afterward: 99.675% Coverage and no state-shaped
-Events. Its five shape witnesses also had zero overflow. Worker target totals
-already include child telemetry. Do not add the coordinator, Event subsets,
-inner guard timers, VM run timers or target aggregates to manufacture a
-critical-path total. Callback elapsed time is neither successful response-write
-count nor semantic-outcome count; its share is not a wall-time speedup bound.
-
-Coverage exchanges arbitrate scheduling and the next coverage threshold; they
-are not logical kernel ticks or mere edge reports. No ready-count histogram was
-recorded, so the result does not identify how often only one runnable choice was
-reported. Coverage deserves investigation before assuming that register
-publication is the dominant cost, but no guard removal, larger quantum or
-batching benefit follows from these measurements.
-
-The frozen build has a known response-guard failure path that can lose prior
-Console and SDK observations. This successful arm reported zero guard errors;
-it does not qualify failure-path observation preservation. Later repairs and
-any performance comparison require their own source-bound evidence.
-
-### Genuine deep imports: backing reuse and remaining validation
-
-Source `0f15b7d130f85c2dae8d7f041ba4505d5f59ead9` includes descriptor
-deduplication and report-only locality observations in the prepared foundation.
-One etcd pilot on Linux KVM used a 1 GiB
-guest, an 8 GiB cache and no warmup. It constructed 32 genuine actions and
-captured parents at depths 1, 8, 31 and 32. Four sessions booted; the allowed
-CPU set was 0 and 1, without a per-role pinning claim. This was a direct-target
-import experiment, not a search campaign.
-
-| Raw import | Extent references N | Backing owners U | Recent hits/misses | Mapping attempts | Store bytes copied | Resident bytes hashed |
-|---|---:|---:|---:|---:|---:|---:|
-| Cold depth 31 | 31 | 2 | 0/2 | 31 | 13,774,848 | 600,629,248 |
-| Same worker, setup to 31 | 31 | 2 | 2/0 | 31 | 0 | 600,629,248 |
-| Same worker, near 31 to 32 | 32 | 2 | 2/0 | 32 | 2,891,776 | 600,387,584 |
-| Same worker, near 32 to 31 | 31 | 2 | 2/0 | 31 | 0 | 600,535,040 |
-| Fresh worker, depth 31 | 31 | 2 | 0/2 | 31 | 13,774,848 | 600,629,248 |
-
-Each import sent two FD handles and recorded one accepted and measured import,
-with no imports excluded by the measurement limit. U identifies admitted backing allocations, not
-unique physical RAM. The observed transfer used fewer
-handles than extent references; it still created 31 or 32 mapped range views. The warm setup
-import made 3,628 Store intern calls, all hits, with zero copied bytes, while
-resident verification still performed 146,638 page hashes. Those repeated hash bytes are
-work counts, not unique memory or evidence of amplification with chain depth:
-all extents resolve before one sparse import. The source uses one fresh
-verification set before the service-factory callback and another afterward.
-With near set to setup, the source code implies two traversals
-of the same 73,319 resident slots; the pilot has no per-stage counter split.
-The alias fixture and Store rebase corruption tests protect both fresh phases.
-Sharing verified IDs across
-the callback would weaken the corruption check.
-
-Cold and fresh imports each additionally hashed 1,073,741,824 bytes for the
-sparse-base digest; repeated imports in the same worker made no sparse-base
-hash call. All five raw import windows had zero whole-request hashes and zero
-guest backend entries. The warm setup import recorded 170.352 milliseconds of
-resident verification within 188.378 milliseconds of sparse import; those
-nested timers must not be added. Raw import wall timing excludes telemetry
-queries and the separate replay/hash/SDK oracles. Guard and transport counter
-windows still contain fixed telemetry observer effects and child status lag.
-
-The 117 phase records passed the pinned harness's full typed snapshot checks
-for normal retained and imported restores. Those checks use production restore
-validation, not a second independent decoder. Raw imports separately replayed
-actual handles and compared endpoint whole-state hashes, ordered EventHistory,
-seal times and complete SDK arrays against the captured parents; repeated
-SDK arrays matched across the same and fresh workers. All reported error,
-refusal, watchdog, abandonment and quarantine counters were zero. Source
-`0f15b7d1` includes the response-guard observation-retention repair; this
-successful run does not itself qualify failure paths.
-
-The strict supervisor recorded exit zero, no timeout or owned leftovers, and
-325 complete samples. Postflight found all eight named or sampled PID/start
-identities, including the detached waiter, absent and no KVM users. That is the
-reviewed session and sampled-identity scope, not containment of arbitrary
-session-escaping descendants. Sampled aggregate PSS peaked at 2,642,428 KiB;
-it is not total cache ownership or a guaranteed memory peak. The final index
-charged 75,026,432 bytes across two segments with no refusal or eviction.
-This single sample establishes backing recurrence and remaining work, not a
-registration benefit, warm-versus-cold speedup, routing result or scaling claim.
-
-### Remaining measured costs and accounting rules
-
-For the `431ba486` pair, worker-lifetime SDK request and response guard timers
-totaled 164.007 seconds
-with one worker and 173.807 seconds across two workers. These include worker
-startup, overlap VM execution scopes, and run concurrently across workers.
-They identify substantial guard work, but are not additive wall-time fractions.
-Local service answering can remove an outer Decision RPC while retaining these
-SDK guards. Sealed executable files do not establish immutable private live
-code mappings, so they do not justify deleting live-byte checks.
-
-In that pair, shared cache lock hold time was approximately 0.13 milliseconds
-in each run;
-coordinator admission took 2.802 and 0.375 milliseconds respectively. These small
-root-only cases do not support cache-lock restructuring or background persistence as the next
-bottleneck fix. They also contain no imported-parent evidence.
-
-Per-range backing identity was not measured in the retained-depth experiment.
-Final index statistics and the allocator structure provide a structural upper
-bound: at depth 8, eight imported ranges remained owned by an index with one
-live backing segment and no eviction. At depths 32 and 128, 32 imported ranges
-were bounded by two and eight total live segments respectively. The allocator
-uses one backing owner per segment and retains it while extents remain live.
-These inferred bounds support per-import descriptor deduplication. They do not
-establish persistent registration reuse,
-fewer mappings, fewer Store copies or immutable shared page ownership. At depth
-1,024, the index had 73 segments, so these aggregate statistics do not determine
-the number of distinct backings in its 32-range import.
-
-Counter interpretation must preserve ownership and scope:
-
-- Campaign target totals already sum worker profiles. Shared index and launcher
-  counters are separate owners, not additional worker copies.
-- Sending and receiving the same descriptor are two observations of one
-  transfer. Serialized bytes, copied bytes, mapped span and resident memory
-  measure different things.
-- Guard, VM run and exit timers nest. Concurrent worker timers cannot be added
-  to obtain campaign wall time.
-- Logical ticks and normalized history are not physical backend entry counts
-  or native guest instruction counts.
-
-Arbitrary untracked changes to retained memory still require fresh integrity
-verification. An incremental commitment needs an enforced immutable-object and
-writer boundary, not merely a cached root.
-
-The Linux sealed-executable guard must freshly hash main code at each check.
-Equality of the current live and sealed read streams does not prove they still
-match admission. A native macOS synthetic counterexample using the exact helper
-changed both streams identically: fresh main hashing changed the identity while
-an admission prefix did not. This covers synthetic readers, not Linux physical
-fault injection or a benchmark.
-
-### Provenance and qualification limits
-
-The retained-depth executable SHA-256 is
-`75b9a15e366ff06b2da701077dc1b70c5f5a45c251a764167b418d4e62cb77a7`.
-The fixed-work executable SHA-256 is
-`7cb48f4554fc7ee5083dec314ef07fe880083c6ba4fa61bf402197147e9d6589`.
-The fixed-work stream SHA-256 is
-`a6a1a7d58816d88b84f59f89b54997fb3274caca88f56cf76758115c00e2ac8d`.
-The SDK-attribution reference executable SHA-256 is
-`77042b48abe2dbc0cea06f324fbaad7ef4b4bcb08d4caaed578db2a83338322e`.
-Its raw evidence manifest is
-`fed31654fa37f92b6cd1abbb8814af1a0b05842c6b840a86153a9dd62bd171ce`,
-and its preceding no-VM qualification manifest is
-`ec7d44ff9d212bb9e2dc5d40942f53bd16897682f874a441b0cb148dd6a0e74d`.
-The accepted one-worker and two-worker evidence-bundle manifest hashes are
-`2dcaf0aaf81e20478ba053b3e8c754d5fedf3850b61ccb7d82420bdbd42c1710`
-and `d5affb593636102c2f3f447d112fbe39a9f0caf9d8574719b7f65d23ac4fa127`.
-The deep-import pilot executable SHA-256 is
-`334f6dc246ef1eff51c1e667ee99e09299a36496ceed944bcc233960e800cdb9`;
-its harness source SHA-256 is
-`b5a964b53383b6d5a92a51cd7589ffa754579acdfac567246f90581f5254af8e`,
-and its 93-file evidence manifest is
-`e703bb6b1a23363ef6d281808f4081309ad117ce9b50055d982c7dafe4748f7c`.
-Its phase records hash to
-`130381b15379a70c8882b2a429baf343ae56c85f26ae1e486f95bc817d94d9e6`.
-Raw bundles and independent audits are not published with this document. They
-are retained locally under `/tmp/consonance-foundation-hardware`,
-`/tmp/consonance-fixed-work-scaling-lifecycle-v3`,
-`/tmp/consonance-fixed-work-sdk-attribution-v1` and
-`/tmp/consonance-deep-import-pilot-execution-v1`, with remote source, binaries
-and runtime inputs on ms02 under `/var/tmp/consonance-foundation-0be4f44`,
-`/var/tmp/consonance-fixed-work-scaling-lifecycle-v3-431ba486` and
-`/var/tmp/consonance-sdk-attribution-v1-5978c157`. The pilot records remain at
-`/var/tmp/consonance-deep-import-pilot-v1-334f6dc-20261018`, with its qualified
-source, executable and inputs at
-`/var/tmp/consonance-deep-import-0f15-staging-v2-20261018`.
-The synthetic integrity proof is
-retained under `/tmp/sealed-prefix-correlated-read-proof`, manifest
-`e09c48136ca5ad72e22e6ef0e9f49e82264a20395bba8c2017ec245bd8f9b1e2`.
-These are temporary retention locations, not durable public downloads. Issue #745 records shipping
-and acceptance decisions. The hashes identify evidence, not a standalone
-reproduction recipe.
-
-Normal sealed executable and workload admission remained active. For the
-retained-depth and `431ba486` experiments, existing guest runtime artifacts passed
-the normal verifier with **host-only** qualification:
-the current source key differs from the artifact key by a host SHA-2 dependency
-lock change. No new guest runtime was built, relabeled or exempted from admission.
-The `5978c157` reference also passed normal verification with **host-only**
-qualification, source key
-`bff06830863466a2aded99aaedb95f34087fe03af65d9785eed31a8c509943b4`
-and artifact key
-`bb596fc540540984b7682208cef544ccd9664237fe1d380ae32da3febacf179f`.
-The deep-import pilot also retained host-only qualification, source key
-`b3be9e6a3cf4f43f0e7b895ce6075ae328c3adfe07c45eea3da0749da5b538ba`
-and the same `bb596fc5` artifact key. Normal OCI preparation used the qualified
-inputs; no guest runtime was rebuilt.
-These results do not claim exact runtime-input qualification or cross-build
-replay equivalence. Warm and constrained caches, RAM-size variation, repeated
-seed panels, retained-parent scaling and useful-outcome measurements remain
-necessary before broader performance conclusions.
+Use repeated, bounded trials and report their spread, run order and host load.
+Pin equivalent core types and include a single-worker reference for each core
+used. Separate cold, warm and constrained-cache cases. Sampled PSS is neither a
+guaranteed peak nor total cache ownership; account for unmapped cache backing
+and use cgroup memory for campaign capacity. Preserve owned-session exit
+receipts and sampled process identities, and refuse uncertain cleanup instead
+of treating leader exit as proof that all workers stopped.
 
 ## The model
 
@@ -401,39 +159,6 @@ search to reach the ceiling.
 | Worker waiting | Worker wall time over worker busy time | Busy and wall time per worker |
 | Contention | Guest time per unit of new work with every worker running, over that time with one | Guest cycles on a full run against a one-worker run on the same core type |
 
-> [!NOTE]
-> **Worked example: Pokémon Blue at native speed.**
->
-> On an M1 Max (Firestorm), the Game Boy core runs Pokémon Blue at 9,904 frames
-> per second in a bare loop and 9,932 frames per second inside one search worker.
-> Within measurement error, the search adds no host overhead. It also repeats no
-> guest work: every frame it runs belongs to a requested action. Snapshots are
-> small enough to retain every endpoint, at 58 KiB each, or about 17,000 per
-> gigabyte. That leaves core utilization, worker waiting, and contention to
-> explain any gap when scaling to the whole chip.
-
-> [!NOTE]
-> **Worked example: etcd on one core.**
->
-> For the etcd historical case, we ran a Consonance search with one worker
-> pinned to a core of each type. We estimated guest time by multiplying the
-> worker's busy time by the fraction of cycles spent in the guest, and measured
-> re-execution as total virtual time run divided by new virtual time.
->
-> | | Intel 285HX P-core | Intel 285HX E-core | CIX CP8180 (Cortex-A720) | CIX CP8180 (Cortex-A520) |
-> |---|---|---|---|---|
-> | New guest time per execution | 60 ms | 87 ms | 215 ms | 838 ms |
-> | Ceiling per core | 16.6/s | 11.5/s | 4.7/s | 1.2/s |
-> | Measured rate | 2.14/s | 1.19/s | 0.40/s | 0.066/s |
-> | Host overhead | 3.2x | 4.0x | 4.9x | 8.2x |
-> | Re-execution | 2.4x | 2.4x | 2.4x | 2.2x |
-> | Gap | 7.8x | 9.7x | 11.7x | 18x |
->
-> Each worker stayed busy throughout its run, so the worker-waiting factor is
-> one. These single-worker runs also provide the baseline for contention. The
-> E-core achieved 0.56 of the P-core's execution rate, while the Cortex-A520
-> achieved 0.17 of the Cortex-A720's rate.
-
 A search report's `telemetry` records the inputs to each factor: worker busy,
 idle, and scheduler wait time, host time by exit site and snapshot operation,
 and new against re-run work in both host and virtual time. Estimate guest time
@@ -450,9 +175,10 @@ advance the virtual clock, add to this minimum.
 The cost depends on how often the guest exits relative to the work it does
 between exits. Multiply the exit count by the cost per exit, then divide by
 guest time to get the overhead. At 2.5 µs per exit, exiting every 25 µs of
-guest work adds 10%; exiting every 2.5 µs doubles the total time. In a Linux
-guest, most exits are ticks that advance the virtual clock, and a register the
-guest writes each time it unmasks interrupts can cost more than any device.
+guest work adds 10%; exiting every 2.5 µs doubles the total time. Attribute physical exits and SDK scheduling exchanges by operation before
+identifying a dominant cost. Coverage exchanges select scheduling decisions
+and the next threshold; they are distinct from logical kernel ticks. Callback
+shape alone does not establish that register publication dominates.
 
 ## Pages
 
@@ -567,26 +293,6 @@ parallelism. Cores of one type can run at different clock speeds, and a
 one-worker run gets the fastest, so compare against one-worker runs on each
 core the full run uses. Boot time and final persistence can also dominate
 short campaigns spread across many workers.
-
-> [!NOTE]
-> **Worked example: etcd on seven Cortex-A720 workers.**
->
-> On a CIX CP8180, seven Cortex-A720 workers run the etcd search at about
-> 27,700 executions per hour, and one worker runs about 6,000. The shared
-> snapshot cache holds every selected state, so re-execution is 1.00, and
-> restores take 5% of busy time. Seven workers run 4.6 times one. Most of the
-> remaining gap comes from the chip:
->
-> | Setup | Guest time per exit |
-> |---|---|
-> | One search alone on a 2.6 GHz core | 13.2 µs |
-> | One search alone on a 2.2 GHz core | 15.7 µs |
-> | Four one-worker searches at once | 16.0 to 18.5 µs |
-> | One four-worker search on the same cores | 16.9 µs |
->
-> The chip's Cortex-A720 cores run at 2.2 to 2.6 GHz, and one worker gets the
-> fastest. Separate guests slow each other by about 20% through shared caches
-> and memory; a four-worker search is no slower than four separate searches.
 
 Weak scaling increases the campaign size along with the worker count. This
 still runs into coordinator capacity as jobs per second increase, and memory
