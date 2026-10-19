@@ -7332,7 +7332,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_discriminator_save_error_fails_closed() {
+    fn idle_discriminator_does_not_capture_unrelated_cpu_state() {
         let mut exits = arm_timer_exits(1000);
         exits.push(Exit::Common(CommonExit::Idle));
         let mut inner = configured_mock(exits);
@@ -7353,11 +7353,11 @@ mod tests {
         for _ in 0..3 {
             assert!(matches!(v.step().unwrap(), Step::Continued));
         }
-        let err = v.step().unwrap_err();
-        assert!(
-            matches!(err, VmmError::Backend(_)),
-            "a save error during the idle discriminator must fail closed, got {err:?}"
+        assert_eq!(
+            v.step().expect("idle reads flags without full CPU capture"),
+            Step::Continued
         );
+        assert_eq!(v.idle_landings().len(), 1);
     }
 
     fn full_vmm(
@@ -7697,6 +7697,14 @@ mod tests {
     impl Backend for SaveFailBackend {
         type A = vmm_backend::X86;
 
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.0.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.0.read_x86_cpuid_state()
+        }
+
         fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
             self.0.set_policy(policy)
         }
@@ -7764,6 +7772,14 @@ mod tests {
 
     impl Backend for CountSaveBackend {
         type A = vmm_backend::X86;
+
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.inner.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.inner.read_x86_cpuid_state()
+        }
 
         fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
             self.inner.set_policy(policy)
@@ -7935,6 +7951,14 @@ mod tests {
 
     impl Backend for ContinuationBackend {
         type A = X86;
+
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.inner.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.inner.read_x86_cpuid_state()
+        }
 
         #[cfg(feature = "xsave-diagnostics")]
         fn diagnostic_breakpoint(&mut self, rip: u64) -> vmm_backend::Result<()> {

@@ -53,6 +53,24 @@ and resolution, and overlap VMM guest/service timing rather than adding another
 independent elapsed interval. Counters and their 5040-byte runtime storage never
 enter snapshots, identity commitments, virtual clocks or retention policy.
 
+## Narrow x86 observations
+
+`Backend::read_x86_regs` reads only general registers, including RIP and RFLAGS.
+`read_x86_cpuid_state` reads only the CR4 and XCR0 inputs to dynamic CPUID
+resolution. Neither method falls back to a full CPU save: unsupported backends
+return `Unsupported`. Boxed backends forward the exact result. The x86 mock
+reads its live scripted state; KVM retains affinity and backend-health checks,
+uses GET_REGS or guarded GET_SREGS2 plus GET_XCRS, and does not retire a staged
+completion, prepare a snapshot, enter the guest, or capture XSAVE/MSRs/nested
+state. The guarded SREGS2 read retains the existing AMD PAE refusal.
+
+These observations are valid during exit servicing, including while an MSR
+answer is pending, and are not sealable snapshot records. Callers still use the
+complete save/prepare/validate path for publication, restore and state hashes.
+The existing native MSR completion test compares both narrow observations with
+the complete architectural record before and after completion, checks unchanged
+physical entry totals, and requires the unanswered MSR to remain pending.
+
 ## Implementations
 
 - `MockBackend` and `MockArm64Backend` provide scripted, deterministic

@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct X86CpuidState {
+    pub cr4: u64,
+    pub xcr0: u64,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct CpuidModel {
     pub entries: Vec<CpuidEntry>,
