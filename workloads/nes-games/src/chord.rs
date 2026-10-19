@@ -90,6 +90,50 @@ impl ChordVocabulary {
         let held = |buttons: u8| self.held.contains(&buttons).then_some(buttons);
         let buttons = match below(rand, CONTROL_KINDS)? {
             0 => {
+                let mut others = [0; DIRECTION_MASKS.len()];
+                let mut count = 0;
+                for direction in DIRECTION_MASKS {
+                    if direction != base & DIRECTION_BITS
+                        && let Some(buttons) = held((base & !DIRECTION_BITS) | direction)
+                    {
+                        others[count] = buttons;
+                        count += 1;
+                    }
+                }
+                if count == 0 {
+                    base
+                } else {
+                    others[below(rand, count)?]
+                }
+            }
+            1 => held(base ^ A_BUTTON).unwrap_or(base),
+            2 => held(base ^ B_BUTTON).unwrap_or(base),
+            _ => base,
+        };
+        Ok(ButtonChord::new(buttons, self.stratified_hold(rand)?))
+    }
+
+    #[cfg(test)]
+    fn change_one_control_reference(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        previous: &ButtonChord,
+    ) -> Result<ButtonChord, Box<dyn Error>> {
+        let base = previous.buttons & !self.tap.map_or(0, |tap| tap.buttons);
+        if !self.held.contains(&base) {
+            return self.sample(rand);
+        }
+        if let Some(tap) = self.tap
+            && below(rand, tap.odds)? == 0
+        {
+            return Ok(ButtonChord::new(
+                base | tap.buttons,
+                hold_in(rand, tap.hold_frames)?,
+            ));
+        }
+        let held = |buttons: u8| self.held.contains(&buttons).then_some(buttons);
+        let buttons = match below(rand, CONTROL_KINDS)? {
+            0 => {
                 let others: Vec<u8> = DIRECTION_MASKS
                     .into_iter()
                     .filter(|&direction| direction != base & DIRECTION_BITS)
@@ -176,6 +220,28 @@ mod tests {
             (false, B_BUTTON) => 2,
             (false, 0) => 3,
             other => panic!("{previous:#04x} -> {next:#04x} changed {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stack_direction_choices_preserve_chords_and_generator_state() {
+        for held in [&NES_PRESSABLE_BUTTON_MASKS[..], &SMALL[..], &[0x00][..]] {
+            for tap in [None, Some(select_taps())] {
+                let chords = vocabulary(held, tap);
+                let mut actual = RomuDuoJrRand::with_seed(0x5eed_c406);
+                let mut reference = actual;
+                for previous in 0..=u8::MAX {
+                    for _ in 0..64 {
+                        let previous = ButtonChord::new(previous, 30);
+                        let observed = chords.change_one_control(&mut actual, &previous).unwrap();
+                        let expected = chords
+                            .change_one_control_reference(&mut reference, &previous)
+                            .unwrap();
+                        assert_eq!(observed, expected);
+                        assert_eq!(actual.next_u64(), reference.next_u64());
+                    }
+                }
+            }
         }
     }
 
