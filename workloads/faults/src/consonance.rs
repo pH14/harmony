@@ -14,6 +14,10 @@ use std::{
 
 use consonance_client::{
     cache::{CacheError, CacheIndex, Lease, Namespace},
+    endpoint::{
+        EndpointBranch, EndpointProof, EndpointProofRequest, EndpointReceipt, EndpointStops,
+        ExecutionEndpoint, ExecutionRequest, ExecutionStart,
+    },
     session::{
         SearchSession, Session, SessionConfig, SessionError, UmlLaunch, WorkerLauncher,
         WorkerSession, identity_with_config,
@@ -26,7 +30,7 @@ use environment::{
         Answer as ChannelAnswer, ChannelError, CoverageSchedule, Question, ServiceHandler,
         ServiceResponse,
     },
-    input_spec::{ServiceConfig, ServiceFactory, nominal_factory},
+    input_spec::{InputSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
 use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_windows};
 use searcher::target::ExitKind;
@@ -1383,6 +1387,70 @@ fn run_with_service_decisions(
     Ok(stop)
 }
 
+struct ObservedEndpoint {
+    receipt: EndpointReceipt,
+    decoder: SdkDecoder,
+    events: u64,
+    payload_bytes: u64,
+    decoded: u64,
+}
+
+fn execute_observed_endpoint(
+    session: &mut dyn SearchSession,
+    request: ExecutionRequest,
+    handler: &mut dyn ServiceHandler,
+    mut decoder: SdkDecoder,
+) -> Result<ObservedEndpoint, Box<dyn Error>> {
+    let deadline = request.until.deadline.ok_or("endpoint deadline missing")?.0;
+    let mut start = ExecutionEndpoint::execute(session, request)?;
+    let mut endpoint = loop {
+        start = match start {
+            ExecutionStart::Decision(decision) => {
+                if stop_moment(decision.stop()) >= deadline {
+                    break decision.finalize(true)?;
+                }
+                let resolution = resolution_for_stop(decision.stop(), handler)?;
+                decision.resume(resolution)?
+            }
+            ExecutionStart::Endpoint(endpoint) => break endpoint,
+        };
+    };
+    let mut events = 0u64;
+    let mut payload_bytes = 0u64;
+    let mut decoded = 0u64;
+    loop {
+        let page = endpoint.page();
+        events += page.events.len() as u64;
+        payload_bytes += page
+            .events
+            .iter()
+            .map(|event| event.2.len() as u64)
+            .sum::<u64>();
+        match decoder.append(&page.events) {
+            Ok(count) => decoded += count as u64,
+            Err(error) => {
+                endpoint.abandon();
+                return Err(error.into());
+            }
+        }
+        if !endpoint.next_page()? {
+            break;
+        }
+    }
+    if let Err(error) = decoder.capture().check_infrastructure_status() {
+        endpoint.abandon();
+        return Err(error.into());
+    }
+    let receipt = endpoint.commit()?;
+    Ok(ObservedEndpoint {
+        receipt,
+        decoder,
+        events,
+        payload_bytes,
+        decoded,
+    })
+}
+
 fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
     let message = format!("{what}: {error}");
     match error.downcast_ref::<SessionError>() {
@@ -1961,6 +2029,16 @@ impl Live {
         action: FaultAction,
         observation: &mut FaultObservations,
     ) -> Result<HistoryReceipt, String> {
+        self.capture_receipt_with_proof(parent, action, observation, None)
+    }
+
+    fn capture_receipt_with_proof(
+        &mut self,
+        parent: &HistoryReceipt,
+        action: FaultAction,
+        observation: &mut FaultObservations,
+        proof: Option<EndpointProof>,
+    ) -> Result<HistoryReceipt, String> {
         self.cursor.begin_action(parent.moment());
         observation
             .parks
@@ -1968,21 +2046,29 @@ impl Live {
         observation
             .park_reads
             .retain(|read| read.moment > parent.moment());
-        let endpoint = match parent.endpoint() {
-            FaultEndpointCertificate::KvmWholeState(_) => {
-                FaultEndpointCertificate::KvmWholeState(self.state_hash_current()?)
-            }
-            FaultEndpointCertificate::UmlWholeStateUnavailable => {
-                FaultEndpointCertificate::UmlWholeStateUnavailable
-            }
-            FaultEndpointCertificate::KvmUnavailableAfterFailure => {
+        let (endpoint, event_history) = match (parent.endpoint(), proof) {
+            (
+                FaultEndpointCertificate::KvmWholeState(_),
+                Some(EndpointProof::WholeStateAndHistory {
+                    state_hash,
+                    history,
+                }),
+            ) => (
+                FaultEndpointCertificate::KvmWholeState(state_hash),
+                Some((history.count, history.digest)),
+            ),
+            (FaultEndpointCertificate::KvmWholeState(_), None) => (
+                FaultEndpointCertificate::KvmWholeState(self.state_hash_current()?),
+                Some(self.ordered_history()?),
+            ),
+            (
+                FaultEndpointCertificate::UmlWholeStateUnavailable,
+                None | Some(EndpointProof::Unavailable),
+            ) => (FaultEndpointCertificate::UmlWholeStateUnavailable, None),
+            (FaultEndpointCertificate::KvmUnavailableAfterFailure, _) => {
                 return Err("uncertified parent endpoint".to_owned());
             }
-        };
-        let event_history = if matches!(endpoint, FaultEndpointCertificate::KvmWholeState(_)) {
-            Some(self.ordered_history()?)
-        } else {
-            None
+            _ => return Err("execution endpoint evidence differs from parent backend".to_owned()),
         };
         parent.extend(action, endpoint, event_history, observation)
     }
@@ -1993,8 +2079,9 @@ impl Live {
         parent: &HistoryReceipt,
         action: FaultAction,
         observation: &mut FaultObservations,
+        proof: EndpointProof,
     ) -> Result<HistoryReceipt, String> {
-        match self.capture_receipt(parent, action, observation) {
+        match self.capture_receipt_with_proof(parent, action, observation, Some(proof)) {
             Ok(receipt) => Ok(receipt),
             Err(error) => {
                 self.cursor.invalidate();
@@ -2072,14 +2159,18 @@ impl Live {
             }
             let plan = ActionPlan::compile(self.windows, &self.inherited, prefix)
                 .map_err(|error| format!("branch configuration: {error}"))?;
-            self.branch(last, &plan)?;
-            let (mut observation, sealed) =
-                self.run_action(&plan, last.moment, RunKind::Rebuild)?;
+            let (mut observation, sealed, proof) =
+                self.run_action(&plan, last, RunKind::Rebuild)?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
-            let actual =
-                self.capture_sealed_receipt(snap, &receipt, actions[index], &mut observation)?;
+            let actual = self.capture_sealed_receipt(
+                snap,
+                &receipt,
+                actions[index],
+                &mut observation,
+                proof,
+            )?;
             if &actual != expected {
                 let _ = self.session.drop_snapshot(snap);
                 return Err(
@@ -2148,11 +2239,15 @@ impl Live {
         next.push(action);
         let plan = ActionPlan::compile(self.windows, &self.inherited, &next)
             .map_err(|error| format!("branch configuration: {error}"))?;
-        self.branch(parent, &plan)?;
-        let (mut observation, sealed) = self.run_action(&plan, parent.moment, kind)?;
+        let (mut observation, sealed, proof) = self.run_action(&plan, parent, kind)?;
         let receipt = if let Some((snap, moment)) = sealed {
-            let receipt =
-                self.capture_sealed_receipt(snap, history.receipt(), action, &mut observation)?;
+            let receipt = self.capture_sealed_receipt(
+                snap,
+                history.receipt(),
+                action,
+                &mut observation,
+                proof,
+            )?;
             self.seal_captured_link(parent, snap, moment, receipt.clone())?;
             Some(receipt)
         } else {
@@ -2188,27 +2283,78 @@ impl Live {
     fn run_action(
         &mut self,
         plan: &ActionPlan,
-        from: u64,
+        parent: Point,
         kind: RunKind,
-    ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
+    ) -> Result<(FaultObservations, Option<(SnapId, u64)>, EndpointProof), String> {
         self.horizons_run = self.horizons_run.saturating_add(1);
+        let at = self
+            .chain
+            .at_snapshot(parent.snap)
+            .ok_or("branch observation parent missing")?;
+        let parent_receipt = self.chain.provenance(at)?.clone();
+        let branch = if let Some(checkpoint) = self.chain.observation_checkpoint(at) {
+            checkpoint.validate_binding(&parent_receipt)?;
+            self.cursor.decoder = Some(checkpoint.decoder().clone());
+            self.telemetry.observation_checkpoint_hits += 1;
+            let mut input = InputSpec::seeded(SEED);
+            input.set_config(plan.service_config());
+            input.set_payloads(Some(Vec::new()));
+            input.set_coverage_schedule(Some(plan.coverage_schedule.clone()));
+            Some(
+                EndpointBranch::new(parent.snap, &input)
+                    .map_err(|error| session_failure("endpoint branch input", error.as_ref()))?,
+            )
+        } else {
+            self.branch(parent, plan)?;
+            None
+        };
+        self.cursor.begin_action(parent_receipt.moment());
+        let decoder = self.cursor.decoder.clone().unwrap_or_default();
+        let proof = match parent_receipt.endpoint() {
+            FaultEndpointCertificate::KvmWholeState(_) => {
+                EndpointProofRequest::CapturedWholeStateAndHistory
+            }
+            FaultEndpointCertificate::UmlWholeStateUnavailable => EndpointProofRequest::Omit,
+            FaultEndpointCertificate::KvmUnavailableAfterFailure => {
+                return Err("uncertified parent endpoint".to_owned());
+            }
+        };
+        let request = ExecutionRequest {
+            branch,
+            until: control_proto::StopConditions {
+                deadline: Some(control_proto::Moment(plan.deadline)),
+                on: control_proto::StopMask::NONE,
+            },
+            resolve: None,
+            sdk_cursor: decoder.offset(),
+            snapshot_on: EndpointStops::DEADLINE,
+            proof,
+        };
+        let combined_branch = request.branch.is_some();
         let run_started = started();
         let mut handler = plan.handler.clone();
-        let stop =
-            match run_with_service_decisions(self.session.as_mut(), plan.deadline, &mut handler) {
-                Ok(stop) => stop,
-                Err(error) => return Err(self.abandon("run", error.as_ref())),
-            };
+        let outcome =
+            execute_observed_endpoint(self.session.as_mut(), request, &mut handler, decoder);
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.cursor.invalidate();
+                return Err(self.abandon("execution endpoint", error.as_ref()));
+            }
+        };
+        if combined_branch {
+            self.telemetry.branches.count += 1;
+        }
         let runs = match kind {
             RunKind::New => &mut self.telemetry.new,
             RunKind::Rebuild => &mut self.telemetry.rebuild,
             RunKind::Replay => &mut self.telemetry.replay,
         };
         runs.host.since(run_started);
-        runs.virtual_nanos = runs
-            .virtual_nanos
-            .saturating_add(stop_moment(&stop).saturating_sub(from));
-        if let StopReason::Crash { vtime, info } = &stop {
+        runs.virtual_nanos = runs.virtual_nanos.saturating_add(
+            stop_moment(&outcome.receipt.binding.stop).saturating_sub(parent.moment),
+        );
+        if let StopReason::Crash { vtime, info } = &outcome.receipt.binding.stop {
             let tail = self.session.console_tail().unwrap_or_default();
             let start = tail.len().saturating_sub(CONSOLE_TAIL);
             eprintln!(
@@ -2218,26 +2364,20 @@ impl Live {
                 String::from_utf8_lossy(&tail[start..])
             );
         }
-        let stop = FaultStop::from_stop_reason(&stop);
-        let snap = if stop.is_continuable() {
-            let seal_started = started();
-            let (snapshot, at) = self
-                .session
-                .snapshot()
-                .map_err(|error| self.abandon("snapshot", error.as_ref()))?;
-            self.telemetry.seals.since(seal_started);
-            Some((snapshot, at))
-        } else {
-            None
+        let stop = match &outcome.receipt.binding.stop {
+            StopReason::Decision { vtime, .. } if vtime.0 >= plan.deadline => FaultStop::Deadline,
+            actual => FaultStop::from_stop_reason(actual),
         };
-        let observation = match self.observe(stop) {
-            Ok(observation) => observation,
-            Err(error) => {
-                self.abandoned = true;
-                return Err(error);
-            }
-        };
-        Ok((observation, snap))
+        if outcome.receipt.snapshot.is_some() {
+            self.telemetry.seals.count += 1;
+        }
+        self.telemetry.observation_events += outcome.events;
+        self.telemetry.observation_payload_bytes += outcome.payload_bytes;
+        self.telemetry.observation_decoded_events += outcome.decoded;
+        let observation =
+            FaultObservations::new(outcome.decoder.moment(), outcome.decoder.capture(), stop);
+        self.cursor.decoder = Some(outcome.decoder);
+        Ok((observation, outcome.receipt.snapshot, outcome.receipt.proof))
     }
 
     fn observe(&mut self, stop: FaultStop) -> Result<FaultObservations, String> {

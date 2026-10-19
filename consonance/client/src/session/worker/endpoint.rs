@@ -157,9 +157,11 @@ pub(super) fn put_request(out: &mut Out, request: &EndpointRequest) -> Result<()
             out.bytes(&bytes)
                 .u64(u64::from(request.sdk_cursor))
                 .u8(request.snapshot_on.bits())
-                .u8(u8::from(
-                    request.proof == EndpointProofRequest::WholeStateAndHistory,
-                ));
+                .u8(match request.proof {
+                    EndpointProofRequest::Omit => 0,
+                    EndpointProofRequest::WholeStateAndHistory => 1,
+                    EndpointProofRequest::CapturedWholeStateAndHistory => 2,
+                });
         }
         EndpointRequest::Resume { token, resolution } => {
             if resolution.answer.0.len() > hypercall_proto::MAX_PAYLOAD {
@@ -221,6 +223,7 @@ pub(super) fn take_request(input: &mut In<'_>) -> Result<EndpointRequest, Endpoi
             let proof = match input.u8()? {
                 0 => EndpointProofRequest::Omit,
                 1 => EndpointProofRequest::WholeStateAndHistory,
+                2 => EndpointProofRequest::CapturedWholeStateAndHistory,
                 _ => return Err(malformed("endpoint proof tag").into()),
             };
             let request = ExecutionRequest {
