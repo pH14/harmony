@@ -1513,7 +1513,7 @@ impl Live {
             config.session.clone(),
             Vec::new(),
         )?;
-        session.set_service_factory(service_factory());
+        session.set_service_factory(service_factory())?;
         Ok(Box::new(session))
     }
 
@@ -2325,7 +2325,7 @@ impl Live {
             branch,
             until: control_proto::StopConditions {
                 deadline: Some(control_proto::Moment(plan.deadline)),
-                on: control_proto::StopMask::NONE,
+                on: control_proto::StopMask::NONE.arm(control_proto::class_bit::ASSERTION),
             },
             resolve: None,
             sdk_cursor: decoder.offset(),
@@ -2887,6 +2887,10 @@ mod tests {
             until: control_proto::StopConditions,
             resolve: Option<Resolution>,
         ) -> Result<StopReason, Box<dyn Error>> {
+            assert_eq!(
+                until.on,
+                control_proto::StopMask::NONE.arm(control_proto::class_bit::ASSERTION)
+            );
             let deadline = until.deadline.unwrap().0;
             match resolve {
                 Some(resolution) => self.run_resolving(deadline, resolution),
@@ -3656,6 +3660,10 @@ mod tests {
             until: control_proto::StopConditions,
             resolve: Option<Resolution>,
         ) -> Result<StopReason, Box<dyn Error>> {
+            assert_eq!(
+                until.on,
+                control_proto::StopMask::NONE.arm(control_proto::class_bit::ASSERTION)
+            );
             let deadline = until.deadline.unwrap().0;
             match resolve {
                 Some(resolution) => self.run_resolving(deadline, resolution),

@@ -297,7 +297,7 @@ mod platform {
         .with_wall_limit(Duration::from_secs(20))
         .with_deferred_virtual_time_checkpoint_hashes();
         let mut session = Session::new_with_config(&kernel, &initramfs, config)?;
-        session.set_service_factory(service_factory());
+        session.set_service_factory(service_factory())?;
         let (setup, _) = session.setup_handle();
         session.branch_with_service(
             setup,

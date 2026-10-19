@@ -63,7 +63,8 @@ implementation does not fuse CPU captures or remove a SHA pass.
 
 `ExecutionEndpoint` safely borrows its transport until commit or abort. Drop
 aborts an uncommitted provisional snapshot; no self-reference or unsafe borrow
-is involved. Low-level mutation methods also reject a pending endpoint. Tokens
+is involved. Low-level mutation methods also reject a pending endpoint, including
+the now-fallible `set_service_factory` and `set_max_chain_len` policy setters. Tokens
 are session-scoped and never reset by replay, branch, import or abort. SDK cursors
 remain transport offsets: a workload must still validate its decoder's lineage
 and checkpoint binding. Normal abort releases the provisional snapshot and leaves
