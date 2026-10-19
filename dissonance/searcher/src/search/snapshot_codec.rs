@@ -13,8 +13,13 @@ use std::{
 pub type RecordKey = [u8; 32];
 pub type CodecResult<T> = Result<T, Box<dyn Error>>;
 
-pub trait CheckpointSnapshot: Sized {
+pub trait CheckpointSnapshot: Sized + Clone {
     type Codec: SnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut super::checkpoint::image::ImageBudget,
+    ) -> CodecResult<()>;
+    fn freeze_checkpoint(&self) -> CodecResult<Self>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -79,13 +84,41 @@ impl<S: Serialize + DeserializeOwned> SnapshotCodec<S> for PostcardSnapshotCodec
 
 impl CheckpointSnapshot for () {
     type Codec = PostcardSnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut super::checkpoint::image::ImageBudget,
+    ) -> CodecResult<()> {
+        budget.reserve(std::mem::size_of::<Self>())
+    }
+    fn freeze_checkpoint(&self) -> CodecResult<Self> {
+        Ok(())
+    }
 }
 
 impl CheckpointSnapshot for u8 {
     type Codec = PostcardSnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut super::checkpoint::image::ImageBudget,
+    ) -> CodecResult<()> {
+        budget.reserve(std::mem::size_of::<Self>())
+    }
+    fn freeze_checkpoint(&self) -> CodecResult<Self> {
+        Ok(*self)
+    }
 }
 impl CheckpointSnapshot for Vec<u8> {
     type Codec = PostcardSnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut super::checkpoint::image::ImageBudget,
+    ) -> CodecResult<()> {
+        budget.reserve(std::mem::size_of::<Self>())?;
+        budget.array::<u8>(self.capacity())
+    }
+    fn freeze_checkpoint(&self) -> CodecResult<Self> {
+        Ok(self.clone())
+    }
 }
 
 pub(crate) fn exact<T: DeserializeOwned>(bytes: &[u8]) -> CodecResult<T> {

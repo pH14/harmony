@@ -228,6 +228,12 @@ base must have the same setup and identity, and unchanged pages/chunks are
 retained by reference until a snapshot is serialized. The embedded sidecar
 binds the source setup RAM, so changing only the outer `image_identity` cannot
 import its pages over a setup with different RAM.
+`checkpoint_owned_bytes` bounds the copied page-index capacity and
+`visit_checkpoint_allocations` enumerates immutable page, sidecar-index and
+sidecar-chunk allocations with domain-separated host-local identities. An async
+consumer charges them before cloning, counts each shared allocation once and
+retains the cloned references while encoding. The visitor does not serialize
+pointer identities or grant permission to bypass fresh import verification.
 `SparseSnapshot::logical_identity` returns a copy whose x86 sidecar carries the
 VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.

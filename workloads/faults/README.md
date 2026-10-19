@@ -691,6 +691,20 @@ independently allocated equivalent prefixes. Decode validates receipt roots, pat
 depth, domain, moments and backend continuity before constructing shared Arc nodes;
 endpoint records reference those nodes. The generic searcher frames opaque records
 and never interprets fault history. Old flat snapshot envelopes are refused.
+Asynchronous checkpoint capture inventories the complete cloned snapshot graph:
+inline observations, endpoint/event-history metadata and fixed-size park rows;
+the capacities of both park vectors; the optional check's `Vec<String>` slots and
+every point string; and assertion-map nodes plus each key, message and location
+string capacity. History receipts and actions contain only inline fields. Each
+shared history node includes its Arc control block and is charged once by physical
+allocation identity, with conservative B-tree overhead for the private ledger.
+Independent equivalent histories retain separate charges; owned observation
+containers and strings are charged again for every cloned endpoint. The image
+budget covers these capacities and container envelopes, not allocator fragmentation
+or a process RSS ceiling. A failed charge uses the same synchronous codec before
+cloning; it does not bypass persistence. Frozen snapshots own those
+nodes independently of archive outer-Arc pins; capture neither certifies a
+receipt nor exempts a later execution from actual-history or fresh VM checks.
 History destruction remains iterative. Restore canonicalizes validated expected histories into
 actual shared node allocations before rebuilding the memory ledger. Bootstrap
 imports use the admitted live genesis allocation. Before archive installation, a

@@ -186,13 +186,17 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
     }
 
     pub fn to_resume_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut bytes = Vec::new();
+        self.write_resume(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    pub(crate) fn write_resume(&self, out: &mut dyn std::io::Write) -> Result<(), Box<dyn Error>> {
         if !self.versions.is_empty() {
             return Err("draw tables hold recorded versions, which only stream replay uses".into());
         }
-        Ok(postcard::to_allocvec(&(
-            &self.tables,
-            self.feedback.as_ref(),
-        ))?)
+        postcard::to_io(&(&self.tables, self.feedback.as_ref()), out)?;
+        Ok(())
     }
 
     pub fn from_resume_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>>

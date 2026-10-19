@@ -951,6 +951,39 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_image_budget_counts_spare_emulator_capacity_and_freezes_independently() {
+        use searcher::search::{
+            checkpoint::image::ImageBudget, snapshot_codec::CheckpointSnapshot,
+        };
+        let mut emulator_state = Vec::with_capacity(8192);
+        emulator_state.extend_from_slice(&[3, 5, 7]);
+        let mut snapshot = FamidashSnapshot {
+            emulator_state,
+            observation: FamidashObservations {
+                frame_count: 11,
+                decoded: Default::default(),
+                terminal: false,
+            },
+            failed: false,
+        };
+        let exact = std::mem::size_of::<FamidashSnapshot>() + snapshot.emulator_state.capacity();
+        let mut budget = ImageBudget::new(exact);
+        snapshot.checkpoint_image_charge(&mut budget).unwrap();
+        assert_eq!(budget.remaining(), 0);
+        assert!(
+            snapshot
+                .checkpoint_image_charge(&mut ImageBudget::new(exact - 1))
+                .is_err()
+        );
+        let frozen = snapshot.freeze_checkpoint().unwrap();
+        let expected = postcard::to_allocvec(&snapshot).unwrap();
+        snapshot.emulator_state[0] = 99;
+        snapshot.observation.frame_count += 1;
+        assert_eq!(postcard::to_allocvec(&frozen).unwrap(), expected);
+        assert_ne!(frozen, snapshot);
+    }
+
+    #[test]
     fn world_position_adds_the_scroll_to_the_screen_position() {
         let mut wram = playing_wram();
         wram[SCROLL_X..SCROLL_X + 4].copy_from_slice(&1_000_i32.to_le_bytes());
@@ -1101,6 +1134,16 @@ mod tests {
 
 impl searcher::search::snapshot_codec::CheckpointSnapshot for FamidashSnapshot {
     type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        budget.reserve(std::mem::size_of::<Self>())?;
+        budget.array::<u8>(self.emulator_state.capacity())
+    }
+    fn freeze_checkpoint(&self) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(self.clone())
+    }
 }
 
 #[cfg(test)]

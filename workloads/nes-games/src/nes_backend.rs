@@ -13,11 +13,15 @@ pub fn native_identity_sha256(core_sha256: &str, execution_sha256: &str) -> Stri
 }
 
 pub trait SnapshotState:
-    Clone + fmt::Debug + Eq + Send + Sync + Serialize + DeserializeOwned
+    Clone + fmt::Debug + Eq + Send + Sync + Serialize + DeserializeOwned + 'static
 {
     type WorkRam: WorkRamCopy;
 
     fn memory_charge(&self) -> usize;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>>;
 
     fn logical_identity(&self) -> Result<Self, MachineError> {
         Ok(self.clone())
@@ -25,7 +29,7 @@ pub trait SnapshotState:
 }
 
 pub trait WorkRamCopy:
-    Clone + fmt::Debug + Eq + Send + Sync + Serialize + DeserializeOwned
+    Clone + fmt::Debug + Eq + Send + Sync + Serialize + DeserializeOwned + 'static
 {
     fn copy_of(wram: &[u8; WRAM_SIZE]) -> Self;
 
@@ -65,6 +69,12 @@ impl SnapshotState for Vec<u8> {
 
     fn memory_charge(&self) -> usize {
         self.len()
+    }
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        budget.array::<u8>(self.capacity())
     }
 }
 
@@ -250,6 +260,19 @@ impl SnapshotState for machine::consonance::ConsonancePortable {
 
     fn memory_charge(&self) -> usize {
         self.memory_charge()
+    }
+
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        budget.reserve(
+            self.checkpoint_owned_bytes()
+                .ok_or(searcher::search::checkpoint::image::ImageLimit)?,
+        )?;
+        self.visit_checkpoint_allocations(|domain, identity, bytes| {
+            budget.shared(domain, identity, bytes)
+        })
     }
 
     fn logical_identity(&self) -> Result<Self, MachineError> {

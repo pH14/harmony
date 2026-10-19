@@ -1057,6 +1057,12 @@ flat envelopes and trailing bytes. Plain snapshots opt into the postcard codec;
 workloads with persistent graphs provide semantic keys and graph validation. All
 artifact writers, readers and source-bound checksum validation use this codec.
 
+`CheckpointSnapshot` also supplies explicit immutable freeze and allocation-charge
+contracts. `Reporting::write_evidence_checkpoint` and borrowed draw/JSON writers
+preserve existing body bytes without first materializing unbounded temporary
+vectors. These contracts prepare bounded publication images; frozen state does
+not grant execution or import trust.
+
 Whole-search checkpoint v10 uses the same workload codec in a typed `HMSTORE2`
 append store. Snapshot frames refer to semantic shared keys using checksummed
 physical ranges. Shared frames carry earlier parent locators, so resume validates

@@ -569,6 +569,16 @@ mod tests {
     struct GraphCodec;
     impl CheckpointSnapshot for Graph {
         type Codec = GraphCodec;
+        fn checkpoint_image_charge(
+            &self,
+            budget: &mut super::super::checkpoint::image::ImageBudget,
+        ) -> CodecResult<()> {
+            budget.reserve(std::mem::size_of::<Self>())?;
+            budget.array::<u8>(self.path.capacity())
+        }
+        fn freeze_checkpoint(&self) -> CodecResult<Self> {
+            Ok(self.clone())
+        }
     }
     impl SnapshotCodec<Graph> for GraphCodec {
         const FORMAT: &'static str = "test-semantic-graph-v1";

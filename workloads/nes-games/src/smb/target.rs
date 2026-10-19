@@ -722,6 +722,17 @@ const PLAYER_VERTICAL_PAGE_OFFSET: usize = 0x00b5;
 
 impl<P: SnapshotState> searcher::search::snapshot_codec::CheckpointSnapshot for SmbSnapshot<P> {
     type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        budget.reserve(std::mem::size_of::<Self>())?;
+        self.emulator_state.checkpoint_image_charge(budget)?;
+        budget.reserve(self.work_ram.memory_charge())
+    }
+    fn freeze_checkpoint(&self) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(self.clone())
+    }
 }
 
 #[cfg(test)]
@@ -896,6 +907,13 @@ mod tests {
 
         fn memory_charge(&self) -> usize {
             self.0.len()
+        }
+
+        fn checkpoint_image_charge(
+            &self,
+            budget: &mut searcher::search::checkpoint::image::ImageBudget,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            budget.array::<u8>(self.0.capacity())
         }
 
         fn logical_identity(&self) -> Result<Self, MachineError> {
