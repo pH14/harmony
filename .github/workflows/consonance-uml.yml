@@ -206,6 +206,28 @@ jobs:
           printf '%s\n' "$output"
           grep -Fxq 'running 1 test' <<<"$output"
           grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
+      - name: Refuse native transactions before ordinary UML application launch
+        if: matrix.architecture == 'x86_64'
+        env:
+          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
+          HARMONY_UML_TRANSACTION_REPORT_DIR: ${{ runner.temp }}/uml-transaction-admission
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+        run: |
+          set -euo pipefail
+          output=$(cargo test --locked -p harmony-cli --bin harmony adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
+          printf '%s\n' "$output"
+          grep -Fxq 'running 1 test' <<<"$output"
+          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
+          grep -Fq 'UML_TRANSACTION_REFUSED=XBEGIN' <<<"$output"
+          grep -Fq 'UML_TRANSACTION_REFUSED=XACQUIRE' <<<"$output"
+          grep -Fq 'UML_TRANSACTION_CONTROL=completed' <<<"$output"
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.architecture == 'x86_64'
+        with:
+          name: uml-transaction-admission-${{ github.sha }}
+          path: ${{ runner.temp }}/uml-transaction-admission
+          if-no-files-found: warn
+          retention-days: 14
       - name: Check native FS and GS bases across reused and fresh restores
         if: matrix.architecture == 'x86_64'
         env:

@@ -141,6 +141,39 @@ class ExecutableCoverageTests(unittest.TestCase):
         self.assert_rejected(fixture(bytes.fromhex("d9f9 0f52c0 0fae27 c3")), "xsave")
         self.assert_rejected(fixture(bytes.fromhex("d9f9 0f52c0 0f01d0 c3")), "xgetbv")
 
+    def test_uml_rejects_transaction_entry_but_vm_disposition_is_unchanged(self):
+        for raw, name in [("c7f800000000", "xbegin"), ("66c7f80000", "xbegin"),
+                          ("f2f0830001", "xacquire"), ("f28700", "xacquire"),
+                          ("f2f00fc708", "xacquire"), ("f3f2f0830001", "xacquire")]:
+            with self.subTest(raw=raw):
+                report, accepted = self.inspect(fixture(bytes.fromhex(raw) + b"\xc3"))
+                self.assertTrue(accepted, report)
+                self.assertIn(name, [site["mnemonic"] for site in report["artifacts"]["/fixture"]["sites"]])
+                self.assertFalse(a.verify(report, "uml"), report)
+                self.assertIn("native transaction entry", report["errors"][0])
+                self.assertEqual(report["execution_mode"], "uml")
+
+    def test_uml_allows_standalone_controls_and_nontransactional_repeat_prefixes(self):
+        for raw in ("0f01d5", "c6f801", "0f01d6", "f20f01e8", "f20f01e9",
+                    "f3f0830001", "f3c70000000000", "f2f3f0830001",
+                    "f3a4", "f2a6", "f390", "f30f10c0", "f20f10c0", "f3c3",
+                    "f287c0", "f2f0480fc708"):
+            with self.subTest(raw=raw):
+                report, accepted = self.inspect(fixture(bytes.fromhex(raw) + b"\xc3"))
+                self.assertTrue(accepted, report)
+                self.assertTrue(a.verify(report, "uml"), report)
+                self.assertFalse(any(site["mnemonic"] in a.TRANSACTION_ENTRY
+                                     for site in report["artifacts"]["/fixture"]["sites"]))
+
+    def test_direct_transfer_cannot_hide_transaction_entry_in_an_operand(self):
+        for raw in ("c7f800000000", "f28700"):
+            report, _ = self.inspect(fixture(bytes.fromhex("eb01b8" + raw) + b"\xc3"))
+            self.assertFalse(a.verify(report, "uml"), report)
+
+    def test_unknown_execution_mode_does_not_return_admitted(self):
+        report, _ = self.inspect(fixture())
+        self.assertFalse(a.verify(report, "unknown"))
+
     def test_overlapping_predecessors_cannot_fake_selector_dominance(self):
         code = bytes.fromhex("7401 8031c9 0f01d0 c3")
         report, accepted = self.inspect(fixture(code))

@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind};
+use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind};
 use object::read::elf::ProgramHeader;
 use object::{Object, ObjectSection};
 use serde::Serialize;
@@ -241,7 +241,7 @@ impl ImageReport {
                         matches!(
                             site.instruction.as_str(),
                             "RDRAND" | "RDSEED" | "RNDR" | "RNDRRS" | "RDPID" | "LSL"
-                        )
+                        ) || uml_transaction_entry(&site.instruction)
                     })
                     .map(|site| {
                         format!(
@@ -255,7 +255,7 @@ impl ImageReport {
             Ok(())
         } else {
             Err(format!(
-                "User-mode Linux executes hardware entropy and CPU-identity instructions natively; these image sites cannot be admitted even when reviewed:\n{}",
+                "User-mode Linux executes host-input instructions and transaction entry natively; these image sites cannot be admitted even when reviewed:\n{}",
                 native_host_inputs.join("\n")
             )
             .into())
@@ -351,6 +351,9 @@ fn finish_scan(
     reviewed: &BTreeMap<InstructionSite, String>,
 ) {
     for site in found {
+        if uml_transaction_entry(&site.instruction) {
+            continue;
+        }
         if !reviewed.contains_key(site) {
             let paths = report
                 .executables
@@ -500,8 +503,16 @@ where
     }
 }
 
-fn x86_host_input_name(mnemonic: Mnemonic) -> Option<&'static str> {
-    match mnemonic {
+fn uml_transaction_entry(name: &str) -> bool {
+    matches!(name, "XBEGIN" | "XACQUIRE")
+}
+
+fn x86_host_input_name(instruction: &Instruction) -> Option<&'static str> {
+    if instruction.has_xacquire_prefix() {
+        return Some("XACQUIRE");
+    }
+    match instruction.mnemonic() {
+        Mnemonic::Xbegin => Some("XBEGIN"),
         Mnemonic::Rdrand => Some("RDRAND"),
         Mnemonic::Rdseed => Some("RDSEED"),
         Mnemonic::Rdpid => Some("RDPID"),
@@ -808,7 +819,7 @@ fn push_x86_sites(
             let mut decoder =
                 Decoder::with_ip(64, &code[candidate_start..], address, DecoderOptions::NONE);
             let instruction = decoder.decode();
-            if let Some(name) = x86_host_input_name(instruction.mnemonic())
+            if let Some(name) = x86_host_input_name(&instruction)
                 && candidate_start + instruction.len() > boundary
             {
                 sites.push(InstructionSite {
@@ -836,7 +847,7 @@ fn push_x86_sites(
                 break;
             }
             visited[instruction_offset] = true;
-            if let Some(name) = x86_host_input_name(instruction.mnemonic()) {
+            if let Some(name) = x86_host_input_name(&instruction) {
                 sites.push(InstructionSite {
                     digest: digest.to_owned(),
                     address: instruction.ip(),
@@ -874,7 +885,7 @@ fn scan_code(
     if architecture == object::Architecture::X86_64 {
         let decoder = Decoder::with_ip(64, data, address, DecoderOptions::NONE);
         for instruction in decoder {
-            if let Some(name) = x86_host_input_name(instruction.mnemonic()) {
+            if let Some(name) = x86_host_input_name(&instruction) {
                 sites.push((instruction.ip(), name));
             }
         }
@@ -1006,6 +1017,74 @@ mod tests {
         assert!(report.require_for(ExecutionMode::Uml).is_err());
         assert_eq!(report.executables[0].sites.len(), 1);
         assert_eq!(report.executables[0].sites[0].instruction, "RDRAND");
+    }
+
+    #[test]
+    fn uml_refuses_transaction_entry_even_when_reviewed_without_instrumentation() {
+        for (code, name) in [
+            (&[0xc7, 0xf8, 0, 0, 0, 0][..], "XBEGIN"),
+            (&[0x66, 0xc7, 0xf8, 0, 0][..], "XBEGIN"),
+            (&[0xf2, 0xf0, 0x83, 0, 1][..], "XACQUIRE"),
+            (&[0xf2, 0x87, 0][..], "XACQUIRE"),
+            (&[0xf2, 0xf0, 0x0f, 0xc7, 8][..], "XACQUIRE"),
+            (&[0xf3, 0xf2, 0xf0, 0x83, 0, 1][..], "XACQUIRE"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("node"), elf(code, 5, 6)).unwrap();
+            let report = inspect_root(root.path()).unwrap();
+            assert!(report.scan_passed(), "{report:?}");
+            assert!(!report.instrumented_events());
+            assert!(report.require_for(ExecutionMode::Vm).is_ok());
+            assert_eq!(report.executables[0].sites[0].instruction, name);
+            assert!(
+                report
+                    .require_for(ExecutionMode::Uml)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(name)
+            );
+            fs::create_dir_all(root.path().join("etc/harmony")).unwrap();
+            fs::write(
+                root.path().join(ALLOWLIST_PATH),
+                format!("{} 0x1000 {name} reviewed\n", report.executables[0].digest),
+            )
+            .unwrap();
+            let reviewed = inspect_root(root.path()).unwrap();
+            assert!(reviewed.scan_passed());
+            assert!(reviewed.require_for(ExecutionMode::Vm).is_ok());
+            assert!(reviewed.require_for(ExecutionMode::Uml).is_err());
+        }
+    }
+
+    #[test]
+    fn standalone_transaction_controls_and_ordinary_prefixes_do_not_enter_transactions() {
+        for code in [
+            &[0x0f, 1, 0xd5][..],
+            &[0xc6, 0xf8, 1][..],
+            &[0x0f, 1, 0xd6][..],
+            &[0xf2, 0x0f, 1, 0xe8][..],
+            &[0xf2, 0x0f, 1, 0xe9][..],
+            &[0xf3, 0xf0, 0x83, 0, 1][..],
+            &[0xf3, 0xc7, 0, 0, 0, 0, 0][..],
+            &[0xf2, 0xf3, 0xf0, 0x83, 0, 1][..],
+            &[0xf3, 0xa4][..],
+            &[0xf2, 0xa6][..],
+            &[0xf3, 0x90][..],
+            &[0xf3, 0x0f, 0x10, 0xc0][..],
+            &[0xf2, 0x0f, 0x10, 0xc0][..],
+            &[0xf3, 0xc3][..],
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("node"), elf(code, 5, 6)).unwrap();
+            let report = inspect_root(root.path()).unwrap();
+            assert!(report.scan_passed(), "{code:02x?}: {report:?}");
+            assert!(
+                report.executables[0].sites.is_empty(),
+                "{code:02x?}: {report:?}"
+            );
+            assert!(report.require_for(ExecutionMode::Vm).is_ok());
+            assert!(report.require_for(ExecutionMode::Uml).is_ok());
+        }
     }
 
     fn adjacent_x86_elf(left_tail: &[u8], right: &[u8]) -> Vec<u8> {
@@ -1457,7 +1536,7 @@ mod tests {
         let sites = scan_elf(&elf(&code, 5, 6), "").unwrap().unwrap();
         assert_eq!(
             sites.iter().map(|site| site.address).collect::<Vec<_>>(),
-            [0x100c, 0x1010]
+            [0x100c, 0x1010, 0x1011]
         );
     }
 
@@ -1489,7 +1568,11 @@ mod tests {
                     .iter()
                     .map(|site| (site.address, site.instruction.as_str()))
                     .collect::<Vec<_>>(),
-                [(address, instruction)],
+                if instruction == "RDSEED" {
+                    vec![(address, instruction), (address + 1, "XBEGIN")]
+                } else {
+                    vec![(address, instruction)]
+                },
                 "{report:?}"
             );
             assert!(report.require_for(ExecutionMode::Uml).is_err());
@@ -1668,7 +1751,11 @@ mod tests {
                         .iter()
                         .map(|site| (site.address, site.instruction.as_str()))
                         .collect::<Vec<_>>(),
-                    [(0x1000, mnemonic)],
+                    if mnemonic == "RDSEED" {
+                        vec![(0x1000, mnemonic), (0x1001, "XBEGIN")]
+                    } else {
+                        vec![(0x1000, mnemonic)]
+                    },
                     "{mnemonic} crossing section end {section_size}"
                 );
             }
@@ -1682,7 +1769,11 @@ mod tests {
                     .iter()
                     .map(|site| (site.address, site.instruction.as_str()))
                     .collect::<Vec<_>>(),
-                [(0x1000, mnemonic)],
+                if mnemonic == "RDSEED" {
+                    vec![(0x1000, mnemonic), (0x1001, "XBEGIN")]
+                } else {
+                    vec![(0x1000, mnemonic)]
+                },
                 "{mnemonic} crossing section start"
             );
         }
@@ -1901,7 +1992,11 @@ mod tests {
                         .iter()
                         .map(|site| (site.address, site.instruction.as_str()))
                         .collect::<Vec<_>>(),
-                    [(0x1ffe, mnemonic)],
+                    if mnemonic == "RDSEED" {
+                        vec![(0x1ffe, mnemonic), (0x1fff, "XBEGIN")]
+                    } else {
+                        vec![(0x1ffe, mnemonic)]
+                    },
                     "{mnemonic} with left file size {left_file_size}"
                 );
                 if left_file_size == 4096 {

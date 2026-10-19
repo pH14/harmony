@@ -82,8 +82,15 @@ The guest TASK_SIZE remains in the console for diagnosis.
   31:24, or the x2APIC ID in leaves 0xB and 0x1F) gets the ID of the host
   CPU it happens to run on; workloads must not use them. Fault-workload image
   preparation, search and command runs refuse scanned hardware entropy and
-  CPU-identity instructions for UML, including reviewed call sites. The current
-  x86 Bookworm language and historical images contain such sites and are refused
+  CPU-identity instructions for UML, including reviewed call sites. The
+  admission rule also refuses native transaction entry (`XBEGIN` and valid
+  `XACQUIRE` forms), regardless of instrumentation or a review entry. Transaction
+  commit/abort can depend on host resources and asynchronous events. Recording
+  CPUID or hiding its TSX flags does not establish forced-abort semantics.
+  Related standalone controls cannot initiate a transaction and remain admitted;
+  ordinary REP/SSE prefixes and native math are unaffected. See the
+  [image admission policy](../../../workloads/faults/README.md#image-admission).
+  The current x86 Bookworm language and historical images contain such sites and are refused
   for UML until built without them. This does not trap an instruction supplied
   by dynamic code or hidden from the executable-load scan.
 - Host stops and continues of stub processes no longer raise guest
