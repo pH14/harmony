@@ -73,7 +73,7 @@ PR_EXTENDED_CHECK_BUDGETS = {
 }
 PR_TIMEOUT_EXPRESSIONS = {
     (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"):
-        "${{ matrix.name == 'vmm-backend' && 30 || 15 }}",
+        "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store') && 30 || 15 }}",
 }
 
 
@@ -413,8 +413,9 @@ CONSONANCE_ANALYSIS = Workflow(
         Job("Change Selection", "pr", 5, selects=("miri_matrix", "kani")),
         Job("Miri — <Crate>", "pr", 30, select="miri_matrix",
             ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
-            exception="The backend's interpreted snapshot and register inventory "
-                      "checks exceed 15 minutes; other targets retain 15 minutes."),
+            exception="The backend's interpreted snapshot/register inventory and "
+                      "the Store's full resident-verification suite exceed 15 minutes; "
+                      "other targets retain 15 minutes."),
         Job("Miri — <Crate> (Whole Crate)", "full", 320,
             ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
             exception="Interpreting a whole unsafe crate under Miri takes hours, "
