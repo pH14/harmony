@@ -54,6 +54,10 @@ what owns it, and the linter rejects them.
 | `Release / Harmony` | `release.yml` | push (version tags) |
 | `Maintenance / Repository` | `repository-maintenance.yml` | schedule, workflow_dispatch |
 
+The `Archive` job in `Checks / Dissonance` also checks that the searcher builds
+for `wasm32-unknown-unknown`, so the browser demo can run the campaign
+coordinator.
+
 The release CLI archive contains both `harmony` and `harmony-consonance-host`.
 Linux builds the Consonance host as a static musl executable; the frontend
 copies and seals it before execution. macOS signs the separate host with the
@@ -183,6 +187,11 @@ interpretation without a virtual machine.
 the backend it runs, and the linter requires it to keep a bounded Checks
 workflow and a full Benchmarks workflow, and requires each workflow to actually
 run its registered backend.
+
+The `NES Adapter` job in `Checks / Harmony` lints and tests the host-side NES
+manifests, `workloads/nes-games` among them. It also checks that
+`workloads/nes-games` builds for `wasm32-unknown-unknown`, so the browser demo
+can use the same game logic as the native workload.
 
 `Checks / Consonance` and `Checks / Harmony Workloads / OCI` each start with an
 `Exact Runtime Artifacts` job. It runs the shared `exact-platform-runtime`
@@ -730,3 +739,17 @@ a pinned UML profile, and the source SDK for language preparation. Guest, UML
 and SDK archives carry SHA-256 sidecars. `harmony check` and `harmony prepare`
 fetch assets for the CLI version and host architecture into the user data
 cache; development builds can supply explicit runtime paths and `HARMONY_SDK_DIR`.
+
+The Twin Dragons browser lane (`Checks / Dissonance Workloads / Twin Dragons
+Browser`) owns the standalone `demos/twin-dragons/rust` adapter. It builds
+QuickNES into WebAssembly, fetches the pinned silent-effects Twin Dragons ROM
+through `workloads/nes/scripts/build-twin-dragons-rom.sh`, runs adapter
+checks, and uploads the static `twin-dragons-browser-dist` with corresponding
+sources. Its two browser jobs reuse that build: `games` runs the per-game
+search and replay suites and `interface` runs the tour and interaction suites,
+so each stays within the 15-minute pull-request limit. Both verify exact
+selected-history replays and upload `twin-dragons-browser-evidence-<suite>`
+screenshots. The bounded browser check asserts
+liveness, authentic starts in all 3 levels, exact replay and rooted
+branching, and desktop/phone interactions rather than a specific seed’s game
+progress.

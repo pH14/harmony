@@ -69,8 +69,11 @@ failed actions cannot reuse an earlier capture. These values remain local to the
 import operation and preserve all source identity and intermediate-prefix checks.
 It also checks the fixed executor and selection-seed derivation labels. The stream and
 completed report record the loaded Harmony executable identity separately from the
-workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
-its running code-directory hash. Replay fails closed when that identity cannot be
+workload identity. Linux hashes the loaded image through `/proc/self/exe` once per
+process, because the loaded image cannot change while it runs; macOS reads
+its running code-directory hash. A wasm32 module cannot read its own bytes, so it
+records the fixed label `wasm32-module-v1`, which does not bind replay to one build.
+Replay fails closed when that identity cannot be
 read or differs, even if the guest image and workload policies match. The campaign
 reads the identity once before writing the stream and uses the same value for its
 checkpoints. Replay reconstructs adaptive mixture weights from each admitted
@@ -113,13 +116,14 @@ limit because no selector draw can name a tier beyond that many active entries.
 The final report selects no
 more parents, so its compaction releases metadata pins and the liveness anchor
 and then requires the compacted archive to fit the memory limit. Campaign streams require
-schedule policy version 5
+schedule policy version 6
 and the current bounded progress policy; recordings from superseded policy
-namespaces are rejected before replay because their snapshot accounting differs.
+namespaces are rejected before replay because their memory accounting differs.
 
 Empirical step tables fold retained suffixes into an incremental hash and a
-deterministic frequency map capped at 4,096 distinct steps. The compact table
-is the only supported representation. Every campaign keeps one, in
+deterministic frequency map capped at 4,096 distinct steps. A draw picks a step
+with probability proportional to its count over all retained suffixes, with no
+recency weighting. The compact table is the only supported representation. Every campaign keeps one, in
 `search::draw_tables`, so a workload gets the biased draw without owning any of
 the bookkeeping. `DrawTables` folds each retained suffix as its record closes,
 publishes an `EmpiricalStepCheckpoint` the stream records beside every draw,
@@ -185,6 +189,26 @@ time per admission constant. Final compaction bypasses the batching threshold
 and rejects an archive that is still over its limit. Because of that lag, the
 archive's resident bytes are not checked against the whole budget during the
 campaign.
+
+The archive charges its own heap from logical counts: entries, stored suffix
+actions, live prefix nodes, slots, cells, active entries, tiers, pins, landing
+markers, continuation edges and shared snapshot allocations. A checkpoint
+restores those counts, so a resumed or replayed archive charges what the live
+one did. Each count is multiplied by a worst-case size under glibc malloc. An
+allocation of n bytes takes n plus an 8-byte header, rounded up to 16 bytes, and
+at least 32 bytes. A vector grown by push holds at most twice its length and at
+least 4 elements, or 8 for bytes. A B-tree node holds 11 elements, and every
+node but the root holds at least 5, so a set of maps holding n elements uses at
+most n/5 nodes plus one per map. Each prefix node is charged one child-map node.
+The selector's weighted sets keep freed slots until the selector index is
+rebuilt, and compaction rebuilds it, so freed slots are charged as one per
+inactive entry. Compaction shrinks the entry columns to their length so the
+doubling bound holds afterwards. Each resident snapshot also charges its
+reference-count block. On synthetic archives these charges sit 15-50% above the
+measured heap; the `memory_tests` unit tests count the archive's allocations and
+fail when any part exceeds its charge. Allocator fragmentation and heap a
+workload's snapshot charge omits stay outside the archive's limit and show only
+in RSS.
 
 Prefix-tree compaction remaps a single surviving child in its existing map.
 The same prefix nodes can hold optional workload endpoint certificates. A
@@ -297,12 +321,13 @@ RSS rather than the archive's logical memory budget.
 The archive memory budget covers retained snapshots and job-origin snapshots
 pinned until their ordered results are admitted. A workload reports exclusive
 snapshot bytes separately from a root-to-parent visitor over shared allocations.
-The visitor identifies actual live allocations, including their allocation
-headers; the archive charges each reachable allocation once plus its accounting
-entry. Acquiring or releasing a root follows only newly owned or finally released
-nodes, stopping at an already owned ancestor. Clones of an existing root cost one
-lookup; budget queries do not traverse ancestry. Allocation identities and the
-ownership ledger are runtime-only and never enter deterministic evidence.
+The visitor identifies actual live allocations, including their reference-count
+headers. The archive charges each reachable allocation once as a malloc block
+and charges the ownership ledger as one B-tree map. Acquiring or releasing a
+root follows only newly owned or finally released nodes, stopping at an already
+owned ancestor. Clones of an existing root cost one lookup; budget queries do
+not traverse ancestry. Allocation identities and the ownership ledger are
+runtime-only and never enter deterministic evidence.
 
 Worker target-private state, including independently retained inner history
 handles after a reply, remains outside this archive budget. Job-origin outer
@@ -469,12 +494,14 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_pace_yield_cell_recent_count_decay_v1`, and the stream header names
+One selector exists, `tier_progress_cascade_pace_yield_cell_recent_count_decay_v2`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
-rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
-`tier_rank_shift` is three unless the workload says otherwise, so the leading
-tier takes most of the draws, and no tier holding an entry takes zero. The
+rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, an eighth of the rank ahead, so
+the leading tier takes most of the draws, and no tier holding an entry takes
+zero. Every workload uses this ratio, so a workload's progress value must not
+fall along the route to its goal: states on that route would rank below a tier
+that leads nowhere and receive almost no draws. The
 replay verifier bounds a recorded rank by completed progress levels in
 previously admitted archive entries when that selection was reserved. The
 bound includes historical levels that may no longer be selectable, so it
@@ -483,27 +510,49 @@ reconstruct every selector draw.
 Replay also rejects a best-holder preference index outside the workload key's
 compiled portfolio; otherwise selector accounting would silently ignore it.
 
-The leading tier gives up weight while it finds nothing new. Each tier counts its
-draws since a new cell last appeared in it and keeps the longest such run; its
-pace is that longest run or its cell count, whichever is larger. When the
-current count passes twice the pace, the leading tier's weight halves, and it
-halves again each time the count doubles, down to the weight of the rank
-below. The halvings apply only while the rank below yields more per draw than
-the leading tier since the leading tier's last new cell. A tier's yields are
-its new cells and its carried-in wins, admissions that take a slot's
-preference from a parent in another cell. The leading tier counts only its
-carried-in wins there, since a new cell ends the run. With `Td` and `Ty` the
-leading tier's draws and wins in the run, and `Nd` and `Ny` the draws and
-yields of the rank below over the same span, the halvings apply while
-`(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`. When the rank below is a
-different tier from the one recorded when the run began, or no tier was
-recorded, `Nd` and `Ny` are that tier's total draws and yields. A leading tier
-that yields at least as much per draw as the rank below keeps its full weight. A new cell in
-the tier restores the full weight. A
-workload whose progress order has many close steps, such as fine progress
-bands, supplies a shift of one so each rank takes half of the one ahead. The
-largest accepted shift is seven, because a larger one overflows the leading
-tier's 64-bit weight; a draw under a larger shift fails with an error. Within the tier each cell
+The leading tier gives up weight while it makes no progress. A tier makes
+progress when a parent drawn from it opens a cell at a deeper progress value;
+a new cell beside its parent at the same progress value is not progress. Each
+tier counts its draws since it last made progress, or since it appeared, and
+keeps the longest such run; its pace is that longest run or its cell count,
+whichever is larger. When the current count passes twice the pace, the leading
+tier's weight halves, and it halves again each time the count doubles, down to
+the weight of the rank below. The halvings apply only while the rank below
+yields more per draw than the leading tier since the run began, or while the
+leading tier has gone longer without a yield than the rank below has been
+drawn in the run, or while it has gone more than eight times its own average
+gap without a yield. A tier's
+yields are its new cells and its carried-in wins, admissions that take a
+slot's preference from a parent in another cell. A cell is new when the
+archive has never held it and no higher tier holds a cell at its place, so a
+cell that comes back after its entries were dropped, or a lower tier reaching
+a place a higher tier already holds, yields nothing. The rank below counts
+only its new cells in the comparison, so a lower tier that keeps refilling
+stock at the same places does not take weight from a leading tier that keeps
+opening ground. With `Td` and `Ty` the leading tier's draws and yields in the
+run, `Tq` its draws since its last yield, and `Nd` and `Ny` the draws and new
+cells of the rank below over the same span, the halvings apply while
+`(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`, `Tq > Nd`, or
+`Tq * (Ty + 1) > 8 * Td`. The second condition
+makes a leading tier that stops yielding lose its weight even when the rank
+below yields nothing: `Tq` grows with every leading-tier draw and `Nd` grows
+only with the rank below's smaller share, and a tier's yields are finite. The
+third condition sets how soon the fall starts: a tier that still wins now and
+then, but far less often than it used to, falls without waiting for `Tq` to
+pass every draw the rank below received since the run began, while a tier that
+keeps farming at its usual gap holds.
+When the rank below is a different tier from the one recorded when the run
+began, or no tier was recorded, `Nd` and `Ny` are that tier's totals. A
+leading tier that yields at least as much per draw as the rank below opens
+cells keeps its full weight. Progress from the tier restores its full weight.
+A dead-end route that keeps opening cells beside each other at its deepest
+progress value therefore still loses weight, because its cells are finite and
+each opens no deeper ground. When the leading tier has halved all the way
+to the weight of the rank below, the same rule is applied to that rank against
+the rank below it, and so on down. Every rank down to the first one still short
+of its full halvings shares that rank's halved weight. This lets the search
+fall back past several stalled tiers at once, which matters when the states
+that decide a later death lie several tiers back. Within the tier each cell
 weighs `1 / (1 + draws)^2` over the draws it has received since it was last
 reset, so an untried or freshly reset cell takes most of the tier's draws
 until it catches up and every cell keeps a share. Within the cell, a quarter
@@ -535,8 +584,9 @@ new ground instead of settling to an equal share with every cell behind them.
 `SelectorAccounting` reports `cell_selections`, `productive_selections`,
 `cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference,
 `tier_runs` keyed by each tier's progress value with its current and longest
-run, its total draws and yields, its carried-in wins in the current run, and
-the rank below's name, draws and yields when the run began, and the draws each
+run, its total draws and yields, its yields in the current run as `wins`,
+its draws since its last yield as `dry`, its new cells as `cells`, and the rank below's name, draws and new cells when
+the run began, and the draws each
 cell received, and
 every live progress line carries it under `selector`. The draws each cell
 received and `selector.portfolio` appear once each time the executions double,
@@ -857,7 +907,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 8; a checkpoint from another
+match. The search checkpoint format is version 9; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation
@@ -911,3 +961,65 @@ unwinding. A replay reuses its session within that operation and finalizes it
 before returning. During a live campaign the coordinator signals bootstrap
 readiness only after finalization; other execution workers may initialize
 concurrently, and accepting whole-pool readiness still waits for that worker.
+
+## Stepwise coordination
+
+`CampaignCoordinator` holds a live campaign: the `CoordinatorCore`, the seeded
+selection state, the draw tables, the duration policies and the admission
+window. A single-threaded caller drives it with these calls:
+
+| Call | Effect |
+| --- | --- |
+| `CampaignCoordinator::start` | Validates the config, writes the stream header and bootstraps or restores the archive inside the coordinator session. |
+| `reserve_next()` | Reserves one job of the first window and returns false once the window is full or selection stops. The worker pool calls it after every worker reports its startup result and dispatches each job as it is reserved. |
+| `plan(limit)` | Hands out up to `limit` reserved jobs, lowest planned finish first. |
+| `admit(outcome)` | Takes one finished job, admits every job that admission order now allows and reserves one job after each admission. |
+| `fail(reservation, error)` | Records a job that failed to execute. The campaign returns that error when admission order reaches the reservation. |
+| `finished()` | Reports that every reservation is admitted. |
+| `finish(workers)` | Writes the final search checkpoint and builds the report. |
+
+`archive()`, `evidence()`, `executions()`, `reserved()`, `objective_witness()`
+and `progress()` read the live state for display. `progress()` returns the
+same `CampaignProgressRecord` the progress sink receives.
+
+A worker runs a `JobSpec` with `run_job` and returns a `JobOutcome`. A
+`JobSpec` carries its reservation, planned finish, parent snapshot, replay
+actions, their endpoint certificates and suffix. `run_job` executes it through
+`execute_job_certified`. A `JobOutcome` carries the `CampaignJobResult`, the
+execution work and the `certified_result_sha256` digest. Both derive serde, so a caller can pass
+them between threads or browser workers as postcard bytes. A workload's
+`Observations` must therefore deserialize.
+
+`run_campaign_checkpointed_with_options` and
+`run_campaign_checkpointed_observed` drive the same coordinator from the
+worker pool. Each plans every reserved job into the pool's queue and admits each
+reply. A reservation follows an admission and never a caller's request, so a
+caller that plans any number of jobs and runs them in any order writes the same
+stream as the pool for the same seed and window.
+
+`run_campaign_watched` runs the same pool with a `CampaignWatch`. Its `run`
+hook wraps each job on the worker thread and returns a note with the outcome.
+Its `admitted` hook receives that note and the coordinator on the coordinator
+thread after each admission, and `start` runs once after the coordinator
+starts; an error from `start` stops the campaign. `watch_admissions` makes the
+coordinator keep each admission's decisions, and `take_admissions` drains them,
+so a watcher reads retained ids without parsing the stream.
+
+The crate builds for `wasm32-unknown-unknown`. On wasm32 the telemetry clock
+reads zero and progress lines carry `unix_time` 0, because `std::time::Instant`
+and `SystemTime` panic there. A wall budget never stops a wasm32 campaign.
+Search checkpoints and objective witness files need a filesystem. The worker
+pool and thread placement need threads.
+
+```sh
+cargo check --locked --manifest-path dissonance/Cargo.toml -p searcher --target wasm32-unknown-unknown
+```
+
+## Browser adapters
+
+`Archive::entry_input` materializes an entry’s complete ancestral action tape
+for inspection or playback and rejects missing indices. A browser adapter can own
+execution snapshots outside the archive and use this read accessor for films.
+Weighted draws use `RomuDuoJrRand::below_u64` for 64-bit weight
+totals, so wasm32 does not truncate them through `usize`. This uses the same
+multiply-high draw as native selection and preserves its random sequence.

@@ -76,10 +76,8 @@ impl StbGame {
     ) -> Self {
         let ai_level = ai.level();
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-full-postcard-1.1.3-sha256-hex-v6;sha256={core_sha256};prepared-execution-sha256={execution_sha256}",
-            machine::quicknes::QUICKNES_REVISION,
-            machine::quicknes::QUICKNES_BUILD,
-            machine::quicknes::QUICKNES_OPTIONS,
+            "{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-full-postcard-1.1.3-sha256-hex-v6;sha256={core_sha256};prepared-execution-sha256={execution_sha256}",
+            machine::quicknes::core_identity(),
         );
         Self {
             rom: rom.to_vec(),
@@ -924,5 +922,30 @@ mod tests {
             stb_result_sha256(&first).expect("first digest"),
             stb_result_sha256(&second).expect("changed digest"),
         );
+    }
+
+    #[test]
+    fn campaign_suffix_continues_through_respawn_without_a_terminal_endpoint() {
+        use nes_games::stb::target::scripted::ScriptedMachine;
+        for stop_on_objective in [false, true] {
+            let mut target = StbTarget::from_machine(ScriptedMachine::respawn_timeline()).unwrap();
+            let result = execute_suffix(
+                &mut target,
+                StbMilestones::default(),
+                &[ButtonChord::new(1, 1), ButtonChord::new(2, 1)],
+                RetentionPolicy::Unprobed,
+                stop_on_objective,
+            )
+            .expect("respawn suffix");
+            assert_eq!(result.actions.len(), 2);
+            assert!(result.actions.iter().all(|action| {
+                action.outcome.disposition == ExecutionDisposition::Runnable
+                    && !action.outcome.objective_reached
+            }));
+            assert!(result.actions[0].candidate.is_none());
+            assert!(result.actions[1].candidate.is_some());
+            assert_eq!(result.actions[1].milestones.opponent_kos, 1);
+            assert_eq!(target.observe().frame_count, 2);
+        }
     }
 }

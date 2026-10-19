@@ -4,6 +4,16 @@ use std::io;
 
 #[cfg(target_os = "linux")]
 pub(crate) fn loaded_executable_identity_self() -> io::Result<String> {
+    static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(identity) = IDENTITY.get() {
+        return Ok(identity.clone());
+    }
+    let identity = hash_loaded_executable()?;
+    Ok(IDENTITY.get_or_init(|| identity).clone())
+}
+
+#[cfg(target_os = "linux")]
+fn hash_loaded_executable() -> io::Result<String> {
     use sha2::{Digest, Sha256};
     use std::io::Read as _;
 
@@ -67,7 +77,12 @@ fn loaded_executable_identity_from_csops(
     Ok(identity)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn loaded_executable_identity_self() -> io::Result<String> {
+    Ok("wasm32-module-v1".to_owned())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_arch = "wasm32")))]
 pub(crate) fn loaded_executable_identity_self() -> io::Result<String> {
     Err(io::Error::other(
         "cannot identify the loaded executable on this host",

@@ -7,6 +7,7 @@ pub mod crossing;
 pub mod deadline;
 pub mod deadline_actions;
 pub mod delayed;
+pub mod fork;
 pub mod graph;
 pub mod held;
 pub mod map;
@@ -237,6 +238,8 @@ pub struct Evidence {
     pub passive_clock: Option<passive_clock::Evidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub targets: Option<targets::Evidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fork_first: Vec<Option<u64>>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
@@ -245,7 +248,7 @@ pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
     pub evidence: Evidence,
     pub selector: searcher::search::archive::SelectorAccounting,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Observation {
     before: State,
     after: State,
@@ -844,6 +847,19 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                     e.map_max_hits = e.map_max_hits.max(after.hits);
                 }
                 (World::Graph(_), State::Graph(_), State::Graph(_)) => {}
+                (World::Fork(w), State::Fork(_), State::Fork(after)) => {
+                    e.fork_first.resize(3, None);
+                    let reached = [
+                        w.live(after),
+                        w.live(after) && after.position > w.tip(),
+                        after.goal,
+                    ];
+                    for (first, reached) in e.fork_first.iter_mut().zip(reached) {
+                        if reached {
+                            first.get_or_insert(reached_work);
+                        }
+                    }
+                }
                 (World::Targets(w), State::Targets(before), State::Targets(after)) => {
                     let t = e.targets.get_or_insert_with(Default::default);
                     let levels = usize::from(w.cannons) + 1;

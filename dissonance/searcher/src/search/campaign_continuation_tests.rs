@@ -355,7 +355,7 @@ fn replay_rejects_duplicate_skip_for_taken_continuation() {
     assert_eq!(job["selector"]["path"], "continuation");
     let mut skip = records
         .iter()
-        .find(|record| record["event"] == "skip" && record["reservation"] == 17)
+        .find(|record| record["event"] == "skip")
         .unwrap()
         .clone();
     skip["reservation"] = serde_json::json!(reservation);
@@ -1655,7 +1655,7 @@ fn replay_rejects_forged_post_admission_skip_suffix_limits() {
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let index = 147;
+    let index = 555;
     let mut skip: serde_json::Value = serde_json::from_str(&lines[index]).unwrap();
     assert_eq!(skip["event"], "skip");
     assert_eq!(skip["suffix_limit"], 1);
@@ -1701,13 +1701,13 @@ fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
             })
             .unwrap()
     };
-    let (_, sibling) = job_at(60);
-    let (index, mut selected) = job_at(65);
+    let (_, sibling) = job_at(75);
+    let (index, mut selected) = job_at(79);
     assert_eq!(sibling["parent_id"], selected["parent_id"]);
     assert_eq!(sibling["suffix_limit"], 2);
     assert_eq!(selected["suffix_limit"], 1);
-    assert!(60 + config.window > 65);
-    assert!(sibling["sequence"].as_u64().unwrap() > 65 - config.window as u64);
+    assert!(75 + config.window > 79);
+    assert!(sibling["sequence"].as_u64().unwrap() > 79 - config.window as u64);
     selected["suffix_limit"] = serde_json::json!(2);
     lines[index] = serde_json::to_string(&selected).unwrap();
     let error =

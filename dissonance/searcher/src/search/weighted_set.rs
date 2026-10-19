@@ -4,7 +4,7 @@ use std::{cmp::Ordering, collections::BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
 
-use super::rand::splitmix64;
+use super::{heap, rand::splitmix64};
 
 const NONE: usize = usize::MAX;
 
@@ -34,6 +34,13 @@ impl<T> Default for WeightedSet<T> {
             root: NONE,
             len: 0,
         }
+    }
+}
+
+impl<T> WeightedSet<T> {
+    pub(crate) fn heap_bound(sets: usize, members: usize, removals: usize) -> usize {
+        heap::vecs_bytes::<Node<T>>(sets, members.saturating_add(removals))
+            .saturating_add(heap::vecs_bytes::<usize>(sets, removals))
     }
 }
 

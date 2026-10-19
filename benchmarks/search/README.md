@@ -270,7 +270,7 @@ Performance runs hash and discard the full event stream while retaining compact
 reports and a best/winning input. This bounds disk growth without pretending a
 full verification stream was saved. Each witness is replayed twice on fresh
 native targets; every claimed victory must reproduce. Qualification uses
-`verification: campaign`, limited to at most 5,000 executions, and additionally
+`verification: campaign`, limited to at most 10,000 executions, and additionally
 re-executes the complete stream and compares the report and portable checkpoint.
 These modes and verification time are explicit in the matrix. No large-run
 full-campaign verification is implied by a witness-only result.

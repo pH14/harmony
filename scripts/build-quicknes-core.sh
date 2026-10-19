@@ -141,6 +141,34 @@ patch -d "$build_root/core" -f -p1 <<'PATCH'
  		//result = result_badop; // intentionally unreachable; see comment above
 PATCH
 
+# A four-screen cartridge saves a 4 KiB nametable block. The pinned reader
+# reads it in two calls, and its read path subtracts the bytes read from the
+# block's remaining length twice, so the second call fails and the state cannot
+# be restored. The patch reads the whole block in one call. Two-screen states
+# read exactly as before.
+patch -d "$build_root/core" -f -p1 <<'PATCH'
+--- a/nes_emu/Nes_State.cpp
++++ b/nes_emu/Nes_State.cpp
+@@ -256,11 +256,15 @@ const char * Nes_State_::read_blocks( Nes_File_Reader& in )
+ 			break;
+ 			
+ 		case FOUR_CHAR('NTAB'):
++		{
++			uint8_t both [0x1000];
+ 			nametable_size = in.remain();
+-			RETURN_ERR( in.read( nametable, 0x800 ) );
++			RETURN_ERR( in.read_block_data( both, sizeof both ) );
++			memcpy( nametable, both, 0x800 );
+ 			if ( nametable_size > 0x800 )
+-				RETURN_ERR( in.read( chr, 0x800 ) );
++				memcpy( chr, both + 0x800, 0x800 );
+ 			break;
++		}
+ 			
+ 		case FOUR_CHAR('LRAM'):
+ 			ram_valid = true;
+PATCH
+
 make -C "$build_root/core" -j "${HARMONY_QUICKNES_BUILD_JOBS:-4}" \
     DEBUG=0 OPTIMIZE=-O2 GIT_VERSION="$revision"
 

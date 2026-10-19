@@ -35,7 +35,7 @@ pub const MIXTURE_ENERGY_PREFIX: &str = "energy:";
 pub const MIXTURE_ENERGY_SPLICE_PREFIX: &str = "energy_splice:";
 
 #[must_use]
-pub(crate) fn draw_mixture_identifier(mixture: DrawMixture) -> String {
+pub fn draw_mixture_identifier(mixture: DrawMixture) -> String {
     match mixture {
         DrawMixture::AlphabetOnly => MIXTURE_ALPHABET_ONLY_IDENTIFIER.to_owned(),
         DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER.to_owned(),

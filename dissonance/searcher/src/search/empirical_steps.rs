@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{
-    collections::{BTreeMap, VecDeque},
-    error::Error,
-    fmt,
-};
+use std::{collections::BTreeMap, error::Error, fmt};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -14,28 +10,15 @@ const MAX_COMPACT_HISTORY_DISTINCT: usize = 4096;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EmpiricalStepParameters {
     pub prefix_steps: usize,
-    pub recent_successes: usize,
-    pub recent_weight: usize,
-    pub all_history_weight: usize,
     pub update_every_records: u64,
     pub hash_every_records: u64,
 }
 
 impl EmpiricalStepParameters {
     pub fn validate(self) -> Result<(), EmpiricalStepError> {
-        if self.recent_successes == 0 {
-            return Err(EmpiricalStepError::InvalidParameters(
-                "recent success window must be nonzero",
-            ));
-        }
         if self.update_every_records == 0 || self.hash_every_records == 0 {
             return Err(EmpiricalStepError::InvalidParameters(
                 "table update and hash intervals must be nonzero",
-            ));
-        }
-        if self.recent_weight == 0 && self.all_history_weight == 0 {
-            return Err(EmpiricalStepError::InvalidParameters(
-                "at least one empirical step table weight must be nonzero",
             ));
         }
         Ok(())
@@ -54,7 +37,6 @@ pub enum EmpiricalStepError {
     InvalidParameters(&'static str),
     TableLengthOverflow,
     Serialization(serde_json::Error),
-    RecentWindowDiverged,
 }
 
 impl fmt::Display for EmpiricalStepError {
@@ -70,9 +52,6 @@ impl fmt::Display for EmpiricalStepError {
                     "empirical step table serialization failed: {error}"
                 )
             }
-            Self::RecentWindowDiverged => {
-                formatter.write_str("recent empirical step window accounting diverged")
-            }
         }
     }
 }
@@ -81,9 +60,7 @@ impl Error for EmpiricalStepError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Serialization(error) => Some(error),
-            Self::InvalidParameters(_) | Self::TableLengthOverflow | Self::RecentWindowDiverged => {
-                None
-            }
+            Self::InvalidParameters(_) | Self::TableLengthOverflow => None,
         }
     }
 }
@@ -133,8 +110,6 @@ impl<'de, Step: DeserializeOwned + Ord + Clone> Deserialize<'de> for CompactHist
 pub struct EmpiricalStepTables<Step> {
     parameters: EmpiricalStepParameters,
     pending: Vec<Vec<Step>>,
-    recent_sequences: VecDeque<Vec<Step>>,
-    recent: Vec<Step>,
     compact_history: CompactHistory<Step>,
     compact_history_len: usize,
     #[serde(skip)]
@@ -153,8 +128,6 @@ where
         let mut tables = Self {
             parameters,
             pending: Vec::new(),
-            recent_sequences: VecDeque::new(),
-            recent: Vec::new(),
             compact_history: CompactHistory {
                 counts: BTreeMap::new(),
                 ends: Vec::new(),
@@ -171,9 +144,7 @@ where
 
     fn hash_current_tables(&self) -> Result<String, EmpiricalStepError> {
         let mut hasher = self.history_hasher.clone();
-        hasher.update(b"dissonance-empirical-compact-history-v1\0");
-        let recent = serde_json::to_vec(&self.recent).map_err(EmpiricalStepError::Serialization)?;
-        hasher.update(&recent);
+        hasher.update(b"dissonance-empirical-compact-history-v2\0");
         Ok(format!("{:x}", hasher.finalize()))
     }
 
@@ -208,18 +179,6 @@ where
                     .checked_add(1)
                     .ok_or(EmpiricalStepError::TableLengthOverflow)?;
             }
-        }
-        self.recent.extend_from_slice(&contribution);
-        self.recent_sequences.push_back(contribution);
-        while self.recent_sequences.len() > self.parameters.recent_successes {
-            let removed = self
-                .recent_sequences
-                .pop_front()
-                .ok_or(EmpiricalStepError::RecentWindowDiverged)?;
-            if removed.len() > self.recent.len() {
-                return Err(EmpiricalStepError::RecentWindowDiverged);
-            }
-            self.recent.drain(..removed.len());
         }
         Ok(())
     }
@@ -282,11 +241,7 @@ where
     }
 
     #[must_use]
-    pub fn recent(&self) -> &[Step] {
-        &self.recent
-    }
-
-    pub fn mixed_len(&self) -> Result<usize, EmpiricalStepError> {
+    pub fn mixed_len(&self) -> usize {
         self.view().mixed_len()
     }
 
@@ -297,12 +252,7 @@ where
 
     #[must_use]
     pub fn view(&self) -> EmpiricalStepTableRef<'_, Step> {
-        EmpiricalStepTableRef::new(
-            self.parameters,
-            &self.recent,
-            &self.compact_history.ends,
-            self.compact_history_len,
-        )
+        EmpiricalStepTableRef::new(&self.compact_history.ends, self.compact_history_len)
     }
 
     #[must_use]
@@ -324,11 +274,7 @@ where
     pub fn memory_bytes(&self) -> usize {
         let step = std::mem::size_of::<Step>();
         let pending_steps = self.pending.iter().map(Vec::len).sum::<usize>();
-        let recent_sequence_steps = self.recent_sequences.iter().map(Vec::len).sum::<usize>();
-        self.recent
-            .len()
-            .saturating_add(pending_steps)
-            .saturating_add(recent_sequence_steps)
+        pending_steps
             .saturating_mul(step)
             .saturating_add(
                 self.compact_history
@@ -347,59 +293,30 @@ where
 
 #[derive(Clone, Copy)]
 pub struct EmpiricalStepTableRef<'a, Step> {
-    parameters: EmpiricalStepParameters,
-    recent: &'a [Step],
     history_ends: &'a [(Step, usize)],
     history_len: usize,
 }
 
 impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
     #[must_use]
-    pub fn new(
-        parameters: EmpiricalStepParameters,
-        recent: &'a [Step],
-        history_ends: &'a [(Step, usize)],
-        history_len: usize,
-    ) -> Self {
+    pub fn new(history_ends: &'a [(Step, usize)], history_len: usize) -> Self {
         Self {
-            parameters,
-            recent,
             history_ends,
             history_len,
         }
     }
 
-    pub fn mixed_len(&self) -> Result<usize, EmpiricalStepError> {
-        self.recent
-            .len()
-            .checked_mul(self.parameters.recent_weight)
-            .and_then(|recent| {
-                self.history_len
-                    .checked_mul(self.parameters.all_history_weight)
-                    .and_then(|history| recent.checked_add(history))
-            })
-            .ok_or(EmpiricalStepError::TableLengthOverflow)
+    #[must_use]
+    pub fn mixed_len(&self) -> usize {
+        self.history_len
     }
 
     #[must_use]
     pub fn mixed_step(&self, index: usize) -> Option<&'a Step> {
-        let recent_span = self
-            .recent
-            .len()
-            .checked_mul(self.parameters.recent_weight)?;
-        if index < recent_span {
-            return (!self.recent.is_empty()).then(|| &self.recent[index % self.recent.len()]);
-        }
-        let history_index = index.checked_sub(recent_span)?;
-        let history_len = self.history_len;
-        let history_span = history_len.checked_mul(self.parameters.all_history_weight)?;
-        if history_index >= history_span || history_len == 0 {
+        if index >= self.history_len {
             return None;
         }
-        let base_index = history_index % history_len;
-        let position = self
-            .history_ends
-            .partition_point(|(_, end)| *end <= base_index);
+        let position = self.history_ends.partition_point(|(_, end)| *end <= index);
         self.history_ends.get(position).map(|(step, _)| step)
     }
 }
@@ -452,16 +369,13 @@ mod tests {
     fn parameters() -> EmpiricalStepParameters {
         EmpiricalStepParameters {
             prefix_steps: 1,
-            recent_successes: 2,
-            recent_weight: 2,
-            all_history_weight: 1,
             update_every_records: 2,
             hash_every_records: 2,
         }
     }
 
     #[test]
-    fn fold_keeps_recent_and_compact_history() {
+    fn fold_keeps_compact_history() {
         let mut tables = EmpiricalStepTables::new(parameters()).expect("valid parameters");
         tables.fold_retained(&[0, 1, 2]).expect("first success");
         assert!(tables.finish_record().expect("first record").is_none());
@@ -470,7 +384,6 @@ mod tests {
         tables.fold_retained(&[0, 4, 5]).expect("third success");
         tables.finish_record().expect("third record");
         tables.flush().expect("final update");
-        assert_eq!(tables.recent(), &[3, 4, 5]);
         assert_eq!(tables.history_len(), 5);
         assert_eq!(
             tables.compact_history(),
@@ -480,15 +393,13 @@ mod tests {
     }
 
     #[test]
-    fn mixed_index_repeats_each_empirical_table_by_weight() {
+    fn mixed_index_covers_each_folded_step_once() {
         let mut tables = EmpiricalStepTables::new(parameters()).expect("valid parameters");
         tables.fold_retained(&[0, 7]).expect("success");
         tables.flush().expect("make buffered success visible");
-        assert_eq!(tables.mixed_len().expect("mixed length"), 3);
+        assert_eq!(tables.mixed_len(), 1);
         assert_eq!(tables.mixed_step(0), Some(&7));
-        assert_eq!(tables.mixed_step(1), Some(&7));
-        assert_eq!(tables.mixed_step(2), Some(&7));
-        assert_eq!(tables.mixed_step(3), None);
+        assert_eq!(tables.mixed_step(1), None);
     }
 
     #[test]
@@ -533,7 +444,6 @@ mod tests {
 
         let mut compact_parameters = parameters();
         compact_parameters.prefix_steps = 0;
-        compact_parameters.recent_weight = 0;
         let mut tables = Tables::new(compact_parameters).expect("valid parameters");
         tables
             .fold_retained(&[3_u16, 1, 3, 2])
@@ -542,7 +452,7 @@ mod tests {
 
         assert_eq!(tables.history_len(), 4);
         assert_eq!(tables.compact_history().len(), 3);
-        assert_eq!(tables.mixed_len().expect("mixed length"), 4);
+        assert_eq!(tables.mixed_len(), 4);
         assert_eq!(
             (0..4)
                 .map(|index| tables.mixed_step(index).copied())
@@ -557,7 +467,6 @@ mod tests {
 
         let mut compact_parameters = parameters();
         compact_parameters.prefix_steps = 0;
-        compact_parameters.recent_weight = 0;
         let mut tables = Tables::new(compact_parameters).expect("valid parameters");
         let mut value = 7_u32;
         for _ in 0..64 {
@@ -603,10 +512,7 @@ mod tests {
 
         assert_eq!(tables.compact_history().len(), MAX_COMPACT_HISTORY_DISTINCT);
         assert_eq!(tables.history_len(), MAX_COMPACT_HISTORY_DISTINCT);
-        assert_eq!(
-            tables.mixed_step(tables.mixed_len().expect("mixed length")),
-            None
-        );
+        assert_eq!(tables.mixed_step(tables.mixed_len()), None);
     }
 
     #[test]
@@ -637,9 +543,7 @@ mod tests {
 
         let mut compact = Tables::<u16>::new(parameters()).expect("compact incremental tables");
         let mut expected_compact = Sha256::new();
-        expected_compact.update(b"dissonance-empirical-compact-history-v1\0");
-        expected_compact
-            .update(serde_json::to_vec(&Vec::<u16>::new()).expect("encode empty recent"));
+        expected_compact.update(b"dissonance-empirical-compact-history-v2\0");
         assert_eq!(
             compact
                 .checkpoint()
