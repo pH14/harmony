@@ -648,6 +648,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn populated_evidence_survives_a_checkpoint_and_counts_each_first_arrival() {
+        let input = TwinDragonsInput {
+            actions: vec![ButtonChord::new(0x01, 4)],
+        };
+        let mut evidence = TwinDragonsCampaignEvidence::<QuickNesMachine>::default();
+        for (sequence, levels_cleared, death) in [(3, 1, false), (5, 2, false), (8, 2, true)] {
+            TwinDragonsGame::<QuickNesMachine>::record_first_reached(
+                &mut evidence.first_reached,
+                &mut evidence.first_inputs,
+                &(),
+                TwinDragonsMilestones {
+                    levels_cleared,
+                    victory: false,
+                    death,
+                },
+                sequence,
+                &input,
+            );
+        }
+        assert_eq!(
+            evidence.first_reached.first_clears,
+            [Some(3), Some(5), None]
+        );
+        evidence.aggregate = TwinDragonsMilestones {
+            levels_cleared: 2,
+            victory: false,
+            death: true,
+        };
+        evidence.watermark = TwinDragonsProgressWatermark {
+            levels_cleared: 2,
+            x: 300,
+        };
+        evidence.champion_input = input;
+        evidence.champion_milestones = evidence.aggregate;
+        evidence.champion_key = Some(TwinDragonsArchiveKey::default().champion_key());
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 3);
+    }
+
+    #[test]
     fn native_policy_rejects_a_changed_prepared_execution() {
         let first = TwinDragonsGame::new(&[0], Path::new("core.so"), "core", "first");
         let second = TwinDragonsGame::new(&[0], Path::new("core.so"), "core", "second");

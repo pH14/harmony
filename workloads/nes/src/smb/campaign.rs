@@ -499,10 +499,7 @@ mod tests {
                 );
             }
         }
-        let bytes = <SmbGame as Reporting>::evidence_checkpoint(&evidence).expect("encode");
-        let restored = <SmbGame as Reporting>::evidence_from_checkpoint(&bytes).expect("decode");
-        assert_eq!(<SmbGame as Reporting>::checkpoint_marks(&restored), 4);
-        assert_eq!(restored.first_reached, evidence.first_reached);
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 4);
     }
 
     #[test]

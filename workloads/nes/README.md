@@ -172,7 +172,9 @@ evidence and archive. It always runs SMB on the loopback core. Set
 `HARMONY_QUICKNES_CORE` and any of `HARMONY_SMB_ROM`, `HARMONY_MM2_ROM`,
 `HARMONY_METROID_ROM`, `HARMONY_STB_ROM`, `HARMONY_FAMIDASH_ROM` and
 `HARMONY_TWIN_DRAGONS_ROM` to run the same check on those games. Famidash runs
-its first main-side level.
+its first main-side level. Without a ROM, each game's tests fill in its
+evidence and pass it to `evidence::assert_checkpoint_round_trip`, which checks
+the encoding, the rejection of truncated and padded bytes, and the mark count.
 
 ## Backend evidence matrix
 

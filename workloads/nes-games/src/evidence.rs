@@ -173,3 +173,27 @@ impl<G: NesEvidence> NesCampaignEvidence<G> {
         G::first_reached_count(&self.first_reached) + G::named_progress_count(&self.extras)
     }
 }
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn assert_checkpoint_round_trip<G>(evidence: &NesCampaignEvidence<G>) -> usize
+where
+    G: NesEvidence + crate::search::campaign::Reporting<Evidence = NesCampaignEvidence<G>>,
+{
+    let bytes = G::evidence_checkpoint(evidence).expect("encode evidence");
+    let empty = G::evidence_checkpoint(&NesCampaignEvidence::default()).expect("encode default");
+    assert_ne!(bytes, empty, "the evidence under test is the default");
+    let restored = G::evidence_from_checkpoint(&bytes).expect("decode evidence");
+    assert_eq!(
+        G::evidence_checkpoint(&restored).expect("encode restored evidence"),
+        bytes
+    );
+    assert!(G::evidence_from_checkpoint(&bytes[..bytes.len() - 1]).is_err());
+    let mut padded = bytes.clone();
+    padded.push(0);
+    assert!(G::evidence_from_checkpoint(&padded).is_err());
+    assert_eq!(
+        G::checkpoint_marks(&restored),
+        G::checkpoint_marks(evidence)
+    );
+    G::checkpoint_marks(&restored)
+}

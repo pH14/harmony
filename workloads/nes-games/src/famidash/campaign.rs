@@ -648,6 +648,54 @@ mod tests {
     }
 
     #[test]
+    fn populated_evidence_survives_a_checkpoint_and_counts_each_first_arrival() {
+        let input = FamidashInput {
+            actions: vec![ButtonChord::new(0x01, 4)],
+        };
+        let complete = FamidashMilestones {
+            cleared: 1,
+            percent: 100,
+            complete: true,
+            death: false,
+        };
+        let mut evidence = FamidashCampaignEvidence::<QuickNesMachine, 0>::default();
+        for (sequence, milestones) in [
+            (3, complete),
+            (5, complete),
+            (
+                8,
+                FamidashMilestones {
+                    death: true,
+                    ..complete
+                },
+            ),
+        ] {
+            FamidashGame::<QuickNesMachine>::record_first_reached(
+                &mut evidence.first_reached,
+                &mut evidence.first_inputs,
+                &(),
+                milestones,
+                sequence,
+                &input,
+            );
+        }
+        assert_eq!(evidence.first_reached.first_complete, Some(3));
+        evidence.aggregate = FamidashMilestones {
+            death: true,
+            ..complete
+        };
+        evidence.watermark = FamidashProgressWatermark {
+            cleared: 1,
+            percent: 100,
+            x: 4_000,
+        };
+        evidence.champion_input = input;
+        evidence.champion_milestones = complete;
+        evidence.champion_key = Some((1, 4_000));
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 2);
+    }
+
+    #[test]
     fn native_policy_rejects_a_changed_prepared_execution() {
         let stage = Stage::through_group(Side::Main, 0).unwrap();
         let first = game("first", stage);

@@ -744,6 +744,44 @@ impl crate::film::Endpointed for StbGame {
 mod tests {
     use super::*;
 
+    #[test]
+    fn populated_evidence_survives_a_checkpoint_and_counts_each_first_arrival() {
+        let input = StbInput {
+            actions: vec![ButtonChord::new(0x01, 4)],
+        };
+        let knockout = StbMilestones {
+            opponent_damage: 80,
+            opponent_kos: 1,
+            ..StbMilestones::default()
+        };
+        let won = StbMilestones {
+            opponent_kos: 4,
+            victory: true,
+            ..knockout
+        };
+        let mut evidence = StbCampaignEvidence::default();
+        for (sequence, milestones) in [(3, knockout), (5, knockout), (8, won)] {
+            StbGame::record_first_reached(
+                &mut evidence.first_reached,
+                &mut evidence.first_inputs,
+                &(),
+                milestones,
+                sequence,
+                &input,
+            );
+        }
+        assert_eq!(evidence.first_reached.first_opponent_ko, Some(3));
+        evidence.aggregate = won;
+        evidence.watermark = StbProgressWatermark {
+            opponent_kos: 4,
+            opponent_damage: 80,
+        };
+        evidence.champion_input = input;
+        evidence.champion_milestones = won;
+        evidence.champion_key = Some(crate::stb::archive::StbArchiveKey::default().champion_key());
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 2);
+    }
+
     fn result_with_portable(bytes: Vec<u8>) -> StbCampaignJobResult {
         let state = crate::stb::target::StbMechanicalState {
             gameplay: Some(crate::stb::target::StbGameplayState::default()),

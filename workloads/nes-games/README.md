@@ -25,8 +25,8 @@ and `NesMemory` implementations for `QuickNesMachine`, its LZ4 snapshot
 packing, and the constructors, capture and render methods of each target that
 take a ROM and a core path. The `consonance` feature adds the backend
 implementation for the Consonance machine. The `test-support` feature exposes
-test constructors and the scripted Super Tilt Bro machine to the tests of
-`nes-workload`.
+test constructors, the scripted Super Tilt Bro machine and
+`evidence::assert_checkpoint_round_trip` to the tests of `nes-workload`.
 
 Twin Dragons, Famidash, Super Mario Bros., Mega Man 2 and Metroid also have a
 `campaign` module with their `Workload` implementation. `TwinDragonsGame<M>`,

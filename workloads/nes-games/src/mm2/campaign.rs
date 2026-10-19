@@ -972,3 +972,57 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for Mm2Game<M> {
             .ok_or_else(|| "Mega Man 2 source archive has no retained entries".into())
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::mm2::progress::FirstSeen;
+
+    #[test]
+    fn populated_evidence_survives_a_checkpoint_and_counts_named_progress() {
+        let input = Mm2Input {
+            actions: vec![ButtonChord::new(0x01, 4)],
+        };
+        let milestones = Mm2Milestones {
+            max_screen: 6,
+            reached_boss: true,
+            defeated_boss: false,
+        };
+        let mut evidence = Mm2CampaignEvidence::<QuickNesMachine>::default();
+        evidence.extras.genesis_screen = Some(2);
+        let stamp = Some(FirstSeen {
+            execution: 4,
+            route_action_end_frame: 9,
+        });
+        evidence
+            .extras
+            .named_progress
+            .restore(vec![
+                ("crash_entered".to_owned(), stamp),
+                ("crash_room_7".to_owned(), stamp),
+            ])
+            .expect("restore named progress");
+        evidence.extras.best_health = BTreeMap::from([("crash_entered".to_owned(), (28, 14))]);
+        evidence.extras.best_energy = BTreeMap::from([("crash_entered".to_owned(), (14, 28))]);
+        Mm2Game::<QuickNesMachine>::record_first_reached(
+            &mut evidence.first_reached,
+            &mut evidence.first_inputs,
+            &evidence.extras,
+            milestones,
+            4,
+            &input,
+        );
+        evidence.aggregate = milestones;
+        let watermark = Mm2ProgressWatermark {
+            stage: 3,
+            screen: 6,
+            x: 40,
+            ..Mm2ProgressWatermark::default()
+        };
+        evidence.watermark = watermark;
+        evidence.champion_input = input;
+        evidence.champion_milestones = milestones;
+        evidence.champion_key = Some((watermark, (watermark.tier, 28, 300)));
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 3);
+    }
+}
