@@ -35,6 +35,20 @@ class ControlRegionTests(unittest.TestCase):
         result = module.review(self.index, self.history, "d", 2, [(0, 0)], False, False)
         self.assertEqual(result["status"], "source-history-mismatch")
 
+    def test_secondary_player_visits_are_checked_independently(self):
+        row = self.history["rows"][0]
+        row["observation"] = {"x": 0, "dual": True}
+        row["players"] = [{"player": 0, "x": 0}, {"player": 1, "x": 32}]
+        row["values"]["pit_previous_x"] = [0, 32]
+        result = module.review(self.index, self.history, "d", 2, [(2, 0)], False, False)
+        self.assertEqual(result["status"], "visits-regions")
+        self.assertEqual([hit["player"] for hit in result["hits"]], [1])
+
+    def test_legacy_dual_history_cannot_report_a_clean_control(self):
+        self.history["rows"][0]["observation"]["dual"] = True
+        with self.assertRaisesRegex(AssertionError, "both world positions"):
+            module.review(self.index, self.history, "d", 2, [(0, 0)], False, False)
+
 
 if __name__ == "__main__":
     unittest.main()

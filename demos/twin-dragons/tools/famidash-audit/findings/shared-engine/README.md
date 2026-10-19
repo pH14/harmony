@@ -455,12 +455,15 @@ files remain as evidence of the insufficient first repair.
 
 The release data-only repair responds at frame 1,542 and kills at 1,544.
 Solid contact legitimately changes the pose before death; this is not an
-unchanged-until-death proof. The 4,840-frame original clearing input remains
-exact. A fresh 4,754-frame Dissonance clearing input also remains exact under
-the combined v2 repair. Current-upstream upper and lower witnesses respond
+unchanged-until-death proof. The 4,840-frame original input and fresh
+4,754-frame combined-v2 input remain mechanically exact, but subsequent
+actual-probe review found both entering other closed regions (40/110).
+They are withdrawn as playability controls; their region rejection reports
+are retained here. Current-upstream upper and lower witnesses respond
 at 1,524/1,447 and die at 1,525/1,449. All three repaired traces match FCEUmm
 and reset normally. A fresh current combined-repair input clears at 4,841
-with coin mask 4 and matches FCEUmm after entry frame 1.
+with coin mask 4 and matches FCEUmm after entry frame 1. Its actual probes
+also enter regions 40/110, so it is withdrawn as a playability control.
 
 Silent Clubstep (release D4, current E21) has a different rounded-cap gap.
 The historical Dissonance witness, formerly misnamed `kratos`, avoids the
@@ -651,7 +654,7 @@ XX has a further missing floor cap (release C1, current D0). A mini wave
 passes through the empty left side of an RD66_TOP slope at (844,47) and
 enters closed fill component 85 at (844,48). The component spans columns
 841–856, rows 46–56, has 149 cells and no sprites or empty-cell open faces.
-Original release trace matches all 3,937 frames after entry frame 5. A fresh
+The 3,937-frame original release trace matches apart from entry frame 5. A fresh
 current Dissonance witness reproduces the same entry; its independently
 matched trace later dies, so it is not evidence of indefinite survival.
 
@@ -674,3 +677,23 @@ cap's RD66_TOP bottom edge covers 8/16. This measures normal-cube point
 coverage; it does not override wave exemptions, model swept motion, or
 prove that every partial edge is a bug. Source intent and ordinary-input
 reproduction remain required. Clean validation rounds remain 0.
+
+The current upstream Kappaclysm replay also confirms a distinct ship
+arithmetic failure at frame 3,251. Upward ejection correctly moves relative
+Y from 5 to 11; downward ejection then subtracts 15 and wraps to 252.
+World Y jumps from 727 to 971 while the ship remains alive. This replay
+avoids the three reviewed fill regions, showing why region avoidance alone
+cannot establish a legitimate clear. The retained CPU trace includes both
+ejection values and relative-position scratch state.
+
+`ship-down-ejection-current-isolated.patch` changes only this downward
+correction on clean current upstream. It preserves the complete approach
+and kills at frame 3,251 in QuickNES and FCEUmm; both confirm reset after
+40 released frames. It is an isolation proof for the existing generic
+checked-motion proposal, not an additional combined engine patch. Broader
+playability and cycle validation remain required.
+
+Exploratory round 43 is complete: all 109 installed levels, 12,415,000
+Dissonance executions and 83,021 candidates replayed without mismatch.
+Known Forest/XX/Kappa gaps and incomplete source dispositions disqualify
+it as a clean round. The consecutive-clean-round count remains zero.

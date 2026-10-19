@@ -367,8 +367,9 @@ verified probe history against explicitly selected fill components. Add
 `--linear-y` for current upstream's linear-coordinate history. It checks
 source/metatile agreement and reports visits without declaring region intent.
 Normal wave/Snake controls can include both biased and aligned centres.
-Secondary-player controls are rejected because this history format does not
-record their world X coordinates. A clearing input that visits a reviewed
+Schema-2 histories record both players' world positions and check their
+region visits independently. Legacy dual histories lacking both positions
+are rejected. A clearing input that visits a reviewed
 forbidden region is unsuitable as a playability control even if it wins.
 
 Use `review-control-regions.py --regions-index REFERENCE` to preserve reviewed

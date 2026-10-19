@@ -27,32 +27,36 @@ def review(index, history, side, level, seeds, linear_y, aligned_wave, regions_i
     for frame, row in enumerate(history["rows"], 1):
         assert row["frame"] == frame, "complete consecutive history required"
         observation, values = row["observation"], row["values"]
-        assert not observation["dual"], "secondary-player world coordinates are not in this history format"
-        high = values["pit_previous_room"][0]
-        if high == 255:
-            continue
-        y = values["pit_previous_y"][0] + high * (256 if linear_y else 240)
-        x = observation["x"] + ((values["pit_previous_x"][0] - (observation["x"] & 255) + 128) % 256) - 128
-        column, source_row = x // 16, (y - layout["top"]) // 16
-        if not (0 <= column < width and 0 <= source_row < height):
-            continue
-        source = layout["tiles"][source_row * width + column]
-        recorded = values["pit_previous_metatile"][0]
-        if source != recorded:
-            mismatches.append({"frame": frame, "column": column, "row": source_row,
-                               "source": source, "recorded": recorded})
-        offsets = [0]
-        if aligned_wave and values["pit_previous_mode"][0] in (6, 10) and not values["pit_previous_mini"][0]:
-            offsets.append(4)
-        for offset in offsets:
-            checked_column = (x + offset) // 16
-            if not 0 <= checked_column < width:
+        assert not observation["dual"] or "players" in row, "dual history requires both world positions"
+        players = row.get("players", [{"player": 0, "x": observation["x"]}])
+        assert {position["player"] for position in players} == ({0, 1} if observation["dual"] else {0})
+        for position in players:
+            player = position["player"]
+            high = values["pit_previous_room"][player]
+            if high == 255:
                 continue
-            samples += 1
-            number = labels[source_row * width + checked_column]
-            if number in targets:
-                hits.append({"frame": frame, "column": checked_column, "row": source_row,
-                             "offset": offset, "component": number})
+            y = values["pit_previous_y"][player] + high * (256 if linear_y else 240)
+            x = position["x"] + ((values["pit_previous_x"][player] - (position["x"] & 255) + 128) % 256) - 128
+            column, source_row = x // 16, (y - layout["top"]) // 16
+            if not (0 <= column < width and 0 <= source_row < height):
+                continue
+            source = layout["tiles"][source_row * width + column]
+            recorded = values["pit_previous_metatile"][player]
+            if source != recorded:
+                mismatches.append({"frame": frame, "player": player, "column": column, "row": source_row,
+                                   "source": source, "recorded": recorded})
+            offsets = [0]
+            if aligned_wave and values["pit_previous_mode"][player] in (6, 10) and not values["pit_previous_mini"][player]:
+                offsets.append(4)
+            for offset in offsets:
+                checked_column = (x + offset) // 16
+                if not 0 <= checked_column < width:
+                    continue
+                samples += 1
+                number = labels[source_row * width + checked_column]
+                if number in targets:
+                    hits.append({"frame": frame, "player": player, "column": checked_column, "row": source_row,
+                                 "offset": offset, "component": number})
     assert samples, "no in-source history samples"
     return {"schema": 1, "status": "source-history-mismatch" if mismatches else "visits-regions" if hits else "avoids-regions",
             "verified_frames": history["verified_frames"], "sampled_points": samples,

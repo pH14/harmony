@@ -40,6 +40,14 @@ def run(args):
                       ["wrap_mode", "dblocked", "scroll_y", "scroll_y_subpx"]})
     locations["relative_y"] = symbols["_currplayer_rely" if "target_layout" in witness else "_currplayer_y"][0]
     assert all(0 <= value < 2044 for value in locations.values())
+    scratch = {}
+    for name, width in [("eject_U", 1), ("eject_D", 1), ("currplayer_rely", 2),
+                        ("currplayer_y", 2), ("currplayer_vel_y", 2), ("slope_type", 2),
+                        ("slope_frames", 2), ("tmp4", 1), ("tmp7", 1), ("tmp8", 1)]:
+        if "_" + name in symbols:
+            address = symbols["_" + name][0]
+            assert 0 <= address <= 2048 - width
+            scratch[name] = address, width
     core = SymbolFceumm(args.core, args.rom, witness["target_layout"]) if "target_layout" in witness else Fceumm(args.core, args.rom)
     core.startup_frames = witness["options"].get("fceumm_startup_released_frames", 180)
     core.boot(witness["options"]["side"], witness["boot_level"], witness["options"].get("menu_delay", 0))
@@ -87,7 +95,9 @@ def run(args):
                 assert frame <= args.intro_frames, f"instrumented replay differs at frame {frame}"
                 intro_differences.append(frame)
             if args.start <= frame <= args.end:
-                states.append({"frame": frame, **observed})
+                values = {name: int.from_bytes(bytes(ram[address:address + width]), "little")
+                          for name, (address, width) in scratch.items()}
+                states.append({"frame": frame, **observed, "scratch": values})
             if frame >= args.end:
                 break
         if frame >= args.end:

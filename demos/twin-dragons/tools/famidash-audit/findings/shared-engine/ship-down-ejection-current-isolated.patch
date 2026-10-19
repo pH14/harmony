@@ -1,0 +1,25 @@
+--- a/SAUCE/gamemodes/gamemode_ship.h
++++ b/SAUCE/gamemodes/gamemode_ship.h
+@@ -56,6 +56,7 @@
+ }
+ 
+ void ufo_ship_eject() {
++	int corrected_y;
+ 	//if (!currplayer_was_on_slope_counter || currplayer_slope_type & SLOPE_UPSIDEDOWN) {
+ 		if(bg_coll_U()){ // check collision above
+ 			high_byte(currplayer_rely) = high_byte(currplayer_rely) - eject_U - 1;
+@@ -64,7 +65,13 @@
+ 	//}
+ 	//if (!currplayer_was_on_slope_counter || !(currplayer_slope_type & SLOPE_UPSIDEDOWN)) {
+ 		if(bg_coll_D()){ // check collision below
+-			high_byte(currplayer_rely) = high_byte(currplayer_rely) - eject_D;
++			corrected_y = (int)high_byte(currplayer_rely) - (signed char)eject_D;
++			if ((corrected_y < 0 || corrected_y > 255) && !wrap_mode && !DEBUG_MODE && !invincible_counter && high_byte(currplayer_relx) > 0x20) {
++				cube_data[currplayer] |= 1;
++				currplayer_vel_y = 0;
++				return;
++			}
++			high_byte(currplayer_rely) = corrected_y;
+ 			currplayer_vel_y = 0;
+ 		}
+ 	//}

@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "source_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "purpose": "Isolate the current upstream ship downward-ejection wrap; diagnostic minimal code-only patch, generic checked-motion remains combined proposal",
+  "first_bad_frame": 3251,
+  "original_world_y": [
+    727,
+    971
+  ],
+  "correction": {
+    "relative_y_after_integration": 1466,
+    "eject_U": 249,
+    "relative_y_after_upward_ejection": 3002,
+    "eject_D": 15,
+    "wrapped_relative_y": 64698
+  },
+  "repaired_death_frame": 3251,
+  "approach_preserved_after_frame": 40,
+  "quicknes_intro_differences": [],
+  "independent_confirmation": "current-kappa-ship-d-wrap-only-fceumm.json",
+  "source_files": {
+    "SAUCE/gamemodes/gamemode_ship.h": {
+      "original_sha256": "11384e0a27bbafe67d67b936e288469eb509dc093bc545bdb5b5a82328cf8ad1",
+      "repaired_sha256": "1288b881e62031ffde92b387b72be7e2c1056f930284c6dfdd131018e0c026c8"
+    }
+  },
+  "artifacts": {
+    "current-kappa-ship-d-wrap-original-witness.json.gz": "77dacda9d262a1a5db74a9e5f9999039ace1e6caedd2faf227c7011ae31ed621",
+    "current-kappa-ejection-wrap-collision.json": "cb66e5682b01de08bca2d7d949469559620acd62701e06220a6d769dcc7df63c",
+    "current-kappa-original-exploit-fceumm.json": "d11b9b6b9b5546aed3406a283265a35ab8c975f94e84a69869dd902500358dd8",
+    "current-kappa-ship-d-wrap-only-fceumm.json": "a40de9efa2e292e6928f5956204fc3e651094dd28e4e7aa9c0da48028227841e",
+    "kappa-v2-rejected-clearing-regions.json": "35def032fe8047bc547c78bd5909d502440a70f1268654d9ff42dd2dddcb3fe9",
+    "current-kappa-v2-rejected-clearing-regions.json": "7ee471fe6b41af59c0aea6fdd5c80d90303bd67c655b45c2ae046155d60efb23",
+    "kappa-original-rejected-clearing-regions.json": "ca7dea7d9f74eb180f27fa9e144aa05117eac6c17f7c6f0ce1b04242703d5f05"
+  }
+}

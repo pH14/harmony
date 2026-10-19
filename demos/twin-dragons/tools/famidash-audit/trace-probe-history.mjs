@@ -33,6 +33,11 @@ if (witness.target_layout) assert.equal(m.debug_sha256, witness.target_layout.de
 const tape = expand(witness.actions);
 assert.equal(tape.length, witness.trace.length);
 assert.ok(end <= tape.length);
+const playerX = symbols.get("_player_relx") ?? symbols.get("_player_x");
+const playerY = symbols.get("_player_rely") ?? symbols.get("_player_y");
+const scrollX = symbols.get("_scroll_x");
+for (const address of [playerX, playerY, scrollX])
+  assert.ok(Number.isInteger(address) && address >= 0 && address + 4 <= 2048, "missing player-position RAM symbol");
 m.boot(witness.options.side, witness.boot_level, witness.options.menu_delay ?? 0,
   witness.options.startup_released_frames);
 const rows = [];
@@ -44,9 +49,15 @@ for (let i = 0; i < tape.length; i++) {
   const ram = m.ram(), values = {};
   for (const name of arrays) values[name] = Array.from(ram.subarray(symbols.get("_" + name), symbols.get("_" + name) + 2));
   for (const name of scalars) values[name] = ram[symbols.get("_" + name)];
-  rows.push({ frame: i + 1, observation, values });
+  const players = [{ player: 0, x: observation.x, y: observation.y }];
+  if (observation.dual) {
+    const view = new DataView(ram.buffer, ram.byteOffset);
+    players.push({ player: 1, x: view.getInt32(scrollX, true) + ram[playerX + 3],
+      y: observation.camera + ram[playerY + 3] });
+  }
+  rows.push({ frame: i + 1, observation, players, values });
 }
-await writeFile(output, JSON.stringify({ schema: 1, engine: "read-only QuickNES RAM after verified witness frames",
+await writeFile(output, JSON.stringify({ schema: 2, engine: "read-only QuickNES RAM after verified witness frames",
   limitation: "Engine history and scratch state, not an independent geometry oracle; scratch values may be stale.",
   case_sha256: hash(caseBytes), debug_sha256: hash(debugBytes), rom_sha256: m.rom_sha256,
   core_sha256: m.core_sha256, verified_frames: tape.length, rows }, null, 2) + "\n");
