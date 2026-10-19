@@ -465,6 +465,16 @@ crosses a solid slope in an intermediate tile. Pixel centres preserve the
 original point masks. These checks cover geometry; ordinary-input NES replays
 must separately establish dispatch, banking, timing and legitimate routes.
 
+`review-mini-wave45-motion.py INDEX CASE CPU OUTPUT` checks consecutive actual
+centre probes against exact source triangles, including diagonal intermediate
+tiles. It binds the case, ROM and bank-aware CPU trace, checks source reads,
+keeps each player's history separate, and distinguishes surviving crossings
+from death contacts. It reports exact parameter intervals. This catches paths
+whose endpoint tiles are both empty, which a slope-to-fill transition scan
+misses. It excludes mode/size discontinuities and motion over 16 pixels;
+teleport history and source intent still require review. A result is a lead,
+not permission to fill a source component.
+
 `check-mini-wave66.py SOURCE OUTPUT` extracts the actual mini-wave66 polygon
 kernel and checks 64,850 cases against independent exact rational clipping,
 plus all 65,536 signed byte products. The retained
