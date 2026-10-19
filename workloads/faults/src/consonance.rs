@@ -400,11 +400,8 @@ fn coverage_windows(
 ) -> Result<Vec<CoverageWindow>, String> {
     actions
         .iter()
-        .enumerate()
-        .map(|(index, action)| {
-            let (start, end) = windows.window(actions, index)?;
-            Ok((start, end, action.coverage_quantum))
-        })
+        .zip(windows.iter(actions))
+        .map(|(action, window)| window.map(|(start, end)| (start, end, action.coverage_quantum)))
         .collect()
 }
 
