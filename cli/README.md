@@ -572,3 +572,13 @@ same dispatch and storage interfaces without application or NES types.
   exercises plain command replay as an unprivileged UML user, rejects planted
   output divergence, and optionally verifies that a reviewed hardware-entropy
   image is refused before launch.
+
+Fresh prepared NES searches persist the canonical genesis input before launching
+the package. Resume verifies that captured artifact against the package origin
+input before admitting its checkpoint; it never reconstructs an omitted origin.
+
+The reviewed x86 UML native transaction fixture also imports VM-accepted prepared
+records through the host handoff, covering both plain and supervised executions.
+XBEGIN/XACQUIRE refusals and a harmless control retain independent admission after
+frontend capture; the existing native control still launches the reviewed UML
+kernel. CI requires every frontend, prepared-boundary and native control witness.

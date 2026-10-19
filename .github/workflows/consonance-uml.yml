@@ -221,6 +221,9 @@ jobs:
           grep -Fq 'UML_TRANSACTION_REFUSED=XBEGIN' <<<"$output"
           grep -Fq 'UML_TRANSACTION_REFUSED=XACQUIRE' <<<"$output"
           grep -Fq 'UML_TRANSACTION_CONTROL=completed' <<<"$output"
+          grep -Fq 'UML_PREPARED_TRANSACTION_REFUSED=XBEGIN' <<<"$output"
+          grep -Fq 'UML_PREPARED_TRANSACTION_REFUSED=XACQUIRE' <<<"$output"
+          grep -Fq 'UML_PREPARED_TRANSACTION_CONTROL=admitted' <<<"$output"
       - uses: actions/upload-artifact@v4
         if: always() && matrix.architecture == 'x86_64'
         with:

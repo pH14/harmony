@@ -169,7 +169,11 @@ pub fn execute(mut request: Request) -> Result<u8> {
     crate::host_boundary::enter_prepared_host(file)
 }
 
-fn collect_profile(root: &Path, relative: &Path, files: &mut Vec<ProfileFile>) -> Result<()> {
+pub(crate) fn collect_profile(
+    root: &Path,
+    relative: &Path,
+    files: &mut Vec<ProfileFile>,
+) -> Result<()> {
     let mut entries = fs::read_dir(root.join(relative))?.collect::<std::io::Result<Vec<_>>>()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {

@@ -285,31 +285,48 @@ pub fn execute_prepared(mut request: Request, prepared: crate::handoff::Prepared
             Ok(0)
         })()
     } else {
-        let options = nes_workload::package::SearchOptions {
-            seed: manifest.config.search.seed,
-            executions: manifest.config.search.executions,
-            workers: consonance_client::placement::CorePool::detect()?
-                .max_workers()
-                .try_into()?,
-            output: out.join("package"),
-            wall_seconds: manifest.config.search.wall_seconds,
-            checkpoint_owner: manifest.checkpoint_owner.clone(),
-        };
-        #[cfg(target_os = "linux")]
-        let result = nes_workload::package::search_consonance(
-            rom,
-            &prepared.kernel,
-            execution,
-            &prepared.base,
-            &options,
-            &nes_workload::package::SearchStart::Genesis,
-        );
-        #[cfg(not(target_os = "linux"))]
-        let result: Result<nes_workload::package::SearchEvidence> =
-            Err("the NES guest adapter requires Linux".into());
-        result.and_then(|evidence| collect_search(&out, &options.output, &evidence, &mut manifest))
+        search_prepared(&out, &mut manifest, |options| {
+            #[cfg(target_os = "linux")]
+            {
+                nes_workload::package::search_consonance(
+                    rom,
+                    &prepared.kernel,
+                    execution,
+                    &prepared.base,
+                    options,
+                    &nes_workload::package::SearchStart::Genesis,
+                )
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = options;
+                Err("the NES guest adapter requires Linux".into())
+            }
+        })
     };
     finish(&out, &mut manifest, result)
+}
+
+fn search_prepared(
+    out: &Path,
+    manifest: &mut Manifest,
+    search: impl FnOnce(
+        &nes_workload::package::SearchOptions,
+    ) -> Result<nes_workload::package::SearchEvidence>,
+) -> Result<u8> {
+    manifest.store(out, "search-origin-input.json", br#"{"actions":[]}"#)?;
+    manifest.save(out)?;
+    let options = nes_workload::package::SearchOptions {
+        seed: manifest.config.search.seed,
+        executions: manifest.config.search.executions,
+        workers: consonance_client::placement::CorePool::detect()?
+            .max_workers()
+            .try_into()?,
+        output: out.join("package"),
+        wall_seconds: manifest.config.search.wall_seconds,
+        checkpoint_owner: manifest.checkpoint_owner.clone(),
+    };
+    search(&options).and_then(|evidence| collect_search(out, &options.output, &evidence, manifest))
 }
 
 fn replay<R: crate::native::Runner>(
@@ -820,6 +837,114 @@ mod tests {
             input,
             serde_json::json!({"actions": [{"buttons": 1, "hold_frames": 2}]})
         );
+    }
+
+    struct ResumingNative;
+    impl crate::native::Runner for ResumingNative {
+        fn replay(_: &[u8], _: &Path, _: &str, _: serde_json::Value) -> Result<serde_json::Value> {
+            Err("unexpected replay".into())
+        }
+        fn search(
+            _: &[u8],
+            _: &Path,
+            _: &str,
+            _: &nes_workload::package::SearchOptions,
+            start: &nes_workload::package::SearchStart,
+        ) -> Result<nes_workload::package::SearchEvidence> {
+            let nes_workload::package::SearchStart::Checkpoint { origin_input, .. } = start else {
+                panic!("resume did not load the checkpoint");
+            };
+            assert_eq!(*origin_input, serde_json::json!({"actions":[]}));
+            Err("resume consumer reached the captured genesis".into())
+        }
+    }
+
+    #[test]
+    fn prepared_genesis_search_reaches_resume_with_its_captured_origin() {
+        let directory = tempfile::tempdir().unwrap();
+        let out = directory.path().join("fresh");
+        fs::create_dir(&out).unwrap();
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.store(&out, "input", b"rom").unwrap();
+        manifest.store(&out, "core", b"core").unwrap();
+        let owner = manifest.checkpoint_owner.clone();
+        let result = search_prepared(&out, &mut manifest, |options| {
+            let checkpoints = options.output.join("checkpoints");
+            fs::create_dir_all(&checkpoints)?;
+            let input = br#"{"actions":[]}"#;
+            fs::write(options.output.join("origin-input.json"), input)?;
+            let header = CheckpointHeader {
+                format: SEARCH_CHECKPOINT_FORMAT.into(),
+                checkpoint_owner: owner,
+                reason: "interval".into(),
+                workload_identity_sha256: String::new(),
+                executable_identity: String::new(),
+                campaign_seed: 0,
+                window: 1,
+                archive_entry_limit: 8,
+                memory_budget_mib: None,
+                policies: Default::default(),
+                executions: 1,
+                reserved: 1,
+                admitted: 0,
+                planned_clock: 0,
+            };
+            let mut bytes = postcard::to_allocvec(&header)?;
+            bytes.extend(postcard::to_allocvec(&Vec::<StoredSnapshot>::new())?);
+            bytes.extend_from_slice(&Sha256::digest(&bytes));
+            let name = "000000000001-interval.ckpt";
+            let checkpoint = checkpoints.join(name);
+            fs::write(&checkpoint, bytes)?;
+            let checksum = crate::runs::file_digest(&checkpoint)?;
+            fs::write(
+                checkpoints.join("checkpoints.jsonl"),
+                format!(
+                    "{{\"file\":\"{name}\",\"executions\":1,\"reserved\":1,\"checkpoint_sha256\":\"{checksum}\"}}\n"
+                ),
+            )?;
+            let evidence = nes_workload::package::SearchEvidence {
+                witness_input: input.to_vec(),
+                result: serde_json::to_vec(
+                    &serde_json::json!({"solved":false,"witness":{"victory":false}}),
+                )?,
+            };
+            fs::write(
+                options.output.join("witness-input.json"),
+                &evidence.witness_input,
+            )?;
+            fs::write(options.output.join("result.json"), &evidence.result)?;
+            Ok(evidence)
+        });
+        assert_eq!(finish(&out, &mut manifest, result).unwrap(), 0);
+        let saved = Manifest::read(&out).unwrap();
+        saved.verify(&out).unwrap();
+        assert_eq!(
+            checkpoint_origin_input(&out, &saved).unwrap(),
+            serde_json::json!({"actions":[]})
+        );
+        let resumed = directory.path().join("resumed");
+        let error = continue_search::<ResumingNative>(Request {
+            operation: Operation::Resume,
+            selection: Some(crate::selection::Selection {
+                run: out.display().to_string(),
+                finding: None,
+            }),
+            destination: crate::runs::Destination {
+                out: Some(resumed.clone()),
+                name: None,
+            },
+            ..Default::default()
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("resume consumer reached the captured genesis"),
+            "{error}"
+        );
+        assert!(resumed.exists());
     }
 
     #[test]

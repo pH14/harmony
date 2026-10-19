@@ -404,6 +404,18 @@ class StructureTests(unittest.TestCase):
         self.assertTrue(required.issubset(self.runtime_inputs()))
         self.assertNotIn("cli/src", self.runtime_inputs())
 
+    def test_uml_native_witness_uses_the_shared_library_and_prepared_boundary(self):
+        import yaml
+        jobs = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]
+        commands = "\n".join(step.get("run", "") for job in jobs.values() for step in job.get("steps", []))
+        self.assertIn("--lib adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch", commands)
+        self.assertIn("--lib loaded_reviewed_uml_profile_binds_the_recorded_kernel", commands)
+        for witness in ("UML_TRANSACTION_REFUSED=XBEGIN", "UML_TRANSACTION_REFUSED=XACQUIRE", "UML_TRANSACTION_CONTROL=completed",
+                        "UML_PREPARED_TRANSACTION_REFUSED=XBEGIN", "UML_PREPARED_TRANSACTION_REFUSED=XACQUIRE", "UML_PREPARED_TRANSACTION_CONTROL=admitted"):
+            self.assertIn(witness, commands)
+        self.assertIn("harmony-cli adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch",
+                      tuple(test for job in ci_contract.CONSONANCE_UML.jobs for test in job.ignored_tests))
+
     def test_frontend_capability_is_positive_and_isolated_host_is_linted(self):
         manifest = tomllib.loads((ROOT / "cli/Cargo.toml").read_text())
         self.assertEqual(manifest["features"]["default"], ["frontend"])

@@ -682,6 +682,43 @@ mod tests {
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn prepared_uml_handoff(
+        execution: &oci_support::PreparedExecution,
+        profile_root: &Path,
+    ) -> Result<(crate::package::Request, crate::handoff::Prepared)> {
+        let profile = uml::Profile::load(profile_root)?;
+        let kernel = profile.directory().join(&profile.profile().executable.name);
+        let base = profile.directory().join(&profile.profile().rootfs.name);
+        let config = Config {
+            image: Some("captured-image".into()),
+            backend: Backend::Uml,
+            kernel: Some(kernel.clone()),
+            base_initramfs: Some(base.clone()),
+            uml_profile: Some(profile_root.to_path_buf()),
+            command: if execution.execution().bundle.is_none() {
+                execution.execution().argv.clone()
+            } else {
+                Vec::new()
+            },
+            ..Default::default()
+        };
+        let request = crate::package::Request {
+            operation: crate::package::Operation::Run,
+            config: config.shared()?,
+            ..Default::default()
+        };
+        let mut record = crate::handoff::Record::new(&request)?;
+        record.kernel = fs::read(kernel)?;
+        record.base = fs::read(base)?;
+        record.execution = Some(execution.record());
+        crate::preparation::collect_profile(profile_root, Path::new(""), &mut record.profile)?;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("prepared");
+        record.write(&path)?;
+        crate::handoff::Record::read(&path)
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     #[ignore = "requires cc and a reviewed x86 UML profile"]
     fn native_uml_transaction_entry_is_refused_before_launch() -> Result<()> {
@@ -733,6 +770,34 @@ mod tests {
             let inspected = faults_workload::admission::ArchivedImage::new(&archive).inspect()?;
             assert!(!inspected.instrumented_events());
             assert!(inspected.scan_passed());
+            let profile_root = PathBuf::from(std::env::var("HARMONY_UML_REVIEWED_PROFILE")?);
+            fs::create_dir_all(root.path().join("etc/harmony"))?;
+            fs::write(
+                root.path().join(faults_workload::prepare::BUNDLE_PATH),
+                b"node app /bin/app\n",
+            )?;
+            let supervised = oci_support::bundle::prepare(
+                &staged,
+                &oci_support::LaunchRequest::default()
+                    .with_bundle(faults_workload::prepare::SUPERVISOR_BUNDLE),
+            )?;
+            for execution in [&vm, &supervised] {
+                let imported = prepared_uml_handoff(execution, &profile_root);
+                if let Some(name) = expected {
+                    let error = imported
+                        .err()
+                        .ok_or("prepared UML admitted native transaction entry")?
+                        .to_string();
+                    assert!(error.contains(name), "{error}");
+                } else {
+                    imported?;
+                }
+            }
+            if let Some(name) = expected {
+                println!("UML_PREPARED_TRANSACTION_REFUSED={name}");
+            } else {
+                println!("UML_PREPARED_TRANSACTION_CONTROL=admitted");
+            }
             let scanner = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../consonance/harmony-linux/scripts/x86-xstate-admission.py");
             let output = audits.path().join(format!("{kind}.json"));
