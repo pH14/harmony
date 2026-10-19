@@ -129,7 +129,7 @@ where
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    nes_workload::allocator::use_one_malloc_arena();
+    nes_workload::allocator::configure_malloc_arenas();
     let args = Args::parse()?;
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;

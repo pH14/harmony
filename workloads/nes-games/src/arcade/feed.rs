@@ -48,6 +48,8 @@ pub struct Point<V> {
     pub observation: V,
     pub retained: Option<u64>,
     pub frame: u64,
+    #[serde(skip)]
+    pub priority: bool,
 }
 
 #[derive(Clone, Copy, Default, Serialize)]
@@ -64,6 +66,7 @@ pub struct Batch<V> {
     #[serde(flatten)]
     pub stats: Stats,
     pub deaths: u64,
+    pub sampled_jobs: u64,
     pub frames: u64,
     pub points: Vec<Point<V>>,
     pub motion: Vec<Vec<u16>>,
@@ -261,6 +264,7 @@ pub struct Feed<V> {
     exits: Vec<u8>,
     frames: u64,
     deaths: u64,
+    sampled_jobs: u64,
 }
 
 impl<V: Copy> Feed<V> {
@@ -276,13 +280,17 @@ impl<V: Copy> Feed<V> {
             exits: Vec::new(),
             frames: 0,
             deaths: 0,
+            sampled_jobs: 0,
         }
     }
 
     pub fn note(&mut self, note: Note<V>) {
         self.frames = self.frames.saturating_add(note.execution_work);
         self.deaths += u64::from(note.death);
-        self.pending.insert(note.reservation, note);
+        if !note.steps.is_empty() || note.trail.is_some() {
+            self.sampled_jobs = self.sampled_jobs.saturating_add(1);
+            self.pending.insert(note.reservation, note);
+        }
     }
 
     pub fn admit(&mut self, admissions: Vec<CampaignAdmission>) {
@@ -317,6 +325,7 @@ impl<V: Copy> Feed<V> {
                     observation: step.view,
                     retained,
                     frame: step.frame,
+                    priority: note.next_level > 0 || step.objective,
                 });
             }
             if let Some(trail) = note.trail {
@@ -337,6 +346,7 @@ impl<V: Copy> Feed<V> {
         Batch {
             stats,
             deaths: self.deaths,
+            sampled_jobs: self.sampled_jobs,
             frames: self.frames,
             points: std::mem::take(&mut self.points),
             motion: std::mem::take(&mut self.motion),
@@ -392,6 +402,27 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_notes_count_all_work_without_retaining_unsampled_jobs() {
+        let mut feed = Feed::new(0_u8, 0, 99);
+        for reservation in 0..10_000 {
+            feed.note(Note {
+                reservation,
+                steps: Vec::new(),
+                trail: None,
+                next_level: 0,
+                execution_work: 42,
+                death: reservation % 2 == 0,
+            });
+        }
+        assert!(feed.pending.is_empty());
+        let batch = feed.take_batch(Stats::default());
+        assert_eq!((batch.frames, batch.deaths), (420_000, 5_000));
+        assert_eq!(batch.sampled_jobs, 0);
+        assert!(batch.points.is_empty());
+        assert!(batch.motion.is_empty());
+    }
+
+    #[test]
     fn admission_decisions_name_the_retained_steps() {
         let mut feed = Feed::new(0_u8, 0, 99);
         feed.note(Note {
@@ -427,9 +458,11 @@ mod tests {
         let batch = feed.take_batch(Stats::default());
         let retained: Vec<_> = batch.points.iter().map(|point| point.retained).collect();
         assert_eq!(retained, [Some(7), None, None, Some(7)]);
+        assert!(batch.points.iter().all(|point| point.priority));
         assert_eq!(batch.motion, [vec![0, 1, 2, 3, 4]]);
         assert_eq!((batch.finishes, batch.exits), (vec![0], vec![2]));
         assert_eq!((batch.frames, batch.deaths), (45, 1));
+        assert_eq!(batch.sampled_jobs, 2);
         assert_eq!(feed.view(7), Some(1));
         assert_eq!((feed.frames_at(7), feed.digest(7)), (Some(10), Some(11)));
         assert_eq!(feed.digest(0), Some(99));

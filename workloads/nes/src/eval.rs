@@ -76,17 +76,15 @@ pub struct Request {
     pub live_site: Option<PathBuf>,
 }
 
-struct StreamDigest {
+struct StreamSink {
     file: Option<BufWriter<fs::File>>,
-    digest: Sha256,
     bytes: u64,
 }
-impl Write for StreamDigest {
+impl Write for StreamSink {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if let Some(file) = &mut self.file {
             file.write_all(buf)?;
         }
-        self.digest.update(buf);
         self.bytes += buf.len() as u64;
         Ok(buf.len())
     }
@@ -204,13 +202,12 @@ where
         &out.join("identity.json"),
         &json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
     )?;
-    let mut stream = StreamDigest {
+    let mut stream = StreamSink {
         file: if full {
             Some(BufWriter::new(fs::File::create(out.join("stream.jsonl"))?))
         } else {
             None
         },
-        digest: Sha256::new(),
         bytes: 0,
     };
     let mut progress = LineWriter::new(fs::File::create(out.join("progress.jsonl"))?);
@@ -256,6 +253,7 @@ where
         archive.remove("entries");
     }
     write_json(&out.join("campaign.json"), &value)?;
+    write_json(&out.join("telemetry.json"), &report.telemetry)?;
     let export_seconds = export_started.elapsed().as_secs_f64();
     phase(out, "verification", started)?;
     let verify_started = telemetry_now();
@@ -323,7 +321,7 @@ where
             "export_seconds":export_seconds, "verification_seconds":verification_seconds,
             "witness_replays":2, "campaign_replay":full,
             "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
-            "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
+            "stream_sha256":report.stream_sha256, "stream_bytes_generated":stream.bytes, "stream_retained":full,
             "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.execution_work >= limit) {"frame_limit"} else {"wall_limit"}
         }),
     )?;

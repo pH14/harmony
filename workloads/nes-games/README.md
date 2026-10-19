@@ -59,7 +59,10 @@ every four frames and at every chord end, and every controller action it runs. `
 that recorder and returns a `Note` with the trail, the view of every step and
 each candidate's snapshot digest. `feed::Feed` joins notes with the
 coordinator's admission decisions into the `Batch` the page reads: points,
-trails, finished trails and their exits. It drops ids the archive no longer
+trails, finished trails and their exits. Aggregate-only notes update the full
+frame and death totals without entering the pending admission map; batches
+report the cumulative `sampled_jobs` count for notes containing display data.
+It drops ids the archive no longer
 holds once it keeps more than twice the archive's entries.
 `feed::archived_state` builds a state's controller history and replays it
 through a fresh target with `feed::played` when the archived input misses

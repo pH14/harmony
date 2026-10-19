@@ -138,7 +138,7 @@ fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Sta
 }
 
 fn main() -> Result<()> {
-    nes_workload::allocator::use_one_malloc_arena();
+    nes_workload::allocator::configure_malloc_arenas();
     run_cli(|request, rom, out, started| {
         if request.live.is_some() {
             return live(&request, &rom, &out, started);

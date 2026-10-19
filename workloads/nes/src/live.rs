@@ -110,7 +110,7 @@ struct Found<V> {
     digest: Option<u64>,
     frames_at: Option<u64>,
     input: Vec<ButtonChord>,
-    raw: Option<Vec<u8>>,
+    packed: Option<Vec<u8>>,
 }
 
 struct Lookup<V> {
@@ -129,11 +129,14 @@ pub struct LiveWatch<G: ArcadeGame> {
     shared: SharedFeed<G::View>,
     events: Sender<Event>,
     lookups: Mutex<Receiver<Lookup<G::View>>>,
+    pending_lookups: Arc<AtomicUsize>,
     observe: Observe<G::View>,
     game: String,
     viewers: Arc<AtomicUsize>,
     glance: Arc<AtomicBool>,
     recording: AtomicBool,
+    details: Arc<AtomicUsize>,
+    cleared: AtomicUsize,
 }
 
 fn native_observer<V: 'static>(
@@ -160,6 +163,9 @@ fn native_observer<V: 'static>(
         Ok(memory)
     };
     Arc::new(move |raws| {
+        if raws.is_empty() {
+            return Vec::new();
+        }
         let Ok(mut machine) =
             QuickNesMachine::from_rom_bytes_with_identity(&rom, &path, &sha256, &execution)
         else {
@@ -235,10 +241,14 @@ impl<G: ArcadeGame> LiveWatch<G> {
     where
         G::ArchiveReport: Serialize,
     {
+        if self.pending_lookups.load(Ordering::Relaxed) == 0 {
+            return;
+        }
         let Ok(lookups) = self.lookups.try_lock() else {
             return;
         };
-        while let Ok(lookup) = lookups.try_recv() {
+        for lookup in lookups.try_iter().take(1) {
+            self.pending_lookups.fetch_sub(1, Ordering::Relaxed);
             let archive = campaign.archive();
             let shared = lock(&self.shared);
             let found = lookup
@@ -253,9 +263,9 @@ impl<G: ArcadeGame> LiveWatch<G> {
                         digest: feed.and_then(|feed| feed.digest(id)),
                         frames_at: feed.and_then(|feed| feed.frames_at(id)),
                         input: archive.entry_input(index).ok()?.actions,
-                        raw: archive
+                        packed: archive
                             .entry_snapshot(index)
-                            .and_then(|snapshot| raw_state(G::emulator_state(snapshot)).ok()),
+                            .map(|snapshot| G::emulator_state(snapshot).to_vec()),
                     })
                 })
                 .collect();
@@ -276,24 +286,48 @@ where
         job: &JobSpec<G>,
         run: impl FnOnce() -> std::result::Result<JobOutcome<G>, Box<dyn Error>>,
     ) -> WatchedJob<G, Self::Note> {
-        if self.viewers.load(Ordering::Relaxed) > 0 {
-            return run_noted(job, run);
+        let watched = self.viewers.load(Ordering::Relaxed) > 0;
+        if watched && take_detail(&self.details) {
+            let (outcome, note) = run_noted(job, run)?;
+            take_progress(&self.cleared, note.next_level);
+            return Ok((outcome, note));
         }
         let outcome = run()?;
+        let cleared = if watched {
+            outcome
+                .result
+                .actions
+                .iter()
+                .flat_map(|action| action.observations.last())
+                .map(G::cleared)
+                .max()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let progress = watched && take_progress(&self.cleared, cleared);
         let note = Note {
             reservation: outcome.reservation,
-            steps: Vec::new(),
+            steps: if progress {
+                feed::steps(&outcome.result)?
+            } else {
+                Vec::new()
+            },
             trail: None,
-            next_level: 0,
+            next_level: cleared,
             execution_work: outcome.execution_work,
-            death: false,
+            death: outcome.result.actions.last().is_some_and(|action| {
+                action.outcome.disposition == crate::search::rollout::ExecutionDisposition::Terminal
+                    && !action.outcome.objective_reached
+            }),
         };
         Ok((outcome, note))
     }
 
     fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>) {
         let watched = self.viewers.load(Ordering::Relaxed) > 0;
-        if watched != self.recording.swap(watched, Ordering::Relaxed) {
+        if watched != self.recording.load(Ordering::Relaxed) {
+            self.recording.store(watched, Ordering::Relaxed);
             if watched {
                 campaign.watch_admissions();
             } else {
@@ -457,6 +491,7 @@ fn glance_json<V: Serialize>(
                 observation: observation?,
                 retained: Some(id),
                 frame: 0,
+                priority: false,
             })
         })
         .collect();
@@ -464,6 +499,7 @@ fn glance_json<V: Serialize>(
         &Batch {
             stats,
             deaths: 0,
+            sampled_jobs: 0,
             frames: 0,
             points,
             motion: Vec::new(),
@@ -479,7 +515,7 @@ fn sampled<V: Copy>(batch: Batch<V>, sampler: &mut Sampler) -> Batch<V> {
         .points
         .iter()
         .copied()
-        .partition(|point| point.retained.is_some());
+        .partition(|point| point.retained.is_some() || point.priority);
     points.extend(
         sampler
             .pick(open.len(), POINTS_PER_TICK)
@@ -530,11 +566,25 @@ fn take_batch<V: Copy>(shared: &Mutex<Shared<V>>) -> Option<Batch<V>> {
     shared.feed.as_mut().map(|feed| feed.take_batch(stats))
 }
 
+fn take_progress(cleared: &AtomicUsize, next: u8) -> bool {
+    let next = usize::from(next);
+    next > cleared.load(Ordering::Relaxed) && next > cleared.fetch_max(next, Ordering::Relaxed)
+}
+
+fn take_detail(details: &AtomicUsize) -> bool {
+    details
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_ok()
+}
+
 struct Feeding<'a, V> {
     events: &'a Receiver<Event>,
     shared: &'a Mutex<Shared<V>>,
     observe: &'a Observe<V>,
     glance: &'a AtomicBool,
+    details: &'a AtomicUsize,
     workers: u32,
 }
 
@@ -544,6 +594,7 @@ fn feed_loop<V: Serialize + Copy>(feeding: &Feeding<'_, V>, mut viewers: Viewers
         shared,
         observe,
         glance,
+        details,
         workers,
     } = *feeding;
     let mut ready: Option<Arc<str>> = None;
@@ -585,7 +636,9 @@ fn feed_loop<V: Serialize + Copy>(feeding: &Feeding<'_, V>, mut viewers: Viewers
             Ok(Event::Finished) | Err(RecvTimeoutError::Disconnected) => {
                 let won = lock(shared).stats.won;
                 if let Some(mut batch) = take_batch(shared) {
-                    batch.points.retain(|point| point.retained.is_some());
+                    batch
+                        .points
+                        .retain(|point| point.retained.is_some() || point.priority);
                     batch.motion.clear();
                     batch.finishes.clear();
                     batch.exits.clear();
@@ -606,6 +659,7 @@ fn feed_loop<V: Serialize + Copy>(feeding: &Feeding<'_, V>, mut viewers: Viewers
         let Some(batch) = take_batch(shared) else {
             continue;
         };
+        details.store(TRAILS_PER_TICK, Ordering::Relaxed);
         if !viewers.senders.is_empty() {
             viewers.broadcast(&batch_json(&sampled(batch, &mut sampler), workers));
         }
@@ -660,6 +714,7 @@ fn site_file(site: &Path, target: &str) -> Option<PathBuf> {
 struct Server<G: ArcadeGame> {
     events: Sender<Event>,
     lookups: Sender<Lookup<G::View>>,
+    pending_lookups: Arc<AtomicUsize>,
     site: Option<PathBuf>,
     games: Option<Games<G>>,
     observe: Observe<G::View>,
@@ -677,19 +732,34 @@ impl<G: ArcadeGame> Server<G> {
             .filter_map(|id| id.parse().ok())
             .collect();
         let (reply, answer) = mpsc::channel();
-        self.lookups
+        self.pending_lookups.fetch_add(1, Ordering::Relaxed);
+        if self
+            .lookups
             .send(Lookup {
                 ids: ids.clone(),
                 reply,
             })
-            .ok()?;
+            .is_err()
+        {
+            self.pending_lookups.fetch_sub(1, Ordering::Relaxed);
+            return None;
+        }
         let mut found = answer.recv_timeout(LOOKUP_WAIT).ok()?;
+        let raw: Vec<_> = found
+            .iter()
+            .map(|found| {
+                found
+                    .packed
+                    .as_deref()
+                    .and_then(|packed| raw_state(packed).ok())
+            })
+            .collect();
         let unseen: Vec<usize> = (0..found.len())
-            .filter(|&index| found[index].observation.is_none() && found[index].raw.is_some())
+            .filter(|&index| found[index].observation.is_none() && raw[index].is_some())
             .collect();
         let raws: Vec<Vec<u8>> = unseen
             .iter()
-            .filter_map(|&index| found[index].raw.clone())
+            .filter_map(|&index| raw[index].clone())
             .collect();
         for (index, observation) in unseen.into_iter().zip((self.observe)(&raws)) {
             found[index].observation = observation;
@@ -697,8 +767,8 @@ impl<G: ArcadeGame> Server<G> {
         let mut replay: Option<(G, usize)> = None;
         let mut states = Vec::new();
         let mut answered = Vec::new();
-        for found in found {
-            let snapshot = found.raw.as_deref().map(core_state);
+        for (found, raw) in found.into_iter().zip(raw) {
+            let snapshot = raw.as_deref().map(core_state);
             let (Some(observation), Some(digest)) = (
                 found.observation,
                 found.digest.or(snapshot.map(snapshot_digest)),
@@ -990,17 +1060,22 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
         }));
         let (events, received) = mpsc::channel();
         let (lookups, pending) = mpsc::channel();
+        let pending_lookups = Arc::new(AtomicUsize::new(0));
         let viewers = Arc::new(AtomicUsize::new(0));
         let glance = Arc::new(AtomicBool::new(false));
+        let details = Arc::new(AtomicUsize::new(TRAILS_PER_TICK));
         let watch = LiveWatch::<G> {
             shared: Arc::clone(&shared),
             events: events.clone(),
             lookups: Mutex::new(pending),
+            pending_lookups: Arc::clone(&pending_lookups),
             observe: Arc::clone(&observe),
             game: self.id.to_owned(),
             viewers: Arc::clone(&viewers),
             glance: Arc::clone(&glance),
             recording: AtomicBool::new(false),
+            details: Arc::clone(&details),
+            cleared: AtomicUsize::new(0),
         };
         let workers = self.request.workers;
         let feed = {
@@ -1012,6 +1087,7 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
                         shared: &shared,
                         observe: &observe,
                         glance: &glance,
+                        details: &details,
                         workers,
                     },
                     Viewers {
@@ -1025,6 +1101,7 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
         let server = Arc::new(Server {
             events,
             lookups,
+            pending_lookups,
             site: self.request.live_site.clone(),
             games,
             observe,
@@ -1050,7 +1127,90 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{Sampler, encode_snapshot, local_request, site_path};
+    use super::{
+        Batch, Point, Sampler, Stats, encode_snapshot, local_request, sampled, site_path,
+        take_detail, take_progress,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn unsampled_completion_points_survive_output_downsampling() {
+        let mut points = vec![
+            Point {
+                observation: 0_u8,
+                retained: None,
+                frame: 0,
+                priority: false,
+            };
+            10_000
+        ];
+        points.push(Point {
+            observation: 43,
+            retained: None,
+            frame: 100,
+            priority: true,
+        });
+        let batch = sampled(
+            Batch {
+                stats: Stats::default(),
+                deaths: 0,
+                sampled_jobs: 1,
+                frames: 100,
+                points,
+                motion: Vec::new(),
+                finishes: Vec::new(),
+                exits: Vec::new(),
+            },
+            &mut Sampler(123),
+        );
+        assert!(batch.points.len() < 10_001);
+        assert!(batch.points.iter().any(|point| point.observation == 43));
+        assert!(
+            serde_json::to_value(&batch).unwrap()["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|point| point.get("priority").is_none())
+        );
+    }
+
+    #[test]
+    fn level_advancement_is_observed_when_detail_credits_are_exhausted() {
+        let details = AtomicUsize::new(0);
+        let cleared = AtomicUsize::new(0);
+        assert!(!take_detail(&details));
+        assert!(take_progress(&cleared, 1));
+        assert!(!take_progress(&cleared, 1));
+        assert!(!take_progress(&cleared, 0));
+        assert!(!take_detail(&details));
+        assert!(take_progress(&cleared, 2));
+        assert!(take_progress(&cleared, 43));
+        assert!(!take_progress(&cleared, 42));
+    }
+
+    #[test]
+    fn detail_budget_is_shared_by_all_workers_and_refilled_by_the_feed() {
+        let details = AtomicUsize::new(256);
+        let recorded = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..128 {
+                scope.spawn(|| {
+                    for _ in 0..64 {
+                        if take_detail(&details) {
+                            recorded.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(recorded.load(Ordering::Relaxed), 256);
+        assert_eq!(details.load(Ordering::Relaxed), 0);
+        assert!(!take_detail(&details));
+        details.store(2, Ordering::Relaxed);
+        assert!(take_detail(&details));
+        assert!(take_detail(&details));
+        assert!(!take_detail(&details));
+    }
 
     #[test]
     fn site_paths_stay_inside_the_site() {
