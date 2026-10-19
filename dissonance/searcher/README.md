@@ -69,7 +69,8 @@ failed actions cannot reuse an earlier capture. These values remain local to the
 import operation and preserve all source identity and intermediate-prefix checks.
 It also checks the fixed executor and selection-seed derivation labels. The stream and
 completed report record the loaded Harmony executable identity separately from the
-workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
+workload identity. Linux hashes the loaded image through `/proc/self/exe` once per
+process, because the loaded image cannot change while it runs; macOS reads
 its running code-directory hash. A wasm32 module cannot read its own bytes, so it
 records the fixed label `wasm32-module-v1`, which does not bind replay to one build.
 Replay fails closed when that identity cannot be
