@@ -15,6 +15,17 @@ SPEC.loader.exec_module(scaling)
 
 
 class ScalingTests(unittest.TestCase):
+    def test_missing_cpu_coverage_is_not_reported_as_zero_cost(self):
+        unknown = scaling.coordination_costs({}, 10)
+        self.assertTrue(all(value is None for value in unknown.values()))
+        measured = scaling.coordination_costs({
+            "dispatch_phase": {"wall_ns": 100, "host": {"coordinator_cpu_ns": 0}},
+            "stream": {"worker_cpu_ns": None, "producer_wait_ns": 20},
+        }, 10)
+        self.assertEqual(measured["coordinator_cpu_ns_per_job"], 0)
+        self.assertIsNone(measured["encoder_cpu_ns_per_job"])
+        self.assertEqual(measured["producer_wait_ns_per_job"], 2)
+
     def write_run(self, directory, changed=False, workers=1):
         directory.mkdir()
         (directory / "stream.jsonl").write_text('complete stream\n' if not changed else 'changed stream\n')

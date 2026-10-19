@@ -21,7 +21,7 @@ restore, execution and capture; it does not measure guest cycles. Read raw
 buffer peaks. Native runs encode and hash the ordered stream on a separate
 thread; its telemetry has a separate owner from the coordinator and execution
 workers. `coordinator_host` samples coordinator CPU and scheduler wait once at
-the end of search, before final persistence, even with verbose profiling off.
+the end of search, before final report persistence, even with verbose profiling off.
 It is absent when the operating system cannot supply these counters. This CPU
 measurement includes work outside the individual coordinator span timers.
 It includes live-observer construction, encoder startup, worker readiness and
@@ -90,8 +90,12 @@ thermal/frequency behavior and cgroup capacity; `/proc` inventories and load
 averages are retained, but do not prove an idle host. Capacity measurements
 must include the whole campaign's cgroup memory rather than process RSS alone.
 
-`summary.json` reports per-count median/range, speedup, total campaign time and
-worker busy fractions. No numerical speedup threshold is treated as a passing
+`summary.json` reports per-count median/range, speedup, total campaign time,
+worker busy fractions and coordinator/encoder CPU per job when available.
+Missing CPU coverage remains null rather than a zero cost. These costs do not
+automatically establish a worker-count ceiling; apply the capacity model in
+[Performance](../../docs/PERFORMANCE.md) using equivalent-core worker measurements.
+No numerical speedup threshold is treated as a passing
 result. Compare repeated same-host baseline and candidate arms as separate
 builds; both must establish their own exact replay oracle. Hold this bounded
 job fixed, then run a longer campaign to inspect archive growth, snapshot

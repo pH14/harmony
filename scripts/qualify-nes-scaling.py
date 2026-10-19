@@ -74,6 +74,24 @@ def run_trial(command, directory, timeout):
     return time.monotonic() - started
 
 
+def coordination_costs(telemetry, executions):
+    phase = telemetry.get("dispatch_phase") or {}
+    host = phase.get("host") or {}
+    stream = telemetry.get("stream") or {}
+    return {
+        "dispatch_phase_ns": phase.get("wall_ns"),
+        "coordinator_cpu_ns_per_job": (
+            host["coordinator_cpu_ns"] / executions if "coordinator_cpu_ns" in host else None
+        ),
+        "encoder_cpu_ns_per_job": (
+            stream["worker_cpu_ns"] / executions if stream.get("worker_cpu_ns") is not None else None
+        ),
+        "producer_wait_ns_per_job": (
+            stream["producer_wait_ns"] / executions if "producer_wait_ns" in stream else None
+        ),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evaluator", required=True, type=Path)
@@ -155,6 +173,7 @@ def main():
                     "jobs_per_second": result["executions_per_second"],
                     "busy_core_equivalents": busy_ns / search_ns if search_ns else None,
                     "worker_busy_fraction": busy_ns / (search_ns * count) if search_ns else None,
+                    "coordination": coordination_costs(telemetry, result["executions"]),
                     "load_after": os.getloadavg() if hasattr(os, "getloadavg") else None,
                     "identity_record": read_json(output / "identity.json"),
                 }

@@ -108,6 +108,29 @@ coordination:
 | Guest work run a second time | Its full CPU time |
 | Coordinator time per job | The whole search finishes at most one job in that time |
 
+### Feeding many workers
+
+Measure coordinator CPU per admitted job, including selection, admission,
+queueing, live observation and stream output. Use a boundary after workers and
+observers are ready and before final persistence. Individual phase timers can
+omit outer-loop work or contain waits; their sum is not a substitute for the
+thread's CPU counter. Measure any ordered background encoder separately.
+
+If a worker needs `T` seconds of CPU per job, the coordinator needs `C`, and
+one encoder needs `E`, an optimistic throughput bound for `N` worker cores is
+`min(N / T, 1 / C, 1 / E)`. Thus feeding 100 worker cores requires both
+`C < T / 100` and `E < T / 100`, with room for observation and host contention.
+An eight-worker speedup does not establish either inequality. Worker busy wall
+time inflated by scheduling contention overstates `T`; use CPU coverage or an
+isolated equivalent-core reference and preserve the distinction.
+
+This bound is necessary rather than sufficient. Ordered admission can leave
+workers idle behind an unfinished earlier job, even when the coordinator has
+spare CPU. Retain head-of-line waits, the completed-result peak, and the fixed
+admission window alongside CPU measurements. Budget cores for the coordinator,
+encoder and viewer, and memory for every worker, queued job and buffered result.
+Startup and final persistence still count toward end-to-end campaign throughput.
+
 At these costs, an exit every 25 µs of guest work adds about 10% overhead.
 Copying a page every 10 µs adds another 10%.
 
