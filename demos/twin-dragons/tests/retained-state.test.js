@@ -98,12 +98,12 @@ test('includes actual candidates delivered before the pause acknowledgment witho
 test('complete candidate pool preserves every announced unique descendant and refuses overflow before growing', async () => {
   const scope = {};
   installRetainedCollector(scope);
-  const points = Array.from({ length: 200 }, (_, i) => ({ retained: `2:${i + 1}` }));
+  const points = Array.from({ length: 4096 }, (_, i) => ({ retained: `2:${i + 1}` }));
   scope.tdTestCollectNested([{ retained: null }, { retained: '2:0' }, { retained: '1:8' }, ...points]);
   scope.tdTestCollectNested(points);
-  assert.deepEqual(scope.tdTestNestedCandidates, points.map(point => point.retained));
-  assert.throws(() => scope.tdTestCollectNested([{ retained: '2:201' }]), /exceeds 200 unique states/);
-  assert.equal(scope.tdTestNestedCandidates.length, 200);
+  assert.deepEqual([...scope.tdTestNestedCandidates], points.map(point => point.retained));
+  assert.throws(() => scope.tdTestCollectNested([{ retained: '2:4097' }]), /exceeds 4096 unique states/);
+  assert.equal(scope.tdTestNestedCandidates.length, 4096);
   assert.deepEqual([...scope.tdTestNestedCandidates], points.map(point => point.retained));
   assert.equal(scope.tdTestNestedCandidates.overflow, true);
   const worker = new Worker(() => assert.fail('an overflowed candidate pool must never certify a descendant'));
@@ -115,13 +115,47 @@ test('complete candidate pool preserves every announced unique descendant and re
 test('candidate overflow delivered before pause acknowledgment also refuses instead of certifying a truncated pool', async () => {
   const scope = {};
   installRetainedCollector(scope);
-  scope.tdTestCollectNested(Array.from({ length: 200 }, (_, i) => ({ retained: `2:${i + 1}` })));
+  scope.tdTestCollectNested(Array.from({ length: 4096 }, (_, i) => ({ retained: `2:${i + 1}` })));
   const worker = new Worker((message, target) => {
     assert.equal(message.type, 'pause');
-    assert.throws(() => scope.tdTestCollectNested([{ retained: '2:201' }]), /exceeds 200/);
+    assert.throws(() => scope.tdTestCollectNested([{ retained: '2:4097' }]), /exceeds 4096/);
     target.emit({ type: 'paused' });
   });
   await assert.rejects(retainedDescendant({ worker, candidates: scope.tdTestNestedCandidates, branch: 2 }), /Invalid retained descendant candidates/);
   assert.equal(worker.messages.length, 1);
+  worker.assertReleased();
+});
+
+
+test('selection ends collection before queries and later resumed branch batches cannot grow or overflow it', async () => {
+  const scope = {};
+  installRetainedCollector(scope);
+  scope.tdTestCollectNested([{ retained: '2:1' }]);
+  const worker = new Worker((message, target) => {
+    if (message.type === 'pause') return target.emit({ type: 'paused' });
+    assert.equal(scope.tdTestNestedCandidates.collecting, false);
+    scope.tdTestCollectNested(Array.from({ length: 5000 }, (_, i) => ({ retained: `2:${i + 2}` })));
+    target.emit({ type: 'states', request: message.request, states: [state('2:1')], missing: [] });
+  });
+  assert.equal((await retainedDescendant({ worker, candidates: scope.tdTestNestedCandidates, branch: 2 })).id, '2:1');
+  scope.tdTestCollectNested(Array.from({ length: 5000 }, (_, i) => ({ retained: `2:${i + 5002}` })));
+  assert.deepEqual([...scope.tdTestNestedCandidates], ['2:1']);
+  assert.equal(scope.tdTestNestedCandidates.overflow, undefined);
+  assert.equal(scope.tdTestNestedCandidates.collecting, false);
+  worker.assertReleased();
+});
+
+test('failed acquisition also disarms collection without accepting missing evidence', async () => {
+  const scope = {};
+  installRetainedCollector(scope);
+  scope.tdTestCollectNested([{ retained: '2:1' }]);
+  const worker = new Worker((message, target) => {
+    if (message.type === 'pause') return target.emit({ type: 'paused' });
+    target.emit({ type: 'states', request: message.request, states: [], missing: message.ids });
+  });
+  await assert.rejects(retainedDescendant({ worker, candidates: scope.tdTestNestedCandidates, branch: 2 }), /No currently retained nested descendant/);
+  scope.tdTestCollectNested(Array.from({ length: 5000 }, (_, i) => ({ retained: `2:${i + 2}` })));
+  assert.deepEqual([...scope.tdTestNestedCandidates], ['2:1']);
+  assert.equal(scope.tdTestNestedCandidates.collecting, false);
   worker.assertReleased();
 });
