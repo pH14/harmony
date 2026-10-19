@@ -46,7 +46,14 @@ def components(layout, metatiles):
         names = Counter(metatiles[tiles[y * width + x]]["name"] for x, y in members)
         result.append({"number": number, "tile": tile, "names": dict(names), "area": len(members),
                        "bbox": [min(xs), min(ys), max(xs), max(ys)], "boundary": dict(boundary),
-                       "non_none_boundary_fraction": blocking / max(1, faces), "open_faces": opens, "entries": []})
+                       "non_none_boundary_fraction": blocking / max(1, faces), "open_faces": opens,
+                       "sprites": [], "entries": []})
+    for sprite in layout.get("sprites", []):
+        x, y = sprite["column"], sprite["row"]
+        if 0 <= x < width and 0 <= y < height:
+            number = labels[y * width + x]
+            if number >= 0:
+                result[number]["sprites"].append(sprite)
     return labels, result
 
 
@@ -58,7 +65,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     index = json.loads(args.index.read_text())
     review = json.loads(args.review.read_text())
-    output = {"schema": 2, "index_sha256": hashlib.sha256(args.index.read_bytes()).hexdigest(),
+    output = {"schema": 3, "sprite_membership": "sprite origin tile belongs to the component; sprite extents are not tested",
+              "index_sha256": hashlib.sha256(args.index.read_bytes()).hexdigest(),
               "review_sha256": hashlib.sha256(args.review.read_bytes()).hexdigest(),
               "components": {}, "other_entries": {}}
     by_level = {}

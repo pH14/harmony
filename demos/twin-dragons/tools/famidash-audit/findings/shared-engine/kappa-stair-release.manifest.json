@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "target_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "changes": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/kappaclysm.tmx",
+      "before_sha256": "fea1b3a138f88117f5c0fc50a4a26c07932c41c8461d56138bc6804231aad5dc",
+      "after_sha256": "de7f72840343e4e3f09555107058ec0b9fa7b78f136d9ee82ed2a38b377a0e2e",
+      "edits": [
+        {
+          "column": 244,
+          "row": 25,
+          "from_gid": 112,
+          "to_gid": 101
+        }
+      ]
+    }
+  ],
+  "status": "source-proposal-needs-export-build-and-replay",
+  "evidence": [
+    "Original Kappaclysm input slips around a diagonal pit corner into component242..268 rows24..26. Both cores agree through1721frames; collision samples enterBLACK_NONE24425 at1544. No coin or teleport exit inside.",
+    "Propose a solid left cap at24425, matching the black floor, subject to paired failing and clearing controls."
+  ]
+}

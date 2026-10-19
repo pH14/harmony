@@ -429,7 +429,7 @@ gap without claiming an exact trace match.
 `experimental-current-huge-layout.patch` applies after the current history
 patch. It puts the new collision kernels in the existing collision/sound bank
 for HUGE and keeps rare arithmetic error handlers there behind checked bank
-dispatches. Standard builds retain their layout. All four standard sets and
+dispatches. Standard builds retain their layout. All five current standard sets and
 HUGE link. All 173 HUGE levels (5,640,443 tiles), collision classes and base
 metadata match source. The assembled arithmetic oracle passes 1,245,640 cases,
 including 155,002 checked dispatch arguments; it does not model the mapper.
@@ -441,6 +441,60 @@ the changed level ID (59 in HUGE). This is an ordinary-input control, not a
 The current experimental engine patch sequence is the current history patch,
 HUGE layout patch, then current finish patch. The Fofii, TOE stair and Geodom
 TMX changes are separate data proposals requiring exports for A/B/HUGE as
-applicable. This package remains under validation. The 109-level compact-finish
-sweep is in progress, source dispositions remain incomplete, and the required
-three-consecutive-clean-round count is zero. No production ROM is replaced.
+applicable. This package remains under validation. The completed exploratory round 38 searched all 109 installed levels with
+12,630,000 executions. All 82,285 candidates replay without endpoint mismatch.
+Source dispositions remain incomplete and newly confirmed bugs disqualify
+that round. The three-consecutive-clean-round count is zero. No production ROM is replaced.
+
+Kappaclysm has a stepped-floor gap in component 135, columns 242–268, rows
+24–26. It contains no objective or teleport exit. The initial single cap at
+(244,25) blocks the release witness but leaves two current-upstream witnesses
+unchanged: they enter at (247,24) and (242,26). The `kappa-stair-v2` proposals
+replace all six exposed corner cells of this reviewed component. Version 1
+files remain as evidence of the insufficient first repair.
+
+The release data-only repair responds at frame 1,542 and kills at 1,544.
+Solid contact legitimately changes the pose before death; this is not an
+unchanged-until-death proof. The 4,840-frame original clearing input remains
+exact. A fresh 4,754-frame Dissonance clearing input also remains exact under
+the combined v2 repair. Current-upstream upper and lower witnesses respond
+at 1,524/1,447 and die at 1,525/1,449. All three repaired traces match FCEUmm
+and reset normally. A fresh current combined-repair input clears at 4,841
+with coin mask 4 and matches FCEUmm after entry frame 1.
+
+Silent Clubstep (release D4, current E21) has a different rounded-cap gap.
+The historical Dissonance witness, formerly misnamed `kratos`, avoids the
+small saw's narrow kernel at (29,52) and enters closed component 130 at
+(29,53). This component contains no sprites or open empty-cell faces. One
+released-input frame was removed at frame 166 to reproduce the same route
+on the original ROM; the retiming attempts and independently matched
+1,127-frame original trace are retained explicitly.
+
+The `silent-rounded-cap` proposals replace that half-saw tile with PITSPIKES
+to declare an opaque bottom base. They require the shared base guard: this
+is not a tile-only fix for the original point-sampling engine. The combined
+repair kills the historical input at frame 198 with its approach unchanged
+in both cores and confirms reset. A whole-level clearing control and an
+ordinary current-upstream failure proof remain pending, so this cap proposal
+is experimental.
+
+The complete current combined source builds all five standard sets and HUGE.
+Compiled geometry and collision metadata match all 170 standard and 173 HUGE
+levels. The HUGE Fofii input clears at frame 3,764 in Mesen with coin mask 5.
+The retained patch-series check reconstructs the source changes exactly;
+geometry and build coverage do not imply behavioral coverage of every level.
+
+The schema-3 boundary inventory includes 354 stair corners and 11,426 rounded
+hazard/fill adjacencies across 74 levels. Source-edge stair corners are now
+included, which exposes Kappa's previously missed (242,26) corner. Components
+record sprites by origin tile. These inventories identify review candidates;
+they neither classify bugs nor apply automatic geometry edits.
+
+The sole round-38 base-crossing signal in Endorphin Rush (C5, frame 2,365)
+is a detector false positive. Read-only history tracing verifies all 2,426
+witness frames: the actual collision point moves from Y 642 to 641, while
+the post-frame estimator predicts 641 to 640. The opaque top slab spans
+640–641, so the actual point never crosses its full thickness. FCEUmm
+diverges earlier; this phase diagnosis is an exact QuickNES witness replay,
+not an independently matched FCEUmm contact trace. The disposition and
+hashed history output are retained.

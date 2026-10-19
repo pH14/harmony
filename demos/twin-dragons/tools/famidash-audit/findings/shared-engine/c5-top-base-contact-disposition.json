@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "status": "detector-false-positive",
+  "signal": "c:5:base:486:20:1:0",
+  "candidate": 289,
+  "frame": 2365,
+  "review": "reviewed-caps-round-38",
+  "actual_probe_y": [
+    642,
+    641
+  ],
+  "estimated_probe_y": [
+    641,
+    640
+  ],
+  "top_base_slab": [
+    640,
+    641
+  ],
+  "reason": "The actual probe stops at the near slab edge; it does not cross the complete opaque base. Post-frame position estimation differs by one pixel from collision-phase history.",
+  "evidence": "c5-top-base-contact-history-v2.json",
+  "independent_core_limitation": "FCEUmm trace diverges at frame 1613; no independent frame-2365 claim.",
+  "detector_policy": "Retain geometry-based signals for review; trusting engine history as the detector oracle could hide actual engine-coordinate errors."
+}

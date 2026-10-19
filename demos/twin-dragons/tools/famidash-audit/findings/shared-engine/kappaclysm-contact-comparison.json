@@ -1,0 +1,43 @@
+{
+  "status": "independent-repair-trace-verified; first contact precedes death",
+  "original_case_sha256": "3e5c1c61d26953e4e0b9e1902c80a1ac838d37236238cde98919ed01d6485630",
+  "repaired_case_sha256": "b718d6a724cc5bb40ef4754c397927c3877453bc4522b56706ba67f39db85249",
+  "unchanged_prefix_frames": 1541,
+  "first_response_frame": 1542,
+  "original_at_response": {
+    "level": 30,
+    "state": 2,
+    "x": 3899,
+    "y": 875,
+    "camera": 719,
+    "vy": 861,
+    "mode": 1,
+    "gravity": 0,
+    "mini": 1,
+    "dual": 0,
+    "dead": false,
+    "debug": 0,
+    "invincible": 0,
+    "paused": 0
+  },
+  "repaired_at_response": {
+    "level": 30,
+    "state": 2,
+    "x": 3899,
+    "y": 869,
+    "camera": 719,
+    "vy": 0,
+    "mode": 1,
+    "gravity": 0,
+    "mini": 1,
+    "dual": 0,
+    "dead": false,
+    "debug": 0,
+    "invincible": 0,
+    "paused": 0
+  },
+  "repaired_death_frame": 1544,
+  "strict_unchanged_until_death_claim": false,
+  "clearing_control_frames": 4840,
+  "clearing_control_identical": true
+}

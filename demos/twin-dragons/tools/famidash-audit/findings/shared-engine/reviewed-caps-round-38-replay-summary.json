@@ -1,0 +1,18 @@
+{
+  "round": 38,
+  "levels": 109,
+  "executions": 12630000,
+  "candidates": 82285,
+  "reviewed_candidates": 82285,
+  "replay_status": "replay-inventory-complete",
+  "mismatches": 0,
+  "entry_signals": {
+    "fill": 31993,
+    "hazard-row": 98,
+    "solid": 3,
+    "base": 1
+  },
+  "source_review_complete": false,
+  "clean_rounds": 0,
+  "review_sha256": "e316766ee3cd3cfd953293c169cd1de3c12b3c677b66afa9f325d8d0b650446b"
+}

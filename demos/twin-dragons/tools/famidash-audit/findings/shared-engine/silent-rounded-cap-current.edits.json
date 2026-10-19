@@ -1,0 +1,21 @@
+{
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "evidence": [
+    "Small rounded saw cap at29,52 opens into closed BLACK_NONE component24..191,46..56, no sprites/objectives. Original ordinary retimed Dissonance input survives1127frames below course.",
+    "Replace this rounded cap with the neighboring flat pit hazard, preserving collision class while supplying an opaque bottom base to the generic guard. Needs independent paired repair, clearing and coin controls."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/silentclubstep.tmx",
+      "source_sha256": "9b1bd96723e3b18839e80cbec922845632df3c5a02d2fd05da8e49743119588f",
+      "edits": [
+        {
+          "column": 29,
+          "row": 52,
+          "from_gid": 128,
+          "to_gid": 25
+        }
+      ]
+    }
+  ]
+}

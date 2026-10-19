@@ -1,0 +1,85 @@
+{
+  "status": "independent-repair-traces-and-committed-resets-verified",
+  "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+  "cases": [
+    {
+      "case": "kappaclysm-stair-data-only-control.json.gz",
+      "case_sha256": "b718d6a724cc5bb40ef4754c397927c3877453bc4522b56706ba67f39db85249",
+      "rom_sha256": "94ca4fa3adf6eaee33a49ab8958da64a30c3c7d430ea8a71fff85023199b07fc",
+      "independent_frames": 1544,
+      "reset_confirmation": {
+        "released_frames_after_death": 40,
+        "endpoint": {
+          "level": 30,
+          "state": 2,
+          "x": -238,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0
+        }
+      }
+    },
+    {
+      "case": "current-kappa-upper-v2-data-only-control.json.gz",
+      "case_sha256": "9f24f24541d826508bdadab876cc37965ff81c3816cb8017c4d1db39503628a0",
+      "rom_sha256": "2646385c86b6384ced2542ed9fe380167f9ab6f24a6c65f04a7a45db92969662",
+      "independent_frames": 1525,
+      "reset_confirmation": {
+        "released_frames_after_death": 40,
+        "endpoint": {
+          "level": 33,
+          "state": 2,
+          "x": -238,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0,
+          "wrap": 0,
+          "coins": 0
+        }
+      }
+    },
+    {
+      "case": "current-kappa-low-v2-data-only-control.json.gz",
+      "case_sha256": "0e91a00281aa0bc8b58ad5ec440cb8986d622f6f486c83a0bc1aa8149bd0d70a",
+      "rom_sha256": "2646385c86b6384ced2542ed9fe380167f9ab6f24a6c65f04a7a45db92969662",
+      "independent_frames": 1449,
+      "reset_confirmation": {
+        "released_frames_after_death": 40,
+        "endpoint": {
+          "level": 33,
+          "state": 2,
+          "x": -238,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0,
+          "wrap": 0,
+          "coins": 0
+        }
+      }
+    }
+  ]
+}

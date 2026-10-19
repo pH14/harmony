@@ -67,7 +67,8 @@ mode, partial hazards, persistent solid overlap and horizontal escapes.
 the sprites in their fill components for intent review. It never edits levels
 or classifies topology alone as a bug.
 `components.py` groups connected decorative fill across visual styles for
-source review; its schema 2 records the index and review hashes. Detector
+source review; schema 3 records index/review hashes and sprites whose origin
+tile belongs to each component. Sprite extents are not tested. Detector
 signals never automatically become bug reports or tile edits. Repeated mechanical
 states retain the last collision sample: a lag frame must not invent a new
 horizontal sample. Detector revision 7 records physical collisions hidden by eight-bit centre
@@ -332,3 +333,16 @@ so the same compiled-geometry check supports standard and HUGE layouts.
 `check-vertical-motion.py` also checks generated bank-dispatch arguments and
 executes the selected arithmetic kernels. It does not emulate the mapper;
 independent NES execution remains necessary.
+
+`trace-probe-history.mjs CASE ROM DBG RUNTIME START END OUTPUT` replays every
+ordinary-input witness frame and asserts exact trace, ROM and core identity.
+It retains both players' collision-history bytes and sweep scratch values in
+the selected interval, with case and debug-symbol hashes. These are engine
+history samples; scratch values can be stale and the output is not an
+independent geometry oracle. Use it to investigate collision-phase versus
+post-frame position estimates, as in the retained C5 top-base false positive.
+
+Schema-3 components include sprites whose origin tile belongs to the region.
+The boundary inventory includes stair corners on source edges and rounded
+hazard/fill adjacencies with component references. These are review leads,
+not bug classifications or instructions to modify every listed cell.

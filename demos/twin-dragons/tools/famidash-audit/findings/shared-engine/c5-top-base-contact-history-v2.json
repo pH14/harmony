@@ -1,0 +1,508 @@
+{
+  "schema": 1,
+  "engine": "read-only QuickNES RAM after verified witness frames",
+  "limitation": "Engine history and scratch state, not an independent geometry oracle; scratch values may be stale.",
+  "case_sha256": "a195ad6deedbddd130260892bfa371f29f9e22ef565841069a3e79447581b4c3",
+  "debug_sha256": "c2785867cecedcd25f6e98835fe11ff5847324417f26e3a7949a0a7136bb1094",
+  "rom_sha256": "bc27318cc00f1cba2061f6e399422ad13bfd9b902251c56a1484f7b0191eb36a",
+  "core_sha256": "d63a56ff06a9b08a01155fe04df37d4f6577c110712882c59d232f4cf2acbf31",
+  "verified_frames": 2426,
+  "rows": [
+    {
+      "frame": 2361,
+      "observation": {
+        "level": 5,
+        "state": 2,
+        "x": 7761,
+        "y": 643,
+        "camera": 574,
+        "vy": -416,
+        "mode": 1,
+        "gravity": 0,
+        "mini": 1,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      },
+      "values": {
+        "pit_previous_room": [
+          2,
+          3
+        ],
+        "pit_previous_mode": [
+          1,
+          0
+        ],
+        "pit_previous_mini": [
+          1,
+          1
+        ],
+        "pit_previous_x": [
+          80,
+          237
+        ],
+        "pit_previous_y": [
+          171,
+          14
+        ],
+        "pit_previous_collision": [
+          0,
+          0
+        ],
+        "pit_previous_metatile": [
+          0,
+          0
+        ],
+        "ss_dx": 4,
+        "ss_dy": 5,
+        "ss_origin_x": 2,
+        "ss_origin_y": 245,
+        "ss_type": 0,
+        "ss_metatile": 0,
+        "ss_base_remaining": 0,
+        "ss_base_axis": 2,
+        "ss_base_open": 0,
+        "ss_x0": 4,
+        "ss_x1": 20,
+        "ss_y0": 11,
+        "ss_y1": 12
+      }
+    },
+    {
+      "frame": 2362,
+      "observation": {
+        "level": 5,
+        "state": 2,
+        "x": 7766,
+        "y": 640,
+        "camera": 571,
+        "vy": -465,
+        "mode": 1,
+        "gravity": 0,
+        "mini": 1,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      },
+      "values": {
+        "pit_previous_room": [
+          2,
+          3
+        ],
+        "pit_previous_mode": [
+          1,
+          0
+        ],
+        "pit_previous_mini": [
+          1,
+          1
+        ],
+        "pit_previous_x": [
+          84,
+          237
+        ],
+        "pit_previous_y": [
+          168,
+          14
+        ],
+        "pit_previous_collision": [
+          0,
+          0
+        ],
+        "pit_previous_metatile": [
+          0,
+          0
+        ],
+        "ss_dx": 4,
+        "ss_dy": 5,
+        "ss_origin_x": 2,
+        "ss_origin_y": 245,
+        "ss_type": 0,
+        "ss_metatile": 0,
+        "ss_base_remaining": 0,
+        "ss_base_axis": 2,
+        "ss_base_open": 0,
+        "ss_x0": 4,
+        "ss_x1": 20,
+        "ss_y0": 11,
+        "ss_y1": 12
+      }
+    },
+    {
+      "frame": 2363,
+      "observation": {
+        "level": 5,
+        "state": 2,
+        "x": 7770,
+        "y": 637,
+        "camera": 568,
+        "vy": -514,
+        "mode": 1,
+        "gravity": 0,
+        "mini": 1,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      },
+      "values": {
+        "pit_previous_room": [
+          2,
+          3
+        ],
+        "pit_previous_mode": [
+          1,
+          0
+        ],
+        "pit_previous_mini": [
+          1,
+          1
+        ],
+        "pit_previous_x": [
+          89,
+          237
+        ],
+        "pit_previous_y": [
+          165,
+          14
+        ],
+        "pit_previous_collision": [
+          0,
+          0
+        ],
+        "pit_previous_metatile": [
+          0,
+          0
+        ],
+        "ss_dx": 4,
+        "ss_dy": 5,
+        "ss_origin_x": 2,
+        "ss_origin_y": 245,
+        "ss_type": 0,
+        "ss_metatile": 0,
+        "ss_base_remaining": 0,
+        "ss_base_axis": 2,
+        "ss_base_open": 0,
+        "ss_x0": 4,
+        "ss_x1": 20,
+        "ss_y0": 11,
+        "ss_y1": 12
+      }
+    },
+    {
+      "frame": 2364,
+      "observation": {
+        "level": 5,
+        "state": 2,
+        "x": 7774,
+        "y": 634,
+        "camera": 565,
+        "vy": -563,
+        "mode": 1,
+        "gravity": 0,
+        "mini": 1,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      },
+      "values": {
+        "pit_previous_room": [
+          2,
+          3
+        ],
+        "pit_previous_mode": [
+          1,
+          0
+        ],
+        "pit_previous_mini": [
+          1,
+          1
+        ],
+        "pit_previous_x": [
+          93,
+          237
+        ],
+        "pit_previous_y": [
+          162,
+          14
+        ],
+        "pit_previous_collision": [
+          0,
+          0
+        ],
+        "pit_previous_metatile": [
+          0,
+          0
+        ],
+        "ss_dx": 4,
+        "ss_dy": 5,
+        "ss_origin_x": 2,
+        "ss_origin_y": 245,
+        "ss_type": 0,
+        "ss_metatile": 0,
+        "ss_base_remaining": 0,
+        "ss_base_axis": 2,
+        "ss_base_open": 0,
+        "ss_x0": 4,
+        "ss_x1": 20,
+        "ss_y0": 11,
+        "ss_y1": 12
+      }
+    },
+    {
+      "frame": 2365,
+      "observation": {
+        "level": 5,
+        "state": 2,
+        "x": 7778,
+        "y": 633,
+        "camera": 564,
+        "vy": 0,
+        "mode": 1,
+        "gravity": 0,
+        "mini": 1,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      },
+      "values": {
+        "pit_previous_room": [
+          2,
+          3
+        ],
+        "pit_previous_mode": [
+          1,
+          0
+        ],
+        "pit_previous_mini": [
+          1,
+          1
+        ],
+        "pit_previous_x": [
+          97,
+          237
+        ],
+        "pit_previous_y": [
+          161,
+          14
+        ],
+        "pit_previous_collision": [
+          8,
+          0
+        ],
+        "pit_previous_metatile": [
+          27,
+          0
+        ],
+        "ss_dx": 4,
+        "ss_dy": 255,
+        "ss_origin_x": 3,
+        "ss_origin_y": 254,
+        "ss_type": 8,
+        "ss_metatile": 27,
+        "ss_base_remaining": 0,
+        "ss_base_axis": 1,
+        "ss_base_open": 0,
+        "ss_x0": 3,
+        "ss_x1": 19,
+        "ss_y0": 254,
+        "ss_y1": 255
+      }
+    },
+    {
+      "frame": 2366,
+      "observation": {
+        "level": 5,
+        "state": 2,
+        "x": 7774,
+        "y": 634,
+        "camera": 566,
+        "vy": 0,
+        "mode": 1,
+        "gravity": 0,
+        "mini": 1,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      },
+      "values": {
+        "pit_previous_room": [
+          2,
+          3
+        ],
+        "pit_previous_mode": [
+          1,
+          0
+        ],
+        "pit_previous_mini": [
+          1,
+          1
+        ],
+        "pit_previous_x": [
+          101,
+          237
+        ],
+        "pit_previous_y": [
+          161,
+          14
+        ],
+        "pit_previous_collision": [
+          8,
+          0
+        ],
+        "pit_previous_metatile": [
+          27,
+          0
+        ],
+        "ss_dx": 4,
+        "ss_dy": 0,
+        "ss_origin_x": 255,
+        "ss_origin_y": 255,
+        "ss_type": 8,
+        "ss_metatile": 27,
+        "ss_base_remaining": 0,
+        "ss_base_axis": 1,
+        "ss_base_open": 0,
+        "ss_x0": 255,
+        "ss_x1": 15,
+        "ss_y0": 255,
+        "ss_y1": 0
+      }
+    },
+    {
+      "frame": 2367,
+      "observation": {
+        "level": 5,
+        "state": 2,
+        "x": 7782,
+        "y": 634,
+        "camera": 566,
+        "vy": 0,
+        "mode": 1,
+        "gravity": 0,
+        "mini": 1,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      },
+      "values": {
+        "pit_previous_room": [
+          2,
+          3
+        ],
+        "pit_previous_mode": [
+          1,
+          0
+        ],
+        "pit_previous_mini": [
+          1,
+          1
+        ],
+        "pit_previous_x": [
+          101,
+          237
+        ],
+        "pit_previous_y": [
+          161,
+          14
+        ],
+        "pit_previous_collision": [
+          8,
+          0
+        ],
+        "pit_previous_metatile": [
+          27,
+          0
+        ],
+        "ss_dx": 4,
+        "ss_dy": 0,
+        "ss_origin_x": 255,
+        "ss_origin_y": 255,
+        "ss_type": 8,
+        "ss_metatile": 27,
+        "ss_base_remaining": 0,
+        "ss_base_axis": 1,
+        "ss_base_open": 0,
+        "ss_x0": 255,
+        "ss_x1": 15,
+        "ss_y0": 255,
+        "ss_y1": 0
+      }
+    },
+    {
+      "frame": 2368,
+      "observation": {
+        "level": 5,
+        "state": 2,
+        "x": 7786,
+        "y": 634,
+        "camera": 566,
+        "vy": 0,
+        "mode": 1,
+        "gravity": 0,
+        "mini": 1,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      },
+      "values": {
+        "pit_previous_room": [
+          2,
+          3
+        ],
+        "pit_previous_mode": [
+          1,
+          0
+        ],
+        "pit_previous_mini": [
+          1,
+          1
+        ],
+        "pit_previous_x": [
+          105,
+          237
+        ],
+        "pit_previous_y": [
+          161,
+          14
+        ],
+        "pit_previous_collision": [
+          8,
+          0
+        ],
+        "pit_previous_metatile": [
+          27,
+          0
+        ],
+        "ss_dx": 4,
+        "ss_dy": 0,
+        "ss_origin_x": 251,
+        "ss_origin_y": 255,
+        "ss_type": 8,
+        "ss_metatile": 27,
+        "ss_base_remaining": 0,
+        "ss_base_axis": 1,
+        "ss_base_open": 0,
+        "ss_x0": 251,
+        "ss_x1": 11,
+        "ss_y0": 255,
+        "ss_y1": 0
+      }
+    }
+  ]
+}

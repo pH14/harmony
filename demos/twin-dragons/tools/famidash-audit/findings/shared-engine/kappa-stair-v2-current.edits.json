@@ -1,0 +1,51 @@
+{
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "evidence": [
+    "Original release and current upstream inputs enter the same closed underfloor component at multiple staircase gaps, including24425,24724,24226. Currentone-capnegativecontrols preservebothotherescapesexactly.",
+    "Component242..268rows24..26 has no objective or teleport exit. Review all six diagonal boundary caps of this specific forbidden component, preserving both original4840frame and new4754frame clearing inputs which never visit it. This is reviewed perimeter repair, not automatic fill-to-solid conversion."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/kappaclysm.tmx",
+      "source_sha256": "7fc87f9ed7fcbcf13afff7c5710610fee15ac3fd7e09aa35c1af1602897496e5",
+      "edits": [
+        {
+          "column": 247,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 249,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 264,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 265,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 244,
+          "row": 25,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 242,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 101
+        }
+      ]
+    }
+  ]
+}
