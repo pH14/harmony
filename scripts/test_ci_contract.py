@@ -307,7 +307,7 @@ class StructureTests(unittest.TestCase):
         self.assertIn("timeout -k 10 1800 bash cli/tests/investigation.sh", commands)
         self.assertNotIn("scripts/historical-search.sh", commands)
 
-    def test_only_the_backend_miri_variant_has_the_extended_budget(self):
+    def test_only_backend_and_store_miri_variants_have_extended_budgets(self):
         import yaml
 
         workflow = ci_contract.CONSONANCE_ANALYSIS
@@ -316,7 +316,7 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(registered.timeout_minutes, 30)
         self.assertTrue(registered.exception)
         self.assertEqual(ci_contract.pull_request_budget(workflow.path, registered.name), 30)
-        expression = "${{ matrix.name == 'vmm-backend' && 30 || 15 }}"
+        expression = "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store') && 30 || 15 }}"
         self.assertEqual(job["timeout-minutes"], expression)
         self.assertEqual(ci_contract.PR_TIMEOUT_EXPRESSIONS,
                          {(workflow.path, registered.name): expression})
