@@ -23,18 +23,21 @@ export function trailRoom(samples) {
 }
 
 export class Swarm {
-  constructor(maxBytes, maxTrails, finishHold = 0) {
+  constructor(maxBytes, maxTrails, finishHold = 0, holdIdle = false) {
     this.maxBytes = maxBytes;
     this.maxTrails = maxTrails;
     this.finishHold = finishHold;
+    this.holdIdle = holdIdle;
     this.clear();
   }
   clear() {
     this.trails = new Map();
     this.bytes = 0;
     this.serial = 0;
+    this.lastFrame = null;
   }
   remove(branch) {
+    if (this.lastFrame?.branch === branch) this.lastFrame = null;
     for (const [id, trail] of this.trails) if (trail.branch === branch) {
       this.bytes -= trail.samples.byteLength;
       this.trails.delete(id);
@@ -85,6 +88,23 @@ export class Swarm {
       if (!rooms.has(point.level)) rooms.set(point.level, []);
       rooms.get(point.level).push(point);
       count++;
+    }
+    if (this.holdIdle && detail) {
+      if (rooms.size) {
+        this.lastFrame = { branch, rooms, stale: false };
+      } else if (this.lastFrame?.branch === branch) {
+        if (!this.lastFrame.stale) {
+          this.lastFrame.rooms = new Map([...this.lastFrame.rooms].map(([room, points]) => [room,
+            points.map(({ level, x, y, pose }) => ({ level, x, y, pose, life: 1, stale: true }))]));
+          this.lastFrame.stale = true;
+        }
+        let remaining = maxPoints;
+        for (const [room, points] of this.lastFrame.rooms) {
+          const shown = points.slice(0, Math.max(0, remaining));
+          if (shown.length) rooms.set(room, shown);
+          remaining -= shown.length;
+        }
+      }
     }
     return rooms;
   }

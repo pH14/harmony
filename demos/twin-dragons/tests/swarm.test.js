@@ -133,3 +133,28 @@ test("a clearing trail holds its last position for the finish hold", () => {
   assert.equal(held[0].x, 110);
   assert.equal(swarm.frame(0, 1500).size, 0);
 });
+
+test("idle presentation holds dim real positions without replaying expired attempts", () => {
+  const swarm = new Swarm(4096, 20, 0, true);
+  const samples = new Uint16Array([0, 0, 10, 20, 0, 60, 0, 110, 20, 2]);
+  swarm.add(0, [samples, samples], 0, [0]);
+  const moving = swarm.frame(0, 500, false, 20, true).get(0);
+  assert.equal(moving[0].x, 60);
+  const idle = swarm.frame(0, 2000, false, 20, true).get(0);
+  assert.deepEqual(idle, Array.from({ length: 2 }, () => ({ level: 0, x: 60, y: 20, pose: 0, life: 1, stale: true })));
+  assert.equal(swarm.bytes, 0, "Holding the display releases expired motion payloads");
+  assert.equal(swarm.trails.size, 0);
+  assert.equal(swarm.frame(0, 10000, false, 1, true).get(0).length, 1, "Idle drawing respects a reduced sprite budget");
+  assert.equal(swarm.frame(1, 10000, false, 20, true).size, 0, "Idle positions never leak into a different branch");
+  swarm.add(0, [samples], 10000);
+  const resumed = swarm.frame(0, 10000, false, 20, true).get(0);
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0].x, 10, "New attempts replace held positions at their actual starting points");
+  assert.equal(resumed[0].stale, undefined);
+  swarm.remove(0);
+  assert.equal(swarm.frame(0, 20000, false, 20, true).size, 0);
+  swarm.add(0, [samples], 20000);
+  swarm.frame(0, 20500, false, 20, true);
+  swarm.clear();
+  assert.equal(swarm.frame(0, 30000, false, 20, true).size, 0);
+});
