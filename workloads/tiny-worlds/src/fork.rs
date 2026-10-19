@@ -35,7 +35,7 @@ impl Config {
         if !(2..=31).contains(&self.length)
             || self.fork >= self.length
             || self.dead_len == 0
-            || self.fork + self.dead_len >= self.length
+            || u16::from(self.fork) + u16::from(self.dead_len) >= u16::from(self.length)
             || self.rooms > 16
         {
             return Err(
@@ -283,6 +283,7 @@ mod tests {
         assert!(Config { dead_len: 0, ..w }.validate().is_err());
         assert!(Config { dead_len: 6, ..w }.validate().is_err());
         assert!(Config { rooms: 17, ..w }.validate().is_err());
+        assert!(Config { length: 8, fork: 2, dead_len: 255, ..w }.validate().is_err());
         assert!(!w.state_is_bounded(State {
             run: 1,
             ..w.initial()
