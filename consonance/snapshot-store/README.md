@@ -110,6 +110,16 @@ resolved snapshot, including inherited pages. Sparse archive consumers use it
 before trusting a cached base-RAM digest; implicit zero pages need no read.
 `verify_snapshots` checks multiple resolved snapshots with one set of verified
 resident pages, so content shared by the base and target is hashed once.
+Each resolved-image scan also tracks guest frames independently of resident
+slots, visiting layers newest first. An explicit zero override marks its frame
+seen before older rows are considered. Several frames may share one resident
+slot while remaining distinct entries in the frame set. This zero-based frame
+set starts sparse and promotes only after at least 64 distinct frames and at
+least as many encountered frames as bitmap words. Its bitmap is capped at
+1 MiB; the word count uses checked conversion from the configured guest-page
+count, so huge sparse address spaces stay sparse. Short scans allocate no
+bitmap. Unlike the resident-slot set, frame membership is discarded after each
+resolved-image scan and never crosses snapshot IDs.
 
 `read_transaction` shares the resident-slot verification set across delta
 planning, page differences, checked page reads, and complete-image verification.
@@ -205,6 +215,10 @@ initial implicit-zero digest are creation work, not resident verification.
 Standalone per-hash clock reads and batch clock reads add measurement overhead.
 Clock granularity is platform-dependent; aggregate nanoseconds are not
 cycle-accurate page costs.
+
+A completed-image hit performs no ancestry or page-record checks, so it adds
+no page requests or resident memo hits. These counters describe work actually
+executed; completing a repeated snapshot does not synthesize the elided work.
 
 Distinctness is per read transaction. A later transaction verifies a resident
 slot again, and corrupted pages still reject before use. Diagnostic queries
