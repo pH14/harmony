@@ -67,6 +67,12 @@ class ScopeTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.active(path), set(SCENARIOS))
 
+    def test_publication_and_packaged_adapter_changes_select_the_real_consumer(self):
+        for path in (".github/workflows/release.yml", "scripts/qualify-packaged-host.py",
+                     "scripts/test_ci_packaged_host_qualification.py", "scripts/qualification/packaged-host.json"):
+            with self.subTest(path=path):
+                self.assertEqual(self.active(path), {"harmony_languages"})
+
     def test_the_shared_emulator_build_selects_every_source_built_game(self):
         self.assertEqual(self.active("scripts/build-quicknes-core.sh"),
                          {"dissonance_stb"})

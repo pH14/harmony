@@ -38,7 +38,11 @@ class SelectionTests(unittest.TestCase):
         self.assertFalse(self.required([".github/workflows/repository-checks.yml"]))
         self.assertTrue(self.required([".github/workflows/dissonance-checks.yml"]))
         self.assertTrue(self.required([".github/workflows/repository-checks.yml"], "repository-checks.yml"))
-        self.assertFalse(self.required([".github/workflows/release.yml"]))
+
+
+    def test_release_archive_wiring_selects_its_production_composition_checks(self):
+        self.assertTrue(selected([".github/workflows/release.yml"])["harmony_languages"])
+        self.assertTrue(self.required([".github/workflows/release.yml"]))
 
     def test_rust_sources_and_build_inputs_select(self):
         for path in ("dissonance/searcher/src/lib.rs", "consonance/vmm-core/src/lib.rs", "cli/src/main.rs",

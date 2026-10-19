@@ -169,6 +169,55 @@ jobs:
           name: guest-${{ matrix.isa }}
           path: harmony-guest-*.tar.gz*
 
+
+  packaged-composition:
+    name: Packaged Composition — ${{ matrix.isa }}
+    needs: [cli, guest]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            isa: x86_64
+            triple: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            isa: aarch64
+            triple: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-${{ matrix.triple }}
+          path: packages
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest-${{ matrix.isa }}
+          path: packages
+      - name: Enable required native qualification
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools strace
+          if [[ -c /dev/kvm ]]; then sudo chmod a+rw /dev/kvm; fi
+          musl-gcc -O2 -static -Wall -Wextra -Werror \
+            -o packaged-host-fixture cli/tests/fixtures/packaged-host.c
+      - name: Exercise the exact publication archives through the CLI and worker
+        run: |
+          python3 scripts/qualify-packaged-host.py \
+            --cli-archive "packages/harmony-${{ github.ref_name }}-${{ matrix.triple }}.tar.gz" \
+            --runtime-archive "packages/harmony-guest-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz" \
+            --fixture packaged-host-fixture --output packaged-composition \
+            --evidence-archive "harmony-composition-${{ github.ref_name }}-${{ matrix.isa }}-evidence.tar.gz"
+          cp packaged-composition/receipt.json "harmony-composition-${{ github.ref_name }}-${{ matrix.isa }}.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: composition-${{ matrix.isa }}
+          path: harmony-composition-*
+          if-no-files-found: error
+
+
   uml:
     name: UML Runtime — ${{ matrix.isa }}
     strategy:
@@ -215,13 +264,13 @@ jobs:
 
   publish:
     name: Publish
-    needs: [cli, guest, uml, sdk]
+    needs: [cli, guest, uml, sdk, packaged-composition]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes harmony-*.tar.gz harmony-*.sha256
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes harmony-*.tar.gz harmony-*.sha256 harmony-composition-*.json
         env:
           GH_TOKEN: ${{ github.token }}

@@ -734,6 +734,17 @@ The host-code-identity Miri target exercises the loader callback's unsafe
 program-header copy with a synthetic record on pull requests that change that
 crate. Its whole library runs in scheduled Consonance analysis.
 
+`Packaged Composition` consumes the language workflow's retained paired CLI and
+exact runtime on x86-64. The release's `Packaged Composition — <Architecture>`
+cells consume the actual CLI and guest archives for Linux x86-64 and Arm64.
+They run the public frontend, completed-command replay and a real search
+worker with an independent per-child KVM trace. Publication needs both release
+cells, so missing hardware or incomplete execution fails the check. The same
+archives are published with per-architecture bounded receipts and diagnostic
+archives; no VMM executable is rebuilt in a qualification consumer. Their
+matrix keeps unmeasured restore, whole-state/history and cross-host relations
+unavailable. See the [cell contract](../scripts/qualification/README.md#packaged-production-host-composition).
+
 The release workflow publishes the CLI, a guest kernel and base initramfs with
 their source-bound runtime manifest,
 a pinned UML profile, and the source SDK for language preparation. Guest, UML
