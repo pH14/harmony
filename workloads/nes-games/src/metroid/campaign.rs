@@ -1177,7 +1177,7 @@ mod tests {
         .unwrap();
         assert_eq!(read("ridley_area-boss.json").actions.len(), 5);
         std::fs::remove_dir_all(directory).unwrap();
-        assert!(crate::evidence::assert_checkpoint_round_trip(&evidence) > 0);
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 2);
     }
 
     #[test]
