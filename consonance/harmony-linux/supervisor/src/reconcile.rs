@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use process_proto::events::ParkTarget;
-use process_proto::{
-    EVERY_NODE, ProcessAction, ProcessWindow, WireError, decode_process_windows,
-};
+use process_proto::{EVERY_NODE, ProcessAction, ProcessWindow, WireError, decode_process_windows};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EventPark {
