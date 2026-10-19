@@ -1,0 +1,34 @@
+[
+  {
+    "before": "release-wave66-all-v1-root900-original-clearing.json.gz",
+    "after": "release-wave66-all-v1-root900-clearing.json.gz",
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "frames": 4098,
+    "retimed": false
+  },
+  {
+    "before": "release-wave66-all-v1-root0-original-clearing.json.gz",
+    "after": "release-wave66-all-v1-root0-clearing.json.gz",
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "frames": 4103,
+    "retimed": false
+  },
+  {
+    "before": "current-hell-mini66-v4-root3000-clearing.json.gz",
+    "after": "current-wave66-all-v1-root3000-clearing.json.gz",
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "frames": 4388,
+    "retimed": false
+  },
+  {
+    "before": "current-hell-mini66-v4-root3040-clearing.json.gz",
+    "after": "current-wave66-all-v1-root3040-clearing.json.gz",
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "frames": 4377,
+    "retimed": false
+  }
+]

@@ -1,0 +1,18 @@
+{
+  "3000": {
+    "frames": 4388,
+    "steep_section_probes": 38,
+    "steep_section_fill_entries": [],
+    "all_wave_fill_component_counts": {},
+    "source_mismatches": [],
+    "limitation": "Other wave-fill contacts require separate source assessment; section control only."
+  },
+  "3040": {
+    "frames": 4377,
+    "steep_section_probes": 38,
+    "steep_section_fill_entries": [],
+    "all_wave_fill_component_counts": {},
+    "source_mismatches": [],
+    "limitation": "Other wave-fill contacts require separate source assessment; section control only."
+  }
+}

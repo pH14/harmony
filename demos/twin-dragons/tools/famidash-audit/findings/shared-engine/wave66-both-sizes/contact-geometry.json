@@ -1,0 +1,30 @@
+{
+  "source_tile": [
+    173,
+    26
+  ],
+  "type": "COL_SLOPE_RU66_TOP",
+  "frame936_raw_point": [
+    2780,
+    764
+  ],
+  "frame937_raw_point": [
+    2784,
+    760
+  ],
+  "tile_origin": [
+    2768,
+    752
+  ],
+  "segment_local_start": [
+    12,
+    12
+  ],
+  "segment_local_end": [
+    16,
+    8
+  ],
+  "solid_polygon": "8 <= x <= 16; 0 <= y <= 2*x-16",
+  "first_solid_segment_parameter": "1/3",
+  "explanation": "The old point is outside the solid polygon. The segment crosses its diagonal before leaving the tile; the next sampled tile is noncolliding BLACK_NONE."
+}

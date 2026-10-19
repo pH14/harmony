@@ -1,0 +1,249 @@
+{
+  "frames": 963,
+  "source_mismatches": [],
+  "fill_reads_before_slope_escape": [
+    {
+      "frame": 688,
+      "component": 107,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 689,
+      "component": 107,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 690,
+      "component": 107,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 691,
+      "component": 107,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 692,
+      "component": 107,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 699,
+      "component": 107,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 700,
+      "component": 107,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 701,
+      "component": 107,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 711,
+      "component": 111,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 712,
+      "component": 111,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 713,
+      "component": 111,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 714,
+      "component": 111,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 715,
+      "component": 111,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 734,
+      "component": 119,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 735,
+      "component": 119,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 736,
+      "component": 119,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 739,
+      "component": 100,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 740,
+      "component": 100,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 741,
+      "component": 100,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 742,
+      "component": 100,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 743,
+      "component": 100,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 744,
+      "component": 100,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 751,
+      "component": 101,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 752,
+      "component": 101,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 753,
+      "component": 101,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 754,
+      "component": 101,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 755,
+      "component": 101,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 757,
+      "component": 101,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 758,
+      "component": 101,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 759,
+      "component": 101,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 760,
+      "component": 101,
+      "mode": 0,
+      "mini": 0
+    },
+    {
+      "frame": 761,
+      "component": 101,
+      "mode": 0,
+      "mini": 0
+    }
+  ],
+  "fill_reads_after": [
+    {
+      "frame": 937,
+      "component": 92
+    },
+    {
+      "frame": 938,
+      "component": 92
+    },
+    {
+      "frame": 939,
+      "component": 92
+    },
+    {
+      "frame": 940,
+      "component": 92
+    },
+    {
+      "frame": 941,
+      "component": 92
+    },
+    {
+      "frame": 942,
+      "component": 92
+    },
+    {
+      "frame": 943,
+      "component": 92
+    },
+    {
+      "frame": 944,
+      "component": 92
+    },
+    {
+      "frame": 945,
+      "component": 92
+    },
+    {
+      "frame": 946,
+      "component": 92
+    },
+    {
+      "frame": 947,
+      "component": 92
+    },
+    {
+      "frame": 948,
+      "component": 92
+    }
+  ],
+  "limitation": "Raw centre reads; sprite/body/source-edge intent is not completely assessed."
+}

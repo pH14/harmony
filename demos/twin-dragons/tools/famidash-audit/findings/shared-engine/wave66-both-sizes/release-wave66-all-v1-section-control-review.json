@@ -1,0 +1,52 @@
+{
+  "900": {
+    "frames": 4098,
+    "steep_section_probes": 38,
+    "steep_section_component92_entries": [],
+    "all_wave_fill_component_counts": {
+      "92": 1
+    },
+    "source_mismatches": [],
+    "limitation": "Other wave-fill contacts require separate source assessment; section control only."
+  },
+  "0": {
+    "frames": 4103,
+    "steep_section_probes": 38,
+    "steep_section_component92_entries": [
+      941,
+      942,
+      943,
+      944,
+      945,
+      946,
+      947,
+      948,
+      949,
+      950,
+      951,
+      952,
+      953,
+      954,
+      955,
+      956,
+      957,
+      958,
+      959,
+      960,
+      961,
+      962,
+      963,
+      964,
+      965,
+      966,
+      967
+    ],
+    "all_wave_fill_component_counts": {
+      "91": 122,
+      "92": 43,
+      "121": 110
+    },
+    "source_mismatches": [],
+    "limitation": "Other wave-fill contacts require separate source assessment; section control only."
+  }
+}

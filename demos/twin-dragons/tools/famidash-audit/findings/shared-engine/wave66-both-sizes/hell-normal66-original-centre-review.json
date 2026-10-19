@@ -1,0 +1,186 @@
+{
+  "schema": 1,
+  "status": "raw-probe-triage",
+  "source_review_complete": false,
+  "side": "c",
+  "level": 8,
+  "name": "hell",
+  "components": {
+    "92": {
+      "geometry": {
+        "number": 92,
+        "tile": 111,
+        "names": {
+          "BLACK_NONE": 118
+        },
+        "area": 118,
+        "bbox": [
+          173,
+          23,
+          206,
+          28
+        ],
+        "boundary": {
+          "COL_SLOPE_RU66_BOT": 3,
+          "COL_FLOOR_CEIL": 34,
+          "COL_SLOPE_RU66_TOP": 2,
+          "COL_SLOPE_RU45": 22,
+          "COL_SLOPE_LU45": 29
+        },
+        "non_none_boundary_fraction": 1.0,
+        "open_faces": [],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 937,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2784,
+          "sample_world_y": 760,
+          "column": 174,
+          "row": 26
+        },
+        {
+          "frame": 938,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2788,
+          "sample_world_y": 756,
+          "column": 174,
+          "row": 26
+        },
+        {
+          "frame": 939,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2792,
+          "sample_world_y": 751,
+          "column": 174,
+          "row": 25
+        },
+        {
+          "frame": 940,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2796,
+          "sample_world_y": 747,
+          "column": 174,
+          "row": 25
+        },
+        {
+          "frame": 941,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2801,
+          "sample_world_y": 743,
+          "column": 175,
+          "row": 25
+        },
+        {
+          "frame": 942,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2805,
+          "sample_world_y": 747,
+          "column": 175,
+          "row": 25
+        },
+        {
+          "frame": 943,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2809,
+          "sample_world_y": 751,
+          "column": 175,
+          "row": 25
+        },
+        {
+          "frame": 944,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2813,
+          "sample_world_y": 756,
+          "column": 175,
+          "row": 26
+        },
+        {
+          "frame": 945,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2817,
+          "sample_world_y": 760,
+          "column": 176,
+          "row": 26
+        },
+        {
+          "frame": 946,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2821,
+          "sample_world_y": 764,
+          "column": 176,
+          "row": 26
+        },
+        {
+          "frame": 947,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2826,
+          "sample_world_y": 768,
+          "column": 176,
+          "row": 27
+        },
+        {
+          "frame": 948,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2830,
+          "sample_world_y": 772,
+          "column": 176,
+          "row": 27
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    }
+  },
+  "source_mismatches": [],
+  "outside_source": [],
+  "centre_probes": 64,
+  "limitation": "Raw collision reads and end-of-frame survival only. Mode-specific geometry, source intent, objectives and original-ROM reproduction remain required.",
+  "inputs": {
+    "index_sha256": "28b9e15595b7283729a007e0e20f6b1f5bed656a67aff3ed3373b871f9f029a0",
+    "case_sha256": "c82c5c69be5b2fcbea004fe43c337fb7f6f45a8bdfaaef885ccfffdd29ebe787",
+    "cpu_sha256": "9337c47db17db08690886195d83bc94b92e6ac7bf69915e47019c0fd0d5ee71e",
+    "rom_sha256": "ab24fedcfcf8d5f3e1f29958b3cd783ea986f7a5dcfe5ddc1fbd177cad756934",
+    "core_sha256": "f551d35489077c5e30e14b665c324ed693ae68db0d093e16e84869df003a7a8d",
+    "debug_sha256": "b527c1c22b529237372f48dbe4dc6eb8583e9b87eb768ecd0cd5015c92f54bc1"
+  }
+}

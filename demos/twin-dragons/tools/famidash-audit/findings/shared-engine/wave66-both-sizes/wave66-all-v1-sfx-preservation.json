@@ -1,0 +1,85 @@
+{
+  "status": "verified",
+  "cases": [
+    {
+      "variant": "release",
+      "rom": "famidash.nes",
+      "rom_sha256": "ecb7ee0b5b706c85e4c35132ceb090bb1f5342ed039f7834b9401aefdabd03ca",
+      "sfx_offset": 426000,
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "variant": "release",
+      "rom": "famidash-d-sides.nes",
+      "rom_sha256": "a8e16fc8dc7f2d95babc2e53783ab2c9ac3130903e87e5089325184e7b23d677",
+      "sfx_offset": 426000,
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "variant": "release",
+      "rom": "famidash-c-sides.nes",
+      "rom_sha256": "2eac39f55648f41cc45b7fa92d13cedd0bca8e2b043983ce322ea45c3c43f3a6",
+      "sfx_offset": 426000,
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "variant": "release",
+      "rom": "famidash-b-sides.nes",
+      "rom_sha256": "548cc09b809450180f69662b49e56793bb928853f799f6f8b148b33c588df4e4",
+      "sfx_offset": 426000,
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "variant": "current",
+      "rom": "famidash.nes",
+      "rom_sha256": "24080b915184a9eb16f5dfeaa58d9a04c91a0991180ac4f55e658a13bfd49fee",
+      "sfx_offset": 426000,
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "variant": "current",
+      "rom": "famidash-e-sides.nes",
+      "rom_sha256": "760743ebdf78c794b16fa4e4545ce6e759b2d7dd08553678ef27e93a98da6e83",
+      "sfx_offset": 426000,
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "variant": "current",
+      "rom": "famidash-d-sides.nes",
+      "rom_sha256": "bdb8d2ced4cff89ddb01870da3be14e89e8348c38a596aa993adb604053253a7",
+      "sfx_offset": 426000,
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "variant": "current",
+      "rom": "famidash-c-sides.nes",
+      "rom_sha256": "24bcbbd2a8a4e86534a708f9a20c285eb7f87864e484f4fb74da490863cee0c1",
+      "sfx_offset": 426000,
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "variant": "current",
+      "rom": "famidash-b-sides.nes",
+      "rom_sha256": "e73817869106c349f64b8b10a36bee82576e167e11b7002f8d1d46623b881019",
+      "sfx_offset": 426000,
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "variant": "currentHUGE",
+      "rom": "famidash.nes",
+      "rom_sha256": "f7f7efb3e145ebf3acbb4601e5441ea182081638c7d32828d8ee5f50bcbb1c82",
+      "sfx_offset": 1966096,
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    }
+  ]
+}

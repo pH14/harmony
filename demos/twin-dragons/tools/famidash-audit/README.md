@@ -464,6 +464,12 @@ include pristine-source patches, opposite-direction negative cases, independent
 NES replays and mode-specific clearing controls. Host arithmetic checks do not
 qualify NES timing, history invalidation or all intended routes.
 
+The [both-size wave66 experiment](findings/shared-engine/wave66-both-sizes/README.md)
+extends that kernel to normal wave and invalidates history on size changes.
+It includes a fresh original-release normal-wave reproducer, unchanged-approach
+independent death checks and explicit rejected-route evidence. Current native
+normal-wave reproduction and broader integration remain open.
+
 Source-component schema 4 lists coins within eight tiles of each bounding box
 as `nearby_objectives`. This is proximity, not a reachability or intent verdict.
 An empty `sprites` list only describes membership: a closed component can form
