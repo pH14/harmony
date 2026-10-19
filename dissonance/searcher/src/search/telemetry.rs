@@ -40,8 +40,30 @@ pub struct CompletedBufferTelemetry {
     pub candidates_peak: u64,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StreamTelemetry {
+    pub command_capacity: usize,
+    pub output_capacity: usize,
+    pub background_records: u64,
+    pub background_bytes: u64,
+    pub encode_ns: u64,
+    pub sink_ns: u64,
+    pub flush_ns: u64,
+    pub sink_bytes: u64,
+    pub producer_backpressure_events: u64,
+    pub producer_wait_ns: u64,
+    pub records_in_flight_peak: u64,
+    pub largest_buffer_capacity_bytes: u64,
+    pub worker_cpu_ns: Option<u64>,
+    pub worker_cpu_wait_ns: Option<u64>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct CampaignTelemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<StreamTelemetry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_host: Option<HostTimes>,
     pub bootstrap_ns: u64,
     pub search_ns: u64,
     pub persistence_ns: u64,
@@ -132,20 +154,25 @@ pub struct HostTimes {
 
 impl HostTimes {
     pub(crate) fn measure(coordinator_start: Option<(u64, u64)>, idle: (u64, u64)) -> Self {
-        let (coordinator_cpu_ns, coordinator_run_wait_ns) = coordinator_start
-            .zip(thread_schedstat())
-            .map_or((0, 0), |((cpu_before, wait_before), (cpu, wait))| {
-                (
-                    cpu.saturating_sub(cpu_before),
-                    wait.saturating_sub(wait_before),
-                )
-            });
-        Self {
-            coordinator_cpu_ns,
-            coordinator_run_wait_ns,
+        Self::try_measure(coordinator_start, idle).unwrap_or(Self {
             idle_admission_order_ns: idle.0,
             idle_no_job_ns: idle.1,
-        }
+            ..Self::default()
+        })
+    }
+
+    pub(crate) fn try_measure(
+        coordinator_start: Option<(u64, u64)>,
+        idle: (u64, u64),
+    ) -> Option<Self> {
+        let (cpu_before, wait_before) = coordinator_start?;
+        let (cpu, wait) = thread_schedstat()?;
+        Some(Self {
+            coordinator_cpu_ns: cpu.saturating_sub(cpu_before),
+            coordinator_run_wait_ns: wait.saturating_sub(wait_before),
+            idle_admission_order_ns: idle.0,
+            idle_no_job_ns: idle.1,
+        })
     }
 }
 
@@ -208,6 +235,23 @@ impl IdleClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_coordinator_cpu_is_distinct_from_a_measured_zero() {
+        assert_eq!(HostTimes::try_measure(None, (3, 4)), None);
+        let mut telemetry = CampaignTelemetry::default();
+        assert!(
+            serde_json::to_value(&telemetry)
+                .unwrap()
+                .get("coordinator_host")
+                .is_none()
+        );
+        telemetry.coordinator_host = Some(HostTimes::default());
+        assert_eq!(
+            serde_json::to_value(&telemetry).unwrap()["coordinator_host"]["coordinator_cpu_ns"],
+            0
+        );
+    }
 
     #[test]
     fn target_counters_sum_across_workers() {

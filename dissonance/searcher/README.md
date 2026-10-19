@@ -146,8 +146,36 @@ Workers pull jobs from one shared queue ordered by planned finish, so an idle
 worker takes the queued job that admission reaches first while another worker
 is still busy. A short job reserved after longer ones runs before them,
 because admission needs its result first. The coordinator dispatches each job
-when it reserves it, so the admission window alone limits the jobs that are
-queued, running or finished but not yet admitted. Memory held by finished
+when it reserves it, including between individual admissions unlocked by a
+buffered-result burst. Workers can start the replacement while the coordinator
+admits the next result. The coordinator also refills the queue between received
+replies, so draining a ready reply channel does not defer dispatch. The admission
+window alone limits the jobs that are queued, running or finished but not yet
+admitted. The native pool writes the header inline, then moves owned typed records to one
+ordered background encoder that serializes them and owns the stream hash. The
+coordinator retains the borrowed output sink, which need not be `Send`. Sixteen
+queued commands and one queued encoded line bound the pipeline; reusable byte
+buffers return with later commands. Queue bounds count records, including owned
+record payloads, rather than claiming a fixed byte charge for arbitrary workload
+serialization. A full queue makes the producer drain encoded output before
+retrying. While waiting for worker results, the coordinator pumps output at most
+five milliseconds apart. Normal completion drains, joins and flushes before
+returning the digest. A later worker or coordinator failure drains earlier
+accepted records without appending an end record; sink and encoding failures
+stop certification and close both channel directions before joining. Browser and
+stepped coordinators retain inline encoding.
+
+`PlacedThread::StreamEncoder` lets launchers place this additional host thread
+separately from the coordinator. Encoder placement failure or panic fails startup
+before dispatch. `telemetry.stream` reports encoder records/bytes and encode time,
+coordinator sink writes and final flush, producer backpressure, the maximum
+number of accepted outstanding records, and the largest single reusable buffer
+capacity. `background_records`, `background_bytes` and `sink_bytes` exclude the
+inline header even though the digest includes it; the evaluator result
+`stream_bytes_generated` is the whole-stream byte count. CPU and scheduler-wait
+counters are optional when the host cannot report them. Encoder work is owned by
+this host thread, outside target-worker totals; sink and backpressure time can
+nest inside the coordinator's stream-write span and must not be added to it. Memory held by finished
 results is outside the archive's logical budget and must be measured in host
 RSS. Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
 when finished results wait on an earlier job and `idle_no_job_ns` otherwise.
@@ -565,7 +593,20 @@ holders, so searches that leave the cell start from them. The other draws weigh 
 preferences draws every holder that way. Half of tier draws first try a recent-arrival window: the newest 256
 selectable entries, deduplicated by cell, limited to the drawn tier and cells
 with fewer than 32 draws since their last productive reset. These cells use
-the same count weights and holder selection. An empty window falls back to
+the same count weights and holder selection. Recent candidates use a cached sorted,
+deduplicated vector bounded by those 256 entries. Active membership changes update the entering and leaving holders, refilling
+from the next newest active entry when needed. Per-cell holder counts preserve
+deduplication as holders enter and leave the window. Selection and cell resets
+update cached weights by binary search. Repeated selections and admissions avoid
+rescanning and looking up all 256 cells. Slots that retain one holder per
+preference select their winners in one pass per preference, preserving the
+preference, action-cost and entry-ID tie breaks without allocating and sorting
+intermediate member and order vectors. The cache is
+rebuilt after checkpoint restore and compaction, and its bounded allocation is
+included in selector memory accounting. Tier weighting sums the equal
+promoted prefix, at most eight distinct geometric weights and the unit-weight
+tail directly, preserving the original random draw and cumulative boundaries
+without scanning every tier to total its weight. An empty window falls back to
 the full tier; the other half always uses the full tier. The window derives
 from the existing ordered active index and saved counts, so it adds no
 checkpoint state. `recent_selections` records draws through this path. There
@@ -843,8 +884,10 @@ snapshot; a terminal target without a snapshot is reported as an execution
 error.
 
 `CampaignExecutionOptions::placement` is a `ThreadPlacement` hook the campaign
-calls once on the coordinator thread and once on each worker thread before
-that worker builds its target. A launcher uses it to pin threads to cores. A
+calls once on the coordinator thread, once on the native stream encoder thread,
+and once on each worker thread before that worker builds its target. A launcher
+uses it to pin threads to cores. The encoder has its own `StreamEncoder` role
+so it can run away from a pinned coordinator. A
 failed placement fails the campaign with its message. Placement changes only
 where threads run, so a placed campaign records the same stream as an unplaced
 one.

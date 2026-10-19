@@ -819,6 +819,11 @@ a prior typed execution error remains primary, with a secondary cleanup diagnost
 Linux targets continue reusing their thread-local session between worker jobs.
 Target Drop is not a universal session-finalization boundary.
 
+The native campaign's stream encoder serializes and hashes ordered records on
+a separate thread. When processor placement is enabled, the package places that
+thread on the first execution worker's processor, leaving the coordinator on
+its assigned processor. The encoder does not create a guest session.
+
 Final cumulative telemetry is captured once before explicit session shutdown and
 merged into retired counters without a post-close RPC. It excludes teardown work;
 telemetry failure does not prevent the owned shutdown attempt. Bootstrap scope

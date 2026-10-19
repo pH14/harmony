@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
+    cell::RefCell,
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
@@ -289,6 +290,7 @@ fn tier_weight(rank: u8) -> u64 {
     1_u64 << (u32::from(TIER_RANK_CAP.saturating_sub(rank.min(TIER_RANK_CAP))) * TIER_RANK_SHIFT)
 }
 
+#[cfg(test)]
 fn draw_weighted(
     rand: &mut RomuDuoJrRand,
     weights: impl Iterator<Item = u64> + Clone,
@@ -577,6 +579,63 @@ pub struct ArchiveCandidate<T, K, M> {
     pub milestones: M,
 }
 
+struct RecentCells<K: ArchiveKey> {
+    cells: Vec<(K::Progress, K::Place, u64, usize)>,
+    ids: Vec<usize>,
+    valid: bool,
+}
+
+impl<K: ArchiveKey> Default for RecentCells<K> {
+    fn default() -> Self {
+        Self {
+            cells: Vec::new(),
+            ids: Vec::new(),
+            valid: false,
+        }
+    }
+}
+
+impl<K: ArchiveKey> RecentCells<K> {
+    fn insert(&mut self, id: usize, key: K, weight: u64) {
+        let position = self.ids.binary_search(&id).unwrap_err();
+        self.ids.insert(position, id);
+        let cell = cell_of(key);
+        match self
+            .cells
+            .binary_search_by_key(&cell, |(tier, place, _, _)| (*tier, *place))
+        {
+            Ok(index) => self.cells[index].3 += 1,
+            Err(index) => self.cells.insert(index, (cell.0, cell.1, weight, 1)),
+        }
+    }
+
+    fn remove(&mut self, id: usize, key: K) -> bool {
+        let Ok(position) = self.ids.binary_search(&id) else {
+            return false;
+        };
+        self.ids.remove(position);
+        let index = self
+            .cells
+            .binary_search_by_key(&cell_of(key), |(tier, place, _, _)| (*tier, *place))
+            .unwrap();
+        self.cells[index].3 -= 1;
+        if self.cells[index].3 == 0 {
+            self.cells.remove(index);
+        }
+        true
+    }
+
+    fn set_weight(&mut self, cell: Cell<K>, weight: u64) {
+        if self.valid
+            && let Ok(index) = self
+                .cells
+                .binary_search_by_key(&cell, |(tier, place, _, _)| (*tier, *place))
+        {
+            self.cells[index].2 = weight;
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(bound(
     serialize = "A: Serialize, M: Serialize",
@@ -618,6 +677,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     selector_weighted: bool,
     active_ids: ActiveIds,
     tiers: BTreeMap<K::Progress, TierCells<K>>,
+    #[serde(skip)]
+    recent_cells: RefCell<RecentCells<K>>,
     #[serde(skip)]
     parent_index: Vec<usize>,
     preserve_inactive_snapshots: bool,
@@ -1223,6 +1284,7 @@ where
             selector_weighted: false,
             active_ids: ActiveIds::default(),
             tiers: BTreeMap::new(),
+            recent_cells: RefCell::default(),
             parent_index: Vec::new(),
             preserve_inactive_snapshots: false,
             metadata_pins: BTreeMap::new(),
@@ -1786,6 +1848,7 @@ where
 
         let selector_indexed = std::mem::take(&mut self.selector_indexed);
         self.active_ids = ActiveIds::default();
+        self.recent_cells = RefCell::default();
         self.tiers.clear();
         self.parent_index = Vec::new();
         if selector_indexed {
@@ -2030,6 +2093,10 @@ where
         let tiers = self.tiers.len();
         let preferences = K::preferences();
         heap::btree_bytes::<usize, ()>(1, active)
+            .saturating_add(heap::vec_bytes::<(K::Progress, K::Place, u64, usize)>(
+                self.entries.len().min(256),
+            ))
+            .saturating_add(heap::vec_bytes::<usize>(self.entries.len().min(256)))
             .saturating_add(heap::btree_bytes::<K::Progress, TierCells<K>>(1, tiers))
             .saturating_add(heap::btree_bytes::<K::Place, CellMembers<K>>(tiers, places))
             .saturating_add(WeightedSet::<K::Place>::heap_bound(tiers, places, removals))
@@ -2077,6 +2144,7 @@ where
     }
 
     fn rebuild_selector_index(&mut self) {
+        self.recent_cells = RefCell::default();
         self.selector_indexed = true;
         self.active_ids = ActiveIds::from_ids(self.active_ids());
         let mut grouped = BTreeMap::<K::Progress, BTreeMap<K::Place, Vec<usize>>>::new();
@@ -2208,6 +2276,16 @@ where
             return;
         }
         self.active_ids.insert(id);
+        let recent = self.recent_cells.get_mut();
+        if recent.valid && (recent.ids.len() < 256 || recent.ids[0] < id) {
+            if recent.ids.len() == 256 {
+                let oldest = recent.ids[0];
+                recent.remove(oldest, self.entries[oldest].key);
+            }
+            let key = self.entries[id].key;
+            let draws = self.cells.get(&cell_of(key)).map_or(0, |cell| cell.draws);
+            recent.insert(id, key, if draws < 32 { count_decay(draws) } else { 0 });
+        }
         self.insert_active_cell_member(id);
     }
 
@@ -2216,6 +2294,22 @@ where
             return;
         }
         self.active_ids.remove(id);
+        let recent = self.recent_cells.get_mut();
+        if recent.valid && recent.remove(id, self.entries[id].key) {
+            let replacement = match recent.ids.first() {
+                Some(oldest) => self.active_ids.ids.range(..*oldest).next_back(),
+                None => self.active_ids.ids.last(),
+            };
+            if let Some(&replacement) = replacement {
+                let key = self.entries[replacement].key;
+                let draws = self.cells.get(&cell_of(key)).map_or(0, |cell| cell.draws);
+                recent.insert(
+                    replacement,
+                    key,
+                    if draws < 32 { count_decay(draws) } else { 0 },
+                );
+            }
+        }
         let rank = self.holder_rank(0, id);
         let (progress, place) = (rank.key.progress(), rank.key.place());
         let Some(tier) = self.tiers.get_mut(&progress) else {
@@ -2304,6 +2398,7 @@ where
     }
 
     fn reweight_selector_index(&mut self) {
+        self.recent_cells.get_mut().valid = false;
         let mut tiers = std::mem::take(&mut self.tiers);
         for (progress, tier) in &mut tiers {
             tier.weights = WeightedSet::from_sorted(
@@ -2491,6 +2586,38 @@ where
     }
 
     fn rank_slot_preferences(
+        &self,
+        slot: &[usize],
+        key: K,
+        cost_in_group: u64,
+    ) -> (Vec<bool>, Vec<usize>) {
+        if K::capacity().max(1) != 1 {
+            return self.rank_slot_preferences_sorted(slot, key, cost_in_group);
+        }
+        let mut retained = vec![false; slot.len() + 1];
+        let mut candidate = Vec::new();
+        for preference in 0..K::preferences().max(1) {
+            let best = slot
+                .iter()
+                .enumerate()
+                .max_by(|(_, left), (_, right)| self.holder_order(preference, **left, **right));
+            let candidate_wins = best.is_none_or(|(_, held)| {
+                key.preference_cmp(preference, self.entries[*held].key)
+                    .then_with(|| self.cost_in_group[*held].cmp(&cost_in_group))
+                    .then_with(|| self.entries[*held].id.cmp(&self.next_entry_id))
+                    == Ordering::Greater
+            });
+            if candidate_wins {
+                retained[slot.len()] = true;
+                candidate.push(preference);
+            } else if let Some((index, _)) = best {
+                retained[index] = true;
+            }
+        }
+        (retained, candidate)
+    }
+
+    fn rank_slot_preferences_sorted(
         &self,
         slot: &[usize],
         key: K,
@@ -3029,26 +3156,57 @@ where
         if rand.below(NonZeroUsize::new(2).unwrap()) != 0 {
             return Ok(None);
         }
-        let places: BTreeMap<_, _> = self
-            .active_ids
-            .ids
-            .iter()
-            .rev()
-            .take(256)
-            .filter_map(|id| {
-                let key = self.entries[*id].key;
-                if key.progress() != progress {
-                    return None;
+        let mut recent = self.recent_cells.borrow_mut();
+        if !recent.valid {
+            recent.ids.clear();
+            recent
+                .ids
+                .extend(self.active_ids.ids.iter().rev().take(256).copied());
+            recent.ids.reverse();
+            recent.cells.clear();
+            let cells = recent
+                .ids
+                .iter()
+                .map(|id| {
+                    let key = self.entries[*id].key;
+                    let draws = self.cells.get(&cell_of(key)).map_or(0, |cell| cell.draws);
+                    let weight = if draws < 32 { count_decay(draws) } else { 0 };
+                    (key.progress(), key.place(), weight, 1)
+                })
+                .collect::<Vec<_>>();
+            recent.cells = cells;
+            recent
+                .cells
+                .sort_unstable_by_key(|(tier, place, _, _)| (*tier, *place));
+            recent.cells.dedup_by(|right, left| {
+                if (right.0, right.1) == (left.0, left.1) {
+                    left.3 += right.3;
+                    true
+                } else {
+                    false
                 }
-                let draws = self.cells.get(&cell_of(key)).map_or(0, |cell| cell.draws);
-                (draws < 32).then_some((key.place(), draws))
-            })
-            .collect();
-        if places.is_empty() {
-            return Ok(None);
+            });
+            recent.valid = true;
         }
-        let index = draw_weighted(rand, places.values().map(|draws| count_decay(*draws)))?;
-        Ok(places.into_keys().nth(index))
+        let start = recent
+            .cells
+            .partition_point(|(tier, _, _, _)| *tier < progress);
+        let end = recent
+            .cells
+            .partition_point(|(tier, _, _, _)| *tier <= progress);
+        let places = &recent.cells[start..end];
+        let total = places.iter().map(|(_, _, weight, _)| *weight).sum();
+        let Some(total) = NonZeroU64::new(total) else {
+            return Ok(None);
+        };
+        let mut draw = rand.below_u64(total);
+        for (_, place, weight, _) in places {
+            if draw < *weight {
+                return Ok(Some(*place));
+            }
+            draw -= weight;
+        }
+        Err("recent cell draw exceeded its total".into())
     }
 
     fn tier_runs(&self, progress: K::Progress) -> TierRuns {
@@ -3129,14 +3287,34 @@ where
             floor += 1;
         }
         let floor_weight = (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX)) >> halvings).max(1);
-        let weights = (0..tiers).map(|rank| {
-            if rank <= floor {
-                floor_weight
-            } else {
-                tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
+        let prefix = floor.saturating_add(1).min(tiers);
+        let prefix_total = floor_weight.saturating_mul(u64::try_from(prefix)?);
+        let tail = prefix.max(usize::from(TIER_RANK_CAP)).min(tiers);
+        let total = (prefix..tail)
+            .fold(prefix_total, |sum, rank| {
+                sum.saturating_add(tier_weight(u8::try_from(rank).unwrap_or(u8::MAX)))
+            })
+            .saturating_add(u64::try_from(tiers.saturating_sub(tail))?);
+        let total = NonZeroU64::new(total).ok_or("weighted draw over nothing")?;
+        let mut draw = rand.below_u64(total);
+        let index = if draw < prefix_total {
+            usize::try_from(draw / floor_weight)?
+        } else {
+            draw -= prefix_total;
+            let mut index = tail;
+            for rank in prefix..tail {
+                let weight = tier_weight(u8::try_from(rank).unwrap_or(u8::MAX));
+                if draw < weight {
+                    index = rank;
+                    break;
+                }
+                draw -= weight;
             }
-        });
-        let index = draw_weighted(rand, weights)?;
+            if index == tail {
+                index += usize::try_from(draw)?;
+            }
+            index
+        };
         let progress = self
             .tiers
             .keys()
@@ -3274,6 +3452,7 @@ where
             && state.draws != 0
         {
             state.draws = 0;
+            self.recent_cells.get_mut().set_weight(cell, count_decay(0));
             self.selector_accounting.cell_resets =
                 self.selector_accounting.cell_resets.saturating_add(1);
             if let Some(tier) = self.tiers.get_mut(&cell.0) {
@@ -3597,6 +3776,10 @@ where
         state.draws = state.draws.saturating_add(1);
         state.draws_total = state.draws_total.saturating_add(1);
         let place_weight = count_decay(state.draws);
+        self.recent_cells.get_mut().set_weight(
+            cell_of(key),
+            if state.draws < 32 { place_weight } else { 0 },
+        );
         let holder_weight = count_decay(self.selected[id]);
         if let Some(tier) = self.tiers.get_mut(&key.progress()) {
             tier.weights.set_weight(&key.place(), place_weight);
@@ -3857,6 +4040,36 @@ where
         Ok(suffix.iter().take(longest_tail).cloned().collect())
     }
 
+    fn draw_recent_cell_reference(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        progress: K::Progress,
+    ) -> Result<Option<K::Place>, Box<dyn Error>> {
+        if rand.below(NonZeroUsize::new(2).unwrap()) != 0 {
+            return Ok(None);
+        }
+        let places: BTreeMap<_, _> = self
+            .active_ids
+            .ids
+            .iter()
+            .rev()
+            .take(256)
+            .filter_map(|id| {
+                let key = self.entries[*id].key;
+                if key.progress() != progress {
+                    return None;
+                }
+                let draws = self.cells.get(&cell_of(key)).map_or(0, |cell| cell.draws);
+                (draws < 32).then_some((key.place(), draws))
+            })
+            .collect();
+        if places.is_empty() {
+            return Ok(None);
+        }
+        let index = draw_weighted(rand, places.values().map(|draws| count_decay(*draws)))?;
+        Ok(places.into_keys().nth(index))
+    }
+
     fn select_parent_candidates_reference(
         &mut self,
         rand: &mut RomuDuoJrRand,
@@ -3866,7 +4079,7 @@ where
             return Err("archive has no expandable entry".into());
         }
         let (progress, rank) = self.draw_tier(rand)?;
-        let recent = self.draw_recent_cell(rand, progress)?;
+        let recent = self.draw_recent_cell_reference(rand, progress)?;
         let place = match recent {
             Some(place) => place,
             None => self.draw_cell_reference(rand, progress)?,
@@ -5869,6 +6082,55 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_tier_weights_match_the_full_scan_after_dry_tier_promotion() {
+        for count in [1, 2, 8, 9, 16, 256, 4096] {
+            let mut archive = Archive::<u8, TierKey, (), ()>::new(|_| 1);
+            for tier in 0..count {
+                archive.tiers.insert(tier, TierCells::default());
+            }
+            for dry_prefix in [0, 1, 3, 7, 8, 9, 16, count] {
+                for tier in count.saturating_sub(dry_prefix)..count {
+                    let runs = archive.tier_runs_mut(tier);
+                    runs.current = 1024;
+                    runs.dry = 1024;
+                }
+                let mut ranked = archive.tiers.keys().rev().copied().peekable();
+                let mut floor = 0;
+                let mut halvings = 0;
+                while let Some(progress) = ranked.next() {
+                    halvings = archive.tier_halvings(progress, ranked.peek().copied());
+                    if halvings < TIER_RANK_SHIFT || ranked.peek().is_none() {
+                        break;
+                    }
+                    floor += 1;
+                }
+                let floor_weight =
+                    (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX)) >> halvings).max(1);
+                let weights = (0..count)
+                    .map(|rank| {
+                        if rank <= floor {
+                            floor_weight
+                        } else {
+                            tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                for seed in 0..128 {
+                    let mut actual = RomuDuoJrRand::with_seed(seed);
+                    let mut reference = actual;
+                    let index = materialized_weighted_reference(&mut reference, &weights).unwrap();
+                    assert_eq!(archive.draw_tier(&mut actual).unwrap().0, count - 1 - index);
+                    assert_eq!(
+                        postcard::to_stdvec(&actual).unwrap(),
+                        postcard::to_stdvec(&reference).unwrap()
+                    );
+                }
+                archive.selector_accounting.tier_runs.clear();
+            }
+        }
+    }
+
+    #[test]
     fn each_tier_rank_weighs_a_fixed_fraction_of_the_rank_above() {
         let weights = (0..=9).map(tier_weight).collect::<Vec<_>>();
         for rank in 0..8 {
@@ -6457,7 +6719,9 @@ mod tests {
         let mut repeated_rand = single_rand;
         let mut recent = 0;
         for _ in 0..4096 {
-            let expected = single.draw_recent_cell(&mut single_rand, (1, 0)).unwrap();
+            let expected = single
+                .draw_recent_cell_reference(&mut single_rand, (1, 0))
+                .unwrap();
             let actual = repeated
                 .draw_recent_cell(&mut repeated_rand, (1, 0))
                 .unwrap();
@@ -6469,6 +6733,139 @@ mod tests {
             postcard::to_stdvec(&single_rand).unwrap(),
             postcard::to_stdvec(&repeated_rand).unwrap()
         );
+    }
+
+    #[test]
+    fn single_capacity_ranking_matches_sorted_preferences_and_ties() {
+        fn compare<K: ArchiveKey>(keys: Vec<K>) {
+            let mut archive = Archive::<u64, K, (), ()>::new(|cost| *cost);
+            for (index, key) in keys.iter().copied().enumerate() {
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![index as u64 + 1],
+                            key,
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap()
+                    .unwrap();
+            }
+            for count in 0..=keys.len() {
+                for reversed in [false, true] {
+                    let mut slot = (0..count).collect::<Vec<_>>();
+                    if reversed {
+                        slot.reverse();
+                    }
+                    for key in keys.iter().copied() {
+                        for cost in [0, 1, 5, 17, 32, 33] {
+                            assert_eq!(
+                                archive.rank_slot_preferences(&slot, key, cost),
+                                archive.rank_slot_preferences_sorted(&slot, key, cost)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        compare(
+            (0..32)
+                .map(|index| ResourceKey {
+                    place: [index, 0, 0],
+                    amount: (index % 5) as u8,
+                })
+                .collect(),
+        );
+        compare(
+            (0..32)
+                .map(|index| PortfolioKey {
+                    slot: index,
+                    first: index % 5,
+                    second: index % 7,
+                })
+                .collect(),
+        );
+        compare(
+            (0..32)
+                .map(|index| TestKey {
+                    x_bucket: index,
+                    ..TestKey::default()
+                })
+                .collect(),
+        );
+    }
+
+    #[test]
+    fn recent_cache_tracks_membership_draw_resets_and_compaction() {
+        let mut archive = TestArchive::new(|_| 1);
+        let mut rand = RomuDuoJrRand::with_seed(9103);
+        for input in 0_u16..364 {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: input.to_le_bytes().to_vec(),
+                        key: TestKey {
+                            major: 1,
+                            progress: input / 3,
+                            state_fingerprint: (input % 3) as u8,
+                            ..TestKey::default()
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+            if input < 300 {
+                continue;
+            }
+            for _ in 0..8 {
+                let mut reference = rand;
+                let selected = archive.select_parent(&mut rand).unwrap();
+                assert_eq!(
+                    selected,
+                    archive
+                        .select_parent_candidates_reference(&mut reference)
+                        .unwrap()
+                );
+                assert_eq!(
+                    postcard::to_stdvec(&rand).unwrap(),
+                    postcard::to_stdvec(&reference).unwrap()
+                );
+                archive.record_selection(selected.0, &selected.1);
+            }
+            let retired = if input % 2 == 0 {
+                *archive.active_ids.ids.first().unwrap()
+            } else {
+                *archive.active_ids.ids.last().unwrap()
+            };
+            archive.deactivate(retired);
+            let retained = *archive.active_ids.ids.last().unwrap();
+            archive.reset_cell_draws(super::cell_of(archive.entries[retained].key));
+            if input % 8 == 0 {
+                archive.compact_history(true).unwrap();
+            }
+            for _ in 0..8 {
+                let mut reference = rand;
+                let selected = archive.select_parent(&mut rand).unwrap();
+                assert_eq!(
+                    selected,
+                    archive
+                        .select_parent_candidates_reference(&mut reference)
+                        .unwrap()
+                );
+                assert_eq!(
+                    postcard::to_stdvec(&rand).unwrap(),
+                    postcard::to_stdvec(&reference).unwrap()
+                );
+                archive.record_selection(selected.0, &selected.1);
+            }
+        }
     }
 
     #[test]
@@ -6492,11 +6889,90 @@ mod tests {
                 .unwrap()
                 .unwrap();
         }
+        archive.ensure_selector_index();
+        if std::env::var_os("DISSONANCE_BENCHMARK_CANDIDATES").is_some() {
+            let ratio = paired_candidate_timing(
+                |new, rand| {
+                    std::hint::black_box(if new {
+                        archive.draw_recent_cell(rand, ())
+                    } else {
+                        archive.draw_recent_cell_reference(rand, ())
+                    })
+                    .unwrap();
+                },
+                1024,
+            );
+            eprintln!("recent_cells=256 cached_to_btree_ratio={ratio:.4}");
+        }
         let mut rand = RomuDuoJrRand::with_seed(732);
         for _ in 0..100 {
+            let mut reference = rand;
             let (id, draw) = archive.select_parent(&mut rand).unwrap();
+            assert_eq!(
+                (id, draw),
+                archive
+                    .select_parent_candidates_reference(&mut reference)
+                    .unwrap()
+            );
+            assert_eq!(
+                postcard::to_stdvec(&rand).unwrap(),
+                postcard::to_stdvec(&reference).unwrap()
+            );
             archive.record_selection(id, &draw);
         }
+        for place in 400..408 {
+            let id = archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![place],
+                        key: ResourceKey {
+                            place: [place, 0, 0],
+                            amount: 5,
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+            for retired in [false, true] {
+                if retired {
+                    archive.deactivate(id);
+                    archive.compact_history(true).unwrap();
+                }
+                for _ in 0..16 {
+                    let mut reference = rand;
+                    let selected = archive.select_parent(&mut rand).unwrap();
+                    assert_eq!(
+                        selected,
+                        archive
+                            .select_parent_candidates_reference(&mut reference)
+                            .unwrap()
+                    );
+                    assert_eq!(
+                        postcard::to_stdvec(&rand).unwrap(),
+                        postcard::to_stdvec(&reference).unwrap()
+                    );
+                    archive.record_selection(selected.0, &selected.1);
+                }
+            }
+        }
+        let mut reference_rand = rand;
+        let mut actual_rand = rand;
+        for _ in 0..4096 {
+            assert_eq!(
+                archive.draw_recent_cell(&mut actual_rand, ()).unwrap(),
+                archive
+                    .draw_recent_cell_reference(&mut reference_rand, ())
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            postcard::to_stdvec(&actual_rand).unwrap(),
+            postcard::to_stdvec(&reference_rand).unwrap()
+        );
         let bytes = postcard::to_stdvec(&archive).unwrap();
         let mut restored: Archive<u16, ResourceKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
         let mut restored_rand = rand;

@@ -16,13 +16,13 @@ use super::{
     CampaignOrigin, CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord,
     CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
     CampaignTypes, CompletedBuffer, CompletedJob, CoordinatorCore, JobSpecRecord,
-    LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob, StreamWriter, Workload,
-    archive_entry_limit_is_valid, bootstrap_campaign, build_report, completed_job_records,
-    continuation_arrival, continuation_attempt, derive_selection_seed, execution_work_delta,
-    finish_record, initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
-    profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
-    record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
-    retained_archive_indexes, stop_reservations_after_objective,
+    LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob, StreamWriter,
+    ThreadPlacement, Workload, archive_entry_limit_is_valid, bootstrap_campaign, build_report,
+    completed_job_records, continuation_arrival, continuation_attempt, derive_selection_seed,
+    execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
+    mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
+    progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
+    restore_search_checkpoint, retained_archive_indexes, stop_reservations_after_objective,
     stop_reservations_after_work_budget, stream_header, with_coordinator_session,
     write_live_progress, write_search_checkpoint,
 };
@@ -96,6 +96,8 @@ pub fn run_job<G: Workload>(
         result_sha256,
     })
 }
+
+type JobDispatch<'a, G> = dyn FnMut(JobSpec<G>) -> Result<(), Box<dyn Error>> + 'a;
 
 pub struct CampaignCoordinator<'a, G: Workload> {
     workload: &'a G,
@@ -221,7 +223,7 @@ where
         );
         header.work_budget = work_budget;
         let mut writer = StreamWriter::new(stream);
-        writer.write_line(&header)?;
+        writer.write_line(header.clone())?;
 
         let mut core = CoordinatorCore::new(
             workload,
@@ -373,6 +375,17 @@ where
         Ok(coordinator)
     }
 
+    pub(crate) fn enable_background_stream(
+        &mut self,
+        placement: Option<ThreadPlacement>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.writer.enable_background(placement)
+    }
+
+    pub(crate) fn drain_background_stream(&mut self) -> Result<(), Box<dyn Error>> {
+        self.writer.drain_ready()
+    }
+
     pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {
         if self.pending.len() >= self.config.window {
             return Ok(false);
@@ -399,6 +412,25 @@ where
         jobs
     }
 
+    pub(crate) fn dispatch_queued(
+        &mut self,
+        dispatch: &mut JobDispatch<'_, G>,
+    ) -> Result<(), Box<dyn Error>> {
+        while let Some((_, job)) = self.queued.pop_first() {
+            self.running = self.running.saturating_add(1);
+            self.idle_clock.update(
+                self.running,
+                if self.completed.is_empty() {
+                    IdleReason::NoJob
+                } else {
+                    IdleReason::AdmissionOrder
+                },
+            );
+            dispatch(job)?;
+        }
+        Ok(())
+    }
+
     pub fn admit(&mut self, outcome: JobOutcome<G>) -> Result<(), Box<dyn Error>> {
         let JobOutcome {
             reservation,
@@ -406,11 +438,33 @@ where
             execution_work,
             result_sha256,
         } = outcome;
-        self.receive(reservation, Ok((result, execution_work, result_sha256)))
+        self.receive(
+            reservation,
+            Ok((result, execution_work, result_sha256)),
+            None,
+        )
+    }
+
+    pub(crate) fn admit_dispatch(
+        &mut self,
+        outcome: JobOutcome<G>,
+        dispatch: &mut JobDispatch<'_, G>,
+    ) -> Result<(), Box<dyn Error>> {
+        let JobOutcome {
+            reservation,
+            result,
+            execution_work,
+            result_sha256,
+        } = outcome;
+        self.receive(
+            reservation,
+            Ok((result, execution_work, result_sha256)),
+            Some(dispatch),
+        )
     }
 
     pub fn fail(&mut self, reservation: usize, error: String) -> Result<(), Box<dyn Error>> {
-        self.receive(reservation, Err(error))
+        self.receive(reservation, Err(error), None)
     }
 
     #[must_use]
@@ -428,6 +482,7 @@ where
         &mut self,
         reservation: usize,
         outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+        mut dispatch: Option<&mut JobDispatch<'_, G>>,
     ) -> Result<(), Box<dyn Error>> {
         self.workload.verify_integrity()?;
         self.profile.receives = self.profile.receives.saturating_add(1);
@@ -477,6 +532,9 @@ where
             self.admit_completed(finish, reservation, completed)?;
             self.reserve()?;
             self.write_due_checkpoint()?;
+            if let Some(dispatch) = dispatch.as_deref_mut() {
+                self.dispatch_queued(dispatch)?;
+            }
         }
         if self.pending.is_empty() && !self.completed.is_empty() {
             return Err("campaign reorder window ended with an admission gap".into());
@@ -607,6 +665,13 @@ where
         telemetry.workers = workers;
         idle_clock.finish(&mut telemetry.admission);
         telemetry.sum_targets();
+        telemetry.coordinator_host = HostTimes::try_measure(
+            coordinator_schedstat,
+            (
+                telemetry.admission.idle_admission_order_ns,
+                telemetry.admission.idle_no_job_ns,
+            ),
+        );
         telemetry.coordinator = serde_json::to_value(&profile)?;
         let persistence_started = now();
 
@@ -639,13 +704,14 @@ where
         }
         workload.verify_integrity()?;
         writer.write_line(
-            &CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::End(CampaignEndRecord {
+            CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::End(CampaignEndRecord {
                 jobs: reserved,
                 skips: counters.duplicates_skipped,
                 executions_completed: core.sequence,
             }),
         )?;
-        let stream_sha256 = writer.finish()?;
+        let (stream_sha256, stream_telemetry) = writer.finish()?;
+        telemetry.stream = stream_telemetry;
         counters.draw_state_memory_bytes = workload
             .draw_state_memory_bytes(&draw_state)
             .saturating_add(duration_policies.memory_bytes());
@@ -898,7 +964,7 @@ where
             });
         }
         let stream_started = profile_now();
-        writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
+        writer.write_line(CampaignStreamRecord::Job(CampaignJobRecord {
             continuation_energy: pending_job.continuation_energy,
             sequence,
             reservation: u64::try_from(reservation)?,
@@ -1208,7 +1274,7 @@ where
                     .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                 let draw_checkpoint_after =
                     workload.finish_stream_record(&config.run, draw_state, &[], &core.evidence)?;
-                writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
+                writer.write_line(CampaignStreamRecord::Skip(CampaignSkipRecord {
                     reservation: *reserved,
                     parent_id,
                     mutation_seed,

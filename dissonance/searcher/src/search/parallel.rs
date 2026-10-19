@@ -6,6 +6,7 @@ use std::{
     fmt,
     sync::{Arc, Condvar, Mutex, mpsc},
     thread,
+    time::Duration,
 };
 
 use crate::search::telemetry::{
@@ -169,10 +170,22 @@ impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn receive(&self) -> Result<WorkerReply<Key, Output, O>, WorkerPoolError> {
         self.reply_receiver
             .recv()
             .map_err(|_| WorkerPoolError::RepliesClosed)
+    }
+
+    pub(crate) fn receive_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Option<WorkerReply<Key, Output, O>>, WorkerPoolError> {
+        match self.reply_receiver.recv_timeout(timeout) {
+            Ok(reply) => Ok(Some(reply)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(WorkerPoolError::RepliesClosed),
+        }
     }
 
     pub(crate) fn try_receive(
@@ -454,6 +467,32 @@ mod tests {
 
     use super::{WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
     use crate::search::telemetry::TargetCounters;
+
+    #[test]
+    fn timed_receive_distinguishes_waiting_ready_and_closed_workers() {
+        with_worker_pool(
+            1,
+            |_| Ok::<_, String>(()),
+            |_| Ok::<_, String>(()),
+            |(), value: u8| Ok::<_, String>(value + 1),
+            |_| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(1)?;
+                assert!(pool.receive_timeout(Duration::from_millis(10))?.is_none());
+                pool.send(7_u8, 10)?;
+                let reply = pool.receive_timeout(Duration::from_secs(5))?.unwrap();
+                assert_eq!(reply.key, 7);
+                assert_eq!(reply.outcome, Ok(11));
+                pool.close();
+                assert!(matches!(
+                    pool.receive_timeout(Duration::from_secs(5)),
+                    Err(WorkerPoolError::RepliesClosed)
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
 
     #[test]
     fn idle_workers_take_queued_jobs_while_one_worker_is_blocked() {

@@ -18,7 +18,13 @@ serialization and verification are included in campaign seconds; search
 seconds and worker busy fractions are reported separately. Busy time includes
 restore, execution and capture; it does not measure guest cycles. Read raw
 `telemetry.json` for coordinator occupancy, admission stalls and completed
-buffer peaks. Do not add nested or concurrent timers to infer elapsed time.
+buffer peaks. Native runs encode and hash the ordered stream on a separate
+thread; its telemetry has a separate owner from the coordinator and execution
+workers. `coordinator_host` samples coordinator CPU and scheduler wait once at
+the end of search, before final persistence, even with verbose profiling off.
+It is absent when the operating system cannot supply these counters. This CPU
+measurement includes work outside the individual coordinator span timers.
+Do not add nested or concurrent timers to infer elapsed time.
 
 ## Prepare the host
 
@@ -58,11 +64,11 @@ fixed-work speedup comparison. A launcher run uses four reservations per worker;
 at 128 workers that is the same absolute window of 512.
 
 On a quiet host, select physical CPUs of one core type (leave room for the
-coordinator, feed and browser/tunnel). For example, on a machine with at least
-129 usable CPUs:
+coordinator, stream encoder, feed and browser/tunnel). For example, on a machine
+with at least 130 usable CPUs:
 
 ```sh
-taskset -c 0-128 python3 scripts/qualify-nes-scaling.py \
+taskset -c 0-129 python3 scripts/qualify-nes-scaling.py \
   --evaluator workloads/nes/target/release/nes-eval \
   --request /srv/runs/famidash-scaling-request.json \
   --workers 1 2 4 8 16 32 64 128 --window 512 --repeats 3 \

@@ -120,6 +120,7 @@ pub struct CampaignExecutionOptions {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlacedThread {
     Coordinator,
+    StreamEncoder,
     Worker(u32),
 }
 
@@ -218,7 +219,7 @@ pub trait CampaignTypes: Sync {
     type JobObservation: Copy + Send + 'static;
     type Target;
     type Action: Copy + Ord + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    type Key: ArchiveKey + Debug + Eq + Send + Sync;
+    type Key: ArchiveKey + Debug + Eq + Send + Sync + 'static;
     type Milestones: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Progress: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Snapshot: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
@@ -2374,32 +2375,9 @@ fn stream_header<G: Workload>(
     }
 }
 
-struct StreamWriter<'a> {
-    sink: &'a mut dyn Write,
-    hasher: Sha256,
-}
-
-impl<'a> StreamWriter<'a> {
-    fn new(sink: &'a mut dyn Write) -> Self {
-        Self {
-            sink,
-            hasher: Sha256::new(),
-        }
-    }
-
-    fn write_line<T: Serialize>(&mut self, value: &T) -> Result<(), Box<dyn Error>> {
-        let mut line = serde_json::to_vec(value)?;
-        line.push(b'\n');
-        self.sink.write_all(&line)?;
-        self.hasher.update(&line);
-        Ok(())
-    }
-
-    fn finish(self) -> Result<String, Box<dyn Error>> {
-        self.sink.flush()?;
-        Ok(format!("{:x}", self.hasher.finalize()))
-    }
-}
+#[path = "campaign_stream.rs"]
+mod campaign_stream;
+use campaign_stream::StreamWriter;
 
 #[derive(Deserialize, Serialize)]
 struct CampaignCounters {
@@ -3513,37 +3491,43 @@ where
                 progress.map(|sink| -> &mut dyn Write { sink }),
                 options,
             )?);
+            campaign.enable_background_stream(placement.cloned())?;
             watch.start(campaign)?;
             bootstrapped.send(())?;
             drop(bootstrapped);
             pool.wait_ready(config.workers)?;
             while campaign.reserve_next()? {
-                for job in campaign.plan(usize::MAX) {
-                    pool.dispatch((job.planned_finish, job.reservation), job)?;
-                }
+                campaign.dispatch_queued(&mut |job| {
+                    pool.dispatch((job.planned_finish, job.reservation), job)
+                })?;
             }
             loop {
-                for job in campaign.plan(usize::MAX) {
-                    pool.dispatch((job.planned_finish, job.reservation), job)?;
-                }
+                campaign.dispatch_queued(&mut |job| {
+                    pool.dispatch((job.planned_finish, job.reservation), job)
+                })?;
                 if campaign.finished() {
                     break;
                 }
-                let receive_started = profile_now();
-                let reply = match pool.receive() {
-                    Ok(reply) => reply,
-                    Err(WorkerPoolError::RepliesClosed) => {
-                        let reservation = campaign
-                            .next_admission()
-                            .ok_or("campaign lost its planned admission while waiting")?;
-                        return Err(format!(
-                            "campaign reservation {reservation} failed: every worker exited before reporting its result"
-                        )
-                        .into());
+                let reply = loop {
+                    campaign.drain_background_stream()?;
+                    let receive_started = profile_now();
+                    let received = pool.receive_timeout(Duration::from_millis(5));
+                    campaign.note_receive_wait(profile_elapsed(receive_started));
+                    match received {
+                        Ok(Some(reply)) => break reply,
+                        Ok(None) => continue,
+                        Err(WorkerPoolError::RepliesClosed) => {
+                            let reservation = campaign
+                                .next_admission()
+                                .ok_or("campaign lost its planned admission while waiting")?;
+                            return Err(format!(
+                                "campaign reservation {reservation} failed: every worker exited before reporting its result"
+                            )
+                            .into());
+                        }
+                        Err(error) => return Err(error.into()),
                     }
-                    Err(error) => return Err(error.into()),
                 };
-                campaign.note_receive_wait(profile_elapsed(receive_started));
                 let mut ready_reply = Some(reply);
                 while let Some(mut reply) = ready_reply {
                     let physical_worker = reply.worker;
@@ -3610,11 +3594,16 @@ where
                                     "campaign worker replied for another reservation".into()
                                 );
                             }
-                            campaign.admit(outcome)?;
+                            campaign.admit_dispatch(outcome, &mut |job| {
+                                pool.dispatch((job.planned_finish, job.reservation), job)
+                            })?;
                             watch.admitted(note, campaign);
                         }
                         Err(error) => campaign.fail(reservation, error)?,
                     }
+                    campaign.dispatch_queued(&mut |job| {
+                        pool.dispatch((job.planned_finish, job.reservation), job)
+                    })?;
                     ready_reply = match pool.try_receive() {
                         Ok(reply) => reply,
                         Err(WorkerPoolError::RepliesClosed) => None,
@@ -8687,6 +8676,46 @@ mod tests {
     }
 
     #[test]
+    fn replacement_dispatch_precedes_the_next_buffered_admission() {
+        let mut config = three_worker_config();
+        config.window = 6;
+        config.execution_budget = 100;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap();
+        while coordinator.reserve_next().unwrap() {}
+        let mut target = workload.new_target().unwrap();
+        let jobs = coordinator.plan(usize::MAX);
+        assert_eq!(jobs.len(), config.window);
+        let mut outcomes = jobs
+            .iter()
+            .map(|job| run_job(&workload, &config, &mut target, job).unwrap())
+            .collect::<Vec<_>>();
+        let head = outcomes.remove(0);
+        let before = coordinator.executions();
+        for outcome in outcomes.into_iter().rev() {
+            coordinator.admit(outcome).unwrap();
+        }
+        assert_eq!(coordinator.executions(), before);
+        let error = coordinator
+            .admit_dispatch(head, &mut |_| Err("dispatch witness".into()))
+            .unwrap_err();
+        assert_eq!(error.to_string(), "dispatch witness");
+        assert_eq!(coordinator.executions(), before + 1);
+    }
+
+    #[test]
     fn a_single_threaded_caller_writes_the_same_campaign_as_the_worker_pool() {
         let mut config = three_worker_config();
         config.window = 6;
@@ -9872,12 +9901,14 @@ mod tests {
         let mut placed = placed.lock().expect("placement record").clone();
         placed.sort_by_key(|(thread, _)| match thread {
             PlacedThread::Coordinator => 0,
-            PlacedThread::Worker(worker) => worker + 1,
+            PlacedThread::StreamEncoder => 1,
+            PlacedThread::Worker(worker) => worker + 2,
         });
         assert_eq!(
             placed.iter().map(|(thread, _)| *thread).collect::<Vec<_>>(),
             vec![
                 PlacedThread::Coordinator,
+                PlacedThread::StreamEncoder,
                 PlacedThread::Worker(0),
                 PlacedThread::Worker(1),
                 PlacedThread::Worker(2),
@@ -9887,12 +9918,16 @@ mod tests {
             .iter()
             .map(|(_, id)| format!("{id:?}"))
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(threads.len(), 4);
+        assert_eq!(threads.len(), 5);
     }
 
     #[test]
     fn a_placement_failure_fails_the_campaign() {
-        for refused in [PlacedThread::Coordinator, PlacedThread::Worker(1)] {
+        for refused in [
+            PlacedThread::Coordinator,
+            PlacedThread::StreamEncoder,
+            PlacedThread::Worker(1),
+        ] {
             let placement = ThreadPlacement::new(move |thread| {
                 if thread == refused {
                     Err(format!("{thread:?} refused"))
@@ -9928,7 +9963,7 @@ mod tests {
                 one_failed_sender.send(()).unwrap();
                 Err("worker one refused startup".to_owned())
             }
-            PlacedThread::Coordinator => Ok(()),
+            PlacedThread::Coordinator | PlacedThread::StreamEncoder => Ok(()),
             _ => unreachable!(),
         });
         let (error, stream) = std::thread::scope(|scope| {
