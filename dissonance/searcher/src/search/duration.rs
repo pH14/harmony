@@ -375,6 +375,31 @@ impl<C: Copy + Ord> DurationPolicies<C> {
         })
     }
 
+    pub(crate) fn write_checkpoint(
+        &self,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        C: Serialize,
+    {
+        use super::checkpoint::image::Sequence;
+        postcard::to_io(
+            &(
+                DURATION_POLICIES_IDENTIFIER,
+                Sequence(self.order.iter().filter_map(|context| {
+                    self.policies.get(context).map(|policy| {
+                        (
+                            context,
+                            (DURATION_POLICY_IDENTIFIER, Sequence(policy.recent.iter())),
+                        )
+                    })
+                })),
+            ),
+            out,
+        )?;
+        Ok(())
+    }
+
     #[must_use]
     pub fn checkpoint(&self) -> DurationPoliciesCheckpoint<C> {
         DurationPoliciesCheckpoint {
@@ -453,6 +478,30 @@ mod tests {
 
     fn positive(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("positive")
+    }
+
+    #[test]
+    fn borrowed_checkpoint_bytes_preserve_context_fifo_and_bounded_history() {
+        let mut policies = DurationPolicies::<u16>::new();
+        for context in 0..260 {
+            policies
+                .observe(context, positive(1), true, positive(3))
+                .unwrap();
+        }
+        for step in 0..140 {
+            policies
+                .observe(259, positive(1 << (step % 16)), step % 2 == 0, positive(5))
+                .unwrap();
+        }
+        let expected = policies.checkpoint();
+        let mut bytes = Vec::new();
+        policies.write_checkpoint(&mut bytes).unwrap();
+        assert_eq!(bytes, postcard::to_allocvec(&expected).unwrap());
+        let restored = DurationPolicies::from_checkpoint(
+            postcard::from_bytes::<DurationPoliciesCheckpoint<u16>>(&bytes).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restored, policies);
     }
 
     #[test]

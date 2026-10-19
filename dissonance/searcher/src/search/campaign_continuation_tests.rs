@@ -911,6 +911,8 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
                 on_marks: true,
                 on_top_progress: true,
                 checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
             }),
         );
         assert_eq!(
@@ -979,6 +981,8 @@ fn a_campaign_and_checkpoint_reject_another_loaded_executable() {
                 on_marks: false,
                 on_top_progress: false,
                 checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
             }),
             ..CampaignExecutionOptions::default()
         },
@@ -1053,6 +1057,8 @@ fn unavailable_loaded_executable_fails_before_campaign_output() {
                 on_marks: false,
                 on_top_progress: false,
                 checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
             }),
             ..CampaignExecutionOptions::default()
         },
@@ -1080,6 +1086,8 @@ fn a_pinned_checkpoint_refuses_a_valid_swap_after_selection() {
             on_marks: false,
             on_top_progress: false,
             checkpoint_owner: Some("saved-run-a".into()),
+            max_image_bytes: 64 << 20,
+            before_write: None,
         }),
     );
     let selected = directory.join("000000000320-final.ckpt");
@@ -1181,6 +1189,8 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
             on_marks: false,
             on_top_progress: false,
             checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
         }),
     );
     assert!(
@@ -1260,6 +1270,8 @@ fn a_short_campaign_finishes_with_a_checkpoint_that_can_extend_its_budget() {
             on_marks: false,
             on_top_progress: false,
             checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
         }),
     );
     let files = std::fs::read_dir(&directory)
@@ -1306,6 +1318,8 @@ fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
             on_marks: false,
             on_top_progress: false,
             checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
         }),
     );
     config.campaign_seed = 948;
@@ -1358,6 +1372,8 @@ fn a_resume_under_a_changed_search_policy_records_the_change() {
             on_marks: false,
             on_top_progress: false,
             checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
         }),
     );
     config.mixture = DrawMixture::Energy { scale: 6 };
@@ -1405,6 +1421,8 @@ fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
             on_marks: false,
             on_top_progress: false,
             checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
         }),
     );
     let checkpoint = directory.join("000000000300-interval.ckpt");
@@ -1453,6 +1471,8 @@ fn a_checkpoint_with_no_jobs_in_flight_resumes_under_a_larger_budget() {
             on_marks: false,
             on_top_progress: false,
             checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
         }),
     );
     config.execution_budget = 1200;
@@ -1494,6 +1514,8 @@ fn a_drain_checkpoint_refills_the_original_admission_window_on_resume() {
             on_marks: false,
             on_top_progress: false,
             checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
         }),
     );
     let checkpoint = source.join("000000000014-interval.ckpt");
@@ -1511,6 +1533,8 @@ fn a_drain_checkpoint_refills_the_original_admission_window_on_resume() {
             on_marks: false,
             on_top_progress: false,
             checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
         }),
     );
     assert_eq!(resumed.0.executions_completed, 25);

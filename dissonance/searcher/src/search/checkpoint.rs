@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 pub mod image;
+pub(crate) mod publisher;
 
 pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v10";
 
@@ -56,6 +57,9 @@ pub struct CheckpointPlan {
     pub on_marks: bool,
     pub on_top_progress: bool,
     pub checkpoint_owner: Option<String>,
+    pub max_image_bytes: usize,
+    #[cfg(test)]
+    pub(crate) before_write: Option<publisher::TestWriteHook>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -119,37 +123,19 @@ impl<W: Write> Write for HashWriter<W> {
     }
 }
 
-pub(crate) struct CheckpointWriter<P> {
+pub(crate) struct CheckpointSchedule<P> {
     plan: CheckpointPlan,
-    frames: super::snapshot_store::StoreFrames,
     last_marks: usize,
     last_top: Option<P>,
-    intervals: VecDeque<(PathBuf, Vec<u64>)>,
 }
-
-impl<P: Copy + Ord> CheckpointWriter<P> {
-    pub(crate) fn create(
-        plan: CheckpointPlan,
-        marks: usize,
-        top: Option<P>,
-    ) -> Result<Self, Box<dyn Error>> {
-        fs::create_dir_all(&plan.directory)?;
-        let store = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(plan.directory.join(SNAPSHOT_STORE))
-            .map_err(|error| {
-                format!("checkpoint directory already holds a snapshot store: {error}")
-            })?;
-        Ok(Self {
+impl<P: Copy + Ord> CheckpointSchedule<P> {
+    pub(crate) fn new(plan: CheckpointPlan, marks: usize, top: Option<P>) -> Self {
+        Self {
             plan,
-            frames: super::snapshot_store::StoreFrames::new(store),
             last_marks: marks,
             last_top: top,
-            intervals: VecDeque::new(),
-        })
+        }
     }
-
     pub(crate) fn due(
         &mut self,
         executions: u64,
@@ -173,6 +159,96 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         self.last_marks = self.last_marks.max(marks);
         self.last_top = self.last_top.max(top);
         reason
+    }
+}
+
+pub(crate) struct CheckpointStoreWriter {
+    plan: CheckpointPlan,
+    frames: super::snapshot_store::StoreFrames,
+    intervals: VecDeque<(PathBuf, Vec<u64>)>,
+    #[cfg(test)]
+    io: PublicationIoTest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationIo {
+    CheckpointSync,
+    Rename,
+    PublicationDirectorySync,
+    Prune,
+    PruneDirectorySync,
+    JournalSync,
+    JournalDirectorySync,
+}
+#[cfg(test)]
+#[derive(Default)]
+struct PublicationIoTest {
+    fail: Option<PublicationIo>,
+    trace: Vec<PublicationIo>,
+}
+impl CheckpointStoreWriter {
+    pub(crate) fn create(plan: CheckpointPlan) -> Result<Self, Box<dyn Error>> {
+        if plan.max_image_bytes == 0 {
+            return Err("checkpoint image byte limit is zero".into());
+        }
+        let absolute = if plan.directory.is_absolute() {
+            plan.directory.clone()
+        } else {
+            std::env::current_dir()?.join(&plan.directory)
+        };
+        let mut created = Vec::new();
+        for directory in absolute.ancestors() {
+            match fs::metadata(directory) {
+                Ok(_) => break,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    created.push(directory.to_owned())
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        fs::create_dir_all(&plan.directory)?;
+        for directory in created.into_iter().rev() {
+            File::open(&directory)?.sync_all()?;
+            if let Some(parent) = directory.parent() {
+                File::open(parent)?.sync_all()?;
+            }
+        }
+        let store = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(plan.directory.join(SNAPSHOT_STORE))
+            .map_err(|error| {
+                format!("checkpoint directory already holds a snapshot store: {error}")
+            })?;
+        store.sync_all()?;
+        File::open(&plan.directory)?.sync_all()?;
+        Ok(Self {
+            plan,
+            frames: super::snapshot_store::StoreFrames::new(store),
+            intervals: VecDeque::new(),
+            #[cfg(test)]
+            io: PublicationIoTest::default(),
+        })
+    }
+
+    fn publication_io(
+        &mut self,
+        phase: PublicationIo,
+        operation: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
+        #[cfg(test)]
+        {
+            self.io.trace.push(phase);
+            if self.io.fail == Some(phase) {
+                return Err(io::Error::other(format!("injected {phase:?} failure")));
+            }
+        }
+        operation()
+            .map_err(|error| io::Error::new(error.kind(), format!("checkpoint {phase:?}: {error}")))
+    }
+    fn sync_directory(&mut self, phase: PublicationIo) -> io::Result<()> {
+        let directory = File::open(&self.plan.directory)?;
+        self.publication_io(phase, || directory.sync_all())
     }
 
     pub(crate) fn write<'a, S: super::snapshot_codec::CheckpointSnapshot + 'a>(
@@ -214,10 +290,11 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         let checkpoint_sha256 = format!("{:x}", checkpoint_digest.finalize());
         let mut file = hashing.inner;
         file.write_all(&checksum)?;
-        file.sync_data()?;
+        self.publication_io(PublicationIo::CheckpointSync, || file.sync_all())?;
         let checkpoint_bytes = file.metadata()?.len();
         drop(file);
-        fs::rename(&partial, &path)?;
+        self.publication_io(PublicationIo::Rename, || fs::rename(&partial, &path))?;
+        self.sync_directory(PublicationIo::PublicationDirectorySync)?;
         self.frames.publish(stage);
         let mut freed = (0_usize, 0_u64);
         if header.reason == "interval" {
@@ -226,12 +303,12 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
             let mut pruned = Vec::new();
             while self.intervals.len() > INTERVAL_CHECKPOINTS_KEPT {
                 if let Some((oldest, ids)) = self.intervals.pop_front() {
-                    fs::remove_file(oldest)?;
+                    self.publication_io(PublicationIo::Prune, || fs::remove_file(oldest))?;
                     pruned.push(ids);
                 }
             }
             if !pruned.is_empty() {
-                File::open(&self.plan.directory)?.sync_all()?;
+                self.sync_directory(PublicationIo::PruneDirectorySync)?;
             }
             for ids in pruned {
                 let (snapshots, bytes) = self.frames.release(&ids)?;
@@ -263,6 +340,8 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
             .open(self.plan.directory.join(CHECKPOINT_LOG))?;
         log.write_all(line.as_bytes())?;
         log.write_all(b"\n")?;
+        self.publication_io(PublicationIo::JournalSync, || log.sync_all())?;
+        self.sync_directory(PublicationIo::JournalDirectorySync)?;
         Ok(())
     }
 }
@@ -372,6 +451,8 @@ mod tests {
             on_marks: true,
             on_top_progress: true,
             checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
         }
     }
 
@@ -380,8 +461,7 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("dissonance-checkpoint-due-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
-        let mut writer = CheckpointWriter::<u8>::create(plan(directory.clone()), 0, Some(1))
-            .expect("create the writer");
+        let mut writer = CheckpointSchedule::<u8>::new(plan(directory.clone()), 0, Some(1));
         assert_eq!(writer.due(3, 0, Some(1)), None);
         assert_eq!(writer.due(10, 0, Some(1)), Some("interval"));
         assert_eq!(writer.due(11, 1, Some(1)), Some("milestone"));
@@ -389,7 +469,117 @@ mod tests {
         assert_eq!(writer.due(13, 1, Some(2)), Some("top_progress"));
         assert_eq!(writer.due(14, 1, Some(1)), None);
         assert_eq!(writer.due(20, 2, Some(3)), Some("milestone"));
-        fs::remove_dir_all(&directory).expect("remove the directory");
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn streaming_json_keeps_the_existing_checkpoint_body_bytes() {
+        #[derive(Serialize, Deserialize, Debug, PartialEq)]
+        struct Json(#[serde(with = "json_bytes")] serde_json::Value);
+        let value = serde_json::json!({"message": "checkpoint λ\n\"", "samples": (0..1024).collect::<Vec<u64>>(), "empty": []});
+        let old = postcard::to_allocvec(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let actual = postcard::to_allocvec(&Json(value.clone())).unwrap();
+        assert_eq!(actual, old);
+        assert_eq!(postcard::from_bytes::<Json>(&actual).unwrap(), Json(value));
+    }
+
+    #[test]
+    fn every_publication_syncs_its_rename_and_journal_before_acknowledging() {
+        let directory =
+            std::env::temp_dir().join(format!("checkpoint-durable-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let mut writer = CheckpointStoreWriter::create(plan(directory.clone())).unwrap();
+        for (execution, reason) in [
+            (1, "milestone"),
+            (2, "top_progress"),
+            (3, "final"),
+            (4, "interval"),
+            (5, "interval"),
+            (6, "interval"),
+        ] {
+            writer.io.trace.clear();
+            writer
+                .write(
+                    &header(execution, reason),
+                    std::iter::once((execution, &vec![7_u8])),
+                    |out| {
+                        postcard::to_io(&execution, out)?;
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            let mut expected = vec![
+                PublicationIo::CheckpointSync,
+                PublicationIo::Rename,
+                PublicationIo::PublicationDirectorySync,
+            ];
+            if execution == 6 {
+                expected.extend([PublicationIo::Prune, PublicationIo::PruneDirectorySync]);
+            }
+            expected.extend([
+                PublicationIo::JournalSync,
+                PublicationIo::JournalDirectorySync,
+            ]);
+            assert_eq!(writer.io.trace, expected);
+        }
+        assert!(!directory.join("000000000004-interval.ckpt").exists());
+        drop(writer);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn publication_failures_never_damage_a_previously_kept_checkpoint() {
+        for phase in [
+            PublicationIo::CheckpointSync,
+            PublicationIo::Rename,
+            PublicationIo::PublicationDirectorySync,
+            PublicationIo::Prune,
+            PublicationIo::PruneDirectorySync,
+            PublicationIo::JournalSync,
+            PublicationIo::JournalDirectorySync,
+        ] {
+            let directory = std::env::temp_dir().join(format!(
+                "checkpoint-durable-failure-{phase:?}-{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&directory);
+            let mut writer = CheckpointStoreWriter::create(plan(directory.clone())).unwrap();
+            for execution in 1..=2 {
+                writer
+                    .write(
+                        &header(execution, "interval"),
+                        std::iter::once((execution, &vec![execution as u8])),
+                        |out| {
+                            postcard::to_io(&execution, out)?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+            }
+            writer.io.fail = Some(phase);
+            let error = writer
+                .write(
+                    &header(3, "interval"),
+                    std::iter::once((3, &vec![3_u8])),
+                    |out| {
+                        postcard::to_io(&3_u64, out)?;
+                        Ok(())
+                    },
+                )
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("injected {phase:?} failure"))
+            );
+            let mut kept =
+                CheckpointReader::open(&directory.join("000000000002-interval.ckpt")).unwrap();
+            assert_eq!(kept.next::<u64>().unwrap(), 2);
+            assert_eq!(kept.snapshots::<Vec<u8>>().unwrap(), [(2, vec![2])]);
+            kept.finish().unwrap();
+            drop(writer);
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]
@@ -401,7 +591,7 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let mut plan = plan(directory.clone());
         plan.checkpoint_owner = Some("saved-run-a".into());
-        let mut writer = CheckpointWriter::<u8>::create(plan, 0, None).expect("create");
+        let mut writer = CheckpointStoreWriter::create(plan).expect("create");
         writer
             .write(
                 &header(1, "final"),
@@ -434,8 +624,7 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&directory);
-        let mut writer =
-            CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).expect("create");
+        let mut writer = CheckpointStoreWriter::create(plan(directory.clone())).expect("create");
         let first = [(1_u64, vec![1_u8, 2]), (2, vec![3])];
         writer
             .write(
@@ -482,7 +671,7 @@ mod tests {
         assert!(directory.join("000000000020-interval.ckpt").exists());
         assert!(directory.join("000000000030-interval.ckpt").exists());
         assert!(
-            CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).is_err(),
+            CheckpointStoreWriter::create(plan(directory.clone())).is_err(),
             "a directory holds one run's snapshot store"
         );
         fs::remove_dir_all(&directory).expect("remove the directory");
@@ -495,7 +684,7 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&directory);
-        let mut writer = CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).unwrap();
+        let mut writer = CheckpointStoreWriter::create(plan(directory.clone())).unwrap();
         writer
             .write(
                 &header(1, "final"),
@@ -538,7 +727,7 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&directory);
-        let mut writer = CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).unwrap();
+        let mut writer = CheckpointStoreWriter::create(plan(directory.clone())).unwrap();
         writer
             .write(
                 &header(10, "interval"),
@@ -562,7 +751,7 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&directory);
-        let mut writer = CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).unwrap();
+        let mut writer = CheckpointStoreWriter::create(plan(directory.clone())).unwrap();
         let snapshots = [(1_u64, vec![1_u8, 2])];
         writer
             .write(
@@ -629,7 +818,7 @@ mod tests {
     }
 
     fn write_snapshots(
-        writer: &mut CheckpointWriter<u8>,
+        writer: &mut CheckpointStoreWriter,
         executions: u64,
         reason: &str,
         ids: &[u64],
@@ -676,8 +865,7 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&directory);
-        let mut writer =
-            CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).expect("create");
+        let mut writer = CheckpointStoreWriter::create(plan(directory.clone())).expect("create");
         write_snapshots(&mut writer, 10, "interval", &[1, 2, 3]);
         write_snapshots(&mut writer, 15, "milestone", &[2, 3]);
         write_snapshots(&mut writer, 20, "interval", &[2, 3, 4]);
@@ -752,8 +940,7 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&directory);
-        let mut writer =
-            CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).expect("create");
+        let mut writer = CheckpointStoreWriter::create(plan(directory.clone())).expect("create");
         for (executions, id) in [(10, 1), (20, 2), (30, 3)] {
             writer
                 .write(
@@ -778,8 +965,7 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&directory);
-        let mut writer =
-            CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).expect("create");
+        let mut writer = CheckpointStoreWriter::create(plan(directory.clone())).expect("create");
         let header = CheckpointHeader {
             format: "dissonance-search-checkpoint-v9".to_owned(),
             checkpoint_owner: None,
