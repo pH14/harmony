@@ -87,7 +87,9 @@ resets that counter. Bounded searches cannot prove absence of every bug.
 
 `export-control.mjs` exports fresh Dissonance clearing controls with their full
 traces. `export-witness.mjs` retains ordinary failing input and a full fresh trace;
-`dissonance-replay.mjs` and `fceumm.py` verify it in separate emulators. A
+`dissonance-replay.mjs` and `fceumm.py` verify it in separate emulators.
+Witness export validates the saved endpoint for the candidate’s selected player,
+including player two in dual mode; its full trace records the primary game state. A
 repair must kill at the reviewed escape, preserve the approach, and precede
 any later original death. Fixed campaign checks also require death to remain
 committed and the level to reset within 180 released frames. `compare-controls.mjs` records completion and coin

@@ -4,6 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { machine, hash, expand, compress, replay } from "./runtime.mjs";
 import { symbolMachine } from "./symbol-runtime.mjs";
+import { players } from "./signals.mjs";
 
 const [input, rom, runtime, firstText, output, tailText = "0"] = process.argv.slice(2);
 if (!output) throw new Error("export-witness.mjs CANDIDATE ROM RUNTIME FIRST_SUSPECT_FRAME OUTPUT [RELEASED_TAIL]");
@@ -14,11 +15,20 @@ assert.equal(m.core_sha256, candidate.core_sha256);
 const tape = expand(candidate.actions), tail = Number(tailText), first = Number(firstText);
 assert.ok(Number.isSafeInteger(tail) && tail >= 0 && tail <= 20000);
 assert.ok(Number.isSafeInteger(first) && first > 0 && first <= tape.length);
-const trace = await replay(m, candidate.side, candidate.level, tape.concat(Array(tail).fill(0)), candidate.setup?.menu_delay ?? 0, candidate.setup?.startup_released_frames);
-assert.deepEqual(trace[tape.length - 1], Object.fromEntries(Object.entries(candidate.observation).filter(([k]) => k !== "player")));
+const trace = await replay(m, candidate.side, candidate.level, tape, candidate.setup?.menu_delay ?? 0, candidate.setup?.startup_released_frames);
+assert.equal(trace.length, tape.length, "candidate input must reach its saved endpoint");
+const withoutPlayer = o => Object.fromEntries(Object.entries(o).filter(([k]) => k !== "player"));
+assert.deepEqual(withoutPlayer(players(m)[candidate.player ?? 0]), withoutPlayer(candidate.observation));
+for (let i = 0; i < tail && !trace.at(-1).dead && trace.at(-1).state === 2; i++) {
+  m.core.step(0, 1);
+  const observation = m.observe();
+  assert.ok(!observation.debug && !observation.paused);
+  trace.push(observation);
+}
 const witness = { schema: 1, engine: "dissonance-campaign", discovery_engine: candidate.engine,
   discovery: { input, candidate_sha256: hash(bytes), round: candidate.round, seed: candidate.seed,
-    executions: candidate.executions, root: candidate.root, search_wasm_sha256: candidate.search_wasm_sha256 },
+    executions: candidate.executions, root: candidate.root, player: candidate.player ?? 0,
+    search_wasm_sha256: candidate.search_wasm_sha256 },
   options: { side: candidate.side, menu_delay: candidate.setup?.menu_delay ?? 0, startup_released_frames: candidate.setup?.startup_released_frames,
     fceumm_startup_released_frames: candidate.setup?.startup_released_frames === 22 ? 180 : candidate.setup?.startup_released_frames }, boot_level: candidate.level, target_level: candidate.level,
   rom_sha256: m.rom_sha256, core_sha256: m.core_sha256, first_suspect_frame: first,
