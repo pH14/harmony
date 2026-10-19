@@ -2,9 +2,13 @@
 
 This standalone Rust workspace adapts SMB, Mega Man 2, Metroid, and Super Tilt Bro
 to Dissonance.
-It owns game interpretation, controller policies, campaign binaries, and workload
-reporting. Generic archive and campaign mechanisms come from `searcher`; emulator
-and guest execution support comes from `../nes-machine`. Consonance stages an
+It owns campaign drivers, binaries, films, evaluation and workload reporting.
+Game interpretation and controller policies come from
+[`../nes-games`](../nes-games/README.md). This package re-exports those modules
+under the same paths, so `nes_workload::mm2::target` names the Mega Man 2
+target, and its `target` modules make `QuickNesMachine` the default backend of
+each target type. Generic archive and campaign mechanisms come from `searcher`;
+emulator and guest execution support comes from `../nes-machine`. Consonance stages an
 OCI image through `oci-support`, injects the caller's ROM at `/game.nes`, and
 delegates process startup to the platform supervisor.
 
@@ -60,14 +64,16 @@ MP4. `nes-film` renders the evaluation matrices. It reads the input and `result.
 recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search.
 
-A witness's `snapshot_sha256` and the SMB campaign's job-result digest hash
-snapshots after `SnapshotState::logical_identity`. The native Mega Man 2,
-Metroid, and Super Tilt Bro campaign result digests cover the complete job
-result, including preparation failures and retained QuickNES snapshots. Replay
-binds SMB archive checkpoints to the same logical snapshot identity; the
-checkpoint file hash continues to cover its exact serialized bytes. Replay
-therefore detects a latent endpoint-state change even when its decoded game
-observations and archive key agree. On Intel KVM hosts a whole-VM endpoint's raw
+A witness's `snapshot_sha256` hashes snapshots after `SnapshotState::logical_identity`. The Super Tilt Bro
+campaign result digest covers the complete job result, including preparation
+failures and retained QuickNES snapshots. Replay therefore detects a latent
+endpoint-state change even when its decoded game observations and archive key
+agree. The games in `nes-games` digest only the decoded result so a browser
+campaign and a native one produce the same stream. Replay binds each archive
+checkpoint snapshot to the digest its source archive entry records. SMB entries
+record the logical snapshot identity; the other games record the serialized
+snapshot. The checkpoint file hash continues to cover its exact serialized
+bytes. On Intel KVM hosts a whole-VM endpoint's raw
 x87 presence bit changes between runs of the same input with equal guest RAM,
 so the raw bytes cannot serve as a replay identity.
 
@@ -91,7 +97,7 @@ Tilt Bro campaign's own witness is checked.
 
 ## Chord draw
 
-`src/chord.rs` draws the controller chords for every game. An action is a chord
+`nes-games/src/chord.rs` draws the controller chords for every game. An action is a chord
 held for a short hold of 2–12 frames or a long hold, with equal odds. The long
 hold is 96–120 frames for SMB and 48–120 frames for the other games. Each game
 names its held chords and at most one tap button: Select for Metroid, Start for
@@ -109,7 +115,7 @@ before it and is drawn whole: a tap alone, or a held chord at random.
 ## Snapshots
 
 Every game stores its QuickNES snapshots through `NesBackend` in
-`src/nes_backend.rs`. A stored snapshot is the QuickNES state as an LZ4 block
+`nes-games/src/nes_backend.rs`. A stored snapshot is the QuickNES state as an LZ4 block
 with its length in front. A restore checks the declared length against the
 core's state size before it decompresses. The archive charges the compressed
 length plus the snapshot record, so a memory budget keeps more snapshots
@@ -124,6 +130,9 @@ thread serializes, compresses and decompresses in buffers it reuses, so a
 capture allocates only the stored block and a restore allocates nothing. With
 one malloc arena, every allocation takes a lock that all workers share. The
 Consonance backend stores its own portable state through the same trait.
+Mega Man 2 and Metroid also read work RAM and cartridge RAM through
+`NesMemory` in the same file. Metroid also writes them there. QuickNES
+implements `NesMemory`, and the Consonance backend does not.
 
 A snapshot keeps the decoded observation it was taken at. QuickNES serves
 reads right after a restore, so a game that needs work RAM after a restore
@@ -133,7 +142,7 @@ state keeps: none for QuickNES and 2 KiB for Consonance. SMB stores its work
 RAM there. Observations carry no list of changed RAM
 addresses and no log line, because nothing reads them.
 
-Campaign recordings use the current Dissonance schedule policy version 5 and
+Campaign recordings use the current Dissonance schedule policy version 6 and
 bounded progress policy. Replay rejects recordings from superseded policy
 namespaces before constructing a replay target.
 
@@ -148,6 +157,8 @@ and platform evidence is not uniform:
 | SMB/Consonance | `nes-backend-oracle` supports the path; no repository CI VM result is claimed here. | Linux/KVM, the platform runtime, NES OCI image, and a caller-supplied licensed SMB ROM. |
 | Mega Man 2/native | All eight independent stage origins and the whole-game origin pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
+| Twin Dragons/native | Unit tests are checked in and `twin-dragons-campaign` passes local replay qualification; no CI lane runs it yet. | Host QuickNES core and the pinned silent-effects release ROM. |
+| Famidash/native | Unit tests are checked in, and `nes-eval` clears Stereo Madness with a replayed victory witness on seeds 1 to 5; no CI lane runs it yet. | Host QuickNES core with the four-screen state patch and the four official 1.2.8 release ROMs. |
 | Super Tilt Bro/native | The `STB` job in `Checks / Dissonance Workloads / NES` runs a bounded search on affected pull requests. The `Benchmarks / Dissonance Workloads / NES` capability panel evaluates Easy/Fair/Hard AI in independent case jobs through `nes-eval`. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
 
 On Linux/KVM, the shared oracle is invoked as:
@@ -164,6 +175,14 @@ ROMs are not redistributed by this package. On aarch64, the caller must supply
 a kernel, platform runtime, and NES OCI image built for that architecture; no
 current ARM result is claimed by this matrix.
 
+`nes-core-oracle` writes the native QuickNES reference for the browser demo's
+WebAssembly core. It runs a game's setup tape followed by seeded chords from
+that game's vocabulary, with occasional Start and Select taps, and writes the
+tape, system RAM after every frame, and system RAM, cartridge RAM and the
+canonical core state at every action boundary. `--play` turns on video and
+audio capture. `demos/twin-dragons/tests/core-oracle.mjs` runs it and
+compares the browser core frame by frame.
+
 ```sh
 cargo test --manifest-path workloads/nes/Cargo.toml
 cargo clippy --manifest-path workloads/nes/Cargo.toml --all-features --all-targets -- -D warnings
@@ -177,6 +196,11 @@ The `tools` directory contains NES movie conversion and trace utilities.
 
 [Super Tilt Bro](src/stb/README.md) has a separate pinned recipe in
 `scripts/build-stb-rom.sh`, `stb-versions.env`, and `STB-ARTIFACT-LICENSE.md`.
+[Twin Dragons](src/twin_dragons/README.md) has a pinned recipe in
+`scripts/build-twin-dragons-rom.sh`, `twin-dragons-versions.env`, and
+`TWIN-DRAGONS-ARTIFACT-LICENSE.md`.
+[Famidash](src/famidash/README.md) has a pinned recipe in
+`scripts/build-famidash-rom.sh` and `famidash-versions.env`.
 New workloads use the execution, observation, input, and qualification contracts
 described above, with minimal game guidance.
 
@@ -270,6 +294,52 @@ milestone verification, and result export. `nes-eval` keeps the existing game
 dispatch and option validation. Dedicated workload binaries can reuse the same
 protocol and validation machinery without copying the evaluation loop.
 
+## Live view
+
+Every `nes-eval` campaign of Super Mario Bros., Mega Man 2, Metroid, Twin
+Dragons or Famidash serves the arcade page's view of itself over HTTP on a
+loopback port. It prints `live view listening on 127.0.0.1:PORT` and writes
+`live.json` with the address, the page's game id, the process id and, on Linux,
+the process start time from `/proc/self/stat`, to its output directory. It
+removes the file when the campaign ends. A process killed by a signal leaves the
+file behind, and the start time keeps a reused process id from matching it. The
+server refuses any other address, and answers 403 to a request whose `Host` or
+`Origin` names another host: it has no authentication and can serve the ROM
+directory. To watch from another machine, forward the port over SSH, for
+example `ssh -L 8790:127.0.0.1:PORT HOST`, or use the arcade launcher in
+[`demos/twin-dragons`](../../demos/twin-dragons/README.md#native-runs).
+
+The view costs nothing per job while no viewer is connected: workers skip the
+trail and per-action records, and the coordinator turns off admission records.
+Six paired one-worker runs of Famidash and Twin Dragons at 30,000 executions
+differed by 0.2% on average, within run-to-run noise. A connected viewer turns
+the records back on. A viewer that connects first gets a sample of the archive,
+up to 1,000 states with the newest 250 among them, decoded from their
+snapshots, so a long run shows where it has reached without keeping a history.
+
+A request with `live` set to a loopback address such as `127.0.0.1:8790` runs
+the arcade game from genesis with its own draw mixture and a `Traced` core, as
+the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
+`resume` and `mixture`. `live_site` names a directory with the built arcade
+page and its `roms` directory, which the server serves at `/`. Other campaigns
+keep their own game setup and mixture, and their view has no motion trails;
+its root is the campaign's first archived state.
+
+`GET /live/events` is a Server-Sent Events stream: a `ready` message with the
+root state, the archive sample, then one `batch` every 100 ms in the shape the
+browser search worker posts, with at most 256 trails and 2,000 unretained points
+per batch, and a final `limit` message when the campaign ends.
+`GET /live/states?ids=&request=` returns the controller input and core snapshot
+of up to 12 archived states. The coordinator thread reads them between
+admissions. In a `live` campaign, the request thread replays a state's input
+through a fresh target when the archived input does not hold every frame the
+core ran, as the browser does. Requests are limited to 64 KiB with 10-second
+read and write timeouts, and the server holds at most 64 connections. Open
+`http://127.0.0.1:8790/?game=GAME&live` to watch. The page ids are
+`super-mario-bros`, `mega-man-2`, `metroid`, `twin-dragons` and the five
+Famidash groups `famidash`, `famidash-community`, `famidash-b`, `famidash-c` and
+`famidash-d`; a Famidash campaign reports the group that holds its stage.
+
 ## Product CLI adapter
 
 The CLI's NES adapter owns ROM identification and guest-image preparation. The
@@ -284,15 +354,16 @@ the package checks the on-disk core before constructing a target, and the
 QuickNES loader checks its private copy against the same digest on every load.
 Before a native campaign creates its identity, it prepares a digest of the
 executable QuickNES load, including its loaded dependency closure. SMB, Mega Man
-2, Metroid and Super Tilt Bro bind this prepared execution digest in the
-recorded emulator policy. Each campaign worker checks that digest while loading
+2, Metroid, Super Tilt Bro, Famidash and Twin Dragons bind this prepared
+execution digest in the recorded emulator policy, and the native live view loads
+its machines against the same digest. Each campaign worker checks that digest while loading
 its private core and before running the ROM. Native prepared.json, evaluation
 identity.json, power-on fixture descriptors, progress replay records and STB
 film evidence record the same digest, so replacing a dependency while keeping
 the core file unchanged cannot reuse a saved campaign identity.
 The standalone film and probe commands are diagnostic runs: they open the
 selected private core and report observations, but their transient outputs do
-not carry a campaign replay identity. The identity-bearing STB film command
+not carry a campaign replay identity. The identity-bearing `nes-film` command
 records the prepared execution digest in film.json.
 For a saved search origin, the CLI checks the ROM and, for Consonance, the
 kernel and initramfs against the inherited manifest at their final read before

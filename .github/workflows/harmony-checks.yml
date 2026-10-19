@@ -207,7 +207,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
-          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy \
+            --target wasm32-unknown-unknown
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
         with:
@@ -215,6 +216,7 @@ jobs:
           shared-key: harmony-nes-adapter
           workspaces: |
             workloads/nes -> target
+            workloads/nes-games -> target
             workloads/nes-machine -> target
             workloads/nes-protocol -> target
             workloads/nes-guest -> target
@@ -225,9 +227,14 @@ jobs:
           set -euo pipefail
           cargo clippy --locked --manifest-path workloads/nes/Cargo.toml --release \
             --all-features --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path workloads/nes-games/Cargo.toml --release \
+            --all-features --all-targets -- -D warnings
+          cargo check --locked --manifest-path workloads/nes-games/Cargo.toml \
+            --target wasm32-unknown-unknown
           cargo clippy --locked --manifest-path workloads/nes-protocol/Cargo.toml \
             --all-features --all-targets -- -D warnings
           cargo test --locked --manifest-path workloads/nes/Cargo.toml --release --all-features
+          cargo test --locked --manifest-path workloads/nes-games/Cargo.toml --release --all-features
           cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml --all-features
           cargo test --locked --manifest-path workloads/nes-protocol/Cargo.toml --all-features
       - name: Guest-side NES agent on its own manifest

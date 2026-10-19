@@ -94,7 +94,8 @@ current server implements the whole-state digest. An unavailable scope returns
 `Unsupported` rather than a substitute value.
 
 `EventHistory` is available for V-time-wired VMMs. Fresh wiring starts the count
-and commitment at zero. Each completed normalized event commits class, payload,
+and commitment at zero. Version 2 counts commitment records, including normalized
+transport events and completed semantic service exchanges. Each normalized event commits class, payload,
 virtual time and ordered interrupt deadline/vector association. Snapshot capture
 and diagnostic trace retirement are neutral; replay, branch, portable import
 and cache import restore the captured prefix. Local snapshot/schedule IDs and
@@ -102,13 +103,19 @@ checkpoint hashes are excluded. A clockevent delivered during an otherwise
 raw-only ARM exit records a semantic delivery event at that actual boundary;
 it does not change interrupt timing. A backend without history returns `Unsupported`.
 The compact commitment does not retain event bytes or certify arbitrary guest
-instruction history. Faults compares it with source-bound replay certificates,
+instruction history. Completed doorbell exchanges additionally commit canonical
+request kind, service, opcode, sequence, payload, response status and response
+payload. Malformed requests bind their advertised length and observed bytes.
+Immediate completions follow the enclosing transport record; deferred
+completions contribute once when their response is written, using captured
+request state. They neither charge virtual time nor change diagnostic normalized
+event ordinals. Faults compares it with source-bound replay certificates,
 including final terminal and zero-action job results; UML remains unavailable.
 
 ## Intervention plane
 
 `Perturb` stages a bounded mechanical effect at a `Moment`: memory write or memory
-XOR. Protocol version 13 and input format version 8 bind
+XOR. Protocol version 15 and input format version 8 bind
 this vocabulary to the negotiated contract. Workload fault tooling translates
 its fault definitions into these operations. `Exec` injects an interactive
 serial command and runs to a completion marker or deadline. Each operation has

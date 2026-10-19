@@ -228,6 +228,30 @@ jobs:
           path: ${{ runner.temp }}/uml-transaction-admission
           if-no-files-found: warn
           retention-days: 14
+      - name: Compare production xstate preparation with the stronger checker
+        if: matrix.architecture == 'x86_64'
+        env:
+          HARMONY_XSTATE_ADMISSION_REPORT_DIR: ${{ runner.temp }}/xstate-admission
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+        run: |
+          set -euo pipefail
+          output=$(cargo test --locked -p harmony-cli --bin harmony adapters::faults::workflow::tests::native_xstate_preparation_matches_stronger_checker -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
+          printf '%s\n' "$output"
+          grep -Fxq 'running 1 test' <<<"$output"
+          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
+          grep -Fq 'XSTATE_ADMISSION=fxsave:refused' <<<"$output"
+          grep -Fq 'XSTATE_ADMISSION=xsave:refused' <<<"$output"
+          grep -Fq 'XSTATE_ADMISSION=selector1:refused' <<<"$output"
+          grep -Fq 'XSTATE_ADMISSION=selector0:admitted' <<<"$output"
+          grep -Fq 'XSTATE_ADMISSION=restore:admitted' <<<"$output"
+          grep -Fq 'XSTATE_ADMISSION=math:admitted' <<<"$output"
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.architecture == 'x86_64'
+        with:
+          name: xstate-admission-${{ github.sha }}
+          path: ${{ runner.temp }}/xstate-admission
+          if-no-files-found: warn
+          retention-days: 14
       - name: Check native FS and GS bases across reused and fresh restores
         if: matrix.architecture == 'x86_64'
         env:

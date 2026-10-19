@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{cell::RefCell, fmt};
+use std::{cell::RefCell, fmt, ops::Range};
 
-use machine::{Machine, MachineError, SnapId, nes::WRAM_SIZE, quicknes::QuickNesMachine};
+#[cfg(unix)]
+use machine::quicknes::QuickNesMachine;
+use machine::{Machine, MachineError, SnapId, nes::WRAM_SIZE};
 use serde::{Serialize, de::DeserializeOwned};
+
+#[must_use]
+pub fn native_identity_sha256(core_sha256: &str, execution_sha256: &str) -> String {
+    format!("{core_sha256};prepared-execution-sha256={execution_sha256}")
+}
 
 pub trait SnapshotState:
     Clone + fmt::Debug + Eq + Send + Sync + Serialize + DeserializeOwned
@@ -93,11 +100,57 @@ where
     }
 }
 
-thread_local! {
-    static QUICKNES_STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    static QUICKNES_PACKED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+pub trait NesMemory {
+    fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError>;
+
+    fn poke_wram(&mut self, addr: usize, byte: u8) -> Result<(), MachineError>;
+
+    fn capture_save_ram_per_frame(&mut self, range: Range<usize>);
+
+    fn save_ram_frames(&self) -> &[u8];
+
+    fn read_save_ram(&self) -> Result<Vec<u8>, MachineError>;
+
+    fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError>;
 }
 
+#[cfg(unix)]
+impl NesMemory for QuickNesMachine {
+    fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
+        QuickNesMachine::read_wram(self)
+    }
+
+    fn poke_wram(&mut self, addr: usize, byte: u8) -> Result<(), MachineError> {
+        QuickNesMachine::poke_wram(self, addr, byte)
+    }
+
+    fn capture_save_ram_per_frame(&mut self, range: Range<usize>) {
+        QuickNesMachine::capture_save_ram_per_frame(self, range);
+    }
+
+    fn save_ram_frames(&self) -> &[u8] {
+        QuickNesMachine::save_ram_frames(self)
+    }
+
+    fn read_save_ram(&self) -> Result<Vec<u8>, MachineError> {
+        QuickNesMachine::read_save_ram(self)
+    }
+
+    fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError> {
+        QuickNesMachine::write_save_ram(self, offset, bytes)
+    }
+}
+
+#[cfg(unix)]
+thread_local! {
+    static QUICKNES_STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+thread_local! {
+    static PACKED_STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(unix)]
 impl NesBackend<Vec<u8>> for QuickNesMachine {
     fn export_nes(
         &mut self,
@@ -131,10 +184,10 @@ impl NesBackend<Vec<u8>> for QuickNesMachine {
     }
 }
 
-fn pack_quicknes_state(state: &[u8]) -> Result<Vec<u8>, MachineError> {
+pub fn pack_quicknes_state(state: &[u8]) -> Result<Vec<u8>, MachineError> {
     let declared = u32::try_from(state.len())
         .map_err(|_| MachineError::Backend("snapshot is too large to compress".to_owned()))?;
-    QUICKNES_PACKED.with_borrow_mut(|packed| {
+    PACKED_STATE.with_borrow_mut(|packed| {
         packed.resize(4 + lz4_flex::block::get_maximum_output_size(state.len()), 0);
         packed[..4].copy_from_slice(&declared.to_le_bytes());
         let written = lz4_flex::block::compress_into(state, &mut packed[4..]).map_err(|error| {
@@ -144,6 +197,7 @@ fn pack_quicknes_state(state: &[u8]) -> Result<Vec<u8>, MachineError> {
     })
 }
 
+#[cfg(unix)]
 pub fn unpack_quicknes_state(
     machine: &QuickNesMachine,
     packed: &[u8],
@@ -153,15 +207,23 @@ pub fn unpack_quicknes_state(
     Ok(state)
 }
 
+#[cfg(unix)]
 fn unpack_quicknes_state_into(
     machine: &QuickNesMachine,
     packed: &[u8],
     state: &mut Vec<u8>,
 ) -> Result<(), MachineError> {
+    unpack_state_into(packed, machine.snapshot_len(), state)
+}
+
+pub fn unpack_state_into(
+    packed: &[u8],
+    expected: usize,
+    state: &mut Vec<u8>,
+) -> Result<(), MachineError> {
     let undecodable =
         |error| MachineError::Backend(format!("snapshot does not decompress: {error}"));
     let (declared, block) = lz4_flex::block::uncompressed_size(packed).map_err(undecodable)?;
-    let expected = machine.snapshot_len();
     if declared != expected {
         return Err(MachineError::Backend(format!(
             "snapshot declares {declared} bytes; this core's states are {expected}"
@@ -220,7 +282,7 @@ impl NesBackend<machine::consonance::ConsonancePortable>
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use machine::{Machine, quicknes::QuickNesMachine};
 

@@ -73,7 +73,7 @@ PR_EXTENDED_CHECK_BUDGETS = {
 }
 PR_TIMEOUT_EXPRESSIONS = {
     (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"):
-        "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store') && 30 || 15 }}",
+        "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store' || matrix.name == 'consonance-client') && 30 || 15 }}",
 }
 
 
@@ -162,6 +162,7 @@ MIRI_FLAGS_DEFAULT = "-Zmiri-permissive-provenance"
 # Every manifest that owns formatting, lints and tests. A workspace root covers
 # its members; the rest are standalone packages outside any workspace.
 CARGO_MANIFESTS = (
+    "demos/twin-dragons/rust/Cargo.toml",
     "Cargo.toml",
     "consonance/harmony-linux/sdk/Cargo.toml",
     "consonance/harmony-linux/supervisor/Cargo.toml",
@@ -171,6 +172,7 @@ CARGO_MANIFESTS = (
     "workloads/fault-policy/Cargo.toml",
     "workloads/faults/Cargo.toml",
     "workloads/nes/Cargo.toml",
+    "workloads/nes-games/Cargo.toml",
     "workloads/nes-guest/Cargo.toml",
     "workloads/nes-machine/Cargo.toml",
     "workloads/nes-protocol/Cargo.toml",
@@ -182,9 +184,11 @@ CARGO_MANIFESTS = (
 # out-of-workspace guest manifests are checked against the root allow-list for
 # licenses alone, because their dependency sets are audited upstream.
 DENY_COMMANDS = (
+    "--manifest-path demos/twin-dragons/rust/Cargo.toml check --config deny.toml",
     "--manifest-path Cargo.toml check",
     "--manifest-path dissonance/Cargo.toml check",
     "--manifest-path workloads/nes/Cargo.toml check --config deny.toml",
+    "--manifest-path workloads/nes-games/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/nes-protocol/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/fault-policy/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/faults/Cargo.toml check --config deny.toml",
@@ -222,7 +226,7 @@ LIB_PARTITIONS = {
             "vendor::x86::logical_identity_live_tests",
         ),
         "Execution Protocol": (
-            "control", "control_state", "session_trace", "host_telemetry", "sdk_telemetry",
+            "control", "control_state", "service_transcript", "session_trace", "host_telemetry", "sdk_telemetry",
             "vendor::x86::dispatch", "vendor::arm64::dispatch",
         ),
     },
@@ -264,7 +268,7 @@ HOST_TESTS = {
         "vmm-backend hvf::tests::rejected_policy_preserves_live_identity",
         "vmm-backend hvf::tests::failed_policy_write_retires_mutated_vcpu",
         "vmm-backend hvf::tests::failed_fault_completion_retires_partly_changed_vcpu",
-        "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_restore_with_fresh_fallback",
         "vmm-backend::arm64_sysreg_snapshot guest_actlr_state_refuses_capture_and_clean_restore_resets_it",
         "vmm-backend::arm64_sysreg_snapshot guest_pauth_keys_refuse_capture_and_clean_restore_resets_them",
         "vmm-core::arm64_hvf_mdccint guest_mdccint_el1_survives_a_cold_public_snapshot_restore",
@@ -276,11 +280,13 @@ HOST_TESTS = {
         "vmm-core::arm64_executable_restore live::executable_ram_restores_match_guest_continuations",
         ARM64_BASELINE_TEST,
         "vmm-core vendor::arm64::dispatch::tests::live_in_kernel_preemption_matches_guest_acknowledgment",
-        "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_restore_with_fresh_fallback",
+        "vmm-backend::arm64_restore_translation live::empty_dirty_detour_refuses_reuse_and_fresh_restore_discards_abandoned_translation",
+        "vmm-backend::arm64_restore_translation live::executable_bytes_restore_requires_fresh_vm_after_warmed_detour",
         "vmm-backend::arm64_sysreg_snapshot guest_mdccint_survives_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_gic_cpu_interface_survives_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_gic_spi_trigger_survives_fresh_restore",
-        "vmm-backend::arm64_sysreg_snapshot guest_gicr_bases_survive_reused_and_fresh_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_gicr_bases_survive_restore_with_fresh_fallback",
         "vmm-backend::arm64_sysreg_snapshot guest_nonzero_spi_route_rejects_capture_and_zero_route_restores",
         "vmm-backend::arm64_sysreg_snapshot guest_physical_timer_state_refuses_capture_and_legacy_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore",
@@ -314,7 +320,7 @@ OCI_PLATFORM_TESTS = ("oci-support::platform *", "oci-support::process_platform 
 
 def _consonance_crates() -> tuple[str, ...]:
     return (
-        "consonance-client", "control-proto", "environment", "execution-proto",
+        "consonance-client", "control-proto", "environment", "execution-contract", "execution-proto",
         "gicv3", "guest-image", "host-code-identity", "hypercall-doorbell", "hypercall-proto",
         "lapic", "nested-driver", "oci-support", "process-proto", "snapshot-store", "telemetry",
         "uml", "unison", "vm-state", "vmm-backend", "vmm-core", "vtime",
@@ -396,7 +402,7 @@ CONSONANCE_CHECKS = Workflow(
             select="rust_checks"),
         Job("Execution Protocol", "pr", 15,
             crates=("consonance-client", "control-proto", "environment",
-                    "execution-proto", "hypercall-doorbell", "hypercall-proto",
+                    "execution-contract", "execution-proto", "hypercall-doorbell", "hypercall-proto",
                     "process-proto"),
             test_targets=("vmm-core:protocol",),
             select="rust_checks"),
@@ -414,7 +420,8 @@ CONSONANCE_ANALYSIS = Workflow(
         Job("Miri — <Crate>", "pr", 30, select="miri_matrix",
             ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
             exception="The backend's interpreted snapshot/register inventory and "
-                      "the Store's full resident-verification suite exceed 15 minutes; "
+                      "the Store's full resident-verification suite and the client's "
+                      "interpreted cache tests exceed 15 minutes; "
                       "other targets retain 15 minutes."),
         Job("Miri — <Crate> (Whole Crate)", "full", 320,
             ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
@@ -801,6 +808,7 @@ CONSONANCE_UML = Workflow(
                 "uml profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes",
                 "harmony-cli::bin/harmony adapters::faults::runs::tests::loaded_reviewed_uml_profile_binds_the_recorded_kernel",
                 "harmony-cli::bin/harmony adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch",
+                "harmony-cli::bin/harmony adapters::faults::workflow::tests::native_xstate_preparation_matches_stronger_checker",
                 "consonance-client session::uml::tests::reviewed_kernel_panic_is_a_public_client_crash",
                 "uml::guest_exitcode guest_cannot_choose_host_reserved_exit_statuses",
                 "uml::host_clone_exhaustion host_clone_quota_exhaustion_is_not_a_guest_fork_result",
@@ -824,7 +832,19 @@ REPOSITORY_MAINTENANCE = Workflow(
     ),
 )
 
+TWIN_DRAGONS_BROWSER_CHECKS = Workflow(
+    path=f"{WORKFLOW_DIR}/twin-dragons-browser.yml",
+    name="Checks / Dissonance Workloads / Twin Dragons Browser",
+    owner="Dissonance Workloads",
+    triggers=("pull_request", "push", "workflow_dispatch"),
+    jobs=(
+        Job("Twin Dragons Build", "pr", 15, crates=("twin-dragons-browser",)),
+        Job("Twin Dragons Browser — <Suite>", "pr", 15),
+    ),
+)
+
 WORKFLOWS = (
+    TWIN_DRAGONS_BROWSER_CHECKS,
     REPOSITORY_CHECKS,
     HARMONY_HOST_COMPATIBILITY,
     CONSONANCE_CHECKS,

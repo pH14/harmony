@@ -91,6 +91,39 @@ requires a valid memory operation, including implicit-lock `XCHG` or a supported
 explicit `LOCK` form; ordinary REP, PAUSE, SSE and `XRELEASE` prefixes remain
 admitted. The scan still requires cooperative control flow and no generated code.
 
+Production preparation applies the x86 xstate policy to the exact packed ELF
+bytes for both VM and UML execution, including ordinary uninstrumented runs.
+FXSAVE/XSAVE-family saves are refused independently of digest/address review.
+Only the complete straight-line glibc eager-resolver and unused-TLSdesc shapes
+receive the loader exception; the save operand, matching restore, mask/reload sequence,
+predecessors, alternate entries and overlapping decodes all participate in the
+check. TLSdesc and text relocations anywhere in the scanned x86 ELF closure are
+refused. XGETBV requires a unique nonoverlapping straight-line proof that ECX
+is zero, bounded to 32 predecessor instructions. The proof follows full-width
+register copies, respects partial-register and CPUID clobbers, and permits
+conditional branches only when no observed entry bypasses the proof. LOOP-family
+instructions, calls and unknown operations stop the proof. Legacy resolver
+FXSAVE/FXRSTOR requires its complete 16-byte-aligned, 0x240-byte frame; the
+XSAVE variants retain the matching mask and 64-byte alignment rules. Restore operations remain
+admitted, and native standard math is unchanged. The Linux fixture compares
+compiled FXSAVE, XSAVE, selector-1, proven selector-0, restore, math and ordinary
+statically linked libc programs
+through both production preparation modes and the Python checker, retaining
+exact ELF bytes and both decisions. The ordinary libc positive runs in VM mode;
+installed glibc can contain transaction entry already refused by UML admission.
+
+This is a static cooperative-code boundary. It does not enforce future
+executable mappings, mutable files, generated code or instruction preservation
+under engine WriteMemory/XorMemory effects. Those effects can change code even
+when the original image was admitted. Ordinary logical XSAVE/cache identity
+continues to require the documented instruction-domain assumptions; the scan
+is not a runtime domain-preservation or exact-replay qualification certificate.
+A retained development-host KVM probe passed static admission, decoded FXSAVE
+into an RW mapping, changed the mapping to RX and executed it successfully.
+That is a confirmed instruction-domain escape, not a replay-divergence witness.
+Arbitrary RAM effects and dynamic execution remain outside the maintained
+static contract even after the production/checker alignment.
+
 The stub's TSC trap does not trap RDPID or LSL. RDPID returns the host CPU's
 identity, and LSL can read the CPU number from the host GDT segment limit.
 This admission check walks executable loads in the packed image, including
@@ -194,6 +227,14 @@ When reconstructing an earlier prefix, the resolver uses that prefix's installed
 service configuration for requests before its deadline. A request at or beyond
 the deadline remains pending at the action snapshot. The next action's branch
 installs its service configuration before resolving that request.
+
+Before executing an uncached prefix, the client compiles its action timeline
+in one checked cumulative pass. One immutable plan supplies the branch's exact
+standing-service configuration, coverage schedule, local decision handler and
+final deadline. Reconstruction compiles each prefix separately so earlier
+branches retain their original configuration bytes. Compilation and full-prefix
+history materialization remain linear in that prefix's depth; plans are not
+retained across actions.
 
 Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
@@ -518,8 +559,8 @@ job and skip records decode. The binary campaign result hash and checkpoints
 retain the native 128-bit encoding.
 
 Each campaign job's recorded result digest binds its logical result to a tagged
-final endpoint certificate. The v2 result domain also binds v1 normalized-event
-history whenever a KVM whole-state endpoint is available, including terminal and
+final endpoint certificate. The v2 result domain also binds versioned ordered-history
+records (v2 includes completed semantic service exchanges) whenever a KVM whole-state endpoint is available, including terminal and
 zero-action jobs. Failed or unavailable endpoints explicitly carry no history;
 that absence cannot stand in for a whole-state endpoint.
 
@@ -630,7 +671,7 @@ canonicalization does not grant captured execution authority. Branch roots use
 Old history, snapshot, stream, cache and root formats are refused. Missing,
 malformed, or conflicting certificates stop the campaign.
 
-The v2 replay certificate binds the v1 ordered-history format independently of
+The replay certificate binds the v3 ordered-history format independently of
 logical endpoint state. An intermediate event change alters the certificate even
 when endpoint, observations, event count and final virtual time agree. Fresh setup
 preserves the boot event prefix. Replay, branch, portable import and cache import
@@ -826,3 +867,10 @@ number of distinct named rows in the thread report. The 32-row witness cap
 applies per producer table; the accumulated thread report can retain keys from
 multiple sessions and has no global 32-row bound. Neither this field nor the
 shape rows report current residency or enter archive memory policy.
+Fault endpoint certificates bind the ordinary, unqualified execution-assurance
+identity as well as state, event history and observations. History receipts keep
+and validate that identity. A KVM whole-state certificate is evidence for the
+observed replay, and cannot be promoted into CPU portability qualification;
+`HistoryReceipt::require_qualified` refuses unsupported finite compositions.
+UML keeps `UmlWholeStateUnavailable` and has no whole-state certificate. See the
+[execution assurance contract](../../consonance/execution-contract/README.md).

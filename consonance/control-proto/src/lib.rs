@@ -14,7 +14,7 @@ pub use types::{
 
 pub const PROTO_VERSION: u16 = 1;
 
-pub const APP_PROTOCOL_VERSION: u16 = 13;
+pub const APP_PROTOCOL_VERSION: u16 = 15;
 
 pub const READ_CAP: u32 = 1 << 18;
 
@@ -28,8 +28,8 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216);
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 13);
-        assert_eq!(EventHistory::VERSION, 1);
+        assert_eq!(APP_PROTOCOL_VERSION, 15);
+        assert_eq!(EventHistory::VERSION, 3);
         assert_eq!(READ_CAP, 262_144);
     }
 }

@@ -5,7 +5,7 @@
 This module owns every Mega Man 2 RAM address and game interpretation. The
 generic engine receives opaque keys, typed actions, observations and
 snapshots. The decoder documents RAM addresses beside their definitions in
-`target.rs`.
+[`nes-games/src/mm2/target.rs`](../../../nes-games/src/mm2/target.rs).
 
 ## Modes
 

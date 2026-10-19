@@ -1277,6 +1277,27 @@ where
         }
     }
 
+    pub(crate) fn record_guest_completion(&mut self, result: &[u8]) -> Result<(), VmmError> {
+        if let Some(trace) = self.virtual_time_trace.as_mut() {
+            trace
+                .record_completion(result)
+                .map_err(|message| VmmError::ContractViolation(message.into()))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn complete_guest_read(&mut self, value: u64) -> Result<(), VmmError> {
+        self.backend.complete_read(value)?;
+        let mut result = [0; 9];
+        result[1..].copy_from_slice(&value.to_le_bytes());
+        self.record_guest_completion(&result)
+    }
+
+    pub(crate) fn complete_guest_fault(&mut self) -> Result<(), VmmError> {
+        self.backend.complete_fault()?;
+        self.record_guest_completion(&[1])
+    }
+
     fn service_exit(
         &mut self,
         exit: Exit<B::A>,
@@ -2244,6 +2265,8 @@ where
 
     fn write_service_response(
         &mut self,
+        moment: u64,
+        request: &[u8],
         opcode: u16,
         seq: u32,
         status: Status,
@@ -2252,7 +2275,10 @@ where
         let mut response = [0; HC_PAGE];
         let len = encode_response(ServiceId::Sdk, opcode, seq, status, payload, &mut response)
             .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
-        self.write_attributed_response(
+        self.complete_doorbell(
+            moment,
+            request.len() as u32,
+            request,
             &response[..len],
             Attribution::kind(match opcode {
                 2 => Kind::Coverage,
@@ -2286,8 +2312,17 @@ where
         ) {
             return Err(channel::ChannelError::RequestIdentityMismatch.into());
         }
+        let request = crate::service_transcript::pending_request(
+            sdk.pending_stop
+                .as_ref()
+                .expect("validated pending SDK request"),
+        )
+        .ok_or_else(|| {
+            VmmError::ContractViolation("pending service request cannot be encoded".into())
+        })?;
+        let moment = *moment;
         let seq = *seq;
-        self.write_service_response(3, seq, Status::BadRequest, &[])?;
+        self.write_service_response(moment, &request, 3, seq, Status::BadRequest, &[])?;
         self.sdk
             .as_mut()
             .expect("validated pending SDK request")
@@ -2305,6 +2340,9 @@ where
             .as_ref()
             .and_then(|sdk| sdk.pending_stop.clone())
             .ok_or_else(|| VmmError::ContractViolation("no service request is pending".into()))?;
+        let request = crate::service_transcript::pending_request(&stop).ok_or_else(|| {
+            VmmError::ContractViolation("pending service request cannot be encoded".into())
+        })?;
         let (moment, seq, question, opcode, payload, coverage_commit) = match stop {
             SdkStop::Decision {
                 moment,
@@ -2375,7 +2413,7 @@ where
                 "prepared service question differs".into(),
             ));
         }
-        self.write_service_response(opcode, seq, Status::Ok, &payload)?;
+        self.write_service_response(moment, &request, opcode, seq, Status::Ok, &payload)?;
         let sdk = self
             .sdk
             .as_mut()
@@ -2488,7 +2526,10 @@ where
         } else {
             self.dispatch_doorbell(moment, req, &mut resp)
         };
-        self.write_attributed_response(
+        self.complete_doorbell(
+            moment,
+            req_len,
+            req,
             &resp[..resp_len],
             if req_len as usize > HC_PAGE {
                 Attribution::kind(Kind::Unreadable)
@@ -2529,6 +2570,32 @@ where
         let off = usize::try_from(gpa.checked_sub(DOORBELL_MAP_GPA as u64)?).ok()?;
         let end = off.checked_add(len)?;
         db.as_mut_bytes().get_mut(off..end)
+    }
+
+    fn complete_doorbell(
+        &mut self,
+        moment: u64,
+        requested_len: u32,
+        request: &[u8],
+        response: &[u8],
+        attribution: Attribution,
+    ) -> Result<(), VmmError> {
+        if response.is_empty() {
+            return self.write_attributed_response(response, attribution);
+        }
+        if let Some(trace) = self.virtual_time_trace.as_ref() {
+            trace
+                .preflight_service_completion()
+                .map_err(|message| VmmError::ContractViolation(message.into()))?;
+        }
+        let exchange = crate::service_transcript::exchange_digest(requested_len, request, response);
+        self.write_attributed_response(response, attribution)?;
+        if let Some(trace) = self.virtual_time_trace.as_mut() {
+            trace
+                .complete_service(moment, exchange)
+                .map_err(|message| VmmError::ContractViolation(message.into()))?;
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -3347,6 +3414,11 @@ mod tests {
     };
     use crate::vendor::x86::records as snapshot;
 
+    mod service_transcript_tests {
+        use super::*;
+        include!("service_transcript_tests.rs");
+    }
+
     const TEST_RAM: usize = if cfg!(miri) { 0x1_0000 } else { 0x2_0000 };
 
     mod buffered_sdk_encoding {
@@ -3875,6 +3947,66 @@ mod tests {
         let mut vmm = Vmm::new(configured_mock(exits), GuestRam::new(0x1000).unwrap());
         vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
         vmm
+    }
+
+    #[test]
+    fn read_completion_history_detects_reconverged_uart_answers() {
+        let mut observations = Vec::new();
+        for byte in [0x35, 0x71] {
+            let mut vmm = vtime_vmm(
+                vec![Exit::Arch(vmm_backend::X86Exit::Io {
+                    port: 0x3f8,
+                    size: 1,
+                    write: None,
+                })],
+                37,
+            );
+            vmm.inject_serial_input(&[byte]);
+            assert!(matches!(vmm.step().unwrap(), Step::Continued));
+            assert_eq!(
+                vmm.backend.completions(),
+                &[Completion::Read(u64::from(byte))]
+            );
+            observations.push((
+                vmm.state_hash().unwrap(),
+                vmm.event_history().unwrap(),
+                vmm.virtual_time_trace().unwrap().normalized_log().events[0].clone(),
+            ));
+        }
+        let (left_state, left_history, left_event) = &observations[0];
+        let (right_state, right_history, right_event) = &observations[1];
+        assert_eq!(left_state, right_state);
+        assert_eq!(left_history.count, right_history.count);
+        assert_eq!(left_event.class, right_event.class);
+        assert_eq!(left_event.vns_after, right_event.vns_after);
+        assert_eq!(left_event.interrupts, right_event.interrupts);
+        assert_ne!(left_event.payload_digest, right_event.payload_digest);
+        assert_ne!(left_history.digest, right_history.digest);
+    }
+
+    #[test]
+    fn read_completion_history_commits_resolved_cpuid_registers() {
+        let mut observations = Vec::new();
+        for cr4 in [0, 1 << 18] {
+            let mut vmm = vtime_vmm(
+                vec![Exit::Arch(vmm_backend::X86Exit::Cpuid {
+                    leaf: 1,
+                    subleaf: 0,
+                })],
+                37,
+            );
+            let mut state = vmm.backend.save().unwrap();
+            state.sregs.cr4 = cr4;
+            vmm.backend.set_state(state);
+            vmm.step().unwrap();
+            let mut state = vmm.backend.save().unwrap();
+            state.sregs.cr4 = 0;
+            vmm.backend.set_state(state);
+            observations.push((vmm.state_hash().unwrap(), vmm.event_history().unwrap()));
+        }
+        assert_eq!(observations[0].0, observations[1].0);
+        assert_eq!(observations[0].1.count, observations[1].1.count);
+        assert_ne!(observations[0].1.digest, observations[1].1.digest);
     }
 
     #[test]
@@ -4413,7 +4545,8 @@ mod tests {
             1
         );
         for opcode in [2, 3] {
-            let question = channel::Question::with_request_id(7, 8, vec![]).unwrap();
+            let question =
+                channel::Question::with_request_id(7, 8, 1_u64.to_le_bytes().to_vec()).unwrap();
             vmm.sdk.as_mut().unwrap().pending_stop = Some(if opcode == 2 {
                 SdkStop::CoverageDecision {
                     moment: 0,
@@ -4428,7 +4561,11 @@ mod tests {
                     question,
                 }
             });
-            vmm.write_service_response(opcode, 9, Status::BadRequest, &[])
+            let request = crate::service_transcript::pending_request(
+                vmm.sdk.as_ref().unwrap().pending_stop.as_ref().unwrap(),
+            )
+            .unwrap();
+            vmm.write_service_response(0, &request, opcode, 9, Status::BadRequest, &[])
                 .unwrap();
             let kind = if opcode == 2 { "coverage" } else { "service" };
             assert_eq!(

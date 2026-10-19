@@ -144,14 +144,17 @@ VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
 `Session::event_history` and `SearchSession::event_history` return the cumulative
-v1 normalized-event count and commitment through both in-process control and
+v3 ordered-history record count and commitment through both in-process control and
 worker transport. Snapshot replay, portable imports and cache imports restore
 the captured history; diagnostic trace retirement does not reset it. A backend
 without normalized history returns an explicit unavailable error. UML does not
 supply this certificate.
 
-Embedded complete portable snapshots use format version 9; sparse sidecars use
-version 11. Older embedded versions are rejected. The outer sparse archive layout
+Completed service exchanges contribute records in addition to normalized
+transport events; this count is not a guest-exit or diagnostic-log count.
+
+Embedded complete portable snapshots use format version 11; sparse sidecars use
+version 13. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
@@ -324,9 +327,10 @@ that acknowledgement. No complete serialized payload buffer or subsequent
 full-extent copy is retained in the child; page payloads still copy once into
 the destination, and metadata and sidecar allocations remain. The loaded-image
 handshake requires matching workers.
-The host image hello is version 3 because IMPORT now carries a message-local
+The host image hello is version 4; IMPORT carries a message-local
 backing table: U descriptors followed by N ordered (slot, offset, length) rows.
-Versions 1 and 2 are refused because they predate the descriptor-table IMPORT.
+Versions 1 through 3 are refused; older descriptor-table-only workers lack the
+qualification-aware configuration described under Execution assurance.
 The protocol reference cap is independent of diagnostic sampling limits.
 The parent groups only exact live Segment Arc owners while holding the original
 committed chain clones. File descriptor numbers, allocator-local segment IDs,
@@ -362,7 +366,7 @@ length mismatch depends on the kernel (observed on macOS 26.6.2). Synthetic
 parser tests force the mismatched bounds independently of kernel behavior. This does not claim to
 recover kernel-installed handles that the OS did not return: observed Darwin
 truncation can leave unreported handles, tracked separately from bounded parsing.
-The accepted worker descriptor cap remains unchanged; the version 3 host hello
+The accepted worker descriptor cap remains unchanged; the version 4 host hello
 identifies the revised import descriptor-table schema.
 
 On Darwin, every worker frame read uses `recvmsg` with a separate 2048-byte
@@ -721,7 +725,8 @@ An offset at or beyond the available event count returns an empty suffix.
 Advancing a cursor beyond `u32::MAX` fails; a failed multi-page read returns no
 partial suffix. A cursor is scoped to its actual snapshot and branch lineage;
 this API does not authenticate a previously consumed prefix or detect rollback.
-`EventHistory.count` counts normalized execution events and is not an SDK offset.
+`EventHistory.count` counts ordered history commitment records and is not an SDK
+offset.
 Workload adapters own decoder checkpoints and lineage validation.
 
 Explicit worker copies use `copy.parent.*` and `copy.child.loop.*` with independent
@@ -809,3 +814,25 @@ Guest teardown and records an idempotent receipt; successful group cleanup uses
 the existing launcher checks, not a new guarantee about arbitrary descendants. An
 abandoned UML session refuses shutdown confirmation even after removing its live
 Guest; normal confirmed shutdown remains idempotent.
+
+## Execution assurance
+
+The version 4 worker host hello also separates qualification-aware configuration
+from prior descriptor-table-only workers.
+
+Sessions default to ordinary, explicitly unqualified execution. Standard
+libraries remain admitted and CPU portability warnings remain advisory. Set
+`SessionConfig::with_qualification` to request a closed finite composition;
+`UmlLaunch::qualification` carries the same request. Both direct and inherited
+worker admission validate it before creating a guest. Current whole-composition
+candidates all refuse: the retained Linux cross-vendor state contradiction is
+failed and UML whole-state identity is unavailable. The request is not a switch
+that promotes ordinary artifacts into qualified evidence.
+
+The [execution assurance contract](../execution-contract/README.md) names the
+required artifact, engine, surface, substrate, restore and evidence bindings and
+the required transformation matrix. Ordinary assurance is bound into VM image
+identity, portable snapshot metadata, UML root identity and cache namespaces.
+Missing/changed portable assurance metadata is refused. These bindings distinguish
+an observed replay or cache equality from an exact-qualified result; they do not
+claim new architectural equivalence or relax any backend admission restriction.

@@ -29,12 +29,13 @@ use std::{
 
 use crate::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
-    nes::{ButtonChord, WRAM_SIZE, actions_of},
+    nes::{ButtonChord, STATE_MAGIC, WRAM_SIZE, actions_of},
 };
 #[cfg(not(miri))]
 use sha2::{Digest, Sha256};
 
 pub use crate::SharedState;
+pub use crate::nes::STATE_HEADER_LEN;
 
 #[cfg(all(not(miri), target_os = "linux", not(target_env = "gnu")))]
 #[path = "quicknes/identity_musl.rs"]
@@ -45,6 +46,11 @@ mod identity;
 mod loader_guard;
 
 pub const QUICKNES_REVISION: &str = "26bb785c9deddb66a17717b21bb4e328f03ade32";
+
+#[must_use]
+pub fn core_identity() -> String {
+    format!("quicknes-libretro:{QUICKNES_REVISION};{QUICKNES_BUILD};{QUICKNES_OPTIONS}")
+}
 
 const QUICKNES_LIBRARY_VERSION: &str = "1.0-WIP26bb785c9deddb66a17717b21bb4e328f03ade32";
 
@@ -101,8 +107,6 @@ define_quicknes_options!(
 pub const QUICKNES_BUILD: &str =
     "DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32";
 
-const STATE_MAGIC: &[u8; 8] = b"HQNESST3";
-pub const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 64 + 8;
 const QUICKNES_FILE_MAGIC: &[u8; 8] = b"NESS\xff\xff\xff\xff";
 const QUICKNES_BLOCK_HEADER_LEN: usize = 8;
 const QUICKNES_PPU_STATE_LEN: usize = 52;

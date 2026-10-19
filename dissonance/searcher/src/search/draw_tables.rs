@@ -15,13 +15,10 @@ use crate::search::{
 
 pub const DRAW_TABLE_POLICY_FIELD: &str = "draw_table_policy";
 
-const DRAW_TABLE_PREFIX: &str = "retained_suffix_table_v1:";
+const DRAW_TABLE_PREFIX: &str = "retained_suffix_table_v2:";
 
 pub const DEFAULT_DRAW_TABLE_PARAMETERS: EmpiricalStepParameters = EmpiricalStepParameters {
     prefix_steps: 0,
-    recent_successes: 128,
-    recent_weight: 3,
-    all_history_weight: 1,
     update_every_records: 64,
     hash_every_records: 1024,
 };
@@ -42,13 +39,8 @@ pub struct DrawTableHeader {
 #[must_use]
 pub fn draw_table_identifier(parameters: EmpiricalStepParameters) -> String {
     format!(
-        "{DRAW_TABLE_PREFIX}{},{},{},{},{},{}",
-        parameters.prefix_steps,
-        parameters.recent_successes,
-        parameters.recent_weight,
-        parameters.all_history_weight,
-        parameters.update_every_records,
-        parameters.hash_every_records
+        "{DRAW_TABLE_PREFIX}{},{},{}",
+        parameters.prefix_steps, parameters.update_every_records, parameters.hash_every_records
     )
 }
 
@@ -61,9 +53,6 @@ pub fn draw_table_from_identifier(
     let mut fields = fields.split(',');
     let parameters = EmpiricalStepParameters {
         prefix_steps: parse_field(&mut fields, "prefix steps")?,
-        recent_successes: parse_field(&mut fields, "recent successes")?,
-        recent_weight: parse_field(&mut fields, "recent weight")?,
-        all_history_weight: parse_field(&mut fields, "all-history weight")?,
         update_every_records: parse_field(&mut fields, "update interval")?,
         hash_every_records: parse_field(&mut fields, "hash interval")?,
     };
@@ -125,7 +114,6 @@ struct DrawTableVersion<A> {
     checkpoint: EmpiricalStepCheckpoint,
     history_len: usize,
     history_ends: Rc<Vec<(A, usize)>>,
-    recent: Rc<Vec<A>>,
     feedback: Rc<BTreeMap<u64, u64>>,
 }
 
@@ -331,12 +319,7 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
             return Err("recorded draw table hash does not match replay".into());
         }
         draw(DrawView {
-            steps: EmpiricalStepTableRef::new(
-                self.tables.parameters(),
-                &version.recent,
-                &version.history_ends,
-                version.history_len,
-            ),
+            steps: EmpiricalStepTableRef::new(&version.history_ends, version.history_len),
             feedback: &version.feedback,
         })
     }
@@ -355,9 +338,6 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
             last.checkpoint.table_sha256 == checkpoint.table_sha256
                 && last.history_len == history_len
         });
-        let recent = reusable
-            .map(|(_, last)| Rc::clone(&last.recent))
-            .unwrap_or_else(|| Rc::new(self.tables.recent().to_vec()));
         let history_ends = reusable
             .map(|(_, last)| Rc::clone(&last.history_ends))
             .unwrap_or_else(|| Rc::new(self.tables.history_ends().to_vec()));
@@ -367,7 +347,6 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
                 checkpoint,
                 history_len,
                 history_ends,
-                recent,
                 feedback: Rc::clone(&self.feedback),
             },
         );
@@ -384,7 +363,7 @@ pub fn biased_step<A: Copy + Ord>(
     view: DrawView<'_, A>,
     rand: &mut RomuDuoJrRand,
 ) -> Result<Option<A>, Box<dyn Error>> {
-    let length = view.steps.mixed_len()?;
+    let length = view.steps.mixed_len();
     Ok(NonZeroUsize::new(length)
         .and_then(|length| view.steps.mixed_step(rand.below(length)))
         .copied())
@@ -411,10 +390,11 @@ mod tests {
             DEFAULT_DRAW_TABLE_PARAMETERS
         );
         for bad in [
-            "retained_suffix_table_v1:0,128,3,1,64",
-            "retained_suffix_table_v1:0,128,3,1,64,1024,7",
-            "retained_suffix_table_v1:0,0,3,1,64,1024",
-            "unknown_table_v1:0,128,3,1,64,1024",
+            "retained_suffix_table_v2:0,64",
+            "retained_suffix_table_v2:0,64,1024,7",
+            "retained_suffix_table_v2:0,0,1024",
+            "retained_suffix_table_v1:0,128,3,1,64,1024",
+            "unknown_table_v2:0,64,1024",
         ] {
             assert!(
                 draw_table_from_identifier(bad).is_err(),
@@ -449,7 +429,7 @@ mod tests {
         let checkpoint = checkpoints.first().expect("one checkpoint").clone();
         assert_eq!(checkpoint.records, 1);
         let sequence = |view: DrawView<'_, u8>| -> Result<Vec<u8>, Box<dyn Error>> {
-            Ok((0..view.steps.mixed_len()?)
+            Ok((0..view.steps.mixed_len())
                 .map(|index| {
                     *view
                         .steps
@@ -578,7 +558,6 @@ mod tests {
                 },
                 history_len: 0,
                 history_ends: Rc::new(Vec::new()),
-                recent: Rc::new(Vec::new()),
                 feedback: Rc::new(BTreeMap::new()),
             },
         );
@@ -592,7 +571,6 @@ mod tests {
                 },
                 history_len: 0,
                 history_ends: Rc::new(Vec::new()),
-                recent: Rc::new(Vec::new()),
                 feedback: Rc::new(BTreeMap::new()),
             },
         );

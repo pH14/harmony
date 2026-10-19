@@ -189,6 +189,7 @@ mod platform {
         Ok(PortableSnapshot {
             setup: sparse.setup(),
             image_identity: sparse.image_identity(),
+            assurance_identity: sparse.assurance_identity(),
             at,
             pages,
             sidecar: sparse.sidecar(),

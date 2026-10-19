@@ -1238,6 +1238,8 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
 }
 
 pub trait Arm64Kvm {
+    fn validate_restore_boundary(&self) -> Result<()>;
+
     fn vcpu_init(&mut self) -> Result<()>;
 
     fn register_list(&self) -> Result<Vec<u64>>;
@@ -1815,6 +1817,12 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
         self.ensure_healthy()?;
+        self.validate_import_state(state)?;
+        self.kvm.validate_restore_boundary()
+    }
+
+    fn validate_import_state(&self, state: &Arm64VcpuState) -> Result<()> {
+        self.ensure_healthy()?;
         validate_restore_vcpu_state(state)?;
         let registers = inventory::validate(self.kvm.register_list()?)?;
         if self.configured
@@ -1931,6 +1939,7 @@ pub struct FakeKvm {
     #[cfg_attr(not(test), allow(dead_code))]
     init_features: [u32; 7],
     initialized: bool,
+    pub reject_restore_boundary: bool,
 }
 
 #[cfg(any(test, feature = "mock"))]
@@ -1996,6 +2005,13 @@ impl FakeKvm {
 
 #[cfg(any(test, feature = "mock"))]
 impl Arm64Kvm for FakeKvm {
+    fn validate_restore_boundary(&self) -> Result<()> {
+        if self.reject_restore_boundary {
+            return Err(BackendError::Arm64ReusedVcpuRestoreUnsafe);
+        }
+        Ok(())
+    }
+
     fn register_list(&self) -> Result<Vec<u64>> {
         if self.register_inventory_failure {
             return Err(BackendError::Internal("fake KVM register inventory failed"));
@@ -4093,6 +4109,35 @@ mod tests {
             "after partial restore: save={:?}, run={run:?}, irq_mask={irq_mask:?}, prepare={prepare:?}",
             saved.map(|state| state.core.x[0])
         );
+    }
+
+    #[test]
+    fn restore_boundary_refusal_precedes_writes_and_allows_import_validation() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let before = backend.save().unwrap();
+        let mut target = before;
+        target.core.x[0] = 0x1234;
+        backend.kvm.reject_restore_boundary = true;
+        backend.kvm.calls.clear();
+        let writes = backend.kvm.reg_writes;
+        backend.validate_import_state(&target).unwrap();
+        assert!(matches!(
+            backend.validate_restore_state(&target),
+            Err(BackendError::Arm64ReusedVcpuRestoreUnsafe)
+        ));
+        assert!(matches!(
+            backend.restore(&target),
+            Err(BackendError::Arm64ReusedVcpuRestoreUnsafe)
+        ));
+        assert_eq!(backend.kvm.reg_writes, writes);
+        assert!(backend.kvm.calls.is_empty());
+        assert_eq!(backend.save().unwrap(), before);
+        backend.kvm.reject_restore_boundary = false;
+        backend.restore(&target).unwrap();
+        assert_eq!(backend.save().unwrap().core.x[0], 0x1234);
     }
 
     #[test]

@@ -1,11 +1,11 @@
 {
-  "version": 2,
+  "version": 3,
   "cell": {
     "id": "linux-x86-kvm-composed-continuation",
     "host_class": "linux-x86_64-kvm",
     "backend": "KvmBackend",
     "test": "composed_linux_snapshot_continuation",
-    "scope": "owned PID 1 on the pinned 64-bit Linux kernel; READY/DONE/terminal whole-VMM hashes, separate composed portable-snapshot event history, bounded RAM/SIMD/x87 goldens and seed-sensitive entropy with equal continuation work",
+    "scope": "owned PID 1 on the pinned 64-bit Linux kernel; READY/DONE/terminal whole-VMM hashes and V-time, separate composed portable-snapshot cumulative event history through termination, bounded RAM/SIMD/x87 goldens and seed-sensitive entropy with equal continuation and shutdown work",
     "oracles": [
       "uninterrupted",
       "capture-neutral",
@@ -20,7 +20,9 @@
       "ordered-control-history",
       "bounded-conformance",
       "seed-sensitivity",
-      "latent-memory-negative"
+      "latent-memory-negative",
+      "terminal-history",
+      "after-done-history-negative"
     ],
     "unsupported": [
       "host-core-class-mismatch",

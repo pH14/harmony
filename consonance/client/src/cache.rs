@@ -45,6 +45,7 @@ impl Namespace {
 
     fn with_mode(parts: &[&[u8]], mode: KeyMode) -> Self {
         let mut digest = Sha256::new();
+        digest.update(execution_contract::Assurance::ordinary().identity());
         digest.update(match mode {
             KeyMode::Prefix => b"consonance-snapshot-cache-namespace-v1".as_slice(),
             KeyMode::Exact => b"consonance-snapshot-cache-exact-namespace-v1".as_slice(),
@@ -723,6 +724,40 @@ mod tests {
     use super::extent::{HashedPage, extent_len, read_extent, resolve, write_extent};
     use super::segments::PAGE;
     use super::*;
+
+    #[test]
+    fn cache_namespace_binds_the_ordinary_unqualified_assurance_policy() {
+        for (namespace, domain) in [
+            (
+                Namespace::new(&[b"fixture"]),
+                b"consonance-snapshot-cache-namespace-v1".as_slice(),
+            ),
+            (
+                Namespace::exact(&[b"fixture"]),
+                b"consonance-snapshot-cache-exact-namespace-v1".as_slice(),
+            ),
+        ] {
+            let mut old = Sha256::new();
+            old.update(domain);
+            old.update(7_u64.to_le_bytes());
+            old.update(b"fixture");
+            let legacy = Namespace(old.finalize().into(), namespace.1);
+            assert_ne!(*namespace.as_bytes(), *legacy.as_bytes());
+            let index = LocalIndex::new(1 << 20);
+            let retained = put(&index, legacy, b"same-input", None, &[(0, 1)], &[]).unwrap();
+            assert!(index.lookup(namespace, b"same-input").is_none());
+            let current = put(&index, namespace, b"same-input", None, &[(0, 2)], &[]).unwrap();
+            assert_eq!(index.stats().entries, 2);
+            index.release(retained);
+            index.release(current);
+            let mut expected = Sha256::new();
+            expected.update(execution_contract::Assurance::ordinary().identity());
+            expected.update(domain);
+            expected.update(7_u64.to_le_bytes());
+            expected.update(b"fixture");
+            assert_eq!(*namespace.as_bytes(), <[u8; 32]>::from(expected.finalize()));
+        }
+    }
 
     #[test]
     fn lock_work_is_shared_only_by_clones_and_abandon_does_not_keep_state_alive() {

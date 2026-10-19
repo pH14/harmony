@@ -63,6 +63,7 @@ WORLDS = {
                                         "boss_hits_back": True, "late_item": True, "item_at_entry": True,
                                         "tail_slots": True}, 1),
     "boss behind a shield with damage as a tier": (SHIELDED_BOSS, 1),
+    "dead-end fork": ({"fork": {"length": 14, "fork": 2, "dead_len": 6, "rooms": 4}}, 1),
 }
 BUDGETS = {"boss by the door": 600_000, "boss beside a late item": 600_000, "boss past an item at the entry": 600_000,
            "boss behind a shield with damage as a tier": 600_000}
@@ -165,6 +166,9 @@ def world_requests(world: str, count: int) -> list[dict]:
         config = {"family": "map", "parameters": {
             "width": 8, "height": 8, "layout": secrets.randbits(64), "loops": 7, "corridor": 2,
             "shaft": 3, **fields}}
+        if "fork" in fields:
+            config = {"family": "fork", "parameters": {
+                **fields["fork"], "pattern": secrets.randbits(2 * fields["fork"]["length"])}}
         if "cells" in fields:
             config = {"family": "crossing", "parameters": {
                 **fields, "layout": secrets.randbits(64), "pattern": secrets.randbits(2 * fields["length"])}}
@@ -226,6 +230,11 @@ def legs(report: dict) -> tuple[dict, dict]:
         entry = within(evidence["passive_clock"]["first_event_work"][1])
         return ({"to the goal": budget if goal is None else goal, "to wait entry": entry},
                 {"wait entry to goal": None if entry is None or goal is None else goal - entry})
+    if report["config"]["family"] == "fork":
+        live, past = (within(w) for w in (evidence.get("fork_first", []) + [None, None])[:2])
+        return ({"to the live route": live, "past the dead end": past, "to the goal": budget if goal is None else goal},
+                {"live route to past the dead end": None if live is None or past is None else past - live,
+                 "past the dead end to the goal": None if past is None or goal is None else goal - past})
     first = [within(w) for w in evidence["map_first"]]
     tiers = [within(w) for w in evidence["map_first_tier"]]
 
@@ -409,7 +418,7 @@ def execute(binary: Path, job: dict) -> dict:
         raise error(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
     report = {key: value for key, value in json.loads(process.stdout).items() if key in REPORT_FIELDS}
     report["evidence"] = {key: value for key, value in report.get("evidence", {}).items()
-                          if key.startswith(("map_", "crossing_", "passive_clock"))}
+                          if key.startswith(("map_", "crossing_", "passive_clock", "fork_"))}
     report["arm"] = job["arm"]
     return report
 

@@ -296,6 +296,7 @@ impl Session {
         initramfs: &Path,
         config: SessionConfig,
     ) -> Result<Self, Box<dyn Error>> {
+        config.validate()?;
         let kernel_bytes = std::fs::read(kernel)
             .map_err(|error| format!("read kernel {}: {error}", kernel.display()))?;
         let initramfs_bytes = std::fs::read(initramfs)
@@ -867,6 +868,7 @@ impl Session {
         Ok(PortableSnapshot {
             setup: self.setup.0,
             image_identity: self.image_identity,
+            assurance_identity: execution_contract::Assurance::ordinary().identity(),
             at,
             pages,
             sidecar: sparse.sidecar,
@@ -1145,6 +1147,60 @@ mod tests {
             snapshot_times: BTreeMap::from([(setup.id, setup.at)]),
             abandoned: false,
         }
+    }
+
+    #[test]
+    fn qualified_execution_is_refused_before_artifact_or_backend_admission() {
+        for composition in [
+            execution_contract::Composition::RetainedLinuxContinuation9673,
+            execution_contract::Composition::UmlWholeState,
+        ] {
+            let config = SessionConfig::default()
+                .with_qualification(execution_contract::Requirement::Qualified(composition));
+            let (result, entries, _) = crate::image_identity::trace_checks(None, || {
+                Session::new_with_config(b"invalid kernel", b"invalid initramfs", config)
+            });
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("qualification refused"), "{error}");
+            assert_eq!(entries, 0);
+            let config = SessionConfig::default()
+                .with_qualification(execution_contract::Requirement::Qualified(composition));
+            let missing = tempfile::tempdir().unwrap();
+            let error = Session::from_paths_with_config(
+                &missing.path().join("kernel"),
+                &missing.path().join("initramfs"),
+                config,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("qualification refused"), "{error}");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn public_snapshot_restore_refuses_relabelled_assurance_without_mutation() {
+        let image =
+            vmm_core::vendor::arm64::image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let mut session = mock_arm_session(
+            SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0"),
+            &image,
+        );
+        let snapshot = session.setup_snapshot().unwrap();
+        assert_eq!(
+            snapshot.assurance_identity,
+            execution_contract::Assurance::ordinary().identity()
+        );
+        session.restore(&snapshot).unwrap();
+        let before = session.state_hash().unwrap();
+        let store = session.store_bytes();
+        let mut forged = snapshot.clone();
+        forged.assurance_identity = [31; 32];
+        let error = session.restore(&forged).unwrap_err().to_string();
+        assert!(error.contains("assurance identity differs"), "{error}");
+        assert_eq!(before, session.state_hash().unwrap());
+        assert_eq!(store, session.store_bytes());
+        session.restore(&snapshot).unwrap();
     }
 
     #[test]

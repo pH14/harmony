@@ -28,7 +28,7 @@ class ScopeTests(unittest.TestCase):
                          {"dissonance_stb"})
 
     def test_stb_changes_select_the_stb_check(self):
-        for path in ("workloads/nes/src/stb/target.rs", "workloads/nes/src/bin/stb-probe.rs",
+        for path in ("workloads/nes-games/src/stb/target.rs", "workloads/nes/src/bin/stb-probe.rs",
                      "workloads/nes/scripts/build-stb-rom.sh",
                      ".github/actions/stb-evaluation/action.yml"):
             with self.subTest(path=path):

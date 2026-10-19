@@ -35,9 +35,7 @@ struct MiningReport {
     entries_used: u64,
     checkpoint: EmpiricalStepCheckpoint,
     first_success_execution: Option<u64>,
-    recent_window_start_execution: Option<u64>,
     last_success_execution: Option<u64>,
-    recent: Vec<ButtonChord>,
     all_history: Vec<ButtonChord>,
     mixed_chords: usize,
     mask_histogram: BTreeMap<u8, u64>,
@@ -47,7 +45,7 @@ struct MiningReport {
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let source = PathBuf::from(args.next().ok_or(
-        "usage: smb-mine-chords <archive.json> <world> <level> <minimum-progress> <prefix-steps> <recent-successes> <recent-weight> <all-history-weight> <update-every-records> <hash-every-records> <output.json>",
+        "usage: smb-mine-chords <archive.json> <world> <level> <minimum-progress> <prefix-steps> <update-every-records> <hash-every-records> <output.json>",
     )?);
     let filter = SmbSourceFilter {
         world: parse_next(&mut args, "world")?,
@@ -56,9 +54,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let parameters = EmpiricalStepParameters {
         prefix_steps: parse_next(&mut args, "prefix steps")?,
-        recent_successes: parse_next(&mut args, "recent successes")?,
-        recent_weight: parse_next(&mut args, "recent weight")?,
-        all_history_weight: parse_next(&mut args, "all-history weight")?,
         update_every_records: parse_next(&mut args, "update interval")?,
         hash_every_records: parse_next(&mut args, "hash interval")?,
     };
@@ -97,7 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     tables.flush()?;
     let checkpoint = tables.checkpoint()?;
-    let mixed_len = tables.mixed_len()?;
+    let mixed_len = tables.mixed_len();
     let mut mask_histogram = BTreeMap::<u8, u64>::new();
     let mut hold_histogram_by_12s = BTreeMap::<u8, u64>::new();
     for chord in &all_history {
@@ -115,14 +110,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         entries_used,
         checkpoint,
         first_success_execution: success_executions.first().copied(),
-        recent_window_start_execution: success_executions
-            .len()
-            .checked_sub(parameters.recent_successes)
-            .and_then(|index| success_executions.get(index))
-            .copied()
-            .or_else(|| success_executions.first().copied()),
         last_success_execution: success_executions.last().copied(),
-        recent: tables.recent().to_vec(),
         all_history,
         mixed_chords: mixed_len,
         mask_histogram,
@@ -131,10 +119,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     create_parent(&output)?;
     fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
     println!(
-        "entries {} chords {} recent {} mixed {} table_sha256 {}",
+        "entries {} chords {} mixed {} table_sha256 {}",
         report.entries_used,
         report.all_history.len(),
-        report.recent.len(),
         report.mixed_chords,
         report.checkpoint.table_sha256
     );

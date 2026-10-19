@@ -21,7 +21,7 @@ EXECUTABLE = "linux_snapshot_continuation"
 TEST = "composed_linux_snapshot_continuation"
 CUT_FILES = ("memory.bin", "state.bin", "observation.txt", "host-class.txt", "oracles.txt", "portable.bin", "control-oracles.txt")
 FILES = (EXECUTABLE, "bzImage", "initramfs-continuation.cpio.gz")
-ORACLES = ['uninterrupted', 'capture-neutral', 'fresh-restore', 'cache-pressure', 'reused-after-detour-or-explicit-amd-refusal', 'corrupt-ram-negative', 'omitted-simd-negative', 'cross-host-fresh-restore', 'cross-vendor-fresh-restore', 'whole-vmm-checkpoints', 'ordered-control-history', 'bounded-conformance', 'seed-sensitivity', 'latent-memory-negative']
+ORACLES = ['uninterrupted', 'capture-neutral', 'fresh-restore', 'cache-pressure', 'reused-after-detour-or-explicit-amd-refusal', 'corrupt-ram-negative', 'omitted-simd-negative', 'cross-host-fresh-restore', 'cross-vendor-fresh-restore', 'whole-vmm-checkpoints', 'ordered-control-history', 'bounded-conformance', 'seed-sensitivity', 'latent-memory-negative', 'terminal-history', 'after-done-history-negative']
 
 
 def cell():
@@ -29,7 +29,7 @@ def cell():
     Q.fields(value, "version cell")
     result = value["cell"]
     Q.fields(result, "id host_class backend test scope oracles unsupported minimum_import_hosts seeds")
-    if value["version"] != 2 or result["test"] != TEST or result["minimum_import_hosts"] < 2 or result["oracles"] != ORACLES or result["seeds"] != ["0028c0ffee5eedc0", "0028c0ffee5fedc0"]:
+    if value["version"] != 3 or result["test"] != TEST or result["minimum_import_hosts"] < 2 or result["oracles"] != ORACLES or result["seeds"] != ["0028c0ffee5eedc0", "0028c0ffee5fedc0"]:
         raise ValueError("unsupported or vacuous Linux continuation cell")
     return result
 
@@ -45,7 +45,7 @@ def hashes(directory, names):
 def identity(directory):
     value = Q.read(directory / "identity.json")
     Q.fields(value, "version source files registry_sha256 contract_sha256")
-    if value != {"version": 2, "source": source(), "files": hashes(directory, FILES),
+    if value != {"version": 3, "source": source(), "files": hashes(directory, FILES),
                  "registry_sha256": Q.digest(REGISTRY),
                  "contract_sha256": Q.digest(ROOT / "consonance/vmm-core/contracts/x86/guest.toml")}:
         raise ValueError("Linux continuation artifact identity mismatch")
@@ -67,7 +67,7 @@ def bundle(directory, kernel, initramfs):
     directory.mkdir(parents=True, exist_ok=False)
     for original, name in zip((Path(binaries[0]), kernel, initramfs), FILES):
         shutil.copy2(original, directory / name)
-    Q.write(directory / "identity.json", {"version": 2, "source": source(), "files": hashes(directory, FILES),
+    Q.write(directory / "identity.json", {"version": 3, "source": source(), "files": hashes(directory, FILES),
             "registry_sha256": Q.digest(REGISTRY),
             "contract_sha256": Q.digest(ROOT / "consonance/vmm-core/contracts/x86/guest.toml")})
 
@@ -80,20 +80,28 @@ def marker(log, key, pattern):
 
 
 def execution_oracles(log):
-    result = {"ready_state": marker(log, "READY_STATE", r"[0-9a-f]{64}"),
-              "done_state": marker(log, "DONE_STATE", r"[0-9a-f]{64}"),
-              "terminal_state": marker(log, "TERMINAL_STATE", r"[0-9a-f]{64}"),
-              "terminal": marker(log, "TERMINAL", "guest-poweroff-idle")}
-    result["work"] = work(marker(log, "WORK", r"[0-9]+:[0-9]+"))
-    control = {key: marker(log, "CONTROL_" + key.upper(), r"[0-9a-f]{64}") for key in ("ready_state", "done_state", "terminal_state")}
-    for name in ("ready", "done"):
+    result = {name + "_state": marker(log, name.upper() + "_STATE", r"[0-9a-f]{64}")
+              for name in ("ready", "done", "terminal")}
+    result["terminal"] = marker(log, "TERMINAL", "guest-poweroff-idle")
+    control = {key: marker(log, "CONTROL_" + key.upper(), r"[0-9a-f]{64}")
+               for key in ("ready_state", "done_state", "terminal_state")}
+    for name in ("ready", "done", "terminal"):
         count, digest = marker(log, "CONTROL_" + name.upper() + "_HISTORY", r"[0-9]+:[0-9a-f]{64}").split(":")
         control[name + "_history"] = {"count": int(count), "digest": digest}
-    control["work"] = work(marker(log, "CONTROL_WORK", r"[0-9]+:[0-9]+"))
-    if not 0 < control["ready_history"]["count"] < control["done_history"]["count"] <= (1 << 64) - 1 or control["done_history"]["count"] - control["ready_history"]["count"] != control["work"]["events"]:
-        raise ValueError("nonvacuous control history/work mismatch")
-    if result["work"] != control["work"]:
-        raise ValueError("raw and composed continuation work differs")
+        for prefix, target in (("", result), ("CONTROL_", control)):
+            target[name + "_vns"] = int(marker(log, prefix + name.upper() + "_TIME", r"[0-9]+"))
+            if not 0 <= target[name + "_vns"] <= (1 << 64) - 1:
+                raise ValueError("oversized checkpoint V-time")
+    for key, start, end in (("work", "ready", "done"), ("shutdown_work", "done", "terminal")):
+        for prefix, target in (("", result), ("CONTROL_", control)):
+            target[key] = work(marker(log, prefix + key.upper(), r"[0-9]+:[0-9]+"))
+            if target[end + "_vns"] - target[start + "_vns"] != target[key]["vns"]:
+                raise ValueError("checkpoint V-time/work mismatch")
+        before, after = control[start + "_history"]["count"], control[end + "_history"]["count"]
+        if not 0 < before < after <= (1 << 64) - 1 or after - before != control[key]["events"]:
+            raise ValueError("nonvacuous control history/work mismatch")
+        if result[key] != control[key]:
+            raise ValueError("raw and composed continuation work differs")
     result["control"] = control
     return result
 
@@ -114,7 +122,11 @@ def seed_oracles(log):
     first, second = work(words[4] + ":" + words[6]), work(words[5] + ":" + words[7])
     if first != second:
         raise ValueError("seed sensitivity work is not stable")
-    return {"seeds": words[:2], "entropy": words[2:4], "work": first,
+    shutdown = marker(log, "O3_SHUTDOWN_WORK", r"(?:[0-9]+:){3}[0-9]+").split(":")
+    shutdown_first, shutdown_second = work(shutdown[0] + ":" + shutdown[2]), work(shutdown[1] + ":" + shutdown[3])
+    if shutdown_first != shutdown_second:
+        raise ValueError("seed sensitivity shutdown work is not stable")
+    return {"seeds": words[:2], "entropy": words[2:4], "work": first, "shutdown_work": shutdown_first,
             "repeat": marker(log, "O3_REPEAT", "matched"), "pure": marker(log, "O3_PURE", "matched"),
             "terminal": marker(log, "O3_TERMINAL", "guest-poweroff-idle")}
 
@@ -139,8 +151,14 @@ def evidence(log, kind):
         "oracles": execution_oracles(log), "seeds": seed_oracles(log),
         "conformance": marker(log, "O2", "ram-simd-x87-goldens"),
         "latent_negative": marker(log, "O1_NEGATIVE", "detected-output-equal"),
+        "shutdown_negative": marker(log, "SHUTDOWN_NEGATIVE", "detected-state-output-equal"),
     }
-    if result["seeds"]["work"] != result["oracles"]["work"] or result["seeds"]["entropy"][0] != observed.split()[7]:
+    negative_count, negative_digest = marker(log, "SHUTDOWN_NEGATIVE_HISTORY", r"[0-9]+:[0-9a-f]{64}").split(":")
+    result["shutdown_negative_history"] = {"count": int(negative_count), "digest": negative_digest}
+    terminal_history = result["oracles"]["control"]["terminal_history"]
+    if int(negative_count) != terminal_history["count"] or negative_digest == terminal_history["digest"]:
+        raise ValueError("after-DONE control requires equal work and distinct terminal history")
+    if any(result["seeds"][key] != result["oracles"][key] for key in ("work", "shutdown_work")) or result["seeds"]["entropy"][0] != observed.split()[7]:
         raise ValueError("seed evidence does not match baseline continuation")
     return result
 
@@ -154,7 +172,7 @@ def checked_receipt(path, artifact, kind):
         raise ValueError("unknown x86 host vendor")
     if set(re.findall(r"^vendor_id\s*:\s*(\S+)", record["host"]["cpuinfo"], re.MULTILINE)) != {record["host"]["vendor"]}:
         raise ValueError("receipt vendor does not match retained CPU inventory")
-    if record["version"] != 2 or record["cell"] != cell() or record["artifact"] != artifact or record["kind"] != kind:
+    if record["version"] != 3 or record["cell"] != cell() or record["artifact"] != artifact or record["kind"] != kind:
         raise ValueError("mismatched Linux continuation receipt")
     log = path.parent / "execution.log"
     if Q.digest(log) != record["log_sha256"] or evidence(log.read_text(), kind) != record["evidence"]:
@@ -172,10 +190,16 @@ def checked_receipt(path, artifact, kind):
             raise ValueError("snapshot expected observation mismatch")
         for name, oracles in (("oracles.txt", record["evidence"]["oracles"]), ("control-oracles.txt", record["evidence"]["oracles"]["control"])):
             words = (path.parent / "cut" / name).read_text().split()
-            if len(words) != 9 or words[8] != oracles["terminal_state"] or words[0] != oracles["ready_state"] or words[3] != oracles["done_state"] or work(words[6] + ":" + words[7]) != oracles["work"]:
-                raise ValueError("snapshot whole-state oracle mismatch")
-            if name == "control-oracles.txt" and any({"count": int(words[index + 1]), "digest": words[index + 2]} != oracles[role + "_history"] for role, index in (("ready", 0), ("done", 3))):
-                raise ValueError("snapshot normalized-history oracle mismatch")
+            if len(words) != 16:
+                raise ValueError("snapshot oracle schema mismatch")
+            for role, index in (("ready", 0), ("done", 4), ("terminal", 10)):
+                if words[index] != oracles[role + "_state"] or int(words[index + 3]) != oracles[role + "_vns"]:
+                    raise ValueError("snapshot whole-state/time oracle mismatch")
+                if name == "control-oracles.txt" and {"count": int(words[index + 1]), "digest": words[index + 2]} != oracles[role + "_history"]:
+                    raise ValueError("snapshot normalized-history oracle mismatch")
+            if any(work(words[index] + ":" + words[index + 1]) != oracles[key]
+                   for key, index in (("work", 8), ("shutdown_work", 14))):
+                raise ValueError("snapshot work oracle mismatch")
     return record
 
 
@@ -199,7 +223,7 @@ def run(directory, output, host_id_file, exported=None):
         subprocess.run([str(executable.resolve()), TEST, "--ignored", "--exact", "--nocapture", "--test-threads=1"],
                        env=environment, stdout=log, stderr=subprocess.STDOUT, timeout=1800, check=True)
     log = output / "execution.log"
-    Q.write(output / "receipt.json", {"version": 2, "cell": cell(), "artifact": artifact, "kind": kind,
+    Q.write(output / "receipt.json", {"version": 3, "cell": cell(), "artifact": artifact, "kind": kind,
         "host": {"instance_id": Q.host_instance_id(host_id_file.read_text().strip()), "hostname": platform.node(),
                  "kernel": platform.release(), "vendor": vendors.pop(), "cpuinfo": cpuinfo},
         "log_sha256": Q.digest(log), "evidence": evidence(log.read_text(), kind),
@@ -207,7 +231,7 @@ def run(directory, output, host_id_file, exported=None):
 
 
 def compare(directory, exported, receipts, output):
-    verdict = {"version": 2, "cell": None, "outcome": "inconclusive", "imports": []}
+    verdict = {"version": 3, "cell": None, "outcome": "inconclusive", "imports": []}
     try:
         verdict["cell"] = cell()
         artifact = identity(directory)

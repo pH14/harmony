@@ -203,6 +203,7 @@ version = "0.1.0"
 dependencies = [
  "control-proto",
  "environment",
+ "execution-contract",
  "host-code-identity",
  "hypercall-proto",
  "libc",
@@ -318,6 +319,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "execution-proto"
 version = "0.1.0"
 dependencies = [
@@ -348,6 +358,7 @@ dependencies = [
  "consonance-client",
  "control-proto",
  "environment",
+ "execution-contract",
  "fault-policy",
  "iced-x86",
  "object",
@@ -645,6 +656,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nes-games"
+version = "0.1.0"
+dependencies = [
+ "lz4_flex",
+ "machine",
+ "postcard",
+ "searcher",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "nes-protocol"
 version = "0.1.0"
 
@@ -656,6 +680,7 @@ dependencies = [
  "libc",
  "lz4_flex",
  "machine",
+ "nes-games",
  "oci-support",
  "postcard",
  "searcher",

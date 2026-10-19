@@ -11,6 +11,7 @@ guest-image = { path = "../../consonance/guest-image", version = "=0.1.0" }
 oci-support = { path = "../../consonance/oci", version = "=0.1.0" }
 searcher = { path = "../../dissonance/searcher", version = "=0.1.0" }
 machine = { path = "../nes-machine", version = "=0.1.0" }
+nes-games = { path = "../nes-games", version = "=0.1.0" }
 lz4_flex = { version = "=0.11.6", default-features = false, features = ["safe-decode", "safe-encode", "std"] }
 postcard = { version = "=1.1.3", default-features = false, features = ["alloc", "use-std"] }
 serde = { version = "=1.0.228", features = ["derive"] }
@@ -23,7 +24,7 @@ thiserror = "2"
 libc = "=0.2.189"
 
 [features]
-consonance = ["machine/consonance"]
+consonance = ["machine/consonance", "nes-games/consonance"]
 
 [[bin]]
 name = "nes-film"
@@ -32,6 +33,7 @@ path = "src/bin/nes-film.rs"
 [dev-dependencies]
 consonance-client = { path = "../../consonance/client", version = "=0.1.0", features = ["in-process"] }
 machine = { path = "../nes-machine", version = "=0.1.0", features = ["test-loopback"] }
+nes-games = { path = "../nes-games", version = "=0.1.0", features = ["test-support"] }
 
 [[bin]]
 name = "nes-backend-oracle"

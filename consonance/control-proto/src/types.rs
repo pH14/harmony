@@ -83,7 +83,7 @@ pub struct EventHistory {
 }
 
 impl EventHistory {
-    pub const VERSION: u16 = 1;
+    pub const VERSION: u16 = 3;
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]

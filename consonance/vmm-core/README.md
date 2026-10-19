@@ -34,8 +34,16 @@ readbacks supply an oracle independently of the snapshot encoder. Bounded O1
 also compares the production whole-state hash at READY, DONE and termination;
 O2 fixes RAM/SIMD/x87 goldens; O3 repeats two distinct seeds and requires changed
 entropy with equal nonentropy outputs and positive continuation work. A separate
-`ControlServer` portable snapshot path preserves the cumulative event history;
-raw `VmState` restore does not carry that history. The
+`ControlServer` portable snapshot path preserves and compares the cumulative
+event history through the terminal checkpoint, including count and V-time.
+Both READY→DONE and DONE→termination must perform positive, matching work. The
+owned PID 1 writes a byte to the modeled, stateless POST port after DONE, then
+clears the register before shutdown. A planted control changes that byte only
+after matching DONE, observes the changed normalized write, and restores the
+code byte. State, output, event count and V-time must reconverge at termination;
+the cumulative terminal history must still distinguish the executions. This
+fixture mutation is a negative control, not qualified executable admission.
+Raw `VmState` restore does not carry cumulative history. The
 [qualification adapter](../../scripts/qualification/README.md#composed-linux-continuation)
 retains exact artifacts and cross-host admission outcomes. This bounded x86
 fixture does not establish a complete backend register inventory or qualify
@@ -275,7 +283,7 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 9, and the sparse sidecar is version 11;
+The complete portable format is version 11, and the sparse sidecar is version 13;
 older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
 changed-page numbers and bytes to its sidecar; import verifies them before
 deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
@@ -371,6 +379,14 @@ and byte-for-byte equality among uninterrupted, save-and-continue, and fresh
 restored continuations. The underlying XSAVE behavior remains tracked in
 [#307](https://github.com/pH14/harmony/issues/307).
 
+ARM KVM also refuses restore after guest entry because its register setters do
+not establish translation-cache maintenance. This refusal reaches the same
+fresh-VM fallback and leaves portable import available on a used backend.
+The live backend witness uses an empty-dirty fixed-ASID detour; the public VMM
+executable-restore witness checks that refusal leaves RAM unchanged and that a
+fresh VM executes the restored bytes. See the backend README for the boundary
+and its performance cost.
+
 ## Architecture boundary
 
 The engine uses only common exits, guest-physical addresses, bytes, and typed
@@ -387,9 +403,9 @@ advancing virtual time. Supported ports keep the same assigned durations once
 their ownership and any explicit width constraint have been validated.
 The modeled 8259 master and slave command and interrupt-mask ports accept only
 byte reads and writes; other widths fail before changing masks or virtual time.
-Every V-time-wired VMM maintains a v1 ordered normalized-event commitment:
+Every V-time-wired VMM maintains a v3 ordered-history commitment:
 `count` starts at zero with a zero digest; each completed normalized event
-advances a SHA-256 chain under `consonance.ordered-event-history.v1`, committing
+advances a tagged SHA-256 chain under `consonance.ordered-event-history.v3`, committing
 the preceding digest, checked cumulative count, event class, payload digest,
 virtual time after completion, and ordered interrupt deadline/vector pairs.
 Delivery outside an active guest-exit context is rejected before consuming the
@@ -402,14 +418,35 @@ an interrupt with its completing event is semantic; local trace event indexes,
 schedule indexes, backend debug strings, diagnostic
 checkpoint hashes, and session segment labels are excluded. Raw-only backend
 exits without semantic delivery do not consume a normalized ordinal. Count
-overflow fails the event.
+overflow fails the event. Completed Consonance-owned doorbell exchanges append
+separately tagged records binding canonical request kind, service, opcode,
+sequence and payload, plus response kind, identity, status and payload. Malformed
+frames bind their advertised length and observed bytes. Valid framing padding
+outside the decoded payload is not service semantics. The exchange digest uses
+`consonance.service-exchange.v1` with fixed-width fields and length-delimited
+payloads. The history count includes both normalized transport events and
+service completion records; diagnostic normalized ordinals and interrupt
+schedule placement still count only normalized transport/delivery events.
+
+Immediate exchanges are queued after their enclosing transport record. A
+request deferred at a control deadline or awaiting an external answer contributes
+no completed exchange until its response is written. Snapshots retain the raw
+deferred frame or decoded SDK question, sequence and coverage-ready count;
+completion reconstructs canonical request fields from this captured state,
+regardless of later writes to the guest request page. Imports reject pending
+SDK questions that cannot fit the service frame before admitting a handle.
+Replay, branch and imports restore that pending state and the history prefix.
+Count capacity is checked before publishing a response, responses refused before
+publication contribute no completion, and a consumed pending decision cannot
+complete twice. Service records charge no
+virtual time and do not inject timing events or change checkpoint placement.
 This is a constant-size history commitment, separate from logical VM state;
 the existing diagnostic log remains available independently.
 
 Fresh V-time wiring resets history. Capturing/hashing a snapshot and retiring
 its diagnostic trace do not advance or reset it. Replay and branch restore the
 captured commitment before continuation, regardless of local snapshot IDs or
-restore mode. Full portable snapshots (v9) and sparse sidecars (v11) retain its
+restore mode. Full portable snapshots (v10) and sparse sidecars (v12) retain its
 presence, count and digest independently of the logical state hash. Imports
 require a live validator and check availability against its V-time model before
 creating a handle. Restore also rejects a mismatch on the actual target.
@@ -890,11 +927,12 @@ every threshold unchanged.
 `tests/arm64_executable_restore.rs` promotes the public-VMM experiment in
 [issue #633](https://github.com/pH14/harmony/issues/633) into a registered Linux
 ARM hardware test. It compares guest-authored PL011 bytes for cold A/B,
-uninterrupted B, capture-only B, fresh-restored B, and a warmed reused VM
-alternating A/B executable page contents. A separate RAM-only restoration
+uninterrupted B, capture-only B, fresh-restored B, and a warmed VM
+that refuses in-place snapshot restore before changing RAM, then uses a fresh
+VM to alternate A/B executable page contents. A separate RAM-only restoration
 control avoids CPU restoration as a cache-maintenance confounder. Every
-transition checks that only executable page 0 differs, that full restored RAM
-matches, and that the guest RAM allocation stays in place. The guest loops back
+RAM-only transition checks that only executable page 0 differs, that full
+restored RAM matches, and that the guest RAM allocation stays in place. The guest loops back
 to the same instruction address; no RAM remapping is requested. A portable
 negative control rejects stale, missing and extra observation bytes.
 
@@ -1064,3 +1102,13 @@ replace previous cumulative child values and preserve the last values on error.
 Neither worker sums nor these breakdowns are additive to shared cache totals or
 the existing guard timers. This measurement establishes no batching speedup or
 permission to remove publication, deadline, interrupt, or image-check boundaries.
+
+Modeled read completions are part of the normalized payload and version 3
+ordered history. x86 port, xAPIC, RDMSR and CPUID responses, and normalized ARM
+MMIO reads commit the result supplied through the backend completion interface.
+Fault completions have a distinct tag. This detects differing supplied answers
+even when device and guest state later reconverge. It does not independently
+attest that hardware applied the supplied value correctly. ARM raw-only GIC and
+sysreg substrate operations remain outside the portable normalized stream.
+Complete snapshots use version 11 and sparse snapshots use version 13; earlier
+histories cannot be imported under these semantics.

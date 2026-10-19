@@ -40,7 +40,7 @@ def selected(paths):
             continue
         if any(fnmatch.fnmatchcase(path, pattern) for pattern in GLOBAL):
             return dict.fromkeys(result, True)
-        if path.startswith(("dissonance/", "cli/", "workloads/nes/", "workloads/nes-machine/", "workloads/nes-protocol/", "workloads/nes-guest/")):
+        if path.startswith(("dissonance/", "cli/", "workloads/nes/", "workloads/nes-games/", "workloads/nes-machine/", "workloads/nes-protocol/", "workloads/nes-guest/")):
             result["dissonance_stb"] = True
         if path == "scripts/build-quicknes-core.sh":
             result["dissonance_stb"] = True

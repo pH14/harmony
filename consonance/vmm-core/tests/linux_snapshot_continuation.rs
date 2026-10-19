@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vmm_backend::{Backend, BackendError, X86};
@@ -53,6 +54,7 @@ fn boot() -> Machine {
 struct Checkpoint {
     state: [u8; 32],
     history: control_proto::EventHistory,
+    vns: u64,
 }
 
 fn checkpoint(vmm: &mut Machine) -> Checkpoint {
@@ -61,6 +63,7 @@ fn checkpoint(vmm: &mut Machine) -> Checkpoint {
     Checkpoint {
         state: vmm.state_hash().expect("whole modeled VMM state"),
         history: vmm.event_history().expect("normalized history available"),
+        vns: vmm.effective_vns().expect("checkpoint V-time"),
     }
 }
 
@@ -70,7 +73,9 @@ struct Observation {
     checkpoint: Checkpoint,
     events: u64,
     elapsed_vns: u64,
-    terminal_state: [u8; 32],
+    terminal: Checkpoint,
+    shutdown_events: u64,
+    shutdown_vns: u64,
 }
 
 fn hex(bytes: &[u8; 32]) -> String {
@@ -85,26 +90,29 @@ fn hash(text: &str) -> [u8; 32] {
 impl Checkpoint {
     fn encode(&self) -> String {
         format!(
-            "{} {} {}",
+            "{} {} {} {}",
             hex(&self.state),
             self.history.count,
-            hex(&self.history.digest)
+            hex(&self.history.digest),
+            self.vns
         )
     }
 
     fn decode(words: &[&str]) -> Self {
-        assert_eq!(words.len(), 3);
+        assert_eq!(words.len(), 4);
         Self {
             state: hash(words[0]),
             history: control_proto::EventHistory {
                 count: words[1].parse().unwrap(),
                 digest: hash(words[2]),
             },
+            vns: words[3].parse().unwrap(),
         }
     }
 
     fn emit(&self, name: &str) {
         println!("X3_{name}_STATE={}", hex(&self.state));
+        println!("X3_{name}_TIME={}", self.vns);
         println!(
             "X3_{name}_HISTORY={}:{}",
             self.history.count,
@@ -124,8 +132,20 @@ impl Observation {
             "raw continuation whole state"
         );
         assert_eq!(
-            self.terminal_state, expected.terminal_state,
+            self.terminal.state, expected.terminal.state,
             "raw terminal whole state"
+        );
+        assert_eq!(
+            self.terminal.vns, expected.terminal.vns,
+            "raw terminal V-time"
+        );
+        assert_eq!(
+            self.shutdown_events, expected.shutdown_events,
+            "raw shutdown work"
+        );
+        assert_eq!(
+            self.shutdown_vns, expected.shutdown_vns,
+            "raw shutdown V-time"
         );
         assert_eq!(self.events, expected.events, "raw continuation work");
         assert_eq!(
@@ -136,29 +156,37 @@ impl Observation {
 
     fn encode(&self) -> String {
         format!(
-            "{} {} {} {}",
+            "{} {} {} {} {} {}",
             self.checkpoint.encode(),
             self.events,
             self.elapsed_vns,
-            hex(&self.terminal_state)
+            self.terminal.encode(),
+            self.shutdown_events,
+            self.shutdown_vns
         )
     }
 
     fn decode(readback: String, words: &[&str]) -> Self {
-        assert_eq!(words.len(), 6);
+        assert_eq!(words.len(), 12);
         Self {
             readback,
-            checkpoint: Checkpoint::decode(&words[..3]),
-            events: words[3].parse().unwrap(),
-            elapsed_vns: words[4].parse().unwrap(),
-            terminal_state: hash(words[5]),
+            checkpoint: Checkpoint::decode(&words[..4]),
+            events: words[4].parse().unwrap(),
+            elapsed_vns: words[5].parse().unwrap(),
+            terminal: Checkpoint::decode(&words[6..10]),
+            shutdown_events: words[10].parse().unwrap(),
+            shutdown_vns: words[11].parse().unwrap(),
         }
     }
 
     fn emit(&self) {
-        println!("X3_DONE_STATE={}", hex(&self.checkpoint.state));
+        self.checkpoint.emit("DONE");
         println!("X3_WORK={}:{}", self.events, self.elapsed_vns);
-        println!("X3_TERMINAL_STATE={}", hex(&self.terminal_state));
+        self.terminal.emit("TERMINAL");
+        println!(
+            "X3_SHUTDOWN_WORK={}:{}",
+            self.shutdown_events, self.shutdown_vns
+        );
         println!("X3_TERMINAL=guest-poweroff-idle");
     }
 }
@@ -196,7 +224,78 @@ fn until(vmm: &mut Machine, marker: &[u8], pressure: bool) {
     panic!("incomplete: guest step budget");
 }
 
+struct ShutdownControl {
+    offsets: Vec<usize>,
+    observed: bool,
+}
+
+impl ShutdownControl {
+    fn plant(vmm: &mut Machine) -> Self {
+        let pattern = [0xb0, 0x5a, 0xe6, 0x80, 0x31, 0xc0];
+        let offsets: Vec<_> = vmm
+            .guest_memory()
+            .windows(pattern.len())
+            .enumerate()
+            .filter_map(|(offset, bytes)| (bytes == pattern).then_some(offset + 1))
+            .collect();
+        assert!(
+            !offsets.is_empty(),
+            "owned post-DONE OUT instruction must exist"
+        );
+        for offset in &offsets {
+            vmm.apply_effect(&environment::channel::Effect::WriteMemory {
+                gpa: *offset as u64,
+                bytes: vec![0xa5],
+            })
+            .unwrap();
+        }
+        Self {
+            offsets,
+            observed: false,
+        }
+    }
+
+    fn restore_after_write(&mut self, vmm: &mut Machine) {
+        if self.observed {
+            return;
+        }
+        let payload = [0, 0x80, 0, 1, 1, 0xa5, 0, 0, 0];
+        let mut hash = Sha256::new();
+        hash.update(b"consonance.prescriptive-event.v1\0");
+        hash.update([3]);
+        hash.update((payload.len() as u64).to_le_bytes());
+        hash.update(payload);
+        let expected: [u8; 32] = hash.finalize().into();
+        if !vmm
+            .virtual_time_trace()
+            .unwrap()
+            .normalized_log()
+            .events
+            .last()
+            .is_some_and(|event| event.payload_digest == expected)
+        {
+            return;
+        }
+        for offset in &self.offsets {
+            vmm.apply_effect(&environment::channel::Effect::WriteMemory {
+                gpa: *offset as u64,
+                bytes: vec![0x5a],
+            })
+            .unwrap();
+        }
+        self.observed = true;
+    }
+}
+
 fn observation(vmm: &mut Machine, pressure: bool) -> Observation {
+    observation_with_shutdown_control(vmm, pressure, false)
+}
+
+fn observation_with_shutdown_control(
+    vmm: &mut Machine,
+    pressure: bool,
+    planted: bool,
+) -> Observation {
     let start = vmm.event_history().unwrap().count;
     let start_vns = vmm.effective_vns().unwrap();
     vmm.inject_serial_input(b"A\n");
@@ -221,16 +320,40 @@ fn observation(vmm: &mut Machine, pressure: bool) -> Observation {
         events > 0 && elapsed_vns > 0,
         "nonvacuous continuation work"
     );
+    let mut control = planted.then(|| ShutdownControl::plant(vmm));
     for steps in 0..1_000_000 {
-        match vmm.step().expect("complete guest shutdown") {
+        let step = vmm.step().expect("complete guest shutdown");
+        if let Some(control) = &mut control {
+            control.restore_after_write(vmm);
+        }
+        match step {
             Step::Continued => {}
             Step::Terminal(TerminalReason::Idle) => {
+                if let Some(control) = &control {
+                    assert!(
+                        control.observed,
+                        "planted shutdown OUT must execute after DONE"
+                    );
+                }
+                let terminal = checkpoint(vmm);
+                let shutdown_events = terminal
+                    .history
+                    .count
+                    .checked_sub(done.history.count)
+                    .unwrap();
+                let shutdown_vns = terminal.vns.checked_sub(done.vns).unwrap();
+                assert!(
+                    shutdown_events > 0 && shutdown_vns > 0,
+                    "nonvacuous shutdown work"
+                );
                 return Observation {
                     readback,
                     checkpoint: done,
                     events,
                     elapsed_vns,
-                    terminal_state: checkpoint(vmm).state,
+                    terminal,
+                    shutdown_events,
+                    shutdown_vns,
                 };
             }
             other => panic!("unexpected continuation termination: {other:?}"),
@@ -335,9 +458,10 @@ impl ControlCut {
     fn emit(&self) {
         self.ready.emit("CONTROL_READY");
         self.expected.checkpoint.emit("CONTROL_DONE");
+        self.expected.terminal.emit("CONTROL_TERMINAL");
         println!(
-            "X3_CONTROL_TERMINAL_STATE={}",
-            hex(&self.expected.terminal_state)
+            "X3_CONTROL_SHUTDOWN_WORK={}:{}",
+            self.expected.shutdown_events, self.expected.shutdown_vns
         );
         println!(
             "X3_CONTROL_WORK={}:{}",
@@ -357,11 +481,11 @@ impl ControlCut {
     fn import(directory: &Path, readback: String) -> Self {
         let oracles = std::fs::read_to_string(directory.join("control-oracles.txt")).unwrap();
         let words: Vec<_> = oracles.split_whitespace().collect();
-        assert_eq!(words.len(), 9);
+        assert_eq!(words.len(), 16);
         Self {
             portable: std::fs::read(directory.join("portable.bin")).unwrap(),
-            ready: Checkpoint::decode(&words[..3]),
-            expected: Observation::decode(readback, &words[3..]),
+            ready: Checkpoint::decode(&words[..4]),
+            expected: Observation::decode(readback, &words[4..]),
         }
     }
 }
@@ -393,6 +517,36 @@ fn control_continuation() -> ControlCut {
         ready,
         expected,
     };
+    let mut wrong = cut.restore();
+    let observed = observation_with_shutdown_control(wrong.vmm_mut().unwrap(), false, true);
+    observed.assert_raw_matches(&cut.expected);
+    assert_eq!(
+        observed.checkpoint, cut.expected.checkpoint,
+        "control starts after matching DONE"
+    );
+    assert_eq!(
+        observed.terminal.state, cut.expected.terminal.state,
+        "shutdown state reconverges"
+    );
+    assert_eq!(
+        observed.terminal.history.count, cut.expected.terminal.history.count,
+        "equal shutdown event counts"
+    );
+    assert_ne!(
+        observed.terminal.history.digest, cut.expected.terminal.history.digest,
+        "terminal history detects after-DONE observation difference"
+    );
+    assert_ne!(
+        observed, cut.expected,
+        "complete composed oracle refuses reconverged shutdown"
+    );
+    println!(
+        "X3_SHUTDOWN_NEGATIVE_HISTORY={}:{}",
+        observed.terminal.history.count,
+        hex(&observed.terminal.history.digest)
+    );
+    println!("X3_SHUTDOWN_NEGATIVE=detected-state-output-equal");
+    drop(wrong);
     let mut fresh = cut.restore();
     assert_eq!(
         observation(fresh.vmm_mut().unwrap(), true),
@@ -410,9 +564,9 @@ fn import(directory: &Path) {
     let expected = std::fs::read_to_string(directory.join("observation.txt")).unwrap();
     let oracles = std::fs::read_to_string(directory.join("oracles.txt")).unwrap();
     let words: Vec<_> = oracles.split_whitespace().collect();
-    assert_eq!(words.len(), 9);
-    let ready = Checkpoint::decode(&words[..3]);
-    let expected = Observation::decode(expected, &words[3..]);
+    assert_eq!(words.len(), 16);
+    let ready = Checkpoint::decode(&words[..4]);
+    let expected = Observation::decode(expected, &words[4..]);
     let mut vmm = target().unwrap();
     let before_cpu = vmm.vcpu_record().unwrap();
     let before_ram = blake3::hash(vmm.guest_memory());
@@ -436,7 +590,7 @@ fn import(directory: &Path) {
                 actual_ready.state, ready.state,
                 "imported READY whole state"
             );
-            println!("X3_READY_STATE={}", hex(&actual_ready.state));
+            actual_ready.emit("READY");
             let observed = observation(&mut vmm, true);
             observed.assert_raw_matches(&expected);
             let control = ControlCut::import(directory, expected.readback.clone());
@@ -531,6 +685,21 @@ fn composed_linux_snapshot_continuation() {
         alternate_observed.events,
         expected.elapsed_vns,
         alternate_observed.elapsed_vns
+    );
+    assert_eq!(
+        expected.shutdown_events, alternate_observed.shutdown_events,
+        "seed-stable shutdown work"
+    );
+    assert_eq!(
+        expected.shutdown_vns, alternate_observed.shutdown_vns,
+        "seed-stable shutdown V-time"
+    );
+    println!(
+        "X3_O3_SHUTDOWN_WORK={}:{}:{}:{}",
+        expected.shutdown_events,
+        alternate_observed.shutdown_events,
+        expected.shutdown_vns,
+        alternate_observed.shutdown_vns
     );
     println!("X3_O3_REPEAT=matched");
     println!("X3_O3_PURE=matched");
@@ -689,7 +858,7 @@ fn composed_linux_snapshot_continuation() {
         control.export(Path::new(&directory));
     }
     println!("X3_O2=ram-simd-x87-goldens");
-    println!("X3_READY_STATE={}", hex(&ready.state));
+    ready.emit("READY");
     expected.emit();
     println!("X3_OBSERVATION={}", expected.readback);
     println!("X3_LOCAL=uninterrupted,capture-neutral,fresh,pressure,reused-or-refused");

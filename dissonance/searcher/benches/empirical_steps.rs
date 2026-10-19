@@ -8,9 +8,6 @@ const C120_APPROXIMATE_STEPS: usize = 1_690_000;
 fn cached_checkpoint(c: &mut Criterion) {
     let parameters = EmpiricalStepParameters {
         prefix_steps: 0,
-        recent_successes: 1,
-        recent_weight: 1,
-        all_history_weight: 1,
         update_every_records: 64,
         hash_every_records: 64,
     };

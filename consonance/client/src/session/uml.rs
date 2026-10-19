@@ -69,7 +69,8 @@ fn root_identity(
     loaded_executable: &str,
 ) -> [u8; 32] {
     let mut identity = Sha256::new();
-    identity.update(b"harmony-uml-root-v6\0");
+    identity.update(b"harmony-uml-root-v7\0");
+    identity.update(execution_contract::Assurance::ordinary().identity());
     identity.update((loaded_executable.len() as u64).to_le_bytes());
     identity.update(loaded_executable.as_bytes());
     identity.update(profile_identity.as_bytes());
@@ -229,6 +230,9 @@ fn setup_point(
 
 impl UmlSession {
     pub fn boot(config: &UmlLaunch, factory: ServiceFactory) -> Result<Self, Box<dyn Error>> {
+        config
+            .qualification
+            .admit(execution_contract::Engine::UserModeLinux)?;
         let (loaded_executable, loaded_image_guard) =
             crate::image_identity::LoadedImageGuard::identity()?;
         let profile = uml::Profile::load(&config.profile)?;
@@ -1852,10 +1856,47 @@ while True:
     }
 
     #[test]
+    fn qualified_uml_boot_refuses_before_loading_profile_or_spawning() {
+        let parent = tempfile::tempdir().unwrap();
+        for composition in [
+            execution_contract::Composition::RetainedLinuxContinuation9673,
+            execution_contract::Composition::UmlWholeState,
+        ] {
+            let config = UmlLaunch {
+                qualification: execution_contract::Requirement::Qualified(composition),
+                profile: parent.path().join("missing-profile"),
+                expected_profile_identity_sha256: "fixture".into(),
+                expected_host: host(),
+                initramfs: parent.path().join("missing-initramfs"),
+                expected_initramfs_sha256: [0; 32],
+                memory_mib: 128,
+                kernel_arguments: Vec::new(),
+                work_parent: parent.path().join("must-not-create"),
+                seed: 0,
+                setup_budget: 1,
+                progress_limit: Duration::from_secs(1),
+            };
+            let error = UmlSession::boot(
+                &config,
+                std::sync::Arc::new(|_| {
+                    Err(environment::channel::ChannelError::Handler(
+                        "must not configure services".into(),
+                    ))
+                }),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("qualification refused"), "{error}");
+            assert!(!config.work_parent.exists());
+        }
+    }
+
+    #[test]
     fn root_identity_refuses_a_different_admitted_guest_processor() {
         let profile_identity = "admitted-profile";
         let host = host();
         let config = UmlLaunch {
+            qualification: execution_contract::Requirement::Ordinary,
             profile: PathBuf::new(),
             expected_profile_identity_sha256: profile_identity.into(),
             expected_host: host.clone(),
@@ -1925,6 +1966,7 @@ while True:
         let profile_identity = "admitted-profile";
         let host = host();
         let mut config = UmlLaunch {
+            qualification: execution_contract::Requirement::Ordinary,
             profile: PathBuf::new(),
             expected_profile_identity_sha256: profile_identity.into(),
             expected_host: host.clone(),

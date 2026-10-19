@@ -86,6 +86,7 @@ version = "0.1.0"
 dependencies = [
  "control-proto",
  "environment",
+ "execution-contract",
  "host-code-identity",
  "hypercall-proto",
  "libc",
@@ -185,6 +186,14 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys",
+]
+
+[[package]]
+name = "execution-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
 ]
 
 [[package]]
@@ -359,6 +368,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nes-games"
+version = "0.1.0"
+dependencies = [
+ "lz4_flex",
+ "machine",
+ "postcard",
+ "searcher",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "nes-protocol"
 version = "0.1.0"
 
@@ -371,6 +393,7 @@ dependencies = [
  "libc",
  "lz4_flex",
  "machine",
+ "nes-games",
  "oci-support",
  "postcard",
  "searcher",
