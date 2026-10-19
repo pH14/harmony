@@ -120,8 +120,8 @@ test("file capture writes chunks in order, closes after final data, and bypasses
 test("file backpressure pauses capture until ordered writes drain, with bounded queued chunks", async () => {
   let release;
   const events = [];
-  const gate = new Promise(resolve => { release = resolve; });
-  const writable = { async write(blob) { events.push(await blob.text()); await gate; }, async close() { events.push("close"); }, async abort() {} };
+  const writeReady = new Promise(resolve => { release = resolve; });
+  const writable = { async write(blob) { events.push(await blob.text()); await writeReady; }, async close() { events.push("close"); }, async abort() {} };
   const f = fixture({ maxPendingBytes: 6 });
   f.recording.start(f.canvas, { writable });
   f.Recorder.last.data("abc");
