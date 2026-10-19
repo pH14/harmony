@@ -122,9 +122,15 @@ impl EndpointDriver for Session {
     }
 
     fn proof(&mut self) -> Result<EndpointProof, EndpointError> {
+        let assurance_identity = self
+            .config
+            .qualification
+            .admit(execution_contract::Engine::VirtualMachine)?
+            .identity();
         let state_hash = self.state_hash()?;
         let history = self.event_history()?;
         Ok(EndpointProof::WholeStateAndHistory {
+            assurance_identity,
             state_hash,
             history,
         })

@@ -47,7 +47,7 @@ const MAX_FDS: usize = crate::import_layout::PROTOCOL_REFERENCE_LIMIT;
 const DARWIN_CONTROL_CAPACITY: usize = 2048;
 const EXIT_POLL: Duration = Duration::from_millis(5);
 const EXIT_POLLS: u32 = 400;
-const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v4";
+const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v5";
 const IMAGE_HELLO_LIMIT: usize = 512;
 const IMAGE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -2533,6 +2533,7 @@ mod tests {
         }
         fn proof(&mut self) -> Result<crate::endpoint::EndpointProof, Box<dyn Error>> {
             Ok(crate::endpoint::EndpointProof::WholeStateAndHistory {
+                assurance_identity: execution_contract::Assurance::ordinary().identity(),
                 state_hash: self.state_hash()?,
                 history: self.event_history()?,
             })
@@ -4109,6 +4110,7 @@ mod tests {
             assert_eq!(
                 receipt.proof,
                 EndpointProof::WholeStateAndHistory {
+                    assurance_identity: execution_contract::Assurance::ordinary().identity(),
                     state_hash,
                     history
                 }
@@ -6526,11 +6528,12 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
 
     #[test]
     fn descriptor_table_import_requires_the_new_host_hello_version() {
-        assert_eq!(IMAGE_HELLO, b"harmony-session-worker-image-v4");
+        assert_eq!(IMAGE_HELLO, b"harmony-session-worker-image-v5");
         for version in [
             b"harmony-session-worker-image-v1".as_slice(),
             b"harmony-session-worker-image-v2".as_slice(),
             b"harmony-session-worker-image-v3".as_slice(),
+            b"harmony-session-worker-image-v4".as_slice(),
         ] {
             let mut hello = Out::default();
             hello.bytes(version).bytes(b"fixture");

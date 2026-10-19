@@ -1228,6 +1228,43 @@ mod tests {
         session.restore(&snapshot).unwrap();
     }
 
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn endpoint_proof_uses_the_admitted_session_assurance_and_actual_cut() {
+        use crate::endpoint::{EndpointDriver, EndpointProof};
+        let image =
+            vmm_core::vendor::arm64::image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let mut session = mock_arm_session(
+            SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0"),
+            &image,
+        );
+        let state_hash = session.state_hash().unwrap();
+        let history = session.event_history().unwrap();
+        let assurance_identity = session
+            .config
+            .qualification
+            .admit(execution_contract::Engine::VirtualMachine)
+            .unwrap()
+            .identity();
+        assert_eq!(
+            EndpointDriver::proof(&mut session).unwrap(),
+            EndpointProof::WholeStateAndHistory {
+                assurance_identity,
+                state_hash,
+                history,
+            }
+        );
+        session.config.qualification = execution_contract::Requirement::Qualified(
+            execution_contract::Composition::RetainedLinuxContinuation9673,
+        );
+        assert!(
+            EndpointDriver::proof(&mut session)
+                .unwrap_err()
+                .to_string()
+                .contains("qualification refused")
+        );
+    }
+
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn owned_endpoint_refuses_direct_mutators_before_control_or_policy_changes() {

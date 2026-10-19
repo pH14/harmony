@@ -56,10 +56,26 @@ pub enum EndpointProofRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EndpointProof {
     WholeStateAndHistory {
+        assurance_identity: [u8; 32],
         state_hash: [u8; 32],
         history: EventHistory,
     },
     Unavailable,
+}
+
+impl EndpointProof {
+    pub fn validate(&self) -> Result<(), EndpointError> {
+        if let Self::WholeStateAndHistory {
+            assurance_identity, ..
+        } = self
+            && *assurance_identity != execution_contract::Assurance::ordinary().identity()
+        {
+            return Err(
+                EndpointProtocolError::Invalid("execution assurance identity differs").into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -402,6 +418,7 @@ impl EndpointState {
                 };
                 let proof = proof.and_then(|proof| {
                     driver.ensure_active()?;
+                    proof.validate()?;
                     Ok(proof)
                 });
                 match proof {
@@ -740,6 +757,7 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionEndpoint<'a, T> {
             let EndpointReply::Committed(receipt) = result? else {
                 return Err(EndpointProtocolError::Invalid("unexpected commit reply").into());
             };
+            receipt.proof.validate()?;
             if receipt
                 .snapshot
                 .is_some_and(|(_, at)| at != receipt.binding.moment())
@@ -921,6 +939,8 @@ pub(crate) mod tests {
         corrupt_page: bool,
         decision_page: bool,
         lose_commit: bool,
+        proof_assurance: [u8; 32],
+        corrupt_proof: bool,
     }
 
     fn events(count: u32) -> Vec<EndpointEvent> {
@@ -951,6 +971,8 @@ pub(crate) mod tests {
                 corrupt_page: false,
                 decision_page: false,
                 lose_commit: false,
+                proof_assurance: execution_contract::Assurance::ordinary().identity(),
+                corrupt_proof: false,
             }
         }
     }
@@ -1055,6 +1077,7 @@ pub(crate) mod tests {
             self.check("hash")?;
             self.check("history")?;
             Ok(EndpointProof::WholeStateAndHistory {
+                assurance_identity: self.proof_assurance,
                 state_hash: [self.events.len() as u8; 32],
                 history: EventHistory {
                     count: self.events.len() as u64,
@@ -1104,6 +1127,14 @@ pub(crate) mod tests {
             }
             if commit && self.lose_commit {
                 return Err(Injected("lost commit reply").into());
+            }
+            if self.corrupt_proof
+                && let Ok(EndpointReply::Committed(receipt)) = &mut result
+                && let EndpointProof::WholeStateAndHistory {
+                    assurance_identity, ..
+                } = &mut receipt.proof
+            {
+                assurance_identity[0] ^= 1;
             }
             result
         }
@@ -1401,6 +1432,26 @@ pub(crate) mod tests {
                 .is_err()
         );
         assert!(fixture.calls.is_empty());
+    }
+
+    #[test]
+    fn relabelled_assurance_abandons_both_driver_and_transport_commit_paths() {
+        for corrupt_proof in [false, true] {
+            let mut fixture = Fixture {
+                corrupt_proof,
+                proof_assurance: if corrupt_proof {
+                    execution_contract::Assurance::ordinary().identity()
+                } else {
+                    [31; 32]
+                },
+                ..Default::default()
+            };
+            let error = captured(&mut fixture, request()).commit().unwrap_err();
+            assert!(error.to_string().contains("assurance identity differs"));
+            assert!(fixture.abandoned);
+            assert!(fixture.snapshots.is_empty());
+            assert!(!fixture.endpoint.pending());
+        }
     }
 
     #[test]

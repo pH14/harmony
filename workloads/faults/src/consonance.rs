@@ -2047,6 +2047,13 @@ impl Live {
         observation: &mut FaultObservations,
         proof: Option<EndpointProof>,
     ) -> Result<HistoryReceipt, String> {
+        if let Some(EndpointProof::WholeStateAndHistory {
+            assurance_identity, ..
+        }) = &proof
+            && *assurance_identity != parent.assurance_identity()
+        {
+            return Err("execution endpoint assurance differs from parent history".to_owned());
+        }
         self.cursor.begin_action(parent.moment());
         observation
             .parks
@@ -2060,6 +2067,7 @@ impl Live {
                 Some(EndpointProof::WholeStateAndHistory {
                     state_hash,
                     history,
+                    ..
                 }),
             ) => (
                 FaultEndpointCertificate::KvmWholeState(state_hash),
@@ -2757,6 +2765,27 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn endpoint_assurance_is_checked_before_history_or_observation_changes() {
+        let mut live = hashed_live([17; 32]);
+        let parent = fixture_genesis();
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let mut observation = FaultObservations::default();
+        let before = observation.clone();
+        let proof = EndpointProof::WholeStateAndHistory {
+            assurance_identity: [31; 32],
+            state_hash: [17; 32],
+            history: control_proto::EventHistory::default(),
+        };
+        let error = live
+            .capture_receipt_with_proof(&parent, action, &mut observation, Some(proof))
+            .unwrap_err();
+        assert!(error.contains("assurance differs from parent"));
+        assert_eq!(observation, before);
+        assert_eq!(live.cursor.after, None);
+        parent.validate().unwrap();
+    }
+
     impl Live {
         fn seal_link(
             &mut self,
@@ -2926,6 +2955,7 @@ mod tests {
         }
         fn proof(&mut self) -> Result<EndpointProof, Box<dyn Error>> {
             Ok(EndpointProof::WholeStateAndHistory {
+                assurance_identity: execution_contract::Assurance::ordinary().identity(),
                 state_hash: self.state_hash()?,
                 history: self.event_history()?,
             })
@@ -3699,6 +3729,7 @@ mod tests {
         }
         fn proof(&mut self) -> Result<EndpointProof, Box<dyn Error>> {
             Ok(EndpointProof::WholeStateAndHistory {
+                assurance_identity: execution_contract::Assurance::ordinary().identity(),
                 state_hash: self.state_hash()?,
                 history: self.event_history()?,
             })
