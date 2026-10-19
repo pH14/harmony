@@ -3563,6 +3563,7 @@ mod tests {
             v.guest_slice_mut(0xe000, len)
                 .unwrap()
                 .copy_from_slice(&frame[..len]);
+            v.mark_host_dirty(0xe000, len as u64);
             v.service_doorbell(len as u32).unwrap()
         };
         assert_eq!(ring(&mut s), crate::vmm::Step::SdkStop);
@@ -3580,6 +3581,7 @@ mod tests {
             resolve: None,
         };
         let stopped_hash = hash(&mut s);
+        let stopped_history = s.vmm().unwrap().event_history().unwrap();
         let expected = Reply::Stop(StopReason::Decision {
             vtime: Moment(at),
             id: control_proto::DecisionId(77),
@@ -3593,6 +3595,11 @@ mod tests {
         let mut artifact = Vec::new();
         let receipt = s.export_portable_snapshot(pending, &mut artifact).unwrap();
         assert_eq!(receipt.state_hash, stopped_hash);
+        assert_eq!(s.vmm().unwrap().event_history(), Some(stopped_history));
+        let pending_sparse = s.export_sparse_snapshot(origin, pending).unwrap();
+        let mut origin_artifact = Vec::new();
+        s.export_portable_snapshot(origin, &mut origin_artifact)
+            .unwrap();
         assert_eq!(receipt.at, Moment(at));
         assert_eq!(s.vmm().unwrap().exit_counts(), counts);
         assert_eq!(s.vmm().unwrap().effective_vns(), Some(at));
@@ -3662,6 +3669,8 @@ mod tests {
         ));
         assert!(s.vmm().unwrap().pending_service_question().is_none());
         let expected_hash = hash(&mut s);
+        let expected_history = s.vmm().unwrap().event_history().unwrap();
+        assert!(expected_history.count > stopped_history.count);
         let response = s.vmm().unwrap().guest_slice(0xf000, 4096).unwrap().to_vec();
         let (_, bytes) = hypercall_proto::decode(&response).unwrap();
         assert_eq!(ServiceAnswer::decode(bytes).unwrap(), answer);
@@ -3678,6 +3687,7 @@ mod tests {
         let imported = cold.import_portable_snapshot(artifact.as_slice()).unwrap();
         cold.restore(imported.id, None).unwrap().unwrap();
         assert_eq!(hash(&mut cold), stopped_hash);
+        assert_eq!(cold.vmm().unwrap().event_history(), Some(stopped_history));
         assert_eq!(cold.handle(&request).unwrap(), Ok(expected));
         assert_eq!(cold.vmm().unwrap().effective_vns(), Some(at));
         cold.vmm_mut()
@@ -3702,6 +3712,45 @@ mod tests {
             response
         );
         assert_eq!(hash(&mut cold), expected_hash);
+        assert_eq!(cold.vmm().unwrap().event_history(), Some(expected_history));
+        let mut sparse_cold = payload_server();
+        sparse_cold.set_service_factory(std::sync::Arc::clone(&s.service_factory));
+        hello(&mut sparse_cold);
+        let base = sparse_cold
+            .import_portable_snapshot(origin_artifact.as_slice())
+            .unwrap();
+        let imported = sparse_cold
+            .import_sparse_snapshot(base.id, pending_sparse)
+            .unwrap();
+        sparse_cold.restore(imported.id, None).unwrap().unwrap();
+        assert_eq!(
+            sparse_cold.vmm().unwrap().event_history(),
+            Some(stopped_history)
+        );
+        sparse_cold
+            .vmm_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Common(CommonExit::Idle));
+        assert!(matches!(
+            sparse_cold
+                .handle(&Request::Run {
+                    until: resolve_until,
+                    resolve: Some(Resolution {
+                        vtime: Moment(at),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(answer.encode()),
+                    }),
+                })
+                .unwrap(),
+            Ok(Reply::Stop(_))
+        ));
+        assert_eq!(hash(&mut sparse_cold), expected_hash);
+        assert_eq!(
+            sparse_cold.vmm().unwrap().event_history(),
+            Some(expected_history)
+        );
         assert_eq!(
             cold.vmm().unwrap().sdk_events(),
             s.vmm().unwrap().sdk_events()
@@ -5710,7 +5759,7 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 13,
+            caps.protocol_version, 14,
             "protocol version numbers remain monotonic after retired tags"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
@@ -11650,6 +11699,16 @@ mod tests {
                 b.sdk_snapshot().unwrap().unwrap().recorded
             );
             assert_eq!(a.sdk_events(), b.sdk_events());
+            assert_eq!(a.event_history(), b.event_history());
+            assert_eq!(
+                b.event_history().unwrap().count,
+                b.virtual_time_trace()
+                    .unwrap()
+                    .normalized_log()
+                    .events
+                    .len() as u64
+                    + 1,
+            );
             let actual_trace = a.virtual_time_trace().unwrap().normalized_log();
             let mut expected_trace = b.virtual_time_trace().unwrap().normalized_log().clone();
             if replay {
@@ -11688,6 +11747,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let vmm = server.vmm_mut().unwrap();
+        let history = vmm.event_history();
         let before = vmm.sdk_snapshot().unwrap().unwrap().recorded;
         let response = vmm.guest_memory()[0xf000..0xf100].to_vec();
         vmm.set_host_operation_guard(Arc::new(|site| {
@@ -11699,6 +11759,7 @@ mod tests {
         }));
         assert!(vmm.resolve_service_binding_mismatch().is_err());
         assert!(vmm.pending_service_question().is_some());
+        assert_eq!(vmm.event_history(), history);
         assert_eq!(vmm.sdk_snapshot().unwrap().unwrap().recorded, before);
         assert_eq!(&vmm.guest_memory()[0xf000..0xf100], response);
         assert!(
@@ -11922,6 +11983,16 @@ mod tests {
                 b.sdk_snapshot().unwrap().unwrap().recorded
             );
             assert_eq!(a.sdk_events(), b.sdk_events());
+            assert_eq!(a.event_history(), b.event_history());
+            assert_eq!(
+                a.event_history().unwrap().count,
+                a.virtual_time_trace()
+                    .unwrap()
+                    .normalized_log()
+                    .events
+                    .len() as u64
+                    + 1,
+            );
             assert_eq!(
                 a.virtual_time_trace().unwrap().normalized_log(),
                 b.virtual_time_trace().unwrap().normalized_log()

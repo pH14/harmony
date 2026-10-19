@@ -505,8 +505,8 @@ job and skip records decode. The binary campaign result hash and checkpoints
 retain the native 128-bit encoding.
 
 Each campaign job's recorded result digest binds its logical result to a tagged
-final endpoint certificate. The v2 result domain also binds v1 normalized-event
-history whenever a KVM whole-state endpoint is available, including terminal and
+final endpoint certificate. The v2 result domain also binds versioned ordered-history
+records (v2 includes completed semantic service exchanges) whenever a KVM whole-state endpoint is available, including terminal and
 zero-action jobs. Failed or unavailable endpoints explicitly carry no history;
 that absence cannot stand in for a whole-state endpoint.
 
