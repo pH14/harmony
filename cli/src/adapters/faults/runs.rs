@@ -105,7 +105,9 @@ impl Manifest {
         })
     }
     pub fn read(path: &Path) -> Result<Self> {
-        let record = crate::runs::Manifest::read(path)?;
+        Self::from_record(crate::runs::Manifest::read(path)?)
+    }
+    pub fn from_record(record: crate::runs::Manifest) -> Result<Self> {
         let config = Config::from_shared(&record.config)?;
         let state: State = serde_json::from_value(record.payload.clone())?;
         let uml_host =

@@ -84,12 +84,23 @@ fn command_replay_matches(original: &Manifest, actual: serde_json::Value) -> boo
     )
 }
 
+#[cfg(feature = "frontend")]
 pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Result<u8> {
+    let saved = crate::runs::Saved::read(&selection.run)?;
+    replay_saved(selection, destination, repeat, saved)
+}
+
+pub fn replay_saved(
+    selection: Selection,
+    destination: Destination,
+    repeat: u32,
+    saved: crate::runs::Saved,
+) -> Result<u8> {
     if repeat == 0 {
         return Err("repeat must be positive".into());
     }
-    let source = crate::runs::locate(&selection.run)?;
-    let original = Manifest::read(&source)?;
+    let source = saved.path;
+    let original = Manifest::from_record(saved.manifest)?;
     original.verify(&source)?;
     if original.status != "complete" {
         return Err("a failed or incomplete recording cannot certify exact replay".into());
@@ -188,10 +199,22 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
     super::workflow::finish(&out, &mut manifest, result)
 }
 
+#[cfg(feature = "frontend")]
 pub fn branch(request: crate::adapters::Request) -> Result<u8> {
+    let saved = crate::runs::Saved::read(
+        &request
+            .selection
+            .as_ref()
+            .ok_or("select a search or branch")?
+            .run,
+    )?;
+    branch_saved(request, saved)
+}
+
+pub fn branch_saved(request: crate::adapters::Request, saved: crate::runs::Saved) -> Result<u8> {
     let selection = request.selection.ok_or("select a search or branch")?;
-    let source = crate::runs::locate(&selection.run)?;
-    let original = Manifest::read(&source)?;
+    let source = saved.path;
+    let original = Manifest::from_record(saved.manifest)?;
     original.verify(&source)?;
     if original.bundle.is_none() {
         return Err("branching requires a supervised application scenario".into());

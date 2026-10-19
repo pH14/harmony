@@ -236,11 +236,20 @@ fn validate_runner(c: &mut Config) -> Result<()> {
     Ok(())
 }
 
-pub fn execute_prepared(mut request: Request, prepared: crate::handoff::Prepared) -> Result<u8> {
+pub fn execute_prepared(
+    mut request: Request,
+    mut prepared: crate::handoff::Prepared,
+) -> Result<u8> {
     validate_runner(&mut request.config)?;
     let _: Options = toml::Value::Table(request.config.workload.options.clone()).try_into()?;
     if request.selection.is_some() {
-        return saved_execution::<crate::native::Guarded>(request);
+        return saved_resolved::<crate::native::Guarded>(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        );
     }
     if !matches!(request.operation, Operation::Run | Operation::Search) {
         return Err("unsupported guarded NES operation".into());
@@ -443,13 +452,23 @@ fn saved(request: Request) -> Result<u8> {
         _ => Err("unsupported saved NES display operation".into()),
     }
 }
+#[cfg(feature = "frontend")]
 fn saved_execution<R: crate::native::Runner>(request: Request) -> Result<u8> {
+    let saved =
+        crate::runs::Saved::read(&request.selection.as_ref().ok_or("select an execution")?.run)?;
+    saved_resolved::<R>(request, saved)
+}
+
+fn saved_resolved<R: crate::native::Runner>(
+    request: Request,
+    saved: crate::runs::Saved,
+) -> Result<u8> {
     if matches!(request.operation, Operation::Search | Operation::Resume) {
-        return continue_search::<R>(request);
+        return continue_resolved_search::<R>(request, saved);
     }
     let selection = request.selection.ok_or("select an execution")?;
-    let path = crate::runs::locate(&selection.run)?;
-    let original = Manifest::read(&path)?;
+    let path = saved.path;
+    let original = saved.manifest;
     if selection
         .finding
         .is_some_and(|finding| finding != 1 || original.payload["finding"] != true)
@@ -602,11 +621,26 @@ fn rooted_search_start(
     ))
 }
 
+#[cfg(all(test, feature = "frontend"))]
 fn continue_search<R: crate::native::Runner>(request: Request) -> Result<u8> {
+    let saved = crate::runs::Saved::read(
+        &request
+            .selection
+            .as_ref()
+            .ok_or("select a search or branch")?
+            .run,
+    )?;
+    continue_resolved_search::<R>(request, saved)
+}
+
+fn continue_resolved_search<R: crate::native::Runner>(
+    request: Request,
+    saved: crate::runs::Saved,
+) -> Result<u8> {
     use nes_workload::package::{SearchOptions, SearchStart};
     let selection = request.selection.ok_or("select a search or branch")?;
-    let parent = crate::runs::locate(&selection.run)?;
-    let original = Manifest::read(&parent)?;
+    let parent = saved.path;
+    let original = saved.manifest;
     original.verify(&parent)?;
     if selection
         .finding
@@ -1019,6 +1053,57 @@ mod tests {
             checkpoint_origin_input(source.path(), &manifest).unwrap(),
             serde_json::json!({"actions":[]})
         );
+    }
+
+    #[test]
+    fn saved_consumer_keeps_admitted_metadata_and_rechecks_artifact_bytes() {
+        for changed_artifact in [false, true] {
+            let source = tempfile::tempdir().unwrap();
+            let children = tempfile::tempdir().unwrap();
+            let destination = children.path().join("replay");
+            let mut config = Config::default();
+            config.workload.package = "nes".into();
+            config.runner.kind = "quicknes".into();
+            let mut manifest = Manifest::new(config.clone(), "run").unwrap();
+            manifest.store(source.path(), "input", b"rom").unwrap();
+            manifest.payload = serde_json::json!({
+                "witness": {"victory": false}, "repeats": []
+            });
+            manifest.save(source.path()).unwrap();
+            manifest.verify(source.path()).unwrap();
+            let saved = crate::runs::Saved::read(source.path().to_str().unwrap()).unwrap();
+            fs::write(
+                source.path().join("manifest.json"),
+                b"replacement is not JSON",
+            )
+            .unwrap();
+            if changed_artifact {
+                fs::write(source.path().join("artifacts/input"), b"changed ROM").unwrap();
+            }
+            let request = Request {
+                config,
+                operation: Operation::Replay,
+                selection: Some(crate::selection::Selection {
+                    run: source.path().display().to_string(),
+                    finding: None,
+                }),
+                destination: crate::runs::Destination {
+                    out: Some(destination.clone()),
+                    name: None,
+                },
+                ..Default::default()
+            };
+            let error = saved_resolved::<crate::native::Native>(request, saved)
+                .unwrap_err()
+                .to_string();
+            let expected = if changed_artifact {
+                "recorded artifact input has changed"
+            } else {
+                "saved NES repeats disagree"
+            };
+            assert!(error.contains(expected), "{error}");
+            assert!(!destination.exists());
+        }
     }
 
     #[test]

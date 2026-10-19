@@ -125,7 +125,7 @@ impl Package for Faults {
         }
     }
 }
-pub fn execute_prepared(request: Request, prepared: crate::handoff::Prepared) -> Result<u8> {
+pub fn execute_prepared(request: Request, mut prepared: crate::handoff::Prepared) -> Result<u8> {
     let config = config::Config::from_shared(&request.config)?;
     match request.operation {
         Operation::Search if request.selection.is_none() => {
@@ -154,14 +154,30 @@ pub fn execute_prepared(request: Request, prepared: crate::handoff::Prepared) ->
                 vocabulary,
             )
         }
-        Operation::Search | Operation::Resume => workflow::continue_search(request),
+        Operation::Search | Operation::Resume => workflow::continue_saved(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        ),
         Operation::Run => workflow::run_prepared(config, request, prepared),
-        Operation::Replay => investigate::replay(
+        Operation::Replay => investigate::replay_saved(
             request.selection.ok_or("select a search or branch")?,
             request.destination,
             request.repeat,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
         ),
-        Operation::Branch => investigate::branch(request),
+        Operation::Branch => investigate::branch_saved(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        ),
         _ => Err("unsupported guarded fault operation".into()),
     }
 }

@@ -42,6 +42,19 @@ pub struct Manifest {
     pub runner_identity: serde_json::Value,
 }
 
+pub struct Saved {
+    pub path: PathBuf,
+    pub manifest: Manifest,
+}
+
+impl Saved {
+    pub fn read(run: &str) -> Result<Self> {
+        let path = locate(run)?;
+        let manifest = Manifest::read(&path)?;
+        Ok(Self { path, manifest })
+    }
+}
+
 #[allow(clippy::disallowed_methods)]
 fn generated_name() -> Result<String> {
     let stamp = std::time::SystemTime::now()

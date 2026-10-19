@@ -236,7 +236,12 @@ fn execute(mut request: Request) -> Result<u8> {
     } else {
         None
     };
-    execute_ready(request, fresh)
+    let saved = request
+        .selection
+        .as_ref()
+        .map(|selection| crate::runs::Saved::read(&selection.run))
+        .transpose()?;
+    execute_ready(request, fresh, saved)
 }
 
 #[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
@@ -263,7 +268,7 @@ pub fn execute_prepared(request: Request, prepared: crate::handoff::Prepared) ->
             .execution
             .as_ref()
             .map(|execution| (prepared.kernel.clone(), execution.initramfs(&prepared.base)));
-        execute_ready(request, fresh)
+        execute_ready(request, fresh, prepared.saved)
     }
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     {
@@ -273,7 +278,11 @@ pub fn execute_prepared(request: Request, prepared: crate::handoff::Prepared) ->
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn execute_ready(mut request: Request, fresh: Option<(Vec<u8>, Vec<u8>)>) -> Result<u8> {
+fn execute_ready(
+    mut request: Request,
+    fresh: Option<(Vec<u8>, Vec<u8>)>,
+    saved: Option<crate::runs::Saved>,
+) -> Result<u8> {
     validate_runner(&mut request.config)?;
     if request.selection.is_some() && request.operation != Operation::Replay {
         return Err("nested does not yet support starting a search from saved state".into());
@@ -287,8 +296,9 @@ fn execute_ready(mut request: Request, fresh: Option<(Vec<u8>, Vec<u8>)>) -> Res
                     "nested verification replays the complete search; omit --finding".into(),
                 );
             }
-            let path = crate::runs::locate(&s.run)?;
-            let m = Manifest::read(&path)?;
+            let saved = saved.ok_or("missing resolved saved recording")?;
+            let path = saved.path;
+            let m = saved.manifest;
             m.verify(&path)?;
             let stream = verified_replay_source(&path, &m)?;
             Ok((path, m, stream))
