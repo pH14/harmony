@@ -424,3 +424,11 @@ The tool rejects cores missing those exports. Retained schema-1 traces still
 contain actual map reads, but their centre labels need bank-aware reassessment
 when queries originate from switched banks. The retained frame790 caller
 regression demonstrates two intermediate queries previously counted as centres.
+
+`check-wave-slope-segment.py SOURCE OUTPUT` checks the experimental normal-wave
+45-degree continuous triangle routine against 46,139 exact rational clipping
+cases. When the bounded signed product helper is present, it also checks all
+65,536 signed byte products. Continuous tile triangles use outer coordinates
+0..16. This verifies host arithmetic and geometry, independently of dispatch,
+NES mapping, actual pixel intent, and frame-budget effects. The source remains
+an experiment until those checks and route assessments pass.

@@ -793,3 +793,8 @@ finishes in 5,070 frames on unmodified upstream. The repair adds two lag frames,
 so the current control does not support an unchanged-controller-input claim.
 Broader direction/mini coverage, mapper runtime checks and complete integration
 rounds remain pending; this is still an experimental upstream proposal.
+
+The [continuous wave slope experiment](wave-slope-segment/README.md) retains
+three new original-ROM temporal corner escapes, a normal-wave segment repair,
+its independent tests and its remaining mini-wave/66-degree failure. Its current
+clearing route is explicitly unqualified because it uses that remaining gap.

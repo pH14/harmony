@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "status": "experimental-combined-prototype-only; not-ready-for-clean-upstream-application",
+  "base": "Frozen combined Kappa42 + four wave45 point corrections + Spider prototype. This delta depends on its existing collision history and bank allocation.",
+  "changes": [
+    {
+      "path": "SAUCE/functions/collision.h",
+      "before_sha256": "e330be56b236cc43bf94b0a81cb87181d07183ab05fa6539d09c876dbf58c4d8",
+      "after_sha256": "f401119a41880603b46ca75cd4e630cece1a208e8abc5e62f4553719dd3cf1e6"
+    },
+    {
+      "path": "SAUCE/functions/spike_sweep.h",
+      "before_sha256": "f8c273924cca305caa6266d7507ad58ba1f5410b4223cbd4495bc69e18b3535c",
+      "after_sha256": "507038a88d85970fe7d4a8c5dd542e8622e16a54c838f96e41b3499c9dd69d0e"
+    }
+  ],
+  "compiled_level_counts": [
+    170,
+    173
+  ],
+  "remaining": "Mini-wave66 temporal corner remains; current clearing control is not a legitimate-route control. Integration with Spider snap-first and early Geodom3 still pending."
+}

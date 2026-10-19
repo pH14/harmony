@@ -1,0 +1,130 @@
+diff --git a/SAUCE/functions/collision.h b/SAUCE/functions/collision.h
+--- a/SAUCE/functions/collision.h
++++ b/SAUCE/functions/collision.h
+@@ -1083,6 +1083,13 @@
+         wave_slope_point();
+         temp_x -= 4;
+     }
++    __asm__("lda %v\n cmp #6\n bne %g\n ldx %v", gamemode, wave_segment_done, currplayer);
++    __asm__("lda %v\n clc\n adc #4\n sta tmp1\n lda %v,x\n clc\n adc #4\n eor tmp1\n and #$f0\n bne %g", temp_x, pit_previous_x, wave_segment_query);
++    __asm__("lda %v\n eor %v,x\n and #$f0\n bne %g", temp_y, pit_previous_y, wave_segment_query);
++    goto wave_segment_done;
++wave_segment_query:
++    crossPRGBankJump0(check_wave_slope_motion);
++wave_segment_done:;
+ }
+ 
+ CODE_BANK_POP()
+diff --git a/SAUCE/functions/spike_sweep.h b/SAUCE/functions/spike_sweep.h
+--- a/SAUCE/functions/spike_sweep.h
++++ b/SAUCE/functions/spike_sweep.h
+@@ -74,6 +74,109 @@
+ 
+ 
+ 
++CODE_BANK_POP()
++CODE_BANK_PUSH("SPIDER_BANK")
++#pragma rodata-name (push, "SPIDER_BANK")
++int wave_signed_product(signed char x, signed char y) {
++    static unsigned char ax, ay;
++    static unsigned int product;
++    ax = x; ay = y;
++    product = (unsigned int)ax * ay;
++    if (x < 0) product -= (unsigned int)ay << 8;
++    if (y < 0) product -= (unsigned int)ax << 8;
++    return (signed short)product;
++}
++
++unsigned char wave_triangle_hit(void) {
++    static signed char x0, y0, x1, y1, x2, y2;
++    static int a, b, c;
++    if (ss_origin_x > (ss_dx > 0 ? ss_dx : 0) || ss_origin_x + 16 < (ss_dx < 0 ? ss_dx : 0) ||
++        ss_origin_y > (ss_dy > 0 ? ss_dy : 0) || ss_origin_y + 16 < (ss_dy < 0 ? ss_dy : 0)) return 0;
++    x0 = ss_origin_x; y0 = ss_origin_y;
++    x1 = ss_origin_x + 16; y1 = ss_origin_y + 16;
++    switch (collision) {
++        case COL_SLOPE_RD45:
++            if (ss_origin_x + ss_origin_y + 16 > 0 && ss_origin_x + ss_origin_y + 16 > ss_dx + ss_dy) return 0;
++            x0 += 16; x2 = ss_origin_x; y2 = ss_origin_y + 16;
++            break;
++        case COL_SLOPE_LD45:
++            if (ss_origin_y - ss_origin_x > 0 && ss_origin_y - ss_origin_x > ss_dy - ss_dx) return 0;
++            x2 = ss_origin_x; y2 = ss_origin_y + 16;
++            break;
++        case COL_SLOPE_RU45:
++            if (ss_origin_y - ss_origin_x < 0 && ss_origin_y - ss_origin_x < ss_dy - ss_dx) return 0;
++            x2 = ss_origin_x + 16; y2 = ss_origin_y;
++            break;
++        case COL_SLOPE_LU45:
++            if (ss_origin_x + ss_origin_y + 16 < 0 && ss_origin_x + ss_origin_y + 16 < ss_dx + ss_dy) return 0;
++            x1 = ss_origin_x + 16; y1 = ss_origin_y; x2 = ss_origin_x; y2 = ss_origin_y + 16;
++            break;
++        default: return 0;
++    }
++    a = wave_signed_product(x0, ss_dy);
++    a -= wave_signed_product(y0, ss_dx);
++    b = wave_signed_product(x1, ss_dy);
++    b -= wave_signed_product(y1, ss_dx);
++    c = wave_signed_product(x2, ss_dy);
++    c -= wave_signed_product(y2, ss_dx);
++    return !((a > 0 && b > 0 && c > 0) || (a < 0 && b < 0 && c < 0));
++}
++
++void wave_test_slope_tile(void) {
++    if (collision != COL_SLOPE_RD45 && collision != COL_SLOPE_LD45 &&
++        collision != COL_SLOPE_RU45 && collision != COL_SLOPE_LU45) return;
++    if (wave_triangle_hit()) cube_data[ss_player] |= 1;
++}
++
++void check_wave_slope_segment(void) {
++    ss_old_x += 4;
++    ss_x += 4;
++    if ((ss_x & 240) == (ss_old_x & 240) && (ss_y & 240) == (ss_old_y & 240)) { ss_x -= 4; return; }
++    temp_x = ss_old_x; temp_y = ss_old_y; temp_room = ss_old_room;
++    bg_collision_sub();
++    ss_origin_x = -(ss_old_x & 15); ss_origin_y = -(ss_old_y & 15);
++    wave_test_slope_tile();
++    temp_x = ss_x; temp_y = ss_y; temp_room = ss_room;
++    bg_collision_sub();
++    ss_origin_x = ss_dx - (ss_x & 15); ss_origin_y = ss_dy - (ss_y & 15);
++    wave_test_slope_tile();
++    if ((ss_x & 240) != (ss_old_x & 240) && (ss_y & 240) != (ss_old_y & 240)) {
++        temp_x = ss_old_x;
++        bg_collision_sub();
++        ss_origin_x = -(ss_old_x & 15); ss_origin_y = ss_dy - (ss_y & 15);
++        wave_test_slope_tile();
++        temp_x = ss_x; temp_y = ss_old_y; temp_room = ss_old_room;
++        bg_collision_sub();
++        ss_origin_x = ss_dx - (ss_x & 15); ss_origin_y = -(ss_old_y & 15);
++        wave_test_slope_tile();
++    }
++    ss_x -= 4;
++    temp_x = ss_x; temp_y = ss_y; temp_room = ss_room; collision = ss_old_type; collision_metatile = ss_saved_metatile;
++}
++
++void check_wave_slope_motion(void) {
++    ss_player = currplayer;
++    ss_old_room = pit_previous_room[ss_player];
++    if (ss_old_room > 3 || temp_room > 3 || (cube_data[ss_player] & 1)) return;
++    if (pit_previous_mode[ss_player] != gamemode || pit_previous_mini[ss_player] != currplayer_mini) return;
++    ss_old_x = pit_previous_x[ss_player]; ss_old_y = pit_previous_y[ss_player];
++    ss_dx = (signed char)(temp_x - ss_old_x);
++    if (ss_dx < -16 || ss_dx > 16) return;
++    ss_full_dy = (int)temp_y - ss_old_y;
++    ss_room = temp_room - ss_old_room;
++    if (ss_room == 1) ss_full_dy += 240;
++    else if (ss_room == 255) ss_full_dy -= 240;
++    else if (ss_room) return;
++    if (ss_full_dy < -16 || ss_full_dy > 16) return;
++    ss_dy = ss_full_dy;
++    ss_x = temp_x; ss_y = temp_y; ss_room = temp_room;
++    ss_old_type = collision; ss_saved_metatile = collision_metatile;
++    check_wave_slope_segment();
++}
++
++#pragma rodata-name (pop)
++CODE_BANK_POP()
++CODE_BANK_PUSH("XCD_BANK_05")
+ void check_spike_motion(void) {
+     ss_player = currplayer;
+     ss_old_room = pit_previous_room[ss_player];

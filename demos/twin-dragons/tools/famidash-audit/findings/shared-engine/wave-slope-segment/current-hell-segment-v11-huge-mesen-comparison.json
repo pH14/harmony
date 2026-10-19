@@ -1,0 +1,16 @@
+{
+  "negative": {
+    "frames": 798,
+    "difference_frames_excluding_level": [
+      6,
+      798
+    ]
+  },
+  "positive": {
+    "frames": 4389,
+    "difference_frames_excluding_level": [
+      6
+    ]
+  },
+  "limitation": "Separate physical level number131 normalized only for comparison; first40 intro frames allowed for negative mechanical proof."
+}

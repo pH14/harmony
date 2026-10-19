@@ -1,0 +1,8 @@
+{
+  "status": "verified",
+  "cases": 46139,
+  "signed_product_cases": 65536,
+  "source_sha256": "5570843f1c0d0774ccddaa89a799a7e5076186bae9b074695223c21a45b5a836",
+  "reference": "Independent exact rational clipping against five half-planes; outer tile boundaries are 0..16.",
+  "limitation": "Host arithmetic and geometry only; NES mapping, dispatch, pixel intent and frame budget require separate checks."
+}

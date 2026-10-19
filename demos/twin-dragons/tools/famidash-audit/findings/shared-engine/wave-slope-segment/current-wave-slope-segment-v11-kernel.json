@@ -1,0 +1,8 @@
+{
+  "status": "verified",
+  "cases": 46139,
+  "signed_product_cases": 65536,
+  "source_sha256": "507038a88d85970fe7d4a8c5dd542e8622e16a54c838f96e41b3499c9dd69d0e",
+  "reference": "Independent exact rational clipping against five half-planes. Continuous triangles use outer0..16 tile boundaries.",
+  "limitation": "Host geometry only; NES byte widths, mapper runtime, collision dispatch, pixel intent and frame budget require separate checks."
+}
