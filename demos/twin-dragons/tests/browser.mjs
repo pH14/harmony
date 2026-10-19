@@ -11,6 +11,7 @@ import { prefixAt } from "../src/branch.js";
 import { TOUR_KEY } from "../src/tour.js";
 import { isMapEvidence } from "../src/world.js";
 import { showOnMap } from "./map-point.mjs";
+import { installRetainedCollector, retainedDescendant } from "./retained-state.mjs";
 const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const browser = await chromium.launch({
   headless: true,
@@ -25,6 +26,7 @@ page.on("response", (response) => {
   if (response.status() >= 400)
     errors.push(`${response.status()} ${response.url()}`);
 });
+await page.addInitScript(installRetainedCollector);
 await page.addInitScript((tourKey) => {
   localStorage.setItem(tourKey, "seen");
   const RealWorker = window.Worker;
@@ -60,9 +62,7 @@ await page.addInitScript((tourKey) => {
         if (data.type === "batch" && data.active === 2) {
           if (!window.tdTestNestedBatch)
             window.tdTestNestedBatch = { ...data, motionStart: [...data.motion[0].slice(0, 5)] };
-          window.tdTestNestedRetained = data.points.findLast(
-            (point) => point.retained !== null && point.retained !== "2:0",
-          )?.retained ?? window.tdTestNestedRetained;
+          window.tdTestCollectNested(data.points);
         }
         if (
           data.type === "batch" &&
@@ -952,20 +952,21 @@ try {
   const admitted = new Set(["2:0", ...nested.batch.points.filter(p => p.retained !== null).map(p => p.retained)]);
   assert.ok(nested.batch.states >= 1 && nested.batch.states <= admitted.size, "Retained-state counts must belong to the active search");
   await page.waitForFunction(
-    () => window.tdTestNestedRetained?.startsWith("2:"),
+    () => window.tdTestNestedCandidates?.length > 0,
     undefined,
     { timeout: 60000 },
   );
-  await page.evaluate(() => window.tdTestWorker.postMessage({ type: "pause" }));
-  let nestedDescendant = null;
-  for (let attempt = 0; attempt < 20 && !nestedDescendant?.snapshot; attempt++) {
-    const nestedId = await page.evaluate(() => window.tdTestNestedRetained);
-    await page.evaluate((id) => window.tdTestWorker.postMessage({ type: "states", ids: [id], request: -10 }), nestedId);
-    await page.waitForFunction((id) => window.tdTestStates?.[0]?.id === id, nestedId);
-    nestedDescendant = await page.evaluate(() => window.tdTestStates[0]);
-    if (!nestedDescendant?.snapshot) await page.waitForTimeout(100);
+  const nestedContext = await page.evaluateHandle(() => ({
+    worker: window.tdTestWorker, candidates: window.tdTestNestedCandidates, branch: 2,
+  }));
+  let nestedDescendant;
+  try {
+    nestedDescendant = await page.evaluate(retainedDescendant, nestedContext);
+  } finally {
+    await nestedContext.dispose();
   }
   assert.ok(nestedDescendant?.snapshot, "A retained nested descendant must still be in the archive");
+  assert.ok(nestedDescendant.id.startsWith("2:") && nestedDescendant.id !== "2:0");
   assert.deepEqual(nestedDescendant.actions.slice(0, nestedPrefix.length), nestedPrefix);
   assert.ok(nestedDescendant.frames > nestedFrame);
   emulator.restore(emulatorRoot);
