@@ -426,7 +426,7 @@ impl std::fmt::Debug for CommittedExtent {
 impl CommittedExtent {
     #[cfg(any(all(feature = "in-process", not(miri)), test))]
     pub(crate) fn backing_witness(&self) -> BackingWitness {
-        BackingWitness(Arc::downgrade(&self.segment))
+        BackingWitness(Arc::downgrade(&self.extent.segment))
     }
 
     #[must_use]

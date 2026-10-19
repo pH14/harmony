@@ -762,7 +762,8 @@ contents. They do not measure globally unique kernel backing objects.
 `recent_backing_hits` and `recent_backing_misses` classify each current distinct
 allocation against the prior per-worker window, before refreshing it in first
 reference order. The window retains at most 128 weak allocation witnesses;
-`recent_window_evictions` counts capacity removals. Weak witnesses preserve control
+`recent_window_evictions` counts capacity removals. Witnesses identify the Segment allocation shared by distinct extent owners,
+not each extent's Arc allocation. Weak witnesses preserve control
 block identity without retaining mappings, descriptors, extents, or page storage.
 A fresh worker starts with an empty window. Hits indicate bounded recent recurrence,
 not lifetime reuse; misses include first sightings and evicted allocations.

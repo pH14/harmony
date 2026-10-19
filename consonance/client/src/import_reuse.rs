@@ -168,11 +168,17 @@ mod tests {
     #[test]
     fn weak_window_keeps_no_mapped_extent_and_has_no_reused_identity() {
         let mut segments = PageSegments::new(4096, 1);
-        let extent = segments.allocate(4096).unwrap().commit();
+        let mut writable = segments.allocate(4096).unwrap();
+        writable.bytes_mut().fill(0x5a);
+        let extent = writable.commit();
+        let reader = extent.clone();
         let witness = extent.backing_witness();
         let mut reuse = ImportReuse::default();
         reuse.accepted(std::slice::from_ref(&extent));
         segments.free_committed(extent);
+        assert!(reader.bytes().iter().all(|byte| *byte == 0x5a));
+        assert!(segments.full(4096), "a live reader must retain its mapping");
+        drop(reader);
         assert!(
             !segments.full(4096),
             "metric witnesses must not keep mappings alive"
