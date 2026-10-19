@@ -178,3 +178,16 @@ test("attempts of different lengths each leave a bounded held position until fre
   swarm.frame(1, 3000, false, 100, true);
   assert.equal(swarm.lastFrame.points.size, 0, 'Switching branches releases cached positions');
 });
+
+test("a reduced sprite budget never replaces sampled-out running attempts with frozen positions", () => {
+  const swarm = new Swarm(1 << 20, 400, 0, true);
+  const trails = Array.from({ length: 300 }, (_, i) => new Uint16Array([0, 0, i, 20, 0, 600, 0, i + 100, 20, 0]));
+  swarm.add(0, trails, 0);
+  assert.equal(swarm.frame(0, 100, false, 400, true).get(0).length, 300);
+  const sampled = swarm.frame(0, 5000, false, 290, true).get(0);
+  assert.equal(sampled.length, 150);
+  assert.ok(sampled.every((p) => !p.stale));
+  const expired = swarm.frame(0, 11000, false, 290, true).get(0);
+  assert.equal(expired.length, 290);
+  assert.ok(expired.every((p) => p.stale));
+});

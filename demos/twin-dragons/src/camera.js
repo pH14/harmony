@@ -4,8 +4,8 @@ export function resumeFollowing(camera) {
     targets: new Map(), follow: true, focus: null });
 }
 
-export function resetRetreat(camera) {
-  for (const target of camera.targets.values()) target.behind = 0;
+export function resetRetreat(camera, activeRoom = null) {
+  for (const [room, target] of camera.targets) if (room !== activeRoom) target.behind = 0;
 }
 
 export function trackingGoal(held, point, points, now, progress, retreatMs = 1500) {
