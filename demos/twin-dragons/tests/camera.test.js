@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resumeFollowing, trackingGoal } from "../src/camera.js";
+import { resumeFollowing, resetRetreat, trackingGoal } from "../src/camera.js";
 
 test("following a selected level clears the previous camera's interaction holds", () => {
   const camera = { follow: false, manual: 10000, held: 3000, only: 1,
@@ -38,4 +38,12 @@ test("stale sprites cannot prevent the camera following a real retreat", () => {
   const held = { goal, behind: 100 };
   const points = [{ x: 992, y: 100, stale: true }, { x: 992, y: 100, stale: true }];
   assert.equal(trackingGoal(held, back, points, 2000, (p) => p.x), back);
+});
+
+test("suspending camera updates discards retreat evidence in every room", () => {
+  const goal = { x: 1000, y: 100 }, back = { x: 200, y: 100 };
+  const held = { goal, behind: 100 }, other = { behind: 200 };
+  resetRetreat({ targets: new Map([[0, held], [1, other]]) });
+  assert.equal(other.behind, 0);
+  assert.equal(trackingGoal(held, back, [], 3300, (p) => p.x), goal);
 });

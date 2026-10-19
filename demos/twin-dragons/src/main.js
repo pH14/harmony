@@ -8,7 +8,7 @@ import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { Swarm, ghosts, trailRoom, MOTION_STRIDE } from "./swarm.js";
-import { resumeFollowing, trackingGoal } from "./camera.js";
+import { resumeFollowing, resetRetreat, trackingGoal } from "./camera.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, GRID_CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
@@ -676,6 +676,7 @@ function updateCamera(now) {
   const dt = Math.min(0.1, camera.last ? (now - camera.last) / 1000 : 0);
   camera.last = now;
   document.querySelector(".map-wrap").dataset.camera = camera.focus ? "focus" : camera.follow ? "follow" : "idle";
+  if (!ready || branchPreview || camera.focus || !camera.follow || paused || camera.held > now || camera.manual > now) resetRetreat(camera);
   if (!ready || branchPreview) return;
   const smooth = (seconds) => (reducedMotion.matches ? 1 : 1 - Math.exp(-dt / seconds));
   if (camera.focus) {
@@ -696,9 +697,9 @@ function updateCamera(now) {
   const t = now - camera.introStart;
   const scale = camera.introDone ? 1 : t < 1500 ? INTRO_SCALE : INTRO_SCALE + (1 - INTRO_SCALE) * ease(Math.min(1, (t - 1500) / 800));
   if (!camera.introDone && t >= 2300) camera.introDone = true;
-  if (reducedMotion.matches && now - camera.jumped < 2000) return;
-  camera.jumped = now;
-  if (camera.pinned == null) {
+  const steer = !reducedMotion.matches || now - camera.jumped >= 2000;
+  if (steer) camera.jumped = now;
+  if (steer && camera.pinned == null) {
     const room = followRoom(now);
     if (room != null) {
       setRoom(room, true);
@@ -711,7 +712,7 @@ function updateCamera(now) {
     const held = camera.targets.get(room);
     const point = trackingGoal(held, frontier(room), swarmRooms.get(room) || [], now,
       (point) => cameraProgress(room, point), CAMERA_RETREAT_MS);
-    if (!point) continue;
+    if (!point || !steer) continue;
     const c = mapCanvas(room, point);
     if (!c) continue;
     const view = roomView(room, c);
