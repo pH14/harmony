@@ -37,7 +37,7 @@ use crate::chain::{Chain, Hit, Point, Shared};
 use crate::history::{FaultHistory, HistoryReceipt};
 use crate::target::{
     ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultSnapshot,
-    FaultStop, ObservationCheckpoint, SdkDecoder, standing_windows,
+    FaultStop, ObservationCheckpoint, SdkDecoder, action_delta, standing_windows,
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
@@ -377,44 +377,52 @@ pub fn service_factory() -> ServiceFactory {
     })
 }
 
-fn branch_config(
-    windows: ActionWindows,
-    inherited: &[StandingWindow],
-    actions: &[FaultAction],
-) -> Result<ServiceConfig, Box<dyn Error>> {
-    let mut standing = inherited.to_vec();
-    standing.extend(standing_windows(windows, actions)?);
-    Ok(ServiceConfig {
-        local_services: vec![process_proto::debug::NAMESPACE],
-        identity: SERVICE_IDENTITY.to_vec(),
-        configuration: encode_configuration(
-            &encode_windows(&standing)?,
-            &coverage_windows(windows, actions)?,
-        )?,
-    })
+struct ActionPlan {
+    handler: StandingHandler,
+    coverage_schedule: CoverageSchedule,
+    deadline: u64,
 }
 
-fn coverage_windows(
-    windows: ActionWindows,
-    actions: &[FaultAction],
-) -> Result<Vec<CoverageWindow>, String> {
-    actions
-        .iter()
-        .zip(windows.iter(actions))
-        .map(|(action, window)| window.map(|(start, end)| (start, end, action.coverage_quantum)))
-        .collect()
-}
+impl ActionPlan {
+    fn compile(
+        windows: ActionWindows,
+        inherited: &[StandingWindow],
+        actions: &[FaultAction],
+    ) -> Result<Self, Box<dyn Error>> {
+        let mut standing = inherited.to_vec();
+        let mut coverage = Vec::with_capacity(actions.len());
+        let mut deadline = windows.root_seal;
+        for (action, window) in actions.iter().zip(windows.iter(actions)) {
+            let (start, end) = window?;
+            standing.extend(action_delta(*action, (start, end)).standing);
+            coverage.push((start, end, action.coverage_quantum));
+            deadline = end;
+        }
+        let configuration = encode_configuration(&encode_windows(&standing)?, &coverage)?;
+        let rows = coverage
+            .iter()
+            .map(|&(start, end, quantum)| (start, end, u64::from(quantum.get())))
+            .collect();
+        let coverage_schedule =
+            CoverageSchedule::new(environment::channel::DEFAULT_COVERAGE_QUANTUM, rows)?;
+        Ok(Self {
+            handler: StandingHandler(Arc::new(StandingPlan {
+                configuration,
+                windows: standing,
+                coverage,
+            })),
+            coverage_schedule,
+            deadline,
+        })
+    }
 
-fn branch_coverage_schedule(
-    windows: ActionWindows,
-    actions: &[FaultAction],
-) -> Result<CoverageSchedule, String> {
-    let rows = coverage_windows(windows, actions)?
-        .into_iter()
-        .map(|(start, end, quantum)| (start, end, u64::from(quantum.get())))
-        .collect();
-    CoverageSchedule::new(environment::channel::DEFAULT_COVERAGE_QUANTUM, rows)
-        .map_err(|error| error.to_string())
+    fn service_config(&self) -> ServiceConfig {
+        ServiceConfig {
+            local_services: vec![process_proto::debug::NAMESPACE],
+            identity: SERVICE_IDENTITY.to_vec(),
+            configuration: self.handler.0.configuration.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -892,10 +900,10 @@ impl FaultTarget {
         }
         let (progress, observation) = with_live(&self.config, |live| {
             let (snapshot, at) = live.session.snapshot().map_err(|e| e.to_string())?;
-            let standing = branch_config(live.windows, &live.inherited, self.actions())
+            let plan = ActionPlan::compile(live.windows, &live.inherited, self.actions())
                 .map_err(|e| e.to_string())?;
-            let service =
-                debug_configuration(&standing.configuration, message).map_err(|e| e.to_string())?;
+            let service = debug_configuration(plan.handler.configuration(), message)
+                .map_err(|e| e.to_string())?;
             let mut handler =
                 DebugHandler::decode(&service.configuration).map_err(|error| error.to_string())?;
             live.cursor.invalidate();
@@ -905,7 +913,7 @@ impl FaultTarget {
                     service,
                     Vec::new(),
                     Vec::new(),
-                    Some(branch_coverage_schedule(live.windows, self.actions())?),
+                    Some(plan.coverage_schedule),
                 )
                 .map_err(|e| e.to_string())?;
             live.session
@@ -2061,9 +2069,11 @@ impl Live {
                     )
                 });
             }
-            self.branch(last, prefix)?;
+            let plan = ActionPlan::compile(self.windows, &self.inherited, prefix)
+                .map_err(|error| format!("branch configuration: {error}"))?;
+            self.branch(last, &plan)?;
             let (mut observation, sealed) =
-                self.run_action(prefix, index, last.moment, RunKind::Rebuild)?;
+                self.run_action(&plan, last.moment, RunKind::Rebuild)?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
@@ -2135,9 +2145,10 @@ impl Live {
         };
         let mut next = history.actions();
         next.push(action);
-        self.branch(parent, &next)?;
-        let (mut observation, sealed) =
-            self.run_action(&next, history.len(), parent.moment, kind)?;
+        let plan = ActionPlan::compile(self.windows, &self.inherited, &next)
+            .map_err(|error| format!("branch configuration: {error}"))?;
+        self.branch(parent, &plan)?;
+        let (mut observation, sealed) = self.run_action(&plan, parent.moment, kind)?;
         let receipt = if let Some((snap, moment)) = sealed {
             let receipt =
                 self.capture_sealed_receipt(snap, history.receipt(), action, &mut observation)?;
@@ -2149,11 +2160,9 @@ impl Live {
         Ok((observation, receipt))
     }
 
-    fn branch(&mut self, parent: Point, actions: &[FaultAction]) -> Result<(), String> {
-        let config = branch_config(self.windows, &self.inherited, actions)
-            .map_err(|error| format!("branch configuration: {error}"))?;
-        let coverage_schedule = branch_coverage_schedule(self.windows, actions)
-            .map_err(|error| format!("branch coverage schedule: {error}"))?;
+    fn branch(&mut self, parent: Point, plan: &ActionPlan) -> Result<(), String> {
+        let config = plan.service_config();
+        let coverage_schedule = plan.coverage_schedule.clone();
         let branch_started = started();
         self.cursor.invalidate();
         let result = self.session.branch_with_service(
@@ -2177,22 +2186,18 @@ impl Live {
 
     fn run_action(
         &mut self,
-        actions: &[FaultAction],
-        index: usize,
+        plan: &ActionPlan,
         from: u64,
         kind: RunKind,
     ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
-        let (_, deadline) = self.windows.window(actions, index)?;
         self.horizons_run = self.horizons_run.saturating_add(1);
         let run_started = started();
-        let config = branch_config(self.windows, &self.inherited, actions)
-            .map_err(|error| format!("decision handler configuration: {error}"))?;
-        let mut handler = StandingHandler::from_configuration(&config.configuration)
-            .map_err(|error| format!("decision handler: {error}"))?;
-        let stop = match run_with_service_decisions(self.session.as_mut(), deadline, &mut handler) {
-            Ok(stop) => stop,
-            Err(error) => return Err(self.abandon("run", error.as_ref())),
-        };
+        let mut handler = plan.handler.clone();
+        let stop =
+            match run_with_service_decisions(self.session.as_mut(), plan.deadline, &mut handler) {
+                Ok(stop) => stop,
+                Err(error) => return Err(self.abandon("run", error.as_ref())),
+            };
         let runs = match kind {
             RunKind::New => &mut self.telemetry.new,
             RunKind::Rebuild => &mut self.telemetry.rebuild,
@@ -2374,6 +2379,21 @@ mod tests {
         LocalIndex,
         extent::{extent_len, read_extent, write_extent},
     };
+
+    fn test_branch_config(
+        windows: ActionWindows,
+        inherited: &[StandingWindow],
+        actions: &[FaultAction],
+    ) -> Result<ServiceConfig, Box<dyn Error>> {
+        Ok(ActionPlan::compile(windows, inherited, actions)?.service_config())
+    }
+
+    fn test_coverage_schedule(
+        windows: ActionWindows,
+        actions: &[FaultAction],
+    ) -> Result<CoverageSchedule, Box<dyn Error>> {
+        Ok(ActionPlan::compile(windows, &[], actions)?.coverage_schedule)
+    }
 
     #[test]
     fn snapshot_memory_charge_counts_owned_assertions_beside_shared_history() {
@@ -2645,6 +2665,12 @@ mod tests {
 
     thread_local! {
         static AFTER_RUN_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
+    }
+
+    type PlannedBranch = (ServiceConfig, Option<CoverageSchedule>);
+
+    thread_local! {
+        static PLANNED_BRANCHES: RefCell<Option<Vec<PlannedBranch>>> = const { RefCell::new(None) };
     }
 
     #[derive(Debug, Default)]
@@ -2942,12 +2968,17 @@ mod tests {
         fn branch_with_service(
             &mut self,
             snapshot: SnapId,
-            _: ServiceConfig,
+            config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
-            _: Option<CoverageSchedule>,
+            coverage: Option<CoverageSchedule>,
         ) -> Result<(), Box<dyn Error>> {
             self.branch_calls += 1;
+            PLANNED_BRANCHES.with(|branches| {
+                if let Some(branches) = branches.borrow_mut().as_mut() {
+                    branches.push((config, coverage));
+                }
+            });
             if self.hash.is_some() {
                 self.current = snapshot.0;
                 if let Some(history) = self.histories.get(&snapshot.0) {
@@ -3494,7 +3525,7 @@ mod tests {
         assert_eq!(first.vtime.0, crate::target::SUPERVISOR_TICK_NANOS);
         assert_eq!(
             installed,
-            &branch_config(live.windows, &[], &actions).unwrap()
+            &test_branch_config(live.windows, &[], &actions).unwrap()
         );
         let question = Question::with_request_id(7, STANDING_NAMESPACE, Vec::new()).unwrap();
         let expected = StandingHandler::from_configuration(&installed.configuration)
@@ -3505,7 +3536,7 @@ mod tests {
             panic!("the installed standing service must answer");
         };
         assert_eq!(first.answer.0, expected.encode());
-        let previous = branch_config(live.windows, &[], &actions[..1]).unwrap();
+        let previous = test_branch_config(live.windows, &[], &actions[..1]).unwrap();
         let previous = StandingHandler::from_configuration(&previous.configuration)
             .unwrap()
             .respond(first.vtime.0, &question)
@@ -5613,7 +5644,7 @@ mod tests {
                 snap: SnapId(1),
                 moment: 7,
             },
-            &[action],
+            &ActionPlan::compile(live.windows, &live.inherited, &[action]).unwrap(),
         )
         .unwrap();
         assert_eq!(live.cursor.decoder.as_ref().unwrap().offset(), 2);
@@ -5676,7 +5707,9 @@ mod tests {
         let mut importer = publishing_live(&index, namespace, SnapId(1), [17; 32]);
         let at = importer.find_path(receipt.path(), 1).unwrap().unwrap();
         let parent = importer.chain.point(at);
-        importer.branch(parent, &[action, action]).unwrap();
+        let plan =
+            ActionPlan::compile(importer.windows, &importer.inherited, &[action, action]).unwrap();
+        importer.branch(parent, &plan).unwrap();
         assert!(importer.chain.pending_observation_checkpoint(at).is_none());
         assert!(importer.chain.observation_checkpoint(at).is_some());
         assert_eq!(importer.cursor.decoder.as_ref().unwrap().offset(), 1);
@@ -6302,7 +6335,7 @@ mod tests {
                     snap: SnapId(1),
                     moment: 0,
                 },
-                &[],
+                &ActionPlan::compile(live.windows, &live.inherited, &[]).unwrap(),
             )
             .unwrap_err();
         assert!(error.starts_with(WATCHDOG_CUTOFF));
@@ -6328,7 +6361,7 @@ mod tests {
 
     #[test]
     fn debug_service_is_portable_and_root_identity_includes_saved_state() {
-        let standing = branch_config(ActionWindows { root_seal: 1000 }, &[], &[]).unwrap();
+        let standing = test_branch_config(ActionWindows { root_seal: 1000 }, &[], &[]).unwrap();
         let message = process_proto::debug::Message {
             id: 9,
             operation: process_proto::debug::Operation::Input,
@@ -6923,6 +6956,273 @@ mod tests {
         assert_eq!(target.watchdog_cutoffs(), 0);
     }
 
+    fn reference_plan(
+        windows: ActionWindows,
+        inherited: &[StandingWindow],
+        actions: &[FaultAction],
+    ) -> (ServiceConfig, CoverageSchedule) {
+        let mut standing = inherited.to_vec();
+        let mut rows = Vec::new();
+        for (index, action) in actions.iter().enumerate() {
+            let window = windows.window(actions, index).unwrap();
+            standing.extend(action_delta(*action, window).standing);
+            rows.push((window.0, window.1, u64::from(action.coverage_quantum.get())));
+        }
+        let encoded = encode_windows(&standing).unwrap();
+        let mut configuration = u32::try_from(encoded.len()).unwrap().to_le_bytes().to_vec();
+        configuration.extend_from_slice(&encoded);
+        for &(start, end, quantum) in &rows {
+            configuration.extend_from_slice(&start.to_le_bytes());
+            configuration.extend_from_slice(&end.to_le_bytes());
+            configuration.extend_from_slice(&u16::try_from(quantum).unwrap().to_le_bytes());
+        }
+        (
+            ServiceConfig {
+                local_services: vec![process_proto::debug::NAMESPACE],
+                identity: SERVICE_IDENTITY.to_vec(),
+                configuration,
+            },
+            CoverageSchedule::new(environment::channel::DEFAULT_COVERAGE_QUANTUM, rows).unwrap(),
+        )
+    }
+
+    #[test]
+    fn compiled_prefix_plans_preserve_exact_service_bytes_and_quantums() {
+        use crate::target::{SUPERVISOR_TICK_NANOS, TIMELINE_STEPS};
+        use fault_policy::{DecisionClass, Fault, ParkTarget, Span, process_target};
+        use std::num::NonZeroU16;
+
+        let ticks = |value| NonZeroU16::new(value).unwrap();
+        let root = ActionWindows { root_seal: 1_000 };
+        let inherited = [StandingWindow {
+            class: DecisionClass::Process.as_u16(),
+            target: process_target(9, &Fault::ProcEventKill { rarity: 5 }),
+            start: 17,
+            end: u64::MAX,
+        }];
+        let actions = [
+            FaultAction::new(FaultOperation::Wait(ticks(2)), ticks(64)),
+            FaultAction::new(FaultOperation::Kill(3, ticks(3)), ticks(8)),
+            FaultAction::new(
+                FaultOperation::EventKill {
+                    node: 4,
+                    rarity: 7,
+                    ticks: ticks(1),
+                },
+                ticks(32768),
+            ),
+            FaultAction::new(
+                FaultOperation::EventPark {
+                    node: 5,
+                    edges: 13,
+                    hold_us: 7_000,
+                    ticks: ticks(4),
+                    target: ParkTarget::new(8, 16),
+                },
+                ticks(1),
+            ),
+            FaultAction::new(FaultOperation::Pause(6, ticks(5)), ticks(1024)),
+            FaultAction::new(FaultOperation::Restart(7, ticks(8)), ticks(2)),
+            FaultAction::new(FaultOperation::Hook(99, ticks(1)), ticks(16)),
+        ];
+        let ends = [0, 2, 5, 6, 10, 15, 23, 24];
+        let moment = |ticks| root.root_seal + ticks * SUPERVISOR_TICK_NANOS;
+        for depth in 0..=actions.len() {
+            TIMELINE_STEPS.with(|steps| steps.set(0));
+            let plan = ActionPlan::compile(root, &inherited, &actions[..depth]).unwrap();
+            assert_eq!(TIMELINE_STEPS.with(std::cell::Cell::get), depth);
+            assert_eq!(plan.deadline, moment(ends[depth]));
+            let (expected_config, expected_schedule) =
+                reference_plan(root, &inherited, &actions[..depth]);
+            assert_eq!(plan.service_config(), expected_config);
+            assert_eq!(plan.coverage_schedule.encode(), expected_schedule.encode());
+            let mut direct = plan.handler.clone();
+            assert!(Arc::ptr_eq(&plan.handler.0, &direct.0));
+            let mut decoded =
+                StandingHandler::from_configuration(&expected_config.configuration).unwrap();
+            let standing = Question::with_request_id(1, STANDING_NAMESPACE, Vec::new()).unwrap();
+            let quantum = Question::with_request_id(
+                2,
+                environment::channel::SERVICE_COVERAGE_QUANTUM,
+                1_u64.to_le_bytes().to_vec(),
+            )
+            .unwrap();
+            for at in [
+                999,
+                1_000,
+                moment(2) - 1,
+                moment(2),
+                moment(5),
+                moment(6),
+                moment(10),
+                moment(15),
+                moment(17),
+                moment(23),
+                moment(24),
+            ] {
+                for question in [&standing, &quantum] {
+                    assert_eq!(
+                        direct.respond(at, question).unwrap(),
+                        decoded.respond(at, question).unwrap()
+                    );
+                }
+                assert_eq!(
+                    plan.coverage_schedule.quantum_at(at),
+                    expected_schedule.quantum_at(at)
+                );
+            }
+        }
+        let full = ActionPlan::compile(root, &inherited, &actions).unwrap();
+        assert_eq!(
+            full.handler.0.coverage,
+            [
+                (moment(0), moment(2), ticks(64)),
+                (moment(2), moment(5), ticks(8)),
+                (moment(5), moment(6), ticks(32768)),
+                (moment(6), moment(10), ticks(1)),
+                (moment(10), moment(15), ticks(1024)),
+                (moment(15), moment(23), ticks(2)),
+                (moment(23), moment(24), ticks(16)),
+            ]
+        );
+        let mut expected = inherited.to_vec();
+        for (node, fault, start, end) in [
+            (3, Fault::ProcKill, moment(2), moment(5)),
+            (4, Fault::ProcEventKill { rarity: 7 }, moment(5), u64::MAX),
+            (
+                5,
+                Fault::ProcEventPark {
+                    edges: 13,
+                    hold: Span(7_000_000),
+                    target: ParkTarget::new(8, 16),
+                },
+                moment(6),
+                moment(10),
+            ),
+            (
+                6,
+                Fault::ProcPause(Span(5 * SUPERVISOR_TICK_NANOS)),
+                moment(10),
+                moment(15),
+            ),
+            (7, Fault::ProcRestart, moment(15), moment(17)),
+            (0, Fault::RunHook(99), moment(23), moment(24)),
+        ] {
+            expected.push(StandingWindow {
+                class: DecisionClass::Process.as_u16(),
+                target: process_target(node, &fault),
+                start,
+                end,
+            });
+        }
+        assert_eq!(full.handler.0.windows, expected);
+    }
+
+    #[test]
+    fn compiled_plans_preserve_empty_maximum_roots_and_reject_overflow_and_size_limits() {
+        use crate::target::SUPERVISOR_TICK_NANOS;
+        let action = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
+        let root = ActionWindows {
+            root_seal: u64::MAX,
+        };
+        let empty = ActionPlan::compile(root, &[], &[]).unwrap();
+        assert_eq!(empty.deadline, u64::MAX);
+        assert_eq!(empty.service_config(), reference_plan(root, &[], &[]).0);
+        assert_eq!(
+            empty.coverage_schedule.quantum_at(u64::MAX),
+            environment::channel::DEFAULT_COVERAGE_QUANTUM
+        );
+        let root = ActionWindows {
+            root_seal: u64::MAX - SUPERVISOR_TICK_NANOS,
+        };
+        assert_eq!(
+            ActionPlan::compile(root, &[], &[action]).unwrap().deadline,
+            u64::MAX
+        );
+        assert_eq!(
+            ActionPlan::compile(root, &[], &[action, action])
+                .err()
+                .unwrap()
+                .to_string(),
+            "action timeline overflows guest time"
+        );
+        let limit = (environment::channel::MAX_CHANNEL_BYTES - 14) / 24;
+        let actions = vec![action; limit + 1];
+        let root = ActionWindows { root_seal: 1000 };
+        assert!(ActionPlan::compile(root, &[], &actions[..limit]).is_ok());
+        assert_eq!(
+            ActionPlan::compile(root, &[], &actions)
+                .err()
+                .unwrap()
+                .to_string(),
+            ChannelError::TooLarge.to_string()
+        );
+        let inherited = [StandingWindow {
+            class: 1,
+            target: vec![0; usize::from(u16::MAX) + 1],
+            start: 0,
+            end: u64::MAX,
+        }];
+        assert!(ActionPlan::compile(root, &inherited, &[]).is_err());
+    }
+
+    #[test]
+    fn executed_and_rebuilt_prefixes_compile_once_and_cached_children_do_no_planning() {
+        use crate::target::TIMELINE_STEPS;
+        let actions = [
+            FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into(),
+            FaultOperation::Kill(3, std::num::NonZeroU16::new(3).unwrap()).into(),
+            FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
+        ];
+        let inherited = vec![StandingWindow {
+            class: 1,
+            target: vec![7],
+            start: 0,
+            end: u64::MAX,
+        }];
+        let mut history = FaultHistory::genesis(fixture_genesis()).unwrap();
+        let mut source = scripted_capture_live(vec![[17; 32]; actions.len()], false);
+        source.inherited = inherited.clone();
+        PLANNED_BRANCHES.with(|branches| *branches.borrow_mut() = Some(Vec::new()));
+        for (index, action) in actions.iter().enumerate() {
+            TIMELINE_STEPS.with(|steps| steps.set(0));
+            let (_, receipt) = source.advance(&history, *action, RunKind::New).unwrap();
+            assert_eq!(TIMELINE_STEPS.with(std::cell::Cell::get), index + 1);
+            history = history.push(receipt.unwrap()).unwrap();
+        }
+        let original = PLANNED_BRANCHES.with(|branches| branches.borrow_mut().take().unwrap());
+        for (index, (config, schedule)) in original.iter().enumerate() {
+            let (expected_config, expected_schedule) =
+                reference_plan(source.windows, &inherited, &actions[..=index]);
+            assert_eq!(config, &expected_config);
+            assert_eq!(
+                schedule.as_ref().unwrap().encode(),
+                expected_schedule.encode()
+            );
+        }
+        assert_eq!(original.len(), actions.len());
+        TIMELINE_STEPS.with(|steps| steps.set(0));
+        let parent = history.ancestor(actions.len() - 1).unwrap();
+        let (_, cached) = source
+            .advance(&parent, actions[actions.len() - 1], RunKind::New)
+            .unwrap();
+        assert_eq!(cached.as_ref(), Some(history.receipt()));
+        assert_eq!(TIMELINE_STEPS.with(std::cell::Cell::get), 0);
+        let mut rebuilt = scripted_capture_live(vec![[17; 32]; actions.len()], false);
+        rebuilt.inherited = inherited;
+        PLANNED_BRANCHES.with(|branches| *branches.borrow_mut() = Some(Vec::new()));
+        assert!(
+            rebuilt
+                .ensure_certified_prefix(&history, true)
+                .unwrap()
+                .is_ok()
+        );
+        let reconstruction =
+            PLANNED_BRANCHES.with(|branches| branches.borrow_mut().take().unwrap());
+        assert_eq!(TIMELINE_STEPS.with(std::cell::Cell::get), 6);
+        assert_eq!(reconstruction, original);
+    }
+
     #[test]
     fn coverage_windows_select_the_recorded_action_quantum_and_reject_gaps() {
         let actions = [
@@ -6936,8 +7236,8 @@ mod tests {
             ),
         ];
         let windows = ActionWindows { root_seal: 1_000 };
-        let configuration = branch_config(windows, &[], &actions).unwrap();
-        let schedule = branch_coverage_schedule(windows, &actions).unwrap();
+        let configuration = test_branch_config(windows, &[], &actions).unwrap();
+        let schedule = test_coverage_schedule(windows, &actions).unwrap();
         let mut handler =
             StandingHandler::from_configuration(&configuration.configuration).unwrap();
         let question = Question::with_request_id(
@@ -7006,14 +7306,15 @@ mod tests {
             ticks: std::num::NonZeroU16::new(2).unwrap(),
         })];
         let moment = root.window(&prefix, 0).unwrap().1;
-        let original = branch_config(root, &[], &prefix).unwrap();
+        let original = test_branch_config(root, &[], &prefix).unwrap();
         let active = active_root_windows(&[], root, &prefix, moment).unwrap();
         let payload = encode_root_payload([7; 32], &active, b"snapshot", [9; 32]).unwrap();
         let decoded = decode_root_payload(&payload, [7; 32]).unwrap();
         assert_eq!(decoded.snapshot, b"snapshot");
         assert_eq!(root_standing(&payload).unwrap(), active);
         let continuation =
-            branch_config(ActionWindows { root_seal: moment }, &decoded.standing, &[]).unwrap();
+            test_branch_config(ActionWindows { root_seal: moment }, &decoded.standing, &[])
+                .unwrap();
         let mut original = StandingHandler::from_configuration(&original.configuration).unwrap();
         let mut continuation =
             StandingHandler::from_configuration(&continuation.configuration).unwrap();
@@ -7032,7 +7333,7 @@ mod tests {
         let nested_payload =
             encode_root_payload([7; 32], &nested_active, b"nested", [9; 32]).unwrap();
         let nested = decode_root_payload(&nested_payload, [7; 32]).unwrap();
-        let nested_config = branch_config(
+        let nested_config = test_branch_config(
             ActionWindows {
                 root_seal: nested_moment,
             },
@@ -7053,7 +7354,7 @@ mod tests {
     #[test]
     fn inactive_debug_declares_local_but_active_empty_debug_remains_external_and_validates_status()
     {
-        let config = branch_config(ActionWindows { root_seal: 0 }, &[], &[]).unwrap();
+        let config = test_branch_config(ActionWindows { root_seal: 0 }, &[], &[]).unwrap();
         let factory = service_factory();
         let mut standing = factory(&config).unwrap();
         assert_eq!(
