@@ -123,7 +123,9 @@ Raw `VmState` capture restores logical machine state, not cumulative event
 history. The additional production `ControlServer` path captures and exports
 its full portable snapshot, imports and replays it in a fresh server, then
 compares both complete VMM hashes and the separately preserved history count
-and digest. Capture itself must preserve both. These paths retain distinct
+and digest at READY, DONE and termination. All checkpoints retain absolute
+V-time, and both the READY→DONE and DONE→termination intervals must have positive
+event count and V-time deltas. Capture itself must preserve both. These paths retain distinct
 oracles rather than copying an expected history into the raw VMM fixture.
 
 The exporter retains RAM, encoded raw VM state, raw checkpoint oracles, the
@@ -138,7 +140,17 @@ state hashes, exact guest observations and continuation work, and the composed
 portable path's cumulative event history. The aggregate rejects a changed hash
 or history even if every guest-emitted field agrees. Missing oracles, a repeated
 seed, stable entropy under changed seeds, zero/unequal work, or an unexpected
-terminal outcome refuse qualification.
+terminal outcome refuse qualification. A native planted control changes a
+modeled POST-port write after DONE and restores the instruction before shutdown:
+terminal state and output reconverge with equal count/time, while the terminal
+history digest and composed oracle must distinguish the executions.
+
+X3 registry, artifact identities, receipts and aggregate verdicts use schema 3.
+The raw and composed oracle exports contain all three checkpoints plus both
+work intervals; schema-2 exports/receipts cannot satisfy this extended scope.
+This fixture schema is independent of the production EventHistory and portable
+snapshot versions. Retained older hardware evidence keeps its original scope;
+this extension does not resolve the cross-vendor state counterexample below.
 
 Build and run on Linux x86-64 with Rust's musl target and `musl-gcc`:
 
