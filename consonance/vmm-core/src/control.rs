@@ -9565,6 +9565,7 @@ mod tests {
         inner: MockBackend,
         entered: bool,
         reject_import: bool,
+        arm_restore_boundary: bool,
     }
 
     impl Backend for UsedRestoreRejectBackend {
@@ -9634,7 +9635,11 @@ mod tests {
             state: &vmm_backend::VcpuState,
         ) -> vmm_backend::Result<()> {
             if self.entered {
-                Err(vmm_backend::BackendError::AmdReusedVcpuRestoreUnsafe)
+                Err(if self.arm_restore_boundary {
+                    vmm_backend::BackendError::Arm64ReusedVcpuRestoreUnsafe
+                } else {
+                    vmm_backend::BackendError::AmdReusedVcpuRestoreUnsafe
+                })
             } else {
                 self.inner.validate_restore_state(state)
             }
@@ -9677,6 +9682,7 @@ mod tests {
             inner: MockBackend::new(),
             entered: false,
             reject_import: false,
+            arm_restore_boundary: false,
         };
         // SAFETY: the aligned page remains live and exclusive until after the mock backend is dropped.
         unsafe { backend.map_memory(vmm_backend::Gpa(0), &mut page.0) }.unwrap();
@@ -9685,7 +9691,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "portable import uses mapped snapshot storage")]
     fn portable_import_on_used_backend_validates_for_fresh_replay() {
-        fn build() -> Vmm<UsedRestoreRejectBackend> {
+        fn build(arm_restore_boundary: bool) -> Vmm<UsedRestoreRejectBackend> {
             let mut inner = MockBackend::with_exits([Exit::Common(CommonExit::Idle)]);
             inner.set_policy(&X86Policy::default()).unwrap();
             let mut vmm = Vmm::new(
@@ -9693,6 +9699,7 @@ mod tests {
                     inner,
                     entered: false,
                     reject_import: false,
+                    arm_restore_boundary,
                 },
                 GuestRam::new(RAM).unwrap(),
             );
@@ -9708,8 +9715,13 @@ mod tests {
             vmm
         }
 
-        for mode in [super::RestoreMode::Memcpy, super::RestoreMode::InPlace] {
-            let mut server = ControlServer::new(build(), Box::new(|| Ok(build())));
+        for (arm_restore_boundary, mode) in [false, true].into_iter().flat_map(|arm| {
+            [super::RestoreMode::Memcpy, super::RestoreMode::InPlace].map(|mode| (arm, mode))
+        }) {
+            let mut server = ControlServer::new(
+                build(arm_restore_boundary),
+                Box::new(move || Ok(build(arm_restore_boundary))),
+            );
             server.set_restore_mode(mode);
             assert_eq!(
                 server.handle(&Request::Hello(server_caps())).unwrap(),
@@ -9731,7 +9743,8 @@ mod tests {
                     .unwrap()
                     .backend_mut()
                     .validate_restore_state(&before),
-                Err(vmm_backend::BackendError::AmdReusedVcpuRestoreUnsafe)
+                Err(vmm_backend::BackendError::AmdReusedVcpuRestoreUnsafe
+                    | vmm_backend::BackendError::Arm64ReusedVcpuRestoreUnsafe)
             ));
             let stats_before = server.snapshot_store_stats();
             server.vmm_mut().unwrap().backend_mut().reject_import = true;

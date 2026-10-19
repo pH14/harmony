@@ -649,6 +649,25 @@ register. Both backends and the codec reject nonzero reserved bits. The ignored
 `arm64_hvf_mdccint` hardware test compares guest readback without restore and
 after a fresh VMM restore.
 
+ARM KVM refuses restore after the first attempted guest entry. Updating
+translation registers through `KVM_SET_ONE_REG` does not establish a guest TLB
+or instruction-cache maintenance boundary. A fixed-CPU, fixed-ASID witness with
+an empty dirty bitmap reproduced a stale translation after an abandoned branch;
+dirty-log clearing can incidentally hide that failure. The refusal occurs in
+restore preflight before register writes or the control server's RAM changes.
+The control server falls back to a fresh VM. Portable import checks the saved
+state independently of whether the current VM has already run, so importing a
+snapshot for fresh replay remains supported. Reconfiguring policy never clears
+the used-vCPU latch. This costs fresh-VM creation on ARM KVM replay until an
+explicit in-place maintenance mechanism is qualified.
+
+The live `arm64_restore_translation` regression warms the abandoned mapping,
+drains its page-table writes, confirms a subsequent empty dirty bitmap, checks
+that refusal preserves registers and RAM and permits continuation, and compares
+fresh restore with guest-issued invalidation. The shared register suite reports
+when ARM KVM requires this fresh fallback; HVF continues to exercise in-place
+restore with its explicit maintenance path.
+
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before
 guest RAM or backend state is changed.
@@ -754,8 +773,8 @@ shareability and cacheability fields before changing vCPU state, then writes
 both halves and requires exact readback. KVM rewrites outer-shareable,
 noncacheable inner, and noncanonical outer-cacheable values on write; imported
 records containing those values are rejected before mutation. The ignored
-`guest_gicr_bases_survive_reused_and_fresh_restore` test compares guest MMIO
-readback after uninterrupted execution, an in-place restore, and a cold restore.
+`guest_gicr_bases_survive_restore_with_fresh_fallback` test compares guest MMIO
+readback after uninterrupted execution, restore with fresh fallback, and a cold restore.
 ARM KVM selects VGIC `GICD_IIDR` implementation revision 2 before configuring
 the device and requires exact readback. KVM revisions 2 and 3 return different
 guest-visible `GICR_CTLR` values on the same host, so accepting the host's

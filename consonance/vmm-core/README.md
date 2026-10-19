@@ -371,6 +371,14 @@ and byte-for-byte equality among uninterrupted, save-and-continue, and fresh
 restored continuations. The underlying XSAVE behavior remains tracked in
 [#307](https://github.com/pH14/harmony/issues/307).
 
+ARM KVM also refuses restore after guest entry because its register setters do
+not establish translation-cache maintenance. This refusal reaches the same
+fresh-VM fallback and leaves portable import available on a used backend.
+The live backend witness uses an empty-dirty fixed-ASID detour; the public VMM
+executable-restore witness checks that refusal leaves RAM unchanged and that a
+fresh VM executes the restored bytes. See the backend README for the boundary
+and its performance cost.
+
 ## Architecture boundary
 
 The engine uses only common exits, guest-physical addresses, bytes, and typed
@@ -890,11 +898,12 @@ every threshold unchanged.
 `tests/arm64_executable_restore.rs` promotes the public-VMM experiment in
 [issue #633](https://github.com/pH14/harmony/issues/633) into a registered Linux
 ARM hardware test. It compares guest-authored PL011 bytes for cold A/B,
-uninterrupted B, capture-only B, fresh-restored B, and a warmed reused VM
-alternating A/B executable page contents. A separate RAM-only restoration
+uninterrupted B, capture-only B, fresh-restored B, and a warmed VM
+that refuses in-place snapshot restore before changing RAM, then uses a fresh
+VM to alternate A/B executable page contents. A separate RAM-only restoration
 control avoids CPU restoration as a cache-maintenance confounder. Every
-transition checks that only executable page 0 differs, that full restored RAM
-matches, and that the guest RAM allocation stays in place. The guest loops back
+RAM-only transition checks that only executable page 0 differs, that full
+restored RAM matches, and that the guest RAM allocation stays in place. The guest loops back
 to the same instruction address; no RAM remapping is requested. A portable
 negative control rejects stale, missing and extra observation bytes.
 

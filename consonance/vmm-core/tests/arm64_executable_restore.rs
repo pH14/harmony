@@ -190,19 +190,25 @@ mod live {
             step(&mut reused, A);
         }
         assert_instruction_cache(&mut reused);
-        let address = reused.guest_memory().as_ptr();
         for round in 0..ROUNDS {
             let (expected, image) = if round % 2 == 0 {
                 (B, &ram_b)
             } else {
                 (A, &ram_a)
             };
-            reused
-                .restore_vm_state(&initial)
-                .expect("reused state restore");
+            let before = reused.guest_memory().to_vec();
+            assert!(matches!(
+                reused.restore_snapshot(image, &initial),
+                Err(vmm_core::vmm::VmmError::ContractViolation(message))
+                    if message == format!("restore_vm_state: backend rejected snapshot shape: {}", vmm_backend::BackendError::Arm64ReusedVcpuRestoreUnsafe)
+            ));
+            assert_eq!(reused.guest_memory(), before);
             pinned.verify();
-            restore_memory(&mut reused, image);
-            assert_eq!(reused.guest_memory().as_ptr(), address);
+            let mut replacement = boot(A);
+            replacement
+                .restore_snapshot(image, &initial)
+                .expect("fresh fallback");
+            reused = replacement;
             step(&mut reused, expected);
         }
 
@@ -225,7 +231,7 @@ mod live {
         assert_instruction_cache(&mut reused);
         assert_instruction_cache(&mut direct);
         println!(
-            "ARM_EXECUTABLE_RESTORE cold=pass capture_only=pass fresh=pass reused={ROUNDS} memory_only={ROUNDS} stale=0"
+            "ARM_EXECUTABLE_RESTORE cold=pass capture_only=pass fresh=pass reused_refused_fresh_fallback={ROUNDS} memory_only={ROUNDS} stale=0"
         );
     }
 }
