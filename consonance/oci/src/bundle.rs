@@ -4,6 +4,7 @@ use super::cpio::{CpioError, Writer};
 use super::exact;
 use super::image::{ImageError, Ownership, StagedImage, with_host_read_access};
 use execution_proto::{ExecutionSpec, SpecError, VERSION};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -50,7 +51,8 @@ pub enum BundleError {
     Io(#[from] std::io::Error),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExternalInput {
     pub destination: PathBuf,
     pub data: Vec<u8>,
@@ -103,6 +105,19 @@ pub struct PreparedExecution {
     control_segment: Vec<u8>,
     execution: ExecutionSpec,
     identity: [u8; 32],
+    external_inputs: Vec<ExternalInput>,
+    kvm: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedExecutionRecord {
+    pub version: u32,
+    pub rootfs_segment: Vec<u8>,
+    pub execution: ExecutionSpec,
+    pub external_inputs: Vec<ExternalInput>,
+    pub kvm: bool,
+    pub identity: [u8; 32],
 }
 
 pub struct ArchivedRootfs {
@@ -133,6 +148,108 @@ impl ArchivedRootfs {
 }
 
 impl PreparedExecution {
+    pub fn external_inputs(&self) -> &[ExternalInput] {
+        &self.external_inputs
+    }
+
+    pub fn exposes_kvm(&self) -> bool {
+        self.kvm
+    }
+
+    pub fn record(&self) -> PreparedExecutionRecord {
+        PreparedExecutionRecord {
+            version: 1,
+            rootfs_segment: self.rootfs_segment.clone(),
+            execution: self.execution.clone(),
+            external_inputs: self.external_inputs.clone(),
+            kvm: self.kvm,
+            identity: self.identity,
+        }
+    }
+
+    pub fn from_record(record: PreparedExecutionRecord) -> Result<Self, BundleError> {
+        if record.version != 1 {
+            return Err(BundleError::RootfsArchive(
+                "unsupported prepared execution version".into(),
+            ));
+        }
+        record.execution.validate()?;
+        if !record
+            .execution
+            .env
+            .iter()
+            .any(|entry| entry == "LD_BIND_NOW=1")
+            || !record
+                .execution
+                .env
+                .iter()
+                .any(|entry| entry.starts_with("PATH="))
+        {
+            return Err(BundleError::RootfsArchive(
+                "prepared environment lacks canonical binding policy".into(),
+            ));
+        }
+        let inputs = validate_external_inputs(&record.external_inputs)?;
+        let control_segment =
+            build_control_segment_validated(&record.execution, &inputs, record.kvm)?;
+        let identity =
+            execution_identity(&record.rootfs_segment, &control_segment, &record.execution)?;
+        if identity != record.identity {
+            return Err(BundleError::RootfsArchive(
+                "prepared execution identity differs".into(),
+            ));
+        }
+        let prepared = Self {
+            rootfs_segment: record.rootfs_segment,
+            control_segment,
+            execution: record.execution,
+            identity,
+            external_inputs: record.external_inputs,
+            kvm: record.kvm,
+        };
+        let archive = prepared.archived_rootfs()?;
+        for path in [
+            "/proc",
+            "/dev",
+            "/dev/pts",
+            "/dev/shm",
+            "/sys",
+            "/sys/fs/cgroup",
+            "/run",
+            "/tmp",
+            SUPERVISOR_PATH,
+            EXECUTION_DESTINATION,
+            HARMONY_DEVICE,
+            KERNEL_LOG_DEVICE,
+        ]
+        .into_iter()
+        .chain(inputs.iter().map(|input| input.destination.as_str()))
+        .chain(record.kvm.then_some(KVM_DEVICE))
+        {
+            for ancestor in Path::new(path).ancestors().skip(1) {
+                let relative = ancestor.strip_prefix("/").unwrap().to_string_lossy();
+                if archive
+                    .entries()
+                    .any(|entry| entry.path == relative && entry.mode & 0o170000 == 0o120000)
+                {
+                    return Err(BundleError::MountSymlink {
+                        path: path.to_owned(),
+                    });
+                }
+            }
+            let relative = path.trim_start_matches('/');
+            if archive
+                .entries()
+                .any(|entry| entry.path == relative && entry.mode & 0o170000 == 0o120000)
+            {
+                return Err(BundleError::MountSymlink {
+                    path: path.to_owned(),
+                });
+            }
+        }
+        Ok(prepared)
+    }
+
     pub fn rootfs_segment(&self) -> &[u8] {
         &self.rootfs_segment
     }
@@ -154,8 +271,7 @@ impl PreparedExecution {
         if segment.len() < 18 || segment[..10] != [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 4, 255] {
             return Err(BundleError::RootfsArchive("gzip header".into()));
         }
-        let bytes = miniz_oxide::inflate::decompress_to_vec(&segment[10..segment.len() - 8])
-            .map_err(|error| BundleError::RootfsArchive(format!("deflate: {error:?}")))?;
+        let bytes = inflate_rootfs(&segment[10..segment.len() - 8], 1 << 30)?;
         let trailer = &segment[segment.len() - 8..];
         if trailer[..4] != crc32fast::hash(&bytes).to_le_bytes()
             || trailer[4..] != (bytes.len() as u32).to_le_bytes()
@@ -185,6 +301,12 @@ impl PreparedExecution {
             .map(|byte| format!("{byte:02x}"))
             .collect()
     }
+}
+
+fn inflate_rootfs(bytes: &[u8], limit: usize) -> Result<Vec<u8>, BundleError> {
+    miniz_oxide::inflate::decompress_to_vec_with_limit(bytes, limit).map_err(|error| {
+        BundleError::RootfsArchive(format!("deflate or output limit: {:?}", error.status))
+    })
 }
 
 fn parse_rootfs_archive(bytes: Vec<u8>) -> Result<ArchivedRootfs, BundleError> {
@@ -359,6 +481,8 @@ fn prepare_readable(
         control_segment,
         execution,
         identity,
+        external_inputs: request.external_inputs.clone(),
+        kvm: request.kvm,
     })
 }
 
@@ -1184,6 +1308,57 @@ mod tests {
             validate_external_inputs(&too_large),
             Err(BundleError::ExternalInputBytes { .. })
         ));
+    }
+
+    #[test]
+    fn prepared_record_round_trip_preserves_the_actual_execution() {
+        let launch = LaunchRequest::default()
+            .with_external_inputs(vec![ExternalInput::new("/input/value", b"captured")])
+            .with_kvm();
+        let prepared = prepare(&image(), &launch).unwrap();
+        let record: PreparedExecutionRecord =
+            serde_json::from_slice(&serde_json::to_vec(&prepared.record()).unwrap()).unwrap();
+        let imported = PreparedExecution::from_record(record).unwrap();
+        assert_eq!(prepared, imported);
+        assert_eq!(prepared.initramfs(b"base"), imported.initramfs(b"base"));
+        for change in 0..4 {
+            let mut record = prepared.record();
+            match change {
+                0 => record.version += 1,
+                1 => record.execution.argv.push("changed".into()),
+                2 => record.external_inputs[0].data.push(1),
+                _ => record.rootfs_segment[12] ^= 1,
+            }
+            assert!(PreparedExecution::from_record(record).is_err());
+        }
+    }
+
+    #[test]
+    fn prepared_record_rejects_a_recommitted_mount_alias() {
+        let staged = image();
+        let prepared = prepare(&staged, &LaunchRequest::default()).unwrap();
+        std::os::unix::fs::symlink("/elsewhere", staged.rootfs.join("usr")).unwrap();
+        let mut record = prepared.record();
+        record.rootfs_segment = build_rootfs_segment(&staged.rootfs, &staged.owners).unwrap();
+        record.identity = execution_identity(
+            &record.rootfs_segment,
+            prepared.control_segment(),
+            &record.execution,
+        )
+        .unwrap();
+        assert!(matches!(
+            PreparedExecution::from_record(record),
+            Err(BundleError::MountSymlink { .. })
+        ));
+    }
+
+    #[test]
+    fn archived_rootfs_inflation_stops_at_the_explicit_limit() {
+        let bytes = miniz_oxide::deflate::compress_to_vec(&[7; 4096], 1);
+        assert_eq!(inflate_rootfs(&bytes, 4096).unwrap(), [7; 4096]);
+        let error = inflate_rootfs(&bytes, 1024).unwrap_err().to_string();
+        assert!(error.contains("output limit"));
+        assert!(error.len() < 128);
     }
 
     #[test]

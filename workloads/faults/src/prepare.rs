@@ -65,6 +65,38 @@ fn prepare_staged_with(
     };
     let execution = oci_support::bundle::prepare(staged, &request)?;
     after_archive();
+    let (bundle, vocabulary) = admit_prepared(&execution, supplied, mode)?;
+    Ok(Prepared {
+        vocabulary,
+        bundle,
+        initramfs: execution.initramfs(base),
+    })
+}
+
+pub fn admit_prepared(
+    execution: &oci_support::PreparedExecution,
+    supplied: Option<&str>,
+    mode: ExecutionMode,
+) -> Result<(String, FaultVocabulary), Box<dyn Error>> {
+    if execution.exposes_kvm() {
+        return Err("fault execution cannot expose host KVM".into());
+    }
+    let inputs = execution.external_inputs();
+    let expected = if supplied.is_some() {
+        "/etc/harmony/cli.bundle"
+    } else {
+        SUPERVISOR_BUNDLE
+    };
+    if execution.execution().bundle.as_deref() != Some(expected)
+        || (supplied.is_none() && !inputs.is_empty())
+        || supplied.is_some_and(|text| {
+            inputs.len() != 1
+                || inputs[0].destination != std::path::Path::new(expected)
+                || inputs[0].data != text.as_bytes()
+        })
+    {
+        return Err("prepared supervisor bundle differs from its request".into());
+    }
     let archive = execution.archived_rootfs()?;
     let image = crate::admission::ArchivedImage::new(&archive);
     let admission = image.inspect()?;
@@ -80,11 +112,7 @@ fn prepare_staged_with(
     };
     let vocabulary =
         FaultVocabulary::parse(&bundle)?.with_instrumented_events(admission.instrumented_events());
-    Ok(Prepared {
-        vocabulary,
-        bundle,
-        initramfs: execution.initramfs(base),
-    })
+    Ok((bundle, vocabulary))
 }
 
 #[cfg(test)]
@@ -113,6 +141,32 @@ ready /usr/bin/servicectl endpoint health
         std::fs::create_dir_all(root.join("etc/harmony")).unwrap();
         std::fs::write(root.join(BUNDLE_PATH), BUNDLE).unwrap();
         staged(root.to_path_buf())
+    }
+
+    #[test]
+    fn admitted_prepared_input_checks_the_actual_supervisor_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        let staged = image(root.path());
+        let launch = LaunchRequest::default().with_bundle(SUPERVISOR_BUNDLE);
+        let prepared = oci_support::bundle::prepare(&staged, &launch).unwrap();
+        let (bundle, vocabulary) = admit_prepared(&prepared, None, ExecutionMode::Vm).unwrap();
+        assert_eq!(bundle, BUNDLE);
+        assert_eq!(vocabulary.nodes(), 1);
+        assert!(
+            admit_prepared(
+                &prepared,
+                Some("node changed /bin/other\n"),
+                ExecutionMode::Vm
+            )
+            .is_err()
+        );
+        let changed = oci_support::bundle::prepare(&staged, &launch.with_kvm()).unwrap();
+        assert!(
+            admit_prepared(&changed, None, ExecutionMode::Vm)
+                .unwrap_err()
+                .to_string()
+                .contains("host KVM")
+        );
     }
 
     #[test]
