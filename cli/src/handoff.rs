@@ -132,7 +132,10 @@ impl Record {
         if bytes[payload..] != Sha256::digest(&bytes[..payload])[..] {
             return Err("prepared execution checksum differs from its bytes".into());
         }
-        let record: Self = postcard::from_bytes(&bytes[..payload])?;
+        let (record, remaining): (Self, _) = postcard::take_from_bytes(&bytes[..payload])?;
+        if !remaining.is_empty() {
+            return Err("prepared execution contains trailing record bytes".into());
+        }
         record.accept()
     }
 
@@ -275,7 +278,19 @@ impl Record {
                     if execution.exposes_kvm() {
                         return Err("fault execution cannot expose host KVM".into());
                     }
-                    if execution.execution().bundle.is_some() {
+                    let supervised = request.operation == Operation::Search
+                        || request.actions.is_some()
+                        || !config.nodes.is_empty();
+                    if execution.execution().bundle.is_some() != supervised {
+                        return Err("prepared fault supervision differs from its request".into());
+                    }
+                    if request.operation == Operation::Run
+                        && !config.command.is_empty()
+                        && (request.actions.is_some() || !config.nodes.is_empty())
+                    {
+                        return Err("command overrides cannot be combined with supervised scenarios; set nodes.NAME.command in TOML".into());
+                    }
+                    if supervised {
                         let generated = config.bundle()?;
                         let (text, admitted) = faults_workload::prepare::admit_prepared(
                             execution,
@@ -398,6 +413,134 @@ mod tests {
         record
     }
 
+    fn fault_record(operation: Operation, actions: bool, nodes: bool, supervised: bool) -> Record {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/harmony")).unwrap();
+        fs::write(
+            root.path().join("etc/harmony/bundle"),
+            b"node app /app/service\n",
+        )
+        .unwrap();
+        let image = oci_support::image::StagedImage {
+            rootfs: root.path().to_owned(),
+            owners: Default::default(),
+            config: oci_support::image::RuntimeConfig {
+                cmd: vec!["/app/service".into()],
+                ..Default::default()
+            },
+        };
+        let mut config = crate::adapters::faults::config::Config {
+            backend: Backend::Kvm,
+            ..Default::default()
+        };
+        if nodes {
+            config.nodes.insert(
+                "app".into(),
+                crate::adapters::faults::config::Node {
+                    command: vec!["/app/service".into()],
+                },
+            );
+        }
+        let launch = if supervised {
+            if let Some(bundle) = config.bundle().unwrap() {
+                oci_support::LaunchRequest::default()
+                    .with_bundle("/etc/harmony/cli.bundle")
+                    .with_external_inputs(vec![oci_support::ExternalInput::new(
+                        "/etc/harmony/cli.bundle",
+                        bundle.into_bytes(),
+                    )])
+            } else {
+                oci_support::LaunchRequest::default()
+                    .with_bundle(faults_workload::prepare::SUPERVISOR_BUNDLE)
+            }
+        } else {
+            oci_support::LaunchRequest::default()
+        };
+        let execution = oci_support::bundle::prepare(&image, &launch).unwrap();
+        let request = Request {
+            operation,
+            config: config.shared().unwrap(),
+            actions: actions.then(|| "captured-actions".into()),
+            ..Default::default()
+        };
+        let mut record = Record::new(&request).unwrap();
+        record.kernel = b"captured kernel".to_vec();
+        record.base = b"captured base".to_vec();
+        record.execution = Some(execution.record());
+        if actions {
+            record.inputs.insert("actions".into(), b"[]".to_vec());
+        }
+        record
+    }
+
+    #[test]
+    fn handoff_roundtrips_plain_and_required_supervised_fault_requests() {
+        for (operation, actions, nodes, supervised) in [
+            (Operation::Run, false, false, false),
+            (Operation::Search, false, false, true),
+            (Operation::Run, true, false, true),
+            (Operation::Run, false, true, true),
+        ] {
+            let record = fault_record(operation, actions, nodes, supervised);
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            let (request, prepared) = Record::read(file.path()).unwrap();
+            assert_eq!(request.operation, operation);
+            assert_eq!(prepared.bundle.is_some(), supervised);
+            assert_eq!(prepared.vocabulary.is_some(), supervised);
+            if actions {
+                assert_eq!(fs::read(request.actions.unwrap()).unwrap(), b"[]");
+            }
+            assert_eq!(prepared.kernel, b"captured kernel");
+            assert_eq!(prepared.base, b"captured base");
+        }
+    }
+
+    #[test]
+    fn handoff_rejects_rechecksummed_fault_supervision_mismatches() {
+        for (operation, actions, nodes, supervised) in [
+            (Operation::Search, false, false, false),
+            (Operation::Run, true, false, false),
+            (Operation::Run, false, true, false),
+            (Operation::Run, false, false, true),
+        ] {
+            let record = fault_record(operation, actions, nodes, supervised);
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            assert!(
+                Record::read(file.path())
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("supervision differs")
+            );
+        }
+    }
+
+    #[test]
+    fn handoff_rejects_rechecksummed_bytes_after_a_valid_record() {
+        let record = record();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        record.write(file.path()).unwrap();
+        assert!(Record::read(file.path()).is_ok());
+        let bytes = fs::read(file.path()).unwrap();
+        let payload = &bytes[..bytes.len() - 32];
+        for suffix in [vec![0], postcard::to_allocvec(&record).unwrap()] {
+            let mut changed = payload.to_vec();
+            changed.extend(suffix);
+            let checksum = Sha256::digest(&changed);
+            changed.extend_from_slice(&checksum);
+            fs::write(file.path(), changed).unwrap();
+            assert!(
+                Record::read(file.path())
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("trailing record bytes")
+            );
+        }
+    }
+
     #[test]
     fn handoff_uses_captured_artifacts_and_inputs_after_sources_change() {
         let mut record = record();
@@ -437,7 +580,9 @@ mod tests {
                 _ => request.actions = Some("uncaptured actions".into()),
             }
             record.request = serde_json::to_vec(&request).unwrap();
-            assert!(record.accept().is_err());
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            assert!(Record::read(file.path()).is_err());
         }
     }
 
