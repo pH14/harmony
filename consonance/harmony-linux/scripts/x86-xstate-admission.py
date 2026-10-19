@@ -23,6 +23,9 @@ NATIVE_ARITHMETIC = {"rcpps", "rcpss", "rsqrtps", "rsqrtss", "vrcpps", "vrcpss",
                "vrcpph", "vrcpsh", "vrsqrtph", "vrsqrtsh", "vrcp14pd", "vrcp14ps", "vrcp14sd", "vrcp14ss", "vrcp28pd", "vrcp28ps", "vrcp28sd", "vrcp28ss",
                "vrsqrt14pd", "vrsqrt14ps", "vrsqrt14sd", "vrsqrt14ss", "vrsqrt28pd", "vrsqrt28ps", "vrsqrt28sd", "vrsqrt28ss",
                "fsin", "fcos", "fsincos", "fptan", "fpatan", "f2xm1", "fyl2x", "fyl2xp1"}
+TRANSACTION = {"xbegin", "xend", "xabort", "xtest", "xsusldtrk", "xresldtrk", "xacquire", "xrelease"}
+TRANSACTION_ALIASES = {"xbeginw": "xbegin", "xbeginl": "xbegin"}
+TRANSACTION_ENTRY = {"xbegin", "xacquire"}
 SCOPE = {
     "startup_binding": "LD_BIND_NOW=1-before-every-exec",
     "generated_code": "forbidden",
@@ -333,6 +336,37 @@ def loader_trampoline(instructions, index, targets, predecessors, overlapping):
     return None
 
 
+def hle_prefix(raw, mnemonic, operands):
+    repeat = None
+    lock = False
+    position = 0
+    for value in raw:
+        if value in (0xf2, 0xf3):
+            repeat = value
+        elif value == 0xf0:
+            lock = True
+        elif value not in (0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67) and not 0x40 <= value <= 0x4f:
+            break
+        position += 1
+    if repeat is None or position >= len(raw):
+        return None
+    tokens = (mnemonic + " " + operands).split()
+    prefixes = {"xacquire", "xrelease", "lock", "rep", "repz", "repnz", "repe", "repne", "data16", "addr32"}
+    while tokens and (tokens[0] in prefixes or tokens[0].startswith("rex")):
+        tokens.pop(0)
+    if len(tokens) < 2:
+        return None
+    operation = tokens[0]
+    destination = "".join(tokens[1:]).rsplit(",", 1)[-1]
+    memory = not destination.startswith("$") and (not destination.startswith("%") or ":" in destination)
+    locked = re.fullmatch(r"(?:add|adc|and|btc|btr|bts|cmpxchg|cmpxchg8b|dec|inc|neg|not|or|sbb|sub|xor|xadd|xchg)[bwlq]?", operation)
+    exchange = re.fullmatch(r"xchg[bwlq]?", operation)
+    release_store = repeat == 0xf3 and raw[position] in (0x88, 0x89, 0xc6, 0xc7) and re.fullmatch(r"mov[bwlq]?", operation)
+    if memory and (lock and locked or exchange or release_store):
+        return "xacquire" if repeat == 0xf2 else "xrelease"
+    return None
+
+
 def executable_coverage(data, segments, objdump):
     """Cover mapped executable pages, ELF entries/edges and direct transfers.
 
@@ -379,7 +413,7 @@ def executable_coverage(data, segments, objdump):
             groups.append((previous, code + raw, entries | anchors))
         else:
             groups.append((start, raw, anchors))
-    special_names = SAVE | RESTORE | NATIVE_ARITHMETIC | {"xgetbv"}
+    special_names = SAVE | RESTORE | NATIVE_ARITHMETIC | TRANSACTION | TRANSACTION_ALIASES.keys() | {"xgetbv"}
     special_re = re.compile(r"\b(" + "|".join(sorted(special_names, key=len, reverse=True)) + r")\b")
     pending = {entry for _, _, entries in groups for entry in entries}
     instructions, targets, visited = {}, set(pending), set()
@@ -399,9 +433,14 @@ def executable_coverage(data, segments, objdump):
                     continue
                 ip, raw, mnemonic, operands = match.groups()
                 special = special_re.search(mnemonic + " " + operands)
-                if special:
+                hle = hle_prefix(bytes.fromhex(raw), mnemonic, operands)
+                if hle:
+                    mnemonic = hle
+                elif special and special[1] not in ("xacquire", "xrelease"):
                     mnemonic = special[1]
-                yield {"address": int(ip, 16), "bytes": bytes.fromhex(raw).hex(), "mnemonic": mnemonic, "operands": operands.strip()}
+                elif mnemonic in ("xacquire", "xrelease"):
+                    mnemonic = "ignored-hle-prefix"
+                yield {"address": int(ip, 16), "bytes": bytes.fromhex(raw).hex(), "mnemonic": TRANSACTION_ALIASES.get(mnemonic, mnemonic), "operands": operands.strip()}
 
     while pending:
         entry = min(pending)
@@ -456,7 +495,7 @@ def disassemble(data, segments, objdump):
     predecessors, overlapping = proof_edges(instructions)
     sites = []
     for index, item in enumerate(instructions):
-        if item["mnemonic"] not in SAVE | RESTORE | NATIVE_ARITHMETIC | {"xgetbv"}:
+        if item["mnemonic"] not in SAVE | RESTORE | NATIVE_ARITHMETIC | TRANSACTION | {"xgetbv"}:
             continue
         item = dict(item)
         if item["mnemonic"] == "xgetbv":
@@ -717,9 +756,11 @@ def inventory_initramfs(path, objdump="objdump"):
     return report, contents
 
 
-def verify(report):
+def verify(report, execution_mode="vm"):
     errors = []
     try:
+        if execution_mode not in ("vm", "uml"):
+            raise Rejected("unknown execution mode")
         if any(a["interpreter"] or a["needed"] for a in report["artifacts"].values()):
             loader = report["artifacts"].get(GLIBC_INTERPRETER)
             if not loader or loader["soname"] != "ld-linux-x86-64.so.2":
@@ -736,11 +777,13 @@ def verify(report):
             if any(s["mnemonic"] == "xgetbv" and not s["straightline_ecx_zero"] for s in record["sites"]):
                 raise Rejected(f"unproved XGETBV selector: {name}")
             for site in record["sites"]:
+                if execution_mode == "uml" and site["mnemonic"] in TRANSACTION_ENTRY:
+                    raise Rejected(f"native transaction entry is not admitted for UML: {name}:{site['address']:#x} {site['mnemonic']}")
                 if site["mnemonic"] in SAVE and not site.get("loader_trampoline"):
                     raise Rejected(f"save instruction outside a loader trampoline: {name}:{site['address']:#x} {site['mnemonic']}")
     except (Rejected, OSError, TypeError, KeyError, ValueError, AttributeError) as error:
         errors.append(str(error))
-    report.update(mode="verify", admitted=not errors, errors=errors)
+    report.update(mode="verify", execution_mode=execution_mode, admitted=not errors, errors=errors)
     return not errors
 
 
@@ -750,6 +793,7 @@ def main():
     parser.add_argument("rootfs", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--objdump", default="objdump", help="GNU objdump executable")
+    parser.add_argument("--execution-mode", choices=("vm", "uml"), default="vm")
     args = parser.parse_args()
     try:
         if args.output.resolve().is_relative_to(args.rootfs.resolve()):
@@ -758,7 +802,7 @@ def main():
         report, _ = inspect(args.rootfs, args.objdump)
         success = True
         if args.mode.startswith("verify"):
-            success = verify(report)
+            success = verify(report, args.execution_mode)
     except (Rejected, OSError, ValueError, EOFError, struct.error, subprocess.SubprocessError) as error:
         report = {"version": 1, "mode": args.mode, "admitted": False, "errors": [str(error)]}
         success = False

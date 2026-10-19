@@ -373,8 +373,8 @@ pub fn run(
 mod tests {
     use super::*;
 
-    fn elf(code: &[u8; 4]) -> Vec<u8> {
-        let mut bytes = vec![0; 4101];
+    fn elf(code: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0; 4097 + code.len()];
         bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
         for (offset, value) in [
             (16, 2_u16),
@@ -394,20 +394,32 @@ mod tests {
         }
         bytes[64..68].copy_from_slice(&1_u32.to_le_bytes());
         bytes[68..72].copy_from_slice(&5_u32.to_le_bytes());
-        for (offset, value) in [(72, 4096_u64), (80, 0x1000), (96, 4), (104, 4), (112, 4096)] {
+        for (offset, value) in [
+            (72, 4096_u64),
+            (80, 0x1000),
+            (96, code.len() as u64),
+            (104, code.len() as u64),
+            (112, 4096),
+        ] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
         bytes[120..124].copy_from_slice(&0x6474e551_u32.to_le_bytes());
         bytes[124..128].copy_from_slice(&6_u32.to_le_bytes());
         bytes[260..264].copy_from_slice(&1_u32.to_le_bytes());
-        for (offset, value) in [(264, 6_u64), (272, 0x1000), (280, 4096), (288, 4), (304, 1)] {
+        for (offset, value) in [
+            (264, 6_u64),
+            (272, 0x1000),
+            (280, 4096),
+            (288, code.len() as u64),
+            (304, 1),
+        ] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
         bytes[324..328].copy_from_slice(&3_u32.to_le_bytes());
-        for (offset, value) in [(344, 4100_u64), (352, 1), (368, 1)] {
+        for (offset, value) in [(344, 4096 + code.len() as u64), (352, 1), (368, 1)] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
-        bytes[4096..4100].copy_from_slice(code);
+        bytes[4096..4096 + code.len()].copy_from_slice(code);
         bytes
     }
 
@@ -436,6 +448,176 @@ mod tests {
                 .require_for(ExecutionMode::Uml)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn ordinary_uninstrumented_uml_preparation_refuses_transaction_entry() {
+        for (code, name) in [
+            (&[0xc7, 0xf8, 0, 0, 0, 0, 0xc3][..], "XBEGIN"),
+            (&[0xf2, 0x87, 0, 0xc3][..], "XACQUIRE"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::create_dir(root.path().join("bin")).unwrap();
+            let path = root.path().join("bin/app");
+            fs::write(&path, elf(code)).unwrap();
+            let staged = oci_support::image::StagedImage {
+                rootfs: root.path().to_path_buf(),
+                owners: oci_support::image::Ownership::default(),
+                config: oci_support::image::RuntimeConfig::default(),
+            };
+            let request = oci_support::bundle::LaunchRequest::default();
+            let before = fs::read(&path).unwrap();
+            let vm = prepare_plain_staged(&staged, &request, ExecutionMode::Vm).unwrap();
+            let report =
+                faults_workload::admission::ArchivedImage::new(&vm.archived_rootfs().unwrap())
+                    .inspect()
+                    .unwrap();
+            assert!(!report.instrumented_events());
+            let error = prepare_plain_staged(&staged, &request, ExecutionMode::Uml)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains(name), "{error}");
+            assert_eq!(fs::read(&path).unwrap(), before);
+            fs::write(&path, elf(&[0xf3, 0xa4, 0x90, 0xc3])).unwrap();
+            assert!(prepare_plain_staged(&staged, &request, ExecutionMode::Uml).is_ok());
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    #[ignore = "requires cc and a reviewed x86 UML profile"]
+    fn native_uml_transaction_entry_is_refused_before_launch() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::create_dir(root.path().join("bin"))?;
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../workloads/faults/tests/fixtures/uml_transaction_init.c");
+        let staged = oci_support::image::StagedImage {
+            rootfs: root.path().to_path_buf(),
+            owners: oci_support::image::Ownership::default(),
+            config: oci_support::image::RuntimeConfig::default(),
+        };
+        let request = oci_support::bundle::LaunchRequest::default();
+        let binary = root.path().join("bin/app");
+        let audits = tempfile::tempdir()?;
+        let evidence = std::env::var_os("HARMONY_UML_TRANSACTION_REPORT_DIR").map(PathBuf::from);
+        if let Some(directory) = &evidence {
+            fs::create_dir(directory)?;
+        }
+        for (kind, expected) in [(1, Some("XBEGIN")), (2, Some("XACQUIRE")), (0, None)] {
+            let status = std::process::Command::new("cc")
+                .args([
+                    "-O2",
+                    "-static",
+                    "-nostdlib",
+                    "-ffreestanding",
+                    "-fno-stack-protector",
+                    "-fno-pie",
+                    "-no-pie",
+                    "-Wl,-e,_start",
+                    "-Wl,--build-id=none",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                ])
+                .arg(format!("-DTRANSACTION_KIND={kind}"))
+                .arg(&source)
+                .arg("-o")
+                .arg(&binary)
+                .status()?;
+            assert!(status.success());
+            let bytes = fs::read(&binary)?;
+            assert!(bytes.starts_with(b"\x7fELF"));
+            if let Some(directory) = &evidence {
+                fs::write(directory.join(format!("kind-{kind}.elf")), &bytes)?;
+            }
+            let vm = prepare_plain_staged(&staged, &request, ExecutionMode::Vm)?;
+            let archive = vm.archived_rootfs()?;
+            let inspected = faults_workload::admission::ArchivedImage::new(&archive).inspect()?;
+            assert!(!inspected.instrumented_events());
+            assert!(inspected.scan_passed());
+            let scanner = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../consonance/harmony-linux/scripts/x86-xstate-admission.py");
+            let output = audits.path().join(format!("{kind}.json"));
+            let python = std::process::Command::new("python3")
+                .arg(scanner)
+                .arg("verify")
+                .arg(root.path())
+                .args(["--execution-mode", "uml", "--output"])
+                .arg(&output)
+                .status()?;
+            let audit_bytes = fs::read(output)?;
+            if let Some(directory) = &evidence {
+                fs::write(
+                    directory.join(format!("kind-{kind}-python.json")),
+                    &audit_bytes,
+                )?;
+            }
+            let audit: serde_json::Value = serde_json::from_slice(&audit_bytes)?;
+            assert_eq!(audit["execution_mode"], "uml");
+            assert_eq!(python.success(), expected.is_none(), "{audit}");
+            if expected.is_some() {
+                assert!(
+                    audit["errors"][0]
+                        .as_str()
+                        .unwrap()
+                        .contains("native transaction entry")
+                );
+            }
+            if let Some(name) = expected {
+                let error = prepare_plain_staged(&staged, &request, ExecutionMode::Uml)
+                    .err()
+                    .ok_or("native transaction entry was admitted")?
+                    .to_string();
+                if let Some(directory) = &evidence {
+                    fs::write(directory.join(format!("kind-{kind}-rust.txt")), &error)?;
+                }
+                assert!(error.contains(name), "{error}");
+                assert_eq!(fs::read(&binary)?, bytes);
+                println!("UML_TRANSACTION_REFUSED={name}");
+            } else {
+                prepare_plain_staged(&staged, &request, ExecutionMode::Uml)?;
+                let artifacts = tempfile::tempdir()?;
+                let initramfs = artifacts.path().join("initramfs.cpio.gz");
+                let packer = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../consonance/uml/tests/fixtures/pack_fsgsbase_initramfs.py");
+                assert!(
+                    std::process::Command::new("python3")
+                        .arg(packer)
+                        .arg(&binary)
+                        .arg(&initramfs)
+                        .status()?
+                        .success()
+                );
+                let directory = std::env::var("HARMONY_UML_REVIEWED_PROFILE")?;
+                let profile = uml::Profile::load(Path::new(&directory))?;
+                let work = artifacts.path().join("work");
+                fs::create_dir(&work)?;
+                let mut launch = uml::Launch::new(work);
+                launch.memory_mib = 128;
+                launch.wall_limit = std::time::Duration::from_secs(30);
+                launch.console_tail_bytes = 64 << 10;
+                launch.set_initramfs(&initramfs)?;
+                let exit = uml::Guest::spawn(&launch, &profile)?.wait()?;
+                if let Some(report) = &evidence {
+                    fs::write(report.join("control-console.txt"), &exit.console)?;
+                    fs::write(
+                        report.join("profile.json"),
+                        fs::read(Path::new(&directory).join("profile.json"))?,
+                    )?;
+                }
+                let console = String::from_utf8_lossy(&exit.console);
+                assert_eq!(exit.reason, uml::ExitReason::Exited(0), "{console}");
+                assert!(
+                    console.contains("UML TRANSACTION CONTROL PASS"),
+                    "{console}"
+                );
+                assert!(exit.leftovers.is_empty());
+                assert!(exit.work_removed);
+                println!("UML_TRANSACTION_CONTROL=completed");
+            }
+        }
+        Ok(())
     }
 
     #[test]

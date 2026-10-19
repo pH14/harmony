@@ -172,7 +172,7 @@ def main():
             (args.output / (name + "-candidate.json")).write_text(json.dumps(scans[name][0], indent=2))
         if args.mode == "verify":
             for name in ("platform", "workload"):
-                if not a.verify(scans[name][0]):
+                if not a.verify(scans[name][0], execution_mode="vm"):
                     raise a.Rejected(f"{name} rejected: {scans[name][0]['errors']}")
                 (args.output / (name + "-verification.json")).write_text(json.dumps(scans[name][0], indent=2))
             report["admitted"] = True

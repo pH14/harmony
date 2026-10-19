@@ -72,6 +72,25 @@ pair, artifacts and inputs.
 For User-mode Linux, preparation rejects the scanned hardware entropy and
 CPU-identity instructions even when reviewed. UML runs guest user instructions
 natively, so the VM's hidden feature bits do not protect a guarded call site.
+It also refuses `XBEGIN` and valid `XACQUIRE` instructions before execution,
+including uninstrumented images and reviewed sites. RTM and HLE can abort for
+unmodeled cache, resource and asynchronous conditions; one guest CPU does not
+make their outcome deterministic. The rule applies to both fault-search
+preparation and ordinary application preparation from the archived rootfs.
+It does not add an instruction-review requirement for these sites in VM mode.
+
+The entry-only rule follows Intel's
+[transactional instruction definitions](https://cdrdv2-public.intel.com/671143/334569-sdm-vol-2d.pdf)
+and [asynchronous-abort guidance](https://www.intel.com/content/www/us/en/developer/articles/technical/software-security-guidance/technical-documentation/intel-tsx-asynchronous-abort.html).
+`XEND`, `XABORT`, `XTEST`, `XRELEASE`, `XSUSLDTRK` and `XRESLDTRK` do not start
+a transaction and remain admitted. Outside a transaction, their supporting
+CPUs respectively fault, perform no abort, report inactive, release normally,
+or leave tracking unchanged. This is not a claim that unsupported CPUs execute
+them instead of raising an instruction exception. `XACQUIRE` classification
+requires a valid memory operation, including implicit-lock `XCHG` or a supported
+explicit `LOCK` form; ordinary REP, PAUSE, SSE and `XRELEASE` prefixes remain
+admitted. The scan still requires cooperative control flow and no generated code.
+
 The stub's TSC trap does not trap RDPID or LSL. RDPID returns the host CPU's
 identity, and LSL can read the CPU number from the host GDT segment limit.
 This admission check walks executable loads in the packed image, including

@@ -151,6 +151,7 @@ python3 consonance/harmony-linux/scripts/x86-xstate-admission.py inventory ROOTF
 python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify ROOTFS --output result.json
 python3 consonance/harmony-linux/scripts/x86-xstate-admission.py inventory-initramfs INITRAMFS --output candidate.json
 python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramfs INITRAMFS --output result.json
+python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify ROOTFS --execution-mode uml --output uml-result.json
 ```
 
 `--objdump` selects the disassembler. Inventory discovers every ELF by file
@@ -158,6 +159,17 @@ contents regardless of executable permissions and records file digests, metadata
 symlink targets and every FXSAVE/XSAVE-family instruction site. Verify checks the
 executable properties listed below on that same inventory. It compares nothing
 against a stored digest, so rebuilding an image does not require a new approval.
+Verification records its execution mode. The default is `vm`; all current
+prepared-composition and virtual-time callers explicitly select that KVM mode.
+UML checks must select `--execution-mode uml`, which refuses native transaction
+entry through `XBEGIN` or a valid `XACQUIRE` prefix. Inventory also records the
+related non-entry transactional controls. GNU objdump's `xbeginw` spelling is
+normalized to `xbegin`; ordinary F2/F3 prefixes are not treated as transactions.
+The Rust application preparation path independently applies the same UML rule
+to the exact archived image without requiring instrumentation. Standalone
+`XEND`, `XABORT`, `XTEST`, `XRELEASE` and TSX load-tracking controls do not enter
+transactions and are admitted. Native math and standard libraries retain their
+existing admission and advisory CPU-portability policy.
 Actual launch configuration, kernel, ordered archive composition, ROM and SQL
 inputs are additionally checked by the workload composition checker under
 `workloads/guest-images/`.

@@ -305,7 +305,7 @@ jobs:
           set -euo pipefail
           python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramfs \
             consonance/harmony-linux/build/x86_64/initramfs.cpio.gz \
-            --output virtual-time-evidence/admission.json
+            --execution-mode vm --output virtual-time-evidence/admission.json
           cp consonance/harmony-linux/build/x86_64/runtime-manifest.json \
             virtual-time-evidence/runtime-manifest.json
           timeout -k 10 240 cargo test --locked --release -p vmm-core \
