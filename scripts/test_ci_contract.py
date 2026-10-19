@@ -757,7 +757,7 @@ class HostCompatibilityTests(unittest.TestCase):
                       command)
         self.assertNotIn("cargo test", command)
 
-    def test_direct_export_pass_gate_accepts_colored_nextest_and_rejects_missing_or_skipped(self):
+    def test_direct_export_pass_check_accepts_colored_nextest_and_rejects_missing_or_skipped(self):
         step = next(step for step in self.hosts["macos-arm64"]["steps"]
                     if step.get("name") == "Verify direct extent export copy accounting on Arm64")
         name = "session::live::tests::served_export_writes_once_into_the_allocated_destination"
