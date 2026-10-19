@@ -416,11 +416,12 @@ that acknowledgement. No complete serialized payload buffer or subsequent
 full-extent copy is retained in the child; page payloads still copy once into
 the destination, and metadata and sidecar allocations remain. The loaded-image
 handshake requires matching workers.
-The host image hello is version 4; IMPORT carries a message-local
+The version 4 host image hello identifies both descriptor-table IMPORT and
+transactional execution-endpoint commands. IMPORT carries a message-local
 backing table: U descriptors followed by N ordered (slot, offset, length) rows.
-Versions 1 through 3 are refused; older descriptor-table-only workers lack the
-qualification-aware configuration described under Execution assurance.
-The protocol reference cap is independent of diagnostic sampling limits.
+Versions 1, 2 and 3 are refused because those peers do not share the complete
+current protocol. The protocol reference cap is independent of diagnostic
+sampling limits.
 The parent groups only exact live Segment Arc owners while holding the original
 committed chain clones. File descriptor numbers, allocator-local segment IDs,
 identical bytes and inode metadata do not establish owner identity. Both the
@@ -456,7 +457,8 @@ parser tests force the mismatched bounds independently of kernel behavior. This 
 recover kernel-installed handles that the OS did not return: observed Darwin
 truncation can leave unreported handles, tracked separately from bounded parsing.
 The accepted worker descriptor cap remains unchanged; the version 4 host hello
-identifies the revised import descriptor-table schema.
+identifies both the descriptor-table import schema and the execution-endpoint
+protocol.
 
 On Darwin, every worker frame read uses `recvmsg` with a separate 2048-byte
 control buffer, including header remainders and body bytes. All complete
