@@ -86,6 +86,12 @@ unified features enable the client mock backend. An exact-name PASS assertion
 in the ANSI-stripped `host-tests.log` prevents a skipped or omitted case from satisfying coverage,
 without a second build. This covers real Session extent-copy telemetry without
 requiring a guest hardware run.
+The paired CLI package fixture also verifies that the guarded executable refuses
+frontend commands, mismatched readiness protocols and truncated prepared requests.
+The CLI's shared application tests run through its library target; the reviewed
+UML profile consumer selects that same library test explicitly. Both shipped
+binary entrypoints remain separate, including under all-feature builds.
+
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed
@@ -224,15 +230,15 @@ Every job declares a trigger class.
   consumers keep the 15-minute budget. The separate `C Investigation` job has
   a 35-minute exception for its bounded branch and search continuation under
   sealed-host identity checks.
-  The selected `vmm-backend`, `snapshot-store`, and `consonance-client` Miri
-  checks have a 30-minute exception for interpreted snapshot/register-inventory
-  coverage, the Store's full resident-verification suite, and interpreted client
-  cache tests, respectively. The Store retains its whole
-  library selector, including promotion, fresh corruption checks and retained
-  high-slot/recycled-storage fixtures; that coverage exceeded the 15-minute job
-  budget. Every other Miri matrix target keeps 15 minutes. The registry binds
-  the exact timeout expression, so the extended budget cannot silently cover
-  every variant.
+  The selected `snapshot-store` Miri check has a 45-minute exception for the
+  Store's full resident-verification suite. The selected `vmm-backend` and
+  `consonance-client` Miri checks retain 30-minute exceptions for interpreted
+  snapshot/register-inventory coverage and client cache tests, respectively.
+  The Store retains its whole library selector, including promotion, fresh
+  corruption checks and retained high-slot/recycled-storage fixtures; that
+  coverage exceeded the 30-minute job budget. Every other Miri matrix target
+  keeps 15 minutes. The registry binds the exact timeout expression, so the
+  extended budget cannot silently cover every variant.
   `PR_ARTIFACT_BUILD_BUDGETS` and `PR_EXTENDED_CHECK_BUDGETS` register these
   named exceptions; neither permits a full capability search on pull requests.
 - **`full`** jobs run on a schedule, a manual dispatch, or a path-filtered push
@@ -740,6 +746,17 @@ The host-code-identity Miri target exercises the loader callback's unsafe
 program-header copy with a synthetic record on pull requests that change that
 crate. Its whole library runs in scheduled Consonance analysis.
 
+`Packaged Composition` consumes the language workflow's retained paired CLI and
+exact runtime on x86-64. The release's `Packaged Composition — <Architecture>`
+cells consume the actual CLI and guest archives for Linux x86-64 and Arm64.
+They run the public frontend, completed-command replay and a real search
+worker with an independent per-child KVM trace. Publication needs both release
+cells, so missing hardware or incomplete execution fails the check. The same
+archives are published with per-architecture bounded receipts and diagnostic
+archives; no VMM executable is rebuilt in a qualification consumer. Their
+matrix keeps unmeasured restore, whole-state/history and cross-host relations
+unavailable. See the [cell contract](../scripts/qualification/README.md#packaged-production-host-composition).
+
 The release workflow publishes the CLI, a guest kernel and base initramfs with
 their source-bound runtime manifest,
 a pinned UML profile, and the source SDK for language preparation. Guest, UML
@@ -760,3 +777,8 @@ screenshots. The bounded browser check asserts
 liveness, authentic starts in all 3 levels, exact replay and rooted
 branching, and desktop/phone interactions rather than a specific seed’s game
 progress.
+
+The CLI job lints both the additive all-features graph and the isolated guarded
+host graph (`--no-default-features --features consonance-host`). Ordinary paired
+frontend builds retain the default `frontend` capability. Packaged host producers
+already select the isolated graph on Linux and macOS.

@@ -5,16 +5,17 @@ use super::{
     runs::Manifest,
 };
 use crate::runs::Destination;
+#[cfg(feature = "frontend")]
+use faults_workload::admission::ExecutionMode;
 use faults_workload::{
     Artifacts, FaultVocabulary,
-    admission::ExecutionMode,
     package::{self, SearchStart},
 };
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+#[cfg(feature = "frontend")]
+use std::path::PathBuf;
+use std::{fs, path::Path};
 
+#[cfg(feature = "frontend")]
 pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
     let requested_mode = super::requested_execution_mode(&c);
     let runtime_error = super::config::resolve(&mut c, offline)
@@ -71,6 +72,7 @@ pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
     Ok(if ready { 0 } else { 2 })
 }
 
+#[cfg(feature = "frontend")]
 fn configure(mut c: Config, offline: bool) -> Result<Config> {
     if c.image.is_none() {
         return Err("provide a workload input or configure its build".into());
@@ -106,6 +108,7 @@ fn store_runtime_artifacts(
     Ok(())
 }
 
+#[cfg(feature = "frontend")]
 fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
     let (kernel, base) = crate::runtime::read_pair(&c.runtime())?;
     let generated = c.bundle()?;
@@ -125,7 +128,8 @@ fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
     ))
 }
 
-fn prepare_plain_staged(
+#[cfg(feature = "frontend")]
+pub(crate) fn prepare_plain_staged(
     staged: &oci_support::image::StagedImage,
     request: &oci_support::bundle::LaunchRequest,
     mode: ExecutionMode,
@@ -133,6 +137,7 @@ fn prepare_plain_staged(
     prepare_plain_staged_with(staged, request, mode, || {})
 }
 
+#[cfg(feature = "frontend")]
 fn prepare_plain_staged_with(
     staged: &oci_support::image::StagedImage,
     request: &oci_support::bundle::LaunchRequest,
@@ -175,9 +180,20 @@ pub fn report_code(report: &faults_workload::Report) -> u8 {
     }
 }
 
+#[cfg(feature = "frontend")]
 pub fn search(c: Config, destination: Destination, offline: bool) -> Result<u8> {
     let c = configure(c, offline)?;
     let (artifacts, bundle, vocabulary) = prepare_faults(&c)?;
+    search_prepared(c, destination, artifacts, bundle, vocabulary)
+}
+
+pub fn search_prepared(
+    c: Config,
+    destination: Destination,
+    artifacts: Artifacts,
+    bundle: String,
+    vocabulary: FaultVocabulary,
+) -> Result<u8> {
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "search", Some(bundle), true)?;
     capture_runtime(&mut manifest, &out, &artifacts)?;
@@ -190,10 +206,22 @@ pub fn search(c: Config, destination: Destination, offline: bool) -> Result<u8> 
     finish(&out, &mut manifest, result)
 }
 
+#[cfg(feature = "frontend")]
 pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
+    let saved = crate::runs::Saved::read(
+        &request
+            .selection
+            .as_ref()
+            .ok_or("select a search or branch")?
+            .run,
+    )?;
+    continue_saved(request, saved)
+}
+
+pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Saved) -> Result<u8> {
     let selection = request.selection.ok_or("select a search or branch")?;
-    let parent = crate::runs::locate(&selection.run)?;
-    let original = Manifest::read(&parent)?;
+    let parent = saved.path;
+    let original = Manifest::from_record(saved.manifest)?;
     let resume = request.operation == crate::adapters::Operation::Resume;
     if resume {
         original.record.verify(&parent)?;
@@ -288,6 +316,7 @@ fn search_faults(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "frontend")]
 pub fn run(
     config: Config,
     destination: Destination,
@@ -297,15 +326,44 @@ pub fn run(
     offline: bool,
     command: Vec<String>,
 ) -> Result<u8> {
-    let mut c = configure(config, offline)?;
-    if !command.is_empty() {
-        c.command = command;
-    }
-    if !c.command.is_empty() && (!c.nodes.is_empty() || actions.is_some()) {
-        return Err("command overrides cannot be combined with supervised scenarios; set nodes.NAME.command in TOML".into());
-    }
-    if actions.is_some() || !c.nodes.is_empty() {
-        let (artifacts, bundle, vocabulary) = prepare_faults(&c)?;
+    crate::preparation::execute(crate::adapters::Request {
+        operation: crate::adapters::Operation::Run,
+        config: config.shared()?,
+        destination,
+        actions,
+        repeat,
+        console,
+        offline,
+        command,
+        ..Default::default()
+    })
+}
+
+pub fn run_prepared(
+    c: Config,
+    request: crate::adapters::Request,
+    prepared: crate::handoff::Prepared,
+) -> Result<u8> {
+    let crate::adapters::Request {
+        destination,
+        actions,
+        repeat,
+        console,
+        ..
+    } = request;
+    let execution = prepared
+        .execution
+        .as_ref()
+        .ok_or("missing prepared execution")?;
+    let artifacts = Artifacts {
+        kernel: prepared.kernel.clone(),
+        initramfs: execution.initramfs(&prepared.base),
+    };
+    if let Some(bundle) = prepared.bundle {
+        let vocabulary = prepared
+            .vocabulary
+            .as_ref()
+            .ok_or("missing admitted vocabulary")?;
         let actions = match actions {
             Some(path) => {
                 faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?.actions
@@ -335,17 +393,6 @@ pub fn run(
             "--repeat requires an action scenario; use replay for recorded commands".into(),
         );
     }
-    let stage = tempfile::tempdir()?;
-    let staged =
-        oci_support::image::stage(c.image.as_deref().ok_or("missing image")?, stage.path())?;
-    let prepared = prepare_plain_staged(
-        &staged,
-        &oci_support::bundle::LaunchRequest::new(c.command.clone()),
-        super::execution_mode(c.backend),
-    )?;
-    let (kernel, base) = crate::runtime::read_pair(&c.runtime())?;
-    let initramfs = prepared.initramfs(&base);
-    let artifacts = Artifacts { kernel, initramfs };
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "run", None, true)?;
     capture_runtime(&mut manifest, &out, &artifacts)?;
@@ -369,7 +416,7 @@ pub fn run(
     finish(&out, &mut manifest, result)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
 
@@ -646,6 +693,105 @@ mod tests {
         Ok(())
     }
 
+    fn prepared_fixture_request(
+        execution: &oci_support::PreparedExecution,
+        config: &Config,
+    ) -> Result<crate::package::Request> {
+        Ok(crate::package::Request {
+            operation: if execution.execution().bundle.is_some() {
+                crate::package::Operation::Search
+            } else {
+                crate::package::Operation::Run
+            },
+            config: config.shared()?,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn prepared_fixture_declares_supervised_intent_before_handoff_admission() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::create_dir_all(root.path().join("etc/harmony"))?;
+        fs::write(
+            root.path().join("etc/harmony/bundle"),
+            b"node app /bin/app\n",
+        )?;
+        let image = oci_support::image::StagedImage {
+            rootfs: root.path().to_owned(),
+            owners: Default::default(),
+            config: Default::default(),
+        };
+        for supervised in [false, true] {
+            let launch = if supervised {
+                oci_support::LaunchRequest::default()
+                    .with_bundle(faults_workload::prepare::SUPERVISOR_BUNDLE)
+            } else {
+                oci_support::LaunchRequest::new(vec!["/bin/app".into()])
+            };
+            let execution = oci_support::bundle::prepare(&image, &launch)?;
+            let config = Config {
+                backend: Backend::Kvm,
+                command: if supervised {
+                    Vec::new()
+                } else {
+                    execution.execution().argv.clone()
+                },
+                ..Default::default()
+            };
+            let request = prepared_fixture_request(&execution, &config)?;
+            let mut record = crate::handoff::Record::new(&request)?;
+            record.kernel = b"captured kernel".to_vec();
+            record.base = b"captured base".to_vec();
+            record.execution = Some(execution.record());
+            let file = tempfile::NamedTempFile::new()?;
+            record.write(file.path())?;
+            let (request, prepared) = crate::handoff::Record::read(file.path())?;
+            assert_eq!(
+                request.operation,
+                if supervised {
+                    crate::package::Operation::Search
+                } else {
+                    crate::package::Operation::Run
+                }
+            );
+            assert_eq!(prepared.bundle.is_some(), supervised);
+        }
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn prepared_uml_handoff(
+        execution: &oci_support::PreparedExecution,
+        profile_root: &Path,
+    ) -> Result<(crate::package::Request, crate::handoff::Prepared)> {
+        let profile = uml::Profile::load(profile_root)?;
+        let kernel = profile.directory().join(&profile.profile().executable.name);
+        let base = profile.directory().join(&profile.profile().rootfs.name);
+        let config = Config {
+            image: Some("captured-image".into()),
+            backend: Backend::Uml,
+            kernel: Some(kernel.clone()),
+            base_initramfs: Some(base.clone()),
+            uml_profile: Some(profile_root.to_path_buf()),
+            command: if execution.execution().bundle.is_none() {
+                execution.execution().argv.clone()
+            } else {
+                Vec::new()
+            },
+            ..Default::default()
+        };
+        let request = prepared_fixture_request(execution, &config)?;
+        let mut record = crate::handoff::Record::new(&request)?;
+        record.kernel = fs::read(kernel)?;
+        record.base = fs::read(base)?;
+        record.execution = Some(execution.record());
+        crate::preparation::collect_profile(profile_root, Path::new(""), &mut record.profile)?;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("prepared");
+        record.write(&path)?;
+        crate::handoff::Record::read(&path)
+    }
+
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     #[ignore = "requires cc and a reviewed x86 UML profile"]
@@ -698,6 +844,34 @@ mod tests {
             let inspected = faults_workload::admission::ArchivedImage::new(&archive).inspect()?;
             assert!(!inspected.instrumented_events());
             assert!(inspected.scan_passed());
+            let profile_root = PathBuf::from(std::env::var("HARMONY_UML_REVIEWED_PROFILE")?);
+            fs::create_dir_all(root.path().join("etc/harmony"))?;
+            fs::write(
+                root.path().join(faults_workload::prepare::BUNDLE_PATH),
+                b"node app /bin/app\n",
+            )?;
+            let supervised = oci_support::bundle::prepare(
+                &staged,
+                &oci_support::LaunchRequest::default()
+                    .with_bundle(faults_workload::prepare::SUPERVISOR_BUNDLE),
+            )?;
+            for execution in [&vm, &supervised] {
+                let imported = prepared_uml_handoff(execution, &profile_root);
+                if let Some(name) = expected {
+                    let error = imported
+                        .err()
+                        .ok_or("prepared UML admitted native transaction entry")?
+                        .to_string();
+                    assert!(error.contains(name), "{error}");
+                } else {
+                    imported?;
+                }
+            }
+            if let Some(name) = expected {
+                println!("UML_PREPARED_TRANSACTION_REFUSED={name}");
+            } else {
+                println!("UML_PREPARED_TRANSACTION_CONTROL=admitted");
+            }
             let scanner = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../consonance/harmony-linux/scripts/x86-xstate-admission.py");
             let output = audits.path().join(format!("{kind}.json"));

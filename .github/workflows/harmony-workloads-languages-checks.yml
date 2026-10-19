@@ -112,6 +112,48 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+
+  packaged-composition:
+    name: Packaged Composition
+    needs: [scope, guest, tools]
+    if: needs.scope.outputs.harmony_languages == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: language-cli-tools
+          path: paired-cli
+      - uses: actions/download-artifact@v4
+        with:
+          name: language-guest-runtime
+          path: runtime/x86_64
+      - name: Enable required native composition and package the retained producer bytes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools strace
+          if [[ -c /dev/kvm ]]; then sudo chmod a+rw /dev/kvm; fi
+          tar -C paired-cli -czf cli.tar.gz harmony harmony-consonance-host
+          tar -C runtime -czf runtime.tar.gz x86_64/bzImage x86_64/initramfs-oci.cpio.gz x86_64/runtime-manifest.json
+          musl-gcc -O2 -static -Wl,-z,separate-code -Wall -Wextra -Werror \
+            -o packaged-host-fixture cli/tests/fixtures/packaged-host.c
+      - name: Exercise the packaged CLI and worker
+        run: |
+          python3 scripts/qualify-packaged-host.py --cli-archive cli.tar.gz \
+            --runtime-archive runtime.tar.gz --fixture packaged-host-fixture \
+            --output packaged-composition --evidence-archive packaged-composition-evidence.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: packaged-composition-evidence
+          path: |
+            packaged-composition/receipt.json
+            packaged-composition-evidence.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+
   images:
     name: Language Image — ${{ matrix.name }}
     needs: scope

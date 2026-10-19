@@ -167,10 +167,22 @@ struct Summary<'a> {
     actions: &'a [FaultAction],
 }
 
+#[cfg(feature = "frontend")]
 pub fn shrink(request: Request) -> Result<u8> {
+    let saved = crate::runs::Saved::read(
+        &request
+            .selection
+            .as_ref()
+            .ok_or("select a search or branch")?
+            .run,
+    )?;
+    shrink_saved(request, saved)
+}
+
+pub fn shrink_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> {
     let selection = request.selection.ok_or("select a search or branch")?;
-    let source = crate::runs::locate(&selection.run)?;
-    let original = Manifest::read(&source)?;
+    let source = saved.path;
+    let original = Manifest::from_record(saved.manifest)?;
     original.verify(&source)?;
     if original.bundle.is_none() {
         return Err("shrinking requires a supervised application scenario".into());

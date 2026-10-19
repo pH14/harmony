@@ -27,13 +27,9 @@ impl Default for Consonance {
 }
 use crate::host::Hypervisor;
 use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeMap,
-    fs,
-    io::Read,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{collections::BTreeMap, path::PathBuf};
+#[cfg(feature = "frontend")]
+use std::{fs, io::Read, path::Path, process::Command};
 
 pub const RELEASE: &str = match option_env!("HARMONY_RELEASE_VERSION") {
     Some(tag) => tag,
@@ -60,6 +56,7 @@ pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+#[cfg(feature = "frontend")]
 pub fn data_dir() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("HARMONY_DATA_DIR") {
         return Ok(path.into());
@@ -100,6 +97,7 @@ fn choose_for(c: &Consonance, host: &Hypervisor, linux: bool) -> Result<Backend>
     }
 }
 
+#[cfg(feature = "frontend")]
 pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
     c.backend = choose(c)?;
     eprintln!("backend: {:?}", c.backend);
@@ -139,6 +137,7 @@ pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "frontend")]
 fn select_acquired_runtime(
     c: &mut Consonance,
     directory: &Path,
@@ -156,6 +155,7 @@ fn select_acquired_runtime(
     Ok(())
 }
 
+#[cfg(feature = "frontend")]
 fn select_existing_runtime(
     c: &mut Consonance,
     directories: &[PathBuf],
@@ -220,6 +220,7 @@ fn select_existing_runtime(
     Ok(())
 }
 
+#[cfg(feature = "frontend")]
 fn paired_files(kernel: &Path, base: &Path) -> bool {
     if !kernel.is_file() || !base.is_file() {
         return false;
@@ -230,6 +231,7 @@ fn paired_files(kernel: &Path, base: &Path) -> bool {
     }
 }
 
+#[cfg(feature = "frontend")]
 fn verify_runtime_pair(
     kernel: &Path,
     base: &Path,
@@ -312,30 +314,59 @@ fn verify_runtime_pair(
     })
 }
 
+#[cfg(feature = "frontend")]
 pub fn read_pair(c: &Consonance) -> Result<(Vec<u8>, Vec<u8>)> {
     let kernel_path = c.kernel.as_ref().ok_or("missing kernel")?;
     let base_path = c.base_initramfs.as_ref().ok_or("missing base initramfs")?;
     let kernel = fs::read(kernel_path)?;
     let base = fs::read(base_path)?;
-    if let Some(qualification) = &c.runtime_qualification {
-        if c.backend != Backend::Uml && digest(&kernel) != qualification.kernel_sha256 {
-            return Err(format!(
-                "runtime kernel {} changed after selection",
-                kernel_path.display()
-            )
-            .into());
-        }
-        if digest(&base) != qualification.base_initramfs_sha256 {
-            return Err(format!(
-                "runtime base {} changed after selection",
-                base_path.display()
-            )
-            .into());
-        }
-    }
+    validate_pair_bytes(c, &kernel, &base)?;
     Ok((kernel, base))
 }
 
+pub fn validate_pair_bytes(c: &Consonance, kernel: &[u8], base: &[u8]) -> Result<()> {
+    if let Some(qualification) = &c.runtime_qualification {
+        if c.backend != Backend::Uml && digest(kernel) != qualification.kernel_sha256 {
+            return Err("runtime kernel changed after selection".into());
+        }
+        if digest(base) != qualification.base_initramfs_sha256 {
+            return Err("runtime base changed after selection".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_captured_runtime(
+    c: &Consonance,
+    kernel: &[u8],
+    base: &[u8],
+    manifest: Option<&[u8]>,
+) -> Result<()> {
+    validate_pair_bytes(c, kernel, base)?;
+    if let Some(qualification) = &c.runtime_qualification {
+        let manifest: RuntimeManifest =
+            serde_json::from_slice(manifest.ok_or("qualified prepared runtime has no manifest")?)?;
+        let kernel_name = if std::env::consts::ARCH == "aarch64" {
+            "Image"
+        } else {
+            "bzImage"
+        };
+        if manifest.version != 1
+            || manifest.architecture != std::env::consts::ARCH
+            || manifest.source_digest != SOURCE_DIGEST
+            || manifest.files.get(kernel_name) != Some(&qualification.kernel_sha256)
+            || manifest.files.get("initramfs-oci.cpio.gz")
+                != Some(&qualification.base_initramfs_sha256)
+        {
+            return Err("prepared runtime manifest differs from the selected platform".into());
+        }
+    } else if manifest.is_some() {
+        return Err("custom prepared runtime carries an unexpected manifest".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "frontend")]
 pub fn acquire(kind: &str, isa: &str, offline: bool) -> Result<PathBuf> {
     let version = RELEASE;
     let destination = data_dir()?.join("runtime").join(version).join(kind);
@@ -372,6 +403,7 @@ pub fn acquire(kind: &str, isa: &str, offline: bool) -> Result<PathBuf> {
     Ok(destination)
 }
 
+#[cfg(feature = "frontend")]
 fn unpack_verified(archive: &Path, expected: &str, destination: &Path) -> Result<()> {
     let bytes = fs::read(archive)?;
     if digest(&bytes) != expected {
@@ -393,6 +425,7 @@ fn unpack_verified(archive: &Path, expected: &str, destination: &Path) -> Result
     Ok(())
 }
 
+#[cfg(feature = "frontend")]
 fn fetch(url: &str, path: &Path) -> Result<()> {
     eprintln!("fetching {url}");
     let status = Command::new("curl")
@@ -423,7 +456,7 @@ fn fetch(url: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
 

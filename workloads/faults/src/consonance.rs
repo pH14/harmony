@@ -2979,6 +2979,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             snapshot: SnapId,
+            _: u64,
             config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
@@ -3460,6 +3461,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             _: SnapId,
+            _: u64,
             config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,

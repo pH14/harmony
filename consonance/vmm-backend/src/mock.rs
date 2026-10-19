@@ -392,6 +392,17 @@ impl Backend for MockBackend {
         Ok(())
     }
 
+    fn read_x86_regs(&mut self) -> Result<crate::VcpuRegs> {
+        Ok(self.state.regs)
+    }
+
+    fn read_x86_cpuid_state(&mut self) -> Result<crate::X86CpuidState> {
+        Ok(crate::X86CpuidState {
+            cr4: self.state.sregs.cr4,
+            xcr0: self.state.xcr0,
+        })
+    }
+
     fn save(&mut self) -> Result<VcpuState> {
         let mut state = self.state.clone();
         state.host_core_class = self.host_core_class;

@@ -137,7 +137,7 @@ jobs:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-        run: cargo test --locked -p harmony-cli --bin harmony loaded_reviewed_uml_profile_binds_the_recorded_kernel -- --ignored --nocapture
+        run: cargo test --locked -p harmony-cli --lib loaded_reviewed_uml_profile_binds_the_recorded_kernel -- --ignored --nocapture
       - name: Report guest panics and distinguish setup host failures
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
@@ -214,13 +214,16 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
         run: |
           set -euo pipefail
-          output=$(cargo test --locked -p harmony-cli --bin harmony adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
+          output=$(cargo test --locked -p harmony-cli --lib adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
           printf '%s\n' "$output"
           grep -Fxq 'running 1 test' <<<"$output"
           grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
           grep -Fq 'UML_TRANSACTION_REFUSED=XBEGIN' <<<"$output"
           grep -Fq 'UML_TRANSACTION_REFUSED=XACQUIRE' <<<"$output"
           grep -Fq 'UML_TRANSACTION_CONTROL=completed' <<<"$output"
+          grep -Fq 'UML_PREPARED_TRANSACTION_REFUSED=XBEGIN' <<<"$output"
+          grep -Fq 'UML_PREPARED_TRANSACTION_REFUSED=XACQUIRE' <<<"$output"
+          grep -Fq 'UML_PREPARED_TRANSACTION_CONTROL=admitted' <<<"$output"
       - uses: actions/upload-artifact@v4
         if: always() && matrix.architecture == 'x86_64'
         with:
@@ -235,7 +238,7 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
         run: |
           set -euo pipefail
-          output=$(cargo test --locked -p harmony-cli --bin harmony adapters::faults::workflow::tests::native_xstate_preparation_matches_stronger_checker -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
+          output=$(cargo test --locked -p harmony-cli --lib adapters::faults::workflow::tests::native_xstate_preparation_matches_stronger_checker -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
           printf '%s\n' "$output"
           grep -Fxq 'running 1 test' <<<"$output"
           grep -Eq 'test result: ok\. 1 passed;' <<<"$output"

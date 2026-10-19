@@ -1,22 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::config::Result;
-#[derive(Clone, Debug, clap::Args)]
+#[cfg_attr(feature = "frontend", derive(clap::Args))]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Selection {
-    #[arg(value_name = "NAME")]
+    #[cfg_attr(feature = "frontend", arg(value_name = "NAME"))]
     pub run: String,
-    #[arg(long, help = "Select a numbered finding from the search")]
+    #[cfg_attr(
+        feature = "frontend",
+        arg(long, help = "Select a numbered finding from the search")
+    )]
     pub finding: Option<usize>,
 }
-#[derive(Clone, Debug, Default, clap::Args)]
+#[cfg_attr(feature = "frontend", derive(clap::Args))]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct Point {
-    #[arg(long, help="Select the boundary after this many recorded actions", conflicts_with_all=["rewind", "rewind_time"])]
+    #[cfg_attr(feature = "frontend", arg(long, help="Select the boundary after this many recorded actions", conflicts_with_all=["rewind", "rewind_time"]))]
     pub step: Option<usize>,
-    #[arg(long, help="Move back this many steps from the finding or endpoint", conflicts_with_all=["step", "rewind_time"])]
+    #[cfg_attr(feature = "frontend", arg(long, help="Move back this many steps from the finding or endpoint", conflicts_with_all=["step", "rewind_time"]))]
     pub rewind: Option<usize>,
-    #[arg(long, help="Move back by guest time, rounded to a recorded boundary (e.g. 2s)", conflicts_with_all=["step", "rewind"])]
+    #[cfg_attr(feature = "frontend", arg(long, help="Move back by guest time, rounded to a recorded boundary (e.g. 2s)", conflicts_with_all=["step", "rewind"]))]
     pub rewind_time: Option<String>,
 }
 impl Point {
+    #[cfg(feature = "frontend")]
     pub fn specified(&self) -> bool {
         self.step.is_some() || self.rewind.is_some() || self.rewind_time.is_some()
     }

@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use super::{Operation, Package, Request};
-use crate::{
-    config::{Config, Result},
-    runs::Manifest,
-};
+#[cfg(feature = "frontend")]
+use super::Package;
+use super::{Operation, Request};
+use crate::config::Config;
+use crate::{config::Result, runs::Manifest};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
+#[cfg(feature = "frontend")]
 pub struct Nes;
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
     guest_image: Option<String>,
 }
+#[cfg(feature = "frontend")]
 impl Package for Nes {
     fn name(&self) -> &'static str {
         "nes"
@@ -30,36 +32,7 @@ impl Package for Nes {
         Ok(())
     }
     fn validate_runner(&self, c: &mut Config) -> Result<()> {
-        if c.runner.kind.is_empty() {
-            c.runner.kind = if c.runner.backend.is_some() {
-                "consonance"
-            } else {
-                "quicknes"
-            }
-            .into();
-        }
-        match c.runner.kind.as_str() {
-            "quicknes" => {
-                if c.runner.backend.is_some() {
-                    return Err("quicknes has no virtualization backend".into());
-                }
-            }
-            "consonance" => {
-                if !cfg!(target_os = "linux") {
-                    return Err("the NES Consonance adapter currently requires Linux KVM".into());
-                }
-                if c.runner
-                    .backend
-                    .as_deref()
-                    .is_some_and(|b| b != "auto" && b != "kvm")
-                {
-                    return Err("the NES Consonance adapter currently supports KVM".into());
-                }
-                c.runner.backend = Some("kvm".into());
-            }
-            _ => return Err("NES supports quicknes and consonance runners".into()),
-        }
-        Ok(())
+        validate_runner(c)
     }
     fn semantic_outcome(&self, payload: &serde_json::Value) -> serde_json::Value {
         let mut outcome = payload.clone();
@@ -170,7 +143,7 @@ impl Package for Nes {
             m.save(&out)?;
             let result = (|| {
                 for _ in 0..request.repeat {
-                    let witness = replay(&out, &m, input.clone())?;
+                    let witness = replay::<crate::native::Native>(&out, &m, input.clone())?;
                     record_witness(&mut m, &input, witness, None)?;
                 }
                 Ok(0)
@@ -230,10 +203,149 @@ impl Package for Nes {
         finish(&out, &mut m, result)
     }
 }
-fn replay(path: &Path, m: &Manifest, input: serde_json::Value) -> Result<serde_json::Value> {
+fn validate_runner(c: &mut Config) -> Result<()> {
+    if c.runner.kind.is_empty() {
+        c.runner.kind = if c.runner.backend.is_some() {
+            "consonance"
+        } else {
+            "quicknes"
+        }
+        .into();
+    }
+    match c.runner.kind.as_str() {
+        "quicknes" => {
+            if c.runner.backend.is_some() {
+                return Err("quicknes has no virtualization backend".into());
+            }
+        }
+        "consonance" => {
+            if !cfg!(target_os = "linux") {
+                return Err("the NES Consonance adapter currently requires Linux KVM".into());
+            }
+            if c.runner
+                .backend
+                .as_deref()
+                .is_some_and(|b| b != "auto" && b != "kvm")
+            {
+                return Err("the NES Consonance adapter currently supports KVM".into());
+            }
+            c.runner.backend = Some("kvm".into());
+        }
+        _ => return Err("NES supports quicknes and consonance runners".into()),
+    }
+    Ok(())
+}
+
+pub fn execute_prepared(
+    mut request: Request,
+    mut prepared: crate::handoff::Prepared,
+) -> Result<u8> {
+    validate_runner(&mut request.config)?;
+    let _: Options = toml::Value::Table(request.config.workload.options.clone()).try_into()?;
+    if request.selection.is_some() {
+        return saved_resolved::<crate::native::Guarded>(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        );
+    }
+    if !matches!(request.operation, Operation::Run | Operation::Search) {
+        return Err("unsupported guarded NES operation".into());
+    }
+    let rom = prepared.rom.as_ref().ok_or("missing prepared NES ROM")?;
+    let execution = prepared
+        .execution
+        .as_ref()
+        .ok_or("missing prepared NES guest")?;
+    let run_input = if request.operation == Operation::Run {
+        if !request.command.is_empty() || request.repeat == 0 {
+            return Err("NES requires typed controller inputs and positive repeats".into());
+        }
+        let input: serde_json::Value = serde_json::from_slice(&fs::read(
+            request
+                .actions
+                .as_ref()
+                .ok_or("NES run requires --actions INPUT.json")?,
+        )?)?;
+        if !input["actions"].is_array() {
+            return Err("NES input must contain an actions array".into());
+        }
+        Some(input)
+    } else {
+        None
+    };
+    let out = request.destination.create()?;
+    let mut manifest = Manifest::new(
+        request.config,
+        if run_input.is_some() { "run" } else { "search" },
+    )?;
+    manifest.store(&out, "input", rom)?;
+    manifest.store(&out, "kernel", &prepared.kernel)?;
+    manifest.store(&out, "initramfs", &execution.initramfs(&prepared.base))?;
+    manifest.save(&out)?;
+    let result = if let Some(input) = run_input {
+        (|| {
+            for _ in 0..request.repeat {
+                let witness = replay::<crate::native::Guarded>(&out, &manifest, input.clone())?;
+                record_witness(&mut manifest, &input, witness, None)?;
+            }
+            Ok(0)
+        })()
+    } else {
+        search_prepared(&out, &mut manifest, |options| {
+            #[cfg(target_os = "linux")]
+            {
+                nes_workload::package::search_consonance(
+                    rom,
+                    &prepared.kernel,
+                    execution,
+                    &prepared.base,
+                    options,
+                    &nes_workload::package::SearchStart::Genesis,
+                )
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = options;
+                Err("the NES guest adapter requires Linux".into())
+            }
+        })
+    };
+    finish(&out, &mut manifest, result)
+}
+
+fn search_prepared(
+    out: &Path,
+    manifest: &mut Manifest,
+    search: impl FnOnce(
+        &nes_workload::package::SearchOptions,
+    ) -> Result<nes_workload::package::SearchEvidence>,
+) -> Result<u8> {
+    manifest.store(out, "search-origin-input.json", br#"{"actions":[]}"#)?;
+    manifest.save(out)?;
+    let options = nes_workload::package::SearchOptions {
+        seed: manifest.config.search.seed,
+        executions: manifest.config.search.executions,
+        workers: consonance_client::placement::CorePool::detect()?
+            .max_workers()
+            .try_into()?,
+        output: out.join("package"),
+        wall_seconds: manifest.config.search.wall_seconds,
+        checkpoint_owner: manifest.checkpoint_owner.clone(),
+    };
+    search(&options).and_then(|evidence| collect_search(out, &options.output, &evidence, manifest))
+}
+
+fn replay<R: crate::native::Runner>(
+    path: &Path,
+    m: &Manifest,
+    input: serde_json::Value,
+) -> Result<serde_json::Value> {
     let rom = fs::read(path.join("artifacts/input"))?;
     if m.config.runner.kind == "quicknes" {
-        return nes_workload::package::replay_native(
+        return R::replay(
             &rom,
             &path.join("artifacts/core"),
             m.artifacts
@@ -260,9 +372,10 @@ fn guest_replay_runtime(path: &Path, manifest: &Manifest) -> Result<(Vec<u8>, Ve
         read_recorded_artifact(path, manifest, "initramfs")?,
     ))
 }
+#[cfg(feature = "frontend")]
 fn saved(request: Request) -> Result<u8> {
-    if matches!(request.operation, Operation::Search | Operation::Resume) {
-        return continue_search(request);
+    if !matches!(request.operation, Operation::Inspect | Operation::Timeline) {
+        return saved_execution::<crate::native::Native>(request);
     }
     let selection = request.selection.ok_or("select an execution")?;
     let path = crate::runs::locate(&selection.run)?;
@@ -336,6 +449,33 @@ fn saved(request: Request) -> Result<u8> {
             }
             Ok(0)
         }
+        _ => Err("unsupported saved NES display operation".into()),
+    }
+}
+#[cfg(feature = "frontend")]
+fn saved_execution<R: crate::native::Runner>(request: Request) -> Result<u8> {
+    let saved =
+        crate::runs::Saved::read(&request.selection.as_ref().ok_or("select an execution")?.run)?;
+    saved_resolved::<R>(request, saved)
+}
+
+fn saved_resolved<R: crate::native::Runner>(
+    request: Request,
+    saved: crate::runs::Saved,
+) -> Result<u8> {
+    if matches!(request.operation, Operation::Search | Operation::Resume) {
+        return continue_resolved_search::<R>(request, saved);
+    }
+    let selection = request.selection.ok_or("select an execution")?;
+    let path = saved.path;
+    let original = saved.manifest;
+    if selection
+        .finding
+        .is_some_and(|finding| finding != 1 || original.payload["finding"] != true)
+    {
+        return Err("finding does not exist in this recording".into());
+    }
+    match request.operation {
         Operation::Replay | Operation::Branch => {
             if request.repeat == 0 {
                 return Err("repeat must be positive".into());
@@ -412,7 +552,7 @@ fn saved(request: Request) -> Result<u8> {
             )?;
             let result = (|| {
                 for _ in 0..request.repeat {
-                    let witness = replay(&out, &m, input.clone())?;
+                    let witness = replay::<R>(&out, &m, input.clone())?;
                     let expected = (request.operation == Operation::Replay)
                         .then_some(&original.payload["witness"]);
                     record_witness(&mut m, &input, witness, expected)?;
@@ -481,11 +621,26 @@ fn rooted_search_start(
     ))
 }
 
-fn continue_search(request: Request) -> Result<u8> {
+#[cfg(all(test, feature = "frontend"))]
+fn continue_search<R: crate::native::Runner>(request: Request) -> Result<u8> {
+    let saved = crate::runs::Saved::read(
+        &request
+            .selection
+            .as_ref()
+            .ok_or("select a search or branch")?
+            .run,
+    )?;
+    continue_resolved_search::<R>(request, saved)
+}
+
+fn continue_resolved_search<R: crate::native::Runner>(
+    request: Request,
+    saved: crate::runs::Saved,
+) -> Result<u8> {
     use nes_workload::package::{SearchOptions, SearchStart};
     let selection = request.selection.ok_or("select a search or branch")?;
-    let parent = crate::runs::locate(&selection.run)?;
-    let original = Manifest::read(&parent)?;
+    let parent = saved.path;
+    let original = saved.manifest;
     original.verify(&parent)?;
     if selection
         .finding
@@ -545,7 +700,7 @@ fn continue_search(request: Request) -> Result<u8> {
     };
     let rom = read_recorded_artifact(&out, &m, "input")?;
     let result = if m.config.runner.kind == "quicknes" {
-        nes_workload::package::search_native(
+        R::search(
             &rom,
             &out.join("artifacts/core"),
             m.artifacts
@@ -624,7 +779,7 @@ fn record_witness(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
     use searcher::search::checkpoint::{
@@ -718,6 +873,114 @@ mod tests {
         );
     }
 
+    struct ResumingNative;
+    impl crate::native::Runner for ResumingNative {
+        fn replay(_: &[u8], _: &Path, _: &str, _: serde_json::Value) -> Result<serde_json::Value> {
+            Err("unexpected replay".into())
+        }
+        fn search(
+            _: &[u8],
+            _: &Path,
+            _: &str,
+            _: &nes_workload::package::SearchOptions,
+            start: &nes_workload::package::SearchStart,
+        ) -> Result<nes_workload::package::SearchEvidence> {
+            let nes_workload::package::SearchStart::Checkpoint { origin_input, .. } = start else {
+                panic!("resume did not load the checkpoint");
+            };
+            assert_eq!(*origin_input, serde_json::json!({"actions":[]}));
+            Err("resume consumer reached the captured genesis".into())
+        }
+    }
+
+    #[test]
+    fn prepared_genesis_search_reaches_resume_with_its_captured_origin() {
+        let directory = tempfile::tempdir().unwrap();
+        let out = directory.path().join("fresh");
+        fs::create_dir(&out).unwrap();
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.store(&out, "input", b"rom").unwrap();
+        manifest.store(&out, "core", b"core").unwrap();
+        let owner = manifest.checkpoint_owner.clone();
+        let result = search_prepared(&out, &mut manifest, |options| {
+            let checkpoints = options.output.join("checkpoints");
+            fs::create_dir_all(&checkpoints)?;
+            let input = br#"{"actions":[]}"#;
+            fs::write(options.output.join("origin-input.json"), input)?;
+            let header = CheckpointHeader {
+                format: SEARCH_CHECKPOINT_FORMAT.into(),
+                checkpoint_owner: owner,
+                reason: "interval".into(),
+                workload_identity_sha256: String::new(),
+                executable_identity: String::new(),
+                campaign_seed: 0,
+                window: 1,
+                archive_entry_limit: 8,
+                memory_budget_mib: None,
+                policies: Default::default(),
+                executions: 1,
+                reserved: 1,
+                admitted: 0,
+                planned_clock: 0,
+            };
+            let mut bytes = postcard::to_allocvec(&header)?;
+            bytes.extend(postcard::to_allocvec(&Vec::<StoredSnapshot>::new())?);
+            bytes.extend_from_slice(&Sha256::digest(&bytes));
+            let name = "000000000001-interval.ckpt";
+            let checkpoint = checkpoints.join(name);
+            fs::write(&checkpoint, bytes)?;
+            let checksum = crate::runs::file_digest(&checkpoint)?;
+            fs::write(
+                checkpoints.join("checkpoints.jsonl"),
+                format!(
+                    "{{\"file\":\"{name}\",\"executions\":1,\"reserved\":1,\"checkpoint_sha256\":\"{checksum}\"}}\n"
+                ),
+            )?;
+            let evidence = nes_workload::package::SearchEvidence {
+                witness_input: input.to_vec(),
+                result: serde_json::to_vec(
+                    &serde_json::json!({"solved":false,"witness":{"victory":false}}),
+                )?,
+            };
+            fs::write(
+                options.output.join("witness-input.json"),
+                &evidence.witness_input,
+            )?;
+            fs::write(options.output.join("result.json"), &evidence.result)?;
+            Ok(evidence)
+        });
+        assert_eq!(finish(&out, &mut manifest, result).unwrap(), 0);
+        let saved = Manifest::read(&out).unwrap();
+        saved.verify(&out).unwrap();
+        assert_eq!(
+            checkpoint_origin_input(&out, &saved).unwrap(),
+            serde_json::json!({"actions":[]})
+        );
+        let resumed = directory.path().join("resumed");
+        let error = continue_search::<ResumingNative>(Request {
+            operation: Operation::Resume,
+            selection: Some(crate::selection::Selection {
+                run: out.display().to_string(),
+                finding: None,
+            }),
+            destination: crate::runs::Destination {
+                out: Some(resumed.clone()),
+                name: None,
+            },
+            ..Default::default()
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("resume consumer reached the captured genesis"),
+            "{error}"
+        );
+        assert!(resumed.exists());
+    }
+
     #[test]
     fn resumed_search_refuses_a_replaced_origin_input() {
         let source = tempfile::tempdir().unwrap();
@@ -780,7 +1043,9 @@ mod tests {
             },
             ..Default::default()
         };
-        let error = continue_search(request).unwrap_err().to_string();
+        let error = continue_search::<crate::native::Native>(request)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("search origin input differs"), "{error}");
         assert!(!destination.exists());
         fs::write(package.join("origin-input.json"), br#"{"actions":[]}"#).unwrap();
@@ -788,6 +1053,57 @@ mod tests {
             checkpoint_origin_input(source.path(), &manifest).unwrap(),
             serde_json::json!({"actions":[]})
         );
+    }
+
+    #[test]
+    fn saved_consumer_keeps_admitted_metadata_and_rechecks_artifact_bytes() {
+        for changed_artifact in [false, true] {
+            let source = tempfile::tempdir().unwrap();
+            let children = tempfile::tempdir().unwrap();
+            let destination = children.path().join("replay");
+            let mut config = Config::default();
+            config.workload.package = "nes".into();
+            config.runner.kind = "quicknes".into();
+            let mut manifest = Manifest::new(config.clone(), "run").unwrap();
+            manifest.store(source.path(), "input", b"rom").unwrap();
+            manifest.payload = serde_json::json!({
+                "witness": {"victory": false}, "repeats": []
+            });
+            manifest.save(source.path()).unwrap();
+            manifest.verify(source.path()).unwrap();
+            let saved = crate::runs::Saved::read(source.path().to_str().unwrap()).unwrap();
+            fs::write(
+                source.path().join("manifest.json"),
+                b"replacement is not JSON",
+            )
+            .unwrap();
+            if changed_artifact {
+                fs::write(source.path().join("artifacts/input"), b"changed ROM").unwrap();
+            }
+            let request = Request {
+                config,
+                operation: Operation::Replay,
+                selection: Some(crate::selection::Selection {
+                    run: source.path().display().to_string(),
+                    finding: None,
+                }),
+                destination: crate::runs::Destination {
+                    out: Some(destination.clone()),
+                    name: None,
+                },
+                ..Default::default()
+            };
+            let error = saved_resolved::<crate::native::Native>(request, saved)
+                .unwrap_err()
+                .to_string();
+            let expected = if changed_artifact {
+                "recorded artifact input has changed"
+            } else {
+                "saved NES repeats disagree"
+            };
+            assert!(error.contains(expected), "{error}");
+            assert!(!destination.exists());
+        }
     }
 
     #[test]

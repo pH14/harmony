@@ -177,6 +177,14 @@ suite uses these checks:
 Each check identifies the behavior it establishes, covers the production path
 where that behavior matters, and includes a representative failing case.
 
+The packaged-host cell separately checks a finite public CLI composition using
+the exact frontend, host and runtime archives. Its nonempty guest readback,
+completed command replay and same-child worker/KVM trace cover production
+routing and execution that separately linked VMM tests do not. Its receipt
+explicitly leaves whole-state/history and unmeasured restore/cross-host
+relations unavailable; passing this cell cannot qualify those relations.
+Required Linux release cells fail on blocked hardware or incomplete execution.
+
 ## Content lints
 
 `scripts/custom-lints.py` checks file name and fixed text patterns: workload

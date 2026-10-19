@@ -1,116 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::{
-    Command, DebugCommand,
-    config::{Config, Execution, Result},
-    runs::{Manifest, locate},
-};
+use crate::config::Result;
+pub use crate::host_identity::*;
 use std::{ffi::OsString, path::PathBuf, process::Command as ProcessCommand};
 #[cfg(target_os = "linux")]
 use std::{fs::File, io};
-
-pub fn strict_host() -> bool {
-    env!("CARGO_BIN_NAME") == "harmony-consonance-host"
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Route {
-    Native,
-    Strict,
-}
-
-fn runner_route(kind: &str) -> Route {
-    if kind == "quicknes" {
-        Route::Native
-    } else {
-        Route::Strict
-    }
-}
-
-fn execution_route(source: &Execution) -> Result<Route> {
-    Ok(runner_route(&source.load()?.runner.kind))
-}
-
-fn saved_route(name: &str) -> Result<Route> {
-    let path = locate(name)?;
-    Ok(runner_route(&Manifest::read(&path)?.config.runner.kind))
-}
-
-pub fn route(command: &Command) -> Result<Route> {
-    match command {
-        Command::Init { .. }
-        | Command::List { .. }
-        | Command::Show { .. }
-        | Command::Diff { .. } => Ok(Route::Native),
-        Command::Check { source, .. } => execution_route(source),
-        Command::Search { source, budget, .. } => {
-            budget.apply(&mut Config::default())?;
-            if let Command::Search {
-                from: Some(saved), ..
-            }
-            | Command::Search {
-                resume: Some(saved),
-                ..
-            } = command
-            {
-                saved_route(saved)
-            } else {
-                execution_route(source)
-            }
-        }
-        Command::Prepare { source, .. } => Ok(runner_route(&source.load()?.runner.kind)),
-        Command::Branch { selection, .. } | Command::Shrink { selection, .. } => {
-            saved_route(&selection.run)
-        }
-        Command::Debug { command } => match command {
-            DebugCommand::Run {
-                source,
-                seed,
-                wall_seconds,
-                ..
-            } => {
-                crate::config::Budget {
-                    seed: *seed,
-                    wall_seconds: *wall_seconds,
-                    executions: None,
-                }
-                .apply(&mut Config::default())?;
-                execution_route(source)
-            }
-            DebugCommand::Replay { selection, .. } => saved_route(&selection.run),
-        },
-        Command::SessionWorker => Ok(Route::Strict),
-    }
-}
-
-pub fn strict_identity() -> Result<String> {
-    #[cfg(target_os = "linux")]
-    {
-        Ok(host_code_identity::sealed_static_executable_identity()?)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Ok(host_code_identity::strict_macos_executable_identity()?)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        Err("Consonance requires a supported immutable host runtime".into())
-    }
-}
-
-pub fn require_strict_host() -> Result<()> {
-    strict_identity().map(|_| ())
-}
-
-pub fn admit_execution(kind: &str) -> Result<()> {
-    match (strict_host(), kind == "consonance") {
-        (true, true) | (false, false) => Ok(()),
-        (true, false) => {
-            Err("the Consonance host cannot execute the native QuickNES runner".into())
-        }
-        (false, true) => Err("Consonance execution requires the packaged strict host".into()),
-    }
-}
 
 fn packaged_host() -> Result<PathBuf> {
     let executable = std::env::current_exe()?;
@@ -123,19 +17,6 @@ fn packaged_host() -> Result<PathBuf> {
         .into());
     }
     Ok(host)
-}
-
-pub fn installed_binary_hint() -> Option<PathBuf> {
-    #[cfg(target_os = "linux")]
-    if strict_host() {
-        let path = PathBuf::from(std::env::args_os().next()?);
-        return (path.is_absolute()
-            && path
-                .file_name()
-                .is_some_and(|name| name == "harmony-consonance-host"))
-        .then_some(path);
-    }
-    std::env::current_exe().ok()
 }
 
 pub fn enter_strict_host() -> Result<u8> {
@@ -164,6 +45,66 @@ pub fn enter_strict_host() -> Result<u8> {
         let _ = (host, arguments);
         Err("Consonance requires a supported immutable host runtime".into())
     }
+}
+
+pub fn enter_prepared_host(request: std::fs::File) -> Result<u8> {
+    use std::os::{fd::AsRawFd, unix::process::CommandExt};
+    let host = packaged_host()?;
+    rustix::io::fcntl_setfd(&request, rustix::io::FdFlags::empty())?;
+    #[cfg(target_os = "linux")]
+    let image = sealed_host(&host)?;
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = ProcessCommand::new(format!("/proc/self/fd/{}", image.as_raw_fd()));
+        command.arg0(host.as_os_str());
+        command
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mut command = ProcessCommand::new(host);
+    let descriptor = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    command
+        .arg("--prepared")
+        .arg(format!("{descriptor}/{}", request.as_raw_fd()));
+    Err(command.exec().into())
+}
+
+pub fn probe_host() -> Result<()> {
+    let status = call_host(&[
+        std::ffi::OsStr::new("--probe"),
+        std::ffi::OsStr::new(crate::runtime::RELEASE),
+        std::ffi::OsStr::new(env!("HARMONY_PLATFORM_SOURCE_DIGEST")),
+    ])?;
+    if status != 0 {
+        return Err("the packaged Consonance host refused runtime admission".into());
+    }
+    Ok(())
+}
+
+fn call_host(arguments: &[&std::ffi::OsStr]) -> Result<u8> {
+    let host = packaged_host()?;
+    #[cfg(target_os = "linux")]
+    let image = sealed_host(&host)?;
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        use std::os::unix::process::CommandExt;
+        let mut command = ProcessCommand::new(format!(
+            "/proc/self/fd/{}",
+            std::os::fd::AsRawFd::as_raw_fd(&image)
+        ));
+        command.arg0(host.as_os_str());
+        command
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mut command = ProcessCommand::new(host);
+    let status = command.args(arguments).status()?;
+    Ok(status
+        .code()
+        .and_then(|code| u8::try_from(code).ok())
+        .unwrap_or(2))
 }
 
 #[cfg(target_os = "linux")]
@@ -219,33 +160,4 @@ fn sealed_host(path: &std::path::Path) -> io::Result<File> {
         ));
     }
     Ok(image)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::Parser;
-
-    #[test]
-    fn recording_route_uses_the_resolved_runner() {
-        let native = crate::Cli::try_parse_from(["harmony", "search", "game.nes"]).unwrap();
-        assert_eq!(route(&native.command).unwrap(), Route::Native);
-
-        let consonance = crate::Cli::try_parse_from([
-            "harmony",
-            "search",
-            "--config-toml",
-            "[workload]\npackage='faults'\ninput='example:local'\n",
-        ])
-        .unwrap();
-        assert_eq!(route(&consonance.command).unwrap(), Route::Strict);
-    }
-
-    #[test]
-    fn display_only_commands_stay_in_the_frontend() {
-        let show = crate::Cli::try_parse_from(["harmony", "show", "saved"]).unwrap();
-        assert_eq!(route(&show.command).unwrap(), Route::Native);
-        let diff = crate::Cli::try_parse_from(["harmony", "diff", "a", "b"]).unwrap();
-        assert_eq!(route(&diff.command).unwrap(), Route::Native);
-    }
 }

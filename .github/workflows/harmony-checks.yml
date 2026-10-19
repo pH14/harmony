@@ -60,6 +60,15 @@ jobs:
           tool: cargo-nextest
       - name: Lint the assembled CLI
         run: cargo clippy -p harmony-cli --all-features --all-targets -- -D warnings
+      - name: Lint the isolated execution capability
+        run: |
+          cargo clippy -p harmony-cli --no-default-features --features consonance-host --bin harmony-consonance-host -- -D warnings
+          cargo tree --locked -p harmony-cli --no-default-features --features consonance-host \
+            --edges normal --prefix none --format '{p}' >host-dependencies.txt
+          if grep -Eq '^(clap|tar) ' host-dependencies.txt; then
+            cat host-dependencies.txt
+            exit 1
+          fi
       - name: Configuration and investigation
         run: cargo nextest run --all-features -p harmony-cli
 
@@ -107,7 +116,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain and musl linker
         run: |
-          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
           rustup target add aarch64-unknown-linux-musl
           sudo apt-get update
@@ -116,6 +125,10 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: harmony-consonance-host-arm64
+      - name: Lint the isolated Arm64 guarded role
+        run: |
+          cargo clippy --locked -p harmony-cli --target aarch64-unknown-linux-musl \
+            --no-default-features --features consonance-host --lib --bin harmony-consonance-host -- -D warnings
       - name: Build both packaged executables
         run: |
           cargo build --locked -p harmony-cli --bin harmony

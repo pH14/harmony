@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pub mod config;
 mod investigate;
-mod prepare;
+#[cfg(feature = "frontend")]
+pub(crate) mod prepare;
 mod runs;
 mod shrink;
 mod terminal;
-mod workflow;
-use super::{Operation, Package, Request};
-use crate::config::{Config, Result};
+pub(crate) mod workflow;
+#[cfg(feature = "frontend")]
+use super::Package;
+use super::{Operation, Request};
+#[cfg(feature = "frontend")]
+use crate::config::Config;
+use crate::config::Result;
+#[cfg(feature = "frontend")]
 use std::path::Path;
 
+#[cfg(feature = "frontend")]
 fn execution_mode(backend: crate::config::Backend) -> faults_workload::admission::ExecutionMode {
     if backend == crate::config::Backend::Uml {
         faults_workload::admission::ExecutionMode::Uml
@@ -18,6 +25,7 @@ fn execution_mode(backend: crate::config::Backend) -> faults_workload::admission
     }
 }
 
+#[cfg(feature = "frontend")]
 fn requested_execution_mode(
     config: &config::Config,
 ) -> config::Result<faults_workload::admission::ExecutionMode> {
@@ -29,7 +37,9 @@ fn requested_execution_mode(
     Ok(execution_mode(backend))
 }
 
+#[cfg(feature = "frontend")]
 pub struct Faults;
+#[cfg(feature = "frontend")]
 impl Package for Faults {
     fn name(&self) -> &'static str {
         "faults"
@@ -117,6 +127,70 @@ impl Package for Faults {
         }
     }
 }
+pub fn execute_prepared(request: Request, mut prepared: crate::handoff::Prepared) -> Result<u8> {
+    let config = config::Config::from_shared(&request.config)?;
+    match request.operation {
+        Operation::Search if request.selection.is_none() => {
+            let execution = prepared
+                .execution
+                .as_ref()
+                .ok_or("missing prepared supervisor")?;
+            let bundle = prepared
+                .bundle
+                .as_ref()
+                .ok_or("search requires a supervisor bundle")?;
+            let vocabulary = prepared
+                .vocabulary
+                .as_ref()
+                .ok_or("search requires admitted vocabulary")?
+                .clone();
+            let artifacts = faults_workload::Artifacts {
+                kernel: prepared.kernel.clone(),
+                initramfs: execution.initramfs(&prepared.base),
+            };
+            workflow::search_prepared(
+                config,
+                request.destination,
+                artifacts,
+                bundle.clone(),
+                vocabulary,
+            )
+        }
+        Operation::Search | Operation::Resume => workflow::continue_saved(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        ),
+        Operation::Run => workflow::run_prepared(config, request, prepared),
+        Operation::Replay => investigate::replay_saved(
+            request.selection.ok_or("select a search or branch")?,
+            request.destination,
+            request.repeat,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        ),
+        Operation::Branch => investigate::branch_saved(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        ),
+        Operation::Shrink => shrink::shrink_saved(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        ),
+        _ => Err("unsupported guarded fault operation".into()),
+    }
+}
+
 pub fn worker() -> Result<u8> {
     use faults_workload::consonance::{SESSION_SERVICE, service_factory};
     consonance_client::session::serve_inherited(|service| {
@@ -125,7 +199,7 @@ pub fn worker() -> Result<u8> {
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
     use crate::config::Backend;

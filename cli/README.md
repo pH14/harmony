@@ -439,21 +439,83 @@ host. A Consonance command refuses an absent or unqualified companion.
 ## Storage and boundaries
 
 The Linux and macOS CLI installations pair `harmony` with
-`harmony-consonance-host` in the same `bin` directory. `harmony` keeps the native
-QuickNES runner and dispatches Consonance commands to the paired host. On Linux,
-it copies the static-musl host into a fresh executable memfd, seals its complete
-contents against writes and resizing, then executes it. The host checks those
+`harmony-consonance-host` in the same `bin` directory. `harmony` owns workload
+builds, language and runtime downloads, OCI staging, native QuickNES and saved-run
+browsing. Search still prepares its input automatically. Consonance execution
+receives a captured prepared request after this work completes. The guarded host
+contains the coordinator and its same-image session worker, including fault,
+NES Consonance, nested KVM and reviewed UML execution. Its dedicated entrypoint
+accepts prepared execution, readiness probes and the internal session-worker
+role; it does not parse the frontend command tree or construct its package
+method table. The shared application library exposes separate frontend and guarded entrypoints;
+NES saved execution selects its native or guarded backend through static generic
+dispatch, so the guarded entrypoint has no native QuickNES callback. Role
+selection uses independent bin entrypoints. The default `frontend` capability
+enables command parsing, package preparation/browsing, runtime acquisition and
+native dispatch; the `harmony` bin requires it. The isolated host build uses
+`--no-default-features --features consonance-host`, omitting those modules and
+the direct clap/tar/compression dependencies used for recipe/download handling.
+OCI archive parsing and compression remain required transitively for independent
+prepared-image admission. Both default and `--all-features` builds preserve
+native frontend behavior; enabling `consonance-host` does not change its role.
+The Linux x86-64 and Arm64 CI jobs lint the isolated guarded role with warnings
+as errors; nested KVM execution remains limited to Linux x86-64, while other
+hosts retain its explicit unsupported-execution refusal. On Linux, it copies
+the static-musl host into a fresh executable memfd, seals its complete contents against writes and resizing, then executes it. The host checks those
 seals, the full loaded ELF bytes (including writable initializers), and its
 executable mappings before it parses a command. On macOS, the paired host is a
 hardened signed executable with the OS-only library constraint and Hypervisor
 entitlement. It checks the kernel-loaded code hash, exact signing policy and
 loaded system images before command dispatch. A missing or invalid host stops
-Consonance commands. The paired host reparses the original command and its
-configuration; the frontend's runner choice cannot authorize a later changed
-recipe. Saved Consonance recordings retain this strict host identity. Native
+Consonance execution and readiness checks. `harmony prepare` performs its build
+outside the guarded host. The frontend checks companion admission before implicit
+preparation, then unlinks the captured request file and execs the host with its
+held read-only descriptor. The execution keeps the command's original PID,
+process group and terminal, including for guest shells. The captured backing
+remains held for the host's lifetime; no request pathname survives the handoff.
+
+The `harmony-prepared-execution-v1` handoff is a self-contained postcard file
+with JSON request metadata and a trailing SHA-256. Its total size is at most
+1 GiB, metadata at most 1 MiB, and a captured UML profile at most 4,096 ordinary
+files. Actions and host scripts are captured in that file as well. The host checks
+the checksum before decoding, requires exactly one fully consumed postcard record,
+rejects another release/platform-source/protocol,
+validates the operation, pinned backend, options and runtime qualification, and
+reconstructs canonical OCI control bytes from the prepared record. It independently
+admits the actual archived application image and supervisor vocabulary. Faults
+supervision must agree with the requested search, captured actions and configured
+nodes; a plain execution cannot discard requested actions or replace supervision.
+Execution-bearing fields are accepted only by operations that consume them:
+actions by Faults/NES runs and branches, guest commands by Faults branches,
+console output by plain Faults runs, and additional budgets by saved searches.
+Raw command overrides must agree with the effective Faults run configuration.
+Saved replay, branch and resume require a selection; incompatible point selectors,
+commands, captures and repeat counts are refused before execution.
+Captured action/script presence must match the request exactly, and ROM payloads
+belong only to fresh NES execution.
+Prepared rootfs inflation is bounded to 1 GiB. Source recipe/image changes after capture
+cannot replace those bytes. Captured UML files are independently loaded through
+the reviewed-profile validator. The temporary profile and captured inputs remain
+owned until execution finishes. Saved execution resolves and verifies its original
+manifest once at host admission. The request must name the same workload package;
+operation and configuration checks then use that resolved configuration. Search
+from a saved source requires a branch. The host carries this manifest and resolved
+path through the operation instead of loading different metadata at dispatch.
+Artifact bytes and workload outcomes are still verified at their existing use
+points; holding metadata does not cache an integrity verdict across operations.
+A prepared request cannot supply replacement artifacts for replay, branching or resume. Saved Consonance recordings
+retain this strict host identity. Native
 QuickNES recordings retain their native loaded-image identity.
 Linux hosts must permit executable memfds; `vm.memfd_noexec=2` prevents
 Consonance execution and produces an explicit error.
+
+The Linux release check exercises the same packaged frontend, sealed host and
+guest runtime archives that publication uses. The bounded fixture emits a
+reviewed readback, replays a completed command, and runs one public search with
+a traced production worker child. This checks those local public paths; it
+does not establish whole-state or history equivalence, restore portability,
+macOS composition or cross-host behavior. The release retains the finite matrix
+and exact artifact digests beside the executable and runtime assets.
 
 The v4 manifest contains the loaded Harmony executable identity, resolved
 workload and runner identities, artifact hashes, parent recording and a
@@ -546,3 +608,13 @@ same dispatch and storage interfaces without application or NES types.
   exercises plain command replay as an unprivileged UML user, rejects planted
   output divergence, and optionally verifies that a reviewed hardware-entropy
   image is refused before launch.
+
+Fresh prepared NES searches persist the canonical genesis input before launching
+the package. Resume verifies that captured artifact against the package origin
+input before admitting its checkpoint; it never reconstructs an omitted origin.
+
+The reviewed x86 UML native transaction fixture also imports VM-accepted prepared
+records through the host handoff, covering both plain and supervised executions.
+XBEGIN/XACQUIRE refusals and a harmless control retain independent admission after
+frontend capture; the existing native control still launches the reviewed UML
+kernel. CI requires every frontend, prepared-boundary and native control witness.
