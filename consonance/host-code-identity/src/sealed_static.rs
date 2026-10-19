@@ -13,8 +13,11 @@ const DOMAIN: &[u8] = b"linux-sealed-static-memfd-elf-sha256-v1\0";
 const IDENTITY_PREFIX: &str = "linux-sealed-static-memfd-elf-sha256-v1:";
 const REQUIRED_SEALS: i32 =
     libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+const PAGE_PRESENT: u64 = 1 << 63;
+const PAGE_SWAPPED: u64 = 1 << 62;
+const PAGE_FILE_OR_SHARED: u64 = 1 << 61;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ExecutableSegment {
     offset: u64,
     mapped_len: u64,
@@ -42,10 +45,14 @@ struct AdmittedMaps {
 #[derive(Clone, Copy, Debug)]
 pub struct SealedStaticExecutableGuard {
     identity: [u8; 32],
-    file_digest: [u8; 32],
     device: u64,
     inode: u64,
     file_len: u64,
+    segment: ExecutableSegment,
+    main: (u64, u64),
+    vdso: (u64, u64),
+    vdso_digest: [u8; 32],
+    vsyscall: bool,
 }
 
 fn denied(message: &'static str) -> io::Error {
@@ -410,13 +417,52 @@ fn hash_main_mapping(
     Ok(())
 }
 
+fn page_unwritten(entry: u64) -> bool {
+    entry & (PAGE_PRESENT | PAGE_SWAPPED) == 0 || entry & PAGE_FILE_OR_SHARED != 0
+}
+
+fn check_code_pages(
+    pagemap: &File,
+    map: &ExecutableMap,
+    page_size: u64,
+    work: &mut GuardBytes,
+) -> io::Result<()> {
+    let mut entries = [0u8; 65536];
+    let mut page = map.start / page_size;
+    let end = map.end / page_size;
+    while page < end {
+        let count = usize::try_from((end - page).min(entries.len() as u64 / 8))
+            .map_err(|_| denied("executable mapping length overflows"))?;
+        let mut transferred = 0;
+        let read = read_exact_counted_at(
+            |bytes, offset| pagemap.read_at(bytes, offset),
+            &mut entries[..count * 8],
+            page * 8,
+            &mut transferred,
+        );
+        work.code_page_entries = work.code_page_entries.saturating_add(transferred / 8);
+        read?;
+        if !entries[..count * 8]
+            .chunks_exact(8)
+            .all(|entry| page_unwritten(u64::from_ne_bytes(entry.try_into().unwrap())))
+        {
+            return Err(denied("live code page was written after it was loaded"));
+        }
+        page += count as u64;
+    }
+    Ok(())
+}
+
 fn hash_vdso(
     digest: &mut Sha256,
     memory: &File,
     map: &ExecutableMap,
     work: &mut GuardBytes,
-) -> io::Result<()> {
-    digest.update((map.end - map.start).to_le_bytes());
+) -> io::Result<[u8; 32]> {
+    let mut alone = Sha256::new();
+    for digest in [&mut *digest, &mut alone] {
+        digest.update((map.end - map.start).to_le_bytes());
+    }
     let mut bytes = [0u8; 65536];
     let mut position = map.start;
     while position < map.end {
@@ -428,11 +474,13 @@ fn hash_vdso(
             position,
             &mut work.live_exec_read_bytes,
         )?;
-        digest.update(&bytes[..count]);
-        work.live_exec_hashed_bytes = work.live_exec_hashed_bytes.saturating_add(count as u64);
+        for digest in [&mut *digest, &mut alone] {
+            digest.update(&bytes[..count]);
+            work.live_exec_hashed_bytes = work.live_exec_hashed_bytes.saturating_add(count as u64);
+        }
         position += count as u64;
     }
-    Ok(())
+    Ok(alone.finalize().into())
 }
 
 fn file_seals(file: &File) -> io::Result<i32> {
@@ -444,14 +492,14 @@ fn file_seals(file: &File) -> io::Result<i32> {
     Ok(seals)
 }
 
-fn measure(
+fn open_sealed_executable(
     admitted: Option<&SealedStaticExecutableGuard>,
-    work: &mut GuardMeasurement,
-) -> io::Result<SealedStaticExecutableGuard> {
+) -> io::Result<(String, File, fs::Metadata)> {
     let path = fs::read_link("/proc/self/exe")?;
     let path = path
         .to_str()
-        .ok_or_else(|| denied("sealed executable path is not UTF-8"))?;
+        .ok_or_else(|| denied("sealed executable path is not UTF-8"))?
+        .to_owned();
     if !path.starts_with("/memfd:") || !path.ends_with(" (deleted)") {
         return Err(denied("host executable is not a sealed memfd"));
     }
@@ -469,18 +517,36 @@ fn measure(
     {
         return Err(denied("sealed executable changed after admission"));
     }
-    let segment = executable_segment(&file, metadata.len(), page_size()?)?;
-    let file_digest = match admitted {
-        Some(admitted) => admitted.file_digest,
-        None => hash_file(&file, metadata.len(), work.bytes.as_mut().unwrap())?,
-    };
+    Ok((path, file, metadata))
+}
+
+fn census(
+    path: &str,
+    metadata: &fs::Metadata,
+    segment: ExecutableSegment,
+    work: &mut GuardMeasurement,
+) -> io::Result<AdmittedMaps> {
     work.image_censuses = work.image_censuses.saturating_add(1);
-    let maps_before = admit_maps(
+    admit_maps(
         &fs::read_to_string("/proc/self/maps")?,
         path,
         metadata.dev(),
         metadata.ino(),
         segment,
+    )
+}
+
+fn measure(work: &mut GuardMeasurement) -> io::Result<SealedStaticExecutableGuard> {
+    let (path, file, metadata) = open_sealed_executable(None)?;
+    let page_size = page_size()?;
+    let segment = executable_segment(&file, metadata.len(), page_size)?;
+    let file_digest = hash_file(&file, metadata.len(), work.bytes.as_mut().unwrap())?;
+    let maps_before = census(&path, &metadata, segment, work)?;
+    check_code_pages(
+        &File::open("/proc/self/pagemap")?,
+        &maps_before.main,
+        page_size,
+        work.bytes.as_mut().unwrap(),
     )?;
     let memory = File::open("/proc/self/mem")?;
     let mut digest = Sha256::new();
@@ -495,7 +561,7 @@ fn measure(
         &maps_before.main,
         work.bytes.as_mut().unwrap(),
     )?;
-    hash_vdso(
+    let vdso_digest = hash_vdso(
         &mut digest,
         &memory,
         &maps_before.vdso,
@@ -505,26 +571,54 @@ fn measure(
     if maps_before.vsyscall {
         update_field(&mut digest, &fs::read("/proc/sys/kernel/osrelease")?);
     }
-    work.image_censuses = work.image_censuses.saturating_add(1);
-    let maps_after = admit_maps(
-        &fs::read_to_string("/proc/self/maps")?,
-        path,
-        metadata.dev(),
-        metadata.ino(),
-        segment,
-    )?;
-    if maps_before.all != maps_after.all {
+    if maps_before.all != census(&path, &metadata, segment, work)?.all {
         return Err(denied(
             "executable mappings changed during identity measurement",
         ));
     }
     Ok(SealedStaticExecutableGuard {
         identity: digest.finalize().into(),
-        file_digest,
         device: metadata.dev(),
         inode: metadata.ino(),
         file_len: metadata.len(),
+        segment,
+        main: (maps_before.main.start, maps_before.main.end),
+        vdso: (maps_before.vdso.start, maps_before.vdso.end),
+        vdso_digest,
+        vsyscall: maps_before.vsyscall,
     })
+}
+
+fn recheck(admitted: &SealedStaticExecutableGuard, work: &mut GuardMeasurement) -> io::Result<()> {
+    let (path, _, metadata) = open_sealed_executable(Some(admitted))?;
+    let maps_before = census(&path, &metadata, admitted.segment, work)?;
+    if (maps_before.main.start, maps_before.main.end) != admitted.main
+        || (maps_before.vdso.start, maps_before.vdso.end) != admitted.vdso
+        || maps_before.vsyscall != admitted.vsyscall
+    {
+        return Err(denied("executable mappings moved after admission"));
+    }
+    check_code_pages(
+        &File::open("/proc/self/pagemap")?,
+        &maps_before.main,
+        page_size()?,
+        work.bytes.as_mut().unwrap(),
+    )?;
+    if hash_vdso(
+        &mut Sha256::new(),
+        &File::open("/proc/self/mem")?,
+        &maps_before.vdso,
+        work.bytes.as_mut().unwrap(),
+    )? != admitted.vdso_digest
+    {
+        return Err(denied("vDSO changed after admission"));
+    }
+    if maps_before.all != census(&path, &metadata, admitted.segment, work)?.all {
+        return Err(denied(
+            "executable mappings changed during identity measurement",
+        ));
+    }
+    Ok(())
 }
 
 impl SealedStaticExecutableGuard {
@@ -538,7 +632,7 @@ impl SealedStaticExecutableGuard {
 
     fn capture_inner(work: &mut GuardMeasurement) -> io::Result<(String, Self)> {
         work.bytes.get_or_insert_default();
-        let admitted = measure(None, work)?;
+        let admitted = measure(work)?;
         let mut text = String::from(IDENTITY_PREFIX);
         const HEX: &[u8; 16] = b"0123456789abcdef";
         for byte in admitted.identity {
@@ -553,15 +647,10 @@ impl SealedStaticExecutableGuard {
     }
 
     pub fn check_measured(self, work: &mut GuardMeasurement) -> io::Result<()> {
-        crate::guard_work::measured(work, |work| self.check_inner(work))
-    }
-
-    fn check_inner(self, work: &mut GuardMeasurement) -> io::Result<()> {
-        work.bytes.get_or_insert_default();
-        if measure(Some(&self), work)?.identity != self.identity {
-            return Err(denied("sealed executable changed after admission"));
-        }
-        Ok(())
+        crate::guard_work::measured(work, |work| {
+            work.bytes.get_or_insert_default();
+            recheck(&self, work)
+        })
     }
 }
 
@@ -772,8 +861,60 @@ mod tests {
         hash_vdso(&mut Sha256::new(), &memory, &map, &mut work).unwrap();
         assert_eq!(
             (work.live_exec_read_bytes, work.live_exec_hashed_bytes),
-            (12, 8)
+            (12, 12)
         );
+    }
+
+    #[test]
+    fn page_provenance_accepts_only_unfaulted_or_file_backed_pages() {
+        assert!(page_unwritten(0));
+        assert!(page_unwritten(PAGE_PRESENT | PAGE_FILE_OR_SHARED | 0x1234));
+        assert!(page_unwritten(PAGE_SWAPPED | PAGE_FILE_OR_SHARED));
+        assert!(!page_unwritten(PAGE_PRESENT));
+        assert!(!page_unwritten(PAGE_PRESENT | 0x1234));
+        assert!(!page_unwritten(PAGE_SWAPPED));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "uses temporary files and positioned OS reads unavailable under Miri isolation"
+    )]
+    fn copied_code_page_is_refused_and_entries_are_counted() {
+        let pages = 9000_u64;
+        let base = 0x40_u64;
+        let file_page = (PAGE_PRESENT | PAGE_FILE_OR_SHARED).to_ne_bytes();
+        let mut pagemap = tempfile::tempfile().unwrap();
+        for _ in 0..base + pages {
+            pagemap.write_all(&file_page).unwrap();
+        }
+        pagemap
+            .write_at(&0_u64.to_ne_bytes(), (base + 3) * 8)
+            .unwrap();
+        let map = ExecutableMap {
+            start: base * 4096,
+            end: (base + pages) * 4096,
+            permissions: "r-xp".into(),
+            offset: 0,
+            device_major: 0,
+            device_minor: 0,
+            inode: 1,
+            path: "fixture".into(),
+        };
+        let mut work = GuardBytes::default();
+        check_code_pages(&pagemap, &map, 4096, &mut work).unwrap();
+        assert_eq!(work.code_page_entries, pages);
+        pagemap
+            .write_at(&PAGE_PRESENT.to_ne_bytes(), (base + pages - 1) * 8)
+            .unwrap();
+        let error = check_code_pages(&pagemap, &map, 4096, &mut work).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(work.code_page_entries, 2 * pages);
+        let short = ExecutableMap {
+            end: (base + pages + 1) * 4096,
+            ..map
+        };
+        assert!(check_code_pages(&pagemap, &short, 4096, &mut GuardBytes::default()).is_err());
     }
 
     #[cfg(target_env = "musl")]
@@ -810,6 +951,75 @@ mod tests {
         assert!(guard.check().is_err());
         drop(mapping);
         guard.check().unwrap();
+    }
+
+    #[cfg(target_env = "musl")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn cached_guard_rejects_code_page_rewritten_with_its_own_bytes() {
+        const CHILD_ENV: &str = "HARMONY_CACHED_GUARD_REWRITE_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new("/proc/self/exe")
+                .args([
+                    "--exact",
+                    "sealed_static::tests::cached_guard_rejects_code_page_rewritten_with_its_own_bytes",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.contains("running 1 test")
+                    && stdout.contains("1 passed"),
+                "{}\nstdout: {stdout}\nstderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let (_, guard) = SealedStaticExecutableGuard::capture().unwrap();
+        guard.check().unwrap();
+        let page = page_size().unwrap();
+        let code = guard.main.0 + page;
+        assert!(code + page <= guard.main.1);
+        let memory = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/proc/self/mem")
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        memory.read_exact_at(&mut byte, code).unwrap();
+        if memory.write_at(&byte, code).is_err() {
+            let address = usize::try_from(code).unwrap() as *mut libc::c_void;
+            let length = usize::try_from(page).unwrap();
+            // SAFETY: address and length name one whole page inside this process's own private code mapping; adding write permission keeps it readable and executable, and no Rust reference aliases it.
+            let unprotected = unsafe {
+                libc::mprotect(
+                    address,
+                    length,
+                    libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                )
+            };
+            assert_eq!(unprotected, 0);
+            // SAFETY: the page is writable and mapped for the rest of this process; writing back the byte just read leaves every instruction unchanged.
+            unsafe { std::ptr::write_volatile(address.cast::<u8>(), byte[0]) };
+            // SAFETY: the same whole page returns to the read and execute permissions it was loaded with.
+            let restored =
+                unsafe { libc::mprotect(address, length, libc::PROT_READ | libc::PROT_EXEC) };
+            assert_eq!(restored, 0);
+        }
+        let mut after = [0_u8; 1];
+        memory.read_exact_at(&mut after, code).unwrap();
+        assert_eq!(after, byte);
+        assert!(
+            guard
+                .check()
+                .unwrap_err()
+                .to_string()
+                .contains("live code page was written")
+        );
     }
 
     #[test]

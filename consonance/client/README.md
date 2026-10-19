@@ -123,11 +123,13 @@ from a write-sealed memfd. Admission rejects a program interpreter, dependent
 libraries, writable executable segments, unsupported executable mappings, and
 ambient loader overrides. It binds the sealed executable to the kernel-loaded
 mapping and measures the complete executable-map census, including the vDSO,
-each time the guard is checked. The full sealed-file digest is measured at
-admission and reused only while the file identity and seals remain stable;
-each recheck still compares every live executable byte with that file. An
-ordinary GNU executable and a dynamic library whose constructor clears its
-loader variable are refused.
+each time the guard is checked. Admission compares every live executable byte
+with the sealed file and measures the full file. Each recheck requires the same
+sealed file and mappings and requires every live code page to be an unwritten
+page of that file, so a code write since admission fails the check even after
+its bytes are restored. `host-code-identity` describes this check. An ordinary
+GNU executable and a dynamic library whose constructor clears its loader
+variable are refused.
 
 On macOS, admission requires the kernel-loaded main executable's CDHash to
 match a strictly validated signed image with hardened runtime, the Hypervisor
@@ -647,7 +649,7 @@ checks or callbacks. Snapshot/replay does not rewind these host-work totals.
 
 Linux byte fields report actual live-code/vDSO reads, sealed executable code reads,
 SHA-256 input and comparison input, with admission-only full-file reads/hashes
-separate. Successful partial reads remain counted on refusal. ELF/proc metadata,
+separate. `code_page_entries` counts the code page-table entries read. Successful partial reads remain counted on refusal. ELF/proc metadata,
 digest framing and cross-process child identity work are excluded. macOS exports
 no Linux byte leaves, while reporting its kernel signing state, static-signing
 and image-census stage attempts. A telemetry query replaces
