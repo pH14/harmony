@@ -206,10 +206,22 @@ pub fn search_prepared(
     finish(&out, &mut manifest, result)
 }
 
+#[cfg(feature = "frontend")]
 pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
+    let saved = crate::runs::Saved::read(
+        &request
+            .selection
+            .as_ref()
+            .ok_or("select a search or branch")?
+            .run,
+    )?;
+    continue_saved(request, saved)
+}
+
+pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Saved) -> Result<u8> {
     let selection = request.selection.ok_or("select a search or branch")?;
-    let parent = crate::runs::locate(&selection.run)?;
-    let original = Manifest::read(&parent)?;
+    let parent = saved.path;
+    let original = Manifest::from_record(saved.manifest)?;
     let resume = request.operation == crate::adapters::Operation::Resume;
     if resume {
         original.record.verify(&parent)?;

@@ -49,7 +49,35 @@ pub struct Prepared {
     pub rom: Option<Vec<u8>>,
     pub bundle: Option<String>,
     pub vocabulary: Option<faults_workload::FaultVocabulary>,
+    pub saved: Option<crate::runs::Saved>,
     _files: tempfile::TempDir,
+}
+
+impl Prepared {
+    pub fn resolve_saved(&mut self, request: &mut Request) -> Result<()> {
+        if let Some(selection) = &request.selection {
+            let saved = crate::runs::Saved::read(&selection.run)?;
+            saved.manifest.verify(&saved.path)?;
+            self.bind_saved(request, saved)?;
+        }
+        Ok(())
+    }
+
+    fn bind_saved(&mut self, request: &mut Request, saved: crate::runs::Saved) -> Result<()> {
+        if request.config.workload.package != saved.manifest.config.workload.package {
+            return Err("prepared workload package differs from its saved recording".into());
+        }
+        if request.operation == Operation::Search && saved.manifest.mode != "branch" {
+            return Err(
+                "search --from requires a branch; use branch NAME to choose a starting point"
+                    .into(),
+            );
+        }
+        request.config = saved.manifest.config.clone();
+        validate_request_config(request)?;
+        self.saved = Some(saved);
+        Ok(())
+    }
 }
 
 #[cfg(any(feature = "frontend", test))]
@@ -144,6 +172,61 @@ fn validate_request_inputs(request: &Request) -> Result<()> {
     Ok(())
 }
 
+fn validate_request_config(request: &Request) -> Result<()> {
+    request.config.validate()?;
+    if request.config.runner.kind != "consonance"
+        || !matches!(
+            request.operation,
+            Operation::Search
+                | Operation::Run
+                | Operation::Replay
+                | Operation::Branch
+                | Operation::Resume
+        )
+    {
+        return Err("the guarded runtime accepts only prepared Consonance execution".into());
+    }
+    validate_request_inputs(request)?;
+    let runtime = crate::runners::consonance(&request.config.runner)?;
+    if runtime.backend == Backend::Auto {
+        return Err("prepared execution must pin its backend".into());
+    }
+    match request.config.workload.package.as_str() {
+        "faults" => {
+            let config = crate::adapters::faults::config::Config::from_shared(&request.config)?;
+            if config.build.language.is_some()
+                || config.build.dockerfile.is_some()
+                || !config.build.command.is_empty()
+            {
+                return Err("prepared execution still contains build work".into());
+            }
+            if !request.command.is_empty() && request.command != config.command {
+                return Err(
+                    "prepared command override differs from its effective configuration".into(),
+                );
+            }
+        }
+        "nes" => {
+            if runtime.backend != Backend::Kvm {
+                return Err("the NES guest adapter requires KVM".into());
+            }
+        }
+        "nested" => {
+            if !request.config.workload.options.is_empty() {
+                return Err("nested has no workload options".into());
+            }
+            if runtime.backend != Backend::Kvm
+                || !matches!(request.operation, Operation::Search | Operation::Replay)
+                || (request.selection.is_some() && request.operation != Operation::Replay)
+            {
+                return Err("nested requires KVM search or replay".into());
+            }
+        }
+        _ => return Err("unknown prepared workload package".into()),
+    }
+    Ok(())
+}
+
 impl Record {
     #[cfg(any(feature = "frontend", test))]
     pub fn new(request: &Request) -> Result<Self> {
@@ -218,20 +301,7 @@ impl Record {
             return Err("prepared execution metadata exceeds its limit".into());
         }
         let mut request: Request = serde_json::from_slice(&self.request)?;
-        request.config.validate()?;
-        if request.config.runner.kind != "consonance"
-            || !matches!(
-                request.operation,
-                Operation::Search
-                    | Operation::Run
-                    | Operation::Replay
-                    | Operation::Branch
-                    | Operation::Resume
-            )
-        {
-            return Err("the guarded runtime accepts only prepared Consonance execution".into());
-        }
-        validate_request_inputs(&request)?;
+        validate_request_config(&request)?;
         if self.rom.is_some() && request.config.workload.package != "nes" {
             return Err("unexpected prepared ROM for a non-NES workload".into());
         }
@@ -244,9 +314,6 @@ impl Record {
             }
         }
         let runtime = crate::runners::consonance(&request.config.runner)?;
-        if runtime.backend == Backend::Auto {
-            return Err("prepared execution must pin its backend".into());
-        }
         let files = tempfile::tempdir()?;
         for (name, bytes) in self.inputs {
             let field = match name.as_str() {
@@ -340,17 +407,6 @@ impl Record {
         match request.config.workload.package.as_str() {
             "faults" => {
                 let config = crate::adapters::faults::config::Config::from_shared(&request.config)?;
-                if config.build.language.is_some()
-                    || config.build.dockerfile.is_some()
-                    || !config.build.command.is_empty()
-                {
-                    return Err("prepared execution still contains build work".into());
-                }
-                if !request.command.is_empty() && request.command != config.command {
-                    return Err(
-                        "prepared command override differs from its effective configuration".into(),
-                    );
-                }
                 if let Some(execution) = &execution {
                     let mode = if config.backend == Backend::Uml {
                         faults_workload::admission::ExecutionMode::Uml
@@ -407,9 +463,6 @@ impl Record {
                 }
             }
             "nes" => {
-                if runtime.backend != Backend::Kvm {
-                    return Err("the NES guest adapter requires KVM".into());
-                }
                 if let Some(execution) = &execution {
                     let rom = self.rom.as_ref().ok_or("prepared NES input is missing")?;
                     nes_workload::package::RomKind::identify(rom)?;
@@ -432,14 +485,6 @@ impl Record {
                 }
             }
             "nested" => {
-                if !request.config.workload.options.is_empty() {
-                    return Err("nested has no workload options".into());
-                }
-                if runtime.backend != Backend::Kvm
-                    || !matches!(request.operation, Operation::Search | Operation::Replay)
-                {
-                    return Err("nested requires KVM search or replay".into());
-                }
                 if let Some(execution) = &execution {
                     let inputs = execution.external_inputs();
                     if !execution.exposes_kvm()
@@ -462,6 +507,7 @@ impl Record {
                 rom: self.rom,
                 bundle,
                 vocabulary,
+                saved: None,
                 _files: files,
             },
         ))
@@ -793,6 +839,139 @@ mod tests {
                 assert_eq!(fs::read(path).unwrap(), b"true");
             }
         }
+    }
+
+    fn write_saved_metadata(path: &Path, config: &crate::config::Config, mode: &str) {
+        fs::write(
+            path.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "format": "harmony-run-v4",
+                "binary_identity": "metadata admission fixture, not a strict image",
+                "architecture": std::env::consts::ARCH,
+                "mode": mode,
+                "status": "complete",
+                "error": null,
+                "config": config,
+                "parent": null,
+                "artifacts": {},
+                "payload": null,
+                "runner_identity": null,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn read_saved_handoff(mut record: Record, directory: &Path) -> (Request, Prepared) {
+        let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+        request.selection.as_mut().unwrap().run = directory.display().to_string();
+        record.request = serde_json::to_vec(&request).unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        record.write(file.path()).unwrap();
+        Record::read(file.path()).unwrap()
+    }
+
+    #[test]
+    fn saved_metadata_admission_rejects_package_repeat_and_search_source_substitution() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut record = saved_record(Operation::Branch, "nes");
+        let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+        request.repeat = 2;
+        request.point.step = Some(0);
+        record.request = serde_json::to_vec(&request).unwrap();
+        let (mut request, mut prepared) = read_saved_handoff(record, directory.path());
+        let mut original = request.config.clone();
+        original.workload.package = "faults".into();
+        write_saved_metadata(directory.path(), &original, "search");
+        let saved = crate::runs::Saved::read(&request.selection.as_ref().unwrap().run).unwrap();
+        let error = prepared.bind_saved(&mut request, saved).unwrap_err();
+        assert!(error.to_string().contains("workload package differs"));
+        assert!(prepared.saved.is_none());
+
+        let (mut request, mut prepared) =
+            read_saved_handoff(saved_record(Operation::Search, "faults"), directory.path());
+        write_saved_metadata(directory.path(), &request.config, "search");
+        let saved = crate::runs::Saved::read(&request.selection.as_ref().unwrap().run).unwrap();
+        let error = prepared.bind_saved(&mut request, saved).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("search --from requires a branch")
+        );
+        assert!(prepared.saved.is_none());
+    }
+
+    #[test]
+    fn saved_metadata_admission_validates_the_effective_config_before_holding_it() {
+        for case in 0..4 {
+            let directory = tempfile::tempdir().unwrap();
+            let package = if case == 2 { "nes" } else { "faults" };
+            let (mut request, mut prepared) =
+                read_saved_handoff(saved_record(Operation::Replay, package), directory.path());
+            let mut original = request.config.clone();
+            let expected = match case {
+                0 => {
+                    original.search.executions = u64::MAX;
+                    "exceeds TOML's maximum"
+                }
+                1 => {
+                    original.workload.options.insert(
+                        "build".into(),
+                        toml::Value::Table(
+                            [(
+                                "command".into(),
+                                toml::Value::Array(vec![toml::Value::String("make".into())]),
+                            )]
+                            .into_iter()
+                            .collect(),
+                        ),
+                    );
+                    "still contains build work"
+                }
+                2 => {
+                    original.runner.backend = Some("hvf".into());
+                    "NES guest adapter requires KVM"
+                }
+                _ => {
+                    original.runner.kind = "quicknes".into();
+                    "only prepared Consonance execution"
+                }
+            };
+            write_saved_metadata(directory.path(), &original, "run");
+            let saved = crate::runs::Saved::read(&request.selection.as_ref().unwrap().run).unwrap();
+            let error = prepared.bind_saved(&mut request, saved).unwrap_err();
+            assert!(error.to_string().contains(expected), "case {case}: {error}");
+            assert!(prepared.saved.is_none());
+        }
+    }
+
+    #[test]
+    fn saved_metadata_admission_keeps_one_config_when_manifest_is_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut request, mut prepared) =
+            read_saved_handoff(saved_record(Operation::Search, "faults"), directory.path());
+        let mut original = request.config.clone();
+        original.search.seed = 17;
+        write_saved_metadata(directory.path(), &original, "branch");
+        let saved = crate::runs::Saved::read(&request.selection.as_ref().unwrap().run).unwrap();
+        prepared.bind_saved(&mut request, saved).unwrap();
+        assert_eq!(request.config.search.seed, 17);
+        let mut replacement = original;
+        replacement.workload.package = "nes".into();
+        write_saved_metadata(directory.path(), &replacement, "search");
+        let held = prepared.saved.take().unwrap();
+        assert_eq!(held.path, directory.path().canonicalize().unwrap());
+        assert_eq!(held.manifest.config.workload.package, "faults");
+        assert_eq!(held.manifest.config.search.seed, request.config.search.seed);
+        assert_eq!(held.manifest.mode, "branch");
+        assert_eq!(
+            crate::runs::Manifest::read(directory.path())
+                .unwrap()
+                .config
+                .workload
+                .package,
+            "nes"
+        );
     }
 
     #[test]

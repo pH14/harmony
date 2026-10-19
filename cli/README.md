@@ -478,9 +478,14 @@ belong only to fresh NES execution.
 Prepared rootfs inflation is bounded to 1 GiB. Source recipe/image changes after capture
 cannot replace those bytes. Captured UML files are independently loaded through
 the reviewed-profile validator. The temporary profile and captured inputs remain
-owned until execution finishes. Saved execution reloads and verifies its original
-manifest and artifact identities in the host; a prepared request cannot supply
-replacement artifacts for replay, branching or resume. Saved Consonance recordings
+owned until execution finishes. Saved execution resolves and verifies its original
+manifest once at host admission. The request must name the same workload package;
+operation and configuration checks then use that resolved configuration. Search
+from a saved source requires a branch. The host carries this manifest and resolved
+path through the operation instead of loading different metadata at dispatch.
+Artifact bytes and workload outcomes are still verified at their existing use
+points; holding metadata does not cache an integrity verdict across operations.
+A prepared request cannot supply replacement artifacts for replay, branching or resume. Saved Consonance recordings
 retain this strict host identity. Native
 QuickNES recordings retain their native loaded-image identity.
 Linux hosts must permit executable memfds; `vm.memfd_noexec=2` prevents
