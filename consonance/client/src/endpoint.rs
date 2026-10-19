@@ -340,7 +340,11 @@ impl EndpointState {
                 request.resolve = Some(resolution);
                 request.digest()?;
                 let decision = self.decision.take().expect("decision checked");
-                self.execute(driver, request, Some(decision.binding.request_digest))
+                let result = self.execute(driver, request, Some(decision.binding.request_digest));
+                if result.is_err() {
+                    driver.abandon();
+                }
+                result
             }
             EndpointRequest::FinalizeDecision { token, capture } => {
                 let decision = self.decision.as_ref().ok_or(EndpointProtocolError::Stale)?;
@@ -809,6 +813,9 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionDecision<'a, T> {
             });
         self.finished = true;
         let transport = self.transport.take().expect("decision transport owned");
+        if result.is_err() {
+            transport.endpoint_abandon();
+        }
         let result = ExecutionEndpoint::start_reply(transport, request, digest, result);
         result
     }
@@ -901,6 +908,9 @@ mod tests {
         snapshots: BTreeMap<SnapId, u32>,
         next_snapshot: u64,
         next_stop: Option<StopReason>,
+        pending_question: Option<(Moment, DecisionId, u16)>,
+        snapshot_questions: BTreeMap<SnapId, Option<(Moment, DecisionId, u16)>>,
+        deliveries: u32,
         calls: Vec<String>,
         exchanges: usize,
         page_events: usize,
@@ -927,6 +937,9 @@ mod tests {
                 snapshots: [(SnapId(1), 2)].into(),
                 next_snapshot: 100,
                 next_stop: None,
+                pending_question: None,
+                snapshot_questions: BTreeMap::new(),
+                deliveries: 0,
                 calls: Vec::new(),
                 exchanges: 0,
                 page_events: 100,
@@ -988,20 +1001,38 @@ mod tests {
             resolve: Option<Resolution>,
         ) -> Result<StopReason, EndpointError> {
             self.check(if resolve.is_some() { "resolve" } else { "run" })?;
+            if let Some(resolution) = resolve {
+                if self.pending_question
+                    != Some((resolution.vtime, resolution.id, resolution.service))
+                {
+                    return Err(Injected("wrong pending question").into());
+                }
+                self.pending_question = None;
+                self.deliveries += 1;
+            }
             for _ in 0..2 {
                 let n = self.events.len() as u32;
                 self.events.push((u64::from(n), n, vec![n as u8]));
             }
-            Ok(self
+            let stop = self
                 .next_stop
                 .take()
-                .unwrap_or(StopReason::Deadline { vtime: Moment(100) }))
+                .unwrap_or(StopReason::Deadline { vtime: Moment(100) });
+            if let StopReason::Decision { vtime, id, ctx } = &stop {
+                self.pending_question = Some((
+                    *vtime,
+                    *id,
+                    u16::from_le_bytes(ctx[..2].try_into().unwrap()),
+                ));
+            }
+            Ok(stop)
         }
         fn snapshot(&mut self) -> Result<(SnapId, u64), EndpointError> {
             self.check("snapshot-before")?;
             let id = SnapId(self.next_snapshot);
             self.next_snapshot += 1;
             self.snapshots.insert(id, self.events.len() as u32);
+            self.snapshot_questions.insert(id, self.pending_question);
             self.check("snapshot-after")?;
             Ok((id, 100))
         }
@@ -1040,6 +1071,7 @@ mod tests {
             self.abandoned = true;
             self.calls.push("abandon".to_owned());
             self.snapshots.clear();
+            self.snapshot_questions.clear();
             self.calls.push("clear-snapshots".to_owned());
         }
     }
@@ -1231,6 +1263,64 @@ mod tests {
             ]
         );
         assert_eq!(fixture.exchanges, 3);
+    }
+
+    #[test]
+    fn legacy_and_transaction_capture_the_same_pending_question_and_resolve_it_once() {
+        let stop = StopReason::Decision {
+            vtime: Moment(100),
+            id: DecisionId(31),
+            ctx: vec![7, 0, 5],
+        };
+        let mut legacy = Fixture {
+            next_stop: Some(stop.clone()),
+            ..Default::default()
+        };
+        assert_eq!(legacy.run(request().until, None).unwrap(), stop);
+        let snapshot = legacy.snapshot().unwrap();
+        let expected_proof = legacy.proof().unwrap();
+        let mut batched = Fixture {
+            next_stop: Some(stop.clone()),
+            ..Default::default()
+        };
+        {
+            let ExecutionStart::Decision(decision) =
+                ExecutionEndpoint::execute(&mut batched, request()).unwrap()
+            else {
+                panic!("expected decision");
+            };
+            let receipt = decision.finalize(true).unwrap().commit().unwrap();
+            assert_eq!(receipt.binding.stop, stop);
+            assert_eq!(receipt.snapshot, Some(snapshot));
+            assert_eq!(receipt.proof, expected_proof);
+        }
+        assert_eq!(batched.pending_question, legacy.pending_question);
+        assert_eq!(batched.snapshot_questions, legacy.snapshot_questions);
+        assert_eq!(batched.deliveries, 0);
+        let resolution = Resolution {
+            vtime: Moment(100),
+            service: 7,
+            id: DecisionId(31),
+            answer: Answer(vec![3]),
+        };
+        let resumed = legacy
+            .run(request().until, Some(resolution.clone()))
+            .unwrap();
+        let mut next = request();
+        next.sdk_cursor = 4;
+        next.resolve = Some(resolution.clone());
+        let receipt = captured(&mut batched, next.clone()).commit().unwrap();
+        assert_eq!(receipt.binding.stop, resumed);
+        assert_eq!(batched.pending_question, None);
+        assert_eq!(batched.deliveries, 1);
+        assert_eq!(legacy.deliveries, 1);
+        assert!(
+            batched
+                .endpoint_exchange(EndpointRequest::Execute(next))
+                .is_err()
+        );
+        assert_eq!(batched.deliveries, 1);
+        assert!(batched.abandoned);
     }
 
     #[test]

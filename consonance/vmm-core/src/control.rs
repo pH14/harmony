@@ -12407,6 +12407,93 @@ mod tests {
     }
 
     #[test]
+    fn stopped_question_snapshot_preserves_pending_delivery_until_one_exact_resolution() {
+        let frame = local_service_frame();
+        let mut server = deadline_chain_server(&frame, local_service_spec(false, 0x22));
+        let until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        let stop = server
+            .handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            stop,
+            Reply::Stop(StopReason::Decision {
+                vtime: Moment(10_000),
+                id: control_proto::DecisionId(77),
+                ..
+            })
+        ));
+        let pending = server
+            .vmm()
+            .unwrap()
+            .sdk_snapshot()
+            .unwrap()
+            .unwrap()
+            .pending_stop;
+        let before_hash = hash(&mut server);
+        let physical = server.host_telemetry().physical;
+        let snapshot = snap(&mut server);
+        assert_eq!(server.host_telemetry().physical, physical);
+        assert_eq!(hash(&mut server), before_hash);
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .sdk_snapshot()
+                .unwrap()
+                .unwrap()
+                .pending_stop,
+            pending
+        );
+        assert_eq!(server.sdk_snaps[&snapshot.0].channel.pending_stop, pending);
+        assert!(server.recorded.answers().is_empty());
+        let responses = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&responses);
+        server.set_host_operation_guard(Arc::new(move |site| {
+            if site == HostOperationSite::SdkResponse {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(())
+        }));
+        let resolution = Resolution {
+            vtime: Moment(10_000),
+            service: 19,
+            id: control_proto::DecisionId(77),
+            answer: Answer(environment::channel::Answer::Data(vec![0x22]).encode()),
+        };
+        assert!(!matches!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: Some(resolution.clone())
+                })
+                .unwrap()
+                .unwrap(),
+            Reply::Stop(StopReason::Decision { .. })
+        ));
+        assert!(server.vmm().unwrap().pending_service_question().is_none());
+        assert_eq!(server.recorded.answers().len(), 1);
+        assert_eq!(responses.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: Some(resolution)
+                })
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(responses.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(server.sdk_snaps[&snapshot.0].channel.pending_stop, pending);
+    }
+
+    #[test]
     fn a_resolution_at_its_run_deadline_keeps_the_question_pending() {
         use environment::channel::Answer as ServiceAnswer;
 
