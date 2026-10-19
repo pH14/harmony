@@ -96,6 +96,35 @@ enum Command {
         #[arg(long, default_value_t = 1, help = "Replays to run at once")]
         jobs: usize,
     },
+    #[command(
+        about = "Shrink a finding and report the logs, data and client history around each remaining fault"
+    )]
+    Explain {
+        #[command(flatten)]
+        selection: Selection,
+        #[command(flatten)]
+        destination: Destination,
+        #[arg(long, default_value_t = 1, help = "Replays to run at once")]
+        jobs: usize,
+        #[arg(
+            long = "log",
+            value_name = "GUEST_PATH",
+            help = "Guest log file or glob whose new lines are shown around each fault"
+        )]
+        logs: Vec<String>,
+        #[arg(
+            long = "data",
+            value_name = "GUEST_DIR",
+            help = "Guest directory or glob whose file changes are shown around each fault"
+        )]
+        data: Vec<String>,
+        #[arg(
+            long,
+            value_name = "COMMAND",
+            help = "Guest shell text whose output shows the client history at the violation"
+        )]
+        history: Option<String>,
+    },
     #[command(about = "List saved searches and branches")]
     List {
         #[arg(long)]
@@ -275,6 +304,27 @@ fn execute(command: Command) -> Result<u8> {
                 ..Default::default()
             });
         }
+        Command::Explain {
+            selection,
+            destination,
+            jobs,
+            logs,
+            data,
+            history,
+        } => {
+            return workflow::saved(Request {
+                operation: Operation::Explain,
+                selection: Some(selection),
+                destination,
+                jobs,
+                explain: adapters::faults::config::Explain {
+                    logs,
+                    data,
+                    history,
+                },
+                ..Default::default()
+            });
+        }
         Command::List { json } => return workflow::list(json),
         Command::Show {
             selection,
@@ -412,6 +462,23 @@ mod tests {
                 "1",
                 "--jobs",
                 "4",
+            ],
+            vec![
+                "harmony",
+                "explain",
+                "baseline",
+                "--finding",
+                "1",
+                "--jobs",
+                "4",
+                "--log",
+                "/tmp/app/*.log",
+                "--data",
+                "/tmp/app/data",
+                "--history",
+                "/app/check",
+                "--out",
+                "baseline-explained",
             ],
             vec!["harmony", "list"],
             vec!["harmony", "check"],

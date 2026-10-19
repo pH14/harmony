@@ -4,7 +4,12 @@ use super::{investigate, runs::Manifest};
 use crate::{adapters::Request, config::Result};
 use faults_workload::{FaultAction, FaultOperation, package::Report};
 use serde::Serialize;
-use std::{collections::BTreeSet, fs, num::NonZeroU16, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    num::NonZeroU16,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Attempt {
@@ -167,6 +172,106 @@ struct Summary<'a> {
     actions: &'a [FaultAction],
 }
 
+pub struct Shrunk {
+    pub report: Report,
+    pub actions: Vec<FaultAction>,
+    pub replays: usize,
+    pub faults_before: usize,
+}
+
+pub fn faults(actions: &[FaultAction]) -> usize {
+    actions
+        .iter()
+        .filter(|action| !matches!(action.operation, FaultOperation::Wait(_)))
+        .count()
+}
+
+pub struct Source {
+    pub manifest: Manifest,
+    pub path: PathBuf,
+    pub actions: Vec<FaultAction>,
+    pub violations: Vec<String>,
+}
+
+pub fn source(saved: crate::runs::Saved, finding: Option<usize>, verb: &str) -> Result<Source> {
+    let path = saved.path;
+    let manifest = Manifest::from_record(saved.manifest)?;
+    manifest.verify(&path)?;
+    if manifest.bundle.is_none() {
+        return Err(format!("{verb} requires a supervised application scenario").into());
+    }
+    let recorded = investigate::recorded_witness(&manifest, finding)?;
+    if !recorded.bug {
+        return Err(format!("the selected execution has no violation to {verb}").into());
+    }
+    let (mut actions, _, anchor) = investigate::trajectory(&recorded, true);
+    actions.truncate(anchor);
+    Ok(Source {
+        manifest,
+        path,
+        actions,
+        violations: recorded.violations,
+    })
+}
+
+pub fn shrink_into(
+    out: &Path,
+    manifest: &Manifest,
+    source: &Source,
+    finding: Option<usize>,
+    jobs: usize,
+) -> Result<Shrunk> {
+    let actions = &source.actions;
+    let target = &source.violations;
+    let artifacts = manifest.fault_artifacts(out)?;
+    let options = manifest.options(out)?;
+    let settle = source.manifest.settle;
+    let evaluate =
+        |index: usize, input: &[FaultAction]| -> std::result::Result<Trial<Report>, String> {
+            let mut options = options.clone();
+            options.output = attempt_dir(out, index);
+            fs::create_dir_all(&options.output).map_err(|error| error.to_string())?;
+            let report =
+                faults_workload::package::execute_actions(&artifacts, input, 1, &options, settle)
+                    .map_err(|error| error.to_string())?;
+            let (reproduced, violations) = reproduces(&report, target);
+            Ok(Trial {
+                reproduced,
+                violations,
+                value: report,
+            })
+        };
+    let baseline = evaluate(0, actions)?;
+    if !baseline.reproduced {
+        return Err(format!(
+            "the recorded actions no longer produce {target:?}; see {}",
+            attempt_dir(out, 0).display()
+        )
+        .into());
+    }
+    let reduction = reduce(actions, jobs.max(1), baseline.value, evaluate)?;
+    let shrunk = candidate(actions, &reduction.replaced);
+    let faults_before = faults(actions);
+    fs::write(
+        out.join("shrink.json"),
+        serde_json::to_vec_pretty(&Summary {
+            finding,
+            violations: target,
+            faults_before,
+            faults_after: faults_before - reduction.replaced.len(),
+            replaced: reduction.replaced.iter().copied().collect(),
+            attempts: &reduction.attempts,
+            actions: &shrunk,
+        })?,
+    )?;
+    Ok(Shrunk {
+        report: reduction.value,
+        actions: shrunk,
+        replays: reduction.attempts.len() + 1,
+        faults_before,
+    })
+}
+
 #[cfg(feature = "frontend")]
 pub fn shrink(request: Request) -> Result<u8> {
     let saved = crate::runs::Saved::read(
@@ -181,80 +286,24 @@ pub fn shrink(request: Request) -> Result<u8> {
 
 pub fn shrink_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> {
     let selection = request.selection.ok_or("select a search or branch")?;
-    let source = saved.path;
-    let original = Manifest::from_record(saved.manifest)?;
-    original.verify(&source)?;
-    if original.bundle.is_none() {
-        return Err("shrinking requires a supervised application scenario".into());
-    }
-    let recorded = investigate::recorded_witness(&original, selection.finding)?;
-    if !recorded.bug {
-        return Err("the selected execution has no violation to shrink".into());
-    }
-    let (mut actions, _, anchor) = investigate::trajectory(&recorded, true);
-    actions.truncate(anchor);
-    let target = recorded.violations.clone();
+    let source = source(saved, selection.finding, "shrink")?;
     let out = request.destination.create()?;
-    let mut manifest = original.inherit(&source, &out, "replay")?;
-    manifest.actions = actions.clone();
+    let mut manifest = source.manifest.inherit(&source.path, &out, "replay")?;
+    manifest.actions = source.actions.clone();
     manifest.save(&out)?;
     let result = (|| -> Result<u8> {
-        let artifacts = manifest.fault_artifacts(&out)?;
-        let options = manifest.options(&out)?;
-        let settle = original.settle;
-        let evaluate = |index: usize,
-                        input: &[FaultAction]|
-         -> std::result::Result<Trial<Report>, String> {
-            let mut options = options.clone();
-            options.output = attempt_dir(&out, index);
-            fs::create_dir_all(&options.output).map_err(|error| error.to_string())?;
-            let report =
-                faults_workload::package::execute_actions(&artifacts, input, 1, &options, settle)
-                    .map_err(|error| error.to_string())?;
-            let (reproduced, violations) = reproduces(&report, &target);
-            Ok(Trial {
-                reproduced,
-                violations,
-                value: report,
-            })
-        };
-        let baseline = evaluate(0, &actions)?;
-        if !baseline.reproduced {
-            return Err(format!(
-                "the recorded actions no longer produce {target:?}; see {}",
-                attempt_dir(&out, 0).display()
-            )
-            .into());
-        }
-        let jobs = request.jobs.max(1);
-        let reduction = reduce(&actions, jobs, baseline.value, evaluate)?;
-        let shrunk = candidate(&actions, &reduction.replaced);
-        let faults_before = actions
-            .iter()
-            .filter(|action| !matches!(action.operation, FaultOperation::Wait(_)))
-            .count();
-        let faults_after = faults_before - reduction.replaced.len();
-        manifest.actions = shrunk.clone();
-        reduction.value.write(&out)?;
-        manifest.pin_outcome(&reduction.value)?;
-        fs::write(
-            out.join("shrink.json"),
-            serde_json::to_vec_pretty(&Summary {
-                finding: selection.finding,
-                violations: &target,
-                faults_before,
-                faults_after,
-                replaced: reduction.replaced.iter().copied().collect(),
-                attempts: &reduction.attempts,
-                actions: &shrunk,
-            })?,
-        )?;
+        let shrunk = shrink_into(&out, &manifest, &source, selection.finding, request.jobs)?;
+        manifest.actions = shrunk.actions.clone();
+        shrunk.report.write(&out)?;
+        manifest.pin_outcome(&shrunk.report)?;
         println!(
-            "kept {faults_after} of {faults_before} faults after {} replays; violation: {}",
-            reduction.attempts.len() + 1,
-            target.join("; ")
+            "kept {} of {} faults after {} replays; violation: {}",
+            faults(&shrunk.actions),
+            shrunk.faults_before,
+            shrunk.replays,
+            source.violations.join("; ")
         );
-        for (index, action) in shrunk.iter().enumerate() {
+        for (index, action) in shrunk.actions.iter().enumerate() {
             if !matches!(action.operation, FaultOperation::Wait(_)) {
                 println!("  step {}: {:?}", index + 1, action.operation);
             }
@@ -264,7 +313,7 @@ pub fn shrink_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> {
     super::workflow::finish(&out, &mut manifest, result)
 }
 
-fn attempt_dir(out: &Path, index: usize) -> std::path::PathBuf {
+fn attempt_dir(out: &Path, index: usize) -> PathBuf {
     out.join("attempts").join(index.to_string())
 }
 
