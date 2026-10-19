@@ -1,0 +1,53 @@
+--- a/SAUCE/functions/collision.h
++++ b/SAUCE/functions/collision.h
+@@ -1034,6 +1034,40 @@
+ 	Clobbers:
+ 	tmp2
+ */
++CODE_BANK_PUSH("COLLISION_BANK")
++
++void wave_slope_point(void) {
++    switch (collision) {
++        case COL_SLOPE_RD45:
++            if ((temp_x & 15) + (temp_y & 15) >= 15) cube_data[currplayer] |= 1;
++            break;
++        case COL_SLOPE_LD45:
++            if ((temp_y & 15) >= (temp_x & 15)) cube_data[currplayer] |= 1;
++            break;
++        case COL_SLOPE_RU45:
++            if ((temp_y & 15) <= (temp_x & 15)) cube_data[currplayer] |= 1;
++            break;
++        case COL_SLOPE_LU45:
++            if ((temp_x & 15) + (temp_y & 15) <= 15) cube_data[currplayer] |= 1;
++            break;
++    }
++}
++
++void wave_slope_center(void) {
++    temp_x += 4;
++    if ((temp_x & 15) < 4) {
++        bg_collision_sub();
++        wave_slope_point();
++        temp_x -= 4;
++        bg_collision_sub();
++    } else {
++        wave_slope_point();
++        temp_x -= 4;
++    }
++}
++
++CODE_BANK_POP()
++
+ void bg_coll_death() {
+ 
+ 
+@@ -1077,7 +1111,9 @@
+     check_pit_crossing();
+ #endif
+ 
++
++    if ((gamemode == GAMEMODE_WAVE || gamemode == GAMEMODE_SNAKE) && !currplayer_mini) crossPRGBankJump0(wave_slope_center);
+ }
+ 
+ CODE_BANK_POP()
+-#endif+#endif

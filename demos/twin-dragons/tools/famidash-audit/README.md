@@ -360,3 +360,13 @@ are required to distinguish a floor gap from intentional open geometry.
 The single-level runner looks up reference inputs by the release-side/level
 alias, allowing current fifth-set levels to use their original workload
 identity. Physical selection, symbols and ROM identity remain current.
+
+`review-control-regions.py INDEX HISTORY OUTPUT --side SIDE --level N
+--seed COLUMN ROW [--seed COLUMN ROW ...] --aligned-wave` checks complete
+verified probe history against explicitly selected fill components. Add
+`--linear-y` for current upstream's linear-coordinate history. It checks
+source/metatile agreement and reports visits without declaring region intent.
+Normal wave/Snake controls can include both biased and aligned centres.
+Secondary-player controls are rejected because this history format does not
+record their world X coordinates. A clearing input that visits a reviewed
+forbidden region is unsuitable as a playability control even if it wins.

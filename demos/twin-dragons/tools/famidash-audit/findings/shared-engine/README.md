@@ -576,3 +576,55 @@ source, with component references. That source has 353 stair candidates and
 11,424 rounded hazard adjacencies after its earlier cap edits. All counts
 are review leads, not confirmed bugs or automatic tile edits. Exploratory
 round 43 lacks the new Forest Temple cap and cannot qualify as a clean round.
+
+The LU45-only candidate is incomplete. A separate Forest Temple wave route
+passes through a diagonal RD45 boundary into enclosed component 42. Its
+2,289-frame trace is identical on the original release and LU45 candidate.
+FCEUmm matches the original trace. The old probe moves from EMPTY at
+(x low 111, Y 877) to BLACK_NONE at (115,880); the aligned point is already
+inside the adjacent RD45 triangle on the preceding frame.
+
+`wave-four-slopes` generalizes the experimental aligned point to all four
+45-degree orientations, preserving the original body routine and mini-wave
+behavior. The release helper uses XCD_BANK_02; current uses COLLISION_BANK.
+All four release and all five current standard builds plus HUGE link. The
+release compiled geometry and collision metadata match all 109 installed
+levels. The host oracle checks 14,155,776 room-local cases and 53,084,160
+current linear-coordinate cases, including metadata restoration at seams.
+It does not establish mapper correctness or cover the 22/66-degree slopes.
+
+Both cores block the release Forest Temple wave input at frame 1,774, with
+its entire approach unchanged, and confirm reset. A separate fresh current
+Dissonance witness is blocked at 1,848 with its approach unchanged in both
+cores, followed by reset. The current old probe reaches BLACK_NONE at 1,850;
+its earlier coarse fill signal at 1,860 was not the first entry. Both
+Deadlocked witnesses still die at frame 891 with unchanged approaches in
+both cores. The 5,921-frame fresh Deadlocked clear remains exactly unchanged.
+
+Of 201 paired release inputs, 160 traces remain exact; 95 of 125 previously
+clearing inputs still clear. Affected routes and timing remain under review.
+A current Forest Temple clearing input dies at 1,719 in mini-ship mode on
+the combined repairs before any wave-point change, identically on LU45 and
+four-orientation prototypes. This is not a wave regression. Fresh current
+combined-repair clearing discovery is running; this patch is experimental.
+
+Control intent review rejects the fresh 5,123-frame release Forest Temple
+clear: it still uses the separate quarter-block hole. Its verified probe
+history contains 821 samples in the forbidden underfloor region, with no
+source/recorded-metatile mismatch. It is retained as a reviewed quarter-gap
+witness, not a whole-level playability control.
+
+A fresh current combined-repair Dissonance input clears in 5,234 frames with
+coin mask 3 and matches FCEUmm after entry frame 3. Every witness frame is
+verified again in read-only history tracing. The biased and aligned wave
+probe positions avoid both selected enclosed regions, and every recorded
+metatile matches source. This establishes avoidance of those two known
+escapes; it does not classify every other course boundary.
+
+The next combined prototype includes solid caps below all six quarter-block
+adjacencies of the reviewed Forest Temple component (columns 468, 470, 475,
+480, 502, 504 at row 26). The current clearing input remains exact. This is
+under validation, including a new release clearing search; rounded saw
+adjacencies elsewhere along the same boundary still require input review.
+The 109-level round 43 continues on the older LU45 prototype to finish
+coverage, but known Forest Temple bugs disqualify it. Clean rounds remain 0.

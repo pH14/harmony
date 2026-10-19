@@ -1,0 +1,16 @@
+{
+  "status": "aligned-wave-point-and-probe-state-preservation-verified",
+  "cases": 14155776,
+  "body_slope_routine": "source-identical to baseline",
+  "orientations": [
+    "RD45",
+    "LD45",
+    "RU45",
+    "LU45"
+  ],
+  "helper_sha256": "b146bc44491484e1ba04864c359ef9b0b83d5820d89024271eb53ddc9030284b",
+  "source_sha256": "a6b249ef38b33f656e9031a4b49ee1061e07b7e742affe1f5445f71d62a8abe7",
+  "scope": "host-compiled helper; tile seams, both players, three incoming flag states",
+  "coordinate_layout": "room-local byte Y including invalid 240..255",
+  "limitation": "caller selection, sprite alignment and NES mapper require independent runtime validation"
+}
