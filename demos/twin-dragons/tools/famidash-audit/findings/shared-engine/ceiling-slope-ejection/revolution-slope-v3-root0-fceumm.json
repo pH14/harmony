@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "status": "independent-campaign-replay-verified",
+  "frames": 6309,
+  "endpoint": {
+    "level": 32,
+    "state": 3,
+    "x": 18308,
+    "y": 792,
+    "camera": 719,
+    "vy": -672,
+    "mode": 1,
+    "gravity": 0,
+    "mini": 0,
+    "dual": 0,
+    "dead": false,
+    "debug": 0,
+    "invincible": 0,
+    "paused": 0
+  },
+  "reset_confirmation": null,
+  "comparison_start_frame": 41,
+  "intro_difference_frames": [
+    5
+  ],
+  "clearing_control": "not-included-in-campaign-witness",
+  "rom_sha256": "0d09fd2c1cff68fc3f9e8623fecaaff4126d4596eb46c5f79ea9b823bd320b5d",
+  "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+  "case_sha256": "0007baaccdf40cf79d5743697491283c34273cbe0ec76ca2897f90db096082a5"
+}

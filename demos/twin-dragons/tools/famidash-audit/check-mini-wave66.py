@@ -57,7 +57,7 @@ def check(source):
     path = source / "SAUCE/functions/mini_wave66.h"
     text = path.read_text()
     start = text.index("static signed char mw_dx")
-    end = text.index("unsigned char mw_valid[2];", start)
+    end = text.index("\n}\n", text.index("unsigned char mini66_polygon_hit(void)", start)) + 3
     kernel = text[start:end]
     prefix = "\n".join(f"#define COL_SLOPE_{name} {index}" for index, name in enumerate(NAMES))
     wrapper = """

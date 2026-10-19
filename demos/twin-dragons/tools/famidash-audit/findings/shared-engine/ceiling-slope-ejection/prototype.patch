@@ -1,0 +1,33 @@
+--- a/SAUCE/functions/collision.h
++++ b/SAUCE/functions/collision.h
+@@ -767,6 +767,7 @@
+ 	tmp4, tmp7, tmp8
+ */
+ char bg_coll_return_slope_D () {
++    if (collision >= COL_SLOPE_RU45 && collision <= COL_SLOPE_LU66_BOT) return 0;
+ 	tmp1 = bg_coll_slope();
+ 	
+ 	if (!tmp2) {
+@@ -802,21 +803,9 @@
+ 	tmp4, tmp7, tmp8
+ */
+ char bg_coll_return_slope_U () {
++    if (collision >= COL_SLOPE_RD45 && collision <= COL_SLOPE_LD66_BOT) return 0;
+ 	tmp1 = bg_coll_slope();
+ 
+-	if (!tmp2) {
+-		// LEFT CHECK
+-		if (currplayer_slope_type & SLOPE_RISING) {
+-			currplayer_slope_type = currplayer_last_slope_type;
+-			return 0;
+-		}
+-	} else {
+-		// RIGHT CHECK
+-		if (!(currplayer_slope_type & SLOPE_RISING)) {
+-			currplayer_slope_type = currplayer_last_slope_type;
+-			return 0;
+-		}
+-	}
+ 
+ 	if (tmp1) {
+ 		if ((currplayer_last_slope_type & SLOPE_RISING) && !(currplayer_slope_type & SLOPE_RISING)) {
