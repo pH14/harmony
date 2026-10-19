@@ -215,9 +215,10 @@ Every job declares a trigger class.
   consumers keep the 15-minute budget. The separate `C Investigation` job has
   a 35-minute exception for its bounded branch and search continuation under
   sealed-host identity checks.
-  The selected `vmm-backend` and `snapshot-store` Miri checks have a 30-minute
-  exception for interpreted snapshot/register-inventory coverage and the Store's
-  full resident-verification suite, respectively. The Store retains its whole
+  The selected `vmm-backend`, `snapshot-store`, and `consonance-client` Miri
+  checks have a 30-minute exception for interpreted snapshot/register-inventory
+  coverage, the Store's full resident-verification suite, and interpreted client
+  cache tests, respectively. The Store retains its whole
   library selector, including promotion, fresh corruption checks and retained
   high-slot/recycled-storage fixtures; that coverage exceeded the 15-minute job
   budget. Every other Miri matrix target keeps 15 minutes. The registry binds
