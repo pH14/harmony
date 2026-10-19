@@ -10532,6 +10532,7 @@ mod tests {
         assert_eq!(restored.objective_witness, core.objective_witness);
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn wait_for_checkpoint_worker(coordinator: &CampaignCoordinator<'_, TestWorkload>) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !coordinator.checkpoint_worker_finished() {
