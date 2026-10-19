@@ -202,7 +202,10 @@ impl<S: CheckpointSnapshot + Send + Sync + 'static, P: Copy + Ord> CheckpointPub
     {
         match self.publish_image(version, reason, snapshots, body) {
             Ok(()) => Ok(()),
-            Err(error) => Err(self.retire(failure(error)).into()),
+            Err(error) => {
+                self.retire(failure(error.as_ref()));
+                Err(error)
+            }
         }
     }
     fn publish_image<'a>(
@@ -797,6 +800,96 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn typed_charge_freeze_and_body_errors_survive_first_handback_and_finalization() {
+        #[derive(Debug)]
+        struct CaptureError(u8);
+        impl fmt::Display for CaptureError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "typed capture {}", self.0)
+            }
+        }
+        impl Error for CaptureError {}
+        #[derive(Clone, serde::Serialize, serde::Deserialize)]
+        struct Snapshot(u8);
+        impl CheckpointSnapshot for Snapshot {
+            type Codec = crate::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+            fn checkpoint_image_charge(
+                &self,
+                budget: &mut ImageBudget,
+            ) -> Result<(), Box<dyn Error>> {
+                if self.0 == 0 {
+                    return Err(Box::new(CaptureError(0)));
+                }
+                budget.reserve(size_of::<Self>())
+            }
+            fn freeze_checkpoint(&self) -> Result<Self, Box<dyn Error>> {
+                if self.0 == 1 {
+                    return Err(Box::new(CaptureError(1)));
+                }
+                Ok(self.clone())
+            }
+        }
+        for stage in 0..3 {
+            let path = directory(&format!("typed-capture-{stage}"));
+            let mut publisher = CheckpointPublisher::<Snapshot, u8>::create(
+                plan(path.clone(), 1 << 20),
+                header(),
+                0,
+                None,
+            )
+            .unwrap();
+            let snapshot = Snapshot(stage);
+            let error = publisher
+                .publish(version(1), "final", std::iter::once((3, &snapshot)), |_| {
+                    if stage == 2 {
+                        Err(Box::new(CaptureError(2)))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
+            assert_eq!(error.downcast_ref::<CaptureError>().unwrap().0, stage);
+            assert!(publisher.failure.is_some());
+            assert!(publisher.writer.is_none());
+            assert!(publisher.worker.is_none());
+            assert!(publisher.keeper.is_none());
+            assert!(publisher.poll().unwrap_err().is::<PersistenceFailure>());
+            let combined = publisher.finish::<()>(Err(error)).unwrap_err();
+            assert!(combined.is::<CampaignPersistenceFailure>());
+            assert_eq!(
+                combined
+                    .source()
+                    .unwrap()
+                    .downcast_ref::<CaptureError>()
+                    .unwrap()
+                    .0,
+                stage
+            );
+            assert!(
+                publisher
+                    .publish(
+                        version(2),
+                        "final",
+                        std::iter::once((3, &snapshot)),
+                        |_| Ok(())
+                    )
+                    .unwrap_err()
+                    .is::<PersistenceFailure>()
+            );
+            assert!(
+                publisher
+                    .finish(Ok(()))
+                    .unwrap_err()
+                    .is::<PersistenceFailure>()
+            );
+            assert!(!path.join("000000000001-final.ckpt").exists());
+            assert!(!path.join("000000000002-final.ckpt").exists());
+            drop(publisher);
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
     fn post_stage_publication_failures_retire_the_writer_for_async_and_pressure_paths() {
         use super::super::PublicationIo;
         for (phase, label) in [
@@ -819,7 +912,7 @@ mod tests {
                         Ok(())
                     });
                 if pressure {
-                    assert!(result.unwrap_err().is::<PersistenceFailure>());
+                    assert!(result.unwrap_err().is::<std::io::Error>());
                 } else {
                     result.unwrap();
                     assert!(publisher.join().is_err());
