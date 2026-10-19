@@ -30,7 +30,21 @@ the recorded execution budget. One coordinator
 random generator draws every selection, so a fixed seed and window write the
 same stream at any worker count. Worker ids appear only in run telemetry. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
-for replay. Replay checks the source fields allowed by each origin kind, requires
+for replay.
+
+Physical assignment chooses the earliest queued planned-finish/reservation key
+first, then the best currently idle worker for that job's optional opaque
+locality key. Workloads advertise at most 64 keys per idle worker and assign a
+static rank to each match. A matching worker outranks a nonmatching worker;
+higher ranks win, followed by the smaller worker identifier. The queue never
+waits for a busy owner or bypasses its head for a later local job. Advertisements
+are removed on assignment or worker exit and rebuilt after execution or target
+recovery. They convey no ownership or integrity authority. Selection, seeds,
+planned finishes, checkpoint state, retention and admission remain independent
+of these hints. Workloads without locality keys use the same queue with empty
+advertisements.
+
+Replay checks the source fields allowed by each origin kind, requires
 an archive checkpoint exactly when the stream names one, and matches the supplied
 checkpoint path, format, serialized bytes, and digest before copying its provenance
 into a completed report. Archive-origin recording and full or prefix replay require

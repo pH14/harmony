@@ -796,6 +796,19 @@ fn held_suffix(
 }
 
 impl TargetExecution for FaultWorkload {
+    fn worker_locality(&self, target: &FaultTarget) -> searcher::search::locality::WorkerLocality {
+        target.worker_locality()
+    }
+
+    fn snapshot_locality(
+        &self,
+        snapshot: &FaultSnapshot,
+    ) -> Option<searcher::search::locality::LocalityKey> {
+        Some(searcher::search::locality::LocalityKey(
+            snapshot.history.receipt().root(),
+        ))
+    }
+
     fn begin_job_observation(&self) {
         crate::job_observation::begin();
     }
