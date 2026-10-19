@@ -70,6 +70,16 @@ kill or replacing a child. Its injected kills use `SIGKILL`, so a fatal signal
 or nonzero exit status proves the child ended independently before the kill
 took effect, even when that exit is reaped after the kill decision.
 
+The exemption above lets a restarted node fail while the system is still
+recovering, so a node that never recovers would go unreported. A second
+built-in Always assertion covers that case:
+`workload becomes ready within 30 seconds after faults end`. Once no fault
+window is active and no injected fault is pending for 30 seconds of virtual
+time, a readiness generation that has still not passed its `ready` probe
+violates it, once per generation. The details give the generation and the quiet
+ticks. A node that crash-loops after an injected kill, or a cluster that never
+regains readiness after a restart, reports through this assertion.
+
 After initial readiness, an optional `workload` command starts once and remains
 independent of node recovery. An optional `check` command runs serially and
 continuously. The supervisor publishes the checks-started register before it

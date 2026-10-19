@@ -69,9 +69,71 @@ impl RecoveryReadiness {
     }
 }
 
+pub const RECOVERY_NANOS: u64 = 30_000_000_000;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RecoveryWatch {
+    quiet_since: u64,
+    reported: Option<u64>,
+}
+
+impl RecoveryWatch {
+    pub fn observe(
+        &mut self,
+        tick: u64,
+        disturbed: bool,
+        readiness: &RecoveryReadiness,
+    ) -> Option<u64> {
+        if disturbed {
+            self.quiet_since = tick;
+            return None;
+        }
+        if !readiness.is_pending() || self.reported == Some(readiness.generation()) {
+            return None;
+        }
+        let quiet = tick.saturating_sub(self.quiet_since);
+        if quiet < RECOVERY_NANOS / crate::TICK_NANOS {
+            return None;
+        }
+        self.reported = Some(readiness.generation());
+        Some(quiet)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{RecoveryError, RecoveryReadiness};
+    use super::{RecoveryError, RecoveryReadiness, RecoveryWatch};
+
+    const BOUND: u64 = super::RECOVERY_NANOS / crate::TICK_NANOS;
+
+    #[test]
+    fn a_workload_that_stays_unready_after_faults_end_is_reported_once() {
+        let mut readiness = RecoveryReadiness::initially_ready();
+        let mut watch = RecoveryWatch::default();
+        readiness.restarted(true).unwrap();
+        assert_eq!(watch.observe(10, true, &readiness), None);
+        assert_eq!(watch.observe(10 + BOUND - 1, false, &readiness), None);
+        assert_eq!(watch.observe(10 + BOUND, false, &readiness), Some(BOUND));
+        assert_eq!(watch.observe(20 + BOUND, false, &readiness), None);
+        readiness.restarted(false).unwrap();
+        assert_eq!(
+            watch.observe(30 + BOUND, false, &readiness),
+            Some(20 + BOUND)
+        );
+    }
+
+    #[test]
+    fn faults_and_readiness_keep_the_watch_silent() {
+        let mut readiness = RecoveryReadiness::initially_ready();
+        let mut watch = RecoveryWatch::default();
+        assert_eq!(watch.observe(2 * BOUND, false, &readiness), None);
+        readiness.restarted(true).unwrap();
+        for tick in 0..3 * BOUND {
+            assert_eq!(watch.observe(tick, true, &readiness), None);
+        }
+        readiness.mark_ready(readiness.generation());
+        assert_eq!(watch.observe(10 * BOUND, false, &readiness), None);
+    }
 
     #[test]
     fn a_slow_probe_keeps_hooks_queued_until_the_current_generation_is_ready() {

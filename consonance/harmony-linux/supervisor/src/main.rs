@@ -123,7 +123,7 @@ mod runtime {
     use harmony_supervisor::evidence::CheckEvidence;
     use harmony_supervisor::process;
     use harmony_supervisor::reconcile::ActiveWindows;
-    use harmony_supervisor::recovery::RecoveryReadiness;
+    use harmony_supervisor::recovery::{RecoveryReadiness, RecoveryWatch};
     use harmony_supervisor::regs::{
         REG_ALIVE, REG_CHECK_ENABLED, REG_CHECKS_FINISHED, REG_CHECKS_STARTED,
         REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_PID, REG_COMPLETED_CHECK_RUN,
@@ -653,6 +653,7 @@ mod runtime {
         assertion_output: File,
         hooks: Vec<Hook>,
         recovery: RecoveryReadiness,
+        recovery_watch: RecoveryWatch,
         recovery_probe: Option<RecoveryProbe>,
         retired_probes: Vec<Child>,
         workload: Option<Child>,
@@ -667,6 +668,7 @@ mod runtime {
                 assertion_output,
                 hooks: Vec::new(),
                 recovery: RecoveryReadiness::initially_ready(),
+                recovery_watch: RecoveryWatch::default(),
                 recovery_probe: None,
                 retired_probes: Vec::new(),
                 workload: None,
@@ -697,6 +699,8 @@ mod runtime {
             .map_err(|error| format!("node exit output: {error}"))?;
         process::write_record(&mut assertion_output, &process::node_exit_record(None))
             .map_err(|error| format!("node exit declaration: {error}"))?;
+        process::write_record(&mut assertion_output, &process::recovery_record(None))
+            .map_err(|error| format!("recovery declaration: {error}"))?;
         let mut nodes: Vec<Node> = bundle
             .nodes
             .iter()
@@ -994,6 +998,22 @@ mod runtime {
             )?;
             for ready in ready_hooks {
                 launch_ready_hook(ready, spec, bundle, &mut runtime.hooks, supervisor, tick)?;
+            }
+            let disturbed = !active.is_empty() || supervisor.pending_faults() != 0;
+            if let Some(quiet) = runtime
+                .recovery_watch
+                .observe(tick, disturbed, &runtime.recovery)
+            {
+                let generation = runtime.recovery.generation();
+                log(
+                    tick,
+                    &format!("workload not ready {quiet} ticks after faults ended"),
+                );
+                process::write_record(
+                    &mut runtime.assertion_output,
+                    &process::recovery_record(Some((generation, quiet))),
+                )
+                .map_err(|error| format!("recovery record: {error}"))?;
             }
             poll_workload(&mut runtime, supervisor, tick);
             poll_check(spec, bundle, &mut runtime, supervisor, sdk, tick)?;
