@@ -1288,7 +1288,6 @@ impl searcher::search::snapshot_codec::CheckpointSnapshot for Snapshot {
     type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
 }
 
-
 #[cfg(test)]
 fn test_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};

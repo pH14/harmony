@@ -527,16 +527,16 @@ The recorded `host_failure_policy = host_incomplete_v2` binds this behavior;
 streams and checkpoints with an absent or different policy are refused, including
 the earlier watchdog-only policy. The execution and endpoint-certificate identities
 also advance because observations now encode the distinct infrastructure flag. The
-combined replay endpoint uses certificate domain v3, binding ordered event history
-and infrastructure-marked observations under one schema. Reading ordered history
+combined replay endpoint uses certificate domain v4, binding ordinary assurance,
+ordered event history and infrastructure-marked observations under one schema. Reading ordered history
 preserves typed host failures and rejects a known abandoned matching session as
 incomplete; missing or mismatched session identities remain ordinary errors. The
 shared hash helper retains the actual error even when that call retires the
 session: a timeout stays a timeout and a malformed reply stays an ordinary error.
 A successful hash from a session retired during the call cannot certify a
 continuation. These checks also cover receipt reconstruction and imported roots.
-Execution identity v10 separates the combined contract from the earlier receipt-only
-identity. Ordinary
+Execution identity v11 binds this combined contract and its assurance identity;
+earlier identities that omitted either cannot be reused. Ordinary
 guest terminal outcomes retain their existing meaning. An outer CLI timeout is
 also an infrastructure failure. Completed reports still expose
 `execution_failures` and `watchdog_cutoffs`; a host cutoff cannot contribute to
@@ -916,3 +916,12 @@ returned identity with the parent receipt before changing observations or
 extending the receipt. A relabelled endpoint proof refuses even when its other
 binding fields are unchanged. The combined worker protocol requires host hello5;
 both incompatible hello4 schemas and all older versions are refused.
+
+The shared history codec is `fault-history-dag-v2`. Every receipt frame retains
+its ordinary-unqualified `assurance_identity`, includes it in the semantic node
+root, and validates it before encoding/deduplication and after decoding.
+Changing assurance is refused even if the receipt root and frame checksum are
+recomputed. The codec does not upgrade an ordinary execution into a qualified
+composition. Older DAG-v1 codecs and flat snapshot envelopes are refused;
+whole-search checkpoints require the distinct v10 envelope. The current
+execution identity remains v11 and ordered event history remains v3.

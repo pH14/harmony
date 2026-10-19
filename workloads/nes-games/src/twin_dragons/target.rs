@@ -828,3 +828,41 @@ mod tests {
 impl searcher::search::snapshot_codec::CheckpointSnapshot for TwinDragonsSnapshot {
     type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
 }
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    use searcher::search::campaign::{SnapshotCheckpoint, SnapshotCheckpointEntry};
+
+    #[test]
+    fn framed_snapshot_round_trip_refuses_previous_flat_format() {
+        let snapshot = TwinDragonsSnapshot {
+            emulator_state: vec![3, 1, 4, 1, 5],
+            observation: TwinDragonsObservations {
+                frame_count: 17,
+                decoded: Default::default(),
+                terminal: false,
+            },
+            failed: false,
+        };
+        let checkpoint = SnapshotCheckpoint {
+            format: super::super::campaign::SNAPSHOT_CHECKPOINT_FORMAT.into(),
+            entries: vec![SnapshotCheckpointEntry { id: 7, snapshot }],
+        };
+        let bytes = checkpoint.to_bytes().unwrap();
+        assert_eq!(
+            SnapshotCheckpoint::<TwinDragonsSnapshot>::from_bytes(&bytes, &checkpoint.format)
+                .unwrap(),
+            checkpoint
+        );
+        let old = postcard::to_allocvec(&(
+            "twin-dragons-quicknes-snapshot-checkpoint-v1",
+            &checkpoint.entries,
+        ))
+        .unwrap();
+        assert!(
+            SnapshotCheckpoint::<TwinDragonsSnapshot>::from_bytes(&old, &checkpoint.format)
+                .is_err()
+        );
+    }
+}
