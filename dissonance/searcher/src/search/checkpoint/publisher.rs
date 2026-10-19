@@ -33,7 +33,7 @@ struct CheckpointImage<S> {
     ordinal: u64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct PersistenceFailure {
     message: String,
 }
@@ -73,6 +73,7 @@ pub(crate) struct CheckpointPublisher<S, P> {
     worker: Option<JoinHandle<WorkerResult>>,
     keeper: Option<Arc<CheckpointImage<S>>>,
     ordinal: u64,
+    failure: Option<PersistenceFailure>,
     #[cfg(test)]
     before_write: Option<Arc<dyn Fn(u64) + Send + Sync>>,
 }
@@ -126,6 +127,7 @@ impl<S: CheckpointSnapshot + Send + Sync + 'static, P: Copy + Ord> CheckpointPub
             worker: None,
             keeper: None,
             ordinal: 0,
+            failure: None,
             #[cfg(test)]
             before_write,
         })
@@ -139,18 +141,30 @@ impl<S: CheckpointSnapshot + Send + Sync + 'static, P: Copy + Ord> CheckpointPub
         self.schedule.due(executions, marks, top)
     }
     pub(crate) fn poll(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.worker.as_ref().is_some_and(JoinHandle::is_finished) {
+        if self.failure.is_some() || self.worker.as_ref().is_some_and(JoinHandle::is_finished) {
             self.join()?;
         }
         Ok(())
     }
+    #[cfg(test)]
+    pub(crate) fn worker_finished(&self) -> bool {
+        self.worker.as_ref().is_some_and(JoinHandle::is_finished)
+    }
+    fn retire(&mut self, error: PersistenceFailure) -> PersistenceFailure {
+        self.writer.take();
+        self.keeper.take();
+        self.failure.get_or_insert(error).clone()
+    }
     fn join(&mut self) -> Result<(), PersistenceFailure> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
         if let Some(worker) = self.worker.take() {
-            let (writer, result) = worker
-                .join()
-                .map_err(|_| failure("writer thread panicked"))?;
-            self.writer = Some(writer);
-            result?;
+            match worker.join() {
+                Ok((writer, Ok(()))) => self.writer = Some(writer),
+                Ok((_, Err(error))) => return Err(self.retire(error)),
+                Err(_) => return Err(self.retire(failure("writer thread panicked"))),
+            }
         }
         Ok(())
     }
@@ -164,6 +178,12 @@ impl<S: CheckpointSnapshot + Send + Sync + 'static, P: Copy + Ord> CheckpointPub
             (Ok(value), Ok(())) => Ok(value),
             (Err(error), Ok(())) => Err(error),
             (Ok(_), Err(error)) => Err(error.into()),
+            (Err(primary), Err(_))
+                if primary.is::<PersistenceFailure>()
+                    || primary.is::<CampaignPersistenceFailure>() =>
+            {
+                Err(primary)
+            }
             (Err(primary), Err(persistence)) => Err(Box::new(CampaignPersistenceFailure {
                 primary,
                 persistence,
@@ -171,6 +191,21 @@ impl<S: CheckpointSnapshot + Send + Sync + 'static, P: Copy + Ord> CheckpointPub
         }
     }
     pub(crate) fn publish<'a>(
+        &mut self,
+        version: AdmissionVersion,
+        reason: &str,
+        snapshots: impl Iterator<Item = (u64, &'a S)> + Clone,
+        body: impl Fn(&mut dyn Write) -> Result<(), Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        S: 'a,
+    {
+        match self.publish_image(version, reason, snapshots, body) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.retire(failure(error)).into()),
+        }
+    }
+    fn publish_image<'a>(
         &mut self,
         version: AdmissionVersion,
         reason: &str,
@@ -761,6 +796,58 @@ mod tests {
         drop(publisher);
         fs::remove_dir_all(path).unwrap();
     }
+    #[test]
+    fn post_stage_publication_failures_retire_the_writer_for_async_and_pressure_paths() {
+        use super::super::PublicationIo;
+        for (phase, label) in [
+            (PublicationIo::Rename, "rename"),
+            (PublicationIo::JournalSync, "journal"),
+        ] {
+            for pressure in [false, true] {
+                let path = directory(&format!("poison-{label}-{pressure}"));
+                let mut publisher = CheckpointPublisher::<u8, u8>::create(
+                    plan(path.clone(), if pressure { 1 } else { 1 << 20 }),
+                    header(),
+                    0,
+                    None,
+                )
+                .unwrap();
+                publisher.writer.as_mut().unwrap().io.fail = Some(phase);
+                let result =
+                    publisher.publish(version(1), "interval", std::iter::once((3, &7)), |out| {
+                        postcard::to_io(&11_u8, out)?;
+                        Ok(())
+                    });
+                if pressure {
+                    assert!(result.unwrap_err().is::<PersistenceFailure>());
+                } else {
+                    result.unwrap();
+                    assert!(publisher.join().is_err());
+                }
+                assert!(publisher.failure.is_some());
+                assert!(publisher.writer.is_none());
+                assert!(publisher.worker.is_none());
+                assert!(publisher.keeper.is_none());
+                assert!(publisher.poll().unwrap_err().is::<PersistenceFailure>());
+                assert!(
+                    publisher
+                        .publish(version(2), "final", std::iter::once((3, &7)), |_| Ok(()))
+                        .unwrap_err()
+                        .is::<PersistenceFailure>()
+                );
+                assert!(
+                    publisher
+                        .finish(Ok(()))
+                        .unwrap_err()
+                        .is::<PersistenceFailure>()
+                );
+                assert!(!path.join("000000000002-final.ckpt").exists());
+                drop(publisher);
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn final_join_refuses_success_and_preserves_a_typed_primary_with_writer_failure() {
         #[derive(Debug)]

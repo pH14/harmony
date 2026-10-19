@@ -10528,6 +10528,81 @@ mod tests {
         assert_eq!(restored.objective_witness, core.objective_witness);
     }
 
+    fn wait_for_checkpoint_worker(coordinator: &CampaignCoordinator<'_, TestWorkload>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !coordinator.checkpoint_worker_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "checkpoint worker did not finish"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn a_direct_coordinator_cannot_complete_after_handing_back_a_publication_failure() {
+        let directory =
+            std::env::temp_dir().join(format!("direct-checkpoint-poison-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("000000000001-interval.ckpt")).unwrap();
+        let mut config = three_worker_config();
+        config.window = 1;
+        config.execution_budget = 1;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: std::num::NonZeroU64::new(1),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                    max_image_bytes: 64 << 20,
+                    before_write: None,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(coordinator.reserve_next().unwrap());
+        let job = coordinator.plan(1).pop().unwrap();
+        let mut target = workload.new_target().unwrap();
+        coordinator
+            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .unwrap();
+        wait_for_checkpoint_worker(&coordinator);
+        assert!(
+            coordinator
+                .reserve_next()
+                .unwrap_err()
+                .is::<super::super::checkpoint::publisher::PersistenceFailure>()
+        );
+        coordinator.watch_admissions();
+        coordinator.unwatch_admissions();
+        assert!(coordinator.plan(usize::MAX).is_empty());
+        assert!(coordinator.reserve_next().is_err());
+        assert!(
+            coordinator
+                .fail(job.reservation, "another worker error".into())
+                .is_err()
+        );
+        assert!(coordinator.finish(Vec::new()).is_err());
+        assert!(!directory.join("000000000001-final.ckpt").exists());
+        assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+        }));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn direct_coordinator_gap_finalization_keeps_primary_and_pending_writer_failure() {
         let directory =

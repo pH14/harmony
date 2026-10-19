@@ -111,6 +111,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     draw_state: DrawTables<G::Action>,
     duration_policies: DurationPolicies<G::Key>,
     checkpoints: Option<CheckpointPublisher<G::Snapshot, <G::Key as ArchiveKey>::Progress>>,
+    failed: bool,
     reserved: u64,
     admitted: usize,
     planned_clock: u64,
@@ -313,6 +314,7 @@ where
             draw_state,
             duration_policies,
             checkpoints,
+            failed: false,
             reserved,
             admitted,
             planned_clock,
@@ -383,6 +385,7 @@ where
 
     pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {
         let result = (|| {
+            self.ensure_active()?;
             self.poll_persistence()?;
             if self.pending.len() >= self.config.window {
                 return Ok(false);
@@ -393,6 +396,9 @@ where
     }
 
     pub fn plan(&mut self, limit: usize) -> Vec<JobSpec<G>> {
+        if self.failed {
+            return Vec::new();
+        }
         let mut jobs = Vec::new();
         while jobs.len() < limit
             && let Some((_, job)) = self.queued.pop_first()
@@ -442,6 +448,7 @@ where
         outcome: Result<(CampaignJobResult<G>, u64, String), String>,
     ) -> Result<(), Box<dyn Error>> {
         let result = (|| {
+            self.ensure_active()?;
             self.poll_persistence()?;
             self.workload.verify_integrity()?;
             self.profile.receives = self.profile.receives.saturating_add(1);
@@ -500,6 +507,20 @@ where
         self.handback_on_error(result)
     }
 
+    fn ensure_active(&self) -> Result<(), Box<dyn Error>> {
+        if self.failed {
+            return Err("campaign coordinator has already failed".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn checkpoint_worker_finished(&self) -> bool {
+        self.checkpoints
+            .as_ref()
+            .is_some_and(CheckpointPublisher::worker_finished)
+    }
+
     fn poll_persistence(&mut self) -> Result<(), Box<dyn Error>> {
         if let Some(checkpoints) = self.checkpoints.as_mut() {
             checkpoints.poll()?;
@@ -522,10 +543,14 @@ where
         &mut self,
         result: Result<T, Box<dyn Error>>,
     ) -> Result<T, Box<dyn Error>> {
-        match self.checkpoints.as_mut() {
+        let result = match self.checkpoints.as_mut() {
             Some(checkpoints) => checkpoints.finish(result),
             None => result,
+        };
+        if result.is_err() {
+            self.failed = true;
         }
+        result
     }
 
     pub fn watch_admissions(&mut self) {
@@ -602,6 +627,7 @@ where
         workers: Vec<WorkerTelemetry>,
     ) -> Result<CampaignOutcome<G>, Box<dyn Error>> {
         let result = (|| {
+            self.ensure_active()?;
             if !self.completed.is_empty() || !self.schedule.is_empty() {
                 return Err("campaign reorder window ended with an admission gap".into());
             }
