@@ -2,8 +2,14 @@
 pub(crate) mod faults;
 pub(crate) mod nes;
 pub(crate) mod nested;
+#[cfg(not(feature = "frontend"))]
+use crate::config::Result;
+#[cfg(feature = "frontend")]
 use crate::config::{Result, Workload};
-pub use crate::package::{Operation, Package, Request};
+#[cfg(feature = "frontend")]
+pub use crate::package::Package;
+pub use crate::package::{Operation, Request};
+#[cfg(feature = "frontend")]
 static PACKAGES: &[&dyn Package] = &[
     &nes::Nes,
     &nested::Nested,
@@ -11,6 +17,7 @@ static PACKAGES: &[&dyn Package] = &[
     #[cfg(test)]
     &tests::Counter,
 ];
+#[cfg(feature = "frontend")]
 pub fn select(workload: &Workload) -> Result<&'static dyn Package> {
     let package = if workload.package.is_empty() {
         PACKAGES
@@ -23,10 +30,12 @@ pub fn select(workload: &Workload) -> Result<&'static dyn Package> {
         .copied()
         .ok_or_else(|| format!("unknown workload package {:?}", workload.package).into())
 }
+#[cfg(feature = "frontend")]
 pub fn dispatch(request: Request) -> Result<u8> {
     dispatch_with_diagnostics(request, &mut std::io::stderr())
 }
 
+#[cfg(feature = "frontend")]
 fn dispatch_with_diagnostics(
     request: Request,
     diagnostics: &mut impl std::io::Write,
@@ -79,7 +88,7 @@ pub fn worker() -> Result<u8> {
     faults::worker()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
     use crate::{

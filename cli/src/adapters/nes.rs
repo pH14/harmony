@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use super::{Operation, Package, Request};
-use crate::{
-    config::{Config, Result},
-    runs::Manifest,
-};
+#[cfg(feature = "frontend")]
+use super::Package;
+use super::{Operation, Request};
+use crate::config::Config;
+use crate::{config::Result, runs::Manifest};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
+#[cfg(feature = "frontend")]
 pub struct Nes;
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
     guest_image: Option<String>,
 }
+#[cfg(feature = "frontend")]
 impl Package for Nes {
     fn name(&self) -> &'static str {
         "nes"
@@ -30,36 +32,7 @@ impl Package for Nes {
         Ok(())
     }
     fn validate_runner(&self, c: &mut Config) -> Result<()> {
-        if c.runner.kind.is_empty() {
-            c.runner.kind = if c.runner.backend.is_some() {
-                "consonance"
-            } else {
-                "quicknes"
-            }
-            .into();
-        }
-        match c.runner.kind.as_str() {
-            "quicknes" => {
-                if c.runner.backend.is_some() {
-                    return Err("quicknes has no virtualization backend".into());
-                }
-            }
-            "consonance" => {
-                if !cfg!(target_os = "linux") {
-                    return Err("the NES Consonance adapter currently requires Linux KVM".into());
-                }
-                if c.runner
-                    .backend
-                    .as_deref()
-                    .is_some_and(|b| b != "auto" && b != "kvm")
-                {
-                    return Err("the NES Consonance adapter currently supports KVM".into());
-                }
-                c.runner.backend = Some("kvm".into());
-            }
-            _ => return Err("NES supports quicknes and consonance runners".into()),
-        }
-        Ok(())
+        validate_runner(c)
     }
     fn semantic_outcome(&self, payload: &serde_json::Value) -> serde_json::Value {
         let mut outcome = payload.clone();
@@ -230,8 +203,41 @@ impl Package for Nes {
         finish(&out, &mut m, result)
     }
 }
+fn validate_runner(c: &mut Config) -> Result<()> {
+    if c.runner.kind.is_empty() {
+        c.runner.kind = if c.runner.backend.is_some() {
+            "consonance"
+        } else {
+            "quicknes"
+        }
+        .into();
+    }
+    match c.runner.kind.as_str() {
+        "quicknes" => {
+            if c.runner.backend.is_some() {
+                return Err("quicknes has no virtualization backend".into());
+            }
+        }
+        "consonance" => {
+            if !cfg!(target_os = "linux") {
+                return Err("the NES Consonance adapter currently requires Linux KVM".into());
+            }
+            if c.runner
+                .backend
+                .as_deref()
+                .is_some_and(|b| b != "auto" && b != "kvm")
+            {
+                return Err("the NES Consonance adapter currently supports KVM".into());
+            }
+            c.runner.backend = Some("kvm".into());
+        }
+        _ => return Err("NES supports quicknes and consonance runners".into()),
+    }
+    Ok(())
+}
+
 pub fn execute_prepared(mut request: Request, prepared: crate::handoff::Prepared) -> Result<u8> {
-    Nes.validate_runner(&mut request.config)?;
+    validate_runner(&mut request.config)?;
     let _: Options = toml::Value::Table(request.config.workload.options.clone()).try_into()?;
     if request.selection.is_some() {
         return saved_execution::<crate::native::Guarded>(request);
@@ -340,6 +346,7 @@ fn guest_replay_runtime(path: &Path, manifest: &Manifest) -> Result<(Vec<u8>, Ve
         read_recorded_artifact(path, manifest, "initramfs")?,
     ))
 }
+#[cfg(feature = "frontend")]
 fn saved(request: Request) -> Result<u8> {
     if !matches!(request.operation, Operation::Inspect | Operation::Timeline) {
         return saved_execution::<crate::native::Native>(request);
@@ -721,7 +728,7 @@ fn record_witness(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
     use searcher::search::checkpoint::{

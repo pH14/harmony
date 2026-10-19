@@ -432,8 +432,14 @@ role; it does not parse the frontend command tree or construct its package
 method table. The shared application library exposes separate frontend and guarded entrypoints;
 NES saved execution selects its native or guarded backend through static generic
 dispatch, so the guarded entrypoint has no native QuickNES callback. Role
-selection uses independent bin entrypoints, so building both bins with
-`--all-features` preserves native frontend behavior. On Linux,
+selection uses independent bin entrypoints. The default `frontend` capability
+enables command parsing, package preparation/browsing, runtime acquisition and
+native dispatch; the `harmony` bin requires it. The isolated host build uses
+`--no-default-features --features consonance-host`, omitting those modules and
+the direct clap/tar/compression dependencies used for recipe/download handling.
+OCI archive parsing and compression remain required transitively for independent
+prepared-image admission. Both default and `--all-features` builds preserve
+native frontend behavior; enabling `consonance-host` does not change its role. On Linux,
 it copies the static-musl host into a fresh executable memfd, seals its complete
 contents against writes and resizing, then executes it. The host checks those
 seals, the full loaded ELF bytes (including writable initializers), and its

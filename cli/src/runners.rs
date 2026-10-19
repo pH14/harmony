@@ -3,10 +3,15 @@ use crate::{
     config::{Backend, Result, Runner},
     runtime::Consonance,
 };
+#[cfg(feature = "frontend")]
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+#[cfg(feature = "frontend")]
+use std::path::Path;
+#[cfg(feature = "frontend")]
+use std::path::PathBuf;
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
+#[cfg(feature = "frontend")]
 pub struct Quicknes {
     pub core: Option<PathBuf>,
 }
@@ -36,6 +41,7 @@ pub fn store_consonance(spec: &mut Runner, runtime: &Consonance) -> Result<()> {
     spec.options = options;
     Ok(())
 }
+#[cfg(feature = "frontend")]
 pub fn normalize(spec: &mut Runner, base: &Path) -> Result<()> {
     match spec.kind.as_str() {
         "" => Ok(()),
@@ -63,6 +69,7 @@ pub fn normalize(spec: &mut Runner, base: &Path) -> Result<()> {
         other => Err(format!("unknown runner {other:?}").into()),
     }
 }
+#[cfg(feature = "frontend")]
 pub fn resolve(spec: &mut Runner, offline: bool) -> Result<()> {
     match spec.kind.as_str() {
         "consonance" => {

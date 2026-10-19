@@ -9,6 +9,7 @@ fn main() {
         .to_path_buf();
     let inputs = [
         "Cargo.toml",
+        "cli/Cargo.toml",
         "Cargo.lock",
         "flake.nix",
         "flake.lock",

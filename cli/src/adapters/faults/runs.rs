@@ -243,6 +243,7 @@ impl Manifest {
     }
 }
 
+#[cfg(feature = "frontend")]
 pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
     let mut outcome = payload.clone();
     if let Some(report) = outcome
@@ -254,7 +255,7 @@ pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
     outcome
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
 

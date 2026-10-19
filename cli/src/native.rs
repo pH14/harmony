@@ -20,9 +20,11 @@ pub trait Runner {
     ) -> Result<SearchEvidence>;
 }
 
+#[cfg(feature = "frontend")]
 pub struct Native;
 pub struct Guarded;
 
+#[cfg(feature = "frontend")]
 impl Runner for Native {
     fn replay(
         rom: &[u8],
