@@ -34,8 +34,16 @@ readbacks supply an oracle independently of the snapshot encoder. Bounded O1
 also compares the production whole-state hash at READY, DONE and termination;
 O2 fixes RAM/SIMD/x87 goldens; O3 repeats two distinct seeds and requires changed
 entropy with equal nonentropy outputs and positive continuation work. A separate
-`ControlServer` portable snapshot path preserves the cumulative event history;
-raw `VmState` restore does not carry that history. The
+`ControlServer` portable snapshot path preserves and compares the cumulative
+event history through the terminal checkpoint, including count and V-time.
+Both READY→DONE and DONE→termination must perform positive, matching work. The
+owned PID 1 writes a byte to the modeled, stateless POST port after DONE, then
+clears the register before shutdown. A planted control changes that byte only
+after matching DONE, observes the changed normalized write, and restores the
+code byte. State, output, event count and V-time must reconverge at termination;
+the cumulative terminal history must still distinguish the executions. This
+fixture mutation is a negative control, not qualified executable admission.
+Raw `VmState` restore does not carry cumulative history. The
 [qualification adapter](../../scripts/qualification/README.md#composed-linux-continuation)
 retains exact artifacts and cross-host admission outcomes. This bounded x86
 fixture does not establish a complete backend register inventory or qualify

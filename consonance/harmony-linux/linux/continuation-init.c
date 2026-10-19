@@ -44,6 +44,8 @@ void _start(void)
 	u64 observed[2], fp, random, time[2];
 	const u64 delay[2] = { 0, 2000000 };
 	u64 hash = 0xcbf29ce484222325;
+	if (call3(172, 3, 0, 0))
+		for (;;) {}
 	for (u64 i = 0; i != sizeof(memory); i++)
 		memory[i] = (unsigned char)(i * 17 + 31);
 	__asm__ volatile("movdqu %0, %%xmm15; fninit; fldl %1"
@@ -78,6 +80,7 @@ void _start(void)
 	hex(time[1]);
 	hex(random);
 	write_all("\nX3_DONE\n", 9);
+	__asm__ volatile(".byte 0xb0, 0x5a, 0xe6, 0x80, 0x31, 0xc0" : : : "rax", "memory");
 	call3(169, 0xfee1dead, 672274793, 0x4321fedc);
 	for (;;) {}
 }

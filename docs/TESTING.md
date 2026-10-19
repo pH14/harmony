@@ -83,7 +83,11 @@ portable-snapshot path also compares the separate cumulative event history.
 O2 checks the reviewed RAM checksum, XMM15 and x87 constants. O3 repeats two
 explicit seeds, requires different entropy and identical nonentropy readbacks,
 and requires equal positive continuation event counts and virtual time. Both
-runs must reach the owned guest's poweroff-idle terminal outcome. Missing,
+runs must reach the owned guest's poweroff-idle terminal outcome. The composed
+portable arm compares cumulative history through that terminal checkpoint, with
+positive, matching DONE-to-termination event and V-time deltas. A planted
+after-DONE port write must remain distinguishable in history even when terminal
+state and output reconverge. Missing,
 zero-work, same-seed and changed-latent-state controls prevent a vacuous cell.
 This is finite x86 KVM Linux evidence, not an oracle registry for every backend
 or a UML whole-state result.
