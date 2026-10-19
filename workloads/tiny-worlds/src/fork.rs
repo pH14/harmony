@@ -283,7 +283,16 @@ mod tests {
         assert!(Config { dead_len: 0, ..w }.validate().is_err());
         assert!(Config { dead_len: 6, ..w }.validate().is_err());
         assert!(Config { rooms: 17, ..w }.validate().is_err());
-        assert!(Config { length: 8, fork: 2, dead_len: 255, ..w }.validate().is_err());
+        assert!(
+            Config {
+                length: 8,
+                fork: 2,
+                dead_len: 255,
+                ..w
+            }
+            .validate()
+            .is_err()
+        );
         assert!(!w.state_is_bounded(State {
             run: 1,
             ..w.initial()
