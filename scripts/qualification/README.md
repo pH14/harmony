@@ -217,3 +217,16 @@ host pairs. It does not qualify arbitrary applications, nested virtualization,
 other backends, reused AMD restore, Arm Linux continuation, or a complete
 architectural register inventory. In particular, the Arm OS-lock regression
 and its debug-register table do not establish `KVM_GET_REG_LIST` coverage.
+
+## Runtime assurance requests
+
+The [execution assurance contract](../../consonance/execution-contract/README.md)
+keeps finite qualification separate from ordinary execution. Its closed
+candidate assessments retain the failed cross-vendor continuation above and
+UML's unavailable whole-state capability. No production whole-composition
+contract currently has the complete required transformation matrix, so an
+explicit qualification request refuses at Session/worker/UML admission. Ordinary
+library execution remains available, with an unqualified assurance identity
+bound through snapshots, cache namespaces and replay certificates. Existing
+bounded passing receipts retain their stated scope; neither their existence nor
+matching CPU metadata grants a stronger claim.

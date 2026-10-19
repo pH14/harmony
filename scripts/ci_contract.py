@@ -320,7 +320,7 @@ OCI_PLATFORM_TESTS = ("oci-support::platform *", "oci-support::process_platform 
 
 def _consonance_crates() -> tuple[str, ...]:
     return (
-        "consonance-client", "control-proto", "environment", "execution-proto",
+        "consonance-client", "control-proto", "environment", "execution-contract", "execution-proto",
         "gicv3", "guest-image", "host-code-identity", "hypercall-doorbell", "hypercall-proto",
         "lapic", "nested-driver", "oci-support", "process-proto", "snapshot-store", "telemetry",
         "uml", "unison", "vm-state", "vmm-backend", "vmm-core", "vtime",
@@ -402,7 +402,7 @@ CONSONANCE_CHECKS = Workflow(
             select="rust_checks"),
         Job("Execution Protocol", "pr", 15,
             crates=("consonance-client", "control-proto", "environment",
-                    "execution-proto", "hypercall-doorbell", "hypercall-proto",
+                    "execution-contract", "execution-proto", "hypercall-doorbell", "hypercall-proto",
                     "process-proto"),
             test_targets=("vmm-core:protocol",),
             select="rust_checks"),

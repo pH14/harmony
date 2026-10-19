@@ -1044,6 +1044,15 @@ fn put_config(out: &mut Out, config: &SessionConfig) {
         super::GuestContract::Ordinary => 0,
         super::GuestContract::NestedHost => 1,
     })
+    .u8(match config.qualification {
+        execution_contract::Requirement::Ordinary => 0,
+        execution_contract::Requirement::Qualified(
+            execution_contract::Composition::RetainedLinuxContinuation9673,
+        ) => 1,
+        execution_contract::Requirement::Qualified(
+            execution_contract::Composition::UmlFaultsWholeState,
+        ) => 2,
+    })
     .len(config.ram_bytes)
     .u64(config.seed)
     .u64(config.run_budget)
@@ -1063,6 +1072,16 @@ fn take_config(input: &mut In<'_>) -> io::Result<SessionConfig> {
             0 => super::GuestContract::Ordinary,
             1 => super::GuestContract::NestedHost,
             _ => return Err(malformed("unknown guest contract")),
+        },
+        qualification: match input.u8()? {
+            0 => execution_contract::Requirement::Ordinary,
+            1 => execution_contract::Requirement::Qualified(
+                execution_contract::Composition::RetainedLinuxContinuation9673,
+            ),
+            2 => execution_contract::Requirement::Qualified(
+                execution_contract::Composition::UmlFaultsWholeState,
+            ),
+            _ => return Err(malformed("unknown execution qualification requirement")),
         },
         ram_bytes: input.len()?,
         seed: input.u64()?,
@@ -1120,6 +1139,7 @@ impl WorkerSession {
         setup_payloads: &[Vec<u8>],
         service: &str,
     ) -> Result<Self, Box<dyn Error>> {
+        config.validate()?;
         let loaded_image_guard = launcher.loaded_image_guard.fork();
         let transport = Arc::new(work::Work::default());
         let (process, stream) = launcher
@@ -1909,6 +1929,7 @@ impl Served {
             if self.session.is_some() {
                 return Err("session worker is already initialized".into());
             }
+            init.config.validate()?;
             let session = open(init)?;
             let (setup, at) = session.setup_handle();
             self.session = Some(session);
@@ -3701,6 +3722,62 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+    }
+
+    #[test]
+    fn qualified_worker_launch_and_received_init_refuse_before_starting_execution() {
+        for composition in [
+            execution_contract::Composition::RetainedLinuxContinuation9673,
+            execution_contract::Composition::UmlFaultsWholeState,
+        ] {
+            let config = config()
+                .with_qualification(execution_contract::Requirement::Qualified(composition));
+            let launcher = WorkerLauncher {
+                program: PathBuf::from("/must-not-spawn-unqualified-worker"),
+                args: Vec::new(),
+                expected_image: "fixture".into(),
+                expected_main: "fixture".into(),
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            };
+            let (result, entries, _) = crate::image_identity::trace_checks(None, || {
+                WorkerSession::spawn(&launcher, b"k", b"i", &config, &[], "fake")
+            });
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("qualification refused")
+            );
+            assert_eq!(entries, 0);
+            let mut request = Out::op(INIT);
+            put_config(&mut request, &config);
+            request.bytes(b"k").bytes(b"i").len(0).bytes(b"fake");
+            let mut served = Served::default();
+            let mut opened = false;
+            let error = served
+                .handle(
+                    &request.0,
+                    &[],
+                    &mut |_| {
+                        opened = true;
+                        Err("must not open".into())
+                    },
+                    &mut |_| Err("must not allocate".into()),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("qualification refused"));
+            assert!(!opened);
+            assert!(served.session.is_none());
+        }
+        let mut request = Out::default();
+        put_config(&mut request, &config());
+        request.0[1] = 255;
+        assert!(
+            take_config(&mut In(&request.0))
+                .unwrap_err()
+                .to_string()
+                .contains("unknown execution qualification")
+        );
     }
 
     #[test]

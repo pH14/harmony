@@ -812,3 +812,21 @@ Guest teardown and records an idempotent receipt; successful group cleanup uses
 the existing launcher checks, not a new guarantee about arbitrary descendants. An
 abandoned UML session refuses shutdown confirmation even after removing its live
 Guest; normal confirmed shutdown remains idempotent.
+## Execution assurance
+
+Sessions default to ordinary, explicitly unqualified execution. Standard
+libraries remain admitted and CPU portability warnings remain advisory. Set
+`SessionConfig::with_qualification` to request a closed finite composition;
+`UmlLaunch::qualification` carries the same request. Both direct and inherited
+worker admission validate it before creating a guest. Current whole-composition
+candidates all refuse: the retained Linux cross-vendor state contradiction is
+failed and UML whole-state identity is unavailable. The request is not a switch
+that promotes ordinary artifacts into qualified evidence.
+
+The [execution assurance contract](../execution-contract/README.md) names the
+required artifact, engine, surface, substrate, restore and evidence bindings and
+the required transformation matrix. Ordinary assurance is bound into VM image
+identity, portable snapshot metadata, UML root identity and cache namespaces.
+Missing/changed portable assurance metadata is refused. These bindings distinguish
+an observed replay or cache equality from an exact-qualified result; they do not
+claim new architectural equivalence or relax any backend admission restriction.

@@ -149,6 +149,15 @@ advisory warning but is not numerical or whole-state qualification. Existing sna
 runner compatibility checks remain mandatory. This CLI warning does not add a
 CPU restriction to lower-level execution APIs or change snapshot/cache keys.
 
+Ordinary execution now carries an explicit unqualified assurance identity through
+session admission, snapshot metadata, cache namespaces and observed replay
+certificates. A closed finite-composition qualification request refuses when its
+required transformation matrix is missing, failed or unavailable. No production
+whole-composition contract currently qualifies: the retained cross-vendor Linux
+contradiction remains failed, and UML whole-state evidence remains unavailable.
+See the [execution assurance contract](../consonance/execution-contract/README.md).
+This distinction preserves ordinary library execution and advisory CPU warnings.
+
 ## Scope
 
 The current determinism claim has these limits:
