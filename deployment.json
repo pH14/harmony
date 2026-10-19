@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "1c3f9f0adde8f2852f19713c6f5f648cbf572346",
-    "build": "GitHub Actions run 39080131427, artifact twin-dragons-browser-dist",
-    "checks": "CI Twin Dragons Build, Browser games (incl. famidash) and Browser interface passed on 1c3f9f0ad",
-    "asset_manifest_sha256": "aece118815a252a5f8f2698fd3275742a28e3206a9b3ffacf8b51cbc76be7a74"
+    "commit": "2fbbce95f237f0b8ea7d192a4faa407c122f3236",
+    "build": "GitHub Actions run 39257116022, artifact twin-dragons-browser-dist",
+    "checks": "CI Twin Dragons Build, Browser games (incl. famidash) and Browser interface passed on 2fbbce95",
+    "asset_manifest_sha256": "a90b38829293cd7ac2e61a2e5317012b1252b64560b1231d0032eba844ccddec"
   }
 }
