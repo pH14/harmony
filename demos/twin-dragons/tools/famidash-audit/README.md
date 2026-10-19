@@ -118,6 +118,11 @@ by source region, separates live entries from contacts on a committed death
 frame, and retains source mismatches, outside-source samples and nearby
 objectives. Both players are included. Its output leaves source review pending:
 raw reads still need mode-specific geometry and route-intent assessment.
+Use `--regions-index REFERENCE` to retain an original region's footprint after
+source edits replace or split it. Actual reads still validate against the
+repaired source and ROM; the reference supplies only region geometry. Level
+name, dimensions and origin must agree. This prevents a repaired region from
+silently disappearing from the review because it is no longer decorative.
 
 `verify-geometry.py INDEX ROM_DIRECTORY BUILD_DIRECTORY OUTPUT` decodes the
 ROM's actual level-pointer tables, LZ streams, RLE runs and continuation IDs

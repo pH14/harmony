@@ -10,14 +10,20 @@ from pathlib import Path
 from components import components
 
 
-def review(index, witness, cpu):
+def review(index, witness, cpu, regions_index=None):
     assert cpu["schema"] == 2, "bank-aware caller classification is required"
     assert cpu["rom_sha256"] == witness["rom_sha256"]
     layout = next(level for level in index["levels"]
                   if level["side"] == witness["options"]["side"]
                   and level["level"] == witness["boot_level"])
     assert layout["rom_sha256"] == witness["rom_sha256"], "source index targets another ROM"
-    labels, groups = components(layout, index["metatiles"])
+    region_layout = layout
+    if regions_index is not None:
+        region_layout = next(level for level in regions_index["levels"]
+                             if (level["side"], level["level"]) == (layout["side"], layout["level"]))
+        assert all(region_layout[key] == layout[key] for key in ("name", "width", "height", "top")), (
+            "region reference uses different level coordinates")
+    labels, groups = components(region_layout, (regions_index or index)["metatiles"])
     states = {state["frame"]: state for state in cpu["states"]}
     for frame, state in states.items():
         expected = witness["trace"][frame - 1]
@@ -27,6 +33,7 @@ def review(index, witness, cpu):
               "side": layout["side"], "level": layout["level"], "name": layout["name"],
               "components": {}, "source_mismatches": [], "outside_source": [],
               "centre_probes": 0,
+              "region_geometry": "reference index" if regions_index is not None else "actual source index",
               "limitation": "Raw collision reads and end-of-frame survival only. Mode-specific geometry, "
                             "source intent, objectives and original-ROM reproduction remain required."}
     for sample in cpu["samples"]:
@@ -68,6 +75,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("index", "case", "cpu", "output"):
         parser.add_argument(name, type=Path)
+    parser.add_argument("--regions-index", type=Path,
+                        help="preserve reviewed footprints after source edits split or replace a region")
     args = parser.parse_args()
     def read(path):
         raw = path.read_bytes()
@@ -76,12 +85,15 @@ def main():
     case_bytes, witness = read(args.case)
     cpu_bytes, cpu = read(args.cpu)
     assert cpu["witness_sha256"] == hashlib.sha256(case_bytes).hexdigest(), "CPU trace binds another case"
-    result = review(index, witness, cpu)
+    region_bytes, regions = read(args.regions_index) if args.regions_index else (None, None)
+    result = review(index, witness, cpu, regions)
     result["inputs"] = {"index_sha256": hashlib.sha256(index_bytes).hexdigest(),
                         "case_sha256": hashlib.sha256(case_bytes).hexdigest(),
                         "cpu_sha256": hashlib.sha256(cpu_bytes).hexdigest(),
                         "rom_sha256": witness["rom_sha256"], "core_sha256": cpu["core_sha256"],
                         "debug_sha256": cpu["debug_sha256"]}
+    if region_bytes is not None:
+        result["inputs"]["regions_index_sha256"] = hashlib.sha256(region_bytes).hexdigest()
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({"status": result["status"], "components": len(result["components"]),
                       "centre_probes": result["centre_probes"],

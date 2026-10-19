@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import copy
 import importlib.util
 from pathlib import Path
 import unittest
@@ -39,6 +40,31 @@ class CentreEntryTest(unittest.TestCase):
         result = module.review(index, witness, cpu)
         self.assertEqual(result["status"], "source-mismatch-requires-review")
         self.assertEqual(result["components"], {})
+
+    def test_reference_footprint_survives_replacement_with_solid_tiles(self):
+        index, witness, cpu = self.fixture()
+        reference = copy.deepcopy(index)
+        index["levels"][0]["tiles"][4] = 0
+        cpu["samples"][0]["metatile"] = 0
+        result = module.review(index, witness, cpu, reference)
+        self.assertEqual(result["region_geometry"], "reference index")
+        self.assertEqual(result["components"]["0"]["live_entries"][0]["metatile"], 0)
+        self.assertFalse(result["source_mismatches"])
+
+    def test_reference_does_not_override_actual_source_validation(self):
+        index, witness, cpu = self.fixture()
+        reference = copy.deepcopy(index)
+        index["levels"][0]["tiles"][4] = 0
+        result = module.review(index, witness, cpu, reference)
+        self.assertEqual(result["status"], "source-mismatch-requires-review")
+        self.assertEqual(result["components"], {})
+
+    def test_shifted_region_reference_is_rejected(self):
+        index, witness, cpu = self.fixture()
+        reference = copy.deepcopy(index)
+        reference["levels"][0]["top"] = 16
+        with self.assertRaisesRegex(AssertionError, "different level coordinates"):
+            module.review(index, witness, cpu, reference)
 
 
 if __name__ == "__main__":
