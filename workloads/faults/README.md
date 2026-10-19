@@ -685,7 +685,7 @@ Child publication selects the lease of the actual restored parent point, includi
 when another sibling remains resident. Runnable, terminal and interrupted-rebuild
 observations all exclude park and read evidence at or before the previous endpoint.
 
-Standalone checkpoint histories use a parent-indexed DAG with one receipt per
+Standalone and whole-search checkpoint histories use a parent-indexed DAG with one receipt per
 semantic history root. Encoding follows missing tails iteratively and deduplicates
 independently allocated equivalent prefixes. Decode validates receipt roots, paths,
 depth, domain, moments and backend continuity before constructing shared Arc nodes;

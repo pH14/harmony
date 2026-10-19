@@ -1284,6 +1284,11 @@ fn telemetry_now() -> std::time::Instant {
     std::time::Instant::now()
 }
 
+impl searcher::search::snapshot_codec::CheckpointSnapshot for Snapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}
+
+
 #[cfg(test)]
 fn test_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};
@@ -1982,8 +1987,4 @@ mod tests {
         assert_eq!(snapshot.payload.len(), 100);
         assert!(snapshot.payload.iter().any(|&b| b != 0));
     }
-}
-
-impl searcher::search::snapshot_codec::CheckpointSnapshot for Snapshot {
-    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
 }

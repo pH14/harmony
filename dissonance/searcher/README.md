@@ -911,9 +911,10 @@ header or body, so byte changes that remain valid postcard data fail closed
 instead of changing the continuation. These
 checks detect corruption, not deliberate rewriting of a checkpoint and its
 checksum. `checkpoints.jsonl` records each checkpoint's SHA-256, write time and sizes:
-`store_bytes` is the store's length, `live_snapshot_bytes` is the bytes that
-kept checkpoints list, and `freed_snapshots` and `freed_snapshot_bytes` count
-what the write's pruning released. The
+`store_bytes` is the store's length. `live_snapshot_bytes` includes endpoint and
+shared frames reachable from kept checkpoints; `new_snapshot_bytes` and
+`freed_snapshot_bytes` include both kinds. `new_snapshots` and `freed_snapshots`
+count endpoint frames only. The
 header names the body's layout, `SEARCH_CHECKPOINT_FORMAT`. The name changes
 whenever a stored type such as `Archive` changes, and a reader refuses a
 checkpoint of any other layout before it decodes the body. The
@@ -1052,3 +1053,20 @@ parent-before-child dependencies and the exact referenced closure, and refuses o
 flat envelopes and trailing bytes. Plain snapshots opt into the postcard codec;
 workloads with persistent graphs provide semantic keys and graph validation. All
 artifact writers, readers and source-bound checksum validation use this codec.
+
+Whole-search checkpoint v10 uses the same workload codec in a typed `HMSTORE2`
+append store. Snapshot frames refer to semantic shared keys using checksummed
+physical ranges. Shared frames carry earlier parent locators, so resume validates
+the reachable graph iteratively without a global dictionary in each checkpoint.
+Range overflow, overlap, type/key conflicts, forward references and incompatible
+codec headers fail before archive installation.
+
+The writer stages new metadata until the checkpoint is synced and renamed. Kept
+checkpoint listings retain endpoint frames; each live frame owns its root or parent
+edges once. Removing the last listing cascades through unowned graph records
+iteratively, forgetting their keys before punching file holes. Later reintroduction
+of the same semantic root emits its missing ancestry with new locations. Pinned
+checkpoints preserve the reachable graph. Failed encoding stops that writer;
+failed checkpoint publication cannot change earlier live listing/edge ownership.
+Appended unreferenced tails may remain after a fatal failure. Persistence remains
+synchronous; no background writer or retained-image lease protocol is introduced.
