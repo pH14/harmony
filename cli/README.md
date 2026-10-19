@@ -460,11 +460,14 @@ The `harmony-prepared-execution-v1` handoff is a self-contained postcard file
 with JSON request metadata and a trailing SHA-256. Its total size is at most
 1 GiB, metadata at most 1 MiB, and a captured UML profile at most 4,096 ordinary
 files. Actions and host scripts are captured in that file as well. The host checks
-the checksum before decoding, rejects another release/platform-source/protocol,
+the checksum before decoding, requires exactly one fully consumed postcard record,
+rejects another release/platform-source/protocol,
 validates the operation, pinned backend, options and runtime qualification, and
 reconstructs canonical OCI control bytes from the prepared record. It independently
-admits the actual archived application image and supervisor vocabulary. Prepared
-rootfs inflation is bounded to 1 GiB. Source recipe/image changes after capture
+admits the actual archived application image and supervisor vocabulary. Faults
+supervision must agree with the requested search, captured actions and configured
+nodes; a plain execution cannot discard requested actions or replace supervision.
+Prepared rootfs inflation is bounded to 1 GiB. Source recipe/image changes after capture
 cannot replace those bytes. Captured UML files are independently loaded through
 the reviewed-profile validator. The temporary profile and captured inputs remain
 owned until execution finishes. Saved execution reloads and verifies its original
