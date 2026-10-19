@@ -487,9 +487,10 @@ supervision must agree with the requested search, captured actions and configure
 nodes; a plain execution cannot discard requested actions or replace supervision.
 Execution-bearing fields are accepted only by operations that consume them:
 actions by Faults/NES runs and branches, guest commands by Faults branches,
-console output by plain Faults runs, and additional budgets by saved searches.
+console output by plain Faults runs, additional budgets by saved searches, and
+parallel replay counts by Faults shrinks.
 Raw command overrides must agree with the effective Faults run configuration.
-Saved replay, branch and resume require a selection; incompatible point selectors,
+Saved replay, branch, resume and shrink require a selection; incompatible point selectors,
 commands, captures and repeat counts are refused before execution.
 Captured action/script presence must match the request exactly, and ROM payloads
 belong only to fresh NES execution.
@@ -525,7 +526,7 @@ operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
 Saved runs also retain `cpu_provenance`, an advisory history of observed CPU
-implementation metadata. Replay, branching, and continued search print a warning
+implementation metadata. Replay, branching, shrinking and continued search print a warning
 to stderr if the recording and current CPU differ or either identity is unknown,
 incomplete, or heterogeneous. Older manifests without this field warn as unknown;
 derived runs retain that uncertainty. Standard math libraries remain supported,
