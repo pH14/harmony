@@ -181,7 +181,9 @@ Level 1 after a median of 6,300 executions, Level 2 after 37,000 and the game
 after 89,000; every seed finished within 94,000. A coordinator job averages
 about 17 frames. A history is
 bounded to 10,000 actions and 200,000 frames. Runs stop when a path finishes the
-game or when the search WASM buffers reach their limit. Pause stops sending new
+game or when the search WASM buffers reach their limit. A finished game stops new
+reservations, and the page still runs and admits every job reserved before it, so
+the final archive does not depend on the order workers finish. Pause stops sending new
 rollouts and holds results until resume.
 
 Desktops run `navigator.hardwareConcurrency - 2` rollout workers, at most 8, so

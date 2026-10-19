@@ -527,7 +527,7 @@ impl<G: BrowserGame> SearchApi for Search<G> {
     }
 
     fn stopped(&self) -> bool {
-        self.won() || self.coordinator.finished()
+        self.coordinator.finished()
     }
 
     fn snapshot_bytes(&self) -> usize {
