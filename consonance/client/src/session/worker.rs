@@ -744,8 +744,7 @@ fn read_exact_until(
     })
 }
 
-#[cfg(target_os = "macos")]
-fn read_frame_exact(
+fn read_frame_with_rights_exact(
     stream: &UnixStream,
     mut buffer: &mut [u8],
     deadline: Option<Instant>,
@@ -767,6 +766,17 @@ fn read_frame_exact(
         buffer = &mut buffer[size..];
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn read_frame_exact(
+    stream: &UnixStream,
+    buffer: &mut [u8],
+    deadline: Option<Instant>,
+    count: &mut u64,
+    fd_count: &mut u64,
+) -> io::Result<()> {
+    read_frame_with_rights_exact(stream, buffer, deadline, count, fd_count)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -796,7 +806,13 @@ fn recv_raw_bounded(
     if received == 0 {
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
-    read_frame_exact(
+    let strict_rights = request_bounds || limit == crate::endpoint::ENDPOINT_FRAME_LIMIT;
+    let read_exact = if strict_rights {
+        read_frame_with_rights_exact
+    } else {
+        read_frame_exact
+    };
+    read_exact(
         stream,
         &mut header[received..],
         deadline,
@@ -816,7 +832,7 @@ fn recv_raw_bounded(
     let mut prefix = [0];
     let prefix_len = usize::from(request_bounds && len > 0);
     if prefix_len != 0 {
-        read_frame_exact(
+        read_frame_with_rights_exact(
             stream,
             &mut prefix,
             deadline,
@@ -834,7 +850,7 @@ fn recv_raw_bounded(
     if prefix_len != 0 {
         body[0] = prefix[0];
     }
-    read_frame_exact(
+    read_exact(
         stream,
         &mut body[prefix_len..],
         deadline,
@@ -2409,6 +2425,8 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct Fake {
+        endpoint_state: crate::endpoint::EndpointState,
+        endpoint_abandoned: bool,
         next: u64,
         states: BTreeMap<u64, u8>,
         current: u8,
@@ -2444,7 +2462,77 @@ mod tests {
         }
     }
 
+    impl crate::endpoint::EndpointDriver for Fake {
+        fn ensure_active(&self) -> Result<(), Box<dyn Error>> {
+            if self.endpoint_abandoned {
+                Err(SessionError::Abandoned.into())
+            } else {
+                Ok(())
+            }
+        }
+        fn supports_proof(&self) -> bool {
+            true
+        }
+        fn event_count(&self, parent: Option<SnapId>) -> Result<Option<u32>, Box<dyn Error>> {
+            if let Some(parent) = parent {
+                self.state(parent)?;
+            }
+            Ok(Some(
+                self.sdk_history.as_ref().map_or(1, Vec::len).try_into()?,
+            ))
+        }
+        fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
+            ServedSession::branch_input(self, parent, input)
+        }
+        fn run(
+            &mut self,
+            until: StopConditions,
+            resolve: Option<Resolution>,
+        ) -> Result<StopReason, Box<dyn Error>> {
+            match resolve {
+                Some(resolution) => self.run_resolving(until.deadline.unwrap().0, resolution),
+                None => self.run_until(until.deadline.unwrap().0),
+            }
+        }
+        fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+            SearchSession::snapshot(self)
+        }
+        fn page(
+            &mut self,
+            cursor: u32,
+            _end: u32,
+        ) -> Result<Vec<crate::endpoint::EndpointEvent>, Box<dyn Error>> {
+            self.sdk_events_since(cursor)
+        }
+        fn proof(&mut self) -> Result<crate::endpoint::EndpointProof, Box<dyn Error>> {
+            Ok(crate::endpoint::EndpointProof::WholeStateAndHistory {
+                state_hash: self.state_hash()?,
+                history: self.event_history()?,
+            })
+        }
+        fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+            SearchSession::drop_snapshot(self, snapshot)
+        }
+        fn abandon(&mut self) {
+            self.endpoint_abandoned = true;
+            self.states.clear();
+        }
+    }
+
     impl SearchSession for Fake {
+        fn execution_endpoint(
+            &mut self,
+            request: crate::endpoint::EndpointRequest,
+        ) -> Result<crate::endpoint::EndpointReply, Box<dyn Error>> {
+            let mut state = std::mem::take(&mut self.endpoint_state);
+            let result = state.exchange(self, request);
+            self.endpoint_state = state;
+            result
+        }
+        fn abandon_execution_endpoint(&mut self) {
+            crate::endpoint::EndpointDriver::abandon(self);
+        }
+
         fn setup_handle(&self) -> (SnapId, u64) {
             (SnapId(1), 10)
         }
@@ -2586,7 +2674,7 @@ mod tests {
         }
 
         fn abandoned(&self) -> bool {
-            false
+            self.endpoint_abandoned
         }
     }
 
@@ -3937,6 +4025,136 @@ mod tests {
         ])
         .unwrap();
         WorkerSession::spawn(&launcher, &[start], b"i", &config(), &[], "fake").unwrap()
+    }
+
+    fn endpoint_request(deadline: u64) -> crate::endpoint::ExecutionRequest {
+        crate::endpoint::ExecutionRequest {
+            branch: Some(
+                crate::endpoint::EndpointBranch::new(SnapId(1), &InputSpec::seeded(7)).unwrap(),
+            ),
+            until: StopConditions {
+                deadline: Some(Moment(deadline)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+            sdk_cursor: 0,
+            snapshot_on: crate::endpoint::EndpointStops::DEADLINE,
+            proof: crate::endpoint::EndpointProofRequest::WholeStateAndHistory,
+        }
+    }
+
+    #[test]
+    fn execution_endpoint_matches_legacy_worker_facts_with_two_exchanges() {
+        use crate::endpoint::*;
+        let (mut legacy, old_server) = threaded_quarantining(3, None);
+        legacy
+            .branch_with_service(
+                SnapId(1),
+                ServiceConfig::default(),
+                Vec::new(),
+                Vec::new(),
+                None,
+            )
+            .unwrap();
+        let stop = legacy.run_until(20).unwrap();
+        let snapshot = legacy.snapshot().unwrap();
+        let events = legacy.sdk_events_since(0).unwrap();
+        let state_hash = legacy.state_hash().unwrap();
+        let history = legacy.event_history().unwrap();
+        let legacy_sends = legacy
+            .transport
+            .counters("fixture")
+            .into_iter()
+            .filter(|(key, _)| key.ends_with("send.attempts"))
+            .map(|(_, value)| value)
+            .sum::<u64>();
+        let (mut batched, new_server) = threaded_quarantining(3, None);
+        {
+            let ExecutionStart::Endpoint(endpoint) =
+                ExecutionEndpoint::execute(&mut batched, endpoint_request(20)).unwrap()
+            else {
+                panic!("expected endpoint");
+            };
+            assert_eq!(endpoint.page().events, events);
+            let receipt = endpoint.commit().unwrap();
+            assert_eq!(receipt.binding.stop, stop);
+            assert_eq!(receipt.snapshot, Some(snapshot));
+            assert_eq!(
+                receipt.proof,
+                EndpointProof::WholeStateAndHistory {
+                    state_hash,
+                    history
+                }
+            );
+        }
+        let sends = batched.transport.counters("fixture");
+        assert_eq!(
+            sends
+                .iter()
+                .find(|(key, _)| key == "fixture.endpoint.send.attempts")
+                .unwrap()
+                .1,
+            2
+        );
+        let total = sends
+            .into_iter()
+            .filter(|(key, _)| key.ends_with("send.attempts"))
+            .map(|(_, value)| value)
+            .sum::<u64>();
+        assert_eq!(legacy_sends, 7);
+        assert_eq!(total, 3);
+        drop(legacy);
+        drop(batched);
+        old_server.join().unwrap();
+        new_server.join().unwrap();
+    }
+
+    #[test]
+    fn execution_endpoint_preserves_typed_worker_failures_and_latches_abandonment() {
+        use crate::endpoint::*;
+        for deadline in [HANG, HOST_FAILURE] {
+            let (mut worker, server) = threaded_quarantining(3, None);
+            let error = match ExecutionEndpoint::execute(&mut worker, endpoint_request(deadline)) {
+                Err(error) => error,
+                Ok(_) => panic!("expected injected failure"),
+            };
+            assert!(
+                match error.downcast_ref::<SessionError>() {
+                    Some(SessionError::Hung(_)) => deadline == HANG,
+                    Some(SessionError::Infrastructure(_)) => deadline == HOST_FAILURE,
+                    _ => false,
+                },
+                "{error}"
+            );
+            assert!(worker.abandoned());
+            drop(worker);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn execution_endpoint_prefix_refuses_oversized_frames_before_body_allocation() {
+        let (sender, receiver) = UnixStream::pair().unwrap();
+        let mut header = [0; HEADER];
+        header[..8]
+            .copy_from_slice(&((crate::endpoint::ENDPOINT_FRAME_LIMIT + 1) as u64).to_le_bytes());
+        (&sender).write_all(&header).unwrap();
+        (&sender).write_all(&[ENDPOINT]).unwrap();
+        let mut work = work::Delta::default();
+        let error = recv_raw_bounded(
+            &receiver,
+            usize::MAX,
+            Some(Instant::now() + Duration::from_secs(1)),
+            &mut work,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("execution endpoint frame"),
+            "{error}"
+        );
+        assert_eq!(work.header, HEADER as u64);
+        assert_eq!(work.body, 1);
     }
 
     #[test]

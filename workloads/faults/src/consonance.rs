@@ -2816,6 +2816,8 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct TimedOutRestore {
+        endpoint_state: consonance_client::endpoint::EndpointState,
+        endpoint_abandoned: bool,
         hash: Option<[u8; 32]>,
         hash_calls: u64,
         replay_calls: u64,
@@ -2840,7 +2842,85 @@ mod tests {
         next_snap: u64,
     }
 
+    impl consonance_client::endpoint::EndpointDriver for TimedOutRestore {
+        fn ensure_active(&self) -> Result<(), Box<dyn Error>> {
+            if self.abandoned() {
+                Err(SessionError::Abandoned.into())
+            } else {
+                Ok(())
+            }
+        }
+        fn supports_proof(&self) -> bool {
+            true
+        }
+        fn event_count(&self, parent: Option<SnapId>) -> Result<Option<u32>, Box<dyn Error>> {
+            Ok(Some(u32::try_from(
+                self.events
+                    .get(&parent.map_or(self.current, |snap| snap.0))
+                    .map_or(0, Vec::len),
+            )?))
+        }
+        fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
+            self.branch_with_service(
+                parent,
+                input.config().clone(),
+                input.payloads().unwrap_or_default().to_vec(),
+                Vec::new(),
+                input.coverage_schedule().cloned(),
+            )
+        }
+        fn run(
+            &mut self,
+            until: control_proto::StopConditions,
+            resolve: Option<Resolution>,
+        ) -> Result<StopReason, Box<dyn Error>> {
+            let deadline = until.deadline.unwrap().0;
+            match resolve {
+                Some(resolution) => self.run_resolving(deadline, resolution),
+                None => self.run_until(deadline),
+            }
+        }
+        fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+            SearchSession::snapshot(self)
+        }
+        fn page(
+            &mut self,
+            cursor: u32,
+            _end: u32,
+        ) -> Result<Vec<consonance_client::endpoint::EndpointEvent>, Box<dyn Error>> {
+            self.sdk_events_since(cursor)
+        }
+        fn proof(&mut self) -> Result<EndpointProof, Box<dyn Error>> {
+            Ok(EndpointProof::WholeStateAndHistory {
+                state_hash: self.state_hash()?,
+                history: self.event_history()?,
+            })
+        }
+        fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+            SearchSession::drop_snapshot(self, snapshot)
+        }
+        fn abandon(&mut self) {
+            self.endpoint_abandoned = true;
+            self.snapshots.clear();
+            self.events.clear();
+            self.histories.clear();
+        }
+    }
+
     impl SearchSession for TimedOutRestore {
+        fn execution_endpoint(
+            &mut self,
+            request: consonance_client::endpoint::EndpointRequest,
+        ) -> Result<consonance_client::endpoint::EndpointReply, Box<dyn Error>> {
+            let mut state = std::mem::take(&mut self.endpoint_state);
+            let result = state.exchange(self, request);
+            self.endpoint_state = state;
+            result
+        }
+        fn abandon_execution_endpoint(&mut self) {
+            consonance_client::endpoint::EndpointDriver::abandon(self);
+        }
+
         fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
             if TRACK_SHUTDOWN_TELEMETRY.with(|track| track.get()) {
                 SHUTDOWN_CLOSED.with(|closed| closed.set(true));
@@ -3192,7 +3272,7 @@ mod tests {
         }
 
         fn abandoned(&self) -> bool {
-            self.abandon_on_hash && self.hash_calls != 0
+            self.endpoint_abandoned || (self.abandon_on_hash && self.hash_calls != 0)
         }
     }
 
@@ -3274,6 +3354,8 @@ mod tests {
             key: [0; 32],
             holder: 0,
             session: Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 histories: BTreeMap::new(),
 
                 history_failure: None,
@@ -3327,6 +3409,8 @@ mod tests {
     ) -> Live {
         let mut live = timed_out_live();
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -3522,6 +3606,8 @@ mod tests {
 
     #[derive(Debug)]
     struct BoundaryDecisionSession {
+        endpoint_state: consonance_client::endpoint::EndpointState,
+        endpoint_abandoned: bool,
         resolutions: Arc<std::sync::Mutex<Vec<(ServiceConfig, Resolution)>>>,
         branch: Option<ServiceConfig>,
         deadline: u64,
@@ -3529,7 +3615,78 @@ mod tests {
         next_snapshot: u64,
     }
 
+    impl consonance_client::endpoint::EndpointDriver for BoundaryDecisionSession {
+        fn ensure_active(&self) -> Result<(), Box<dyn Error>> {
+            if self.endpoint_abandoned {
+                Err(SessionError::Abandoned.into())
+            } else {
+                Ok(())
+            }
+        }
+        fn supports_proof(&self) -> bool {
+            true
+        }
+        fn event_count(&self, _parent: Option<SnapId>) -> Result<Option<u32>, Box<dyn Error>> {
+            Ok(Some(0))
+        }
+        fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
+            self.branch_with_service(
+                parent,
+                input.config().clone(),
+                Vec::new(),
+                Vec::new(),
+                input.coverage_schedule().cloned(),
+            )
+        }
+        fn run(
+            &mut self,
+            until: control_proto::StopConditions,
+            resolve: Option<Resolution>,
+        ) -> Result<StopReason, Box<dyn Error>> {
+            let deadline = until.deadline.unwrap().0;
+            match resolve {
+                Some(resolution) => self.run_resolving(deadline, resolution),
+                None => self.run_until(deadline),
+            }
+        }
+        fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+            SearchSession::snapshot(self)
+        }
+        fn page(
+            &mut self,
+            _cursor: u32,
+            _end: u32,
+        ) -> Result<Vec<consonance_client::endpoint::EndpointEvent>, Box<dyn Error>> {
+            Ok(Vec::new())
+        }
+        fn proof(&mut self) -> Result<EndpointProof, Box<dyn Error>> {
+            Ok(EndpointProof::WholeStateAndHistory {
+                state_hash: self.state_hash()?,
+                history: self.event_history()?,
+            })
+        }
+        fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+            SearchSession::drop_snapshot(self, snapshot)
+        }
+        fn abandon(&mut self) {
+            self.endpoint_abandoned = true;
+        }
+    }
+
     impl SearchSession for BoundaryDecisionSession {
+        fn execution_endpoint(
+            &mut self,
+            request: consonance_client::endpoint::EndpointRequest,
+        ) -> Result<consonance_client::endpoint::EndpointReply, Box<dyn Error>> {
+            let mut state = std::mem::take(&mut self.endpoint_state);
+            let result = state.exchange(self, request);
+            self.endpoint_state = state;
+            result
+        }
+        fn abandon_execution_endpoint(&mut self) {
+            consonance_client::endpoint::EndpointDriver::abandon(self);
+        }
+
         fn setup_handle(&self) -> (SnapId, u64) {
             (SnapId(1), 0)
         }
@@ -3637,7 +3794,7 @@ mod tests {
         }
 
         fn abandoned(&self) -> bool {
-            false
+            self.endpoint_abandoned
         }
     }
 
@@ -3653,6 +3810,8 @@ mod tests {
         let resolutions = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut live = timed_out_live();
         live.session = Box::new(BoundaryDecisionSession {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             resolutions: Arc::clone(&resolutions),
             branch: None,
             deadline: 0,
@@ -3691,6 +3850,8 @@ mod tests {
     fn hashed_live(hash: [u8; 32]) -> Live {
         let mut live = timed_out_live();
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -3908,6 +4069,8 @@ mod tests {
 
     fn fixture_session() -> TimedOutRestore {
         TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
             history: control_proto::EventHistory::default(),
             history_failure: None,
@@ -3940,6 +4103,8 @@ mod tests {
     ) -> Live {
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history,
@@ -4057,6 +4222,8 @@ mod tests {
                 let workload = capture_fixture_workload(&target);
                 let mut live = hashed_live([17; 32]);
                 live.session = Box::new(TimedOutRestore {
+                    endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                    endpoint_abandoned: false,
                     run_hashes: Some(vec![[17; 32]]),
                     run_hung: failure == "watchdog",
                     terminal_when_exhausted: failure == "terminal",
@@ -4139,6 +4306,8 @@ mod tests {
                 let workload = capture_fixture_workload(&target);
                 let mut live = scripted_capture_live(vec![[17; 32]; depth], false);
                 live.session = Box::new(TimedOutRestore {
+                    endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                    endpoint_abandoned: false,
                     run_hashes: Some(vec![[17; 32]; depth]),
                     history_failure: Some(|| SessionError::Hung(WALL_LIMIT)),
                     ..fixture_session()
@@ -4404,6 +4573,8 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = scripted_capture_live(Vec::new(), false);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             run_hashes: Some(vec![[17; 32]]),
             run_hung: true,
             ..fixture_session()
@@ -4767,6 +4938,8 @@ mod tests {
             )
             .unwrap();
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -4809,6 +4982,8 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 histories: BTreeMap::new(),
 
                 history_failure: None,
@@ -4907,6 +5082,8 @@ mod tests {
         let mut baseline = unbooted_target();
         let mut baseline_live = hashed_live([17; 32]);
         baseline_live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -4948,6 +5125,8 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -5050,6 +5229,8 @@ mod tests {
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -5114,6 +5295,8 @@ mod tests {
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -5162,6 +5345,8 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -5415,6 +5600,8 @@ mod tests {
                 target.history = target.history.push(receipt).unwrap();
             }
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 events: BTreeMap::from([(1, prefix.clone())]),
                 run_events: Some(
                     prefix
@@ -5509,6 +5696,8 @@ mod tests {
         let index = Arc::new(LocalIndex::new(1 << 20));
         let mut live = scripted_capture_live(vec![[17; 32]], false);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             history: control_proto::EventHistory::default(),
             history_failure: None,
             sdk_failure: None,
@@ -5726,6 +5915,8 @@ mod tests {
         let mut valid = vec![0];
         valid.extend_from_slice(&77_u64.to_le_bytes());
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             events: BTreeMap::from([(
                 1,
                 vec![(1, (2 << 24) | 1, valid), (2, (1 << 24) | 1, vec![9, 0, 0])],
@@ -5748,6 +5939,8 @@ mod tests {
         let suffix = (8, 0, br#"{"harmony_park":{"site":3,"edges":4}}"#.to_vec());
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             events: BTreeMap::from([(1, prefix.clone()), (2, sibling)]),
             run_events: Some(prefix.iter().cloned().chain([suffix]).collect()),
             ..fixture_session()
@@ -5827,6 +6020,8 @@ mod tests {
         let namespace = Namespace::exact(&[b"pending-branch-decoder"]);
         let mut publisher = publishing_live(&index, namespace, SnapId(3), [17; 32]);
         publisher.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             current: 3,
             events: BTreeMap::from([(3, vec![(0, u32::MAX, Vec::new())])]),
             snapshots: BTreeMap::from([(3, [17; 32])]),
@@ -6302,6 +6497,8 @@ mod tests {
         let mut baseline = unbooted_target();
         let mut baseline_live = hashed_live([17; 32]);
         baseline_live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -6342,6 +6539,8 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 histories: BTreeMap::new(),
 
                 history_failure: None,
@@ -6711,6 +6910,8 @@ mod tests {
         ] {
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 hash_error: failure,
                 abandon_on_hash: true,
                 ..fixture_session()
@@ -6871,6 +7072,8 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 hash: Some([17; 32]),
                 history_failure: Some(failure),
                 ..TimedOutRestore::default()
@@ -6903,6 +7106,8 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             hash: Some([17; 32]),
             history_failure: Some(|| {
                 SessionError::Control(format!("{INFRASTRUCTURE_FAILURE}forged transport cause"))
@@ -6950,6 +7155,8 @@ mod tests {
             ] {
                 let mut live = hashed_live([17; 32]);
                 live.session = Box::new(TimedOutRestore {
+                    endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                    endpoint_abandoned: false,
                     sdk_failure: failure,
                     ..fixture_session()
                 });
@@ -7584,6 +7791,8 @@ mod tests {
         let install = |digest| {
             let mut live = hashed_live(endpoint);
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 histories: BTreeMap::new(),
                 hash_failure: false,
                 hash_error: None,
@@ -7706,6 +7915,8 @@ mod tests {
             let certify = |digest, history_hung: bool| {
                 let mut live = hashed_live([17; 32]);
                 live.session = Box::new(TimedOutRestore {
+                    endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                    endpoint_abandoned: false,
                     histories: BTreeMap::new(),
                     hash_failure: false,
                     hash_error: None,
