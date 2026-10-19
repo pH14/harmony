@@ -382,7 +382,7 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
         "tiny-world-v1"
     }
     fn checkpoint_format(&self) -> &'static str {
-        "tiny-world-checkpoint-v1"
+        "tiny-world-checkpoint-v2"
     }
     fn workload_identity_sha256(&self) -> String {
         postcard_value_sha256(&(&self.config, self.broken, CAPACITY_TWO, self.scale))
@@ -1363,7 +1363,7 @@ mod tests {
         let origin = CampaignOrigin::SnapshotRoot {
             checkpoint: CampaignCheckpoint {
                 path: "constructed-root".into(),
-                file_sha256: postcard_value_sha256(&snapshots).unwrap(),
+                file_sha256: snapshots.sha256().unwrap(),
                 snapshots,
             },
         };
@@ -1982,4 +1982,8 @@ mod tests {
         assert_eq!(snapshot.payload.len(), 100);
         assert!(snapshot.payload.iter().any(|&b| b != 0));
     }
+}
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for Snapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
 }

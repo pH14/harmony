@@ -250,10 +250,9 @@ where
         fs::File::create(options.output.join("report.json"))?,
         &report,
     )?;
-    serde_json::to_writer(
-        fs::File::create(options.output.join("checkpoint.json"))?,
-        &checkpoint,
-    )?;
+    checkpoint.write_to(&mut fs::File::create(
+        options.output.join("checkpoint.bin"),
+    )?)?;
     let mut best = match report.objective_witness.clone() {
         Some(input) => input,
         None => serde_json::from_value(

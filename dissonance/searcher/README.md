@@ -1045,3 +1045,10 @@ execution snapshots outside the archive and use this read accessor for films.
 Weighted draws use `RomuDuoJrRand::below_u64` for 64-bit weight
 totals, so wasm32 does not truncate them through `usize`. This uses the same
 multiply-high draw as native selection and preserves its random sequence.
+
+Snapshot artifacts select a workload-owned `CheckpointSnapshot::Codec`. The common
+`HMSNAP02` envelope streams checksummed shared-record and endpoint frames, validates
+parent-before-child dependencies and the exact referenced closure, and refuses old
+flat envelopes and trailing bytes. Plain snapshots opt into the postcard codec;
+workloads with persistent graphs provide semantic keys and graph validation. All
+artifact writers, readers and source-bound checksum validation use this codec.

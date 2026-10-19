@@ -13,6 +13,7 @@ mod heap;
 pub mod parallel;
 pub mod rand;
 pub mod rollout;
+pub mod snapshot_codec;
 pub mod telemetry;
 mod weighted_set;
 

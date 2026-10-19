@@ -2050,3 +2050,7 @@ mod boss_status_tests {
         assert_eq!(after.collectibles(), before.collectibles());
     }
 }
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for MetroidSnapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}

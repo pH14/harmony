@@ -221,7 +221,14 @@ pub trait CampaignTypes: Sync {
     type Key: ArchiveKey + Debug + Eq + Send + Sync;
     type Milestones: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Progress: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    type Snapshot: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
+    type Snapshot: Clone
+        + Debug
+        + Eq
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + super::snapshot_codec::CheckpointSnapshot;
     type Observations: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Evidence: Clone + Default;
     type ArchiveReport: Clone;
@@ -746,8 +753,7 @@ pub struct CampaignCheckpoint<S> {
     pub snapshots: SnapshotCheckpoint<S>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(bound = "S: Serialize + DeserializeOwned")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotCheckpoint<S> {
     pub format: String,
     pub entries: Vec<SnapshotCheckpointEntry<S>>,
@@ -765,17 +771,28 @@ type ArchiveMaterialization<G> = (
     Vec<(u64, <G as CampaignTypes>::Snapshot)>,
 );
 
-impl<S: Serialize + DeserializeOwned> SnapshotCheckpoint<S> {
+impl<S: super::snapshot_codec::CheckpointSnapshot> SnapshotCheckpoint<S> {
     pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(postcard::to_allocvec(self)?)
+        let mut bytes = Vec::new();
+        self.write_to(&mut bytes)?;
+        Ok(bytes)
     }
-
+    pub fn sha256(&self) -> Result<String, Box<dyn Error>> {
+        let mut writer = CheckpointHashWriter(Sha256::new());
+        self.write_to(&mut writer)?;
+        Ok(format!("{:x}", writer.0.finalize()))
+    }
+    pub fn write_to(&self, out: &mut dyn Write) -> Result<(), Box<dyn Error>> {
+        super::snapshot_codec::write_checkpoint(self, out)
+    }
+    pub fn read_from(
+        input: &mut dyn std::io::Read,
+        expected_format: &str,
+    ) -> Result<Self, Box<dyn Error>> {
+        super::snapshot_codec::read_checkpoint(input, expected_format)
+    }
     pub fn from_bytes(bytes: &[u8], expected_format: &str) -> Result<Self, Box<dyn Error>> {
-        let (format, _) = postcard::take_from_bytes::<&str>(bytes)?;
-        if format != expected_format {
-            return Err("snapshot checkpoint format is not recognized".into());
-        }
-        Ok(postcard::from_bytes(bytes)?)
+        Self::read_from(&mut &*bytes, expected_format)
     }
 }
 
@@ -3349,7 +3366,7 @@ fn validate_archive_checkpoint<G: Workload + ?Sized>(
         return Err("archive snapshot checkpoint format is not recognized".into());
     }
     let mut writer = CheckpointHashWriter(Sha256::new());
-    postcard::to_io(&checkpoint.snapshots, &mut writer)?;
+    checkpoint.snapshots.write_to(&mut writer)?;
     let actual_sha256 = format!("{:x}", writer.0.finalize());
     if checkpoint.file_sha256 != actual_sha256 {
         return Err("archive snapshot checkpoint bytes do not match their SHA-256".into());
@@ -7158,7 +7175,19 @@ mod tests {
                 .unwrap()
                 .clone(),
         );
-        reject_entries(source_report.clone(), duplicate, "duplicate entry IDs");
+        assert!(
+            duplicate
+                .to_bytes()
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate")
+        );
+        assert!(
+            super::validate_archive_checkpoint_entries(&workload, &source_report, &duplicate)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate entry IDs")
+        );
         let mut unknown = source_snapshots.clone();
         unknown
             .entries
@@ -8449,7 +8478,6 @@ mod tests {
             ids: vec![7],
         })
         .expect("older layout encodes");
-        assert!(postcard::from_bytes::<SnapshotCheckpoint<u8>>(&older).is_err());
         let error = SnapshotCheckpoint::<u8>::from_bytes(&older, "test-checkpoint-v1")
             .expect_err("an older checkpoint is rejected")
             .to_string();
