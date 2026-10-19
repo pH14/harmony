@@ -197,7 +197,7 @@ impl EndpointPage {
             .iter()
             .try_fold(0usize, |bytes, event| {
                 bytes
-                    .checked_add(24)
+                    .checked_add(16)
                     .and_then(|bytes| bytes.checked_add(event.2.len()))
             })
             .ok_or(EndpointProtocolError::Invalid("SDK page length overflow"))?;

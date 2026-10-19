@@ -299,7 +299,14 @@ pub(super) fn put_reply(out: &mut Out, reply: &EndpointReply) -> Result<(), Endp
                 .u64(u64::from(page.next_cursor))
                 .len(page.events.len());
             for (moment, id, bytes) in &page.events {
-                out.u64(*moment).u64(u64::from(*id)).bytes(bytes);
+                out.u64(*moment);
+                out.0.extend_from_slice(&id.to_le_bytes());
+                out.0
+                    .extend_from_slice(&u32::try_from(bytes.len())?.to_le_bytes());
+                out.0.extend_from_slice(bytes);
+                if let Some(copies) = &out.1 {
+                    copies.copied(CopySite::Encode, bytes.len());
+                }
             }
         }
         EndpointReply::Committed(receipt) => {
@@ -349,16 +356,16 @@ fn take_reply(bytes: &[u8]) -> Result<EndpointReply, EndpointError> {
             let cursor = u32_field(&mut input)?;
             let next_cursor = u32_field(&mut input)?;
             let count = input.len()?;
-            if count > input.0.len() / 24 || count > ENDPOINT_PAGE_LIMIT / 24 {
+            if count > input.0.len() / 16 || count > ENDPOINT_PAGE_LIMIT / 16 {
                 return Err(malformed("endpoint event count exceeds bytes").into());
             }
             let mut events = Vec::with_capacity(count);
             for _ in 0..count {
-                events.push((
-                    input.u64()?,
-                    u32_field(&mut input)?,
-                    input.bytes()?.to_vec(),
-                ));
+                let moment = input.u64()?;
+                let id = u32::from_le_bytes(input.take(4)?.try_into().expect("four bytes"));
+                let len = u32::from_le_bytes(input.take(4)?.try_into().expect("four bytes"));
+                let bytes = input.take(usize::try_from(len)?)?.to_vec();
+                events.push((moment, id, bytes));
             }
             let page = EndpointPage {
                 binding,
@@ -447,4 +454,60 @@ fn bounded_detail(detail: impl std::fmt::Display) -> String {
     let mut result = Detail(String::new());
     let _ = write!(&mut result, "{detail}");
     result.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_maximum_legal_control_sdk_page_fits_the_endpoint_wire_without_widening_rows() {
+        let events = vec![(7, 19, vec![3; ENDPOINT_PAGE_LIMIT - 22])];
+        let mut control = Vec::new();
+        encode_reply(0, &Ok(Reply::SdkEvents(events.clone())), &mut control).unwrap();
+        let page = EndpointPage {
+            binding: EndpointBinding {
+                token: EndpointToken(1),
+                request_digest: [7; 32],
+                stop: StopReason::Deadline { vtime: Moment(20) },
+                source_count: 0,
+                start_cursor: 0,
+                end_cursor: 1,
+            },
+            cursor: 0,
+            next_cursor: 1,
+            events,
+        };
+        page.validate().unwrap();
+        let reply = EndpointReply::Page(page);
+        let mut out = Out::default();
+        put_reply(&mut out, &reply).unwrap();
+        assert!(out.0.len() < ENDPOINT_FRAME_LIMIT);
+        assert_eq!(take_reply(&out.0).unwrap(), reply);
+    }
+
+    #[test]
+    fn endpoint_diagnostics_are_bounded_utf8_and_preserve_typed_status() {
+        let detail = "é".repeat(40_000);
+        let bytes = status(
+            Err(SessionError::Infrastructure(detail).into()),
+            &Arc::default(),
+        );
+        let mut input = In(&bytes);
+        assert_eq!(input.u8().unwrap(), FAILED);
+        assert_eq!(input.u8().unwrap(), INFRASTRUCTURE);
+        let detail = input.string().unwrap();
+        assert_eq!(detail.len(), 64 << 10);
+        assert!(detail.chars().all(|character| character == 'é'));
+        input.finish().unwrap();
+        let bytes = status(
+            Err(SessionError::Hung(Duration::from_secs(3)).into()),
+            &Arc::default(),
+        );
+        let mut input = In(&bytes);
+        assert_eq!(input.u8().unwrap(), FAILED);
+        assert_eq!(input.u8().unwrap(), HUNG);
+        assert_eq!(input.u64().unwrap(), 3_000_000_000);
+        input.finish().unwrap();
+    }
 }
