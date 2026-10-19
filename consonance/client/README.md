@@ -95,7 +95,7 @@ finalization have their own small bounds; Execute and Resume have bounds derived
 from existing input/control payload limits. Both hosts reject descriptors in a
 header remainder or body. INIT/import keep their existing independent contracts. Endpoint replies have a fixed receive bound, forbid descriptors and
 validate every tag, length and trailing byte before acting. Versioned peers must
-agree on worker image protocol v4 rather than using a compatibility fallback.
+agree on worker image protocol v5 rather than using a compatibility fallback.
 Endpoint error details are bounded to 64 KiB at UTF-8 boundaries while Hung,
 Infrastructure and Abandoned retain their typed wire identity. Success and error
 replies also report retirement, so even a successful Decision abort cannot leave
