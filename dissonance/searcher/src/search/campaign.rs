@@ -5446,6 +5446,8 @@ mod tests {
     }
     #[derive(Default)]
     struct LiveTargets {
+        locality: bool,
+        locality_reads: std::sync::atomic::AtomicUsize,
         bootstrap_readiness: Option<BootstrapReadiness>,
         refuse: bool,
         integrity_invalidated: std::sync::atomic::AtomicBool,
@@ -5653,6 +5655,25 @@ mod tests {
     impl Error for TestIntegrityViolation {}
 
     impl TargetExecution for TestWorkload {
+        fn worker_locality(&self, target: &TestTarget) -> crate::search::locality::WorkerLocality {
+            use crate::search::locality::{LocalityKey, WorkerLocality};
+            if let Some(targets) = self.targets.as_ref().filter(|targets| targets.locality) {
+                targets
+                    .locality_reads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                WorkerLocality::new([(LocalityKey([target.value; 32]), 1)])
+            } else {
+                WorkerLocality::default()
+            }
+        }
+
+        fn snapshot_locality(&self, snapshot: &u8) -> Option<crate::search::locality::LocalityKey> {
+            self.targets
+                .as_ref()
+                .filter(|targets| targets.locality)
+                .map(|_| crate::search::locality::LocalityKey([*snapshot; 32]))
+        }
+
         fn take_job_observation(&self) -> Option<Self::JobObservation> {
             Some(())
         }
@@ -8642,6 +8663,55 @@ mod tests {
             serde_json::to_vec(&live.0).unwrap()
         );
         assert_eq!(replayed, live);
+    }
+
+    #[test]
+    fn locality_hints_preserve_complete_logical_campaign_streams_across_worker_counts() {
+        for seed in [5, 11, 19] {
+            let mut reference = None;
+            for workers in [1, 3] {
+                for locality in [false, true] {
+                    let targets = Arc::new(LiveTargets {
+                        locality,
+                        ..LiveTargets::default()
+                    });
+                    let workload = TestWorkload {
+                        bootstrap_objective: false,
+                        targets: Some(Arc::clone(&targets)),
+                    };
+                    let mut config = three_worker_config();
+                    config.campaign_seed = seed;
+                    config.workers = workers;
+                    config.window = 6;
+                    let mut stream = Vec::new();
+                    let outcome = run_campaign_checkpointed(
+                        &workload,
+                        &config,
+                        &CampaignOrigin::Genesis,
+                        &mut stream,
+                        None,
+                    )
+                    .unwrap();
+                    if locality {
+                        assert!(
+                            targets
+                                .locality_reads
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                > 0
+                        );
+                    }
+                    let logical = (stream, serde_json::to_vec(&outcome.0).unwrap());
+                    if let Some(expected) = &reference {
+                        assert_eq!(
+                            &logical, expected,
+                            "seed={seed}, workers={workers}, locality={locality}"
+                        );
+                    } else {
+                        reference = Some(logical);
+                    }
+                }
+            }
+        }
     }
 
     fn job_lines(stream: &[u8]) -> Vec<(usize, CampaignJobRecord<EmpiricalStepCheckpoint>)> {
