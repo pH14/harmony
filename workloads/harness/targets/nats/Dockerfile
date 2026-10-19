@@ -56,6 +56,7 @@ RUN sha256="${NATS_SOURCE_SHA256}" \
     && if [ -z "${sha256}" ]; then \
         case "${NATS_VERSION}" in \
             v2.10.20) sha256=598704e96ea92fd74283526c9b6044df8b54e4cdccf9ddc5e25a52249c44424a ;; \
+            v2.10.23) sha256=60b9bbdb84661e9fe1c3834ab1fb421ed74453dd35dc206c04d3272f85b93f28 ;; \
             v2.15.1) sha256=41b25fcb78a174f3afce4ec1eca0c1035439abf580f0a0569dbb03bd0d955e08 ;; \
             *) echo "pass NATS_SOURCE_SHA256 for ${NATS_VERSION}" >&2; exit 1 ;; \
         esac; \

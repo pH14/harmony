@@ -195,7 +195,8 @@ then shows up as lost acknowledged appends.
 The image builds `nats-server` from pinned source through the Antithesis Go
 instrumentation like the
 [etcd case](../bugs/historical/etcd-3.5-inconsistency/image/README.md). The
-Dockerfile knows the source SHA-256 of `v2.10.20` (default) and `v2.15.1`;
+Dockerfile knows the source SHA-256 of `v2.10.20` (default), `v2.10.23`
+and `v2.15.1`;
 pass `NATS_SOURCE_SHA256` for other versions.
 
 ```sh
