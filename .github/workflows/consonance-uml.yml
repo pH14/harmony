@@ -19,6 +19,8 @@ jobs:
     name: Exact retained UML artifact on AMD
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    env:
+      CORE_ROOT: /var/tmp/uml785-${{ github.run_id }}-${{ github.run_attempt }}
     defaults:
       run:
         shell: bash
@@ -39,8 +41,7 @@ jobs:
       - name: Install executable-filtered bounded core collector
         run: |
           set -euo pipefail
-          core_root="/var/tmp/uml785-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          echo "CORE_ROOT=$core_root" >> "$GITHUB_ENV"
+          core_root="$CORE_ROOT"
           export UML785_UID="$(id -u)" UML785_CORE_ROOT="$core_root"
           python3 - "$RUNNER_TEMP/uml785-exact" "$RUNNER_TEMP/core-config.json" <<'PY'
           import importlib.util
