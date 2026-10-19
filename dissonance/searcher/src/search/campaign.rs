@@ -6203,14 +6203,14 @@ mod tests {
 
     type TestActionHook = dyn Fn(TestAction) -> Result<(), String> + Send + Sync;
 
-    struct BootstrapGate {
+    struct BootstrapReadiness {
         coordinator: std::thread::ThreadId,
         finalized: std::sync::atomic::AtomicBool,
         worker_starts: std::sync::atomic::AtomicUsize,
     }
     #[derive(Default)]
     struct LiveTargets {
-        bootstrap_gate: Option<BootstrapGate>,
+        bootstrap_readiness: Option<BootstrapReadiness>,
         refuse: bool,
         integrity_invalidated: std::sync::atomic::AtomicBool,
         fail_next_target: std::sync::atomic::AtomicBool,
@@ -6423,12 +6423,13 @@ mod tests {
                 if fail {
                     Err("test shutdown unconfirmed".into())
                 } else {
-                    if let Some(gate) = self
+                    if let Some(readiness) = self
                         .targets
                         .as_ref()
-                        .and_then(|targets| targets.bootstrap_gate.as_ref())
+                        .and_then(|targets| targets.bootstrap_readiness.as_ref())
                     {
-                        gate.finalized
+                        readiness
+                            .finalized
                             .store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                     Ok(())
@@ -6450,14 +6451,17 @@ mod tests {
             let Some(targets) = &self.targets else {
                 return Ok(TestTarget::default());
             };
-            if let Some(gate) = &targets.bootstrap_gate
-                && std::thread::current().id() != gate.coordinator
+            if let Some(readiness) = &targets.bootstrap_readiness
+                && std::thread::current().id() != readiness.coordinator
             {
                 assert!(
-                    gate.finalized.load(std::sync::atomic::Ordering::SeqCst),
+                    readiness
+                        .finalized
+                        .load(std::sync::atomic::Ordering::SeqCst),
                     "worker started before bootstrap session finalized"
                 );
-                gate.worker_starts
+                readiness
+                    .worker_starts
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
 
@@ -6828,7 +6832,7 @@ mod tests {
         config.execution_budget = 0;
         for fail in [false, true] {
             let targets = Arc::new(LiveTargets {
-                bootstrap_gate: Some(BootstrapGate {
+                bootstrap_readiness: Some(BootstrapReadiness {
                     coordinator: std::thread::current().id(),
                     finalized: std::sync::atomic::AtomicBool::new(false),
                     worker_starts: std::sync::atomic::AtomicUsize::new(0),
@@ -6857,13 +6861,17 @@ mod tests {
                 );
             }
             assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
-            let gate = targets.bootstrap_gate.as_ref().unwrap();
+            let readiness = targets.bootstrap_readiness.as_ref().unwrap();
             assert_eq!(
-                gate.worker_starts.load(std::sync::atomic::Ordering::SeqCst),
+                readiness
+                    .worker_starts
+                    .load(std::sync::atomic::Ordering::SeqCst),
                 usize::from(!fail)
             );
             assert_eq!(
-                gate.finalized.load(std::sync::atomic::Ordering::SeqCst),
+                readiness
+                    .finalized
+                    .load(std::sync::atomic::Ordering::SeqCst),
                 !fail
             );
         }
