@@ -1,5 +1,9 @@
 # Host SHA qualification
 
+For a fixed-window, complete-stream comparison of one NES search across worker
+counts, use the [NES scaling qualifier](nes-scaling.md). It also documents the
+cloud Famidash launch and Arcade recording workflow.
+
 The separate [native math corpus](native-math/README.md) retains one static
 executable and exact arithmetic observations across AMD/Intel hosts. It reports
 bounded agreements and differences while preserving standard math support and
