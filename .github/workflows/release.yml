@@ -200,7 +200,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools strace
           if [[ -c /dev/kvm ]]; then sudo chmod a+rw /dev/kvm; fi
-          musl-gcc -O2 -static -Wall -Wextra -Werror \
+          musl-gcc -O2 -static -Wl,-z,separate-code -Wall -Wextra -Werror \
             -o packaged-host-fixture cli/tests/fixtures/packaged-host.c
       - name: Exercise the exact publication archives through the CLI and worker
         run: |

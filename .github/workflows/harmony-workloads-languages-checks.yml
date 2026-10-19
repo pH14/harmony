@@ -131,7 +131,7 @@ jobs:
           if [[ -c /dev/kvm ]]; then sudo chmod a+rw /dev/kvm; fi
           tar -C paired-cli -czf cli.tar.gz harmony harmony-consonance-host
           tar -C runtime -czf runtime.tar.gz x86_64/bzImage x86_64/initramfs-oci.cpio.gz x86_64/runtime-manifest.json
-          musl-gcc -O2 -static -Wall -Wextra -Werror \
+          musl-gcc -O2 -static -Wl,-z,separate-code -Wall -Wextra -Werror \
             -o packaged-host-fixture cli/tests/fixtures/packaged-host.c
       - name: Exercise the packaged CLI and worker
         run: |
