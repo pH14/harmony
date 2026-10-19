@@ -521,6 +521,13 @@ where
             .is_some_and(CheckpointPublisher::worker_finished)
     }
 
+    #[cfg(test)]
+    pub(super) fn checkpoint_capture_overflows(&self) -> usize {
+        self.checkpoints
+            .as_ref()
+            .map_or(0, CheckpointPublisher::capture_overflows)
+    }
+
     fn poll_persistence(&mut self) -> Result<(), Box<dyn Error>> {
         if let Some(checkpoints) = self.checkpoints.as_mut() {
             checkpoints.poll()?;

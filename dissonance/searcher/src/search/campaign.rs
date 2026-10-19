@@ -5592,13 +5592,23 @@ mod tests {
         static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static EVIDENCE_WRITE_FAILURE: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
+        static EVIDENCE_PRESSURE_WRITE: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
     }
 
-    struct EvidenceWriteFailureGuard(Option<(usize, usize)>);
+    struct EvidenceWriteFailureGuard(Option<(usize, usize)>, Option<(usize, usize)>);
 
     impl EvidenceWriteFailureGuard {
         fn new(pass: usize) -> Self {
-            Self(EVIDENCE_WRITE_FAILURE.replace(Some((pass, 0))))
+            Self(
+                EVIDENCE_WRITE_FAILURE.replace(Some((pass, 0))),
+                EVIDENCE_PRESSURE_WRITE.replace(None),
+            )
+        }
+
+        fn after_overflow() -> Self {
+            let guard = Self::new(2);
+            EVIDENCE_PRESSURE_WRITE.set(Some((0, 0)));
+            guard
         }
 
         fn calls(&self) -> usize {
@@ -5609,6 +5619,7 @@ mod tests {
     impl Drop for EvidenceWriteFailureGuard {
         fn drop(&mut self) {
             EVIDENCE_WRITE_FAILURE.set(self.0);
+            EVIDENCE_PRESSURE_WRITE.set(self.1);
         }
     }
 
@@ -5662,6 +5673,26 @@ mod tests {
         ) -> Result<(), Box<dyn Error>> {
             if let Some((pass, calls)) = EVIDENCE_WRITE_FAILURE.get() {
                 EVIDENCE_WRITE_FAILURE.set(Some((pass, calls + 1)));
+                if let Some((attempts, completed)) = EVIDENCE_PRESSURE_WRITE.get() {
+                    let result = (|| -> std::io::Result<()> {
+                        for _ in 0..128 {
+                            out.write_all(&[0; 1024])?;
+                        }
+                        Ok(())
+                    })();
+                    EVIDENCE_PRESSURE_WRITE.set(Some((
+                        attempts + 1,
+                        completed + usize::from(result.is_ok()),
+                    )));
+                    if calls + 1 == pass {
+                        return Err(Box::new(TestEvidenceWriteError {
+                            pass,
+                            cause: TestEvidenceWriteCause,
+                        }));
+                    }
+                    result?;
+                    return Ok(());
+                }
                 if calls + 1 == pass {
                     return Err(Box::new(TestEvidenceWriteError {
                         pass,
@@ -10667,6 +10698,74 @@ mod tests {
                 std::fs::remove_dir_all(directory).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn coordinator_preserves_a_one_shot_typed_error_after_evidence_capture_overflows() {
+        let directory = std::env::temp_dir().join(format!(
+            "coordinator-evidence-overflow-error-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut config = three_worker_config();
+        config.window = 1;
+        config.execution_budget = 1;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: std::num::NonZeroU64::new(1),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                    max_image_bytes: 64 << 10,
+                    before_write: None,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(coordinator.reserve_next().unwrap());
+        let job = coordinator.plan(1).pop().unwrap();
+        let mut target = workload.new_target().unwrap();
+        let guard = EvidenceWriteFailureGuard::after_overflow();
+        let error = coordinator
+            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .unwrap_err();
+        assert!(error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>());
+        let primary = error.source().unwrap();
+        assert_eq!(
+            primary
+                .downcast_ref::<TestEvidenceWriteError>()
+                .unwrap()
+                .pass,
+            2
+        );
+        assert!(primary.source().unwrap().is::<TestEvidenceWriteCause>());
+        assert_eq!(coordinator.checkpoint_capture_overflows(), 1);
+        assert_eq!(guard.calls(), 2);
+        assert_eq!(EVIDENCE_PRESSURE_WRITE.get(), Some((2, 2)));
+        assert!(coordinator.reserve_next().is_err());
+        assert!(coordinator.plan(usize::MAX).is_empty());
+        assert!(coordinator.finish(Vec::new()).is_err());
+        assert_eq!(guard.calls(), 2);
+        assert!(!directory.join("000000000001-interval.ckpt").exists());
+        assert!(!directory.join("000000000001-final.ckpt").exists());
+        assert!(!directory.join("checkpoints.jsonl").exists());
+        assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+        }));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

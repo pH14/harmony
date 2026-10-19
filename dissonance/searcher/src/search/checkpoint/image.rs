@@ -101,6 +101,33 @@ impl LimitedBytes {
     pub(crate) fn exceeded(&self) -> bool {
         self.exceeded
     }
+    pub(crate) fn capture(&mut self) -> impl Write + '_ {
+        CaptureBytes(self)
+    }
+}
+
+struct CaptureBytes<'a>(&'a mut LimitedBytes);
+
+impl Write for CaptureBytes<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.0.exceeded() {
+            return Ok(bytes.len());
+        }
+        match self.0.write(bytes) {
+            Err(error)
+                if self.0.exceeded()
+                    && error
+                        .get_ref()
+                        .is_some_and(|inner| inner.is::<ImageLimit>()) =>
+            {
+                Ok(bytes.len())
+            }
+            result => result,
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
 }
 impl Write for LimitedBytes {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -300,5 +327,27 @@ mod tests {
         .unwrap_err();
         assert_eq!(calls.get(), 1);
         assert_eq!(error.downcast_ref::<postcard::Error>(), Some(&baseline));
+    }
+
+    #[test]
+    fn capture_discards_overflow_without_growing_or_changing_strict_sink_behavior() {
+        let mut bytes = LimitedBytes::new(8);
+        bytes.capture().write_all(&[1; 3]).unwrap();
+        bytes.capture().write_all(&[2; 5]).unwrap();
+        assert!(!bytes.exceeded());
+        let capacity = bytes.bytes.capacity();
+        assert!(capacity <= 8);
+        bytes.capture().write_all(&[3]).unwrap();
+        assert!(bytes.exceeded());
+        bytes.capture().write_all(&[4; 1024]).unwrap();
+        bytes.capture().flush().unwrap();
+        assert_eq!(bytes.bytes.capacity(), capacity);
+        assert_eq!(bytes.finish(), [1, 1, 1, 2, 2, 2, 2, 2]);
+
+        let mut strict = LimitedBytes::new(8);
+        let error = strict.write_all(&[5; 9]).unwrap_err();
+        assert!(error.get_ref().unwrap().is::<ImageLimit>());
+        assert!(strict.exceeded());
+        assert!(strict.bytes.is_empty());
     }
 }
