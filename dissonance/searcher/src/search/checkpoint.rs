@@ -162,6 +162,24 @@ impl<P: Copy + Ord> CheckpointSchedule<P> {
     }
 }
 
+#[derive(Serialize)]
+struct CheckpointHeaderRef<'a> {
+    format: &'a str,
+    checkpoint_owner: Option<&'a str>,
+    reason: &'a str,
+    workload_identity_sha256: &'a str,
+    executable_identity: &'a str,
+    campaign_seed: u64,
+    window: usize,
+    archive_entry_limit: usize,
+    memory_budget_mib: Option<usize>,
+    policies: &'a BTreeMap<String, String>,
+    executions: u64,
+    reserved: u64,
+    admitted: usize,
+    planned_clock: u64,
+}
+
 pub(crate) struct CheckpointStoreWriter {
     plan: CheckpointPlan,
     frames: super::snapshot_store::StoreFrames,
@@ -185,6 +203,7 @@ enum PublicationIo {
 struct PublicationIoTest {
     fail: Option<PublicationIo>,
     trace: Vec<PublicationIo>,
+    header_policy_buffers: Vec<(usize, usize)>,
 }
 impl CheckpointStoreWriter {
     pub(crate) fn create(plan: CheckpointPlan) -> Result<Self, Box<dyn Error>> {
@@ -257,8 +276,22 @@ impl CheckpointStoreWriter {
         snapshots: impl Iterator<Item = (u64, &'a S)>,
         body: impl FnOnce(&mut dyn Write) -> Result<(), Box<dyn Error>>,
     ) -> Result<(), Box<dyn Error>> {
-        let mut header = header.clone();
-        header.checkpoint_owner = self.plan.checkpoint_owner.clone();
+        let serialized_header = CheckpointHeaderRef {
+            format: &header.format,
+            checkpoint_owner: self.plan.checkpoint_owner.as_deref(),
+            reason: &header.reason,
+            workload_identity_sha256: &header.workload_identity_sha256,
+            executable_identity: &header.executable_identity,
+            campaign_seed: header.campaign_seed,
+            window: header.window,
+            archive_entry_limit: header.archive_entry_limit,
+            memory_budget_mib: header.memory_budget_mib,
+            policies: &header.policies,
+            executions: header.executions,
+            reserved: header.reserved,
+            admitted: header.admitted,
+            planned_clock: header.planned_clock,
+        };
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         let stage = self.frames.stage(snapshots)?;
@@ -279,7 +312,20 @@ impl CheckpointStoreWriter {
                 digest: Sha256::new(),
             },
         );
-        postcard::to_io(&header, &mut out)?;
+        #[cfg(test)]
+        {
+            self.io.header_policy_buffers = serialized_header
+                .policies
+                .iter()
+                .flat_map(|(key, value)| {
+                    [
+                        (key.as_ptr() as usize, key.len()),
+                        (value.as_ptr() as usize, value.len()),
+                    ]
+                })
+                .collect();
+        }
+        postcard::to_io(&serialized_header, &mut out)?;
         postcard::to_io(&index, &mut out)?;
         body(&mut out)?;
         out.flush()?;
