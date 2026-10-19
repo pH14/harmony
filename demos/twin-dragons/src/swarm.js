@@ -74,7 +74,6 @@ export class Swarm {
     const rooms = new Map(), step = Math.max(1, Math.ceil(this.trails.size / maxPoints));
     const holding = this.holdIdle && detail;
     if (holding && this.lastFrame?.branch !== branch) this.lastFrame = { branch, points: new Map(), pending: false };
-    const shown = new Set();
     let count = 0;
     for (const [id, trail] of this.trails) {
       if (trail.branch !== branch || (!trail.finish && (count >= maxPoints || id % step))) continue;
@@ -99,13 +98,12 @@ export class Swarm {
         const { level, x, y, pose } = point;
         this.lastFrame.points.set(id, { level, x, y, pose, life: 1, stale: true });
         while (this.lastFrame.points.size > this.maxTrails) this.lastFrame.points.delete(this.lastFrame.points.keys().next().value);
-        shown.add(id);
       }
       count++;
     }
     if (holding) {
       for (const [id, point] of this.lastFrame.points) {
-        if (shown.has(id) || count >= maxPoints) continue;
+        if (this.trails.has(id) || count >= maxPoints) continue;
         if (!rooms.has(point.level)) rooms.set(point.level, []);
         rooms.get(point.level).push(point);
         count++;

@@ -47,3 +47,13 @@ test("suspending camera updates discards retreat evidence in every room", () => 
   assert.equal(other.behind, 0);
   assert.equal(trackingGoal(held, back, [], 3300, (p) => p.x), goal);
 });
+
+test("rooms off screen cannot retain retreat evidence between visits", () => {
+  const first = { behind: 100 }, second = { behind: 200 };
+  const camera = { targets: new Map([[0, first], [1, second]]) };
+  resetRetreat(camera, 1);
+  assert.equal(first.behind, 0);
+  assert.equal(second.behind, 200);
+  resetRetreat(camera, 0);
+  assert.equal(second.behind, 0);
+});

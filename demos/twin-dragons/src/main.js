@@ -676,6 +676,7 @@ function updateCamera(now) {
   const dt = Math.min(0.1, camera.last ? (now - camera.last) / 1000 : 0);
   camera.last = now;
   document.querySelector(".map-wrap").dataset.camera = camera.focus ? "focus" : camera.follow ? "follow" : "idle";
+  resetRetreat(camera, mapLevel);
   if (!ready || branchPreview || camera.focus || !camera.follow || paused || camera.held > now || camera.manual > now) resetRetreat(camera);
   if (!ready || branchPreview) return;
   const smooth = (seconds) => (reducedMotion.matches ? 1 : 1 - Math.exp(-dt / seconds));
