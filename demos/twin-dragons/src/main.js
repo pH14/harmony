@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import "./style.css";
+import { ViewRecording, composeView } from "./recording.js";
 import { GuidedTour, tourSeen } from "./tour.js";
 import { ReplayTimeline, levelEntryFrame, prefixTrail, trailPoint } from "./replay.js";
 import { RoutePreviews } from "./preview.js";
@@ -64,8 +65,9 @@ const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Arcade</h1><p class="hero-lede">Watch and join Harmony in playing games through multiverse state exploration.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details" open><summary>Details</summary><label class="search-speed"><span>Timelines per second <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
 <div class="goal"><div class="level-nav"><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><nav id="level-strip" class="level-strip" aria-label="Levels in this search" data-key=""><button id="level-more" class="level-more" aria-controls="level-trail" aria-expanded="false" hidden></button><div id="level-trail" class="level-trail"></div></nav><span id="goal-status" hidden></span></div><div class="view-tools"><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
+<div class="recording-controls" role="group" aria-label="Record exploration"><button id="record-view" aria-pressed="false">Record view</button><a id="download-recording" hidden>Download video</a></div>
 <div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys pan; Enter inspects the cell under the pointer or at the center."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="hover" hidden></div></div>
-<div class="map-footer"><span id="memory-limit" hidden></span></div>
+<div class="map-footer"><span id="memory-limit" hidden></span><span id="recording-status" role="status" aria-live="polite"></span></div>
 ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 </section>
 <section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History">›</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="${game.screen.width}" height="${game.screen.height}" aria-label="${game.title} gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><div class="replay-actions"><button id="play" disabled>▶ Replay</button></div><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>${game.controls.a}</span></span><span><kbd>X</kbd><span>${game.controls.b}</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons"><button data-button="2" aria-label="${game.controls.b}">B</button><button data-button="1" aria-label="${game.controls.a}">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
@@ -74,6 +76,55 @@ ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 <div id="error" role="alert" hidden></div>
 <dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Pick a game</h2></div><div id="game-choice" class="game-choice"><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="segments" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring Your Own ROM</h3><div id="rom-games" class="segments" role="group" aria-labelledby="byo-rom-title"></div></section></div><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><div id="level-grid" class="level-grid"></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
+const recordingCanvas = document.createElement("canvas");
+recordingCanvas.width = 1280;
+recordingCanvas.height = 720;
+let recordingURL = null, lastRecorded = -Infinity;
+const recording = new ViewRecording({
+  onChange(state) {
+    $("record-view").textContent = state === "recording" ? "Stop recording" : state === "stopping" ? "Saving video…" : "Record view";
+    $("record-view").disabled = state === "stopping";
+    $("record-view").setAttribute("aria-pressed", state === "recording");
+  },
+  onComplete(blob, reason) {
+    if (recordingURL) URL.revokeObjectURL(recordingURL);
+    recordingURL = URL.createObjectURL(blob);
+    const link = $("download-recording");
+    link.href = recordingURL;
+    link.download = `harmony-${game.id}-${new Date().toISOString().replace(/[:.]/g, "-")}.${blob.type.includes("mp4") ? "mp4" : "webm"}`;
+    link.hidden = false;
+    $("recording-status").textContent = `${reason ? reason + ". " : ""}Video ready (${(blob.size / 1048576).toFixed(1)} MB). Download it before leaving this page.`;
+  },
+  onError(error) { $("recording-status").textContent = `Recording failed: ${error.message}`; },
+});
+$("record-view").disabled = !recording.supported(recordingCanvas);
+if ($("record-view").disabled) $("recording-status").textContent = "Video recording is unavailable in this browser. Try Chrome or Firefox.";
+$("record-view").onclick = () => {
+  if (recording.state === "recording") return recording.stop();
+  try {
+    paintRecording();
+    recording.start(recordingCanvas);
+    $("recording-status").textContent = "Recording view and mini map. Keep this tab visible. Stops after 10 minutes or 256 MB.";
+  } catch (error) { $("recording-status").textContent = `Recording failed: ${error.message}`; }
+};
+function paintRecording() {
+  const map = document.querySelector(".area-map");
+  if (!map) throw new Error("Wait for the game map to load.");
+  composeView(recordingCanvas, {
+    map, overview: document.querySelector(".level-overview"),
+    title: `Harmony Arcade · ${game.title}`,
+    detail: `${maps.get(Number(map.dataset.map))?.label || ""} · ${visualization === "both" ? "Movement + Heatmap" : visualization} · ${liveView ? "Native search" : "Browser search"}`,
+    progress: `${$("hero-timelines").textContent} timelines tried · ${$("work").textContent} game frames · ${$("workers").textContent} workers`,
+    attribution: `${document.querySelector(".game-attribution")?.textContent || game.title} · harmony · Credits: github.com/pH14/harmony · Silent video`,
+  });
+}
+window.addEventListener("beforeunload", (event) => {
+  if (recording.state !== "idle") { event.preventDefault(); event.returnValue = ""; }
+});
+window.addEventListener("pagehide", () => {
+  recording.cleanup();
+  if (recordingURL) URL.revokeObjectURL(recordingURL);
+});
 let heat = new Heatmap(),
   worker,
   rolloutWorkers = [],
@@ -2093,6 +2144,9 @@ function drawMap(now) {
     updateRoomChrome(c);
   }
   for (const strip of document.querySelectorAll(".level-overview")) drawOverview(strip, now);
+  if (recording.state === "recording" && now - lastRecorded >= 1000 / 30) {
+    try { paintRecording(); lastRecorded = now; } catch (error) { recording.fail(error); }
+  }
   drawCost = drawCost * 0.9 + (performance.now() - start) * 0.1;
   const behind = drawCost > 6 && frameGap > 20, ahead = drawCost < 4 || frameGap < 18;
   spriteBudget = Math.min(swarm.maxTrails, Math.max(256, spriteBudget * (behind ? 0.9 : ahead ? 1.02 : 1)));

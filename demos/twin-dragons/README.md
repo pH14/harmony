@@ -134,6 +134,42 @@ archived actions, `feed::archived_state` replays the input through a fresh
 target and returns the recorded actions, so replay, forks and Play from here use
 the actions the core really ran. The native live view uses the same rule.
 
+### Record the search view
+
+Click **Record view** above the map, let the search run, then **Stop recording**
+and **Download video**. This works for browser searches and native `?live`
+campaigns, including runs opened through the launcher or an SSH tunnel. Encoding
+runs in the viewing browser, so a cloud machine needs no desktop or video
+encoder. No screen-sharing permission is needed.
+
+The silent 1280 × 720 video contains the same map and mini map shown on the
+page, including the current Movement/Heatmap layers, moving sprites, camera
+position rectangle, automatic scrolling and level transitions. It adds game and
+level labels, timeline/frame/worker totals, and a credits reference. Inspecting,
+panning or changing the map during recording changes the video as well. Leave
+the camera following the search to record its automatic scrolling.
+
+Keep the tab visible: background tabs throttle rendering. The browser targets
+30 frames per second; actual cadence depends on rendering and encoding load.
+Chrome and Firefox normally export WebM; browsers supporting only MP4 use MP4.
+An unsupported browser disables recording and explains why. The search continues
+when recording stops or fails. Recordings stop at 10 minutes or approximately
+256 MiB (plus the final encoder chunk) to bound browser memory. Download each
+clip before starting another or leaving the page; a successful new recording
+replaces the preceding download. A failed recording preserves the last video.
+The page asks before navigating away during an active recording.
+
+`tests/recording.test.js` covers encoding failure, unsupported/startup failure,
+empty clips, size/time limits, repeated recordings and track cleanup.
+`node tests/recording.mjs` records an actual Famidash search, verifies camera
+movement and mini-map pixels, downloads and decodes the video, checks changing
+frames, failure recovery and mobile layout, and saves video/PNG evidence under
+`test-results/recording/`. Run it against the built preview server with
+`DEMO_URL=http://127.0.0.1:4173`; set `CHROME_CHANNEL=chrome` to use installed
+Chrome instead of Playwright's bundled Chromium. Set `LIVE_RECORDING=1` and
+point `DEMO_URL` at a running native Famidash live server to exercise the same
+record/download checks against its actual event stream.
+
 ### Native runs
 
 `tools/launcher.py` starts live campaigns on Linux machines over SSH and serves
