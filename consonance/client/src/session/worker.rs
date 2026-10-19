@@ -4991,21 +4991,25 @@ mod tests {
                 assert_eq!(recv(&child).unwrap().0[0], INIT);
                 send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
                 assert_eq!(recv(&child).unwrap().0[0], EXPORT);
+                if case == 7 {
+                    let mut header = [0; HEADER];
+                    header[..8].copy_from_slice(&((EXPORT_FRAME_LIMIT + 1) as u64).to_le_bytes());
+                    (&child).write_all(&header).unwrap();
+                    assert!(recv(&child).is_err());
+                    return;
+                }
                 let file = tempfile::tempfile().unwrap();
                 let mut reply = Out::op(NEED_EXTENT);
                 reply.len(if case == 0 { 0 } else { 8192 });
                 if case == 1 {
                     reply.u8(0);
                 }
-                if case == 7 {
-                    reply.0 = vec![0; EXPORT_FRAME_LIMIT + 1];
-                }
                 if case == 2 {
                     reply.0 = vec![OK];
                 }
                 let descriptors = [file.as_fd()];
                 send(&child, &reply.0, if case == 3 { &descriptors } else { &[] }).unwrap();
-                if case < 4 || case == 7 {
+                if case < 4 {
                     assert!(recv(&child).is_err());
                     return;
                 }
@@ -5025,11 +5029,12 @@ mod tests {
             });
             let session = connected_to_script(parent, &server);
             let index = LocalIndex::new(1 << 20);
-            assert!(
-                session
-                    .publish_snapshot(&index, namespace(), b"bad", None, SnapId(1), 1)
-                    .is_err()
-            );
+            let error = session
+                .publish_snapshot(&index, namespace(), b"bad", None, SnapId(1), 1)
+                .unwrap_err();
+            if case == 7 {
+                assert!(error.to_string().contains("frame length exceeds limit"));
+            }
             assert!(session.abandoned());
             assert_eq!(
                 (
