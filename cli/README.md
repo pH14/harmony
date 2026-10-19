@@ -248,7 +248,8 @@ same for every N because the lowest-numbered reproducing candidate of each round
 wins. Each replay starts a fresh guest, so a shrink costs about one finding
 replay per attempt. The output is a replay of the reduced actions that `show`,
 `show --timeline` and `branch` accept. `shrink.json` lists every attempt with the
-replaced steps and the violations it produced. NES findings are not supported.
+replaced steps and the violations it produced, and the reduced actions in a form
+`debug run --actions` accepts. NES findings are not supported.
 
 `search --from` starts fresh exploration from a branch endpoint. `search --resume`
 restores the existing corpus, snapshots, scheduler and evidence from the latest

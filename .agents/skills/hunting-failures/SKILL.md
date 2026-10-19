@@ -98,16 +98,27 @@ finding from `campaign-summary.json`.
    `harmony branch runs/NAME --finding K --exec 'tail -n 200 /tmp/<node>.log'`.
 3. Rewind with `--rewind` or `--rewind-time` to the last state before the
    violation and branch there to test one explanation at a time.
-4. Reduce the action sequence: drop actions with `--actions` until removing
-   any remaining one hides the failure.
-5. Reproduce the reduced sequence natively when it uses only kills, pauses and
+4. Reduce the action sequence with
+   `harmony shrink runs/NAME --finding K --jobs 4 --out runs/NAME-min`. It
+   replaces faults with waits of the same length and keeps only the faults the
+   violation needs. `runs/NAME-min/shrink.json` lists every attempt. Branch
+   the reduced run at its steps to read files and logs before and after each
+   remaining fault.
+5. Check a fix. Replay the reduced actions against the fixed version's image
+   with the same seed:
+   `harmony debug run FIXED.oci --config cfg.toml --seed N --actions
+   runs/NAME-min/shrink.json --out runs/NAME-fixed`. Replay them against the
+   failing image too, as the control. A changed binary changes guest timing, so
+   a clean replay is evidence for the fix, not proof; run a search on the fixed
+   version with the same budget as well.
+6. Reproduce the reduced sequence natively when it uses only kills, pauses and
    restarts. A native reproduction is the evidence a maintainer can run.
-6. Search the target's issue tracker for the symptom. Report a match as known,
+7. Search the target's issue tracker for the symptom. Report a match as known,
    with the link.
 
 A finding is explained when the report names the promise, the minimal fault
-sequence, the client-visible symptom and the server log lines that show the
-cause.
+sequence, the client-visible symptom and the server log lines or data files
+that show the cause.
 
 ## 6. Report
 
