@@ -1,0 +1,80 @@
+{
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "evidence": [
+    "Three separately reproduced Kappaclysm wave entries into closed sprite-free cavities35/36/47. Source and actual rendered inputs reviewed; no coins within eight tiles. Proposal seals only their11fillcells; exporter/build/negative+section control validation remain required."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/kappaclysm.tmx",
+      "source_sha256": "7fc87f9ed7fcbcf13afff7c5710610fee15ac3fd7e09aa35c1af1602897496e5",
+      "edits": [
+        {
+          "column": 133,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 110
+        },
+        {
+          "column": 140,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 141,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 140,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 141,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 140,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 141,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 140,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 141,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 118,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 110
+        },
+        {
+          "column": 118,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 110
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+[
+  {
+    "case": "kappa-three-cavities-v1-root0-original-clearing.json.gz",
+    "frames": 4756,
+    "gameplay_and_intro_trace_identical": true,
+    "original_rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+    "fixed_rom_sha256": "3014b44b2c2a24f292e7739e33fe8100e1f90e3e36ef2c1d02b6d3d0c25a24be"
+  },
+  {
+    "case": "kappa-three-cavities-v1-root500-original-clearing.json.gz",
+    "frames": 4687,
+    "gameplay_and_intro_trace_identical": true,
+    "original_rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+    "fixed_rom_sha256": "3014b44b2c2a24f292e7739e33fe8100e1f90e3e36ef2c1d02b6d3d0c25a24be"
+  },
+  {
+    "case": "current-kappa-three-cavities-v1-root450-original-clearing.json.gz",
+    "frames": 4765,
+    "gameplay_and_intro_trace_identical": true,
+    "original_rom_sha256": "4cd0c16617e2a6096fbffe6720e2f48f835ed5ef592cf836d85ac193640259ea",
+    "fixed_rom_sha256": "86732b5c31ed7d7e065a9b0e134f972dcda0cce603e23e7b260ffef249cf7ddc"
+  },
+  {
+    "case": "current-kappa-three-cavities-v1-root0-original-clearing.json.gz",
+    "frames": 4756,
+    "gameplay_and_intro_trace_identical": true,
+    "original_rom_sha256": "4cd0c16617e2a6096fbffe6720e2f48f835ed5ef592cf836d85ac193640259ea",
+    "fixed_rom_sha256": "86732b5c31ed7d7e065a9b0e134f972dcda0cce603e23e7b260ffef249cf7ddc"
+  }
+]

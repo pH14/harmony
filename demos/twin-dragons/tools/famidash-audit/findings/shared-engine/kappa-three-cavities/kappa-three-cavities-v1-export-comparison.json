@@ -1,0 +1,38 @@
+{
+  "releaseA": {
+    "changed": [
+      {
+        "path": "kappaclysm.lz.bin",
+        "before_bytes": 5066,
+        "after_bytes": 5076,
+        "before_sha256": "2e6c7fe4eba51b172d7a7fbbd7c3282e24be22364cf90ce2e95b3ce0a3277ddd",
+        "after_sha256": "b152fda50fe041c5d3b975900a4acc36c8422433448d71a926f543e0e8509bfb"
+      }
+    ],
+    "added": []
+  },
+  "currentA": {
+    "changed": [
+      {
+        "path": "level/kappaclysm.lz.bin",
+        "before_bytes": 5063,
+        "after_bytes": 5073,
+        "before_sha256": "8e783e8079eeea1ef375cd8f3507bf29536cf76a101810f94010be2ef816d845",
+        "after_sha256": "3dc162ea3058c9153f589a413b6a02977126c2934a00c5ecd5b759d15a835d8b"
+      }
+    ],
+    "added": []
+  },
+  "currentHUGE": {
+    "changed": [
+      {
+        "path": "level/kappaclysm.lz.bin",
+        "before_bytes": 5063,
+        "after_bytes": 5073,
+        "before_sha256": "8e783e8079eeea1ef375cd8f3507bf29536cf76a101810f94010be2ef816d845",
+        "after_sha256": "3dc162ea3058c9153f589a413b6a02977126c2934a00c5ecd5b759d15a835d8b"
+      }
+    ],
+    "added": []
+  }
+}

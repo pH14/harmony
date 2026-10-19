@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "target_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "changes": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/kappaclysm.tmx",
+      "before_sha256": "fea1b3a138f88117f5c0fc50a4a26c07932c41c8461d56138bc6804231aad5dc",
+      "after_sha256": "f9a1a132c8d18c7dcf9197353abc924b2b8b4fdabd5c2ef81efa2c1e625361a5",
+      "edits": [
+        {
+          "column": 133,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 110
+        },
+        {
+          "column": 140,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 141,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 140,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 141,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 140,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 141,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 140,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 141,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 118,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 110
+        },
+        {
+          "column": 118,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 110
+        }
+      ]
+    }
+  ],
+  "status": "source-proposal-exported-built-negative-and-section-controls-verified",
+  "evidence": [
+    "Three separately reproduced Kappaclysm wave entries into closed sprite-free cavities35/36/47. Source and actual rendered inputs reviewed; no coins within eight tiles. Proposal seals only their11fillcells; exporter/build/negative+section control validation remain required."
+  ],
+  "qualification": "Three reviewed cavities only; broader coin routes, performance and full-round source assessment incomplete."
+}

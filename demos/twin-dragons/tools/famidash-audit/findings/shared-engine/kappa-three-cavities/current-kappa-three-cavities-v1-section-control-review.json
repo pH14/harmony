@@ -1,0 +1,23 @@
+{
+  "450": {
+    "frames": 4765,
+    "centre_probes": 5045,
+    "target_entries": [],
+    "source_mismatches": [],
+    "section_probe_count": 179,
+    "section_modes": {
+      "6": 179
+    }
+  },
+  "0": {
+    "frames": 4756,
+    "centre_probes": 5035,
+    "target_entries": [],
+    "source_mismatches": [],
+    "section_probe_count": 175,
+    "section_modes": {
+      "6": 160,
+      "1": 15
+    }
+  }
+}

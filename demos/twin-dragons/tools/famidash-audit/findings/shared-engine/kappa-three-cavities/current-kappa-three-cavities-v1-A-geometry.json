@@ -1,0 +1,422 @@
+{
+  "schema": 1,
+  "status": "verified",
+  "levels": [
+    {
+      "side": "main",
+      "level": 0,
+      "name": "stereomadness",
+      "tile_count": 24138,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 1,
+      "name": "backontrack",
+      "tile_count": 22842,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 2,
+      "name": "polargeist",
+      "tile_count": 25218,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 3,
+      "name": "dryout",
+      "tile_count": 22734,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 4,
+      "name": "baseafterbase",
+      "tile_count": 23436,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 5,
+      "name": "cantletgo",
+      "tile_count": 22572,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 6,
+      "name": "jumper",
+      "tile_count": 24192,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 7,
+      "name": "timemachine",
+      "tile_count": 26892,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 8,
+      "name": "cycles",
+      "tile_count": 22167,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 9,
+      "name": "xstep",
+      "tile_count": 22761,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 10,
+      "name": "clutterfunk",
+      "tile_count": 27081,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 11,
+      "name": "theoryofeverything",
+      "tile_count": 49362,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 12,
+      "name": "electromanadventures",
+      "tile_count": 23733,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 13,
+      "name": "clubstep",
+      "tile_count": 36200,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 14,
+      "name": "electrodynamix",
+      "tile_count": 29970,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 15,
+      "name": "hexagonforce",
+      "tile_count": 42040,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 16,
+      "name": "blastprocessing",
+      "tile_count": 27999,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 17,
+      "name": "toe2",
+      "tile_count": 26325,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 18,
+      "name": "geometricaldominator",
+      "tile_count": 29295,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 19,
+      "name": "deadlocked",
+      "tile_count": 32103,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 20,
+      "name": "fingerdash",
+      "tile_count": 24678,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 21,
+      "name": "dash",
+      "tile_count": 40104,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 22,
+      "name": "thetower",
+      "tile_count": 9312,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 23,
+      "name": "thesewers",
+      "tile_count": 7920,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 24,
+      "name": "thecellar",
+      "tile_count": 13794,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 25,
+      "name": "thesecrethollow",
+      "tile_count": 26112,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 26,
+      "name": "thechallenge",
+      "tile_count": 16701,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 27,
+      "name": "retray",
+      "tile_count": 17118,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 28,
+      "name": "leveleasy",
+      "tile_count": 24138,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 29,
+      "name": "dorabaebasic4",
+      "tile_count": 58368,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 30,
+      "name": "dorabaebasic6",
+      "tile_count": 24273,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 31,
+      "name": "groundtospace",
+      "tile_count": 27162,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 32,
+      "name": "subzero",
+      "tile_count": 22923,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 33,
+      "name": "kappaclysm",
+      "tile_count": 20196,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 34,
+      "name": "sunshine",
+      "tile_count": 48081,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 35,
+      "name": "revolution",
+      "tile_count": 31212,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 36,
+      "name": "funnygameholiday",
+      "tile_count": 27675,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 37,
+      "name": "lostinthewoods",
+      "tile_count": 29469,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 38,
+      "name": "bloodbathbutno",
+      "tile_count": 34720,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 39,
+      "name": "rainbowtylenol",
+      "tile_count": 30510,
+      "continuations": [
+        0
+      ],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 40,
+      "name": "extraordinaryexcitement",
+      "tile_count": 40392,
+      "continuations": [
+        1
+      ],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 41,
+      "name": "thelightningroad",
+      "tile_count": 29470,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 42,
+      "name": "nightmare",
+      "tile_count": 25623,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 43,
+      "name": "firetemple",
+      "tile_count": 23760,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 44,
+      "name": "watertemple",
+      "tile_count": 45372,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    }
+  ],
+  "collision_tables": {
+    "main": {
+      "entries": 256,
+      "sha256": "5f4b9b72ac731c4f4ae7ceb3ba9d78f6f443221f2cdb61a7dabe061fd9033580"
+    }
+  },
+  "index_sha256": "28e26f5af7a842c7530b8c52219b539114d40ba1bc47c8b5a24f2a53be07116b"
+}
