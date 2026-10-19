@@ -135,6 +135,7 @@ class StructureTests(unittest.TestCase):
             "client_test session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent",
             "client_test image_identity::sealed_guard_tests::unexpected_executable_mapping_revokes_a_published_lease",
             "sealed_static::tests::cached_guard_rejects_unexpected_executable_mapping -- --exact",
+            "sealed_static::tests::cached_guard_rejects_code_page_rewritten_with_its_own_bytes -- --exact",
             "sealed_static::tests::measured_read_hash_and_comparison_bytes_survive_refusal -- --exact",
             "recording::tests::sealed_host_admits_public_recording_round_trip -- --exact",
             "-p uml --test terminal_console_limit console_limit_is_settled_after_a_provisional_terminal_stop -- --exact",
