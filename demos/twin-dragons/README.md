@@ -136,11 +136,28 @@ the actions the core really ran. The native live view uses the same rule.
 
 ### Record the search view
 
-Click **Record view** above the map, let the search run, then **Stop recording**
-and **Download video**. This works for browser searches and native `?live`
-campaigns, including runs opened through the launcher or an SSH tunnel. Encoding
-runs in the viewing browser, so a cloud machine needs no desktop or video
-encoder. No screen-sharing permission is needed.
+For a long experiment, use **Record to file** in Chrome on localhost or HTTPS.
+Choose a video file, let the search run, then **Stop recording** to finish and
+save it. MediaRecorder chunks write to that file in order as they arrive;
+there is no recording duration or file size limit. The browser holds at most
+8 MiB of pending writes plus an encoder chunk and its normal frame buffers.
+If storage cannot keep up, capture pauses while writes drain and resumes
+without stopping the search; the status explains the pause. Disk or encoder
+failures abort the uncommitted file and report the error. Stop recording before
+leaving the page so the browser can finish and commit the file.
+
+**Record clip** works in browsers without the file picker too: let the search
+run, then **Stop recording** and **Download video**. Clips stay in browser
+memory and stop at 10 minutes or approximately 256 MiB (plus the final encoder
+chunk). Download each clip before starting another or leaving the page; a
+successful new clip replaces the preceding download. Failed recordings
+preserve the last clip.
+
+Both modes work for browser searches and native `?live` campaigns, including
+runs opened through the launcher or an SSH tunnel. Encoding runs in the viewing
+browser, so a cloud machine needs no desktop or video encoder. No screen-sharing
+permission is needed. The file picker requests access only to the file you
+choose.
 
 The silent 1280 × 720 video contains the same map and mini map shown on the
 page, including the current Movement/Heatmap layers, moving sprites, camera
@@ -153,17 +170,17 @@ Keep the tab visible: background tabs throttle rendering. The browser targets
 30 frames per second; actual cadence depends on rendering and encoding load.
 Chrome and Firefox normally export WebM; browsers supporting only MP4 use MP4.
 An unsupported browser disables recording and explains why. The search continues
-when recording stops or fails. Recordings stop at 10 minutes or approximately
-256 MiB (plus the final encoder chunk) to bound browser memory. Download each
-clip before starting another or leaving the page; a successful new recording
-replaces the preceding download. A failed recording preserves the last video.
-The page asks before navigating away during an active recording.
+when recording stops or fails. The page asks before navigating away during an
+active recording.
 
 `tests/recording.test.js` covers encoding failure, unsupported/startup failure,
-empty clips, size/time limits, repeated recordings and track cleanup.
+empty clips, size/time limits, repeated recordings, track cleanup, ordered file
+writes, slow-storage backpressure, write/close errors and abort/retry isolation.
 `node tests/recording.mjs` records an actual Famidash search, verifies camera
 movement and mini-map pixels, downloads and decodes the video, checks changing
-frames, failure recovery and mobile layout, and saves video/PNG evidence under
+frames, failure recovery and mobile layout. It also writes a real file through
+an OPFS-backed file handle (substituting only the picker), reads the committed
+bytes back and decodes the streamed video. It saves video/PNG evidence under
 `test-results/recording/`. Run it against the built preview server with
 `DEMO_URL=http://127.0.0.1:4173`; set `CHROME_CHANNEL=chrome` to use installed
 Chrome instead of Playwright's bundled Chromium. `tests/point-finish.mjs` checks

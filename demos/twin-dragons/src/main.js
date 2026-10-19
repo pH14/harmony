@@ -65,7 +65,7 @@ const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Arcade</h1><p class="hero-lede">Watch and join Harmony in playing games through multiverse state exploration.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details" open><summary>Details</summary><label class="search-speed"><span>Timelines per second <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
 <div class="goal"><div class="level-nav"><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><nav id="level-strip" class="level-strip" aria-label="Levels in this search" data-key=""><button id="level-more" class="level-more" aria-controls="level-trail" aria-expanded="false" hidden></button><div id="level-trail" class="level-trail"></div></nav><span id="goal-status" hidden></span></div><div class="view-tools"><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
-<div class="recording-controls" role="group" aria-label="Record exploration"><button id="record-view" aria-pressed="false">Record view</button><a id="download-recording" hidden>Download video</a></div>
+<div class="recording-controls" role="group" aria-label="Record exploration"><button id="record-to-file" hidden>Record to file</button><button id="record-view" aria-pressed="false">Record clip</button><a id="download-recording" hidden>Download video</a></div>
 <div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys pan; Enter inspects the cell under the pointer or at the center."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span><span id="recording-status" role="status" aria-live="polite"></span></div>
 ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
@@ -79,25 +79,36 @@ ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 const recordingCanvas = document.createElement("canvas");
 recordingCanvas.width = 1280;
 recordingCanvas.height = 720;
-let recordingURL = null, lastRecorded = -Infinity;
+let recordingURL = null, lastRecorded = -Infinity, choosingRecordingFile = false;
 const recording = new ViewRecording({
   onChange(state) {
-    $("record-view").textContent = state === "recording" ? "Stop recording" : state === "stopping" ? "Saving video…" : "Record view";
-    $("record-view").disabled = state === "stopping" || !recording.supported(recordingCanvas);
+    $("record-view").textContent = state === "recording" ? "Stop recording" : state === "stopping" ? "Saving video…" : "Record clip";
+    $("record-view").disabled = choosingRecordingFile || state === "stopping" || !recording.supported(recordingCanvas);
+    $("record-to-file").disabled = choosingRecordingFile || state !== "idle" || !recording.supported(recordingCanvas);
     $("record-view").setAttribute("aria-pressed", state === "recording");
+    if (state === "recording" && recordingURL) $("download-recording").textContent = "Download previous clip";
+    if (state === "recording" && recording.writable) $("recording-status").textContent = recording.backpressured
+      ? "Disk is busy. Capture is paused while video writes drain; the search continues."
+      : "Recording directly to file with no duration limit. Keep this tab visible. Stop recording to finish and save the video.";
   },
-  onComplete(blob, reason) {
+  onComplete(blob, reason, result) {
+    if (result?.file) {
+      $("recording-status").textContent = `Video saved to file (${(result.bytes / 1048576).toFixed(1)} MB).`;
+      return;
+    }
     if (recordingURL) URL.revokeObjectURL(recordingURL);
     recordingURL = URL.createObjectURL(blob);
     const link = $("download-recording");
     link.href = recordingURL;
+    link.textContent = "Download video";
     link.download = `harmony-${game.id}-${new Date().toISOString().replace(/[:.]/g, "-")}.${blob.type.includes("mp4") ? "mp4" : "webm"}`;
     link.hidden = false;
     $("recording-status").textContent = `${reason ? reason + ". " : ""}Video ready (${(blob.size / 1048576).toFixed(1)} MB). Download it before leaving this page.`;
   },
   onError(error) { $("recording-status").textContent = `Recording failed: ${error.message}`; },
 });
-$("record-view").disabled = !recording.supported(recordingCanvas);
+$("record-to-file").hidden = typeof window.showSaveFilePicker !== "function";
+$("record-to-file").disabled = $("record-view").disabled = !recording.supported(recordingCanvas);
 if ($("record-view").disabled) $("recording-status").textContent = "Video recording is unavailable in this browser. Try Chrome or Firefox.";
 $("record-view").onclick = () => {
   if (recording.state === "recording") return recording.stop();
@@ -106,6 +117,29 @@ $("record-view").onclick = () => {
     recording.start(recordingCanvas);
     $("recording-status").textContent = "Recording view and mini map. Keep this tab visible. Stops after 10 minutes or 256 MB.";
   } catch (error) { $("recording-status").textContent = `Recording failed: ${error.message}`; }
+};
+$("record-to-file").onclick = async () => {
+  choosingRecordingFile = true;
+  recording.onChange(recording.state);
+  let writable;
+  try {
+    const type = recording.mimeType.split(";")[0], extension = type.includes("mp4") ? ".mp4" : ".webm";
+    const handle = await window.showSaveFilePicker({
+      suggestedName: `harmony-${game.id}-${new Date().toISOString().replace(/[:.]/g, "-")}${extension}`,
+      types: [{ description: "Search video", accept: { [type]: [extension] } }],
+    });
+    writable = await handle.createWritable();
+    paintRecording();
+    recording.start(recordingCanvas, { writable });
+  } catch (error) {
+    if (writable && recording.writable !== writable) {
+      try { await writable.abort(); } catch { /* The recording may already have aborted the writer. */ }
+    }
+    $("recording-status").textContent = error.name === "AbortError" ? "File recording canceled." : `Recording failed: ${error.message}`;
+  } finally {
+    choosingRecordingFile = false;
+    recording.onChange(recording.state);
+  }
 };
 function paintRecording() {
   const map = document.querySelector(".area-map");
@@ -122,7 +156,9 @@ window.addEventListener("beforeunload", (event) => {
   if (recording.state !== "idle") { event.preventDefault(); event.returnValue = ""; }
 });
 window.addEventListener("pagehide", () => {
+  const activeRecording = recording.state !== "idle";
   recording.cleanup();
+  if (activeRecording) $("recording-status").textContent = "Recording canceled when leaving this page. Start a new recording to capture more.";
   if (recordingURL) {
     URL.revokeObjectURL(recordingURL);
     recordingURL = null;

@@ -2,41 +2,65 @@
 const TYPES = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
 
 export class ViewRecording {
-  constructor({ Recorder = globalThis.MediaRecorder, maxBytes = 256 * 1024 * 1024, maxDuration = 10 * 60 * 1000, onChange = () => {}, onComplete = () => {}, onError = () => {} } = {}) {
-    Object.assign(this, { Recorder, maxBytes, maxDuration, onChange, onComplete, onError });
+  constructor({ Recorder = globalThis.MediaRecorder, maxBytes = 256 * 1024 * 1024, maxDuration = 10 * 60 * 1000, maxPendingBytes = 8 * 1024 * 1024, onChange = () => {}, onComplete = () => {}, onError = () => {} } = {}) {
+    Object.assign(this, { Recorder, maxBytes, maxDuration, maxPendingBytes, onChange, onComplete, onError });
     this.state = "idle";
   }
-  supported(canvas) {
-    return !!canvas.captureStream && !!this.Recorder && TYPES.some(type => this.Recorder.isTypeSupported(type));
+  get mimeType() {
+    return this.Recorder && TYPES.find(type => this.Recorder.isTypeSupported(type));
   }
-  start(canvas) {
+  supported(canvas) { return !!canvas.captureStream && !!this.mimeType; }
+  start(canvas, { writable = null } = {}) {
     if (this.state !== "idle") throw new Error("A recording is already in progress.");
     if (!this.supported(canvas)) throw new Error("Video recording is unavailable in this browser. Try Chrome or Firefox.");
     this.chunks = [];
-    this.bytes = 0;
+    this.bytes = this.pendingBytes = 0;
     this.reason = "";
+    this.backpressured = false;
+    this.writable = writable;
+    this.writes = Promise.resolve();
     try {
       this.stream = canvas.captureStream(30);
-      this.recorder = new this.Recorder(this.stream, {
-        mimeType: TYPES.find(type => this.Recorder.isTypeSupported(type)), videoBitsPerSecond: 5_000_000,
-      });
+      this.recorder = new this.Recorder(this.stream, { mimeType: this.mimeType, videoBitsPerSecond: 5_000_000 });
       this.recorder.ondataavailable = ({ data }) => {
         if (this.state === "idle" || !data.size) return;
-        this.chunks.push(data);
         this.bytes += data.size;
-        if (this.bytes >= this.maxBytes && this.state === "recording") this.stop("Size limit reached");
+        if (this.writable) this.write(data);
+        else {
+          this.chunks.push(data);
+          if (this.bytes >= this.maxBytes && this.state === "recording") this.stop("Size limit reached");
+        }
       };
-      this.recorder.onerror = (event) => this.fail(event.error || new Error("Video encoder failed."));
+      this.recorder.onerror = event => this.fail(event.error || new Error("Video encoder failed."));
       this.recorder.onstop = () => this.finish();
       this.stream.getTracks().forEach(track => { track.onended = () => this.stop("Capture ended"); });
       this.recorder.start(1000);
       this.started = performance.now();
       this.state = "recording";
-      this.timer = setTimeout(() => this.stop("Recording duration limit reached"), this.maxDuration);
+      if (!writable) this.timer = setTimeout(() => this.stop("Recording duration limit reached"), this.maxDuration);
       this.onChange(this.state);
-    } catch (error) {
-      this.cleanup();
-      throw error;
+    } catch (error) { this.cleanup(); throw error; }
+  }
+  write(data) {
+    const writable = this.writable;
+    this.pendingBytes += data.size;
+    this.writes = this.writes.then(async () => {
+      if (this.writable !== writable) return;
+      await writable.write(data);
+      if (this.writable !== writable) return;
+      this.pendingBytes -= data.size;
+      if (this.backpressured && this.pendingBytes <= this.maxPendingBytes / 2 && this.state === "recording") {
+        this.recorder.resume();
+        this.backpressured = false;
+        this.onChange(this.state);
+      }
+    }).catch(error => { if (this.writable === writable) this.fail(error); });
+    if (this.pendingBytes >= this.maxPendingBytes && this.state === "recording" && !this.backpressured) {
+      try {
+        this.recorder.pause();
+        this.backpressured = true;
+        this.onChange(this.state);
+      } catch (error) { this.fail(error); }
     }
   }
   stop(reason = "") {
@@ -46,13 +70,29 @@ export class ViewRecording {
     this.onChange(this.state);
     try { if (this.recorder.state !== "inactive") this.recorder.stop(); } catch (error) { this.fail(error); }
   }
-  finish() {
+  async finish() {
     if (this.state === "idle") return;
-    const blob = new Blob(this.chunks, { type: this.recorder.mimeType });
+    if (this.state === "recording") { this.state = "stopping"; this.onChange(this.state); }
     const reason = this.reason;
-    this.cleanup();
-    if (blob.size) this.onComplete(blob, reason);
-    else this.onError(new Error("The browser produced an empty recording. Try recording for longer."));
+    if (this.writable) {
+      const writable = this.writable;
+      try {
+        await this.writes;
+        if (this.writable !== writable) return;
+        if (!this.bytes) throw new Error("The browser produced an empty recording. Try recording for longer.");
+        await writable.close();
+        if (this.writable !== writable) return;
+        const bytes = this.bytes;
+        this.writable = null;
+        this.cleanup();
+        this.onComplete(null, reason, { file: true, bytes });
+      } catch (error) { if (this.writable === writable) this.fail(error); }
+    } else {
+      const blob = new Blob(this.chunks, { type: this.recorder.mimeType });
+      this.cleanup();
+      if (blob.size) this.onComplete(blob, reason);
+      else this.onError(new Error("The browser produced an empty recording. Try recording for longer."));
+    }
   }
   fail(error) {
     if (this.state === "idle") return;
@@ -68,8 +108,15 @@ export class ViewRecording {
       }
     }
     this.stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+    const writable = this.writable;
+    this.writable = null;
+    if (writable) {
+      try { Promise.resolve(writable.abort()).catch(() => {}); } catch { /* Preserve the original capture error. */ }
+    }
     this.recorder = this.stream = null;
     this.chunks = [];
+    this.backpressured = false;
+    this.pendingBytes = 0;
     this.state = "idle";
     this.onChange(this.state);
   }

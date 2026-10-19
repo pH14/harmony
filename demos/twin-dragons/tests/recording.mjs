@@ -4,6 +4,29 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import { chromium } from "@playwright/test";
 import { TOUR_KEY } from "../src/tour.js";
 
+async function inspectVideo(page, source = "download") {
+  return page.evaluate(async source => {
+    const video = document.createElement("video");
+    video.muted = true;
+    const fileURL = source === "file" ? URL.createObjectURL(await window.recordingSavedFile.getFile()) : null;
+    video.src = fileURL || document.querySelector("#download-recording").href;
+    await new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = () => reject(new Error("Downloaded video cannot decode")); });
+    const sample = () => {
+      const c = document.createElement("canvas"); c.width = 320; c.height = 180;
+      c.getContext("2d").drawImage(video, 0, 0, 320, 180);
+      return c.toDataURL();
+    };
+    const first = sample();
+    video.currentTime = 1;
+    await new Promise(resolve => { video.onseeked = resolve; });
+    const changed = first !== sample();
+    const result = { width: video.videoWidth, height: video.videoHeight, changed, time: video.currentTime };
+    video.src = "";
+    if (fileURL) URL.revokeObjectURL(fileURL);
+    return result;
+  }, source);
+}
+
 const url = process.env.DEMO_URL || "http://127.0.0.1:4173";
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_CHANNEL ? { channel: process.env.CHROME_CHANNEL } : {}) });
 const errors = [];
@@ -16,6 +39,11 @@ try {
     localStorage.setItem(key, "seen");
     // Keep local browser search small while exercising real game and camera rendering.
     Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 3 });
+    window.showSaveFilePicker = async () => {
+      const directory = await navigator.storage.getDirectory();
+      window.recordingSavedFile = await directory.getFileHandle("search-recording.webm", { create: true });
+      return window.recordingSavedFile;
+    };
     const capture = HTMLCanvasElement.prototype.captureStream;
     HTMLCanvasElement.prototype.captureStream = function (...args) {
       window.recordedCanvas = this;
@@ -57,22 +85,7 @@ try {
   await download.saveAs(artifact);
   assert.ok((await stat(artifact)).size > 1000);
   // Decode the downloaded bytes and verify actual playable frames and changing search visuals.
-  const playback = await page.evaluate(async () => {
-    const video = document.createElement("video");
-    video.muted = true;
-    video.src = document.querySelector("#download-recording").href;
-    await new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = () => reject(new Error("Downloaded video cannot decode")); });
-    const sample = () => {
-      const c = document.createElement("canvas"); c.width = 320; c.height = 180;
-      c.getContext("2d").drawImage(video, 0, 0, 320, 180);
-      return c.toDataURL();
-    };
-    const first = sample();
-    video.currentTime = 1;
-    await new Promise(resolve => { video.onseeked = resolve; });
-    const changed = first !== sample();
-    return { width: video.videoWidth, height: video.videoHeight, changed, time: video.currentTime };
-  });
+  const playback = await inspectVideo(page);
   assert.deepEqual(playback, { width: 1280, height: 720, changed: true, time: 1 });
   const firstURL = await page.locator("#download-recording").getAttribute("href");
   await page.locator("#record-view").click();
@@ -80,6 +93,25 @@ try {
   await page.locator("#record-view").click();
   await page.waitForFunction(previous => document.querySelector("#download-recording").href !== previous, firstURL);
   assert.equal(await page.evaluate(async previous => { try { await fetch(previous); return false; } catch { return true; } }, firstURL), true);
+  await page.locator("#record-to-file").click();
+  await page.waitForFunction(() => document.querySelector("#recording-status").textContent.includes("Recording directly to file"));
+  await page.waitForTimeout(2500);
+  await page.locator("#record-view").click();
+  await page.waitForFunction(() => document.querySelector("#recording-status").textContent.includes("Video saved to file"));
+  const fileBytes = await page.evaluate(async () => {
+    const file = await recordingSavedFile.getFile();
+    return new Promise(resolve => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(",")[1]); reader.readAsDataURL(file); });
+  });
+  const fileArtifact = `${output}/streamed-recording.webm`;
+  await writeFile(fileArtifact, Buffer.from(fileBytes, "base64"));
+  assert.ok((await stat(fileArtifact)).size > 1000);
+  const filePlayback = await inspectVideo(page, "file");
+  assert.deepEqual(filePlayback, { width: 1280, height: 720, changed: true, time: 1 });
+  await page.evaluate(() => { window.showSaveFilePicker = async () => { throw new DOMException("Canceled", "AbortError"); }; });
+  await page.locator("#record-to-file").click();
+  await page.waitForFunction(() => document.querySelector("#recording-status").textContent === "File recording canceled.");
+  assert.equal(await page.locator("#record-view").isEnabled(), true);
+  assert.equal(await page.locator("#download-recording").isVisible(), true);
   await page.evaluate(() => { recordedCanvas.captureStream = () => { throw new Error("Capture failed for test"); }; });
   await page.locator("#record-view").click();
   await page.waitForFunction(() => document.querySelector("#recording-status").textContent.includes("Capture failed for test"));
@@ -95,6 +127,6 @@ try {
   await page.evaluate(() => { MediaRecorder.isTypeSupported = () => false; dispatchEvent(new Event("pagehide")); });
   assert.equal(await page.locator("#record-view").isEnabled(), false, "Cleanup keeps unsupported capture disabled");
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ artifact, composition, playback, before }));
+  console.log(JSON.stringify({ artifact, fileArtifact, composition, playback, filePlayback, before }));
   await page.close();
 } finally { await browser.close(); }
