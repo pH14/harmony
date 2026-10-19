@@ -237,6 +237,7 @@ LIB_PARTITIONS = {
         ),
         "Scheduling": (
             "search::duration", "search::empirical_steps", "search::parallel",
+            "search::locality",
         ),
         "Search Coordination": (
             "search::continuation", "search::rand", "search::job_observation",
