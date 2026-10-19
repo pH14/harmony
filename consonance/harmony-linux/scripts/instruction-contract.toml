@@ -185,8 +185,8 @@ arch = "x86_64"
 channel = "implementation-identity"
 operations = ["FXSAVE", "FXSAVE64", "XSAVE", "XSAVEOPT", "XSAVEC", "XSAVES"]
 claim = "execute"
-layers = ["guest-kernel-pin", "hypervisor-save-canonicalization"]
-disposition = "MXCSR_MASK, init-state component encodings, and ignored legacy-tail bytes are canonicalized at their guest and VMM save boundaries."
+layers = ["guest-kernel-pin", "hypervisor-save-canonicalization", "image-audit"]
+disposition = "MXCSR_MASK, init-state component encodings, and ignored legacy-tail bytes are canonicalized at owned guest and VMM save boundaries. Rust production preparation and the Python rootfs checker reject userspace saves outside complete reviewed loader shapes and require proven selector-zero XGETBV. This static cooperative-code policy does not preserve the future instruction domain under generated code or memory perturbations."
 
 [[instruction]]
 id = "x86-exit-rflags-rf"

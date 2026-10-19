@@ -133,6 +133,19 @@ JITs, code mutation and writable executable memory are excluded by policy. These
 restrictions do not qualify arbitrary images, SQL, ROMs or imported machine
 states.
 
+Production Faults preparation enforces the same static x86 save/selector rules
+from packed ELF bytes for VM and UML execution, using typed iced-x86 decoding.
+The complete loader shapes and unique nonoverlapping XGETBV selector-zero proof
+remain the only static exceptions; TLSdesc and text relocations are refused.
+A Linux conformance fixture sends the same retained compiled ELF bytes through
+production preparation and this Python checker, including permitted restore
+operations and standard math. This alignment does not enforce executable
+provenance after loading or after memory perturbations.
+A retained development-host KVM execution confirmed that an admitted program
+can decode FXSAVE into writable memory, switch it to executable memory and run
+it. This establishes a runtime instruction-domain escape, not replay divergence;
+static admission and ordinary logical-state identity do not prove closure.
+
 Raw XSAVE presence remains in restore data. Snapshot identity uses the core
 layer's [logical identity](../vmm-core/README.md#published-xsave-identity-check),
 which excludes only validated init x87/SSE presence metadata.
