@@ -370,6 +370,7 @@ mod live {
     #[derive(Clone, Debug)]
     pub struct Resources {
         pub placement: Placement,
+        pub topology: Vec<consonance_client::placement::CpuTopology>,
         pub budget: usize,
     }
 
@@ -393,6 +394,7 @@ mod live {
         );
         Ok(Resources {
             placement,
+            topology: pool.topology().to_vec(),
             budget: memory.budget,
         })
     }
@@ -564,6 +566,11 @@ mod live {
         }
         let summary = json!({
             "mode": "faultlab_campaign",
+            "physical_placement": {
+                "requested": resources.placement,
+                "cpu_topology": resources.topology,
+                "memory_policy": "inherited"
+            },
             "image": game.image_identity(),
             "root_seal": archive.root_seal,
             "vocabulary": vocabulary.identifier(),

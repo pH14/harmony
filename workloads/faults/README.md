@@ -314,6 +314,10 @@ session RPC, hashing, import or restore, and retains no extra snapshot lease.
 Actual restoration still validates the captured receipt, machine state and
 decoder binding. A stale hint can affect host work, never certify an endpoint.
 
+The campaign summary records the requested processor assignment, detected
+topology and inherited host memory policy as diagnostics.
+These fields do not enter the deterministic stream or campaign checkpoints.
+
 Optional job locality observations are fixed-size workload-owned values, separate
 from logical fault observations and endpoint certificates. The origin restore
 records its actual selected source: local exact/ancestor or shared import

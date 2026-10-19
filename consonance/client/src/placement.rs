@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+mod topology;
+pub use topology::CpuTopology;
+
 #[cfg(any(target_os = "linux", test))]
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -7,9 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct CorePool {
     cpus: Vec<usize>,
     pinned: bool,
+    topology: Vec<CpuTopology>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct Placement {
     pub coordinator: Option<usize>,
     pub workers: Vec<Option<usize>>,
@@ -20,16 +24,22 @@ impl CorePool {
         #[cfg(target_os = "linux")]
         {
             let allowed = allowed_cpus()?;
-            let mut cpus = fastest_pool(&allowed, |path| std::fs::read_to_string(path).ok());
-            if let Some(quota) =
+            let read = |path: &str| std::fs::read_to_string(path).ok();
+            let ranked = fastest_pool(&allowed, &read);
+            let mut topology = topology::census(&ranked, &read)?;
+            let quota =
                 crate::cgroup::here(|dir| crate::cgroup::cpu_cores(dir, &crate::cgroup::read))
-            {
-                cpus.truncate(usize::try_from(quota).unwrap_or(usize::MAX));
-            }
+                    .map(|quota| usize::try_from(quota).unwrap_or(usize::MAX));
+            let cpus = topology::order(&ranked, &topology, quota);
             if cpus.is_empty() {
                 return Err("this process may use no CPU".to_owned());
             }
-            Ok(Self { cpus, pinned: true })
+            topology.retain(|info| cpus.contains(&info.cpu));
+            Ok(Self {
+                cpus,
+                pinned: true,
+                topology,
+            })
         }
         #[cfg(target_os = "macos")]
         {
@@ -41,6 +51,7 @@ impl CorePool {
             Ok(Self {
                 cpus: (0..cores.unwrap_or(1)).collect(),
                 pinned: false,
+                topology: Vec::new(),
             })
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -52,6 +63,11 @@ impl CorePool {
     #[must_use]
     pub fn cpus(&self) -> &[usize] {
         &self.cpus
+    }
+
+    #[must_use]
+    pub fn topology(&self) -> &[CpuTopology] {
+        &self.topology
     }
 
     #[must_use]
@@ -321,6 +337,7 @@ mod tests {
         let pool = CorePool {
             cpus: vec![0, 1, 10, 11, 6, 7, 8, 9],
             pinned: true,
+            topology: Vec::new(),
         };
         assert_eq!(pool.max_workers(), 7);
         let plan = pool.plan(7).expect("seven workers fit");
@@ -331,6 +348,7 @@ mod tests {
         let unpinned = CorePool {
             cpus: (0..8).collect(),
             pinned: false,
+            topology: Vec::new(),
         };
         assert_eq!(
             unpinned.plan(4).expect("four workers fit").workers,
@@ -340,6 +358,7 @@ mod tests {
         let single = CorePool {
             cpus: vec![3],
             pinned: true,
+            topology: Vec::new(),
         };
         assert_eq!(single.max_workers(), 1);
         let plan = single.plan(1).expect("one worker shares the only core");
