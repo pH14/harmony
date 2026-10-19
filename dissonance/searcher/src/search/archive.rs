@@ -2585,6 +2585,17 @@ where
         won
     }
 
+    fn single_preference_rejects(&self, slot: &[usize], key: K, cost_in_group: u64) -> bool {
+        K::capacity().max(1) == 1
+            && K::preferences().max(1) == 1
+            && slot.iter().any(|held| {
+                key.preference_cmp(0, self.entries[*held].key)
+                    .then_with(|| self.cost_in_group[*held].cmp(&cost_in_group))
+                    .then_with(|| self.entries[*held].id.cmp(&self.next_entry_id))
+                    != Ordering::Greater
+            })
+    }
+
     fn rank_slot_preferences(
         &self,
         slot: &[usize],
@@ -2764,6 +2775,10 @@ where
             .get(&slot_of_key(key))
             .map(Vec::as_slice)
             .unwrap_or_default();
+        if self.single_preference_rejects(slot, key, candidate_cost_in_group) {
+            self.rejected = self.rejected.saturating_add(1);
+            return Ok((None, key));
+        }
         let (ranked, won_preferences) =
             self.rank_slot_preferences(slot, key, candidate_cost_in_group);
         let admitted = ranked.last().copied().unwrap_or(true);
@@ -6766,6 +6781,17 @@ mod tests {
                                 archive.rank_slot_preferences(&slot, key, cost),
                                 archive.rank_slot_preferences_sorted(&slot, key, cost)
                             );
+                            if K::capacity().max(1) == 1 && K::preferences().max(1) == 1 {
+                                assert_eq!(
+                                    archive.single_preference_rejects(&slot, key, cost),
+                                    !archive
+                                        .rank_slot_preferences_sorted(&slot, key, cost)
+                                        .0
+                                        .last()
+                                        .copied()
+                                        .unwrap()
+                                );
+                            }
                         }
                     }
                 }

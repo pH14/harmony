@@ -926,16 +926,19 @@ where
             core.archive
                 .record_selection(parent_index, &pending_job.selector);
         }
-        let retained_ids = retained_archive_indexes(core, &decisions);
-        let new_cell_descendant = retained_ids
-            .iter()
-            .any(|id| core.archive.opened_new_cell(*id));
-        let new_slot_descendant = retained_ids
-            .iter()
-            .any(|id| core.archive.opened_new_slot(*id));
+        let (retained, new_cell_descendant, new_slot_descendant) = retained_archive_indexes(
+            core, &decisions,
+        )
+        .fold((false, false, false), |(_, new_cell, new_slot), id| {
+            (
+                true,
+                new_cell || core.archive.opened_new_cell(id),
+                new_slot || core.archive.opened_new_slot(id),
+            )
+        });
         if !isolated_continuation {
             core.archive
-                .record_selection_outcome(parent_index, !retained_ids.is_empty());
+                .record_selection_outcome(parent_index, retained);
         }
         if isolated_continuation {
             let (landed, replaced) =

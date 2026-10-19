@@ -1244,17 +1244,14 @@ fn continuation_arrival<G: Workload>(
         })
 }
 
-fn retained_archive_indexes<G: Workload>(
-    core: &CoordinatorCore<G>,
-    decisions: &[CampaignAdmissionDecision],
-) -> Vec<usize> {
-    decisions
-        .iter()
-        .filter_map(|decision| match decision {
-            CampaignAdmissionDecision::Retained { id } => core.archive.index_of_id(*id),
-            _ => None,
-        })
-        .collect()
+fn retained_archive_indexes<'a, G: Workload>(
+    core: &'a CoordinatorCore<G>,
+    decisions: &'a [CampaignAdmissionDecision],
+) -> impl Iterator<Item = usize> + 'a {
+    decisions.iter().filter_map(|decision| match decision {
+        CampaignAdmissionDecision::Retained { id } => core.archive.index_of_id(*id),
+        _ => None,
+    })
 }
 
 fn progress_policy_is_supported(policy: &str) -> bool {
@@ -2017,7 +2014,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 .transpose()?
                 .flatten();
             pending_suffix.push(action.action);
-            pending_certificates.push(certificate);
+            if certificate.is_some() || !pending_certificates.is_empty() {
+                pending_certificates.resize(pending_suffix.len() - 1, None);
+                pending_certificates.push(certificate);
+            }
             workload.merge_action_evidence(&mut self.evidence, &action, sequence, || {
                 let mut input = self
                     .archive
@@ -2079,7 +2079,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
-                    Some(&pending_certificates),
+                    (!pending_certificates.is_empty()).then_some(pending_certificates.as_slice()),
                 )?;
                 left_place |= key.place() != parent_place;
                 match admitted {
@@ -5120,8 +5120,7 @@ where
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
                     let new_cell_descendant = retained_archive_indexes(&core, &decisions)
-                        .iter()
-                        .any(|id| core.archive.opened_new_cell(*id));
+                        .any(|id| core.archive.opened_new_cell(id));
                     let (landed, replaced) = continuation_arrival::<G>(
                         &core.archive,
                         taken_continuation
@@ -5138,13 +5137,12 @@ where
                     core.archive.add_continuation_execution_work(execution_work);
                 } else {
                     core.archive.record_selection(parent_index, &job.selector);
-                    let retained_ids = retained_archive_indexes(&core, &decisions);
+                    let retained = retained_archive_indexes(&core, &decisions).next().is_some();
                     core.archive
-                        .record_selection_outcome(parent_index, !retained_ids.is_empty());
+                        .record_selection_outcome(parent_index, retained);
                 }
                 let new_slot_descendant = retained_archive_indexes(&core, &decisions)
-                    .iter()
-                    .any(|id| core.archive.opened_new_slot(*id));
+                    .any(|id| core.archive.opened_new_slot(id));
                 record_mixture_outcome(
                     &mut core.mixture_energy,
                     replay_mixture,
@@ -8114,7 +8112,10 @@ mod tests {
             CampaignAdmissionDecision::Duplicate { id: 0 },
             CampaignAdmissionDecision::Rejected,
         ];
-        assert_eq!(retained_archive_indexes(&core, &decisions), vec![0, 1]);
+        assert_eq!(
+            retained_archive_indexes(&core, &decisions).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
 
         let (mut draw_state, _header) =
             super::initial_draw_state(&workload, &run, None).expect("initialize draw state");
