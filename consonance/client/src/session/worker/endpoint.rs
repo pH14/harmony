@@ -310,6 +310,7 @@ pub(super) fn put_reply(out: &mut Out, reply: &EndpointReply) -> Result<(), Endp
             }
         }
         EndpointReply::Committed(receipt) => {
+            receipt.proof.validate()?;
             out.u8(2);
             put_binding(out, &receipt.binding)?;
             out.option(receipt.snapshot.map(|(snapshot, _)| snapshot.0));
@@ -321,10 +322,12 @@ pub(super) fn put_reply(out: &mut Out, reply: &EndpointReply) -> Result<(), Endp
                     out.u8(0);
                 }
                 EndpointProof::WholeStateAndHistory {
+                    assurance_identity,
                     state_hash,
                     history,
                 } => {
                     out.u8(1)
+                        .bytes(assurance_identity)
                         .bytes(state_hash)
                         .u64(history.count)
                         .bytes(&history.digest);
@@ -385,6 +388,10 @@ fn take_reply(bytes: &[u8]) -> Result<EndpointReply, EndpointError> {
             let proof = match input.u8()? {
                 0 => EndpointProof::Unavailable,
                 1 => EndpointProof::WholeStateAndHistory {
+                    assurance_identity: input
+                        .bytes()?
+                        .try_into()
+                        .map_err(|_| malformed("endpoint assurance identity"))?,
                     state_hash: input
                         .bytes()?
                         .try_into()
@@ -399,6 +406,7 @@ fn take_reply(bytes: &[u8]) -> Result<EndpointReply, EndpointError> {
                 },
                 _ => return Err(malformed("endpoint proof reply tag").into()),
             };
+            proof.validate()?;
             EndpointReply::Committed(EndpointReceipt {
                 binding,
                 snapshot,
@@ -459,6 +467,49 @@ fn bounded_detail(detail: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_wire_preserves_actual_assurance_and_refuses_relabelled_or_missing_metadata() {
+        let assurance = execution_contract::Assurance::ordinary().identity();
+        let reply = EndpointReply::Committed(EndpointReceipt {
+            binding: EndpointBinding {
+                token: EndpointToken(1),
+                request_digest: [7; 32],
+                stop: StopReason::Deadline { vtime: Moment(20) },
+                source_count: 0,
+                start_cursor: 0,
+                end_cursor: 0,
+            },
+            snapshot: Some((SnapId(3), 20)),
+            proof: EndpointProof::WholeStateAndHistory {
+                assurance_identity: assurance,
+                state_hash: [17; 32],
+                history: control_proto::EventHistory {
+                    count: 23,
+                    digest: [19; 32],
+                },
+            },
+        });
+        let mut out = Out::default();
+        put_reply(&mut out, &reply).unwrap();
+        assert_eq!(take_reply(&out.0).unwrap(), reply);
+        let at = out
+            .0
+            .windows(32)
+            .position(|bytes| bytes == assurance)
+            .unwrap();
+        let mut relabelled = out.0.clone();
+        relabelled[at] ^= 1;
+        assert!(
+            take_reply(&relabelled)
+                .unwrap_err()
+                .to_string()
+                .contains("assurance identity differs")
+        );
+        let mut missing = out.0;
+        missing.drain(at - 8..at + 32);
+        assert!(take_reply(&missing).is_err());
+    }
 
     #[test]
     fn a_maximum_legal_control_sdk_page_fits_the_endpoint_wire_without_widening_rows() {

@@ -416,10 +416,12 @@ that acknowledgement. No complete serialized payload buffer or subsequent
 full-extent copy is retained in the child; page payloads still copy once into
 the destination, and metadata and sidecar allocations remain. The loaded-image
 handshake requires matching workers.
-The version 4 host image hello identifies both descriptor-table IMPORT and
-transactional execution-endpoint commands. IMPORT carries a message-local
+The version 5 host image hello identifies qualification-aware INIT, descriptor-table
+IMPORT and transactional execution-endpoint commands. Both incompatible version 4
+schemas are refused alongside versions 1 through 3 before initialization.
+IMPORT carries a message-local
 backing table: U descriptors followed by N ordered (slot, offset, length) rows.
-Versions 1, 2 and 3 are refused because those peers do not share the complete
+Versions 1 through 4 are refused because those peers do not share the complete
 current protocol. The protocol reference cap is independent of diagnostic
 sampling limits.
 The parent groups only exact live Segment Arc owners while holding the original
@@ -456,7 +458,7 @@ length mismatch depends on the kernel (observed on macOS 26.6.2). Synthetic
 parser tests force the mismatched bounds independently of kernel behavior. This does not claim to
 recover kernel-installed handles that the OS did not return: observed Darwin
 truncation can leave unreported handles, tracked separately from bounded parsing.
-The accepted worker descriptor cap remains unchanged; the version 4 host hello
+The accepted worker descriptor cap remains unchanged; the version 5 host hello
 identifies both the descriptor-table import schema and the execution-endpoint
 protocol.
 
@@ -908,8 +910,8 @@ Guest; normal confirmed shutdown remains idempotent.
 
 ## Execution assurance
 
-The version 4 worker host hello also separates qualification-aware configuration
-from prior descriptor-table-only workers.
+The version 5 worker host hello separates the combined qualification-aware INIT,
+descriptor-table IMPORT and execution-endpoint protocol from every prior schema.
 
 Sessions default to ordinary, explicitly unqualified execution. Standard
 libraries remain admitted and CPU portability warnings remain advisory. Set
@@ -927,3 +929,11 @@ identity, portable snapshot metadata, UML root identity and cache namespaces.
 Missing/changed portable assurance metadata is refused. These bindings distinguish
 an observed replay or cache equality from an exact-qualified result; they do not
 claim new architectural equivalence or relax any backend admission restriction.
+
+Endpoint whole-state/history proofs also carry the actual session's admitted
+ordinary assurance identity. Workers return that identity with the measured state
+and history, and decoders and endpoint collectors refuse relabelled proof metadata.
+Fault history compares it with the parent receipt before extending the history.
+The proof request does not supply an expected assurance value to manufacture a
+reply. UML retains unavailable whole-state evidence; endpoint batching does not
+promote any ordinary execution into a qualified finite composition.

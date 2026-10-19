@@ -892,3 +892,10 @@ observed replay, and cannot be promoted into CPU portability qualification;
 `HistoryReceipt::require_qualified` refuses unsupported finite compositions.
 UML keeps `UmlWholeStateUnavailable` and has no whole-state certificate. See the
 [execution assurance contract](../../consonance/execution-contract/README.md).
+
+Execution-endpoint proofs carry the actual session's admitted assurance identity
+with its measured state and ordered history. The history consumer compares that
+returned identity with the parent receipt before changing observations or
+extending the receipt. A relabelled endpoint proof refuses even when its other
+binding fields are unchanged. The combined worker protocol requires host hello5;
+both incompatible hello4 schemas and all older versions are refused.
