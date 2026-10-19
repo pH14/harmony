@@ -1,0 +1,276 @@
+diff --git a/METATILES/metatiles.s b/METATILES/metatiles.s
+--- a/METATILES/metatiles.s
++++ b/METATILES/metatiles.s
+@@ -41,3 +41,21 @@
+ .repeat METATILES_COUNT, I
+   .byte .ident(.sprintf("METATILE_%d_CL", I))
+ .endrepeat
++
++.if HUGE_ROM
++.segment "XCD_BANK_06"
++.else
++.segment "RODATA_2"
++.endif
++.repeat METATILES_COUNT, I
++    .ident(.sprintf("SPIKE_BASE_%d", I)) .set 0
++.endrepeat
++.macro SpikeBase name, flags
++    .ident(.sprintf("SPIKE_BASE_%d", .ident(.sprintf("METATILE_%s", name)))) .set flags
++.endmacro
++.include "spike_bases.inc"
++.export _metatiles_bases := metatiles_bases
++metatiles_bases:
++.repeat METATILES_COUNT / 2, I
++    .byte .ident(.sprintf("SPIKE_BASE_%d", I * 2)) | (.ident(.sprintf("SPIKE_BASE_%d", I * 2 + 1)) << 4)
++.endrepeat
+diff --git a/METATILES/spike_bases.inc b/METATILES/spike_bases.inc
+new file mode 100644
+--- /dev/null
++++ b/METATILES/spike_bases.inc
+@@ -0,0 +1,40 @@
++SpikeBase "BOTTOM_BACKGROUND_SPIKES", 2
++SpikeBase "TOP_BACKGROUND_SPIKES", 1
++SpikeBase "HALF_LEFT_SPIKE_BACKGROUND", 4
++SpikeBase "HALF_RIGHT_SPIKE_BACKGROUND", 8
++SpikeBase "SPIKE_UP", 2
++SpikeBase "SPIKE_HALF", 2
++SpikeBase "HALF_SPIKE_BACKGROUND", 2
++SpikeBase "HALF_SPIKE_BACKGROUND_TOP", 1
++SpikeBase "PITSPIKES_TOP", 1
++SpikeBase "PITSPIKES", 2
++SpikeBase "SPIKE_LEFT", 4
++SpikeBase "SPIKE_TOP", 1
++SpikeBase "SPIKE_RIGHT", 8
++SpikeBase "HALF_SPIKE_LEFT", 4
++SpikeBase "HALF_SPIKE_TOP", 1
++SpikeBase "HALF_SPIKE_RIGHT", 8
++SpikeBase "HALF_SLAB_DOWN_SPIKE", 1
++SpikeBase "XSTEP_SPECIAL", 2
++SpikeBase "BOTTOM_WAVY_PLATFORM_STANDALONE", 2
++SpikeBase "BOTTOM_WAVYPIT", 2
++SpikeBase "TOP_WAVYPIT", 1
++SpikeBase "PITSPIKES_RIGHT", 8
++SpikeBase "PITSPIKES_LEFT", 4
++SpikeBase "WAVYPIT_BOTTOM_SPIKEPIT_TOP", 3
++SpikeBase "SPIKEPIT_TOP_WAVYPIT_BOTTOM", 3
++SpikeBase "SMALL_BLOCK_BOTTOM_BOTH_TOP_SPIKE_LEFT", 2
++SpikeBase "SMALL_BLOCK_BOTTOM_BOTH_TOP_SPIKE_RIGHT", 2
++SpikeBase "SMALL_BLOCK_BOTTOM_BOTH_TOP_SPIKES_BOTH", 2
++SpikeBase "UP_RIGHT_DIAG_SPIKES", 8
++SpikeBase "UP_LEFT_DIAG_SPIKES", 4
++SpikeBase "DOWN_RIGHT_DIAG_SPIKES", 8
++SpikeBase "DOWN_LEFT_DIAG_SPIKES", 4
++SpikeBase "SPIKE_PLATFORM", 2
++SpikeBase "SPIKE_INVERTED_PLATFORM", 3
++SpikeBase "SPIKE_UP_RIGHT_COL_SHIFTED", 2
++SpikeBase "SPIKE_UP_LEFT_COL_SHIFTED", 2
++SpikeBase "SPIKE_DOWN_LEFT_COL_SHIFTED", 1
++SpikeBase "SPIKE_DOWN_RIGHT_COL_SHIFTED", 1
++SpikeBase "DOUBLE_HALF_SPIKE_UP", 2
++SpikeBase "DOUBLE_HALF_SPIKE_TOP", 1
+diff --git a/LIB/asm/nesdash.s b/LIB/asm/nesdash.s
+--- a/LIB/asm/nesdash.s
++++ b/LIB/asm/nesdash.s
+@@ -4637,3 +4637,22 @@
+ ;		mmc3_set_1kb_chr_bank_2(SLOPESA);
+ ;		mmc3_set_1kb_chr_bank_3(current_saw_set);
+ ;	}
++
++.segment "CODE"
++.import _spider_base_meta
++.export _spider_base_flags
++.proc _spider_base_flags
++    ldx _spider_base_meta
++    txa
++    lsr a
++    tay
++    lda metatiles_bases,y
++    bcc even
++    lsr a
++    lsr a
++    lsr a
++    lsr a
++even:
++    and #3
++    rts
++.endproc
+diff --git a/SAUCE/functions/collision.h b/SAUCE/functions/collision.h
+--- a/SAUCE/functions/collision.h
++++ b/SAUCE/functions/collision.h
+@@ -35,6 +35,7 @@
+ 	Implemented in asm
+ */
+ char bg_collision_sub();
++#include "spider_bases.h"
+ 
+ 
+ /*
+@@ -989,6 +990,12 @@
+ #define LEFT_POS tmp7
+ #define RIGHT_POS tmp9
+ 
++CODE_BANK_POP()
++#if __HUGE_ROM
++CODE_BANK_PUSH(MOVEMENT_BANK)
++#else
++CODE_BANK_PUSH("CODE_2")
++#endif
+ char bg_coll_U_spider() {
+ 	temp_x = LEFT_POS; // automatically only the low byte
+ 	temp_y = (
+@@ -997,11 +1004,27 @@
+ 
+ 	tmp8 = (temp_y) & 0x0f;
+ 
+-	COLL_CHECK_TOP
++	bg_collision_sub();
++    __asm__("lda %v\n ora %v+0\n beq %g\n stx %v", collision, spider_base_old_flags, spider_left_clear, spider_base_meta);
++    if (collision && bg_coll_return_U()) {
++        idx8_store(cube_data, currplayer, cube_data[currplayer] & 0b1111110);
++        return 1;
++    }
++    spider_base_slot = 0;
++    if (SPIDER_BASE_CALL(spider_base_step)) return 1;
++spider_left_clear:;
+ 
+ 	temp_x = RIGHT_POS; // automatically only the low byte
+ 
+-	COLL_CHECK_TOP
++	bg_collision_sub();
++    __asm__("lda %v\n ora %v+1\n beq %g\n stx %v", collision, spider_base_old_flags, spider_right_clear, spider_base_meta);
++    if (collision && bg_coll_return_U()) {
++        idx8_store(cube_data, currplayer, cube_data[currplayer] & 0b1111110);
++        return 1;
++    }
++    spider_base_slot = 1;
++    if (SPIDER_BASE_CALL(spider_base_step)) return 1;
++spider_right_clear:;
+ 
+ 	return 0;
+ }
+@@ -1014,14 +1037,33 @@
+ 	
+ 	tmp8 = (temp_y) & 0x0f;
+ 
+-	COLL_CHECK_BOTTOM
++	bg_collision_sub();
++    __asm__("lda %v\n ora %v+0\n beq %g\n stx %v", collision, spider_base_old_flags, spider_left_clear, spider_base_meta);
++    if (collision && bg_coll_return_D()) {
++        idx8_store(cube_data, currplayer, cube_data[currplayer] & 0b1111110);
++        return 1;
++    }
++    spider_base_slot = 0;
++    if (SPIDER_BASE_CALL(spider_base_step)) return 1;
++spider_left_clear:;
+ 
+ 	temp_x = RIGHT_POS; // automatically only the low byte
+ 
+-	COLL_CHECK_BOTTOM
+-
+-	return 0;
+-}
++	bg_collision_sub();
++    __asm__("lda %v\n ora %v+1\n beq %g\n stx %v", collision, spider_base_old_flags, spider_right_clear, spider_base_meta);
++    if (collision && bg_coll_return_D()) {
++        idx8_store(cube_data, currplayer, cube_data[currplayer] & 0b1111110);
++        return 1;
++    }
++    spider_base_slot = 1;
++    if (SPIDER_BASE_CALL(spider_base_step)) return 1;
++spider_right_clear:;
++
++	return 0;
++}
++CODE_BANK_POP()
++CODE_BANK_PUSH(MOVEMENT_BANK)
++
+ #undef LEFT_POS
+ #undef RIGHT_POS
+ 
+diff --git a/SAUCE/functions/spider_bases.h b/SAUCE/functions/spider_bases.h
+new file mode 100644
+--- /dev/null
++++ b/SAUCE/functions/spider_bases.h
+@@ -0,0 +1,61 @@
++#if __HUGE_ROM
++#define SPIDER_BASE_BANK "XCD_BANK_06"
++#define SPIDER_BASE_CALL(sym) ((unsigned char)crossPRGBankJump0(sym))
++#else
++#define SPIDER_BASE_BANK "CODE_2"
++#define SPIDER_BASE_CALL(sym) sym()
++#endif
++CODE_BANK_PUSH(SPIDER_BASE_BANK)
++unsigned char spider_base_flags(void);
++unsigned char spider_base_meta;
++static unsigned char spider_base_direction, spider_base_slot, spider_base_old_flags[2];
++static unsigned char spider_base_new_flags, spider_base_new_phase;
++#if !__HUGE_ROM
++CODE_BANK_POP()
++CODE_BANK_PUSH("CODE")
++#endif
++unsigned char spider_base_crossed(unsigned char old_flags, unsigned char old_phase,
++                                unsigned char new_flags, unsigned char new_phase,
++                                unsigned char down) {
++    if (old_phase == new_phase) return 0;
++    if (down) {
++        if (new_phase < old_phase) return (old_flags & 2) || ((new_flags & 1) && new_phase);
++        return (new_flags & 1) && old_phase == 0;
++    }
++    if (new_phase > old_phase) return (new_flags & 2) || ((old_flags & 1) && old_phase);
++    return (old_flags & 1) && new_phase == 0;
++}
++
++#if !__HUGE_ROM
++CODE_BANK_POP()
++CODE_BANK_PUSH(SPIDER_BASE_BANK)
++#endif
++
++void spider_base_begin(void) {
++    temp_y = high_byte(currplayer_rely) + (currplayer_mini ? (byte(16 - Generic.height) >> 1) : 0) + (spider_base_direction ? Generic.height : 0) + scroll_y;
++    temp_x = tmp7;
++    bg_collision_sub();
++    __asm__("stx %v", spider_base_meta);
++    spider_base_old_flags[0] = collision ? spider_base_flags() : 0;
++    if (((tmp7 ^ tmp9) & 240) == 0) {
++        spider_base_old_flags[1] = spider_base_old_flags[0];
++        return;
++    }
++    temp_x = tmp9;
++    bg_collision_sub();
++    __asm__("stx %v", spider_base_meta);
++    spider_base_old_flags[1] = collision ? spider_base_flags() : 0;
++}
++unsigned char spider_base_step(void) {
++    spider_base_new_flags = collision ? spider_base_flags() : 0;
++    if (!(spider_base_new_flags | spider_base_old_flags[spider_base_slot])) return 0;
++    spider_base_new_phase = temp_y & 15;
++    if (spider_base_crossed(spider_base_old_flags[spider_base_slot], spider_base_new_phase ^ 8,
++                           spider_base_new_flags, spider_base_new_phase, spider_base_direction)) {
++        cube_data[currplayer] |= 1;
++        return 1;
++    }
++    spider_base_old_flags[spider_base_slot] = spider_base_new_flags;
++    return 0;
++}
++CODE_BANK_POP()
+diff --git a/SAUCE/gamemodes/gamemode_spider.h b/SAUCE/gamemodes/gamemode_spider.h
+--- a/SAUCE/gamemodes/gamemode_spider.h
++++ b/SAUCE/gamemodes/gamemode_spider.h
+@@ -92,6 +92,8 @@
+ 	LEFT_POS = Generic.x + low_word(scroll_x) + 3;
+ 	RIGHT_POS = Generic.x + low_word(scroll_x) + Generic.width - 3;
+ 	transitional_linear_absolute_currplayer_y = MSB(scroll_y_subpx + currplayer_rely) + scroll_y;
++	spider_base_direction = 0;
++	SPIDER_BASE_CALL(spider_base_begin);
+ 	do {
+ 		high_byte(currplayer_rely) -= 0x08;
+ 		transitional_linear_absolute_currplayer_y -= 0x08;
+@@ -108,6 +110,8 @@
+ 	LEFT_POS = Generic.x + low_word(scroll_x) + 3;
+ 	RIGHT_POS = Generic.x + low_word(scroll_x) + Generic.width - 3;
+ 	transitional_linear_absolute_currplayer_y = MSB(scroll_y_subpx + currplayer_rely) + scroll_y;
++	spider_base_direction = 1;
++	SPIDER_BASE_CALL(spider_base_begin);
+ 	do {
+ 		high_byte(currplayer_rely) += 0x08;
+ 		transitional_linear_absolute_currplayer_y += 0x08;

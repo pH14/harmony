@@ -1,0 +1,47 @@
+{
+  "release": {
+    "centre_probes": 5040,
+    "closed_sprite_free_components": 17,
+    "body_noncolliding_interior_hits": [],
+    "raw_biased_probe_hits": [
+      {
+        "frame": 3655,
+        "component": 331,
+        "x": 630,
+        "y": 18,
+        "mode": 6
+      },
+      {
+        "frame": 3660,
+        "component": 331,
+        "x": 631,
+        "y": 17,
+        "mode": 6
+      }
+    ],
+    "source_mismatches": [],
+    "rom_sha256": "e2c01f20ffcb8326403d9eadefc1eae4ead54d63b5685e3bae21f7b62e755260",
+    "trace_sha256": "53a8a0fb69ac0f2ae892853a975b07ed1f4884195ebb4ab993b9694d23ea0655",
+    "source_sha256": "41627315d56959eb88bb88fb02a4d48a4269aade35a81bfe92f411e5d38c34c4",
+    "limitation": "Body uses established normal-wave +4X rendering offset. Raw source/meta agreement tested before alignment. A closed-component visit alone does not establish intent."
+  },
+  "current": {
+    "centre_probes": 5041,
+    "closed_sprite_free_components": 17,
+    "body_noncolliding_interior_hits": [],
+    "raw_biased_probe_hits": [
+      {
+        "frame": 3960,
+        "component": 108,
+        "x": 689,
+        "y": 19,
+        "mode": 6
+      }
+    ],
+    "source_mismatches": [],
+    "rom_sha256": "535a59af3eccd461426cf51ad715589dc3635e49947fadf0ad38e8910662094f",
+    "trace_sha256": "6d81ab97a32408297840bfe2e602b3bf0291f9dde5f13914a081ec8694d9a4b0",
+    "source_sha256": "1b7a06be7ff9a3c929afaaa7ec3a6f23f60c2fd43efa49d6d978450de78bd22e",
+    "limitation": "Body uses established normal-wave +4X rendering offset. Raw source/meta agreement tested before alignment. A closed-component visit alone does not establish intent."
+  }
+}

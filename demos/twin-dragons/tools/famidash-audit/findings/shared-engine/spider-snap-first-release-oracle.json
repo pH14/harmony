@@ -1,0 +1,11 @@
+{
+  "status": "verified",
+  "geometry_cases": 4928,
+  "assembled_lookup_cases": 256,
+  "source_sha256": "e5bf4d9ab38b1db4b6a5ea5a46c83cfb6a3be429b2eeba70622b0a9ee9652c1a",
+  "metadata_sha256": "f58cd8b0da16d7a2e4f6580a710f6f0a063b2c58ff80fd53beaf33718dad818f",
+  "rom_sha256": "e2c01f20ffcb8326403d9eadefc1eae4ead54d63b5685e3bae21f7b62e755260",
+  "debug_sha256": "7b5643fb3fd973d4261a31ca044e5238c87a8210c8272010459541e1c46b537c",
+  "index_sha256": "95fbb52f46f76e8b5549e86f041c32f02c03b30741289f635122343613a810b5",
+  "limitation": "Geometry uses the host-compiled source body; lookup executes assembled instructions. This does not emulate NES banking, frame budget, or other collision routines."
+}

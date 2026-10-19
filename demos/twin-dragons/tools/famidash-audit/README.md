@@ -398,3 +398,17 @@ signed offset from the player origin. Use these probe-time coordinates when
 comparing CPU map reads with source geometry; post-frame scroll may differ.
 JavaScript callers unwrapping a low byte must normalize negative remainders
 explicitly. A source mismatch inferred using a negative `%` result is invalid.
+
+`check-spider-bases.py SOURCE ROM DBG INDEX OUTPUT` host-compiles the actual
+bounded directional crossing function (4,928 cases) and executes the assembled
+packed metadata lookup (256 cases). It binds source, lookup metadata, ROM,
+symbol and index hashes. It does not emulate banking or establish a frame budget.
+
+`retime-control.mjs CLEARING_CONTROL ROM RUNTIME OUTPUT.json.gz` accepts only
+retained clearing controls. Set `FAMIDASH_SYMBOLS=DBG` for current upstream.
+It preserves every mechanical transition after the 40-frame intro and changes
+only the duration of identical consecutive observations. Any other change or
+death rejects the conversion. This produces an ordinary controller tape for
+positive playability checks; it cannot validate a failing witness or justify
+an unchanged-input claim. Independently replay the generated input and report
+added lag frames separately.

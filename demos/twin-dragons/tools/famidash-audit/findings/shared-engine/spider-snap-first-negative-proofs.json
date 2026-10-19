@@ -1,0 +1,187 @@
+{
+  "status": "verified",
+  "cases": [
+    {
+      "case": "fingerdash-spider-underfloor-original-witness.json.gz",
+      "variant": "release",
+      "rom_sha256": "e2c01f20ffcb8326403d9eadefc1eae4ead54d63b5685e3bae21f7b62e755260",
+      "debug_sha256": "7b5643fb3fd973d4261a31ca044e5238c87a8210c8272010459541e1c46b537c",
+      "first_original_fill_frame": 2120,
+      "quicknes": "fingerdash-spider-underfloor-original-witness-snap-first-fixed-quicknes.json",
+      "fceumm": "fingerdash-spider-underfloor-original-witness-snap-first-fixed-fceumm.json",
+      "death_frame": 2120,
+      "unchanged_approach_after_frame": 40,
+      "reset": {
+        "released_frames_after_death": 40,
+        "endpoint": {
+          "level": 20,
+          "state": 2,
+          "x": -225,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0
+        }
+      }
+    },
+    {
+      "case": "current-fingerdash-spider-underfloor-original-witness.json.gz",
+      "variant": "current",
+      "rom_sha256": "535a59af3eccd461426cf51ad715589dc3635e49947fadf0ad38e8910662094f",
+      "debug_sha256": "27552f1122abb385acc3f98f65c7217ea9aea37265f88e51f3bce4429a42995e",
+      "first_original_fill_frame": 2182,
+      "quicknes": "current-fingerdash-spider-underfloor-original-witness-snap-first-fixed-quicknes.json",
+      "fceumm": "current-fingerdash-spider-underfloor-original-witness-snap-first-fixed-fceumm.json",
+      "death_frame": 2182,
+      "unchanged_approach_after_frame": 40,
+      "reset": {
+        "released_frames_after_death": 41,
+        "endpoint": {
+          "level": 20,
+          "state": 2,
+          "x": -224,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0,
+          "wrap": 0,
+          "coins": 0
+        }
+      }
+    },
+    {
+      "case": "main-21-494-spider-original-witness.json.gz",
+      "variant": "release",
+      "rom_sha256": "e2c01f20ffcb8326403d9eadefc1eae4ead54d63b5685e3bae21f7b62e755260",
+      "debug_sha256": "7b5643fb3fd973d4261a31ca044e5238c87a8210c8272010459541e1c46b537c",
+      "first_original_fill_frame": 220,
+      "quicknes": "main-21-494-spider-original-witness-snap-first-fixed-quicknes.json",
+      "fceumm": "main-21-494-spider-original-witness-snap-first-fixed-fceumm.json",
+      "death_frame": 220,
+      "unchanged_approach_after_frame": 40,
+      "reset": {
+        "released_frames_after_death": 41,
+        "endpoint": {
+          "level": 21,
+          "state": 2,
+          "x": -238,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0
+        }
+      }
+    },
+    {
+      "case": "main-21-501-spider-original-witness.json.gz",
+      "variant": "release",
+      "rom_sha256": "e2c01f20ffcb8326403d9eadefc1eae4ead54d63b5685e3bae21f7b62e755260",
+      "debug_sha256": "7b5643fb3fd973d4261a31ca044e5238c87a8210c8272010459541e1c46b537c",
+      "first_original_fill_frame": 478,
+      "quicknes": "main-21-501-spider-original-witness-snap-first-fixed-quicknes.json",
+      "fceumm": "main-21-501-spider-original-witness-snap-first-fixed-fceumm.json",
+      "death_frame": 478,
+      "unchanged_approach_after_frame": 40,
+      "reset": {
+        "released_frames_after_death": 41,
+        "endpoint": {
+          "level": 21,
+          "state": 2,
+          "x": -238,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0
+        }
+      }
+    },
+    {
+      "case": "main-24-47-spider-original-witness.json.gz",
+      "variant": "release",
+      "rom_sha256": "e2c01f20ffcb8326403d9eadefc1eae4ead54d63b5685e3bae21f7b62e755260",
+      "debug_sha256": "7b5643fb3fd973d4261a31ca044e5238c87a8210c8272010459541e1c46b537c",
+      "first_original_fill_frame": 863,
+      "quicknes": "main-24-47-spider-original-witness-snap-first-fixed-quicknes.json",
+      "fceumm": "main-24-47-spider-original-witness-snap-first-fixed-fceumm.json",
+      "death_frame": 863,
+      "unchanged_approach_after_frame": 40,
+      "reset": {
+        "released_frames_after_death": 41,
+        "endpoint": {
+          "level": 24,
+          "state": 2,
+          "x": -238,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0
+        }
+      }
+    },
+    {
+      "case": "main-31-182-spider-original-witness.json.gz",
+      "variant": "release",
+      "rom_sha256": "e2c01f20ffcb8326403d9eadefc1eae4ead54d63b5685e3bae21f7b62e755260",
+      "debug_sha256": "7b5643fb3fd973d4261a31ca044e5238c87a8210c8272010459541e1c46b537c",
+      "first_original_fill_frame": 2629,
+      "quicknes": "main-31-182-spider-original-witness-snap-first-fixed-quicknes.json",
+      "fceumm": "main-31-182-spider-original-witness-snap-first-fixed-fceumm.json",
+      "death_frame": 2629,
+      "unchanged_approach_after_frame": 40,
+      "reset": {
+        "released_frames_after_death": 41,
+        "endpoint": {
+          "level": 31,
+          "state": 2,
+          "x": -238,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0
+        }
+      }
+    }
+  ]
+}

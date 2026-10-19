@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "source_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "status": "isolated-six-negative-and-two-positive-controls-verified; integration-and-broader-coverage-pending",
+  "changes": [
+    {
+      "path": "METATILES/metatiles.s",
+      "before_sha256": "8c27405d90108bda26f2666a109e5b5199ba8f861e7fcd31cd03bbae400c9fab",
+      "after_sha256": "27e0b85e7b9c28e52ba1efde4a293b066ba9a5249e0cfa803cd7de998d856ff3"
+    },
+    {
+      "path": "METATILES/spike_bases.inc",
+      "before_sha256": null,
+      "after_sha256": "f58cd8b0da16d7a2e4f6580a710f6f0a063b2c58ff80fd53beaf33718dad818f"
+    },
+    {
+      "path": "LIB/asm/nesdash.s",
+      "before_sha256": "602ee978c936f3327e936fe80fa42f4d7d3a3205e95dbaa899f198c5c3b26cad",
+      "after_sha256": "7c65c235b1e59813f279c9341fb0c22fcf3de647f226ee7e1066205a1390ccbc"
+    },
+    {
+      "path": "SAUCE/functions/collision.h",
+      "before_sha256": "e70c12af24fc9786eb13430311583a3a34408646477d1023a10712d4b068aa37",
+      "after_sha256": "84ac71379c80a9458e1b0e9edf7530afbb90a400406bda4316da9aeca6526f8c"
+    },
+    {
+      "path": "SAUCE/functions/spider_bases.h",
+      "before_sha256": null,
+      "after_sha256": "e5bf4d9ab38b1db4b6a5ea5a46c83cfb6a3be429b2eeba70622b0a9ee9652c1a"
+    },
+    {
+      "path": "SAUCE/gamemodes/gamemode_spider.h",
+      "before_sha256": "71a7b9eb5ea2663b3129945738b7449f3fa5aaed4c4fbc8b355f8850e66bf374",
+      "after_sha256": "3adee7ccc61142b068371d04da8ba5d189b7d74542160367b93153152cfdaab2"
+    }
+  ],
+  "failure": "Spider teleport ignores full-width opaque spike backs when its two inset probes miss the narrow damage kernels.",
+  "scope": "Preserves original solid-surface snaps first, then checks directional opaque-base crossing during each eight-pixel teleport step. Reuses original map reads and preserves traversal of hazards without opaque backs.",
+  "performance": "Current ordinary clearing path requires two extra lag frames relative to unmodified upstream; preserved mechanical transition sequence uses retimed controller input. Release control has unchanged full original-ROM trace."
+}

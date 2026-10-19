@@ -762,3 +762,34 @@ The current clearing input also completes on unmodified upstream with its
 entire trace unchanged. The release input uses a corrected solid boundary
 at frame 2,240 and fails on the original at 2,245, so it establishes repaired
 playability rather than preservation of an original clearing input.
+
+Spider teleport has a separate generic collision gap. Its eight-pixel vertical
+ray samples two inset X points; both can miss a narrow spike kernel and pass
+through the full-width opaque floor underneath. Original CPU traces confirm
+this in Fingerdash, both early Dash floors, The Challenge and Sunshine. The
+current upstream Fingerdash reproduction uses a separate Dissonance input.
+The retained inputs establish interior entry; sustained escape duration varies.
+
+`spider-opaque-bases-{release,current}.patch` checks horizontal opaque bases
+at each teleport step, after preserving the original solid-surface snap.
+It reuses existing map reads and leaves hazards without opaque bases traversable.
+All six retained negative cases have unchanged approaches and die at their
+first crossing in QuickNES and FCEUmm, with normal resets. The host geometry
+and assembled metadata lookup checks pass. All four release builds, five
+current standard builds and current HUGE compile with this source revision.
+Bank allocation in the combined prototype is a separate integration concern.
+
+Fresh ordinary clearing controls complete in 5,067 release frames and 5,072
+current frames; FCEUmm matches both. Full independent CPU traces check 5,040
+and 5,041 centre probes, respectively, with no source/metatile mismatch and no
+aligned body visits inside closed sprite-free noncolliding fill. The two raw
+release wave probes in component331 disappear under the established +4X body
+alignment; they are retained in the review report. This review alone does not
+classify arbitrary closed components as forbidden.
+
+The release control's input is mechanically identical on the original ROM.
+The current route requires retiming: the same mechanical transition sequence
+finishes in 5,070 frames on unmodified upstream. The repair adds two lag frames,
+so the current control does not support an unchanged-controller-input claim.
+Broader direction/mini coverage, mapper runtime checks and complete integration
+rounds remain pending; this is still an experimental upstream proposal.
