@@ -412,3 +412,15 @@ death rejects the conversion. This produces an ordinary controller tape for
 positive playability checks; it cannot validate a failing witness or justify
 an unchanged-input claim. Independently replay the generated input and report
 added lag frames separately.
+
+Collision trace schema 2 classifies callers by their mapped PRG ROM offset,
+using `Page`, `PRGptr` and `PRGsize` exported from the trace core. CPU addresses
+alone are insufficient when banked helpers occupy the same address range.
+`fceumm-trace-exports.T` supplies the required linker exports; relink the same
+FCEUmm objects with `make -f Makefile.libretro TARGET=fceumm_bank_trace.so
+SHARED='-shared -Wl,--version-script=/absolute/path/fceumm-trace-exports.T
+-Wl,-no-undefined'`. This exposes mapping data without changing emulator logic.
+The tool rejects cores missing those exports. Retained schema-1 traces still
+contain actual map reads, but their centre labels need bank-aware reassessment
+when queries originate from switched banks. The retained frame790 caller
+regression demonstrates two intermediate queries previously counted as centres.
