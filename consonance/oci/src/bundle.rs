@@ -19,6 +19,8 @@ pub const SUPERVISOR_PATH: &str = "/usr/lib/harmony/supervisor";
 pub const HARMONY_DEVICE: &str = "/dev/harmony";
 const KERNEL_LOG_DEVICE: &str = "/dev/kmsg";
 const KVM_DEVICE: &str = "/dev/kvm";
+const GUEST_PATH_MAX: usize = 4096;
+const GUEST_NAME_MAX: usize = 255;
 pub const MAX_EXTERNAL_INPUTS: usize = 256;
 pub const MAX_EXTERNAL_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_EXTERNAL_INPUT_PATH_BYTES: usize = 4096;
@@ -303,18 +305,47 @@ impl PreparedExecution {
     }
 }
 
-fn inflate_rootfs(bytes: &[u8], limit: usize) -> Result<Vec<u8>, BundleError> {
-    miniz_oxide::inflate::decompress_to_vec_with_limit(bytes, limit).map_err(|error| {
-        BundleError::RootfsArchive(format!("deflate or output limit: {:?}", error.status))
-    })
+fn inflate_rootfs(mut input: &[u8], limit: usize) -> Result<Vec<u8>, BundleError> {
+    use flate2::{Decompress, FlushDecompress, Status};
+    let malformed = |reason: &str| BundleError::RootfsArchive(reason.into());
+    let mut decoder = Decompress::new(false);
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 64 << 10];
+    loop {
+        let before_in = decoder.total_in();
+        let before_out = decoder.total_out();
+        let status = decoder
+            .decompress(input, &mut chunk, FlushDecompress::None)
+            .map_err(|_| malformed("deflate stream"))?;
+        let consumed = usize::try_from(decoder.total_in() - before_in)
+            .map_err(|_| malformed("deflate input length"))?;
+        let produced = usize::try_from(decoder.total_out() - before_out)
+            .map_err(|_| malformed("deflate output length"))?;
+        if produced > limit.saturating_sub(bytes.len()) {
+            return Err(malformed("deflate output limit"));
+        }
+        bytes.extend_from_slice(&chunk[..produced]);
+        input = &input[consumed..];
+        if status == Status::StreamEnd {
+            return if input.is_empty() {
+                Ok(bytes)
+            } else {
+                Err(malformed("deflate trailing input"))
+            };
+        }
+        if consumed == 0 && produced == 0 {
+            return Err(malformed("incomplete deflate stream"));
+        }
+    }
 }
 
 fn parse_rootfs_archive(bytes: Vec<u8>) -> Result<ArchivedRootfs, BundleError> {
     let malformed = |reason: &str| BundleError::RootfsArchive(reason.into());
     let mut cursor = 0usize;
     let mut entries = Vec::new();
-    let mut names = BTreeSet::new();
+    let mut names = BTreeMap::new();
     let mut root_entries = 0;
+    let mut next_inode = 1_u32;
     loop {
         let header = bytes
             .get(cursor..cursor.saturating_add(110))
@@ -324,15 +355,34 @@ fn parse_rootfs_archive(bytes: Vec<u8>) -> Result<ArchivedRootfs, BundleError> {
         }
         let field = |index: usize| -> Result<u32, BundleError> {
             let start = 6 + index * 8;
-            let text = std::str::from_utf8(&header[start..start + 8])
-                .map_err(|_| malformed("cpio header field"))?;
+            let encoded = &header[start..start + 8];
+            if encoded
+                .iter()
+                .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(byte))
+            {
+                return Err(malformed("noncanonical cpio header field"));
+            }
+            let text = std::str::from_utf8(encoded).map_err(|_| malformed("cpio header field"))?;
             u32::from_str_radix(text, 16).map_err(|_| malformed("cpio header field"))
         };
+        if field(0)? != next_inode
+            || field(4)? != 1
+            || [5, 7, 8, 9, 10, 12]
+                .into_iter()
+                .any(|index| !matches!(field(index), Ok(0)))
+        {
+            return Err(malformed("noncanonical cpio inode or link header"));
+        }
+        next_inode = next_inode
+            .checked_add(1)
+            .ok_or_else(|| malformed("cpio inode overflow"))?;
         let mode = field(1)?;
+        let uid = field(2)?;
+        let gid = field(3)?;
         let filesize = usize::try_from(field(6)?).map_err(|_| malformed("cpio file size"))?;
         let namesize = usize::try_from(field(11)?).map_err(|_| malformed("cpio name size"))?;
-        if namesize == 0 {
-            return Err(malformed("empty cpio name"));
+        if namesize == 0 || namesize > GUEST_PATH_MAX {
+            return Err(malformed("cpio name exceeds guest path limits"));
         }
         let name_start = cursor
             .checked_add(110)
@@ -355,9 +405,12 @@ fn parse_rootfs_archive(bytes: Vec<u8>) -> Result<ArchivedRootfs, BundleError> {
         let data_end = data_start
             .checked_add(filesize)
             .ok_or_else(|| malformed("cpio offset overflow"))?;
-        bytes
+        let data = bytes
             .get(data_start..data_end)
             .ok_or_else(|| malformed("truncated cpio data"))?;
+        if bytes[name_end..data_start].iter().any(|byte| *byte != 0) {
+            return Err(malformed("noncanonical cpio name padding"));
+        }
         cursor = data_end
             .checked_add(3)
             .ok_or_else(|| malformed("cpio offset overflow"))?
@@ -365,14 +418,25 @@ fn parse_rootfs_archive(bytes: Vec<u8>) -> Result<ArchivedRootfs, BundleError> {
         if cursor > bytes.len() {
             return Err(malformed("truncated cpio padding"));
         }
+        if bytes[data_end..cursor].iter().any(|byte| *byte != 0) {
+            return Err(malformed("noncanonical cpio data padding"));
+        }
         if name == "TRAILER!!!" {
-            if filesize != 0 || cursor != bytes.len() || root_entries != 2 {
+            if mode != 0
+                || uid != 0
+                || gid != 0
+                || filesize != 0
+                || cursor != bytes.len()
+                || root_entries != 2
+            {
                 return Err(malformed("cpio trailer"));
             }
             break;
         }
         if name == "harmony-oci" || name == "harmony-oci/rootfs" {
-            if mode & 0o170000 != 0o040000
+            if mode != 0o040755
+                || uid != 0
+                || gid != 0
                 || filesize != 0
                 || (root_entries == 0 && name != "harmony-oci")
                 || (root_entries == 1 && name != "harmony-oci/rootfs")
@@ -390,19 +454,34 @@ fn parse_rootfs_archive(bytes: Vec<u8>) -> Result<ArchivedRootfs, BundleError> {
             .strip_prefix("harmony-oci/rootfs/")
             .ok_or_else(|| malformed("entry outside rootfs"))?;
         if path.is_empty()
-            || path
-                .split('/')
-                .any(|component| component.is_empty() || component == "." || component == "..")
+            || path.split('/').any(|component| {
+                component.is_empty()
+                    || component.len() > GUEST_NAME_MAX
+                    || component == "."
+                    || component == ".."
+            })
             || path.contains('\0')
             || Path::new(path)
                 .components()
                 .any(|component| !matches!(component, Component::Normal(_)))
+            || mode & !0o177777 != 0
             || !matches!(mode & 0o170000, 0o040000 | 0o100000 | 0o120000)
             || (mode & 0o170000 == 0o040000 && filesize != 0)
-            || !names.insert(path.to_owned())
+            || (mode & 0o170000 == 0o120000
+                && (mode != 0o120777
+                    || data.is_empty()
+                    || data.len() >= GUEST_PATH_MAX
+                    || data.contains(&0)))
+            || names.contains_key(path)
         {
             return Err(malformed("invalid or duplicate rootfs path"));
         }
+        if let Some((parent, _)) = path.rsplit_once('/')
+            && names.get(parent) != Some(&0o040000)
+        {
+            return Err(malformed("rootfs parent is absent or not a directory"));
+        }
+        names.insert(path.to_owned(), mode & 0o170000);
         entries.push(ArchivedRootfsIndex {
             path: path.to_owned(),
             mode,
@@ -920,6 +999,7 @@ fn gzip(data: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::image::RuntimeConfig;
+    use guest_image::Owner;
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
@@ -1359,6 +1439,163 @@ mod tests {
         let error = inflate_rootfs(&bytes, 1024).unwrap_err().to_string();
         assert!(error.contains("output limit"));
         assert!(error.len() < 128);
+    }
+
+    fn import_rootfs_segment(segment: Vec<u8>) -> Result<PreparedExecution, BundleError> {
+        let prepared = prepare(&image(), &LaunchRequest::default()).unwrap();
+        let mut record = prepared.record();
+        record.rootfs_segment = segment;
+        record.identity = execution_identity(
+            &record.rootfs_segment,
+            prepared.control_segment(),
+            &record.execution,
+        )
+        .unwrap();
+        PreparedExecution::from_record(record)
+    }
+
+    fn rootfs_writer() -> Writer {
+        let mut writer = Writer::new();
+        writer.dir("harmony-oci", 0o755);
+        writer.dir("harmony-oci/rootfs", 0o755);
+        writer
+    }
+
+    #[test]
+    fn prepared_record_rejects_additional_compressed_streams_and_truncated_deflate() {
+        let prepared = prepare(&image(), &LaunchRequest::default()).unwrap();
+        let mut multiple = prepared.rootfs_segment.clone();
+        multiple.extend_from_slice(&prepared.rootfs_segment);
+        let error = import_rootfs_segment(multiple).unwrap_err().to_string();
+        assert!(error.contains("trailing input"), "{error}");
+        let compressed = miniz_oxide::deflate::compress_to_vec(&[9; 4096], 1);
+        for length in [0, 1, compressed.len() - 1] {
+            assert!(inflate_rootfs(&compressed[..length], 4096).is_err());
+        }
+        let mut trailing = compressed.clone();
+        trailing.push(0);
+        assert!(
+            inflate_rootfs(&trailing, 4096)
+                .unwrap_err()
+                .to_string()
+                .contains("trailing input")
+        );
+    }
+
+    #[test]
+    fn prepared_record_requires_complete_directory_parents_for_every_entry() {
+        for kind in ["symlink", "file", "absent"] {
+            let mut writer = rootfs_writer();
+            match kind {
+                "symlink" => writer.symlink("harmony-oci/rootfs/escape", b"/usr/lib/harmony"),
+                "file" => writer.file("harmony-oci/rootfs/escape", 0o644, b"regular"),
+                _ => {}
+            }
+            writer.file("harmony-oci/rootfs/escape/init", 0o755, b"replacement");
+            let error = import_rootfs_segment(gzip(&writer.finish()))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("parent is absent or not a directory"),
+                "{kind}: {error}"
+            );
+        }
+        let mut valid = rootfs_writer();
+        valid.dir_owned("harmony-oci/rootfs/data", 0o750, Owner { uid: 42, gid: 84 });
+        valid.file_owned(
+            "harmony-oci/rootfs/data/value",
+            0o640,
+            Owner { uid: 42, gid: 84 },
+            b"value",
+        );
+        valid.symlink("harmony-oci/rootfs/alias", b"data/value");
+        assert!(import_rootfs_segment(gzip(&valid.finish())).is_ok());
+    }
+
+    #[test]
+    fn prepared_record_rejects_noncanonical_newc_headers_and_path_aliases() {
+        let canonical = rootfs_writer().finish();
+        for (index, value) in [
+            (0, 2),
+            (4, 0),
+            (4, 2),
+            (5, 1),
+            (7, 1),
+            (8, 1),
+            (9, 1),
+            (10, 1),
+            (12, 1),
+        ] {
+            let mut bytes = canonical.clone();
+            let start = 6 + index * 8;
+            bytes[start..start + 8].copy_from_slice(format!("{value:08x}").as_bytes());
+            assert!(
+                import_rootfs_segment(gzip(&bytes)).is_err(),
+                "field{index}={value}"
+            );
+        }
+        let mut uppercase = canonical.clone();
+        uppercase[14..22].copy_from_slice(b"000041ED");
+        assert!(import_rootfs_segment(gzip(&uppercase)).is_err());
+        let mut padding = canonical;
+        padding[110 + "harmony-oci".len() + 1] = 1;
+        assert!(import_rootfs_segment(gzip(&padding)).is_err());
+        for path in ["a/../b", "a//b", "a/./b", "a/", "./a", "/a"] {
+            let mut writer = rootfs_writer();
+            writer.file(&format!("harmony-oci/rootfs/{path}"), 0o644, b"value");
+            assert!(
+                import_rootfs_segment(gzip(&writer.finish())).is_err(),
+                "{path}"
+            );
+        }
+        let mut duplicate = rootfs_writer();
+        duplicate.file("harmony-oci/rootfs/value", 0o644, b"one");
+        duplicate.file("harmony-oci/rootfs/value", 0o644, b"two");
+        assert!(import_rootfs_segment(gzip(&duplicate.finish())).is_err());
+    }
+
+    fn rootfs_with_name_length(length: usize) -> Vec<u8> {
+        let mut writer = rootfs_writer();
+        let mut path = "harmony-oci/rootfs".to_owned();
+        while length - path.len() > GUEST_NAME_MAX + 1 {
+            path.push('/');
+            path.push_str(&"d".repeat(GUEST_NAME_MAX));
+            writer.dir(&path, 0o755);
+        }
+        path.push('/');
+        path.push_str(&"f".repeat(length - path.len()));
+        writer.file(&path, 0o644, b"value");
+        writer.finish()
+    }
+
+    #[test]
+    fn prepared_record_enforces_guest_name_and_symlink_length_boundaries() {
+        assert!(import_rootfs_segment(gzip(&rootfs_with_name_length(GUEST_PATH_MAX - 1))).is_ok());
+        assert!(import_rootfs_segment(gzip(&rootfs_with_name_length(GUEST_PATH_MAX))).is_err());
+        for (length, accepted) in [(GUEST_NAME_MAX, true), (GUEST_NAME_MAX + 1, false)] {
+            let mut writer = rootfs_writer();
+            writer.file(
+                &format!("harmony-oci/rootfs/{}", "f".repeat(length)),
+                0o644,
+                b"value",
+            );
+            assert_eq!(
+                import_rootfs_segment(gzip(&writer.finish())).is_ok(),
+                accepted
+            );
+        }
+        for (length, accepted) in [
+            (GUEST_PATH_MAX - 1, true),
+            (GUEST_PATH_MAX, false),
+            (GUEST_PATH_MAX + 1, false),
+        ] {
+            let mut writer = rootfs_writer();
+            writer.symlink("harmony-oci/rootfs/leaf", &vec![b'x'; length]);
+            assert_eq!(
+                import_rootfs_segment(gzip(&writer.finish())).is_ok(),
+                accepted
+            );
+        }
     }
 
     #[test]

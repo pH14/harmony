@@ -356,3 +356,18 @@ On native ARM64 Linux and macOS, SHA-256 uses runtime-detected CPU acceleration,
 including when this component is built independently. Other targets and Miri
 retain the existing backend selection. Hash inputs and outputs are unchanged.
 The [host SHA qualification](../../scripts/qualification/README.md) checks independent builds and compares real consumers with software hashing.
+
+Imported prepared rootfs segments accept exactly one fully consumed gzip/DEFLATE
+stream. The newc archive must use the canonical producer headers (sequential
+unique inodes, link count one, zero timestamps/device/check fields and padding),
+canonical unique paths and complete earlier directory parents for every entry.
+Symlinks may be leaves, never parents of another archived path. These checks
+keep the inspected files equal to what the guest kernel unpacks and exclude
+concatenated archives, hardlink aliases and symlink traversal outside the rootfs.
+
+Imported names include their archive prefix and terminating NUL within Linux
+PATH_MAX (4,096 bytes), with components at most NAME_MAX (255 bytes). Symlink
+targets fit within 4,095 bytes. Larger entries are refused before admission, so
+validation never relies on files that the guest unpacker/filesystem would omit.
+The limits follow the pinned [Linux unpacker](https://raw.githubusercontent.com/gregkh/linux/v6.18.35/init/initramfs.c)
+and [Linux path limits](https://raw.githubusercontent.com/gregkh/linux/v6.18.35/include/uapi/linux/limits.h).
