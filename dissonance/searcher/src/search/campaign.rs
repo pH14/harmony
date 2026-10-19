@@ -8940,7 +8940,12 @@ mod tests {
                     fixture.as_ref(),
                 )
                 .unwrap();
-                let logical = (stream, serde_json::to_vec(&outcome).unwrap());
+                assert!(outcome.1.entries.is_empty());
+                let logical = (
+                    stream,
+                    serde_json::to_vec(&outcome.0).unwrap(),
+                    outcome.1.to_bytes().unwrap(),
+                );
                 if let Some(expected) = &reference {
                     assert_eq!(&logical, expected, "case={case:?}");
                 } else {

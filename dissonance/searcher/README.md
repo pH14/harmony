@@ -49,8 +49,11 @@ plan drains with an owned decoded-snapshot cache. It waits for actual queue idle
 membership, starts with the parent retained only by worker 1, and compares empty
 and populated advertisements. Cache misses decode and allocate the restored
 value; hits restore from the retained value. It checks avoided reconstruction,
-busy-owner fallback, and byte-identical complete logical streams and outcomes.
-Its scoped readiness hooks are test-only; the fixture makes no host timing claim.
+busy-owner fallback, and byte-identical complete logical streams, reports and
+checkpoint-codec bytes. This fixture disables final materialization and asserts
+that its concrete checkpoint has no entries; nonempty codec round-trip coverage
+is separate. Its scoped readiness hooks are test-only, and the fixture makes no
+host timing claim.
 
 Replay checks the source fields allowed by each origin kind, requires
 an archive checkpoint exactly when the stream names one, and matches the supplied
