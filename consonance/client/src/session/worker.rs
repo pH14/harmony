@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+mod endpoint;
 mod work;
 
 use std::{
@@ -70,15 +71,27 @@ const RUN_UNTIL: u8 = 13;
 const SDK_EVENTS: u8 = 14;
 const STORE_BYTES: u8 = 15;
 const RUN_RESOLVING: u8 = 16;
+const ENDPOINT: u8 = 20;
 
 const OK: u8 = 0;
 const FAILED: u8 = 1;
+const FAILED_RETIRED: u8 = 2;
 const OTHER: u8 = 0;
 const HUNG: u8 = 1;
 const ABANDONED: u8 = 2;
 const INFRASTRUCTURE: u8 = 3;
 
 pub trait SearchSession: std::fmt::Debug {
+    fn execution_endpoint(
+        &mut self,
+        _request: crate::endpoint::EndpointRequest,
+    ) -> Result<crate::endpoint::EndpointReply, Box<dyn Error>> {
+        Err("execution endpoints are unavailable for this session".into())
+    }
+    fn abandon_execution_endpoint(&mut self) {
+        let _ = self.shutdown();
+    }
+
     fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
         Err("owned session shutdown is unavailable".into())
     }
@@ -200,6 +213,16 @@ trait ServedSession: SearchSession {
 }
 
 impl SearchSession for Session {
+    fn execution_endpoint(
+        &mut self,
+        request: crate::endpoint::EndpointRequest,
+    ) -> Result<crate::endpoint::EndpointReply, Box<dyn Error>> {
+        Session::execution_endpoint(self, request)
+    }
+    fn abandon_execution_endpoint(&mut self) {
+        Session::abandon_execution_endpoint(self);
+    }
+
     fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
@@ -761,11 +784,12 @@ fn read_frame_exact(
     }
 }
 
-fn recv_raw(
+fn recv_raw_bounded(
     stream: &UnixStream,
     limit: usize,
     deadline: Option<Instant>,
     delta: &mut work::Delta,
+    request_bounds: bool,
 ) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     let mut header = [0_u8; HEADER];
     let (received, fds) = recv_with_fds(stream, &mut header, deadline, delta)?;
@@ -789,9 +813,44 @@ fn recv_raw(
     if u64::from_le_bytes(header[8..].try_into().expect("eight bytes")) != fds.len() as u64 {
         return Err(malformed("descriptor count"));
     }
+    let mut prefix = [0];
+    let prefix_len = usize::from(request_bounds && len > 0);
+    if prefix_len != 0 {
+        read_frame_exact(
+            stream,
+            &mut prefix,
+            deadline,
+            &mut delta.body,
+            &mut delta.fds,
+        )?;
+        if prefix[0] == ENDPOINT && (len > crate::endpoint::ENDPOINT_FRAME_LIMIT || !fds.is_empty())
+        {
+            return Err(malformed(
+                "execution endpoint frame exceeds bounds or carries descriptors",
+            ));
+        }
+    }
     let mut body = vec![0; len];
-    read_frame_exact(stream, &mut body, deadline, &mut delta.body, &mut delta.fds)?;
+    if prefix_len != 0 {
+        body[0] = prefix[0];
+    }
+    read_frame_exact(
+        stream,
+        &mut body[prefix_len..],
+        deadline,
+        &mut delta.body,
+        &mut delta.fds,
+    )?;
     Ok((body, fds))
+}
+
+fn recv_raw(
+    stream: &UnixStream,
+    limit: usize,
+    deadline: Option<Instant>,
+    delta: &mut work::Delta,
+) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+    recv_raw_bounded(stream, limit, deadline, delta, false)
 }
 
 fn send_measured(
@@ -814,7 +873,7 @@ fn receive_measured(
     group: Option<work::Group>,
 ) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     let mut delta = work::Delta::default();
-    let result = recv_raw(stream, limit, deadline, &mut delta);
+    let result = recv_raw_bounded(stream, limit, deadline, &mut delta, group.is_none());
     let group = group.unwrap_or_else(|| {
         result
             .as_ref()
@@ -1288,7 +1347,8 @@ impl WorkerSession {
                 self.copies.copied(CopySite::Decode, result.len());
                 Ok(result)
             }
-            FAILED => {
+            FAILED | FAILED_RETIRED => {
+                let retired = body[0] == FAILED_RETIRED;
                 let kind = input.u8()?;
                 let error = match kind {
                     HUNG => SessionError::Hung(Duration::from_nanos(input.u64()?)),
@@ -1298,7 +1358,7 @@ impl WorkerSession {
                     _ => return Err(malformed("reply error kind").into()),
                 };
                 input.finish()?;
-                if kind != OTHER {
+                if retired || kind != OTHER {
                     self.failed.set(true);
                 }
                 Err(error.into())
@@ -1566,6 +1626,16 @@ impl Drop for WorkerSession {
 }
 
 impl SearchSession for WorkerSession {
+    fn execution_endpoint(
+        &mut self,
+        request: crate::endpoint::EndpointRequest,
+    ) -> Result<crate::endpoint::EndpointReply, Box<dyn Error>> {
+        self.call_endpoint(request)
+    }
+    fn abandon_execution_endpoint(&mut self) {
+        self.retire_endpoint_worker();
+    }
+
     fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
         self.shutdown_owned().map_err(Into::into)
     }
@@ -1939,6 +2009,18 @@ impl Served {
         let copies = Arc::clone(&self.copies);
         let session = self.session()?;
         match op {
+            ENDPOINT => {
+                if !fds.is_empty() {
+                    return Err(malformed("execution endpoint carries no descriptors").into());
+                }
+                let request = endpoint::take_request(&mut input)?;
+                input.finish()?;
+                let reply = session.execution_endpoint(request)?;
+                if let Err(error) = endpoint::put_reply(&mut out, &reply) {
+                    session.abandon_execution_endpoint();
+                    return Err(error);
+                }
+            }
             EVENT_HISTORY => {
                 input.finish()?;
                 let history = session.event_history()?;
@@ -2203,7 +2285,16 @@ fn serve_measured(
                 }
             }
         };
-        let reply = status_measured(served.handle(&body, &fds, open, &mut allocate), &copies);
+        let result = served.handle(&body, &fds, open, &mut allocate);
+        let retired = result.is_err()
+            && served
+                .session
+                .as_ref()
+                .is_some_and(|session| session.abandoned());
+        let mut reply = status_measured(result, &copies);
+        if retired {
+            reply[0] = FAILED_RETIRED;
+        }
         if let Some(cause) = allocation_broken {
             return Err(malformed(&format!("allocation exchange failed: {cause}")).into());
         }

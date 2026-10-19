@@ -22,6 +22,8 @@ use super::{
 use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
 
+mod endpoint;
+
 const CONSOLE_TAIL: usize = 64 << 10;
 const CACHE_SIDECAR_MAGIC: [u8; 8] = *b"HUMLCA01";
 
@@ -154,6 +156,7 @@ pub struct UmlSession {
     next: u64,
     setup: (SnapId, u64),
     abandoned: bool,
+    endpoint_state: crate::endpoint::EndpointState,
     counters: Counters,
 }
 
@@ -292,6 +295,7 @@ impl UmlSession {
             next: 1,
             setup: (SnapId(0), moment),
             abandoned: false,
+            endpoint_state: crate::endpoint::EndpointState::default(),
             counters: Counters::default(),
         };
         let (setup, at) = this.capture()?;
@@ -348,6 +352,7 @@ impl UmlSession {
     }
 
     fn capture(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         let begun = started();
         let checkpoint = self
@@ -364,6 +369,7 @@ impl UmlSession {
     }
 
     fn restore(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         if self.abandoned {
             return Err(SessionError::Abandoned.into());
@@ -528,6 +534,16 @@ fn handler(
 }
 
 impl SearchSession for UmlSession {
+    fn execution_endpoint(
+        &mut self,
+        request: crate::endpoint::EndpointRequest,
+    ) -> Result<crate::endpoint::EndpointReply, Box<dyn Error>> {
+        self.exchange_endpoint(request)
+    }
+    fn abandon_execution_endpoint(&mut self) {
+        self.retire_endpoint();
+    }
+
     fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
         if self.abandoned {
             return Err(SessionError::Abandoned.into());
@@ -767,6 +783,7 @@ impl SearchSession for UmlSession {
         lease: &Lease,
         near: SnapId,
     ) -> Result<CachedSnapshotReceipt, Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         let begun = started();
         let chain = index.chain(lease)?;
@@ -832,6 +849,7 @@ impl SearchSession for UmlSession {
     }
 
     fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         self.snapshots.remove(&snapshot);
         Ok(())
@@ -845,6 +863,7 @@ impl SearchSession for UmlSession {
         effects: Vec<(u64, Effect)>,
         coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         if !effects.is_empty() {
             return Err(SessionError::Control(
@@ -866,6 +885,7 @@ impl SearchSession for UmlSession {
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         let result = self.live()?.run_until(deadline);
         self.finish_run(result)
     }
@@ -875,6 +895,7 @@ impl SearchSession for UmlSession {
         deadline: u64,
         resolution: Resolution,
     ) -> Result<StopReason, Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         let result = self.live()?.resolve_and_run(
             deadline,
             resolution.vtime.0,
@@ -995,6 +1016,7 @@ mod tests {
             next: 1,
             setup: (SnapId(1), 0),
             abandoned: false,
+            endpoint_state: crate::endpoint::EndpointState::default(),
             counters: Counters::default(),
         }
     }

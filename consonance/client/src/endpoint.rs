@@ -171,7 +171,6 @@ impl EndpointPage {
             || next != self.next_cursor
             || next > self.binding.end_cursor
             || (self.events.is_empty() && self.cursor < self.binding.end_cursor)
-            || matches!(self.binding.stop, StopReason::Decision { .. })
         {
             return Err(EndpointProtocolError::Invalid("endpoint page binding differs").into());
         }
@@ -201,14 +200,29 @@ pub struct EndpointReceipt {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EndpointRequest {
     Execute(ExecutionRequest),
-    Page { token: EndpointToken, cursor: u32 },
-    Commit { token: EndpointToken },
-    Abort { token: EndpointToken },
+    Resume {
+        token: EndpointToken,
+        resolution: Resolution,
+    },
+    FinalizeDecision {
+        token: EndpointToken,
+        capture: bool,
+    },
+    Page {
+        token: EndpointToken,
+        cursor: u32,
+    },
+    Commit {
+        token: EndpointToken,
+    },
+    Abort {
+        token: EndpointToken,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EndpointReply {
-    Decision(StopReason),
+    Decision(EndpointBinding),
     Page(EndpointPage),
     Committed(EndpointReceipt),
     Aborted,
@@ -233,6 +247,13 @@ pub enum EndpointProtocolError {
 pub trait EndpointDriver {
     fn ensure_active(&self) -> Result<(), EndpointError>;
     fn supports_proof(&self) -> bool;
+    fn validate_request(
+        &self,
+        _request: &ExecutionRequest,
+        _branch: Option<&InputSpec>,
+    ) -> Result<(), EndpointError> {
+        Ok(())
+    }
     fn event_count(&self, parent: Option<SnapId>) -> Result<Option<u32>, EndpointError>;
     fn branch(&mut self, parent: SnapId, spec: &InputSpec) -> Result<(), EndpointError>;
     fn run(
@@ -256,9 +277,16 @@ struct PendingEndpoint {
 }
 
 #[derive(Debug)]
+struct PendingDecision {
+    binding: EndpointBinding,
+    request: ExecutionRequest,
+}
+
+#[derive(Debug)]
 pub struct EndpointState {
     next_token: u64,
     pending: Option<PendingEndpoint>,
+    decision: Option<PendingDecision>,
 }
 
 impl Default for EndpointState {
@@ -266,13 +294,14 @@ impl Default for EndpointState {
         Self {
             next_token: 1,
             pending: None,
+            decision: None,
         }
     }
 }
 
 impl EndpointState {
     pub fn pending(&self) -> bool {
-        self.pending.is_some()
+        self.pending.is_some() || self.decision.is_some()
     }
 
     pub fn exchange(
@@ -282,7 +311,33 @@ impl EndpointState {
     ) -> Result<EndpointReply, EndpointError> {
         driver.ensure_active()?;
         match request {
-            EndpointRequest::Execute(request) => self.execute(driver, request),
+            EndpointRequest::Execute(request) => self.execute(driver, request, None),
+            EndpointRequest::Resume { token, resolution } => {
+                let decision = self.decision.as_ref().ok_or(EndpointProtocolError::Stale)?;
+                if decision.binding.token != token {
+                    return Err(EndpointProtocolError::Stale.into());
+                }
+                let mut request = decision.request.clone();
+                request.branch = None;
+                request.resolve = Some(resolution);
+                request.digest()?;
+                let decision = self.decision.take().expect("decision checked");
+                self.execute(driver, request, Some(decision.binding.request_digest))
+            }
+            EndpointRequest::FinalizeDecision { token, capture } => {
+                let decision = self.decision.as_ref().ok_or(EndpointProtocolError::Stale)?;
+                if decision.binding.token != token {
+                    return Err(EndpointProtocolError::Stale.into());
+                }
+                let mut decision = self.decision.take().expect("decision checked");
+                decision.binding.request_digest =
+                    finalize_digest(decision.binding.request_digest, capture);
+                let result = self.capture(driver, decision.request, decision.binding, capture);
+                if result.is_err() {
+                    driver.abandon();
+                }
+                result
+            }
             EndpointRequest::Page { token, cursor } => {
                 let pending = self.pending.as_ref().ok_or(EndpointProtocolError::Stale)?;
                 if pending.binding.token != token || pending.next_cursor != cursor {
@@ -330,6 +385,14 @@ impl EndpointState {
                 }
             }
             EndpointRequest::Abort { token } => {
+                if let Some(decision) = &self.decision {
+                    if decision.binding.token != token {
+                        return Err(EndpointProtocolError::Stale.into());
+                    }
+                    self.decision = None;
+                    driver.abandon();
+                    return Ok(EndpointReply::Aborted);
+                }
                 let pending = self.pending.as_ref().ok_or(EndpointProtocolError::Stale)?;
                 if pending.binding.token != token {
                     return Err(EndpointProtocolError::Stale.into());
@@ -350,16 +413,18 @@ impl EndpointState {
         &mut self,
         driver: &mut dyn EndpointDriver,
         request: ExecutionRequest,
+        previous_digest: Option<[u8; 32]>,
     ) -> Result<EndpointReply, EndpointError> {
         if self.pending() {
             return Err(EndpointProtocolError::Pending.into());
         }
-        let digest = request.digest()?;
+        let digest = continuation_digest(request.digest()?, previous_digest);
         let branch = request
             .branch
             .as_ref()
             .map(|branch| InputSpec::decode_reproducer(&branch.input))
             .transpose()?;
+        driver.validate_request(&request, branch.as_ref())?;
         if request.proof == EndpointProofRequest::WholeStateAndHistory && !driver.supports_proof() {
             return Err(EndpointProtocolError::Unavailable.into());
         }
@@ -391,21 +456,13 @@ impl EndpointState {
                     EndpointProtocolError::Invalid("selected source SDK history differs").into(),
                 );
             }
-            let stop = driver.run(request.until, request.resolve)?;
+            let stop = driver.run(request.until, request.resolve.clone())?;
             let mut encoded_stop = Vec::new();
             control_proto::encode_reply(
                 0,
                 &Ok(control_proto::Reply::Stop(stop.clone())),
                 &mut encoded_stop,
             )?;
-            if matches!(stop, StopReason::Decision { .. }) {
-                return Ok(EndpointReply::Decision(stop));
-            }
-            let snapshot = if request.snapshot_on.contains(&stop) {
-                Some(driver.snapshot()?)
-            } else {
-                None
-            };
             let end_cursor = driver
                 .event_count(None)?
                 .ok_or(EndpointProtocolError::Invalid(
@@ -419,20 +476,44 @@ impl EndpointState {
                 start_cursor: request.sdk_cursor,
                 end_cursor,
             };
-            let page = Self::read_page(driver, binding.clone(), request.sdk_cursor)?;
-            self.pending = Some(PendingEndpoint {
-                binding,
-                next_cursor: page.next_cursor,
-                snapshot,
-                proof: request.proof,
-            });
-            Ok(EndpointReply::Page(page))
+            if matches!(binding.stop, StopReason::Decision { .. }) {
+                self.decision = Some(PendingDecision {
+                    binding: binding.clone(),
+                    request,
+                });
+                return Ok(EndpointReply::Decision(binding));
+            }
+            let capture = request.snapshot_on.contains(&binding.stop);
+            self.capture(driver, request, binding, capture)
         })();
         if result.is_err() {
             self.pending = None;
+            self.decision = None;
             driver.abandon();
         }
         result
+    }
+
+    fn capture(
+        &mut self,
+        driver: &mut dyn EndpointDriver,
+        request: ExecutionRequest,
+        binding: EndpointBinding,
+        capture: bool,
+    ) -> Result<EndpointReply, EndpointError> {
+        let snapshot = if capture {
+            Some(driver.snapshot()?)
+        } else {
+            None
+        };
+        let page = Self::read_page(driver, binding.clone(), request.sdk_cursor)?;
+        self.pending = Some(PendingEndpoint {
+            binding,
+            next_cursor: page.next_cursor,
+            snapshot,
+            proof: request.proof,
+        });
+        Ok(EndpointReply::Page(page))
     }
 
     fn read_page(
@@ -461,6 +542,27 @@ impl EndpointState {
     }
 }
 
+pub fn continuation_digest(digest: [u8; 32], previous: Option<[u8; 32]>) -> [u8; 32] {
+    match previous {
+        None => digest,
+        Some(previous) => {
+            let mut hash = Sha256::new();
+            hash.update(b"consonance.execution-endpoint.resume.v1\0");
+            hash.update(previous);
+            hash.update(digest);
+            hash.finalize().into()
+        }
+    }
+}
+
+pub fn finalize_digest(previous: [u8; 32], capture: bool) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"consonance.execution-endpoint.finalize-decision.v1\0");
+    hash.update(previous);
+    hash.update([u8::from(capture)]);
+    hash.finalize().into()
+}
+
 pub trait EndpointTransport {
     fn endpoint_exchange(
         &mut self,
@@ -470,14 +572,14 @@ pub trait EndpointTransport {
 }
 
 pub enum ExecutionStart<'a, T: EndpointTransport + ?Sized> {
-    Decision(StopReason),
+    Decision(ExecutionDecision<'a, T>),
     Endpoint(ExecutionEndpoint<'a, T>),
 }
 
 pub struct ExecutionEndpoint<'a, T: EndpointTransport + ?Sized> {
     transport: &'a mut T,
     page: EndpointPage,
-    capture: EndpointStops,
+    capture: bool,
     proof: EndpointProofRequest,
     finished: bool,
 }
@@ -488,13 +590,37 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionEndpoint<'a, T> {
         request: ExecutionRequest,
     ) -> Result<ExecutionStart<'a, T>, EndpointError> {
         let digest = request.digest()?;
+        let result = transport.endpoint_exchange(EndpointRequest::Execute(request.clone()));
+        Self::start_reply(transport, request, digest, result)
+    }
+
+    fn start_reply(
+        transport: &'a mut T,
+        request: ExecutionRequest,
+        digest: [u8; 32],
+        result: Result<EndpointReply, EndpointError>,
+    ) -> Result<ExecutionStart<'a, T>, EndpointError> {
         let start_cursor = request.sdk_cursor;
         let capture = request.snapshot_on;
         let proof = request.proof;
-        let result = transport.endpoint_exchange(EndpointRequest::Execute(request));
         match result {
-            Ok(EndpointReply::Decision(stop @ StopReason::Decision { .. })) => {
-                Ok(ExecutionStart::Decision(stop))
+            Ok(EndpointReply::Decision(binding)) => {
+                if !matches!(binding.stop, StopReason::Decision { .. })
+                    || binding.token.0 == 0
+                    || binding.request_digest != digest
+                    || binding.start_cursor != start_cursor
+                    || binding.start_cursor > binding.source_count
+                    || binding.source_count > binding.end_cursor
+                {
+                    transport.endpoint_abandon();
+                    return Err(EndpointProtocolError::Invalid("decision binding differs").into());
+                }
+                Ok(ExecutionStart::Decision(ExecutionDecision {
+                    transport: Some(transport),
+                    binding,
+                    request,
+                    finished: false,
+                }))
             }
             Ok(EndpointReply::Page(page)) => {
                 if let Err(error) = page.validate() {
@@ -510,6 +636,7 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionEndpoint<'a, T> {
                         EndpointProtocolError::Invalid("execution reply binding differs").into(),
                     );
                 }
+                let capture = capture.contains(&page.binding.stop);
                 Ok(ExecutionStart::Endpoint(Self {
                     transport,
                     page,
@@ -576,7 +703,7 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionEndpoint<'a, T> {
                 return Err(EndpointProtocolError::Invalid("unexpected commit reply").into());
             };
             if receipt.binding != self.page.binding
-                || receipt.snapshot.is_some() != self.capture.contains(&receipt.binding.stop)
+                || receipt.snapshot.is_some() != self.capture
                 || matches!(receipt.proof, EndpointProof::WholeStateAndHistory { .. })
                     != (self.proof == EndpointProofRequest::WholeStateAndHistory)
             {
@@ -604,6 +731,96 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionEndpoint<'a, T> {
             Err(error) => {
                 self.transport.endpoint_abandon();
                 Err(error)
+            }
+        }
+    }
+}
+
+pub struct ExecutionDecision<'a, T: EndpointTransport + ?Sized> {
+    transport: Option<&'a mut T>,
+    binding: EndpointBinding,
+    request: ExecutionRequest,
+    finished: bool,
+}
+
+impl<'a, T: EndpointTransport + ?Sized> ExecutionDecision<'a, T> {
+    pub fn stop(&self) -> &StopReason {
+        &self.binding.stop
+    }
+
+    pub fn resume(
+        mut self,
+        resolution: Resolution,
+    ) -> Result<ExecutionStart<'a, T>, EndpointError> {
+        let mut request = self.request.clone();
+        request.branch = None;
+        request.resolve = Some(resolution.clone());
+        let digest = continuation_digest(request.digest()?, Some(self.binding.request_digest));
+        let result = self
+            .transport
+            .as_mut()
+            .expect("decision transport owned")
+            .endpoint_exchange(EndpointRequest::Resume {
+                token: self.binding.token,
+                resolution,
+            });
+        self.finished = true;
+        let transport = self.transport.take().expect("decision transport owned");
+        let result = ExecutionEndpoint::start_reply(transport, request, digest, result);
+        result
+    }
+
+    pub fn finalize(mut self, capture: bool) -> Result<ExecutionEndpoint<'a, T>, EndpointError> {
+        let digest = finalize_digest(self.binding.request_digest, capture);
+        let result = self
+            .transport
+            .as_mut()
+            .expect("decision transport owned")
+            .endpoint_exchange(EndpointRequest::FinalizeDecision {
+                token: self.binding.token,
+                capture,
+            });
+        self.finished = true;
+        let transport = self.transport.take().expect("decision transport owned");
+        let checked = (|| {
+            let EndpointReply::Page(page) = result? else {
+                return Err(EndpointProtocolError::Invalid(
+                    "unexpected decision finalization reply",
+                )
+                .into());
+            };
+            page.validate()?;
+            let mut binding = self.binding.clone();
+            binding.request_digest = digest;
+            if page.binding != binding || page.cursor != binding.start_cursor {
+                return Err(EndpointProtocolError::Invalid(
+                    "decision finalization binding differs",
+                )
+                .into());
+            }
+            Ok(page)
+        })();
+        match checked {
+            Ok(page) => Ok(ExecutionEndpoint {
+                transport,
+                page,
+                capture,
+                proof: self.request.proof,
+                finished: false,
+            }),
+            Err(error) => {
+                transport.endpoint_abandon();
+                Err(error)
+            }
+        }
+    }
+}
+
+impl<T: EndpointTransport + ?Sized> Drop for ExecutionDecision<'_, T> {
+    fn drop(&mut self) {
+        if !self.finished {
+            if let Some(transport) = self.transport.as_mut() {
+                transport.endpoint_abandon();
             }
         }
     }
@@ -807,6 +1024,7 @@ mod tests {
         fn endpoint_abandon(&mut self) {
             self.abandon();
             self.endpoint.pending = None;
+            self.endpoint.decision = None;
         }
     }
 
@@ -910,23 +1128,64 @@ mod tests {
             next_stop: Some(decision.clone()),
             ..Default::default()
         };
-        match ExecutionEndpoint::execute(&mut fixture, request()).unwrap() {
-            ExecutionStart::Decision(stop) => assert_eq!(stop, decision),
-            ExecutionStart::Endpoint(_) => panic!("decision must not capture"),
-        }
-        assert_eq!(fixture.calls, ["run"]);
-        assert_eq!(fixture.snapshots.len(), 1);
+        let ExecutionStart::Decision(pending) =
+            ExecutionEndpoint::execute(&mut fixture, request()).unwrap()
+        else {
+            panic!("decision must not capture");
+        };
+        assert_eq!(pending.stop(), &decision);
+        let resumed = pending
+            .resume(Resolution {
+                vtime: Moment(9),
+                service: 7,
+                id: DecisionId(23),
+                answer: Answer(vec![3]),
+            })
+            .unwrap();
+        let ExecutionStart::Endpoint(endpoint) = resumed else {
+            panic!("resume must reach endpoint");
+        };
+        endpoint.commit().unwrap();
+        assert_eq!(fixture.calls[0..2], ["run", "resolve"]);
+        assert_eq!(fixture.exchanges, 3);
         assert!(!fixture.endpoint.pending());
-        let mut resume = request();
-        resume.resolve = Some(Resolution {
-            vtime: Moment(9),
-            service: 7,
-            id: DecisionId(23),
-            answer: Answer(vec![3]),
-        });
-        resume.sdk_cursor = 4;
-        captured(&mut fixture, resume).commit().unwrap();
-        assert_eq!(fixture.calls[1], "resolve");
+    }
+
+    #[test]
+    fn stopped_decision_finalization_captures_exact_question_without_guest_resume() {
+        let decision = StopReason::Decision {
+            vtime: Moment(100),
+            id: DecisionId(31),
+            ctx: vec![7, 0, 5],
+        };
+        let mut fixture = Fixture {
+            next_stop: Some(decision.clone()),
+            ..Default::default()
+        };
+        let ExecutionStart::Decision(pending) =
+            ExecutionEndpoint::execute(&mut fixture, request()).unwrap()
+        else {
+            panic!("expected decision");
+        };
+        assert_eq!(pending.stop(), &decision);
+        let endpoint = pending.finalize(true).unwrap();
+        assert_eq!(endpoint.page().binding.stop, decision);
+        let receipt = endpoint.commit().unwrap();
+        assert_eq!(receipt.binding.stop, decision);
+        assert_eq!(receipt.snapshot, Some((SnapId(100), 100)));
+        assert_eq!(
+            fixture.calls,
+            [
+                "run",
+                "snapshot-before",
+                "snapshot-after",
+                "page",
+                "page",
+                "hash",
+                "history"
+            ]
+        );
+        assert_eq!(fixture.exchanges, 3);
     }
 
     #[test]
