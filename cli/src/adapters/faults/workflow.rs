@@ -484,6 +484,144 @@ mod tests {
         }
     }
 
+    #[test]
+    fn plain_vm_and_uml_preparation_enforce_xstate_policy_without_instrumentation() {
+        for (code, expected) in [
+            (&[0x0f, 0xae, 0x07, 0xc3][..], Some("save instruction")),
+            (&[0x0f, 0xae, 0x27, 0xc3][..], Some("save instruction")),
+            (
+                &[0xb9, 1, 0, 0, 0, 0x0f, 0x01, 0xd0, 0xc3][..],
+                Some("XGETBV"),
+            ),
+            (&[0x31, 0xc9, 0x0f, 0x01, 0xd0, 0xc3][..], None),
+            (&[0x0f, 0xae, 0x2f, 0xc3][..], None),
+            (&[0xd9, 0xfe, 0x0f, 0x52, 0xc0, 0xc3][..], None),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::create_dir(root.path().join("bin")).unwrap();
+            let path = root.path().join("bin/app");
+            let bytes = elf(code);
+            fs::write(&path, &bytes).unwrap();
+            let staged = oci_support::image::StagedImage {
+                rootfs: root.path().to_path_buf(),
+                owners: oci_support::image::Ownership::default(),
+                config: oci_support::image::RuntimeConfig::default(),
+            };
+            for mode in [ExecutionMode::Vm, ExecutionMode::Uml] {
+                let prepared = prepare_plain_staged(
+                    &staged,
+                    &oci_support::bundle::LaunchRequest::default(),
+                    mode,
+                );
+                match expected {
+                    Some(message) => assert!(prepared.err().unwrap().to_string().contains(message)),
+                    None => {
+                        let prepared = prepared.unwrap();
+                        let archive = prepared.archived_rootfs().unwrap();
+                        let report = faults_workload::admission::ArchivedImage::new(&archive)
+                            .inspect()
+                            .unwrap();
+                        assert!(!report.instrumented_events());
+                        assert!(report.require_for(mode).is_ok());
+                    }
+                }
+            }
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    #[ignore = "requires cc and GNU objdump"]
+    fn native_xstate_preparation_matches_stronger_checker() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::create_dir(root.path().join("bin"))?;
+        let scratch = tempfile::tempdir()?;
+        let binary = root.path().join("bin/app");
+        let source = scratch.path().join("probe.S");
+        let evidence = std::env::var_os("HARMONY_XSTATE_ADMISSION_REPORT_DIR").map(PathBuf::from);
+        if let Some(path) = &evidence {
+            fs::create_dir(path)?;
+        }
+        let staged = oci_support::image::StagedImage {
+            rootfs: root.path().to_path_buf(),
+            owners: oci_support::image::Ownership::default(),
+            config: oci_support::image::RuntimeConfig::default(),
+        };
+        for (name, assembly, admitted) in [
+            ("fxsave", "fxsave (%rdi)", false),
+            ("xsave", "xsave (%rdi)", false),
+            ("selector1", "mov $1,%ecx; xgetbv", false),
+            ("selector0", "xor %ecx,%ecx; xgetbv", true),
+            ("restore", "xrstor (%rdi)", true),
+            ("math", "fsin; rsqrtps %xmm0,%xmm0", true),
+        ] {
+            fs::write(
+                &source,
+                format!(
+                    ".text\n.globl _start\n_start:\n{assembly}\nret\n.section .note.GNU-stack,\"\",@progbits\n"
+                ),
+            )?;
+            assert!(
+                std::process::Command::new("cc")
+                    .args([
+                        "-static",
+                        "-nostdlib",
+                        "-no-pie",
+                        "-Wl,--build-id=none",
+                        "-Wl,-e,_start"
+                    ])
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&binary)
+                    .status()?
+                    .success()
+            );
+            let bytes = fs::read(&binary)?;
+            if let Some(path) = &evidence {
+                fs::write(path.join(format!("{name}.elf")), &bytes)?;
+            }
+            for (mode, label) in [(ExecutionMode::Vm, "vm"), (ExecutionMode::Uml, "uml")] {
+                let output = scratch.path().join(format!("{name}-{label}.json"));
+                let python = std::process::Command::new("python3")
+                    .arg(
+                        Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .join("../consonance/harmony-linux/scripts/x86-xstate-admission.py"),
+                    )
+                    .arg("verify")
+                    .arg(root.path())
+                    .args(["--execution-mode", label, "--output"])
+                    .arg(&output)
+                    .status()?;
+                let audit = fs::read(&output)?;
+                let json: serde_json::Value = serde_json::from_slice(&audit)?;
+                assert_eq!(python.success(), admitted, "{name} {label}: {json}");
+                let result = prepare_plain_staged(
+                    &staged,
+                    &oci_support::bundle::LaunchRequest::default(),
+                    mode,
+                );
+                assert_eq!(result.is_ok(), admitted, "{name} {label}");
+                if let Some(path) = &evidence {
+                    fs::write(path.join(format!("{name}-{label}-python.json")), &audit)?;
+                    fs::write(
+                        path.join(format!("{name}-{label}-rust.txt")),
+                        match result {
+                            Ok(_) => "admitted".into(),
+                            Err(e) => e.to_string(),
+                        },
+                    )?;
+                }
+                assert_eq!(fs::read(&binary)?, bytes);
+            }
+            println!(
+                "XSTATE_ADMISSION={name}:{}",
+                if admitted { "admitted" } else { "refused" }
+            );
+        }
+        Ok(())
+    }
+
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     #[ignore = "requires cc and a reviewed x86 UML profile"]
