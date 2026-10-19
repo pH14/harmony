@@ -14,6 +14,7 @@ SCENARIOS = (
     "dissonance_stb",
     "harmony_oci",
     "harmony_languages",
+    "harmony_harness",
     "consonance_platform",
     "consonance_kvm",
 )
@@ -51,6 +52,8 @@ def selected(paths):
             result["harmony_oci"] = True
         if path.startswith(("cli/", "consonance/", "workloads/languages/", "workloads/faults/", "workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/")):
             result["harmony_languages"] = True
+        if path.startswith("workloads/harness/"):
+            result["harmony_harness"] = True
         if path.startswith("cli/"):
             result["harmony_oci"] = result["consonance_platform"] = True
         if path.startswith("consonance/"):

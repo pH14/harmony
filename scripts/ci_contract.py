@@ -680,7 +680,7 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
     owner="Harmony Workloads",
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
-        Job("Change Selection", "pr", 5, selects=("harmony_languages",)),
+        Job("Change Selection", "pr", 5, selects=("harmony_languages", "harmony_harness")),
         Job("Language Guest Runtime", "pr", 45,
             exception="A guest runtime missing from the cache is built from source once before bounded consumers.",
             select="harmony_languages"),
@@ -698,6 +698,7 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
             select="harmony_languages"),
         Job("UML Command Replay", "pr", 15, select="harmony_languages"),
+        Job("Harness Kit", "pr", 15, select="harmony_harness"),
     ),
 )
 
@@ -903,6 +904,7 @@ SCOPE_KINDS = {
     "dissonance_stb": (DISSONANCE_NES_CHECKS.name,),
     "harmony_oci": (HARMONY_OCI_CHECKS.name,),
     "harmony_languages": (HARMONY_LANGUAGES_CHECKS.name,),
+    "harmony_harness": (HARMONY_LANGUAGES_CHECKS.name,),
     "consonance_platform": (CONSONANCE_CHECKS.name, HARMONY_OCI_CHECKS.name),
     "consonance_kvm": (CONSONANCE_CHECKS.name,),
     "kani": (CONSONANCE_ANALYSIS.name,),
