@@ -1,0 +1,24 @@
+{
+  "3000": {
+    "frames": 4388,
+    "mini_wave_probes": 114,
+    "late_mini_wave_x_span": [
+      11541,
+      11932
+    ],
+    "mini_wave_noncolliding_interiors": [],
+    "source_mismatches": [],
+    "limitation": "Mode-specific source assessment; other modes and objectives still need independent review."
+  },
+  "3040": {
+    "frames": 4377,
+    "mini_wave_probes": 113,
+    "late_mini_wave_x_span": [
+      11541,
+      11928
+    ],
+    "mini_wave_noncolliding_interiors": [],
+    "source_mismatches": [],
+    "limitation": "Mode-specific source assessment; other modes and objectives still need independent review."
+  }
+}

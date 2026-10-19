@@ -1,0 +1,27 @@
+{
+  "status": "generated-assets-aligned-to-verified-official-release-build",
+  "changes": [
+    {
+      "path": "level_data_cache.json",
+      "before_sha256": "51a0784eb0becea8769b4dc3caecfaadb0a3e6296777e1f6b1c644a47ebe5265",
+      "official_sha256": "03681d91eabb97a3e0ff2e034c1e79c2084fca77f82d741b9259c5707064059f"
+    },
+    {
+      "path": "EXPORTS/windylandscape.lz.0.bin",
+      "before_sha256": "507007e923f2204b69de8b5fa582ae47b3260191ccec5e5e6f7381d61daee1d7",
+      "official_sha256": "817ac8c3947779d915622eb43253076175bda62284ce6394025c9a1273940184"
+    },
+    {
+      "path": "EXPORTS/aftercatabath.lz.0.bin",
+      "before_sha256": "94b2df141d749903f59b1bff72acaa754035e4b8fbd822e295b93b0a1e240664",
+      "official_sha256": "ac5d84c93dcd850a7a079fb344e89d5cd19d0159209855d30d514d039a6643e0"
+    },
+    {
+      "path": "EXPORTS/aftercatabath.lz.1.bin",
+      "before_sha256": "4b7809954f3f71d9127c04dfbf0d109ed4880804e4bdb80c31f84e44d4ff3b58",
+      "official_sha256": "2784dff1a0f04b8be10e497887b9fbff5610f8c46fd169d6a06ef442f894afc5"
+    }
+  ],
+  "level_tmx_changed": false,
+  "reason": "Original pinned checkout includes stale D-side compressed continuation metadata; exact release generated assets preserve the official geometry."
+}

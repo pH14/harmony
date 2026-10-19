@@ -439,3 +439,11 @@ The primary `clearing-input.json` and checkpoint scheduling still use the first
 campaign victory. Per-root inputs allow separate route assessment after an
 initial clearing route is rejected. Export and independently replay each chosen
 input; a victory alone does not establish that its route stays inside terrain.
+
+`check-mini-wave66.py SOURCE OUTPUT` extracts the actual mini-wave66 polygon
+kernel and checks 64,850 cases against independent exact rational clipping,
+plus all 65,536 signed byte products. The retained
+[isolated mini-wave66 proposals](findings/shared-engine/mini-wave66/README.md)
+include pristine-source patches, opposite-direction negative cases, independent
+NES replays and mode-specific clearing controls. Host arithmetic checks do not
+qualify NES timing, history invalidation or all intended routes.

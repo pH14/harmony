@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "status": "isolated-source-proposal; broader-route-and-frame-budget-assessment-incomplete",
+  "base_commit": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "changes": [
+    {
+      "path": "CONFIG/mmc3-album.cfg",
+      "before_sha256": "fd395a48804d4eb529e00956fdfebca6ea5f46ed9c99e29061f1afebc65254fe",
+      "after_sha256": "c2a26f307a8e83f32faafa18402bb677a14f3260ea16bfbd2fe6e6b4b82edbf8"
+    },
+    {
+      "path": "CONFIG/mmc3-big.cfg",
+      "before_sha256": "64bbaf50333f220039f83c0f7ab0f0a0e9e2c3e7f3e7e59e7e8510691f4deae0",
+      "after_sha256": "aaedf9488c2605efa235fc6c6690fc1ad4a12069eec7f41080fbc3c2fda66cef"
+    },
+    {
+      "path": "CONFIG/mmc3-huge-vs.cfg",
+      "before_sha256": "2dd01ed8479eecc537cdc8d39dec22b7e687e86a135089fdde79416ab52ee193",
+      "after_sha256": "9906d7081be264d61f09bdf976b9a7aa07185284d1f9fc1fd1f7dc7d6c9472a8"
+    },
+    {
+      "path": "CONFIG/mmc3-huge.cfg",
+      "before_sha256": "6da94eef9c2aecc96120912f1d8bd8f7c8c8c46088d9938c0d7aa4ec6768aee8",
+      "after_sha256": "a4644a01db3ca5ed284e8f3f7ad47bd3bdd4bff9feea274a1e1a7604d456b005"
+    },
+    {
+      "path": "CONFIG/mmc3.cfg",
+      "before_sha256": "224f002d41ea14247ef232752e844d3123b3f5e84268aa60fd8816dd0b8a1b37",
+      "after_sha256": "790323c87134b508d85ff35fa08f721e709ac480fb1de440bcaf0d912f8ddcf8"
+    },
+    {
+      "path": "CONFIG/nsf.cfg",
+      "before_sha256": "47499b654f918c26ed64931e8a7708fb03206d570927b6ea38add42672d32af8",
+      "after_sha256": "63b7f13aa4bfb29870903189cc3daa593f28b3497d9ad2be7c0b7cc86ee74934"
+    },
+    {
+      "path": "CONFIG/vs-sys.cfg",
+      "before_sha256": "3ee99774b14513c04c50e5af9ab62a1da86815f9e04863ac40f8f622c95e8afd",
+      "after_sha256": "90130949a656e31abcf13546e9f3aeb72c3d25bc58e4e065605a24d7e2563c18"
+    },
+    {
+      "path": "SAUCE/functions/collision.h",
+      "before_sha256": "e70c12af24fc9786eb13430311583a3a34408646477d1023a10712d4b068aa37",
+      "after_sha256": "aece0a60a8a788a486c29829107b9058daaa83bf7d9d1cb7a04ca2c5f62f1a20"
+    },
+    {
+      "path": "SAUCE/functions/mini_wave66.h",
+      "before_sha256": null,
+      "after_sha256": "c74ed6842f53292263900b11d7f9d8e038bde3a05fe092c795410062e5ecd046"
+    },
+    {
+      "path": "SAUCE/functions/reset_level.h",
+      "before_sha256": "6221a61dc1c8e30ed924977622d910f42b14f63dba2820b6fb656c7e053f4178",
+      "after_sha256": "82fbbbde6198a3b97081a6fd04f51c9acd82d4aed08d467ff2bbc7b1fad0b13c"
+    },
+    {
+      "path": "SAUCE/functions/sprite_loading.h",
+      "before_sha256": "6f64fe0a0e100f4b6a52c2208b05aaa3cb74fc2b84cae91c98ff9f208e68d058",
+      "after_sha256": "405a2b876df82369931c1938c2b4601a650d4e2c251521ea87a31e40da191493"
+    }
+  ],
+  "patch_sha256": "5958030083a7df11a90bd4dfb3d689e02d00e2930ac6deb262caefe57a451311",
+  "tested_builds": [
+    "A",
+    "B",
+    "C",
+    "D"
+  ],
+  "untested_configurations": "NSF, album and VS configurations are not qualified."
+}

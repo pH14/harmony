@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "status": "isolated-source-proposal; broader-route-and-frame-budget-assessment-incomplete",
+  "base_commit": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "changes": [
+    {
+      "path": "CONFIG/mmc3-album.cfg",
+      "before_sha256": "553e836b29a4dcf2eff7cec4bbeea25096ff63b0f44b596b576cdae43ada67de",
+      "after_sha256": "17eee91e258c56353309bbd17cd5a0ac459721b1e0708745e3f1266d1ce5fff4"
+    },
+    {
+      "path": "CONFIG/mmc3-huge-vs.cfg",
+      "before_sha256": "ec58c1c2ad35ad663d807e195ec3a4d5eb8893c86a44aebb4a5771a62d1508fc",
+      "after_sha256": "e2c6f2ca797e516fbf3d93e2e144e9159e71cb57659e03337b501c4ac787936e"
+    },
+    {
+      "path": "CONFIG/mmc3-huge.cfg",
+      "before_sha256": "510b07cc1a5c530c008ed8e3d77e22264bfb808b31198128dc29314b5bb63b15",
+      "after_sha256": "5586c0b87209e957d5eb41824c7363d78927429c4314137e7e72b4eef4fb1760"
+    },
+    {
+      "path": "CONFIG/mmc3.cfg",
+      "before_sha256": "7c86f3a0cfa4f8e114d707bdb536270aaba6f913a658513317ce12157b1fef1f",
+      "after_sha256": "62c4f5db172709579018b3724158b3dc6b9e9765d6c5cf84c2fc08b16c8fc818"
+    },
+    {
+      "path": "CONFIG/nsf.cfg",
+      "before_sha256": "70cd4d1c389fff0c7905a4c926d98b0a56c4025b1342c1ea87b4ee7f1632203b",
+      "after_sha256": "a4d816d52ecd396451526fe73f3134ca99851c612dda38b80ca1bc7abef84939"
+    },
+    {
+      "path": "CONFIG/vs-sys.cfg",
+      "before_sha256": "e964c7f3ed87d6e38ae733be39e914b607c9f7bb1ecc966bf3398cb608302c7c",
+      "after_sha256": "2f28ef370cee34cb0dcb05954adf0dac84912f58d67344a46eedcf80936d9b72"
+    },
+    {
+      "path": "SAUCE/functions/collision.h",
+      "before_sha256": "113a95846b3467aeb2be30cf2c0d852ed576d2287f2669198a5ca4c8514c2640",
+      "after_sha256": "a9770db012cd9637b476e446f135f97824ff4964eb3deaf39d3ecf1e57a8eddc"
+    },
+    {
+      "path": "SAUCE/functions/mini_wave66.h",
+      "before_sha256": null,
+      "after_sha256": "a7bf002ff7bf6e0940f6108f5eebc08c7ad3e34b7e0723b2ec9469cee43cc231"
+    },
+    {
+      "path": "SAUCE/functions/reset_level.h",
+      "before_sha256": "c2d689e20a2cf867ac5ab8b7d0a30896e6b1c320851c573fa876df18b84fd724",
+      "after_sha256": "d827821ae8ca9cbf51c05ceccdf3b51eeffee2831fa410974c7a52f711822b27"
+    },
+    {
+      "path": "SAUCE/functions/sprite_loading.h",
+      "before_sha256": "90bef0614d9cd61173aa5d42c2b1d2e1b9b1fb168653cd42fcb7a7b0bf434e65",
+      "after_sha256": "3ad3bad7e5284fef5d4be782da474610ca56151c37940add6de1c5f90c652c63"
+    }
+  ],
+  "patch_sha256": "03e3ab6d0053ee2d52abbeabdcffd3b38e151995aa2bfd999c50bf01a1961b2e",
+  "tested_builds": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "HUGE"
+  ],
+  "untested_configurations": "NSF, album and VS configurations are not qualified."
+}

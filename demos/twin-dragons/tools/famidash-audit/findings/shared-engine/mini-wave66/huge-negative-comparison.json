@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "original_case_sha256": "4d4b90b58e30214b2e3f40d63cee69bebef411447407ce7c220ee17884dfff8e",
+  "huge_result_sha256": "1430a12abe34a4fcd1d2650fa0a08a47ace6e223a5391545ba651994830aed7b",
+  "comparison": "Every observation field except physical level identity; approach frames 1..3063.",
+  "difference_frames": [
+    6
+  ],
+  "death_frame": 3064,
+  "reset_confirmation": {
+    "released_frames_after_death": 40,
+    "endpoint": {
+      "level": 131,
+      "state": 2,
+      "x": -238,
+      "y": 895,
+      "camera": 719,
+      "vy": 0,
+      "mode": 0,
+      "gravity": 0,
+      "mini": 0,
+      "dual": 0,
+      "dead": false,
+      "debug": 0,
+      "invincible": 8,
+      "paused": 0,
+      "wrap": 0,
+      "coins": 0
+    }
+  }
+}
