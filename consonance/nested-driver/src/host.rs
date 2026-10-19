@@ -75,6 +75,10 @@ pub struct Snapshot {
     actions: Vec<u64>,
 }
 
+impl searcher::search::snapshot_codec::CheckpointSnapshot for Snapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Key([u64; 3]);
 
@@ -498,7 +502,7 @@ impl Reporting for NestedWorkload {
         "nested-consonance-campaign-v2"
     }
     fn checkpoint_format(&self) -> &'static str {
-        "nested-consonance-checkpoint-v2"
+        "nested-consonance-checkpoint-v3"
     }
     fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(self.identity.as_bytes()))

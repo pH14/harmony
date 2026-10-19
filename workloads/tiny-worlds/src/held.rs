@@ -729,6 +729,11 @@ pub fn run(request: &Request) -> Result<serde_json::Value, Box<dyn Error>> {
     }))
 }
 
+impl searcher::search::snapshot_codec::CheckpointSnapshot for State {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::{A, B, ChordDraw, Course, RIGHT, Request, State, change_one_control, run};
@@ -825,8 +830,4 @@ mod tests {
             assert!(report["jobs"].as_u64().is_some_and(|jobs| jobs > 0));
         }
     }
-}
-
-impl searcher::search::snapshot_codec::CheckpointSnapshot for State {
-    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
 }

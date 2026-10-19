@@ -1234,7 +1234,7 @@ mod tests {
             MetroidSnapshotCheckpoint::from_bytes(&current, SNAPSHOT_CHECKPOINT_FORMAT).unwrap(),
             checkpoint(SNAPSHOT_CHECKPOINT_FORMAT)
         );
-        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v11")
+        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v12")
             .to_bytes()
             .unwrap();
         let error = MetroidSnapshotCheckpoint::from_bytes(&previous, SNAPSHOT_CHECKPOINT_FORMAT)
