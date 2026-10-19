@@ -3529,12 +3529,16 @@ where
             pool.wait_ready(config.workers)?;
             while campaign.reserve_next()? {
                 for job in campaign.plan(usize::MAX) {
+                    #[cfg(test)]
+                    tests::before_locality_dispatch(pool, job.reservation, true)?;
                     let locality = workload.snapshot_locality(&job.snapshot);
                     pool.dispatch_local((job.planned_finish, job.reservation), job, locality)?;
                 }
             }
             loop {
                 for job in campaign.plan(usize::MAX) {
+                    #[cfg(test)]
+                    tests::before_locality_dispatch(pool, job.reservation, false)?;
                     let locality = workload.snapshot_locality(&job.snapshot);
                     pool.dispatch_local((job.planned_finish, job.reservation), job, locality)?;
                 }
@@ -5448,6 +5452,7 @@ mod tests {
     struct LiveTargets {
         locality: bool,
         locality_reads: std::sync::atomic::AtomicUsize,
+        residency: Option<Arc<ResidencyFixture>>,
         bootstrap_readiness: Option<BootstrapReadiness>,
         refuse: bool,
         integrity_invalidated: std::sync::atomic::AtomicBool,
@@ -5466,6 +5471,8 @@ mod tests {
         value: u8,
         execution_work: u64,
         _counted: Option<TargetCount>,
+        locality_worker: Option<u32>,
+        resident_snapshots: std::collections::BTreeMap<u8, Box<u8>>,
     }
 
     struct TargetCount(Arc<LiveTargets>);
@@ -5657,6 +5664,25 @@ mod tests {
     impl TargetExecution for TestWorkload {
         fn worker_locality(&self, target: &TestTarget) -> crate::search::locality::WorkerLocality {
             use crate::search::locality::{LocalityKey, WorkerLocality};
+            if let Some(fixture) = self
+                .targets
+                .as_ref()
+                .and_then(|targets| targets.residency.as_ref())
+            {
+                if target.locality_worker == Some(0) && fixture.case == ResidencyCase::Refill {
+                    fixture.wait_for(|state| state.first_admitted);
+                }
+                return if fixture.hints {
+                    WorkerLocality::new(
+                        target
+                            .resident_snapshots
+                            .keys()
+                            .map(|value| (LocalityKey([*value; 32]), 1)),
+                    )
+                } else {
+                    WorkerLocality::default()
+                };
+            }
             if let Some(targets) = self.targets.as_ref().filter(|targets| targets.locality) {
                 targets
                     .locality_reads
@@ -5742,8 +5768,15 @@ mod tests {
             targets
                 .most
                 .fetch_max(live, std::sync::atomic::Ordering::SeqCst);
+            let locality_worker = LOCALITY_WORKER.with(std::cell::Cell::get);
             Ok(TestTarget {
                 _counted: Some(TargetCount(Arc::clone(targets))),
+                locality_worker,
+                resident_snapshots: if targets.residency.is_some() && locality_worker == Some(1) {
+                    std::collections::BTreeMap::from([(0, Box::new(0))])
+                } else {
+                    std::collections::BTreeMap::new()
+                },
                 ..TestTarget::default()
             })
         }
@@ -5755,6 +5788,30 @@ mod tests {
             target: &mut Self::Target,
             snapshot: &Self::Snapshot,
         ) -> Result<(), Box<dyn Error>> {
+            if let Some(fixture) = self
+                .targets
+                .as_ref()
+                .and_then(|targets| targets.residency.as_ref())
+                && let Some(worker) = target.locality_worker
+            {
+                let reconstructed = if let std::collections::btree_map::Entry::Vacant(entry) =
+                    target.resident_snapshots.entry(*snapshot)
+                {
+                    let decoded = postcard::from_bytes(&postcard::to_stdvec(snapshot)?)?;
+                    entry.insert(Box::new(decoded));
+                    true
+                } else {
+                    false
+                };
+                target.value = **target.resident_snapshots.get(snapshot).unwrap();
+                fixture
+                    .state
+                    .lock()
+                    .unwrap()
+                    .restores
+                    .push((worker, *snapshot, reconstructed));
+                return Ok(());
+            }
             target.value = *snapshot;
             Ok(())
         }
@@ -5811,6 +5868,16 @@ mod tests {
                 let (captured, current, snapshots) = calls.get();
                 calls.set((captured, current, snapshots + 1));
             });
+            if self
+                .targets
+                .as_ref()
+                .is_some_and(|targets| targets.residency.is_some())
+            {
+                target
+                    .resident_snapshots
+                    .entry(target.value)
+                    .or_insert_with(|| Box::new(target.value));
+            }
             target.snapshot()
         }
         fn candidate_replay_certificate(
@@ -8663,6 +8730,228 @@ mod tests {
             serde_json::to_vec(&live.0).unwrap()
         );
         assert_eq!(replayed, live);
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ResidencyCase {
+        Initial,
+        Refill,
+        BusyOwner,
+    }
+
+    #[derive(Debug, Default)]
+    struct ResidencyState {
+        first_admitted: bool,
+        starts: Vec<(usize, u32)>,
+        restores: Vec<(u32, u8, bool)>,
+        dispatches: Vec<(usize, bool, Vec<u32>)>,
+    }
+
+    struct ResidencyFixture {
+        case: ResidencyCase,
+        hints: bool,
+        state: Mutex<ResidencyState>,
+        changed: std::sync::Condvar,
+    }
+
+    impl ResidencyFixture {
+        #[allow(clippy::disallowed_methods)]
+        fn wait_for(&self, ready: impl Fn(&ResidencyState) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut state = self.state.lock().unwrap();
+            while !ready(&state) {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(!remaining.is_zero(), "residency fixture stalled: {state:?}");
+                state = self.changed.wait_timeout(state, remaining).unwrap().0;
+            }
+        }
+    }
+
+    std::thread_local! {
+        static LOCALITY_WORKER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+        static LOCALITY_DISPATCH: std::cell::RefCell<Option<Arc<ResidencyFixture>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    struct ResidencyScope {
+        previous: Option<Arc<ResidencyFixture>>,
+        worker: Option<u32>,
+    }
+
+    impl ResidencyScope {
+        fn install(fixture: Arc<ResidencyFixture>) -> Self {
+            Self {
+                previous: LOCALITY_DISPATCH.with(|slot| slot.replace(Some(fixture))),
+                worker: LOCALITY_WORKER.with(std::cell::Cell::get),
+            }
+        }
+    }
+
+    impl Drop for ResidencyScope {
+        fn drop(&mut self) {
+            LOCALITY_DISPATCH.with(|slot| slot.replace(self.previous.take()));
+            LOCALITY_WORKER.with(|slot| slot.set(self.worker));
+        }
+    }
+
+    pub(super) fn before_locality_dispatch<Key: Ord, Job, Output, O>(
+        pool: &crate::search::parallel::WorkerPool<Key, Job, Output, O>,
+        reservation: usize,
+        initial: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        let fixture = LOCALITY_DISPATCH.with(|slot| slot.borrow().clone());
+        if let Some(fixture) = fixture {
+            let idle = match (fixture.case, reservation) {
+                (ResidencyCase::Refill, 0) => vec![1],
+                (ResidencyCase::BusyOwner, 1) => {
+                    fixture.wait_for(|state| !state.starts.is_empty());
+                    let first = fixture.state.lock().unwrap().starts[0];
+                    assert_eq!(first.0, 0);
+                    vec![1 - first.1]
+                }
+                _ => vec![0, 1],
+            };
+            pool.wait_idle(&idle)?;
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .dispatches
+                .push((reservation, initial, idle));
+        }
+        Ok(())
+    }
+
+    impl super::CampaignWatch<TestWorkload> for ResidencyFixture {
+        type Note = usize;
+
+        fn run(
+            &self,
+            job: &JobSpec<TestWorkload>,
+            run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+        ) -> super::WatchedJob<TestWorkload, Self::Note> {
+            let worker = LOCALITY_WORKER.with(std::cell::Cell::get).unwrap();
+            self.state
+                .lock()
+                .unwrap()
+                .starts
+                .push((job.reservation, worker));
+            self.changed.notify_all();
+            if self.case == ResidencyCase::BusyOwner && job.reservation == 0 {
+                self.wait_for(|state| {
+                    state
+                        .starts
+                        .iter()
+                        .any(|(reservation, _)| *reservation == 1)
+                });
+            }
+            Ok((run()?, job.reservation))
+        }
+
+        fn admitted(&self, note: usize, _campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+            if note == 0 {
+                self.state.lock().unwrap().first_admitted = true;
+                self.changed.notify_all();
+            }
+        }
+    }
+
+    #[test]
+    fn campaign_locality_avoids_reconstruction_in_both_drains_and_falls_back_when_owner_busy() {
+        let mut reconstructions = Vec::new();
+        let mut assignments = Vec::new();
+        for case in [
+            ResidencyCase::Initial,
+            ResidencyCase::Refill,
+            ResidencyCase::BusyOwner,
+        ] {
+            let mut reference = None;
+            for hints in [false, true] {
+                let fixture = Arc::new(ResidencyFixture {
+                    case,
+                    hints,
+                    state: Mutex::new(ResidencyState::default()),
+                    changed: std::sync::Condvar::new(),
+                });
+                let _scope = ResidencyScope::install(Arc::clone(&fixture));
+                let workload = TestWorkload {
+                    bootstrap_objective: false,
+                    targets: Some(Arc::new(LiveTargets {
+                        locality: true,
+                        residency: Some(Arc::clone(&fixture)),
+                        ..LiveTargets::default()
+                    })),
+                };
+                let mut config = three_worker_config();
+                config.workers = 2;
+                config.window = if case == ResidencyCase::BusyOwner {
+                    2
+                } else {
+                    1
+                };
+                config.execution_budget = if case == ResidencyCase::Initial { 1 } else { 2 };
+                config.materialize_final_artifacts = false;
+                let mut stream = Vec::new();
+                let outcome = super::run_campaign_watched(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions {
+                        placement: Some(ThreadPlacement::new(|thread| {
+                            LOCALITY_WORKER.with(|slot| {
+                                slot.set(match thread {
+                                    PlacedThread::Worker(worker) => Some(worker),
+                                    PlacedThread::Coordinator => None,
+                                })
+                            });
+                            Ok(())
+                        })),
+                        ..CampaignExecutionOptions::default()
+                    },
+                    fixture.as_ref(),
+                )
+                .unwrap();
+                let logical = (stream, serde_json::to_vec(&outcome).unwrap());
+                if let Some(expected) = &reference {
+                    assert_eq!(&logical, expected, "case={case:?}");
+                } else {
+                    reference = Some(logical);
+                }
+                let state = fixture.state.lock().unwrap();
+                assert_eq!(state.restores.len(), config.execution_budget as usize);
+                assert_eq!(state.dispatches.len(), config.execution_budget as usize);
+                assert!(state.dispatches[0].1);
+                if case == ResidencyCase::Refill {
+                    assert_eq!(state.dispatches[0].2, [1]);
+                    assert!(!state.dispatches[1].1);
+                    assert_eq!(state.dispatches[1].2, [0, 1]);
+                }
+                if case == ResidencyCase::Initial {
+                    assert_eq!(state.dispatches[0].2, [0, 1]);
+                }
+                if case == ResidencyCase::BusyOwner {
+                    assert!(state.dispatches[1].1);
+                    assert_eq!(state.dispatches[1].2.len(), 1);
+                }
+                reconstructions.push(state.restores.iter().filter(|(_, _, cold)| *cold).count());
+                let mut starts = state.starts.clone();
+                starts.sort_unstable();
+                assignments.push(starts);
+            }
+        }
+        assert_eq!(reconstructions, [1, 0, 1, 0, 1, 1]);
+        assert_eq!(
+            assignments,
+            [
+                vec![(0, 0)],
+                vec![(0, 1)],
+                vec![(0, 1), (1, 0)],
+                vec![(0, 1), (1, 1)],
+                vec![(0, 0), (1, 1)],
+                vec![(0, 1), (1, 0)],
+            ]
+        );
     }
 
     #[test]
