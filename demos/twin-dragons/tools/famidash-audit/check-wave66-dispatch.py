@@ -9,6 +9,32 @@ from pathlib import Path
 import re
 
 
+def check_direct_call_bank(rom, symbols, segments, caller_name, callee_name):
+    def location(name):
+        symbol = symbols[name]
+        segment = segments[int(symbol["seg"])]
+        address = int(symbol["val"], 0)
+        offset = int(segment["ooffs"], 0) + address - int(segment["start"], 0)
+        return address, offset, int(symbol.get("size", "0"), 0)
+
+    caller, caller_offset, size = location(caller_name)
+    callee, callee_offset, _ = location(callee_name)
+    code = rom[caller_offset:caller_offset + size]
+    target = callee.to_bytes(2, "little")
+    calls = [caller_offset + n for n in range(len(code) - 2)
+             if code[n] in (0x20, 0x4C) and code[n + 1:n + 3] == target]
+    assert calls, f"no direct call from {caller_name} to {callee_name}"
+    caller_bank, callee_bank = (caller_offset - 16) // 8192, (callee_offset - 16) // 8192
+    if 0xA000 <= callee < 0xE000:
+        assert caller // 8192 == callee // 8192 and caller_bank == callee_bank, (
+            f"bank mismatch: {caller_name} in PRG bank {caller_bank} directly calls "
+            f"{callee_name} in PRG bank {callee_bank} at CPU ${callee:04X}")
+    else:
+        assert 0x8000 <= callee < 0xA000 or callee >= 0xE000, "callee is outside fixed code windows"
+    return {"caller": caller_name, "callee": callee_name, "caller_prg_bank": caller_bank,
+            "callee_prg_bank": callee_bank, "direct_call_rom_offsets": calls}
+
+
 def check(source, rom_path, debug_path):
     symbols, segments = {}, {}
     debug = debug_path.read_bytes()
@@ -20,6 +46,9 @@ def check(source, rom_path, debug_path):
             symbols[fields["name"].strip('"')] = fields
     address = lambda name: int(symbols[name]["val"], 0)
     rom = rom_path.read_bytes()
+    direct_calls = [check_direct_call_bank(rom, symbols, segments, caller, callee)
+                    for caller, callee in [("_check_spike_motion", "_ss_test_tile"),
+                                           ("_ss_test_tile", "_ss_test_spike_tile")]]
     memory = bytearray(65536)
     for name in ("_check_pit_crossing", "_ss_shapes", "_ss_wave66"):
         segment = segments[int(symbols[name]["seg"])]
@@ -118,6 +147,7 @@ def check(source, rom_path, debug_path):
         maximum_steps = max(maximum_steps, steps)
         cases += 1
     return {"status": "verified", "cases": cases, "maximum_instructions_to_decision": maximum_steps,
+            "direct_call_banks": direct_calls,
             "rom_sha256": hashlib.sha256(rom).hexdigest(),
             "debug_sha256": hashlib.sha256(debug).hexdigest(),
             "source_sha256": {name: hashlib.sha256((source / "SAUCE/functions" / name).read_bytes()).hexdigest()

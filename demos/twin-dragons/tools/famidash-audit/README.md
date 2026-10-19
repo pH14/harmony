@@ -477,6 +477,10 @@ preserves generic spike queries, known steep-slope boundary crossings and
 diagonal crossings with empty endpoints. It checks the actual ROM table and
 rejects unsupported opcodes or unexpected callees. This checks dispatch
 coverage; the motion kernel, mapper and frame budget require separate checks.
+It also checks the shared tile helpers' selected direct-call edges against
+physical 8 KiB PRG banks. Equal CPU addresses do not establish that a banked
+callee is mapped. Separate linker segments can share a physical bank; the
+standard and HUGE layouts must both pass this check.
 
 Source-component schema 4 lists coins within eight tiles of each bounding box
 as `nearby_objectives`. This is proximity, not a reachability or intent verdict.
