@@ -4,27 +4,27 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import { chromium } from "@playwright/test";
 import { TOUR_KEY } from "../src/tour.js";
 
-async function inspectVideo(page, source = "download") {
-  return page.evaluate(async source => {
+async function inspectVideo(page, source = "download", sampleTime = 1) {
+  return page.evaluate(async ({ source, sampleTime }) => {
     const video = document.createElement("video");
     video.muted = true;
     const fileURL = source === "file" ? URL.createObjectURL(await window.recordingSavedFile.getFile()) : null;
     video.src = fileURL || document.querySelector("#download-recording").href;
-    await new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = () => reject(new Error("Downloaded video cannot decode")); });
-    const sample = () => {
-      const c = document.createElement("canvas"); c.width = 320; c.height = 180;
-      c.getContext("2d").drawImage(video, 0, 0, 320, 180);
+    await new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = () => reject(new Error("Recorded video cannot decode")); });
+    const sample = (y, height) => {
+      const c = document.createElement("canvas"); c.width = 308; c.height = Math.ceil(height / 4);
+      c.getContext("2d").drawImage(video, 24, y, 1232, height, 0, 0, c.width, c.height);
       return c.toDataURL();
     };
-    const first = sample();
-    video.currentTime = 1;
+    const first = sample(88, 438), firstOverview = sample(548, 92);
+    video.currentTime = sampleTime;
     await new Promise(resolve => { video.onseeked = resolve; });
-    const changed = first !== sample();
-    const result = { width: video.videoWidth, height: video.videoHeight, changed, time: video.currentTime };
+    const changed = first !== sample(88, 438), overviewChanged = firstOverview !== sample(548, 92);
+    const result = { width: video.videoWidth, height: video.videoHeight, changed, overviewChanged, time: video.currentTime };
     video.src = "";
     if (fileURL) URL.revokeObjectURL(fileURL);
     return result;
-  }, source);
+  }, { source, sampleTime });
 }
 
 const url = process.env.DEMO_URL || "http://127.0.0.1:4173";
@@ -56,6 +56,7 @@ try {
   await page.waitForFunction(() => Number(document.querySelector("#hero-timelines")?.textContent.replace(/\D/g, "")) > 30, null, { timeout: 60000 });
   assert.equal(await page.locator("#record-view").isEnabled(), true);
   const before = await page.locator(".area-map").first().getAttribute("data-center-x");
+  const captureStarted = Date.now();
   await page.locator("#record-view").click();
   await page.waitForFunction(before => Math.abs(Number(document.querySelector(".area-map").dataset.centerX) - Number(before)) > 50, before, { timeout: process.env.LIVE_RECORDING ? 45000 : 15000 });
   await page.waitForTimeout(2500);
@@ -85,8 +86,10 @@ try {
   await download.saveAs(artifact);
   assert.ok((await stat(artifact)).size > 1000);
   // Decode the downloaded bytes and verify actual playable frames and changing search visuals.
-  const playback = await inspectVideo(page);
-  assert.deepEqual(playback, { width: 1280, height: 720, changed: true, time: 1 });
+  const sampleTime = process.env.LIVE_RECORDING ? Math.max(1, (Date.now() - captureStarted) / 1000 - 1) : 1;
+  const playback = await inspectVideo(page, "download", sampleTime);
+  assert.deepEqual({ width: playback.width, height: playback.height, changed: playback.changed, overviewChanged: playback.overviewChanged }, { width: 1280, height: 720, changed: true, overviewChanged: true });
+  assert.ok(Math.abs(playback.time - sampleTime) < 0.01, "The decoded clip reaches its sampled game frame");
   const firstURL = await page.locator("#download-recording").getAttribute("href");
   await page.locator("#record-view").click();
   await page.waitForTimeout(1200);
@@ -106,7 +109,7 @@ try {
   await writeFile(fileArtifact, Buffer.from(fileBytes, "base64"));
   assert.ok((await stat(fileArtifact)).size > 1000);
   const filePlayback = await inspectVideo(page, "file");
-  assert.deepEqual(filePlayback, { width: 1280, height: 720, changed: true, time: 1 });
+  assert.deepEqual(filePlayback, { width: 1280, height: 720, changed: true, overviewChanged: true, time: 1 });
   await page.evaluate(() => { window.showSaveFilePicker = async () => { throw new DOMException("Canceled", "AbortError"); }; });
   await page.locator("#record-to-file").click();
   await page.waitForFunction(() => document.querySelector("#recording-status").textContent === "File recording canceled.");
