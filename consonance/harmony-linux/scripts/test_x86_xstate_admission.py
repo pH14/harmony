@@ -125,7 +125,10 @@ class ExecutableCoverageTests(unittest.TestCase):
                           ("d9fe", "fsin"), ("d9ff", "fcos"), ("d9f9", "fyl2xp1"), ("c5f853c0", "vrcpps"),
                           ("62f27d484cc0", "vrcp14ps"),
                           ("62f67d484cc0", "vrcpph"), ("62f67d084dc0", "vrcpsh"),
-                          ("62f67d484ec0", "vrsqrtph"), ("62f67d084fc0", "vrsqrtsh")]:
+                          ("62f67d484ec0", "vrsqrtph"), ("62f67d084fc0", "vrsqrtsh"),
+                          ("c7f800000000", "xbegin"), ("66c7f80000", "xbegin"),
+                          ("f28700", "xacquire"), ("f2f0830001", "xacquire"),
+                          ("f2f00fb108", "xacquire"), ("c6f801", "xabort")]:
             report, accepted = self.inspect(fixture(bytes.fromhex(raw) + b"\xc3"))
             self.assertTrue(accepted, report)
             self.assertIn(name, [site["mnemonic"] for site in report["artifacts"]["/fixture"]["sites"]])
@@ -144,7 +147,8 @@ class ExecutableCoverageTests(unittest.TestCase):
     def test_uml_rejects_transaction_entry_but_vm_disposition_is_unchanged(self):
         for raw, name in [("c7f800000000", "xbegin"), ("66c7f80000", "xbegin"),
                           ("f2f0830001", "xacquire"), ("f28700", "xacquire"),
-                          ("f2f00fc708", "xacquire"), ("f3f2f0830001", "xacquire")]:
+                          ("f2f00fc708", "xacquire"), ("f3f2f0830001", "xacquire"),
+                          ("f22e3ef0830001", "xacquire"), ("f26465f0830001", "xacquire")]:
             with self.subTest(raw=raw):
                 report, accepted = self.inspect(fixture(bytes.fromhex(raw) + b"\xc3"))
                 self.assertTrue(accepted, report)
@@ -206,7 +210,10 @@ class ExecutableCoverageTests(unittest.TestCase):
                           ("0f01d0", "xgetbv"), ("d9fe", "fsin"),
                           ("0f53c0", "rcpps"), ("c5f853c0", "vrcpps"),
                           ("62f67d484cc0", "vrcpph"), ("62f67d084dc0", "vrcpsh"),
-                          ("62f67d484ec0", "vrsqrtph"), ("62f67d084fc0", "vrsqrtsh")]:
+                          ("62f67d484ec0", "vrsqrtph"), ("62f67d084fc0", "vrsqrtsh"),
+                          ("c7f800000000", "xbegin"), ("66c7f80000", "xbegin"),
+                          ("f28700", "xacquire"), ("f2f0830001", "xacquire"),
+                          ("f2f00fb108", "xacquire"), ("c6f801", "xabort")]:
             with self.subTest(mnemonic=name):
                 data = bytearray(many_symbol_fixture(1))
                 code = b"\xb8" + bytes.fromhex(raw) + b"\xc3"

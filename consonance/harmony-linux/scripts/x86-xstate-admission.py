@@ -300,10 +300,14 @@ def possible_special_start(code):
     opcode = code[offset]
     if opcode in (0xc4, 0xc5, 0x62):
         return True
+    repeats = any(prefix in (0xf2, 0xf3) for prefix in code[:offset])
+    if repeats and (0xf0 in code[:offset] or opcode in (0x86, 0x87, 0x88, 0x89, 0xc6, 0xc7)):
+        return True
     if offset + 1 == len(code):
         return False
     second = code[offset + 1]
-    return (opcode == 0x0f and second in (0x01, 0xae, 0xc7, 0x52, 0x53)
+    return (opcode in (0xc6, 0xc7) and second == 0xf8
+            or opcode == 0x0f and second in (0x01, 0xae, 0xc7, 0x52, 0x53)
             or opcode == 0xd9 and second in (0xf0, 0xf1, 0xf2, 0xf3, 0xf9, 0xfb, 0xfe, 0xff))
 
 
@@ -351,7 +355,7 @@ def hle_prefix(raw, mnemonic, operands):
     if repeat is None or position >= len(raw):
         return None
     tokens = (mnemonic + " " + operands).split()
-    prefixes = {"xacquire", "xrelease", "lock", "rep", "repz", "repnz", "repe", "repne", "data16", "addr32"}
+    prefixes = {"xacquire", "xrelease", "lock", "rep", "repz", "repnz", "repe", "repne", "data16", "addr32", "cs", "ds", "es", "ss", "fs", "gs"}
     while tokens and (tokens[0] in prefixes or tokens[0].startswith("rex")):
         tokens.pop(0)
     if len(tokens) < 2:
