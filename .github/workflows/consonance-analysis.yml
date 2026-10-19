@@ -76,7 +76,7 @@ jobs:
     needs: scope
     if: (github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.miri_matrix == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store') && 30 || 15 }}
+    timeout-minutes: ${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store' || matrix.name == 'consonance-client') && 30 || 15 }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.scope.outputs.miri_targets) }}
