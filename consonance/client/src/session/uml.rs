@@ -836,6 +836,7 @@ impl SearchSession for UmlSession {
     fn branch_with_service(
         &mut self,
         snapshot: SnapId,
+        seed: u64,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
@@ -853,7 +854,6 @@ impl SearchSession for UmlSession {
         self.verify_live_service_fingerprint(Some(&before))?;
         let handler = prepared?;
         self.restore(snapshot)?;
-        let seed = self.seed;
         self.live()?
             .branch(seed, handler, payloads, coverage_schedule)
             .map_err(|error| self.abandon(error))?;
@@ -1400,6 +1400,7 @@ mod tests {
         session
             .branch_with_service(
                 SnapId(1),
+                0,
                 ServiceConfig::default(),
                 Vec::new(),
                 Vec::new(),
@@ -1412,6 +1413,7 @@ mod tests {
         let error = session
             .branch_with_service(
                 SnapId(1),
+                0,
                 ServiceConfig::default(),
                 vec![vec![0; environment::channel::MAX_CHANNEL_BYTES + 1]],
                 Vec::new(),
@@ -1588,6 +1590,7 @@ mod tests {
                 });
                 session.branch_with_service(
                     SnapId(1),
+                    0,
                     ServiceConfig {
                         local_services: Vec::new(),
                         identity: b"aliased-uml-handler".to_vec(),

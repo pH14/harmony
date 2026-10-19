@@ -408,6 +408,12 @@ fn coverage_windows(
         .collect()
 }
 
+fn action_entropy_seed(actions: &[FaultAction]) -> u64 {
+    actions
+        .last()
+        .map_or(SEED, |action| action.entropy_seed(SEED))
+}
+
 fn branch_coverage_schedule(
     windows: ActionWindows,
     actions: &[FaultAction],
@@ -905,6 +911,7 @@ impl FaultTarget {
             live.session
                 .branch_with_service(
                     snapshot,
+                    action_entropy_seed(self.actions()),
                     service,
                     Vec::new(),
                     Vec::new(),
@@ -2161,6 +2168,7 @@ impl Live {
         self.cursor.invalidate();
         let result = self.session.branch_with_service(
             parent.snap,
+            action_entropy_seed(actions),
             config,
             Vec::new(),
             Vec::new(),

@@ -238,10 +238,10 @@ pub fn sample_action(
         rand,
         std::num::NonZeroU64::new(u64::from(u16::MAX)).unwrap(),
     );
-    Ok(FaultAction::new(
-        action,
-        NonZeroU16::new(u16::try_from(quantum)?).unwrap(),
-    ))
+    Ok(
+        FaultAction::new(action, NonZeroU16::new(u16::try_from(quantum)?).unwrap())
+            .with_choice(rand.next_u64()),
+    )
 }
 
 const PARK_EDGE_EXPONENTS: u32 = 14;
