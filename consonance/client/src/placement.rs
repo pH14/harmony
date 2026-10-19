@@ -25,7 +25,7 @@ impl CorePool {
         {
             let allowed = allowed_cpus()?;
             let read = |path: &str| std::fs::read_to_string(path).ok();
-            let ranked = fastest_pool(&allowed, &read);
+            let ranked = fastest_pool(&allowed, read);
             let mut topology = topology::census(&ranked, &read)?;
             let quota =
                 crate::cgroup::here(|dir| crate::cgroup::cpu_cores(dir, &crate::cgroup::read))
