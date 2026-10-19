@@ -456,6 +456,15 @@ campaign victory. Per-root inputs allow separate route assessment after an
 initial clearing route is rejected. Export and independently replay each chosen
 input; a victory alone does not establish that its route stays inside terrain.
 
+`check-mini-wave45.py SOURCE OUTPUT` host-compiles the experimental mini-wave45
+triangle kernel and compares 47,426 motions with independent rational clipping.
+It also checks all 1,024 stationary points against the original four slope
+predicates and all 65,536 signed products. The cases include the Fingerdash
+diagonal-intermediate crossing: both endpoint tiles are empty, but the motion
+crosses a solid slope in an intermediate tile. Pixel centres preserve the
+original point masks. These checks cover geometry; ordinary-input NES replays
+must separately establish dispatch, banking, timing and legitimate routes.
+
 `check-mini-wave66.py SOURCE OUTPUT` extracts the actual mini-wave66 polygon
 kernel and checks 64,850 cases against independent exact rational clipping,
 plus all 65,536 signed byte products. The retained
