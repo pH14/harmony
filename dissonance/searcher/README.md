@@ -55,6 +55,8 @@ source endpoint across imports. Their actions are reconstructed under the curren
 executor; the source progress watermark remains inherited historical evidence
 bound to the source file bytes, not evidence produced by that reconstruction.
 Snapshot-root origins use their separate checkpoint contract.
+Admission keeps an uncertified action prefix without allocating a certificate vector. The first certificate materializes the full prefix, including missing earlier certificates, so mixed paths retain the same fail-closed validation. A single-preference slot rejects a losing candidate before allocating its preference mask.
+
 For a workload with endpoint certificates, whole-tree import reconstructs each
 action between a parent and its imported candidate, including candidates loaded
 from source snapshots. It compares a checkpointed endpoint with the rebuilt
@@ -154,11 +156,14 @@ window alone limits the jobs that are queued, running or finished but not yet
 admitted. The native pool writes the header inline, then moves owned typed records to one
 ordered background encoder that serializes them and owns the stream hash. The
 coordinator retains the borrowed output sink, which need not be `Send`. Sixteen
-queued commands and one queued encoded line bound the pipeline; reusable byte
-buffers return with later commands. Queue bounds count records, including owned
-record payloads, rather than claiming a fixed byte charge for arbitrary workload
-serialization. A full queue makes the producer drain encoded output before
-retrying. While waiting for worker results, the coordinator uses five-millisecond
+queued commands and one queued encoded batch bound the pipeline. Each batch
+contains at most sixteen records; partial batches are submitted after one
+millisecond when the coordinator next pumps output, and on finish or error
+cleanup. This age threshold is not a one-millisecond delivery guarantee. Reusable
+byte and record-vector buffers return with later commands. At most 288 accepted records and sixteen staged producer records retain owned
+payloads. These bounds count records rather than claiming a fixed byte charge
+for arbitrary workload serialization. A full queue makes the producer drain
+encoded output before retrying. While waiting for worker results, the coordinator uses five-millisecond
 receive timeouts to pump output. Normal completion drains, joins and flushes before
 returning the digest. A later worker or coordinator failure drains earlier
 accepted records without appending an end record; sink and encoding failures
@@ -169,9 +174,10 @@ stepped coordinators retain inline encoding.
 separately from the coordinator. Encoder placement failure or panic fails startup
 before dispatch. `telemetry.stream` reports encoder records/bytes and encode time,
 coordinator sink writes and final flush, producer backpressure, the maximum
-number of accepted outstanding records, and the largest single reusable buffer
-capacity. `background_records`, `background_bytes` and `sink_bytes` exclude the
-inline header even though the digest includes it; the evaluator result
+number of accepted outstanding records, batch count and size, and the largest
+single reusable buffer capacity. `records_in_flight_peak` excludes the up-to-sixteen
+producer-staged records. `background_records`, `background_bytes` and `sink_bytes`
+exclude the inline header even though the digest includes it; the evaluator result
 `stream_bytes_generated` is the whole-stream byte count. CPU and scheduler-wait
 counters are optional when the host cannot report them. Encoder work is owned by
 this host thread, outside target-worker totals; sink and backpressure time can

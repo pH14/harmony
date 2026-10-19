@@ -11,16 +11,24 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::{PlacedThread, ThreadPlacement};
-use crate::search::telemetry::{StreamTelemetry, nanos_since, now, thread_schedstat};
+use crate::search::telemetry::{Moment, StreamTelemetry, nanos_since, now, thread_schedstat};
 
 const COMMAND_CAPACITY: usize = 16;
 const OUTPUT_CAPACITY: usize = 1;
+const BATCH_RECORD_LIMIT: usize = 16;
+const PARTIAL_BATCH_AGE_NS: u64 = 1_000_000;
 
 type Encode = Box<dyn FnOnce(&mut Vec<u8>) -> Result<(), String> + Send>;
 
 struct Command {
-    encode: Encode,
+    records: Vec<Encode>,
     buffer: Vec<u8>,
+}
+
+struct Chunk {
+    buffer: Vec<u8>,
+    records: u64,
+    recycled_records: Vec<Encode>,
 }
 
 struct Encoded {
@@ -30,9 +38,10 @@ struct Encoded {
 
 struct Background {
     commands: Option<SyncSender<Command>>,
-    output: Option<Receiver<Vec<u8>>>,
+    output: Option<Receiver<Chunk>>,
     worker: Option<JoinHandle<Result<Encoded, String>>>,
     recycled: Vec<Vec<u8>>,
+    recycled_records: Vec<Vec<Encode>>,
     pending: u64,
     telemetry: StreamTelemetry,
 }
@@ -57,18 +66,48 @@ impl Background {
                 for mut command in pending {
                     let started = now();
                     command.buffer.clear();
-                    (command.encode)(&mut command.buffer)?;
-                    command.buffer.push(b'\n');
+                    let mut records = 0;
+                    let mut failure = None;
+                    for encode in command.records.drain(..) {
+                        let offset = command.buffer.len();
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            encode(&mut command.buffer)
+                        }));
+                        match result {
+                            Ok(Ok(())) => {
+                                command.buffer.push(b'\n');
+                                records += 1;
+                            }
+                            other => {
+                                command.buffer.truncate(offset);
+                                failure = Some(match other {
+                                    Ok(Err(error)) => error,
+                                    Err(_) => "campaign stream encoder panicked".to_owned(),
+                                    Ok(Ok(())) => unreachable!(),
+                                });
+                                break;
+                            }
+                        }
+                    }
                     hasher.update(&command.buffer);
                     telemetry.encode_ns = telemetry.encode_ns.saturating_add(nanos_since(started));
-                    telemetry.background_records += 1;
+                    telemetry.background_records += records;
+                    telemetry.background_batches += 1;
+                    telemetry.largest_batch_records = telemetry.largest_batch_records.max(records);
                     telemetry.background_bytes += command.buffer.len() as u64;
                     telemetry.largest_buffer_capacity_bytes = telemetry
                         .largest_buffer_capacity_bytes
                         .max(command.buffer.capacity() as u64);
                     completed
-                        .send(command.buffer)
+                        .send(Chunk {
+                            buffer: command.buffer,
+                            records,
+                            recycled_records: command.records,
+                        })
                         .map_err(|_| "campaign stream consumer disconnected".to_owned())?;
+                    if let Some(error) = failure {
+                        return Err(error);
+                    }
                 }
                 if let Some(((before_cpu, before_wait), (after_cpu, after_wait))) =
                     cpu_started.zip(thread_schedstat())
@@ -86,10 +125,13 @@ impl Background {
             output: Some(output),
             worker: Some(worker),
             recycled: Vec::new(),
+            recycled_records: Vec::new(),
             pending: 0,
             telemetry: StreamTelemetry {
                 command_capacity: COMMAND_CAPACITY,
                 output_capacity: OUTPUT_CAPACITY,
+                batch_record_limit: BATCH_RECORD_LIMIT,
+                partial_batch_age_ns: PARTIAL_BATCH_AGE_NS,
                 ..StreamTelemetry::default()
             },
         };
@@ -118,8 +160,10 @@ impl Background {
         }
     }
 
-    fn consume(&mut self, buffer: Vec<u8>, sink: &mut dyn Write) -> Result<(), Box<dyn Error>> {
-        self.pending -= 1;
+    fn consume(&mut self, chunk: Chunk, sink: &mut dyn Write) -> Result<(), Box<dyn Error>> {
+        self.pending -= chunk.records;
+        let buffer = chunk.buffer;
+        self.recycled_records.push(chunk.recycled_records);
         let started = now();
         sink.write_all(&buffer)?;
         self.telemetry.sink_ns = self.telemetry.sink_ns.saturating_add(nanos_since(started));
@@ -143,15 +187,14 @@ impl Background {
         }
     }
 
-    fn enqueue<T: Serialize + Send + 'static>(
+    fn enqueue(
         &mut self,
-        value: T,
+        records: Vec<Encode>,
         sink: &mut dyn Write,
     ) -> Result<(), Box<dyn Error>> {
+        let count = records.len() as u64;
         let mut command = Command {
-            encode: Box::new(move |buffer| {
-                serde_json::to_writer(buffer, &value).map_err(|error| error.to_string())
-            }),
+            records,
             buffer: self.recycled.pop().unwrap_or_default(),
         };
         loop {
@@ -162,7 +205,7 @@ impl Background {
                 .try_send(command)
             {
                 Ok(()) => {
-                    self.pending += 1;
+                    self.pending += count;
                     self.telemetry.records_in_flight_peak =
                         self.telemetry.records_in_flight_peak.max(self.pending);
                     return self.drain(sink);
@@ -210,6 +253,8 @@ impl Background {
         }
         encoded.telemetry.command_capacity = self.telemetry.command_capacity;
         encoded.telemetry.output_capacity = self.telemetry.output_capacity;
+        encoded.telemetry.batch_record_limit = BATCH_RECORD_LIMIT;
+        encoded.telemetry.partial_batch_age_ns = PARTIAL_BATCH_AGE_NS;
         encoded.telemetry.records_in_flight_peak = self.telemetry.records_in_flight_peak;
         encoded.telemetry.producer_backpressure_events =
             self.telemetry.producer_backpressure_events;
@@ -236,6 +281,8 @@ pub(super) struct StreamWriter<'a> {
     line: Vec<u8>,
     background: Option<Background>,
     failed: bool,
+    staged: Vec<Encode>,
+    staged_since: Option<Moment>,
 }
 
 impl<'a> StreamWriter<'a> {
@@ -246,6 +293,8 @@ impl<'a> StreamWriter<'a> {
             line: Vec::new(),
             background: None,
             failed: false,
+            staged: Vec::with_capacity(BATCH_RECORD_LIMIT),
+            staged_since: None,
         }
     }
 
@@ -267,10 +316,17 @@ impl<'a> StreamWriter<'a> {
         &mut self,
         value: T,
     ) -> Result<(), Box<dyn Error>> {
-        if let Some(background) = self.background.as_mut() {
-            let result = background.enqueue(value, self.sink);
-            self.failed |= result.is_err();
-            return result;
+        if self.background.is_some() {
+            if self.staged.is_empty() {
+                self.staged_since = Some(now());
+            }
+            self.staged.push(Box::new(move |buffer| {
+                serde_json::to_writer(buffer, &value).map_err(|error| error.to_string())
+            }));
+            if self.staged.len() == BATCH_RECORD_LIMIT {
+                return self.flush_staged();
+            }
+            return Ok(());
         }
         self.line.clear();
         serde_json::to_writer(&mut self.line, &value)?;
@@ -283,7 +339,29 @@ impl<'a> StreamWriter<'a> {
         Ok(())
     }
 
+    fn flush_staged(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.staged.is_empty() {
+            return Ok(());
+        }
+        self.staged_since = None;
+        let background = self
+            .background
+            .as_mut()
+            .ok_or("campaign stream has no encoder")?;
+        let records = std::mem::take(&mut self.staged);
+        let result = background.enqueue(records, self.sink);
+        self.staged = background.recycled_records.pop().unwrap_or_default();
+        self.failed |= result.is_err();
+        result
+    }
+
     pub(super) fn drain_ready(&mut self) -> Result<(), Box<dyn Error>> {
+        if self
+            .staged_since
+            .is_some_and(|started| nanos_since(started) >= PARTIAL_BATCH_AGE_NS)
+        {
+            self.flush_staged()?;
+        }
         if let Some(background) = self.background.as_mut() {
             let result = background.drain(self.sink);
             self.failed |= result.is_err();
@@ -293,6 +371,7 @@ impl<'a> StreamWriter<'a> {
     }
 
     pub(super) fn finish(mut self) -> Result<(String, Option<StreamTelemetry>), Box<dyn Error>> {
+        self.flush_staged()?;
         let mut result = if let Some(background) = self.background.take() {
             let encoded = background.finish(self.sink)?;
             (encoded.digest, Some(encoded.telemetry))
@@ -319,18 +398,17 @@ impl<'a> StreamWriter<'a> {
 
 impl Drop for StreamWriter<'_> {
     fn drop(&mut self) {
-        if let Some(background) = self.background.take() {
-            if self.failed {
-                drop(background);
-            } else {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                    || -> Result<(), Box<dyn Error>> {
+        if !self.failed {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || -> Result<(), Box<dyn Error>> {
+                    self.flush_staged()?;
+                    if let Some(background) = self.background.take() {
                         background.finish(self.sink)?;
                         self.sink.flush()?;
-                        Ok(())
-                    },
-                ));
-            }
+                    }
+                    Ok(())
+                },
+            ));
         }
     }
 }
@@ -396,10 +474,14 @@ mod tests {
         assert_eq!(digest, reference);
         assert_eq!(digest, format!("{:x}", Sha256::digest(&inline)));
         assert_eq!(telemetry.background_records, 1_000);
+        assert_eq!(telemetry.background_batches, 63);
+        assert_eq!(telemetry.largest_batch_records, BATCH_RECORD_LIMIT as u64);
+        assert_eq!(telemetry.batch_record_limit, BATCH_RECORD_LIMIT);
         assert_eq!(telemetry.sink_bytes, telemetry.background_bytes);
         assert!(telemetry.sink_bytes < inline.len() as u64);
         assert!(
-            telemetry.records_in_flight_peak <= (COMMAND_CAPACITY + OUTPUT_CAPACITY + 1) as u64
+            telemetry.records_in_flight_peak
+                <= ((COMMAND_CAPACITY + OUTPUT_CAPACITY + 1) * BATCH_RECORD_LIMIT) as u64
         );
     }
 
@@ -449,6 +531,54 @@ mod tests {
             assert!(writer.finish().is_err());
         }
         assert_eq!(sink, b"1\n");
+    }
+
+    struct PartialInvalid;
+    impl Serialize for PartialInvalid {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeSeq;
+            let mut sequence = serializer.serialize_seq(Some(2))?;
+            sequence.serialize_element(&123)?;
+            Err(S::Error::custom("partial record refused"))
+        }
+    }
+
+    fn in_batch_failure<T: Serialize + Send + 'static>(value: T, expected: &str) {
+        let mut sink = Vec::new();
+        let mut writer = StreamWriter::new(&mut sink);
+        writer.enable_background(None).unwrap();
+        writer.write_line(1).unwrap();
+        writer.write_line(2).unwrap();
+        writer.write_line(value).unwrap();
+        writer.write_line(4).unwrap();
+        assert!(writer.finish().unwrap_err().to_string().contains(expected));
+        assert_eq!(sink, b"1\n2\n");
+    }
+
+    #[test]
+    fn an_in_batch_partial_serialization_error_or_panic_keeps_only_complete_prefix_records() {
+        in_batch_failure(PartialInvalid, "partial record refused");
+        in_batch_failure(Panicking, "panicked");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_partial_batch_is_submitted_by_age_and_finish_preserves_the_remainder() {
+        let mut sink = Vec::new();
+        let mut writer = StreamWriter::new(&mut sink);
+        writer.enable_background(None).unwrap();
+        writer.write_line(1).unwrap();
+        assert_eq!(writer.staged.len(), 1);
+        writer.staged_since = Some(now() - std::time::Duration::from_millis(2));
+        writer.drain_ready().unwrap();
+        assert!(writer.staged.is_empty());
+        writer.write_line(2).unwrap();
+        let (_, telemetry) = writer.finish().unwrap();
+        let telemetry = telemetry.unwrap();
+        assert_eq!(telemetry.background_batches, 2);
+        assert_eq!(telemetry.background_records, 2);
+        assert_eq!(telemetry.largest_batch_records, 1);
+        assert_eq!(sink, b"1\n2\n");
     }
 
     struct PanicFlush;
@@ -593,11 +723,11 @@ mod tests {
             .as_ref()
             .unwrap()
             .send(Command {
-                encode: Box::new(move |buffer| {
+                records: vec![Box::new(move |buffer| {
                     blocked.recv().unwrap();
                     buffer.extend_from_slice(b"0");
                     Ok(())
-                }),
+                })],
                 buffer: Vec::new(),
             })
             .unwrap_or_else(|_| panic!("encoder stopped"));
@@ -608,9 +738,9 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .send(Command {
-                    encode: Box::new(move |buffer| {
+                    records: vec![Box::new(move |buffer| {
                         serde_json::to_writer(buffer, &index).map_err(|e| e.to_string())
-                    }),
+                    })],
                     buffer: Vec::new(),
                 })
                 .unwrap_or_else(|_| panic!("encoder stopped"));
@@ -618,7 +748,7 @@ mod tests {
         }
         assert!(matches!(
             background.commands.as_ref().unwrap().try_send(Command {
-                encode: Box::new(|_| Ok(())),
+                records: vec![Box::new(|_| Ok(()))],
                 buffer: Vec::new()
             }),
             Err(TrySendError::Full(_))

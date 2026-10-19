@@ -44,6 +44,10 @@ pub struct CompletedBufferTelemetry {
 pub struct StreamTelemetry {
     pub command_capacity: usize,
     pub output_capacity: usize,
+    pub batch_record_limit: usize,
+    pub partial_batch_age_ns: u64,
+    pub background_batches: u64,
+    pub largest_batch_records: u64,
     pub background_records: u64,
     pub background_bytes: u64,
     pub encode_ns: u64,
