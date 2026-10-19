@@ -881,6 +881,7 @@ fn recv_raw_bounded(
     Ok((body, fds))
 }
 
+#[cfg(test)]
 fn recv_raw(
     stream: &UnixStream,
     limit: usize,
@@ -4288,6 +4289,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "host socket deadline bounds malformed-frame qualification"
+    )]
     fn execution_endpoint_frame_remainders_reject_owned_rights_on_both_hosts() {
         let (sender, receiver) = UnixStream::pair().unwrap();
         let descriptor = tempfile::tempfile().unwrap();
@@ -4322,6 +4327,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "host socket deadline bounds malformed-frame qualification"
+    )]
     fn execution_endpoint_opcode_bounds_reject_page_padding_before_body_allocation() {
         let (sender, receiver) = UnixStream::pair().unwrap();
         let mut header = [0; HEADER];
@@ -4345,6 +4354,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "host socket deadline bounds malformed-frame qualification"
+    )]
     fn execution_endpoint_prefix_refuses_oversized_frames_before_body_allocation() {
         let (sender, receiver) = UnixStream::pair().unwrap();
         let mut header = [0; HEADER];

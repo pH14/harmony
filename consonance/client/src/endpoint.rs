@@ -430,11 +430,11 @@ impl EndpointState {
                     return Err(EndpointProtocolError::Stale.into());
                 }
                 let pending = self.pending.take().expect("pending endpoint checked");
-                if let Some((snapshot, _)) = pending.snapshot {
-                    if let Err(error) = driver.drop_snapshot(snapshot) {
-                        driver.abandon();
-                        return Err(error);
-                    }
+                if let Some((snapshot, _)) = pending.snapshot
+                    && let Err(error) = driver.drop_snapshot(snapshot)
+                {
+                    driver.abandon();
+                    return Err(error);
                 }
                 Ok(EndpointReply::Aborted)
             }
@@ -816,8 +816,7 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionDecision<'a, T> {
         if result.is_err() {
             transport.endpoint_abandon();
         }
-        let result = ExecutionEndpoint::start_reply(transport, request, digest, result);
-        result
+        ExecutionEndpoint::start_reply(transport, request, digest, result)
     }
 
     pub fn finalize(mut self, capture: bool) -> Result<ExecutionEndpoint<'a, T>, EndpointError> {
@@ -868,25 +867,25 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionDecision<'a, T> {
 
 impl<T: EndpointTransport + ?Sized> Drop for ExecutionDecision<'_, T> {
     fn drop(&mut self) {
-        if !self.finished {
-            if let Some(transport) = self.transport.as_mut() {
-                transport.endpoint_abandon();
-            }
+        if !self.finished
+            && let Some(transport) = self.transport.as_mut()
+        {
+            transport.endpoint_abandon();
         }
     }
 }
 
 impl<T: EndpointTransport + ?Sized> Drop for ExecutionEndpoint<'_, T> {
     fn drop(&mut self) {
-        if !self.finished {
-            if !matches!(
+        if !self.finished
+            && !matches!(
                 self.transport.endpoint_exchange(EndpointRequest::Abort {
                     token: self.page.binding.token
                 }),
                 Ok(EndpointReply::Aborted)
-            ) {
-                self.transport.endpoint_abandon();
-            }
+            )
+        {
+            self.transport.endpoint_abandon();
         }
     }
 }
@@ -1086,10 +1085,10 @@ mod tests {
             let mut state = std::mem::take(&mut self.endpoint);
             let mut result = state.exchange(self, request);
             self.endpoint = state;
-            if self.corrupt_page {
-                if let Ok(EndpointReply::Page(page)) = &mut result {
-                    page.binding.request_digest[0] ^= 1;
-                }
+            if self.corrupt_page
+                && let Ok(EndpointReply::Page(page)) = &mut result
+            {
+                page.binding.request_digest[0] ^= 1;
             }
             if commit && self.lose_commit {
                 return Err(Injected("lost commit reply").into());
