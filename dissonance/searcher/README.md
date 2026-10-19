@@ -913,8 +913,12 @@ A failed publication permanently retires its writer and latches the persistence
 error, including failures after checkpoint rename or journal writing. Charge,
 freeze and synchronous body-capture errors retain their original type on first
 handback and remain the typed primary/source during finalization; the latched
-summary only rejects later operations. Once an
-error is handed back, the direct coordinator refuses further reservation,
+summary only rejects later operations.
+Evidence writers retain their original boxed errors from both the streamed
+byte-count and byte-emission passes, including the actual coordinator capture
+path. Successful streaming preserves the existing vector codec bytes, and a
+serializer or sink failure without a writer error keeps its Postcard error.
+Once an error is handed back, the direct coordinator refuses further reservation,
 admission and completion; `plan` yields no additional jobs. Workload integrity
 is checked before persistence polling, so an already latched typed contradiction
 remains primary whether the writer is ready or still pending. Finalization keeps

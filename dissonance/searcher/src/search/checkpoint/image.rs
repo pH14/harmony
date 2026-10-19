@@ -2,6 +2,7 @@
 
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     error::Error,
     fmt,
@@ -152,6 +153,29 @@ impl Write for ByteCount {
 }
 
 pub struct StreamedBytes<F>(pub F);
+
+pub(crate) fn write_streamed_bytes(
+    out: &mut dyn Write,
+    write: impl Fn(&mut dyn Write) -> Result<(), Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
+    let failure = RefCell::new(None);
+    let result = postcard::to_io(
+        &StreamedBytes(|out: &mut dyn Write| match write(out) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                *failure.borrow_mut() = Some(error);
+                Err("checkpoint stream callback failed".into())
+            }
+        }),
+        out,
+    )
+    .map(|_| ());
+    match failure.into_inner() {
+        Some(error) => Err(error),
+        None => Ok(result?),
+    }
+}
+
 impl<F> Serialize for StreamedBytes<F>
 where
     F: Fn(&mut dyn Write) -> Result<(), Box<dyn Error>>,
@@ -244,5 +268,37 @@ mod tests {
         let mut out = LimitedBytes::new(expected.len() - 1);
         assert!(postcard::to_io(&stream, &mut out).is_err());
         assert!(out.bytes.len() <= out.limit);
+    }
+
+    #[test]
+    fn streamed_writer_preserves_vector_bytes_and_uncaptured_postcard_sink_errors() {
+        let value = [0_u8, 1, 127, 128, 255];
+        let expected = postcard::to_allocvec(&value.to_vec()).unwrap();
+        let mut out = Vec::new();
+        write_streamed_bytes(&mut out, |out| {
+            out.write_all(&value)?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(out, expected);
+
+        let baseline = postcard::to_io(
+            &StreamedBytes(|out: &mut dyn Write| {
+                out.write_all(&value)?;
+                Ok(())
+            }),
+            LimitedBytes::new(0),
+        )
+        .err()
+        .unwrap();
+        let calls = std::cell::Cell::new(0);
+        let error = write_streamed_bytes(&mut LimitedBytes::new(0), |out| {
+            calls.set(calls.get() + 1);
+            out.write_all(&value)?;
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(error.downcast_ref::<postcard::Error>(), Some(&baseline));
     }
 }
