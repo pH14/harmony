@@ -143,8 +143,8 @@ impl Segment {
         // SAFETY: only Retirement::Unique reaches this call, after checking the
         // actual segment identity. Its capability consumes the writer or unwraps
         // the last committed owner, so no parent Rust reference reads the range.
-        // Export writers retain their ownership until their mappings retire;
-        // KEEP_SIZE preserves all other segment addresses and lengths.
+        // export writers retain their ownership until their mappings retire;
+        // the KEEP_SIZE flag preserves all other segment addresses and lengths.
         unsafe {
             libc::fallocate(
                 self.backing.as_raw_fd(),
