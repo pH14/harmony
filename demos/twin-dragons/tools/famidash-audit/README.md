@@ -382,3 +382,13 @@ output to `boundary-corners.py --slope-masks MASKS` to annotate schema-5
 slope/fill leads with actual edge masks and solid-pixel counts. The source
 revision must match the index. Full edges can still be crossed between
 samples; partial edges may be intentional. Neither result authorizes edits.
+
+`triage-closed-components.mjs COMPONENTS DISCOVERY_INDEX ORIGINAL_ROMS
+REPAIRED_INDEX REPAIRED_ROMS RUNTIME OUTPUT` replays one longest-surviving
+representative for every closed, sprite-free fill component on both the
+original and repaired release ROMs. It retains original ordinary-input
+traces for cases that survive the discovery frame. Input and index hashes
+are checked; results are an inventory, not bug verdicts. Different builds
+can introduce lag, so an unchanged input dying earlier does not establish
+that a region is safe or unreachable. Source intent and actual CPU probes
+remain separate checks. The tool targets the installed release RAM layout.

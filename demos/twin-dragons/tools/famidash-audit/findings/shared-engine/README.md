@@ -697,3 +697,50 @@ Exploratory round 43 is complete: all 109 installed levels, 12,415,000
 Dissonance executions and 83,021 candidates replayed without mismatch.
 Known Forest/XX/Kappa gaps and incomplete source dispositions disqualify
 it as a clean round. The consecutive-clean-round count remains zero.
+
+Kappa's v2 correction was incomplete beyond component 135. CPU probes and
+ordinary inputs confirm ceiling component 40 and late-floor component 110
+also admit entry. Version 4 closes twelve stair faces plus a rounded-saw
+opening at (188,19); its contact-response tests kill release ceiling/floor
+inputs at 1,100/2,167 and current inputs at 1,142/2,155. FCEUmm matches all
+four complete repaired traces and confirms reset after 40 released frames.
+
+Fresh searches then found two other ceiling routes: beside the large saw
+at (185,18) and small saw at (203,19). The version-5 data-only proposals
+close the reviewed rounded-hazard faces inside these same two interiors.
+They contain 42 edits in total, superseding the six-edit version 2 and
+19-edit version 4. This is a scoped source review; rounded boundaries in
+other components still require their own evidence and intent assessment.
+The release and current original-ROM witnesses die at 1,126 and 1,262,
+respectively, preserving the complete mechanical approach. Both emulators
+confirm those results and normal resets. Legitimate whole-level clearing
+controls remain pending; winning alone does not qualify them.
+
+The larger release payload exceeded its original bank by one byte. The
+source-only build swaps the unchanged Cycles and Dorabae Basic 6 level
+blocks between banks 11 and 1B. Both retain their original payload bytes;
+compiled geometry is verified after relocation. The combined version-5
+release/current standard builds verify all 109/170 indexed levels. The
+TMX proposals remain independent of generated bank packing.
+
+Fresh actual Dissonance searches on combined version 5 produce release and
+current clears at 4,854 and 4,853 frames (current coin mask 1). FCEUmm
+matches every gameplay frame; entry differences are release frame 1 and
+current frame 4. Complete read-only collision histories check both players
+against the original footprints of components 40, 110 and 135: zero visits
+and zero source/metatile mismatches. Their only large position changes
+occur at the single-player portal (592,22), selecting the secondary ship's
+previous position. These controls establish combined-build playability;
+separate original-engine, data-only control searches are still running.
+All 173 current HUGE compiled level geometries also verify.
+
+The data-only version-5 builds now have fresh Dissonance clearing inputs:
+release 4,880 frames and current 4,760 frames (coin mask 5). Independent
+FCEUmm replays match all gameplay frames. CPU probes over the entire
+horizontal span of regions 40/110/135 check 1,705 release and 1,638 current
+centres: zero visits and zero source/metatile mismatches. No dual player
+is active in that span. Neither whole-level trace has a large Y jump.
+The current clearing input also completes on unmodified upstream with its
+entire trace unchanged. The release input uses a corrected solid boundary
+at frame 2,240 and fails on the original at 2,245, so it establishes repaired
+playability rather than preservation of an original clearing input.

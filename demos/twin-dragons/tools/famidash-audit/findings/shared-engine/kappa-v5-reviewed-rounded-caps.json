@@ -1,0 +1,410 @@
+{
+  "source_inventory": "wave-four-caps-boundary-inventory-v5-masked.json",
+  "disposition": "Review-scoped caps inside confirmed closed fill components40/110 only; no global rounded-hazard change. Witnesses confirm independent entries via18117,18719,18518,20319. Other faces seal the same inaccessible interiors.",
+  "reviewed_faces": [
+    {
+      "column": 185,
+      "row": 17,
+      "hazard_column": 185,
+      "hazard_row": 18,
+      "hazard": "BIG_SAW_BOTTOM_MIDDLE",
+      "hazard_collision": "COL_DEATH_TOP",
+      "unsealed_edge": "top",
+      "component": 40,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 184,
+      "row": 18,
+      "hazard_column": 185,
+      "hazard_row": 18,
+      "hazard": "BIG_SAW_BOTTOM_MIDDLE",
+      "hazard_collision": "COL_DEATH_TOP",
+      "unsealed_edge": "left",
+      "component": 40,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 186,
+      "row": 18,
+      "hazard_column": 185,
+      "hazard_row": 18,
+      "hazard": "BIG_SAW_BOTTOM_MIDDLE",
+      "hazard_collision": "COL_DEATH_TOP",
+      "unsealed_edge": "right",
+      "component": 40,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 187,
+      "row": 18,
+      "hazard_column": 187,
+      "hazard_row": 19,
+      "hazard": "MED_SAW_BOTTOM_LEFT",
+      "hazard_collision": "COL_DEATH_TOP",
+      "unsealed_edge": "top",
+      "component": 40,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 203,
+      "row": 18,
+      "hazard_column": 203,
+      "hazard_row": 19,
+      "hazard": "SMALL_SAW",
+      "hazard_collision": "COL_DEATH",
+      "unsealed_edge": "top",
+      "component": 40,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 188,
+      "row": 19,
+      "hazard_column": 187,
+      "hazard_row": 19,
+      "hazard": "MED_SAW_BOTTOM_LEFT",
+      "hazard_collision": "COL_DEATH_TOP",
+      "unsealed_edge": "right",
+      "component": 40,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 198,
+      "row": 19,
+      "hazard_column": 198,
+      "hazard_row": 20,
+      "hazard": "MED_SAW_BOTTOM_LEFT",
+      "hazard_collision": "COL_DEATH_TOP",
+      "unsealed_edge": "top",
+      "component": 40,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 199,
+      "row": 19,
+      "hazard_column": 199,
+      "hazard_row": 20,
+      "hazard": "MED_SAW_BOTTOM_RIGHT",
+      "hazard_collision": "COL_DEATH_TOP",
+      "unsealed_edge": "top",
+      "component": 40,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 202,
+      "row": 19,
+      "hazard_column": 203,
+      "hazard_row": 19,
+      "hazard": "SMALL_SAW",
+      "hazard_collision": "COL_DEATH",
+      "unsealed_edge": "left",
+      "component": 40,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 204,
+      "row": 19,
+      "hazard_column": 203,
+      "hazard_row": 19,
+      "hazard": "SMALL_SAW",
+      "hazard_collision": "COL_DEATH",
+      "unsealed_edge": "right",
+      "component": 40,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 355,
+      "row": 22,
+      "hazard_column": 354,
+      "hazard_row": 22,
+      "hazard": "MED_SAW_TOP_RIGHT",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "right",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 357,
+      "row": 22,
+      "hazard_column": 358,
+      "hazard_row": 22,
+      "hazard": "MED_SAW_TOP_RIGHT",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "left",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 353,
+      "row": 23,
+      "hazard_column": 353,
+      "hazard_row": 22,
+      "hazard": "MED_SAW_TOP_LEFT",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "bottom",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 354,
+      "row": 23,
+      "hazard_column": 354,
+      "hazard_row": 22,
+      "hazard": "MED_SAW_TOP_RIGHT",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "bottom",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 358,
+      "row": 23,
+      "hazard_column": 358,
+      "hazard_row": 22,
+      "hazard": "MED_SAW_TOP_RIGHT",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "bottom",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 342,
+      "row": 24,
+      "hazard_column": 343,
+      "hazard_row": 24,
+      "hazard": "BIG_SAW_TOP_MIDDLE",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "left",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 364,
+      "row": 24,
+      "hazard_column": 365,
+      "hazard_row": 24,
+      "hazard": "BIG_SAW_TOP_MIDDLE",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "left",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 366,
+      "row": 24,
+      "hazard_column": 365,
+      "hazard_row": 24,
+      "hazard": "BIG_SAW_TOP_MIDDLE",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "right",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 338,
+      "row": 25,
+      "hazard_column": 337,
+      "hazard_row": 25,
+      "hazard": "BIG_SAW_TOP_MIDDLE",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "right",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 343,
+      "row": 25,
+      "hazard_column": 343,
+      "hazard_row": 24,
+      "hazard": "BIG_SAW_TOP_MIDDLE",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "bottom",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 344,
+      "row": 25,
+      "hazard_column": 344,
+      "hazard_row": 24,
+      "hazard": "BIG_SAW_TOP_RIGHT",
+      "hazard_collision": "COL_DOWN_LEFT_SPIKE",
+      "unsealed_edge": "bottom",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 365,
+      "row": 25,
+      "hazard_column": 365,
+      "hazard_row": 24,
+      "hazard": "BIG_SAW_TOP_MIDDLE",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "bottom",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 336,
+      "row": 26,
+      "hazard_column": 336,
+      "hazard_row": 25,
+      "hazard": "BIG_SAW_TOP_LEFT",
+      "hazard_collision": "COL_DOWN_RIGHT_SPIKE",
+      "unsealed_edge": "bottom",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    },
+    {
+      "column": 337,
+      "row": 26,
+      "hazard_column": 337,
+      "hazard_row": 25,
+      "hazard": "BIG_SAW_TOP_MIDDLE",
+      "hazard_collision": "COL_DEATH_BOTTOM",
+      "unsealed_edge": "bottom",
+      "component": 110,
+      "disposition": "needs-input-and-intent-review"
+    }
+  ],
+  "edits_after_v4": [
+    {
+      "column": 185,
+      "row": 17,
+      "from_gid": 112,
+      "to_gid": 100
+    },
+    {
+      "column": 184,
+      "row": 18,
+      "from_gid": 112,
+      "to_gid": 99
+    },
+    {
+      "column": 186,
+      "row": 18,
+      "from_gid": 112,
+      "to_gid": 101
+    },
+    {
+      "column": 187,
+      "row": 18,
+      "from_gid": 112,
+      "to_gid": 100
+    },
+    {
+      "column": 203,
+      "row": 18,
+      "from_gid": 112,
+      "to_gid": 100
+    },
+    {
+      "column": 198,
+      "row": 19,
+      "from_gid": 112,
+      "to_gid": 100
+    },
+    {
+      "column": 199,
+      "row": 19,
+      "from_gid": 112,
+      "to_gid": 100
+    },
+    {
+      "column": 202,
+      "row": 19,
+      "from_gid": 112,
+      "to_gid": 99
+    },
+    {
+      "column": 204,
+      "row": 19,
+      "from_gid": 112,
+      "to_gid": 101
+    },
+    {
+      "column": 355,
+      "row": 22,
+      "from_gid": 112,
+      "to_gid": 101
+    },
+    {
+      "column": 357,
+      "row": 22,
+      "from_gid": 112,
+      "to_gid": 99
+    },
+    {
+      "column": 353,
+      "row": 23,
+      "from_gid": 112,
+      "to_gid": 98
+    },
+    {
+      "column": 354,
+      "row": 23,
+      "from_gid": 112,
+      "to_gid": 98
+    },
+    {
+      "column": 358,
+      "row": 23,
+      "from_gid": 112,
+      "to_gid": 98
+    },
+    {
+      "column": 342,
+      "row": 24,
+      "from_gid": 112,
+      "to_gid": 99
+    },
+    {
+      "column": 364,
+      "row": 24,
+      "from_gid": 112,
+      "to_gid": 99
+    },
+    {
+      "column": 366,
+      "row": 24,
+      "from_gid": 112,
+      "to_gid": 101
+    },
+    {
+      "column": 338,
+      "row": 25,
+      "from_gid": 112,
+      "to_gid": 101
+    },
+    {
+      "column": 343,
+      "row": 25,
+      "from_gid": 112,
+      "to_gid": 98
+    },
+    {
+      "column": 344,
+      "row": 25,
+      "from_gid": 112,
+      "to_gid": 98
+    },
+    {
+      "column": 365,
+      "row": 25,
+      "from_gid": 112,
+      "to_gid": 98
+    },
+    {
+      "column": 336,
+      "row": 26,
+      "from_gid": 112,
+      "to_gid": 98
+    },
+    {
+      "column": 337,
+      "row": 26,
+      "from_gid": 112,
+      "to_gid": 98
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "reason": "Kappa compressed growth overflowed originalbank11 by1byte. Swap unmodified dorabaebasic6(3046withheader) andcycles(3014withheader) betweenbanks11/1B; neither payload changed.",
+  "before": "11:Kappa+Dorabae6;1B:Cycles+sprites",
+  "after": "11:Kappa+Cycles;1B:Dorabae6+sprites",
+  "sha256": "ef81f0701e0265c074366d5330a412723a779a333aaf9f95c60bca8d7069310b"
+}

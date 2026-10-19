@@ -1,0 +1,130 @@
+{
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "evidence": [
+    "Closed components40/110/135 contain no objectives or open empty-cell faces; ceiling/floor ordinary input witnesses and CPU map reads confirm ingress.",
+    "Release ceiling death1100, latefloor-only2167; current ceiling1142, latefloor-only2155; FCEUmm confirms all traces and reset40.",
+    "This 19-cap proposal supersedes six-cap v2, but wholelevel legitimate control validation remains pending."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/kappaclysm.tmx",
+      "source_sha256": "7fc87f9ed7fcbcf13afff7c5710610fee15ac3fd7e09aa35c1af1602897496e5",
+      "edits": [
+        {
+          "column": 247,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 249,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 264,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 265,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 244,
+          "row": 25,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 242,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 182,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 183,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 192,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 197,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 205,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 206,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 207,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 351,
+          "row": 23,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 360,
+          "row": 23,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 339,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 349,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 369,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 188,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        }
+      ]
+    }
+  ]
+}

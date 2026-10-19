@@ -1,0 +1,269 @@
+{
+  "target_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "evidence": [
+    "Review scopes closed regions40/110/135, not every fill tile or rounded hazard. No objective/exit inside; region135 includes background sprite176.",
+    "Six original stair corners, twelve ceiling/latefloor corners, and twenty-four rounded hazard faces seal the reviewed interiors.",
+    "Original ordinary inputs prove four ceiling ingress routes and latefloor ingress. Data-only release/current repair tests and independent reset confirmations retained.",
+    "Fresh legitimate full-level control remains pending. Earlier clearing inputs were rejected for visiting other confirmed interiors."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/kappaclysm.tmx",
+      "source_sha256": "fea1b3a138f88117f5c0fc50a4a26c07932c41c8461d56138bc6804231aad5dc",
+      "edits": [
+        {
+          "column": 247,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 249,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 264,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 265,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 244,
+          "row": 25,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 242,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 182,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 183,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 192,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 197,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 205,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 206,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 207,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 351,
+          "row": 23,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 360,
+          "row": 23,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 339,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 349,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 369,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 188,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 185,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 100
+        },
+        {
+          "column": 184,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 186,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 187,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 100
+        },
+        {
+          "column": 203,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 100
+        },
+        {
+          "column": 198,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 100
+        },
+        {
+          "column": 199,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 100
+        },
+        {
+          "column": 202,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 204,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 355,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 357,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 353,
+          "row": 23,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 354,
+          "row": 23,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 358,
+          "row": 23,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 342,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 364,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 366,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 338,
+          "row": 25,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 343,
+          "row": 25,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 344,
+          "row": 25,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 365,
+          "row": 25,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 336,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 337,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 98
+        }
+      ]
+    }
+  ]
+}

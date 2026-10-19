@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "status": "avoids-regions",
+  "verified_frames": 4853,
+  "sampled_points": 5877,
+  "linear_y": true,
+  "aligned_wave": true,
+  "components": {
+    "40": {
+      "bbox": [
+        182,
+        17,
+        209,
+        21
+      ],
+      "area": 75,
+      "sprites": []
+    },
+    "110": {
+      "bbox": [
+        330,
+        22,
+        370,
+        26
+      ],
+      "area": 111,
+      "sprites": []
+    },
+    "135": {
+      "bbox": [
+        242,
+        24,
+        268,
+        26
+      ],
+      "area": 57,
+      "sprites": [
+        {
+          "column": 252,
+          "row": 25,
+          "id": 176,
+          "name": "UNKNOWN"
+        }
+      ]
+    }
+  },
+  "source_history_mismatches": [],
+  "hits": [],
+  "limitation": "Engine probe history and selected source regions; this neither classifies region intent nor proves every course boundary correct.",
+  "index_sha256": "cb3a4e3111df377c276a4c96a68636882937401a2a6d2652aeb9e7b65784b37b",
+  "history_sha256": "ba5ced32265cf0bd1e5038fbb2912af35aebc883ad42cb27f321b2324a811db3",
+  "regions_index_sha256": "ecefb721ca52164f3be06fec0055ab74d7203fda62740df724730a8bc615c617"
+}

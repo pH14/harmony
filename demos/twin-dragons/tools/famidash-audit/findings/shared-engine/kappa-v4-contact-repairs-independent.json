@@ -1,0 +1,118 @@
+{
+  "status": "verified",
+  "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+  "cases": [
+    {
+      "case": "kappa-v4-ceiling-actual-control.json.gz",
+      "case_sha256": "ce527abb90daccd0d5585d723ba1923851b32730eee6552c7660c703b3040b60",
+      "rom_sha256": "a087e116e818cefb25d5c90c31a1545982c95a85666e5006edef7daf4fcfff5f",
+      "matched_gameplay_frames": 1060,
+      "death_frame": 1100,
+      "intro_differences": [
+        1
+      ],
+      "reset_after_released_frames": 40,
+      "reset": {
+        "level": 30,
+        "state": 2,
+        "x": -238,
+        "y": 895,
+        "camera": 719,
+        "vy": 0,
+        "mode": 0,
+        "gravity": 0,
+        "mini": 0,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 8,
+        "paused": 0
+      }
+    },
+    {
+      "case": "kappa-late-floor-only-actual-control.json.gz",
+      "case_sha256": "f108e360aef85f07315c1211e50e4427d64a09d5914a2ed67716bb1361881352",
+      "rom_sha256": "d1982274a86a0d917fd948580cb9b1e86295cb738f220d0c124510766ee96644",
+      "matched_gameplay_frames": 2127,
+      "death_frame": 2167,
+      "intro_differences": [
+        1
+      ],
+      "reset_after_released_frames": 40,
+      "reset": {
+        "level": 30,
+        "state": 2,
+        "x": -238,
+        "y": 895,
+        "camera": 719,
+        "vy": 0,
+        "mode": 0,
+        "gravity": 0,
+        "mini": 0,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 8,
+        "paused": 0
+      }
+    },
+    {
+      "case": "current-kappa-v4-ceiling-actual-control.json.gz",
+      "case_sha256": "810c31b3487bce33aa71a13741bd0b4abf84eaeee5dd24f1c72421ba82c22fbd",
+      "rom_sha256": "ec68206e8cfef7a4be76e691343ad46f9b2fcfbfde152c8d86458499334c636f",
+      "matched_gameplay_frames": 1102,
+      "death_frame": 1142,
+      "intro_differences": [
+        4
+      ],
+      "reset_after_released_frames": 40,
+      "reset": {
+        "level": 33,
+        "state": 2,
+        "x": -238,
+        "y": 895,
+        "camera": 719,
+        "vy": 0,
+        "mode": 0,
+        "gravity": 0,
+        "mini": 0,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 8,
+        "paused": 0,
+        "wrap": 0,
+        "coins": 0
+      }
+    },
+    {
+      "case": "current-kappa-v3-true-late-floor-actual-control.json.gz",
+      "case_sha256": "270ff10244e957f0d3c95841e9b62b4ace4a34d860aa3f7f4b2a287d22d725f7",
+      "rom_sha256": "32b1f7bc6e3c89cc42c9dc944ec7c1a87709e511c129e05872b6505ba0e96ad7",
+      "matched_gameplay_frames": 2115,
+      "death_frame": 2155,
+      "intro_differences": [
+        4
+      ],
+      "reset_after_released_frames": 40,
+      "reset": {
+        "level": 33,
+        "state": 2,
+        "x": -238,
+        "y": 895,
+        "camera": 719,
+        "vy": 0,
+        "mode": 0,
+        "gravity": 0,
+        "mini": 0,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 8,
+        "paused": 0,
+        "wrap": 0,
+        "coins": 0
+      }
+    }
+  ]
+}

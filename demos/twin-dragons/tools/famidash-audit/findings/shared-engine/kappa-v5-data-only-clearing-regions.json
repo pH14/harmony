@@ -1,0 +1,78 @@
+[
+  {
+    "variant": "release",
+    "cpu_trace_sha256": "07fd5bd82e1859b2a42fe44562cc0e69356ee9ac61ba650c375600f696dc1e58",
+    "actual_index_sha256": "638101fd0d399dc39ff43f72df756277566dfb14d34a99c745c23a18caef1f9c",
+    "regions_index_sha256": "224382ad4bd51868a9937c795ae3efde97e4b2ddd8bb2d0acec9968dbd1ea955",
+    "window": [
+      1000,
+      2350
+    ],
+    "world_x_extent": [
+      2530,
+      6072
+    ],
+    "components": {
+      "40": [
+        182,
+        17,
+        209,
+        21
+      ],
+      "110": [
+        330,
+        22,
+        370,
+        26
+      ],
+      "135": [
+        242,
+        24,
+        268,
+        26
+      ]
+    },
+    "sampled_centres": 1705,
+    "source_metatile_mismatches": [],
+    "region_hits": [],
+    "limitation": "All three reviewed regions lie inside the monotonically traversed horizontal window. Actual CPU centre probes checked; dual absent in window. This is not an all-boundary correctness claim."
+  },
+  {
+    "variant": "current",
+    "cpu_trace_sha256": "859f7696a0363ba680564c91d71810f28c0a6d270c5060fe8bbec3265beed082",
+    "actual_index_sha256": "5c1dd1deb73f34da07bf158bec0eaba55f8c4040098a822d0f56c32b66679a2c",
+    "regions_index_sha256": "ecefb721ca52164f3be06fec0055ab74d7203fda62740df724730a8bc615c617",
+    "window": [
+      1000,
+      2350
+    ],
+    "world_x_extent": [
+      2530,
+      6414
+    ],
+    "components": {
+      "40": [
+        182,
+        17,
+        209,
+        21
+      ],
+      "110": [
+        330,
+        22,
+        370,
+        26
+      ],
+      "135": [
+        242,
+        24,
+        268,
+        26
+      ]
+    },
+    "sampled_centres": 1638,
+    "source_metatile_mismatches": [],
+    "region_hits": [],
+    "limitation": "All three reviewed regions lie inside the monotonically traversed horizontal window. Actual CPU centre probes checked; dual absent in window. This is not an all-boundary correctness claim."
+  }
+]
