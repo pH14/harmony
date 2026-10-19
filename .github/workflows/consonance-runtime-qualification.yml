@@ -27,10 +27,13 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Install pinned Rust toolchain
+      - name: Install pinned Rust toolchain and musl linker
         run: |
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
           rustup default "$HARMONY_RUST_TOOLCHAIN"
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -49,10 +52,13 @@ jobs:
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
       - name: Extended platform replay
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
         run: |
           set -o pipefail
           for repetition in 1 2 3; do
-            timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture \
+            timeout -k 10 720 cargo test --locked --release --target x86_64-unknown-linux-musl \
+              -p oci-support --test platform --test process_platform -- --ignored --nocapture \
               2>&1 | tee "platform-smoke/replay-$repetition.log"
           done
       - uses: actions/upload-artifact@v4

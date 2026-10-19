@@ -96,6 +96,19 @@ else
     work=$(mktemp -d "${TMPDIR:-/tmp}/harmony-nix-guest.XXXXXXXX")
 fi
 cleanup() {
+    n6_cleanup_status=$?
+    if [ "$n6_cleanup_status" -ne 0 ] && [ "$n6" -eq 1 ] && [ -d "$work/build/n6-instruction-sweep" ]; then
+        n6_diagnostics=$output/diagnostics/n6
+        mkdir -p "$n6_diagnostics"
+        for n6_name in n6-generated.S n6-generated.h \
+            n6-instruction-guest n6-instruction-guest.entropy-audit.txt \
+            n6-instruction-guest-traps-off n6-instruction-guest-traps-off.entropy-audit.txt; do
+            if [ -f "$work/build/n6-instruction-sweep/$n6_name" ]; then
+                cp -p "$work/build/n6-instruction-sweep/$n6_name" "$n6_diagnostics/$n6_name"
+            fi
+        done
+        echo "N6 failed-build diagnostics preserved: $n6_diagnostics" >&2
+    fi
     if [ "${HARMONY_NIX_KEEP_WORK:-0}" -eq 1 ]; then
         echo "N5 diagnostic workspace preserved: $work" >&2
     else
@@ -116,9 +129,9 @@ install -m 0644 "$HARMONY_NIX_LINUX_SOURCE" \
     "$downloads/linux-6.18.35.tar.xz"
 install -m 0644 "$HARMONY_NIX_BUSYBOX_SOURCE" \
     "$downloads/busybox-1.38.0.tar.bz2"
+install -m 0644 "$HARMONY_NIX_MUSL_SOURCE" \
+    "$downloads/musl-1.2.6.tar.gz"
 if [ "$host_arch" = aarch64 ]; then
-    install -m 0644 "$HARMONY_NIX_MUSL_SOURCE" \
-        "$downloads/musl-1.2.6.tar.gz"
     install -m 0644 "$HARMONY_NIX_POSTGRES_SOURCE" \
         "$downloads/postgresql-17.10.tar.bz2"
 fi
@@ -224,9 +237,17 @@ else
     echo "== N5: build minimal x86 kernel and initramfs"
     (cd "$linux_dir" && ./build-kernel.sh && ./build-initramfs.sh && ./build-go-runtime-image.sh)
     if [ "$n6" -eq 1 ]; then
+        echo "== N6: build owned musl for the generated sweep"
+        (
+            cd "$linux_dir"
+            # shellcheck source=../linux/lib-build.sh disable=SC1091
+            . ./lib-build.sh
+            build_x86_musl
+        )
         echo "== N6: build generated sweep and traps-off x86 kernel"
         (cd "$linux_dir" && \
-            ./build-n6-instruction-images.sh && \
+            HARMONY_N6_CC="$build_root/musl-x86-prefix/bin/musl-gcc" \
+                ./build-n6-instruction-images.sh && \
             N6_TRAPS_OFF=1 ./build-kernel.sh)
     fi
     if [ "$serialization_check" -eq 1 ]; then

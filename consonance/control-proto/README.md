@@ -39,12 +39,14 @@ allocating an unbounded buffer or panicking.
 The framing version (`PROTO_VERSION`), application vocabulary version
 (`APP_PROTOCOL_VERSION`), and environment blob version are independent. The
 codec validates only framing; application and blob versions are checked by the
-negotiation and backend layers. Application version 12 adds `SnapshotRefused`,
-which retains the state-capture diagnostic instead of reducing it to
-`NotQuiescent`. Earlier error tags still decode with their original bytes;
-version 11 peers are rejected at negotiation. Snapshot artifact formats are
-unchanged. A refusal identifies a representation gap, not permission to advance
-the execution and save a different endpoint.
+negotiation and backend layers. Application version 14 reports a v2 `EventHistory` commitment and record count
+separately from logical whole-state hashes. The count includes normalized
+transport events and completed semantic service exchanges; it is not the
+number of guest exits or entries in the diagnostic normalized-event log. Earlier peers are rejected at negotiation.
+`SnapshotRefused` retains state-capture diagnostics rather than reducing them to
+`NotQuiescent`. A refusal identifies a representation gap, not permission to
+advance execution and save a different endpoint. Portable snapshot format
+versions are owned by `vmm-core`.
 
 ## Modules and validation
 

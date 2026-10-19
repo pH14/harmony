@@ -95,6 +95,7 @@ thread_local! {
 
 struct TestWorkload;
 impl CampaignTypes for TestWorkload {
+    type JobObservation = ();
     type Target = TestTarget;
     type Action = TestAction;
     type Key = TestKey;
@@ -140,6 +141,12 @@ impl Reporting for TestWorkload {
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
         postcard_value_sha256(result)
+    }
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        postcard_value_sha256(snapshot)
     }
 
     fn archive_report(
@@ -318,6 +325,89 @@ fn continuation_config(
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
     }
+}
+
+#[test]
+fn replay_rejects_duplicate_skip_for_taken_continuation() {
+    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let records = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    replay_campaign_checkpointed(&TestWorkload, &stream, None, None).unwrap();
+    let reservation = 18_u64;
+    let job = records
+        .iter()
+        .find(|record| record["event"] == "job" && record["reservation"] == reservation)
+        .unwrap();
+    assert_eq!(job["selector"]["path"], "continuation");
+    let mut skip = records
+        .iter()
+        .find(|record| record["event"] == "skip")
+        .unwrap()
+        .clone();
+    skip["reservation"] = serde_json::json!(reservation);
+    skip["draw_checkpoint_before"] = job["draw_checkpoint_before"].clone();
+    let mut after = skip["draw_checkpoint_before"].clone();
+    after["records"] = serde_json::json!(after["records"].as_u64().unwrap() + 1);
+    skip["draw_checkpoint_after"] = after;
+    let mut changed = records.clone();
+    let insert_at = changed
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| record["event"] == "job")
+        .nth(usize::try_from(reservation).unwrap() - config.window)
+        .unwrap()
+        .0
+        + 1;
+    changed.insert(insert_at, skip);
+    for record in changed.iter_mut().skip(insert_at + 1) {
+        if record["event"] != "job" && record["event"] != "skip" {
+            continue;
+        }
+        if record["reservation"].as_u64().unwrap() >= reservation {
+            let before = &mut record["draw_checkpoint_before"];
+            before["records"] = serde_json::json!(before["records"].as_u64().unwrap() + 1);
+        }
+        let after = &mut record["draw_checkpoint_after"];
+        if !after.is_null() {
+            after["records"] = serde_json::json!(after["records"].as_u64().unwrap() + 1);
+        }
+    }
+    let end = changed.last_mut().unwrap();
+    assert_eq!(end["event"], "end");
+    end["skips"] = serde_json::json!(end["skips"].as_u64().unwrap() + 1);
+    let mut changed_stream = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned();
+    changed_stream.push('\n');
+    for record in &changed {
+        changed_stream.push_str(&serde_json::to_string(record).unwrap());
+        changed_stream.push('\n');
+    }
+    let error = replay_campaign_checkpointed(&TestWorkload, changed_stream.as_bytes(), None, None)
+        .expect_err("a taken continuation cannot skip an ordinary duplicate");
+    assert!(
+        error
+            .to_string()
+            .contains("skip before a taken continuation"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -1094,6 +1184,17 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
         original.0.telemetry.admission.results_held > 0,
         "no result waited for admission"
     );
+    let buffered = original.0.telemetry.completed_buffer;
+    assert!(
+        buffered.results_peak >= 2,
+        "held results were not counted together"
+    );
+    assert!(buffered.actions_peak >= 2);
+    assert_eq!(buffered.candidates_peak, buffered.actions_peak);
+    assert_eq!(buffered.results_live, 0);
+    assert_eq!(buffered.actions_live, 0);
+    assert_eq!(buffered.candidates_live, 0);
+
     let freed: u64 = std::fs::read_to_string(directory.join("checkpoints.jsonl"))
         .unwrap()
         .lines()
@@ -1554,7 +1655,7 @@ fn replay_rejects_forged_post_admission_skip_suffix_limits() {
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let index = 147;
+    let index = 555;
     let mut skip: serde_json::Value = serde_json::from_str(&lines[index]).unwrap();
     assert_eq!(skip["event"], "skip");
     assert_eq!(skip["suffix_limit"], 1);
@@ -1600,13 +1701,13 @@ fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
             })
             .unwrap()
     };
-    let (_, sibling) = job_at(60);
-    let (index, mut selected) = job_at(65);
+    let (_, sibling) = job_at(75);
+    let (index, mut selected) = job_at(79);
     assert_eq!(sibling["parent_id"], selected["parent_id"]);
     assert_eq!(sibling["suffix_limit"], 2);
     assert_eq!(selected["suffix_limit"], 1);
-    assert!(60 + config.window > 65);
-    assert!(sibling["sequence"].as_u64().unwrap() > 65 - config.window as u64);
+    assert!(75 + config.window > 79);
+    assert!(sibling["sequence"].as_u64().unwrap() > 79 - config.window as u64);
     selected["suffix_limit"] = serde_json::json!(2);
     lines[index] = serde_json::to_string(&selected).unwrap();
     let error =

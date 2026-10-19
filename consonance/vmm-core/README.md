@@ -18,6 +18,52 @@ Cargo dependency graph.
 
 ## Run loop
 
+The live X1 real-mode fixture initializes CS, SS and TR segment types explicitly
+before execution, rather than inheriting vendor-dependent KVM reset values.
+Its checkpoints still hash the complete saved CPU state. The hardware
+qualification retains setup and checkpoint witnesses, RAM and normalized logs
+as described in [the qualification registry](../../scripts/qualification/README.md).
+Production Linux composition also copies the entry state's complete task
+register descriptor, including its defined busy 32-bit TSS type, instead of
+inheriting the host's KVM reset descriptor.
+
+`tests/linux_snapshot_continuation.rs` exercises the production Linux boot,
+completed-boundary capture and full RAM/VM-state restore APIs with the owned
+continuation initramfs. The guest's memory, SIMD, x87, clock and entropy
+readbacks supply an oracle independently of the snapshot encoder. Bounded O1
+also compares the production whole-state hash at READY, DONE and termination;
+O2 fixes RAM/SIMD/x87 goldens; O3 repeats two distinct seeds and requires changed
+entropy with equal nonentropy outputs and positive continuation work. A separate
+`ControlServer` portable snapshot path preserves and compares the cumulative
+event history through the terminal checkpoint, including count and V-time.
+Both READY→DONE and DONE→termination must perform positive, matching work. The
+owned PID 1 writes a byte to the modeled, stateless POST port after DONE, then
+clears the register before shutdown. A planted control changes that byte only
+after matching DONE, observes the changed normalized write, and restores the
+code byte. State, output, event count and V-time must reconverge at termination;
+the cumulative terminal history must still distinguish the executions. This
+fixture mutation is a negative control, not qualified executable admission.
+Raw `VmState` restore does not carry cumulative history. The
+[qualification adapter](../../scripts/qualification/README.md#composed-linux-continuation)
+retains exact artifacts and cross-host admission outcomes. This bounded x86
+fixture does not establish a complete backend register inventory or qualify
+Arm Linux continuation.
+
+These are strict acceptance obligations, not a claim of universal portability.
+At source `9673f33363395f0850cd2cb5e704432d33434180`, the retained
+[hardware run](https://github.com/pH14/harmony/actions/runs/39159236856)
+passes the AMD local/export and five AMD import arms. One hosted import matches
+READY and the independent guest record, then fails the DONE whole-state hash.
+The same retained executable and AMD cut reproduce that failure on nested Intel
+KVM. Intel records the post-cut `fstpl` address in x87's last-instruction pointer;
+the AMD expected state has zero there. The difference reaches guest RAM through
+the kernel's saved FPU image, as well as the VCPU and encoded snapshot. Neither
+guest-visible state nor RAM is normalized away. The strict cross-vendor oracle
+remains failing, so cross-vendor whole-state identity is unqualified. Standard
+libraries remain supported; CPU provenance warnings are advisory. This finite
+state witness complements the numerical portability limits in
+[#733](https://github.com/pH14/harmony/issues/733).
+
 `Vmm::run` repeatedly obtains one backend exit, classifies it through the
 architecture vendor, advances virtual time by the assigned integer duration,
 dispatches devices and protocol services, and completes any pending backend
@@ -28,6 +74,18 @@ clock is consulted. A guest idling in its polling loop writes the idle register
 Control `Run` and `Exec` set their own idle wake from the active deadline before
 each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
+
+The composition layer can inject a host-operation guard into `ControlServer`.
+The server checks it before and after each control request, including before
+the request's reply is encoded, and attaches it to every fresh or recovery VM.
+The VMM checks the same guard before servicing a doorbell and immediately
+before writing any service answer to guest memory. Consonance uses this hook
+to reject host loader changes without making the execution core depend on a
+particular process-loader implementation. The callback receives a bounded
+`HostOperationSite` tag for control-before, control-after, SDK request or SDK
+response. Tags describe existing call boundaries and add no guard calls or
+executable policy; runtime measurement ownership belongs to the composition.
+
 When a `Run` deadline is the earlier idle wake and resumes the guest, control
 refuses `RecordedEnv`: the operator's deadline is absent from the input tape,
 so that tape alone cannot replay the continuation from genesis. This includes
@@ -42,11 +100,34 @@ rejects either request before resolving a pending service answer, injecting a
 command, or entering the guest; it cannot treat a missing clock as time zero.
 An `Exec` request made while an external SDK service answer is pending is
 rejected before its command reaches serial input or changes the control state.
+Custom service and coverage-quantum requests stop as decisions before guest
+response bytes are written. A coverage stop retains the thread, observation,
+ready count, and doorbell sequence in the SDK snapshot and whole-state hash.
+`Run { resolve }` binds the answer to the request payload, then completes the
+original coverage exchange. Invalid quantum answers leave the pending stop and
+coverage threshold unchanged.
+If an SDK request reaches a `Run` deadline during a chained guest step, control
+reports the deadline before answering it. Valid custom service and coverage
+requests remain pending decisions. Other doorbells retain their raw request
+frame, including malformed requests, without writing a response or changing the
+payload cursor, entropy stream, event log, or pvclock registration. The pending
+request is part of the whole-state hash and portable snapshot. A later `Run`
+dispatches it under the branch's service plan before resuming the guest.
+Resolving a pending decision at or after the `Run` deadline leaves its answer
+unrecorded and its response page untouched for the next action.
 If a backend completion chains a later SDK decision into the same guest step
 after virtual time crosses a staged host effect or reseed, control rejects the
 decision as an unsatisfiable schedule instead of exposing it before the input.
 Further `Run` requests reject that poisoned schedule before resolving the
 pending service answer.
+An x86 SDK doorbell does not advance virtual time. An effect added at the
+moment of an already surfaced decision would run after its live answer but
+before that request when replayed from an earlier snapshot. At a deferred raw
+doorbell, the effect would run before its response live but after the response
+in an unsplit run. `Perturb` rejects either same-moment input without changing
+the pending request. A restored pending decision or raw doorbell with an effect
+or reseed already due rejects `Run` before consuming the request or writing
+response bytes.
 If a backend step or scheduled-input application fails after `Run` begins,
 control retires the live VM. A failed step can already have advanced virtual
 time or changed guest state, so the session cannot mint a reproducer or accept
@@ -71,6 +152,49 @@ adds snapshot seal, restore, export and import time and page counts, including
 those of VMs the server has already replaced. These are host wall-clock
 measurements for performance accounting; they never enter virtual time, state
 hashes, or snapshots.
+
+`hash.<site>.calls`, `ram_bytes`, `suffix_bytes`, `metadata_bytes`, `ns` and
+`errors` describe physical SHA-256 stages. Sites are `whole_request`,
+`checkpoint`, `portable_export`, `portable_import`, `sparse_base`,
+`portable_export_envelope` and `portable_import_envelope`. Whole requests and
+checkpoints count actual memory-preimage feeds; the portable export/import
+sites also include sparse target-page commitments. Sparse-base cache hits do
+not start another hash stage. A call starts when its stage is entered, and a
+failure retains any bytes already fed. RAM bytes count actual memory slices;
+suffix bytes count the whole-state suffix; metadata bytes count domain/length
+framing, page indexes and non-RAM portable-envelope sections. Portable envelope
+counters include only bytes actually hashed after successful reads/writes,
+excluding the trailing recorded digest. Their time includes codec and I/O waits.
+Whole-request and checkpoint time also includes vCPU state capture, readiness
+checks and suffix encoding; it is not pure digest CPU time.
+
+The leaves attribute each feed once; wrapper requests do not add another
+charge. Retiring or replaying a VMM never rewinds these host totals. Backend physical
+entry telemetry is merged on the same retirement and failed-restore boundaries,
+independently of normalized exit service counts. Snapshot
+store verification appears under `snapshot.verify.*`, with distinct BLAKE3
+resident-page and VM-state work. Timings are nested diagnostic envelopes across
+hashing and storage, not additive elapsed time. Standalone codec/comparison
+helpers outside a ControlServer do not report into a server's telemetry. These
+fields do not enter event history, portable records, cache identities, hashes,
+retention charges or search policy. Existing snapshot page metrics keep their
+original meanings.
+
+Sparse delta export holds one snapshot-store read transaction across full
+setup/parent/target integrity verification, delta planning, target comparison,
+and the first base-RAM commitment calculation. Each distinct resident page is
+integrity-hashed once within that export; subsequent exports start fresh
+verification even when the base-RAM digest is cached. BLAKE3 resident integrity
+checks and the flat SHA-256 base/target commitments retain their separate
+purposes and existing encodings. Sparse delta import shares one immutable read
+transaction across target comparison and setup/base verification, including a
+cached base digest. Metadata and RAM validation still precede service preflight.
+That transaction ends before any user service callback. Rebase analysis then
+starts fresh resident verification after preflight; the subsequent mutable derive
+also retains its own resident/incoming-page checks. No verified-slot set crosses
+those boundaries. Thus a retained page can still be checked again after the
+callback or during derive; import does not promise one check per page over the
+whole operation.
 
 Guest RAM is owned by `Vmm` for the lifetime of the backend. The canonical state
 fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
@@ -112,6 +236,10 @@ The branch preparation also checks the service identity and configuration after
 the decode seed zero and both branch handler reseeds. A handler that changes its
 advertised contract is rejected before CPU or RAM restore, leaving the live
 execution intact.
+Before the decode-seed probe, branch preparation checks that cloning the new
+handler preserves both the original and clone state. It checks the original
+again after the decode seed, rejecting shared-state changes before installing
+the branch.
 Branch and import preparation also compare a handler-only fingerprint of the
 live SDK handler's identity, configuration, and state before and after calling
 a service factory or restoring a prepared handler. If a factory or shallow
@@ -155,7 +283,7 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 7, and the sparse sidecar is version 9;
+The complete portable format is version 10, and the sparse sidecar is version 12;
 older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
 changed-page numbers and bytes to its sidecar; import verifies them before
 deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
@@ -207,7 +335,7 @@ recoverable refusal without retiring the VM.
 Pvclock-bearing device records explicitly preserve the registered page GPA,
 registration capability, and pending-versus-armed handshake state. The current
 x86 device format is version 7 and the current arm64 device format is version
-14; each uses presence fields so optional devices retain their state without
+17; each uses presence fields so optional devices retain their state without
 selecting historical layouts. Both device records preserve unread serial input
 in FIFO order. Restore replaces any residual input, and state identity includes
 the unread queue even when full snapshot hashing is disabled. The x86 device
@@ -251,6 +379,14 @@ and byte-for-byte equality among uninterrupted, save-and-continue, and fresh
 restored continuations. The underlying XSAVE behavior remains tracked in
 [#307](https://github.com/pH14/harmony/issues/307).
 
+ARM KVM also refuses restore after guest entry because its register setters do
+not establish translation-cache maintenance. This refusal reaches the same
+fresh-VM fallback and leaves portable import available on a used backend.
+The live backend witness uses an empty-dirty fixed-ASID detour; the public VMM
+executable-restore witness checks that refusal leaves RAM unchanged and that a
+fresh VM executes the restored bytes. See the backend README for the boundary
+and its performance cost.
+
 ## Architecture boundary
 
 The engine uses only common exits, guest-physical addresses, bytes, and typed
@@ -267,6 +403,58 @@ advancing virtual time. Supported ports keep the same assigned durations once
 their ownership and any explicit width constraint have been validated.
 The modeled 8259 master and slave command and interrupt-mask ports accept only
 byte reads and writes; other widths fail before changing masks or virtual time.
+Every V-time-wired VMM maintains a v2 ordered-history commitment:
+`count` starts at zero with a zero digest; each completed normalized event
+advances a tagged SHA-256 chain under `consonance.ordered-event-history.v2`, committing
+the preceding digest, checked cumulative count, event class, payload digest,
+virtual time after completion, and ordered interrupt deadline/vector pairs.
+Delivery outside an active guest-exit context is rejected before consuming the
+clockevent schedule. ARM GIC and trapped-system-register exits normally remain
+raw-only. If such an exit actually delivers a clockevent, it becomes an
+`irq_delivery` normalized event at that exact boundary, with no V-time charge
+and no backend-specific raw payload. The interrupt is neither deferred to the
+next normalized exit nor left uncommitted across capture. The association of
+an interrupt with its completing event is semantic; local trace event indexes,
+schedule indexes, backend debug strings, diagnostic
+checkpoint hashes, and session segment labels are excluded. Raw-only backend
+exits without semantic delivery do not consume a normalized ordinal. Count
+overflow fails the event. Completed Consonance-owned doorbell exchanges append
+separately tagged records binding canonical request kind, service, opcode,
+sequence and payload, plus response kind, identity, status and payload. Malformed
+frames bind their advertised length and observed bytes. Valid framing padding
+outside the decoded payload is not service semantics. The exchange digest uses
+`consonance.service-exchange.v1` with fixed-width fields and length-delimited
+payloads. The history count includes both normalized transport events and
+service completion records; diagnostic normalized ordinals and interrupt
+schedule placement still count only normalized transport/delivery events.
+
+Immediate exchanges are queued after their enclosing transport record. A
+request deferred at a control deadline or awaiting an external answer contributes
+no completed exchange until its response is written. Snapshots retain the raw
+deferred frame or decoded SDK question, sequence and coverage-ready count;
+completion reconstructs canonical request fields from this captured state,
+regardless of later writes to the guest request page. Imports reject pending
+SDK questions that cannot fit the service frame before admitting a handle.
+Replay, branch and imports restore that pending state and the history prefix.
+Count capacity is checked before publishing a response, responses refused before
+publication contribute no completion, and a consumed pending decision cannot
+complete twice. Service records charge no
+virtual time and do not inject timing events or change checkpoint placement.
+This is a constant-size history commitment, separate from logical VM state;
+the existing diagnostic log remains available independently.
+
+Fresh V-time wiring resets history. Capturing/hashing a snapshot and retiring
+its diagnostic trace do not advance or reset it. Replay and branch restore the
+captured commitment before continuation, regardless of local snapshot IDs or
+restore mode. Full portable snapshots (v10) and sparse sidecars (v12) retain its
+presence, count and digest independently of the logical state hash. Imports
+require a live validator and check availability against its V-time model before
+creating a handle. Restore also rejects a mismatch on the actual target.
+Unwired VMMs explicitly carry no history. These formats reject older versions.
+The control `EventHistory` request reports history only for a wired VMM.
+Checksum validation authenticates artifact bytes against corruption; comparing
+a replay requires the archived source certificate, not a newly invented history.
+
 The virtual-time LAPIC trace records both the timer deadline and interrupt
 vector. Reprogramming either value replaces the active schedule, so a vector
 rewrite cannot leave the trace naming an interrupt that the LAPIC will not raise.
@@ -320,6 +508,13 @@ CPU records and applies the existing logical XSAVE restore-bitmap rule: presence
 bits for init-valued x87/SSE components normalize, while active components remain
 bound. Every other sidecar field remains encoded. The original portable bytes
 retain the host restore bitmap and remain the input used for restore.
+
+Sparse-delta cache publication commits to the complete sidecar and target-pages
+digest after projecting only that x86 XSAVE metadata or the Arm virtual timer's
+captured counter, according to the validated VM-state architecture. Unknown or
+invalid CPU records cannot publish. The image prefix and every other sidecar
+field remain bound, including SDK, policy, control and trace state; the extent
+keeps its original restore bytes.
 
 The non-default `harmony_omit_nested_state` compiler configuration is the qualification negative
 control. Snapshot publication replaces captured VMX state with a valid inactive
@@ -726,3 +921,184 @@ next quantum. The next threshold is part of the SDK snapshot. A thread whose
 count restarts at the first threshold gets a fresh entry, because Linux reuses
 thread IDs. A zero, malformed or overflowing quantum leaves the environment and
 every threshold unchanged.
+
+## ARM executable RAM restore qualification
+
+`tests/arm64_executable_restore.rs` promotes the public-VMM experiment in
+[issue #633](https://github.com/pH14/harmony/issues/633) into a registered Linux
+ARM hardware test. It compares guest-authored PL011 bytes for cold A/B,
+uninterrupted B, capture-only B, fresh-restored B, and a warmed VM
+that refuses in-place snapshot restore before changing RAM, then uses a fresh
+VM to alternate A/B executable page contents. A separate RAM-only restoration
+control avoids CPU restoration as a cache-maintenance confounder. Every
+RAM-only transition checks that only executable page 0 differs, that full
+restored RAM matches, and that the guest RAM allocation stays in place. The guest loops back
+to the same instruction address; no RAM remapping is requested. A portable
+negative control rejects stale, missing and extra observation bytes.
+
+Before any guest entry, the fixture sets `SCTLR_EL1.I` through the public state
+restore API and checks the captured control value, including after warmup and
+restoration. Stage-1 translation stays disabled. The four-instruction guest
+loops directly to the variant instruction, without a cache-enabling prologue or
+cache-maintenance instruction. Thus the RAM-only control never re-enables the
+cache between the host write and guest fetch. The test pins its thread to its
+current allowed CPU before constructing any VM, verifies placement during the
+restore loops, and restores the original affinity on exit. External `taskset`
+selects which core class it exercises; ordinary registered invocation also
+remains pinned. Output records CPU number, available sysfs MIDR and raw host
+MMFR2, and observed guest SCTLR. Missing sysfs register information is reported
+as unavailable; the test does not infer host stage-2 FWB or CTR cache-coherence
+features from virtualized guest IDs. Guest instruction-cache enablement and CPU
+placement are controls, not proof that a particular host retains stale lines.
+A passing result remains specific to its actual host/kernel/cache behavior.
+
+Run on a Linux ARM host with accessible KVM, pinning each qualified core class:
+
+```sh
+taskset -c 0 cargo test --locked -p vmm-core --test arm64_executable_restore live::executable_ram_restores_match_guest_continuations -- --ignored --exact --nocapture
+```
+
+Require exactly one passed test. An unavailable KVM device fails the requested
+hardware test; an empty test selection on another platform is not qualification.
+Record source revision, kernel, CPU/core placement and output with the result.
+The earlier public-path experiment passed on Linux 6.18.43-current-arm64 on
+Cortex-A720 and Cortex-A520 cores; those negative observations do not establish
+cache coherence on other hosts or kernels. ARM KVM still inherits the default
+instruction-cache hook, and #633 remains an investigation without a confirmed
+stale-instruction witness. This fixture does not qualify cross-host restore,
+arbitrary code mutation, or continuously enforced executable admission.
+
+### x86 capability admission
+
+The contract adapter declares the following CPUID bits as supplied by the VMM
+when constructing `CpuidModel.emulated_features`. They remain in the frozen
+guest model; this metadata tells the KVM substrate which host bits are not
+required. Every other advertised capability word is checked against KVM's
+supported or emulated inventory, including all scalar/SIMD instruction flags.
+
+| Contract fields | Provider and implementation |
+| --- | --- |
+| `6:EAX[2]` ARAT | Userspace LAPIC timer scheduling uses virtual time, independent of host power states (`lapic`, x86 dispatch) |
+| `7:EBX[1]` TSC_ADJUST | `IA32_TSC_ADJUST` reads/writes use the virtual-clock state (`vendor/x86/dispatch.rs`) |
+| `7:EDX[29]` ARCH_CAPABILITIES | Contract MSR `0x10a` has an explicit fixed userspace read disposition, handled by MSR dispatch |
+| `80000007:EDX[8]` invariant TSC | Virtual TSC rate comes from the contract clock, independent of host frequency (`vtime`, x86 dispatch) |
+
+The current contract requires these remaining capabilities from KVM's
+supported inventory, or its explicit instruction-emulation inventory:
+
+| Contract feature word | Required capabilities |
+| --- | --- |
+| `1:ECX` | SSE3, PCLMULQDQ, SSSE3, FMA, CMPXCHG16B, PCID, SSE4.1, SSE4.2, MOVBE, POPCNT, AES, XSAVE, AVX, F16C |
+| `1:EDX` | FPU, VME, DE, PSE, TSC, MSR, PAE, CMPXCHG8B, APIC, SEP, MTRR, PGE, CMOV, PAT, PSE36, CLFLUSH, MMX, FXSR, SSE, SSE2 |
+| `7:EBX` | FSGSBASE, BMI1, AVX2, SMEP, BMI2, ERMS, INVPCID, ADX, SMAP, CLFLUSHOPT |
+| `80000001:ECX` | LAHF/SAHF in long mode, ABM/LZCNT, PREFETCHW |
+| `80000001:EDX` | SYSCALL/SYSRET, NX, 1-GiB pages, RDTSCP, long mode |
+| `D.0`, `D.2` | x87/SSE/YMM state; YMM component size 256 and standard offset 576 |
+
+Policy version 7 explicitly clears self-snoop (`1:EDX[27]`) on every host and
+changes the ordinary and nested contract fingerprints. The bit describes
+conflicting-memory-type cache behavior, not an instruction enable. AMD does
+not enumerate the Intel bit, and the stateful guest MTRR/PAT surface does not
+establish equivalent alias semantics. It is neither a host intersection nor a
+userspace-emulation exemption. Older snapshots are rejected by contract
+identity before restore. Standard instruction features are unchanged.
+KVM recommends always setting the inverse x87 absence flags `7:EBX[6,13]`;
+these describe unavailable legacy x87 fields rather than native capabilities.
+
+This checks the complete requested capability words, so newly requested bits
+in these words automatically require admission too. KVM may provide a feature
+through virtualization rather than native execution: 1-GiB pages can be
+provided through shadow paging, and MOVBE has explicit software emulation.
+The supported/emulated API results, not a raw hardware-only mask, decide.
+
+The generic backend contains no frozen-profile feature exemption mask. It
+validates the caller's declarations against the advertised model and never
+allows them to exempt XSAVE state or component layouts. CPUID identity, caches,
+topology, and frequency descriptions remain fixed guest values. Standard math
+libraries remain supported; admission is about execution capability, not a
+claim of identical arithmetic results across all admitted CPUs.
+
+The controller resolves declared local generic service namespaces from the
+actual pending SDK question after schedule and deadline checks. Coverage and
+deferred doorbells retain their existing resolution rules. Local and external
+answers share the controller transaction: prepare the request-bound input tape
+and projected SDK recording, check both bounded encodings, publish through the
+response guard, then install the candidate SDK handler/answer and controller
+tape. Local handler errors retire the failed VM; a capacity refusal leaves the
+pending question uncommitted. A response-guard failure in either a local answer
+or an explicit Run resolution retires the failed VM while retaining its console
+and SDK events for diagnostics, without committing the candidate answer or tape.
+A handler returning External preserves that stop.
+The request, including the response guard on its initial pending boundary,
+remains present. No guest request suppression or unchecked reply path exists.
+
+Dispatch declarations survive branch, replay and portable import through
+ServiceConfig and the recorded handler snapshot. Control-state magic is
+HCSTATE3; channel and input records explicitly reject previous versions. Host
+RPC stop counts may change under this recorded policy; guest request order,
+virtual moments and mandatory doorbell guards do not disappear.
+
+Local-answer capability is deliberately stateless: an answered candidate must
+leave its complete captured handler fingerprint (identity, configuration,
+dispatch declaration and state) unchanged. A stateful answer is a typed host
+failure before response or tape publication, not an external fallback. This
+allows a fresh reproducer to use its recorded override without skipping a
+handler state transition. External handlers retain their existing stateful
+contract. Supporting stateful computed local answers would require separate
+computed-answer provenance and replay semantics and is outside this format.
+
+Branch preflight rejects an answer binding that conflicts with the selected
+snapshot's actual pending Decision or CoverageDecision payload, before calling
+the service factory or changing the live VM/tape. It does not inspect a different
+current live question in place of the selected snapshot. This applies to local
+and external policies alike. Ordinary nonpending request binding mismatches
+still produce the guarded guest BadRequest response. A local deadline-pending
+request with an initially supplied or replayed conflicting binding also produces
+BadRequest after independently checking its actual tuple and payload. The common
+guarded writer uses the captured sequence and opcode; only successful publication
+clears the pending stop. This rejection changes neither environment nor tape. A
+handler error cannot substitute for proof of a recorded binding mismatch.
+
+Local and explicit resolution share the control answer-frame bound before
+recording or publishing anything. Canonical Data encoding is one tag byte plus
+the data, so at most MAX_PAYLOAD - 1 data bytes fit. Oversized local responses
+return MalformedEnvironment with the question still pending, matching explicit
+resolution, rather than reaching a writer failure that retires the VM.
+
+SDK dispatch attribution partitions existing request and response guard callback
+calls, errors, and outer callback nanoseconds by bounded generic wire-operation
+bins. It does not add checks, RPCs, copied-byte estimates, or canonical state.
+The outer duration wraps `check_host_operation_guard`, including its optional
+callback invocation and error mapping, and overlaps session guard metrics.
+Constructing the callback record, classifying the request, and updating witness
+rows occur outside this timer. Inner strict-check time and executable-read bytes
+are unavailable by operation. Request counts include unreadable and predecode-refused attempts;
+callback counts/time do not count successful response writes or semantic
+outcomes. The first scope has no separate semantic-status/write-success or
+copy-byte counters. An absent guard contributes zero callback calls, not a measured
+successful check. Request refusals before reading guest memory remain explicitly
+unclassified. Invalid frames and unreadable/oversize requests have separate
+bins; a valid frame's
+operation bin does not imply a semantically valid payload.
+
+Up to 32 exact event shapes retain namespace byte, data length, and optional
+first data byte. These are opaque wire witnesses, not workload register meanings.
+Known shapes keep their slots; unseen shapes after capacity go to an explicit
+aggregate overflow. Shape rows plus overflow cover eligible Event.emit requests
+and response callbacks, and are subsets of operation totals, not additional work.
+No inference of zero is valid for missing shapes when overflow is nonzero.
+The cap applies to each VMM or merged controller table. `event_shape_slots`
+reports that table's filled slots and is monotone within its lifetime. Summing
+independent controller reports counts per-controller slot memberships; that sum
+is not a global unique-shape count, current table fill, or memory charge.
+
+Deferred doorbells charge the original request once; later completion derives
+response attribution from the retained request without another request check.
+Pending service and coverage responses use their actual response operation.
+Requests and responses need not balance within a query interval. Attribution is
+cumulative host work, includes setup, survives VMM retirement through the existing
+telemetry owner, and is never restored from a snapshot. Worker telemetry queries
+replace previous cumulative child values and preserve the last values on error.
+Neither worker sums nor these breakdowns are additive to shared cache totals or
+the existing guard timers. This measurement establishes no batching speedup or
+permission to remove publication, deadline, interrupt, or image-check boundaries.

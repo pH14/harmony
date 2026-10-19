@@ -57,6 +57,7 @@ pub struct Config {
     pub kernel: Option<PathBuf>,
     pub base_initramfs: Option<PathBuf>,
     pub uml_profile: Option<PathBuf>,
+    pub runtime_qualification: Option<crate::runtime::RuntimeQualification>,
     pub knobs: Vec<String>,
     pub command: Vec<String>,
     pub build: Build,
@@ -80,6 +81,7 @@ impl Default for Config {
             kernel: None,
             base_initramfs: None,
             uml_profile: None,
+            runtime_qualification: None,
             knobs: Vec::new(),
             command: Vec::new(),
             build: Build::default(),
@@ -215,6 +217,7 @@ impl Config {
             "kernel",
             "base_initramfs",
             "uml_profile",
+            "runtime_qualification",
             "seed",
             "executions",
             "wall_seconds",
@@ -274,7 +277,13 @@ impl Config {
                 .ok_or("invalid backend")?
                 .into(),
         );
-        for key in ["ram_mib", "kernel", "base_initramfs", "uml_profile"] {
+        for key in [
+            "ram_mib",
+            "kernel",
+            "base_initramfs",
+            "uml_profile",
+            "runtime_qualification",
+        ] {
             if let Some(value) = table.remove(key) {
                 shared.runner.options.insert(key.into(), value);
             }
@@ -297,6 +306,7 @@ impl Config {
             kernel: self.kernel.clone(),
             base_initramfs: self.base_initramfs.clone(),
             uml_profile: self.uml_profile.clone(),
+            runtime_qualification: self.runtime_qualification.clone(),
         }
     }
 }
@@ -307,5 +317,40 @@ pub fn resolve(config: &mut Config, offline: bool) -> Result<()> {
     config.kernel = runtime.kernel;
     config.base_initramfs = runtime.base_initramfs;
     config.uml_profile = runtime.uml_profile;
+    config.runtime_qualification = runtime.runtime_qualification;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qualified_runtime_bytes_survive_faults_runner_roundtrip() {
+        let root = tempfile::tempdir().unwrap();
+        let kernel = root.path().join("bzImage");
+        let base = root.path().join("initramfs-oci.cpio.gz");
+        std::fs::write(&kernel, b"kernel").unwrap();
+        std::fs::write(&base, b"base").unwrap();
+        let mut config = Config {
+            backend: Backend::Kvm,
+            kernel: Some(kernel),
+            base_initramfs: Some(base.clone()),
+            ..Config::default()
+        };
+        config.runtime_qualification = Some(
+            serde_json::from_value(serde_json::json!({
+                "kernel_sha256": crate::runtime::digest(b"kernel"),
+                "base_initramfs_sha256": crate::runtime::digest(b"base")
+            }))
+            .unwrap(),
+        );
+        let restored = Config::from_shared(&config.shared().unwrap()).unwrap();
+        assert_eq!(
+            crate::runtime::read_pair(&restored.runtime()).unwrap(),
+            (b"kernel".to_vec(), b"base".to_vec())
+        );
+        std::fs::write(base, b"changed after resolution").unwrap();
+        assert!(crate::runtime::read_pair(&restored.runtime()).is_err());
+    }
 }

@@ -13,6 +13,9 @@ fn arm64_backend() -> MockArm64Backend {
             smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
             psci_profile: vmm_backend::Arm64PsciProfile::HvfSingleVcpu,
             gic_ctlr_fixed_bits: 0,
+            gicd_iidr: 0,
+            gicd_typer2: 0,
+            register_identity: [0; 32],
         },
     });
     backend

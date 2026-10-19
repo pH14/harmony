@@ -26,8 +26,47 @@ initramfs, RAM size, seed, setup run budget, command line, and guest contract.
 Sessions booted with setup payloads also bind their ordered, length-delimited
 payload bytes; the empty list keeps the ordinary session identity.
 `identity_with_config_and_payloads` computes the same identity before boot and
-returns an error if the loaded executable cannot be identified. A nonempty
-`identity_tag` adds a workload domain; it does not replace those setup inputs.
+returns an error if the loaded executable cannot be identified.
+
+Public identity admission requires a strict host in every build, including
+callers of the library API. On Linux, that host is a fully static ELF executed
+from a write-sealed memfd. Admission rejects a program interpreter, dependent
+libraries, writable executable segments, unsupported executable mappings, and
+ambient loader overrides. It binds the sealed executable to the kernel-loaded
+mapping and measures the complete executable-map census, including the vDSO,
+each time the guard is checked. The full sealed-file digest is measured at
+admission and reused only while the file identity and seals remain stable;
+each recheck still compares every live executable byte with that file. An
+ordinary GNU executable and a dynamic library whose constructor clears its
+loader variable are refused.
+
+On macOS, admission requires the kernel-loaded main executable's CDHash to
+match a strictly validated signed image with hardened runtime, the Hypervisor
+entitlement, and the exact OS-only library constraint. Its loaded-image census
+must stay within the permitted OS cache. In-process sessions, UML sessions,
+session workers, cache operations, and service exchanges recheck strict host
+identity at their operation boundaries. The macOS recheck uses kernel-loaded
+signing state and CDHash, dyld generation, and the shared-cache census;
+path-based worker launch repeats full static signature validation. A changed
+or unavailable identity fails the session before a result is accepted.
+
+Cache publication checks strict host identity after the index callback. If it
+changed, the index revokes the committed entry and any descendants before the
+session returns an error. Another thread can observe a published entry before
+that check completes, so this guard is not an atomic cross-thread publication
+fence; each consuming session checks its own host identity before using the cache.
+`Session::image_identity()` returns the identifier admitted at construction;
+artifact and guest-operation boundaries perform the live identity checks.
+
+A nonempty `identity_tag` adds a workload domain; it does not replace those
+setup inputs.
+
+On Linux, `cargo run` and an ordinary GNU executable cannot create sessions or
+workers. The product CLI routes Consonance work into its sealed static host.
+Native CLI manifests use
+`native_loaded_executable_diagnostic_identity_self` to measure their dynamic
+CLI process.
+
 Sparse snapshot pages are relative to setup RAM, so a session checks this
 identity before importing pages from another session. Cache extents carry the
 same identity. Snapshots made with the earlier image identity calculation do
@@ -46,6 +85,13 @@ A package that answers its own opaque service requests installs a resolver with
 carries the package's `ServiceConfig` into the branch so the control server
 builds that handler. The handler is built before the live VM changes, so an
 uninstalled configuration fails the branch and leaves the session untouched.
+An unrecorded custom answer now surfaces as `StopReason::Decision`. The package
+passes an encoded answer to `Session::run` with a `Resolution`; the control
+server records it before guest delivery. `SearchSession::run_resolving` carries
+the same operation through worker and User-mode Linux sessions for fault search.
+`branch_with_service` also accepts an optional recorded coverage schedule, so
+an action's quantum is selected from input bytes at each SDK coverage exchange
+without writing one answer per callback.
 
 The same call carries the host-plane effects the run after the branch applies,
 each against the virtual moment it lands at, so a package stages a machine-level
@@ -97,8 +143,18 @@ import its pages over a setup with different RAM.
 VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
-Embedded complete portable snapshots use format version 7; sparse sidecars use
-version 9. Older embedded versions are rejected. The outer sparse archive layout
+`Session::event_history` and `SearchSession::event_history` return the cumulative
+v2 ordered-history record count and commitment through both in-process control and
+worker transport. Snapshot replay, portable imports and cache imports restore
+the captured history; diagnostic trace retirement does not reset it. A backend
+without normalized history returns an explicit unavailable error. UML does not
+supply this certificate.
+
+Completed service exchanges contribute records in addition to normalized
+transport events; this count is not a guest-exit or diagnostic-log count.
+
+Embedded complete portable snapshots use format version 10; sparse sidecars use
+version 12. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
@@ -122,20 +178,84 @@ the same local number. `CacheIndex` is the interface workers use:
 |---|---|
 | `lookup(namespace, key)` | a lease on the longest cached prefix |
 | `extent(len)` | a writable region, after evicting entries to fit the budget |
-| `publish(namespace, key, parent, extent, cost)` | a lease on the committed entry; a duplicate key keeps the first entry and frees the new extent |
-| `chain(lease)` | the entry's extents, anchor first |
+| `publish(namespace, key, parent, extent, target_commitment, cost)` | a lease on the committed entry; an equal-target duplicate keeps the first entry and frees the new extent, while a divergent duplicate fails without returning a lease |
+| `chain(lease)` | the entry's extents, anchor first; fails if quarantined |
+| `verify_namespace(namespace)` / `verify_lease(lease)` | refuses a quarantined domain or held lease |
+| `verify_integrity()` | refuses any known contradiction in this shared index |
+| `divergences()` | both retained witness chains, namespace, action prefix and commitments |
 | `release(lease)` | the entry can be evicted again |
+| `revoke(lease)` | removes the entry and descendants, invalidating any held leases after a failed post-publication guard |
 | `report_store(holder, bytes)` | records a worker's local store size, evicts to fit, and answers whether that worker should shrink |
 | `forget_store(holder)` | removes a finished worker's store from the budget |
 
 `LocalIndex` is a mutex over the table, held by the process that runs the
-search. Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
+search. Its diagnostic-only `lock_counters()` shares atomic counters across
+clones; other `CacheIndex` implementations default to no counters. Active sites
+report acquisition `attempts`, `acquired`, release `completed`, `wait_ns` and
+`hold_ns`. Sites cover every index operation, including `stats` and abandoned
+writable extents. Counter export takes no table lock and inactive sites are omitted.
+Acquisition attempts are counted before the wait timestamp; wait ends just after
+mutex acquisition. Hold starts at that acquisition timestamp and ends immediately
+before unlocking, including bookkeeping at acquisition, allocation, eviction and
+reclamation performed under the existing mutex. Completion counters update after
+unlocking, including early return and unwind. Unlock and final atomic updates are
+excluded. These durations include timer/atomic overhead and overlap nested
+allocation/I/O work; they must not be added to those durations. Concurrent reads
+are approximate field snapshots, not a synchronized event record. Abandon callbacks
+hold only weak table ownership plus the shared counters. Host time never
+enters `CacheStats` equality, budgeting, leases, quarantine or search policy.
+The campaign reports each shared index once.
+
+Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
 `shm_open` on macOS. Committed extents are never written again. An extent holds
 the pages a snapshot changed over its parent with their BLAKE3 hashes, the pages
 that returned to the setup content, and the sparse sidecar, with a SHA-256
 checksum over everything except the page data. Every 32 entries along a chain
 the next entry stores its full page list over setup and becomes an anchor, so
 an import reads at most 32 extents.
+
+`PageSegments::free` consumes a writable extent; callers cannot reclaim raw
+coordinates while retaining a slice of that range. Abandonment transfers a
+private, non-cloneable reclamation capability when the writer relinquishes ownership.
+Committed copies share one allocation identity and retirement marker. Every
+retirement verifies the actual backing segment identity, and an allocation's
+accounting retires at most once even if several committed copies are freed.
+Only unique ownership permits hole punching; surviving committed readers keep
+their bytes unchanged. A foreign extent cannot reclaim a numerically matching
+range in another allocator.
+
+The target commitment identifies the resolved state, not the chosen delta
+layout. For VMM snapshots, it binds the cache image prefix to the sparse
+sidecar with only the established logical CPU-state projections: init-valued
+x86 XSAVE restore presence and the Arm virtual timer's captured counter.
+Every other sidecar field stays in the commitment, and the original sidecar
+bytes remain in the extent for restore. Sparse delta export derives the
+sidecar's target-pages digest from all target pages that differ from setup,
+independently of the selected parent;
+the sidecar also carries the setup RAM digest, canonical state suffix, VM
+state, SDK state, policy, control state and the separate ordered event-history
+commitment/count. Equal logical endpoints reached through different normalized
+histories therefore conflict under the same cache key. Publication rejects a sidecar
+without that target-pages digest. For UML checkpoints, the commitment binds
+the cache identity to the checkpoint digest, which covers logical memory and
+bridge/service state. The cache compares commitments while holding its index
+lock, before returning a duplicate lease.
+A divergent publication permanently quarantines the entire namespace while
+holding the index lock. Lookups produce no lease, held leases cannot import,
+and subsequent publications, including extents allocated before the contradiction
+and dependent descendants, fail. The namespace's entries and both complete
+extent chains remain pinned against eviction and revocation. Both typed errors
+(`DivergentDuplicate` and `Quarantined`) own the witness record by reference, so
+its bytes survive index teardown. `divergences()` exposes the same record for
+persistence. Ordinary equal-target duplicates still release the new extent.
+Import and publication callers recheck held leases at completion; a concurrent
+quarantine cannot return a successful imported or published handle after that
+check. A consumer must also check integrity before accepting dependent work;
+returned extent bytes alone cannot revoke already running guest execution.
+The fault campaign performs these checks at execution, admission and final
+report boundaries and refuses a completed verdict after any contradiction in
+the shared index. Quarantine is intentionally permanent for this index's lifetime;
+recovery requires a new investigated execution domain.
 
 Eviction takes, among entries with no lease and no children, the one with the
 lowest priority, using GreedyDual-Size (Cao and Irani, 1997). An entry's cost
@@ -184,21 +304,270 @@ Unix socket pair, named by `HARMONY_SESSION_WORKER_FD`, and the child serves it
 with `serve_inherited`. The child re-executes the same binary, so it carries the
 same HVF entitlement and inherits the calling thread's CPU affinity.
 `WorkerLauncher::current_exe` records the parent's loaded image identity and
-checks the spawned child's loaded image before sending the initialization request.
-Linux hashes the parent through `/proc/self/exe` and checks procfs's PID
-namespace before reading `/proc/<child-pid>/exe`; macOS reads each process's
-code-directory hash. A replacement of the executable pathname cannot cause a
-different worker image to run under the parent's recorded identity. Each call is
+checks the spawned child's main executable. The child then measures its own
+loaded image and sends that identity before the parent sends initialization;
+the parent refuses a different identity before guest setup.
+The launcher checks loader overrides again immediately before spawn, and the
+worker rejects them on entry before accepting initialization.
+Linux checks procfs's PID namespace before reading `/proc/<child-pid>/exe` and
+compares the parent's and child's admission-time executable mappings. macOS
+reads each process's main code-directory hash. A replacement of the executable
+pathname cannot cause a different worker image to run under the parent's
+recorded identity. Each call is
 one length-prefixed request and reply. Guest hangs, abandoned sessions and other
 errors come back as the matching `SessionError`; a closed socket or a dead child
 marks the session abandoned. The index and every lease stay in the parent. A
-publish asks the child for the delta size, allocates the extent, and sends the
-segment's descriptor so the child writes the delta into the shared mapping; the
-parent publishes only after the child answers. An import sends one descriptor per
-extent in the chain, and the child maps each range read-only for that call.
-A child that dies mid-call therefore leaves no entry half-written and no lease
-held; its unpublished extent is freed like any abandoned extent. Dropping a
-`WorkerSession` closes the socket and reaps the child.
+publish starts one EXPORT conversation. The child computes the sparse delta once
+and sends NEED_EXTENT from its destination-allocation callback. The parent
+allocates a unique writable extent and returns EXTENT_READY with exactly one
+descriptor and the exact checked range. The child writes changed pages directly
+into that mapping, drops its writer and borrowed slices, and then acknowledges
+completion. The parent reads the extent and computes its commitment only after
+that acknowledgement. No complete serialized payload buffer or subsequent
+full-extent copy is retained in the child; page payloads still copy once into
+the destination, and metadata and sidecar allocations remain. The loaded-image
+handshake requires matching workers.
+The host image hello is version 3 because IMPORT now carries a message-local
+backing table: U descriptors followed by N ordered (slot, offset, length) rows.
+Versions 1 and 2 are refused because they predate the descriptor-table IMPORT.
+The protocol reference cap is independent of diagnostic sampling limits.
+The parent groups only exact live Segment Arc owners while holding the original
+committed chain clones. File descriptor numbers, allocator-local segment IDs,
+identical bytes and inode metadata do not establish owner identity. Both the
+original N<=64 reference limit and U<=N descriptor limit remain enforced. Slots
+appear in first-use order and every supplied slot must be referenced; malformed
+counts, slots, overflow, zero lengths and trailing bytes are rejected before
+mapping, while each mapping still validates its exact backing range.
+
+The child still makes N read-only mappings and drops them before replying. No
+registration, mapping or additional pin survives the import. Namespace, pinned
+object commitment, actual pages/sidecar/state and post-reply lease checks remain
+mandatory on every call. Grouping uses bounded O(N*U) comparisons. Numeric wire
+metadata grows by `8 + 8*N` bytes per import versus the former envelope, even if U=N;
+U=N saves no descriptors. Store intern copies, per-use integrity verification,
+guest materialization and SDK guard work are unchanged. Existing physical I/O
+counters report actual U handles and copy counters retain actual N mappings;
+backing-reuse counters retain their original N/U per accepted operation meaning.
+Repeated-owner transport fixtures show fewer handles, not campaign speedup or
+once-per-worker registration/shared Store pages. Dropping a `WorkerSession`
+closes the socket and transfers the child to the teardown owner described below.
+
+Worker ancillary parsing bounds every header and complete descriptor integer by
+both the supplied control-buffer extent and recvmsg's actual `msg_controllen`.
+A truncated Darwin control header can retain its original larger `cmsg_len`;
+allocation padding is never interpreted as another descriptor. Complete returned
+SCM_RIGHTS handles become owned immediately and close on framing/truncation error;
+unrelated descriptors remain untouched. Pure native-layout parser tests run under
+Miri; the raw truncation regression runs in an isolated subprocess and checks
+received-right closure and descriptor-zero preservation. The native test checks
+ownership/refusal on every supported kernel; reproducing the original declared
+length mismatch depends on the kernel (observed on macOS 26.6.2). Synthetic
+parser tests force the mismatched bounds independently of kernel behavior. This does not claim to
+recover kernel-installed handles that the OS did not return: observed Darwin
+truncation can leave unreported handles, tracked separately from bounded parsing.
+The accepted worker descriptor cap remains unchanged; the version 3 host hello
+identifies the revised import descriptor-table schema.
+
+On Darwin, every worker frame read uses `recvmsg` with a separate 2048-byte
+control buffer, including header remainders and body bytes. All complete
+returned rights become owned before oversized messages are refused; rights
+after the initial header receive are malformed and close on refusal. A plain
+Darwin read can install rights without reporting them, so it cannot consume
+frame remainders safely. Linux retains its protocol-sized initial control
+buffer and plain remainder reads.
+
+The Darwin bound is a qualified XNU implementation assumption, not a universal
+ancillary-data API guarantee. Audited public releases
+[`xnu-10002.1.13`](https://github.com/apple-oss-distributions/xnu/tree/xnu-10002.1.13),
+[`xnu-11417.140.69`](https://github.com/apple-oss-distributions/xnu/tree/xnu-11417.140.69)
+and [`xnu-12377.121.6`](https://github.com/apple-oss-distributions/xnu/tree/xnu-12377.121.6)
+limit the complete send control allocation to one 2048-byte cluster, with a
+tighter LP64 expansion limit, accept one SCM_RIGHTS header covering that
+buffer, and preserve control record boundaries through receive. The bound
+combines [whole-control allocation](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/uipc_syscalls.c),
+[AF_UNIX header admission](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/uipc_usrreq.c)
+and [control receive boundaries](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/uipc_socket.c).
+The per-mbuf 512-FD constant or socket high-water options alone do not prove it.
+
+Public XNU tags are not the shipped kernel binaries. Local native evidence is
+macOS 26.6.2, build 25G83, Darwin 25.6.0/XNU 12377.161.14~5, newer than every
+audited tag; no matching public source was inspected. The ordinary
+`Checks / Harmony Host Compatibility / macOS Arm64` job on `macos-14` checks
+exact PASS records in its existing workspace test log for both native Darwin
+qualification tests. Those records supply macOS 14 runtime evidence. Missing
+feature selection or a skipped test fails that check without another Cargo
+build. No macOS 15 native run was performed.
+
+Sacrificial subprocess tests cover protocol limits, maximum accepted and
+oversized kernel sends, multiple headers, queued sends, zero-data controls,
+and unexpected rights in header remainders/body bytes with and without a
+deadline. They compare live task-FD sets after closing only known owned handles.
+Unexpected MSG_CTRUNC still refuses the message; XNU can install descriptors
+omitted from truncated output, which this process cannot recover safely. Such
+behavior falls outside the qualified bound and is not repaired by closing
+guessed FD numbers. New macOS/XNU behavior requires requalification.
+
+The parent retains checks before EXPORT, after NEED_EXTENT, after the extent
+allocator callback before sending its descriptor, and after receiving completion.
+Publication retains its check after commitment calculation before the index
+callback, and its revoking check after that callback. Each allocation exchange
+permits only one destination request. Its frames are bounded to 4096 bytes and
+reject trailing bytes, unexpected descriptors, repeated requests, and ordinary
+commands. A same-session nested call is rejected before any socket operation.
+Child serving checks once before its first receive, after each handler/status
+result before sending, and after every successful send. Within the allocator
+callback it also checks before NEED_EXTENT, after sending that request, and
+after receiving the allocation response. Each retained boundary performs fresh
+live-code validation. Test counters distinguish guard entries from actual strict
+dispatches; fixture counts establish placement, while admitted-host tests
+establish strict mutation refusal. A publication retains six parent checks;
+INIT plus one successful EXPORT uses eight child checks in the transport fixture.
+An export uses four control frames. Copy elimination alone is not an end-to-end
+speedup claim.
+
+Allocation refusal sends EXTENT_DENIED without a descriptor and drains the
+child's failure acknowledgement before returning the original typed cache error.
+The source session remains usable after this synchronized refusal. Malformed
+frames, guard refusal, or uncertain completion abandon the exchange and publish
+nothing. The 4096-byte bound includes failure diagnostics: an oversized diagnostic
+abandons the session rather than preserving recoverability or allocating an
+unbounded reply. Typed child Hung/Abandoned errors retain their types while
+abandoning the exchange after a destination has been allocated. Any child failure
+after destination allocation abandons the session, including FAILED/OTHER; the
+same ordinary failure before allocation leaves the session usable.
+
+Before attempting an FD handoff, the parent marks the destination as exposed.
+Failure or unwinding then keeps the unique uncommitted extent in the failed
+session, with its existing cache charge, until writer exit is proved. A partially
+failed send can still have delivered the descriptor. Neither EOF, a closed socket,
+nor successful signalling proves that the writer mapping is gone. The retained
+extent is never read, committed, hole-punched or reused while ownership is
+uncertain. `WorkerSession::retained_export_bytes` reports this session-held storage.
+
+Dropping the session transfers its child and retained extents to a process-lifetime
+quarantine before polling exit. A successful `Child::try_wait` exit status is the
+release proof. The `Child` owner is the sole waiter; other code must not reap its
+PID separately. Teardown polls for up to two seconds before signalling a child
+whose ownership remains unambiguous, then polls for up to fifty more milliseconds.
+Background reaping cannot signal an owner until the dropping session finishes
+that grace period and explicitly permits signalling. Each polling step uses the
+nonblocking child wait API. Any wait or signal error, or panic during an owner
+operation, permanently stops both further waits and signals for that owner.
+A PID may already have been reused, so another `Child::try_wait` cannot establish
+safe recovery after ambiguity. Its storage and charge remain retained for the
+process lifetime. Owners with no ambiguous operation can still be released by a
+later confirmed exit. Private threaded fixtures use completed joins as their
+corresponding proof.
+
+`worker_quarantine_stats` reports retained worker/extent counts, retained extent
+bytes, ambiguous owners, successful signals, wait/signal errors and confirmed exits.
+The retained fields are gauges; error, signal and exit fields are cumulative totals.
+`reap_worker_quarantine(limit)` retries at most 64 owners per call in round-robin
+order. Connecting a new worker also retries one old owner. Reaping never releases
+on a signal result, never signals during grace, and never waits or signals an
+ambiguous owner again. A permanently ambiguous owner retains capacity indefinitely;
+this conservative refusal is preferable
+to reclaiming storage while a writer may still use it. These are runtime physical
+resource observations and do not enter snapshots, logical EventHistory or cache
+commitments. Retained bytes describe extent ranges, not process RSS or total
+virtual backing size. The cache remains append-only and retires empty backing
+segments after their ownership has ended.
+
+The parent never accesses a destination while a successful child exchange owns
+its writer mapping. The child checks offset arithmetic, slice length, exact
+required length, and current descriptor backing size before mapping. That size
+check cannot prevent later truncation; the coordinator keeps backing storage
+alive and untruncated for the complete writer lifetime, including uncertain
+completion. macOS can conservatively retain a released range's charge until its
+remaining segment extents are dropped; Linux may reclaim a proved-retired range
+with hole punching.
+
+Worker framing work uses `transport.parent.<group>.<send|receive>` and
+`transport.child.loop.<group>.<send|receive>`. Fixed groups are hello, setup, run,
+observe, snapshot, identity, replay, export, import, telemetry and unknown. All
+allocation-handshake frames remain in export. The parent knows the outstanding
+request group; the child classifies a fully received request by opcode, and failed
+or incomplete new requests use unknown. Parent hello accounting transfers into
+the established session; child hello accounting shares its serving-loop owner.
+Failed startup has no returned session report.
+
+Each direction reports frame `attempts`, framing `completed`, framing `errors`,
+actual `header_bytes`, `body_bytes` and `fd_handles`. Bytes are positive local
+socket syscall results, including partial progress before failure. A complete
+frame has a 16-byte header; descriptors are excluded from bytes and counted once
+on positive sendmsg or when recovered from recvmsg. Truncated ancillary data counts
+only recovered handles, not unobservable discarded descriptors. Mapping shared
+ranges, kernel copies, network traffic and peer application acceptance are not
+measured by these fields. Framing completion does not imply protocol, operation
+or post-I/O guard success. Pre-I/O guard refusal records no transport attempt.
+Inactive groups are omitted and counters saturate; concurrent field snapshots
+are approximate. Linux interruption, EOF and deadline behavior is unchanged.
+Darwin frame-continuation receives retry interrupted syscalls and reject
+unexpected descriptors before classifying an empty receive as EOF.
+
+Parent and child totals describe opposite endpoints and must not be added as
+unique traffic. Child snapshots replace cached totals on successful telemetry
+queries; its response encoding/send appears in a later query. Parent query I/O
+is immediately visible. Failed queries preserve the last child snapshot, so a dead
+child's final work may be unavailable. These diagnostics are not serialized into
+snapshots, certificates, identities, retention or search policy; no protocol
+format changes are involved.
+
+Guard work is observational, per owner, and exported by bounded site. Direct
+Session and UML totals use `guard.session.<site>`. A WorkerSession reports its own
+checks as `guard.parent.<site>`, the child's session/core checks as
+`guard.child.session.<site>`, and the serving loop as `guard.child.loop.<site>`.
+Clones within one session share an owner; each worker spawned by a reused launcher
+forks an empty owner, so another session's cumulative work is never copied into it.
+`WorkerLauncher::telemetry_counters` separately exposes launcher construction work
+under `guard.launcher`; session parent totals start with that session's actual
+spawn checks. Session startup includes its fresh admission/identity measurements.
+Standalone identity preflight calls outside a session and cross-process child-file
+identity checks are not session guard totals. Failed construction has no returned
+session from which to query counters; the low-level caller-owned measured API
+retains refused admission work when that boundary needs observation.
+
+Sites are `admission`, `session_boundary`, `launcher_before/after`,
+`rpc_before/after`, `receive`, `handled`, `sent`, `publication_before/after`,
+`control_before/after`, and `sdk_request/response`. Direct export uses four
+parent sites: `export_before` before EXPORT, `extent_requested` after the first
+reply (NEED_EXTENT or FAILED),
+`extent_allocated` after the allocator callback before FD handoff, and
+`export_completed` after completion reception. The child reverse exchange uses
+`extent_before` before NEED_EXTENT, `extent_sent` after that send before waiting,
+and `extent_received` after the allocation response before mapping. The serving
+loop's `receive` check is its one initial check; each `sent` check also covers the
+next receive.
+Unclassified public session boundaries remain explicit `session_boundary` entries.
+Core hook tags describe generic control/SDK boundaries; executable policy remains
+in the client. Each site exports dispatch attempts, errors and host `ns`, fixture
+dispatches, actual `strict_attempts`, `strict_errors`, and `strict_ns`. These strict
+totals include fresh capture and recheck work. `strict_check_attempts/errors/ns`
+and `strict_capture_attempts/errors/ns` expose those disjoint stages, including
+checks during admission. Fixture placement counts are not real executable
+measurements. Timing envelopes overlap:
+strict time is inside dispatch time, so the two must not be added. Dispatch timing
+stops before counter accumulation/export. A local delta
+is merged after each check, never while holding an accounting lock across policy
+checks or callbacks. Snapshot/replay does not rewind these host-work totals.
+
+Linux byte fields report actual live-code/vDSO reads, sealed executable code reads,
+SHA-256 input and comparison input, with admission-only full-file reads/hashes
+separate. Successful partial reads remain counted on refusal. ELF/proc metadata,
+digest framing and cross-process child identity work are excluded. macOS exports
+no Linux byte leaves, while reporting its kernel signing state, static-signing
+and image-census stage attempts. A telemetry query replaces
+cached child totals rather than adding them. Cumulative
+`guard.child.telemetry_queries` and `guard.child.telemetry_query_failures` remain
+meaningful when added across sessions; failures remain visible after later queries.
+Child values are the last successfully queried totals, not a final account
+of work in a dead or refusing child. Parent checks for the query are immediately
+visible; child checks after its telemetry snapshot appear only on a later query.
+Inactive sites, with zero dispatches, are omitted. Per-site `byte_measured_attempts` and
+`byte_unavailable_attempts` count strict attempts with and without byte accounting,
+respectively, so addition preserves availability coverage; fixture dispatches count
+neither. These counters do not enter identities, snapshots, EventHistory,
+certificates, retention budgets or search decisions.
 
 `UmlSession`, behind the `uml` feature on Linux, runs a User-mode Linux guest
 through `uml::Session`. `UmlLaunch` names the profile, initramfs, memory, boot
@@ -223,9 +592,14 @@ recheck the same admitted processor and host identity. A publish exports the
 checkpoint into one extent,
 and an import reads it back with the session's service factory. Branches
 refuse mechanical effects, because the UML backend cannot write guest memory
-or inject interrupts. `store_bytes` is the allocated size of every held
-checkpoint, and telemetry reports the count and host time of captures,
-restores, fresh restores and imports.
+or inject interrupts. If handler or payload validation rejects a branch after
+its checkpoint has been restored, the client abandons the guest so a caller
+cannot continue from the rewound state after receiving an error. The client
+also checks the active service handler around branch factory calls and cached
+imports, abandoning the guest if a factory, clone, reseed, or restore changes
+the live handler through shared state. `store_bytes`
+is the allocated size of every held checkpoint, and telemetry reports the
+count and host time of captures, restores, fresh restores and imports.
 
 `SearchSession` is the set of calls a search worker makes, implemented by
 `Session`, `WorkerSession` and `UmlSession`.
@@ -264,9 +638,26 @@ Session console diagnostics return the most recent 64 KiB. The VM reader pages
 from the tail offset reported by the guest, so long boot output does not hide
 later failure evidence. UML uses the same bounded-tail contract. Repeated reads
 are snapshots and may overlap; reading diagnostics does not advance execution.
-UML terminal classification waits for the host console collector to finish, so
-the final kernel output cannot race the panic decision. Crash diagnostics report
-the settled exit status whether the bridge closure or process exit was seen first.
+UML terminal settlement waits for the host process to exit and the console
+collector to finish before reporting the diagnostic tail. The kernel-owned exit
+status decides a panic; console text does not. Crash diagnostics report the
+settled ordinary exit status whether the bridge closure or process exit was
+seen first. A signaled host exit abandons the session instead of producing a
+guest crash or shutdown. Host exit87, host signals and launch resource limits
+return typed `SessionError::Infrastructure` errors, including wrapped restore
+boot failures. After setup, guest panic86 retains its guest crash classification.
+Before setup, guest exit and panic remain control errors with the actual terminal
+reason; they cannot form a runnable session. A host progress timeout remains `SessionError::Hung`; malformed replies remain control
+errors. Classification uses owned child status rather than diagnostic text.
+Abandonment reaps the guest and settles its console before returning diagnostics.
+`WorkerSession` preserves typed infrastructure errors through the current image hello
+and distinct error tag; they abandon the worker just as progress timeouts do. A
+worker transport disconnect is also infrastructure failure: legitimate guest exits
+arrive in framed stop replies. Complete malformed frames retain control/protocol
+error semantics. Native controls check an owned worker killed by SIGKILL and a
+malformed frame from a peer held alive; the Faults admission guard separately
+checks the resulting typed infrastructure error without requiring a test-only
+public worker factory.
 
 Durable roots use the `SearchSession` root methods, separately from the transient
 cache namespace. Hardware roots remain deltas against the verified deterministic
@@ -276,3 +667,148 @@ memory, arguments and seed. They can be
 imported over a fresh launch whose host-private setup bytes differ. Cache deltas
 still require their original setup identity. Neither interface interprets
 workload commands.
+
+Search sessions can publish a `SnapshotAttachment` containing an opaque domain
+and payload alongside a cached snapshot. The client assigns no workload meaning
+to those bytes. `publish_snapshot_attached` carries them through both direct and
+process-worker exports; `import_cached_receipt` returns the target attachment,
+its machine commitment, and its independently verified object commitment.
+Existing attachment-free calls use an empty attachment.
+
+The `HMSESS02` cache envelope contains checked lengths for backend metadata,
+attachment domain, and payload, together with the machine commitment. The
+version-two object commitment binds that machine commitment and both
+length-delimited attachment fields. The VM machine commitment already binds the
+admitted image identity and portable target state; UML binds its admitted root
+and setup domain plus the checkpoint digest. Imports compare the object digest
+against the pinned index record and verify the backend machine commitment before
+accepting the imported handle. Each delta carries its complete target attachment;
+resolving a chain never substitutes an ancestor's attachment. Older envelopes
+are refused. UML's separate imported-root format remains distinct from ordinary
+session-cache envelopes.
+
+A duplicate cache key with different attachment evidence follows the existing
+determinism contradiction path, preserving both witnesses and quarantining the
+namespace. Attachments preserve existing page validation, leases, revocation,
+and host-image guards. They are composition-produced provenance protected by
+immutable cache ownership, not signatures against a malicious producer or a
+replacement for checking the actual imported machine state.
+
+Cache namespaces select their key semantics at construction. `Namespace::new`
+uses action-prefix keys: lookup returns the longest retained prefix and a delta
+parent must have a strictly shorter prefix key. `Namespace::exact` uses opaque
+keys: lookup requires complete equality and a delta parent may have unrelated
+key bytes. The constructors use separate digest domains, so the same namespace
+parts cannot mix key modes. Exact mode retains parent ownership, namespace,
+existence, and commitment checks. Entries always link to already retained parent
+entries; equal duplicate publication returns the existing entry without changing
+its ancestry. A conflicting duplicate retains both witness chains and
+quarantines its namespace in either mode. Composition adapters using opaque path
+roots must search their own certified ancestor roots when an exact key is absent.
+
+UML imported roots also retain their source index commitment. After validating
+and importing the checkpoint, the session recomputes the root-domain machine
+commitment and compares it with the pinned index record before installing a
+handle. Final host-image and lease checks remove a temporary handle on failure.
+
+`Session::sdk_events_since(offset)` and `SearchSession::sdk_events_since(offset)`
+return the SDK event suffix starting at the zero-based event index. Direct
+sessions retain the control protocol's checked pagination; process workers carry
+the offset in their SDK-events request and return only that suffix. UML skips
+prior events before copying payloads. `sdk_events()` explicitly requests offset
+zero. Backends using the trait's fallback fetch their complete SDK history and
+slice it; callers must distinguish that correctness fallback from native suffix
+transport when measuring cost.
+
+An offset at or beyond the available event count returns an empty suffix.
+Advancing a cursor beyond `u32::MAX` fails; a failed multi-page read returns no
+partial suffix. A cursor is scoped to its actual snapshot and branch lineage;
+this API does not authenticate a previously consumed prefix or detect rollback.
+`EventHistory.count` counts normalized execution events and is not an SDK offset.
+Workload adapters own decoder checkpoints and lineage validation.
+
+Explicit worker copies use `copy.parent.*` and `copy.child.loop.*` with independent
+owners; internal serializer clones share their owner's counters. `encoded_payload_bytes`
+counts measured `Out::bytes` payload extensions (excluding scalar field encoding
+and the worker hello, which precedes the copy owner),
+`status_payload_bytes` counts the successful reply-body copy into its status
+wrapper, and `decoded_payload_bytes` counts owned INIT/setup/attachment/answer
+payload fields, parent status stripping, and parent SDK-event payload decoding.
+Each actual site counts after its copy, even if later decoding/validation fails.
+Other string decoding, branch reproducer internals, buffer growth/allocator moves,
+Session sidecar construction and kernel copies are excluded: this is an inventory
+of these explicit sites, not all memory traffic or allocated bytes. The same
+payload can legitimately appear at several distinct copying sites.
+
+`copy.child.loop.import_mapping.*` and `export_mapping.*` report mapping attempts,
+errors, successful logical `range_bytes` and actual requested `span_bytes` (which
+includes alignment skip). Successful mappings preceding later failure remain
+counted. They describe repeated virtual mappings, not resident bytes or reads or
+copies; borrowing their slices records no copy. The parent currently creates no
+such mappings. `Session` reports `copy.session.extent.*` (renamed
+`copy.child.session.extent.*` through a worker) for the completed logical
+`encoded_bytes` and actual output `metadata_copy_bytes` / `page_copy_bytes` at its
+final extent writer. UML exports do not emit these extent-copy counters. Padding is
+part of encoded length but not copied metadata. No E-byte temporary output buffer
+or temporary-to-extent copy exists in direct export, and no such charge is inferred.
+Sidecar/row allocations remain separate and are not estimated from output length.
+
+`snapshot.copy.*` counts Store interning and read-into-buffer copies, forwarded
+once through core telemetry. Copies from `Store::materialize` into its tempfile
+mapping are excluded. `intern_calls` includes calls that later fail;
+`intern_hits` counts reused equal resident payloads with no new owned copy;
+`intern_copy_bytes` counts actual new owned page copies, including copies whose
+builder is later discarded. Zero or unchanged writes can bypass interning.
+`read_copy_bytes` counts the public Store read-into-buffer copy, while borrowed
+transaction reads count zero. Generic Store totals include boot/capture/restore
+work and are not labelled import-only bytes; existing import page counts still
+mean merged rows, not physical copying. Store, worker and Session owners are
+runtime-only, do not rewind on snapshot restore, and have no global shared-index
+component. Child copies replace cached totals on query just like child transport.
+Child query-response copies become visible at the next query; the parent's own
+response-decoding copy is visible in the current query. These counters do not
+enter StoreStats, identity, certificates, memory budgets or search policy.
+
+Reading worker telemetry sends one guarded TELEMETRY request. Explicit
+`snapshot_owned_pages` and `store_bytes` calls send separate Snapshot-group RPCs;
+they are not part of the worker telemetry getter. Callers that also collect
+ownership gauges must place those queries outside work-counter phase snapshots.
+Parent and child counter snapshots bracket different response-publication points;
+the fixed telemetry request's framing and guard work remain observable.
+
+
+Accepted process-worker imports expose cumulative `cache_import.parent.*`
+counters without changing the descriptor protocol or mapping work. `extent_references`
+counts N chain references; `backing_occurrences` sums U distinct parent Segment
+allocations per import, and `duplicate_references` sums N−U. These are allocation
+identities, independent of descriptor numbers, allocator-local segment IDs, and
+contents. They do not measure globally unique kernel backing objects.
+
+`recent_backing_hits` and `recent_backing_misses` classify each current distinct
+allocation against the prior per-worker window, before refreshing it in first
+reference order. The window retains at most 128 weak allocation witnesses;
+`recent_window_evictions` counts capacity removals. Witnesses identify the Segment
+allocation shared by distinct extent owners, not each extent's Arc allocation.
+Weak witnesses preserve control block identity without retaining mappings,
+descriptors, extents, or page storage.
+A fresh worker starts with an empty window. Hits indicate bounded recent recurrence,
+not lifetime reuse; misses include first sightings and evicted allocations.
+
+`accepted_imports` advances only after the final lease check. `measured_imports`
+counts accepted layouts of at most 64 references. Larger accepted layouts advance
+`unmeasured_overlimit` without changing the window or N/U totals. All counters
+saturate at u64 maximum. Refused and interrupted imports contribute nothing.
+These counters add no ownership RPCs, mapping deduplication, registration cache,
+or admission authority. Descriptor and mapping counters still report actual work.
+
+Explicit session shutdown reports whether the currently owned process completed
+teardown. WorkerSession closes its transport and uses the same bounded grace,
+signal eligibility and sole-owner exit checks as Drop. An ambiguous or still
+running owner returns an error and remains quarantined with its exposed writable
+extents charged. The result is latched; repeated shutdown and Drop do not poll or
+signal that owner again. Background quarantine reaping retains its existing rules.
+Direct in-process sessions have no external child. UML delegates to its owned
+Guest teardown and records an idempotent receipt; successful group cleanup uses
+the existing launcher checks, not a new guarantee about arbitrary descendants. An
+abandoned UML session refuses shutdown confirmation even after removing its live
+Guest; normal confirmed shutdown remains idempotent.

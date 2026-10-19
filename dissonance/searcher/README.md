@@ -5,7 +5,12 @@
 `searcher` implements deterministic search independently of a workload. The
 `search::` modules own archive retention, parent selection, input mutation,
 campaign coordination, worker execution, seeded draws, checkpoints, stream
-recording, and replay. Workloads supply associated types through `CampaignTypes`
+recording, and replay. Workloads may implement `TargetExecution::verify_integrity`
+to withdraw the entire execution domain after a determinism contradiction.
+Execution, reservation, admission and final report boundaries check this shared
+status. Its error aborts the campaign without an End record or completed report;
+it is not an ordinary failed target, and coordinator checks preserve the typed
+error independently of worker diagnostic strings. Workloads supply associated types through `CampaignTypes`
 and implement four contracts. `Workload` composes those contracts for a full campaign.
 
 The archive keeps entries in cells, a cell being one place at one progress
@@ -28,11 +33,47 @@ configuration, policies, origins, jobs, admissions, skips, and progress needed
 for replay. Replay checks the source fields allowed by each origin kind, requires
 an archive checkpoint exactly when the stream names one, and matches the supplied
 checkpoint path, format, serialized bytes, and digest before copying its provenance
-into a completed report. Live archive import verifies the same bytes before execution.
+into a completed report. Archive-origin recording and full or prefix replay require
+an `ArchiveSource` built by parsing and hashing one byte stream. Its private report
+and digest cannot be replaced separately, and replay checks that raw-byte digest
+against the recorded origin before deriving resume input or importing evidence.
+Changing only JSON whitespace still changes the source identity. Live archive
+import uses that same sealed source. Each exported archive snapshot also has a
+source-entry SHA-256 digest of the workload's logical snapshot identity. The
+workload chooses the projection; Consonance-backed workloads exclude only
+restoration metadata that their existing job-result identity also excludes.
+Before an archive checkpoint restores any state, live import and replay check
+each checkpoint entry's ID and snapshot against that source-bound digest.
+Duplicate or unknown checkpoint IDs, and source entries without a bound digest,
+are rejected. Whole-tree import also compares every present source-entry digest,
+including genesis, with its newly reconstructed logical snapshot identity before
+admitting that entry or inheriting source evidence. A source entry that had a
+digest but no longer reconstructs to a runnable endpoint fails import. Older
+archive reports without snapshot identities remain usable for whole-tree import
+without a checkpoint, but cannot authorize checkpoint restore or certify a
+source endpoint across imports. Their actions are reconstructed under the current
+executor; the source progress watermark remains inherited historical evidence
+bound to the source file bytes, not evidence produced by that reconstruction.
+Snapshot-root origins use their separate checkpoint contract.
+For a workload with endpoint certificates, whole-tree import reconstructs each
+action between a parent and its imported candidate, including candidates loaded
+from source snapshots. It compares a checkpointed endpoint with the rebuilt
+endpoint before binding any certificates to the archive path. A later snapshot
+eviction can therefore replay the imported path with the same checks as a live
+campaign. `TargetExecution::apply_action_and_snapshot` can return the actual
+runnable snapshot captured by that action. Import uses its certificate for that
+prefix and retains the final capture as the rebuilt endpoint after checking the
+execution disposition. A workload returning no capture uses separate certificate
+and snapshot operations. Empty suffixes acquire a fresh snapshot; terminal or
+failed actions cannot reuse an earlier capture. These values remain local to the
+import operation and preserve all source identity and intermediate-prefix checks.
 It also checks the fixed executor and selection-seed derivation labels. The stream and
 completed report record the loaded Harmony executable identity separately from the
-workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
-its running code-directory hash. Replay fails closed when that identity cannot be
+workload identity. Linux hashes the loaded image through `/proc/self/exe` once per
+process, because the loaded image cannot change while it runs; macOS reads
+its running code-directory hash. A wasm32 module cannot read its own bytes, so it
+records the fixed label `wasm32-module-v1`, which does not bind replay to one build.
+Replay fails closed when that identity cannot be
 read or differs, even if the guest image and workload policies match. The campaign
 reads the identity once before writing the stream and uses the same value for its
 checkpoints. Replay reconstructs adaptive mixture weights from each admitted
@@ -40,11 +81,15 @@ result at the original reservation boundary and rejects job or skip weights
 that the recorded policy could not have produced. When the recorded policy
 stops the campaign on an objective, replay rejects work selected after it while allowing jobs
 already reserved in the admission window to finish. The same admission-window
-rule applies when cumulative work reaches the recorded work budget. Schema version 13
+rule applies when cumulative work reaches the recorded work budget. Schema version 14
 requires the loaded executable identity and records the reservation that owns each
 duplicate skip. Replay checks that skips follow
 selection order, stay within the admission window, and do not exceed the live
-limit of 1,024 attempts for one reservation. A terminal record follows only
+limit of 1,024 attempts for one reservation. Each skip must occur during the
+initial window fill or immediately after the admission that opens its later
+reservation slot. A reservation that takes a continuation cannot record a
+duplicate skip because continuation dispatch bypasses ordinary selection. A
+terminal record follows only
 after the campaign has drained its jobs and finished
 successfully. Replay requires that record and checks its job, skip, and
 admission totals. Without a wall-time limit, it also requires every reservation
@@ -71,13 +116,14 @@ limit because no selector draw can name a tier beyond that many active entries.
 The final report selects no
 more parents, so its compaction releases metadata pins and the liveness anchor
 and then requires the compacted archive to fit the memory limit. Campaign streams require
-schedule policy version 5
+schedule policy version 6
 and the current bounded progress policy; recordings from superseded policy
-namespaces are rejected before replay because their snapshot accounting differs.
+namespaces are rejected before replay because their memory accounting differs.
 
 Empirical step tables fold retained suffixes into an incremental hash and a
-deterministic frequency map capped at 4,096 distinct steps. The compact table
-is the only supported representation. Every campaign keeps one, in
+deterministic frequency map capped at 4,096 distinct steps. A draw picks a step
+with probability proportional to its count over all retained suffixes, with no
+recency weighting. The compact table is the only supported representation. Every campaign keeps one, in
 `search::draw_tables`, so a workload gets the biased draw without owning any of
 the bookkeeping. `DrawTables` folds each retained suffix as its record closes,
 publishes an `EmpiricalStepCheckpoint` the stream records beside every draw,
@@ -91,7 +137,10 @@ their input policies and reject unknown or retired identifiers during replay.
 The worker pool starts before the bootstrap. The coordinator bootstraps while
 every worker but the first builds its target, and the first worker builds its
 target after the bootstrap target is dropped, so a campaign never holds more
-targets than workers. The first worker's boot time includes that wait.
+targets than workers. The first worker's boot time includes that wait. Every
+worker reports its startup result before the coordinator selects or dispatches
+a job. If several workers fail to start, the lowest worker number determines
+the reported error regardless of host timing.
 
 Workers pull jobs from one shared queue ordered by planned finish, so an idle
 worker takes the queued job that admission reaches first while another worker
@@ -102,6 +151,19 @@ queued, running or finished but not yet admitted. Memory held by finished
 results is outside the archive's logical budget and must be measured in host
 RSS. Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
 when finished results wait on an earlier job and `idle_no_job_ns` otherwise.
+Worker execution errors also wait for their reservation's planned admission;
+the coordinator can record every earlier successful job and its checkpoint
+before returning a failure identified by reservation. Checkpointed coordinator
+profile timings are observational telemetry, so checkpoint hashes may differ
+across host schedules even when their search state and resumptions agree.
+An execution panic produces a stable error reply carrying the dequeued job's
+schedule key. The worker discards its target and builds a fresh one before
+taking another job, so a queued earlier reservation can still complete. If
+recreation fails, the worker retires. Other workers may continue queued jobs;
+if all workers exit with outstanding reservations, the coordinator drains
+received results and reports the first missing planned reservation. Target
+recreation failure is an external failure, so its timing can change which
+outstanding jobs complete before the failure is reported.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
 `memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
@@ -128,7 +190,36 @@ and rejects an archive that is still over its limit. Because of that lag, the
 archive's resident bytes are not checked against the whole budget during the
 campaign.
 
+The archive charges its own heap from logical counts: entries, stored suffix
+actions, live prefix nodes, slots, cells, active entries, tiers, pins, landing
+markers, continuation edges and shared snapshot allocations. A checkpoint
+restores those counts, so a resumed or replayed archive charges what the live
+one did. Each count is multiplied by a worst-case size under glibc malloc. An
+allocation of n bytes takes n plus an 8-byte header, rounded up to 16 bytes, and
+at least 32 bytes. A vector grown by push holds at most twice its length and at
+least 4 elements, or 8 for bytes. A B-tree node holds 11 elements, and every
+node but the root holds at least 5, so a set of maps holding n elements uses at
+most n/5 nodes plus one per map. Each prefix node is charged one child-map node.
+The selector's weighted sets keep freed slots until the selector index is
+rebuilt, and compaction rebuilds it, so freed slots are charged as one per
+inactive entry. Compaction shrinks the entry columns to their length so the
+doubling bound holds afterwards. Each resident snapshot also charges its
+reference-count block. On synthetic archives these charges sit 15-50% above the
+measured heap; the `memory_tests` unit tests count the archive's allocations and
+fail when any part exceeds its charge. Allocator fragmentation and heap a
+workload's snapshot charge omits stay outside the archive's limit and show only
+in RSS.
+
 Prefix-tree compaction remaps a single surviving child in its existing map.
+The same prefix nodes can hold optional workload endpoint certificates. A
+retained candidate binds the certificate for each action since its parent,
+including intermediate actions that were not themselves retained. A job
+origin returns the replay actions and certificates from the same node walk,
+and in-flight checkpoints preserve both vectors. Shared prefixes reject a
+conflicting binding; compaction and snapshot eviction keep nodes on any
+selectable entry's path. Workloads without endpoint certificates leave these
+certificate slots absent, while workloads that require them reject missing values during
+replay.
 Branching maps are rebuilt so compaction still releases their unused storage;
 missing children follow the same rebuilding path. This preserves node order,
 parent links, owners, and serialized state while avoiding a map allocation and
@@ -156,7 +247,7 @@ campaign and target contracts:
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
-An `ArchiveKey` names three things about a state, and nothing else reads a
+An `ArchiveKey` names four things about a state, and nothing else reads a
 key as a magnitude:
 
 | Question | Answered by |
@@ -226,6 +317,42 @@ the same observations through `Reporting::merge_witness_diagnostics`, whose
 contract excludes champion selection and input publication. Workloads must document
 their scope and bound their memory; these observer allocations are reflected in
 RSS rather than the archive's logical memory budget.
+
+The archive memory budget covers retained snapshots and job-origin snapshots
+pinned until their ordered results are admitted. A workload reports exclusive
+snapshot bytes separately from a root-to-parent visitor over shared allocations.
+The visitor identifies actual live allocations, including their reference-count
+headers. The archive charges each reachable allocation once as a malloc block
+and charges the ownership ledger as one B-tree map. Acquiring or releasing a
+root follows only newly owned or finally released nodes, stopping at an already
+owned ancestor. Clones of an existing root cost one lookup; budget queries do
+not traverse ancestry. Allocation identities and the ownership ledger are
+runtime-only and never enter deterministic evidence.
+
+Worker target-private state, including independently retained inner history
+handles after a reply, remains outside this archive budget. Job-origin outer
+snapshot handles are dropped before the reply releases their ordered pins.
+Thus legal worker drop timing before unpin cannot change budget decisions.
+The archive owns a typed workload retention adapter alongside the checked
+allocation ledger. After a candidate wins retention, the adapter normalizes its
+validated expected history against currently retained nodes, walking only the
+new tail to an indexed ancestor. The adapter registers nodes when the ledger
+first acquires them and removes registrations when the final root or parent
+edge releases them; its index storage is charged as well. The incoming root is
+acquired before population retirement or replacement releases old roots, so
+replacing the sole owner of a deep prefix still walks only the new tail. Candidates
+rejected or failing before installation cannot leave registrations. Input-prefix
+ownership and
+certificate bindings are committed only after normalization and population
+admission succeed. Retirement clears owners without pruning prefix nodes, so
+the validated prefix start remains available for that commit. Independently allocated worker
+histories therefore enter the archive with the same physical sharing as restored
+histories.
+Checkpoint restoration feeds roots through the same normalization and acquisition
+path in stable entry order. Imported snapshots use the already admitted bootstrap
+root in that index. Sharing changes actual allocations rather than treating equal
+content digests as shared storage. The index has no global lifetime and independent
+execution receipts retain their own validation authority.
 
 The shared `search::rollout` loop owns action evidence capture, candidate
 creation, retention probe placement, and stopping; a workload provides action execution and state evaluation.
@@ -367,12 +494,14 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_pace_yield_cell_recent_count_decay_v1`, and the stream header names
+One selector exists, `tier_progress_cascade_pace_yield_cell_recent_count_decay_v2`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
-rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
-`tier_rank_shift` is three unless the workload says otherwise, so the leading
-tier takes most of the draws, and no tier holding an entry takes zero. The
+rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, an eighth of the rank ahead, so
+the leading tier takes most of the draws, and no tier holding an entry takes
+zero. Every workload uses this ratio, so a workload's progress value must not
+fall along the route to its goal: states on that route would rank below a tier
+that leads nowhere and receive almost no draws. The
 replay verifier bounds a recorded rank by completed progress levels in
 previously admitted archive entries when that selection was reserved. The
 bound includes historical levels that may no longer be selectable, so it
@@ -381,27 +510,49 @@ reconstruct every selector draw.
 Replay also rejects a best-holder preference index outside the workload key's
 compiled portfolio; otherwise selector accounting would silently ignore it.
 
-The leading tier gives up weight while it finds nothing new. Each tier counts its
-draws since a new cell last appeared in it and keeps the longest such run; its
-pace is that longest run or its cell count, whichever is larger. When the
-current count passes twice the pace, the leading tier's weight halves, and it
-halves again each time the count doubles, down to the weight of the rank
-below. The halvings apply only while the rank below yields more per draw than
-the leading tier since the leading tier's last new cell. A tier's yields are
-its new cells and its carried-in wins, admissions that take a slot's
-preference from a parent in another cell. The leading tier counts only its
-carried-in wins there, since a new cell ends the run. With `Td` and `Ty` the
-leading tier's draws and wins in the run, and `Nd` and `Ny` the draws and
-yields of the rank below over the same span, the halvings apply while
-`(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`. When the rank below is a
-different tier from the one recorded when the run began, or no tier was
-recorded, `Nd` and `Ny` are that tier's total draws and yields. A leading tier
-that yields at least as much per draw as the rank below keeps its full weight. A new cell in
-the tier restores the full weight. A
-workload whose progress order has many close steps, such as fine progress
-bands, supplies a shift of one so each rank takes half of the one ahead. The
-largest accepted shift is seven, because a larger one overflows the leading
-tier's 64-bit weight; a draw under a larger shift fails with an error. Within the tier each cell
+The leading tier gives up weight while it makes no progress. A tier makes
+progress when a parent drawn from it opens a cell at a deeper progress value;
+a new cell beside its parent at the same progress value is not progress. Each
+tier counts its draws since it last made progress, or since it appeared, and
+keeps the longest such run; its pace is that longest run or its cell count,
+whichever is larger. When the current count passes twice the pace, the leading
+tier's weight halves, and it halves again each time the count doubles, down to
+the weight of the rank below. The halvings apply only while the rank below
+yields more per draw than the leading tier since the run began, or while the
+leading tier has gone longer without a yield than the rank below has been
+drawn in the run, or while it has gone more than eight times its own average
+gap without a yield. A tier's
+yields are its new cells and its carried-in wins, admissions that take a
+slot's preference from a parent in another cell. A cell is new when the
+archive has never held it and no higher tier holds a cell at its place, so a
+cell that comes back after its entries were dropped, or a lower tier reaching
+a place a higher tier already holds, yields nothing. The rank below counts
+only its new cells in the comparison, so a lower tier that keeps refilling
+stock at the same places does not take weight from a leading tier that keeps
+opening ground. With `Td` and `Ty` the leading tier's draws and yields in the
+run, `Tq` its draws since its last yield, and `Nd` and `Ny` the draws and new
+cells of the rank below over the same span, the halvings apply while
+`(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`, `Tq > Nd`, or
+`Tq * (Ty + 1) > 8 * Td`. The second condition
+makes a leading tier that stops yielding lose its weight even when the rank
+below yields nothing: `Tq` grows with every leading-tier draw and `Nd` grows
+only with the rank below's smaller share, and a tier's yields are finite. The
+third condition sets how soon the fall starts: a tier that still wins now and
+then, but far less often than it used to, falls without waiting for `Tq` to
+pass every draw the rank below received since the run began, while a tier that
+keeps farming at its usual gap holds.
+When the rank below is a different tier from the one recorded when the run
+began, or no tier was recorded, `Nd` and `Ny` are that tier's totals. A
+leading tier that yields at least as much per draw as the rank below opens
+cells keeps its full weight. Progress from the tier restores its full weight.
+A dead-end route that keeps opening cells beside each other at its deepest
+progress value therefore still loses weight, because its cells are finite and
+each opens no deeper ground. When the leading tier has halved all the way
+to the weight of the rank below, the same rule is applied to that rank against
+the rank below it, and so on down. Every rank down to the first one still short
+of its full halvings shares that rank's halved weight. This lets the search
+fall back past several stalled tiers at once, which matters when the states
+that decide a later death lie several tiers back. Within the tier each cell
 weighs `1 / (1 + draws)^2` over the draws it has received since it was last
 reset, so an untried or freshly reset cell takes most of the tier's draws
 until it catches up and every cell keeps a share. Within the cell, a quarter
@@ -433,8 +584,9 @@ new ground instead of settling to an equal share with every cell behind them.
 `SelectorAccounting` reports `cell_selections`, `productive_selections`,
 `cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference,
 `tier_runs` keyed by each tier's progress value with its current and longest
-run, its total draws and yields, its carried-in wins in the current run, and
-the rank below's name, draws and yields when the run began, and the draws each
+run, its total draws and yields, its yields in the current run as `wins`,
+its draws since its last yield as `dry`, its new cells as `cells`, and the rank below's name, draws and new cells when
+the run began, and the draws each
 cell received, and
 every live progress line carries it under `selector`. The draws each cell
 received and `selector.portfolio` appear once each time the executions double,
@@ -630,6 +782,44 @@ which the report also sums across workers. Report equality and the report's
 serialized form leave telemetry out, so a replayed report stays byte-identical;
 a caller that wants it writes it separately.
 
+Optional job observations use `run_campaign_checkpointed_observed`. Each workload
+owns its `CampaignTypes::JobObservation` schema; uninterested workloads use `()`.
+The payload is `Copy + Send + 'static` and compile-time limited to 256 bytes. It
+must contain self-contained values: `Copy` excludes owning containers, but cannot
+prove that a static reference or integer handle does not refer to external data.
+Searcher never decodes the workload payload and does not serialize it into the
+logical stream, report or checkpoint. Collection does not call cumulative target
+telemetry; final worker telemetry still runs once per worker.
+
+The optional sink receives validated completion receipts with the actual physical
+worker, reservation, planned finish and reserved parent identifiers. Completion
+order is physical; consumers join by reservation rather than assigning logical
+meaning to delivery order. The sink runs synchronously and can affect host timing.
+A sink error or panic disables subsequent sink calls, preserves the primary
+campaign result and records the coverage loss in caller-owned
+`ObservationDiagnostics`. Counters survive campaign errors and unwind. A reply
+owns a small delivery envelope; dropping an unsent, invalid, queued or undelivered
+payload counts one discard without allocating or locking during Drop. After the
+campaign and worker scope fully terminate, collected equals delivered plus
+discarded, unless the explicit overflow flag is set. Hook panic counters count
+events: one job can increment both begin and drain panic counts, so those counts
+are not a disjoint partition of eligible jobs. A snapshot while producers are
+active is observational and is not a final coverage receipt. Consumers must
+bound their own output rows; no internal per-job log is retained.
+
+`telemetry.completed_buffer` reports live and peak `results`, `actions` and
+`candidates` counts for the current coordinator invocation; checkpoint resume
+starts fresh gauges and peaks. A result enters when the coordinator receives it
+and leaves when ordered admission removes it. Failed worker results count as one result
+with zero action/candidate records; candidates count every present optional
+candidate, including nonviable ones. Successful reports end with zero live
+counts; peaks include immediately admitted results as well as held results.
+Coordinator profile lines expose the same action/candidate live counts and all
+three peaks beside the existing `completed_buffered` result count.
+These are record counts, not heap bytes, unique snapshots or process RSS. They
+are runtime diagnostics excluded from checkpoint profiles, search decisions,
+report equality and the deterministic report/stream serialization.
+
 The last sidecar record of a run also carries `retained_diagnostics`, an
 optional workload census over the archive's cached active endpoints. Each
 endpoint is offered with the number of times the selector drew it, so a census
@@ -717,7 +907,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 7; a checkpoint from another
+match. The search checkpoint format is version 9; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation
@@ -758,3 +948,80 @@ The checkpoint journal records both completed (`executions`) and reserved
 (`reserved`) work. A consumer granting an additional execution budget starts
 from `reserved`, because restoring the checkpoint also restores already queued
 work. At a completed checkpoint those counts are equal.
+
+TargetExecution::finish_coordinator_session ends coordinator-owned bootstrap or
+checkpoint-resume resources before worker readiness is released. The default is
+empty for workloads without such resources. The scope is installed before target
+construction; normal success and errors invoke it once, while unwinding invokes
+best-effort cleanup. A cleanup error fails successful bootstrap. If execution
+already failed, its original typed error is retained and cleanup failure is
+reported separately. Worker targets and their in-campaign reuse are unaffected.
+
+The same coordinator-session scope surrounds the entire standalone full or prefix
+campaign replay, including validation, target construction, replay errors and
+unwinding. A replay reuses its session within that operation and finalizes it
+before returning. During a live campaign the coordinator signals bootstrap
+readiness only after finalization; other execution workers may initialize
+concurrently, and accepting whole-pool readiness still waits for that worker.
+
+## Stepwise coordination
+
+`CampaignCoordinator` holds a live campaign: the `CoordinatorCore`, the seeded
+selection state, the draw tables, the duration policies and the admission
+window. A single-threaded caller drives it with these calls:
+
+| Call | Effect |
+| --- | --- |
+| `CampaignCoordinator::start` | Validates the config, writes the stream header and bootstraps or restores the archive inside the coordinator session. |
+| `reserve_next()` | Reserves one job of the first window and returns false once the window is full or selection stops. The worker pool calls it after every worker reports its startup result and dispatches each job as it is reserved. |
+| `plan(limit)` | Hands out up to `limit` reserved jobs, lowest planned finish first. |
+| `admit(outcome)` | Takes one finished job, admits every job that admission order now allows and reserves one job after each admission. |
+| `fail(reservation, error)` | Records a job that failed to execute. The campaign returns that error when admission order reaches the reservation. |
+| `finished()` | Reports that every reservation is admitted. |
+| `finish(workers)` | Writes the final search checkpoint and builds the report. |
+
+`archive()`, `evidence()`, `executions()`, `reserved()`, `objective_witness()`
+and `progress()` read the live state for display. `progress()` returns the
+same `CampaignProgressRecord` the progress sink receives.
+
+A worker runs a `JobSpec` with `run_job` and returns a `JobOutcome`. A
+`JobSpec` carries its reservation, planned finish, parent snapshot, replay
+actions, their endpoint certificates and suffix. `run_job` executes it through
+`execute_job_certified`. A `JobOutcome` carries the `CampaignJobResult`, the
+execution work and the `certified_result_sha256` digest. Both derive serde, so a caller can pass
+them between threads or browser workers as postcard bytes. A workload's
+`Observations` must therefore deserialize.
+
+`run_campaign_checkpointed_with_options` and
+`run_campaign_checkpointed_observed` drive the same coordinator from the
+worker pool. Each plans every reserved job into the pool's queue and admits each
+reply. A reservation follows an admission and never a caller's request, so a
+caller that plans any number of jobs and runs them in any order writes the same
+stream as the pool for the same seed and window.
+
+`run_campaign_watched` runs the same pool with a `CampaignWatch`. Its `run`
+hook wraps each job on the worker thread and returns a note with the outcome.
+Its `admitted` hook receives that note and the coordinator on the coordinator
+thread after each admission, and `start` runs once after the coordinator
+starts; an error from `start` stops the campaign. `watch_admissions` makes the
+coordinator keep each admission's decisions, and `take_admissions` drains them,
+so a watcher reads retained ids without parsing the stream.
+
+The crate builds for `wasm32-unknown-unknown`. On wasm32 the telemetry clock
+reads zero and progress lines carry `unix_time` 0, because `std::time::Instant`
+and `SystemTime` panic there. A wall budget never stops a wasm32 campaign.
+Search checkpoints and objective witness files need a filesystem. The worker
+pool and thread placement need threads.
+
+```sh
+cargo check --locked --manifest-path dissonance/Cargo.toml -p searcher --target wasm32-unknown-unknown
+```
+
+## Browser adapters
+
+`Archive::entry_input` materializes an entry’s complete ancestral action tape
+for inspection or playback and rejects missing indices. A browser adapter can own
+execution snapshots outside the archive and use this read accessor for films.
+Weighted draws use `RomuDuoJrRand::below_u64` for 64-bit weight
+totals, so wasm32 does not truncate them through `usize`. This uses the same
+multiply-high draw as native selection and preserves its random sequence.

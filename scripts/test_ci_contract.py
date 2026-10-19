@@ -22,6 +22,343 @@ ROOT = ci_contract.ROOT
 
 
 class StructureTests(unittest.TestCase):
+    def test_client_miri_filesystem_access_is_limited_to_one_exact_test(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ".github/workflows/consonance-analysis.yml").read_text())["jobs"]
+        for name in ("miri", "miri-whole-crate"):
+            steps = jobs[name]["steps"]
+            scoped = [step for step in steps
+                      if "-Zmiri-disable-isolation" in step.get("env", {}).get("MIRIFLAGS", "")]
+            self.assertEqual(len(scoped), 1)
+            step = scoped[0]
+            self.assertIn("matrix.name == 'consonance-client'", step["if"])
+            self.assertIn("cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it -- --exact --ignored", step["run"])
+            self.assertIn("test result: ok. 1 passed;", step["run"])
+        target = next(row for row in miri_scope.selected_targets(["consonance/client/src/cache/segments.rs"])
+                      if row["name"] == "consonance-client")
+        self.assertNotIn("-Zmiri-disable-isolation", target["miriflags"])
+        whole = next(row for row in jobs["miri-whole-crate"]["strategy"]["matrix"]["include"]
+                     if row["name"] == "consonance-client")
+        self.assertNotIn("-Zmiri-disable-isolation", whole["miriflags"])
+        selected = next(step for step in jobs["miri-whole-crate"]["steps"]
+                        if step.get("name") == "Interpret borrowed descriptor metadata with filesystem access")
+        self.assertIn("env.SELECTED == 'true'", selected["if"])
+
+    def test_uml_qualifier_artifact_is_static_musl_on_both_architectures(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]
+        build = next(step for step in jobs["artifacts"]["steps"]
+                     if step.get("name") == "Build the qualification binary")
+        self.assertEqual(build["env"]["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"],
+                         "musl-gcc")
+        self.assertIn("--target ${{ matrix.architecture }}-unknown-linux-musl", build["run"])
+        self.assertIn("target/${{ matrix.architecture }}-unknown-linux-musl/release/harmony-uml-qualify",
+                      build["run"])
+
+    def test_uml_launcher_refuses_dynamic_loaded_code_once(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]
+        runs = [(job, step.get("run", "")) for job, details in jobs.items()
+                for step in details.get("steps", [])
+                if "scripts/test-loaded-code-identity.py" in step.get("run", "")]
+        self.assertEqual(runs, [("launcher", "python3 scripts/test-loaded-code-identity.py")])
+
+    def test_reviewed_uml_live_cases_use_sealed_musl_tests(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]
+        artifacts = jobs["artifacts"]
+        steps = {step.get("name"): step for step in artifacts["steps"]}
+        panic = steps["Report guest panics and distinguish setup host failures"]
+        for architecture in ("X86_64", "AARCH64"):
+            self.assertEqual(
+                panic["env"][f"CARGO_TARGET_{architecture}_UNKNOWN_LINUX_MUSL_RUNNER"],
+                "${{ github.workspace }}/scripts/linux-sealed-test-runner.py",
+            )
+        self.assertIn("--target ${{ matrix.architecture }}-unknown-linux-musl", panic["run"])
+        self.assertIn("reviewed_kernel_panic_is_a_public_client_crash", panic["run"])
+        self.assertIn("setup_terminal_status_preserves_host_provenance_and_guest_controls", panic["run"])
+        self.assertIn("setup terminal provenance: signals/87 infrastructure; 86/0 guest; cleanup empty", panic["run"])
+        self.assertIn("sealed_worker_sigkill_is_infrastructure_and_guest_stops_are_framed", panic["run"])
+        self.assertIn("worker transport provenance: SIGKILL infrastructure; framed guest panic/shutdown preserved", panic["run"])
+        fsgsbase = steps["Check native FS and GS bases across reused and fresh restores"]
+        self.assertEqual(fsgsbase["if"], "matrix.architecture == 'x86_64'")
+        self.assertEqual(
+            fsgsbase["env"]["CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER"],
+            "${{ github.workspace }}/scripts/linux-sealed-test-runner.py",
+        )
+        self.assertIn("--target x86_64-unknown-linux-musl", fsgsbase["run"])
+        self.assertIn("direct_fs_gs_bases_survive_reused_and_fresh_restore", fsgsbase["run"])
+        for step in (panic, fsgsbase):
+            self.assertIn("grep -Fxq 'running 1 test'", step["run"])
+            self.assertIn("grep -Eq 'test result: ok\\. 1 passed;'", step["run"])
+
+    def test_linux_strict_host_exercises_public_apis_from_sealed_musl(self):
+        import yaml
+
+        registered = next(job for job in ci_contract.HARMONY_CHECKS.jobs
+                          if job.name == "Consonance Host Public API")
+        self.assertEqual((registered.trigger, registered.timeout_minutes, registered.select),
+                         ("pr", 15, "rust_checks"))
+        jobs = yaml.safe_load((ROOT / ci_contract.HARMONY_CHECKS.path).read_text())["jobs"]
+        job = jobs["consonance-public-api"]
+        self.assertEqual(job["name"], registered.name)
+        self.assertEqual(job["timeout-minutes"], registered.timeout_minutes)
+        self.assertEqual(job["needs"], "scope")
+        self.assertEqual(job["if"], "needs.scope.outputs.rust_checks == 'true'")
+        step = next(step for step in job["steps"]
+                    if step.get("name") == "Exercise public APIs inside a sealed static host")
+        self.assertEqual(step["env"]["CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER"],
+                         "${{ github.workspace }}/scripts/linux-sealed-test-runner.py")
+        commands = step["run"]
+        for expected in (
+            "-p consonance-client --features in-process,uml --lib",
+            "-p host-code-identity --lib",
+            "-p uml --lib",
+            "grep -Fxq 'running 1 test'",
+            "grep -Eq 'test result: ok\\. 1 passed;'",
+            "client_test session::tests::sealed_host_admits_public_session_identity",
+            "client_test session::worker::tests::sealed_host_reexecs_a_public_worker",
+            "client_test session::worker::tests::shared_launcher_forks_session_telemetry_owners",
+            "client_test session::uml::tests::clean_guest_exit_remains_a_terminal_shutdown",
+            "client_test session::uml::tests::host_signal_abandons_instead_of_reporting_guest_shutdown",
+            "client_test session::uml::tests::host_clone_status_abandons_instead_of_reporting_guest_shutdown",
+            "client_test session::uml::tests::capture_timeout_abandons_with_a_typed_watchdog_error",
+            "client_test session::uml::tests::paused_restore_timeout_abandons_with_a_typed_watchdog_error",
+            "client_test session::uml::tests::rejected_service_branch_cannot_leave_a_usable_rewound_uml_session",
+            "client_test session::uml::tests::service_factory_aliasing_the_live_handler_abandons_the_session",
+            "client_test session::uml::tests::root_import_checks_the_independently_pinned_machine_commitment",
+            "client_test session::worker::tests::worker_launcher_refuses_a_child_without_image_hello",
+            "client_test session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent",
+            "client_test image_identity::sealed_guard_tests::unexpected_executable_mapping_revokes_a_published_lease",
+            "sealed_static::tests::cached_guard_rejects_unexpected_executable_mapping -- --exact",
+            "sealed_static::tests::measured_read_hash_and_comparison_bytes_survive_refusal -- --exact",
+            "recording::tests::sealed_host_admits_public_recording_round_trip -- --exact",
+            "-p uml --test terminal_console_limit console_limit_is_settled_after_a_provisional_terminal_stop -- --exact",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, commands)
+        self.assertTrue((ROOT / "scripts/linux-sealed-test-runner.py").is_file())
+
+    def test_oci_runtime_qualification_uses_sealed_static_hosts(self):
+        import yaml
+
+        cases = (
+            (ci_contract.HARMONY_OCI_CHECKS.path, "container-execution",
+             "Run and restore containers inside the guest", "x86_64-unknown-linux-musl"),
+            (ci_contract.CONSONANCE_RUNTIME.path, "runtime-artifacts",
+             "Extended platform replay", "x86_64-unknown-linux-musl"),
+            (ci_contract.RELEASE.path, "guest",
+             "Qualify the released runtime on hardware", '"$HOST_TARGET"'),
+        )
+        for path, job_name, step_name, target in cases:
+            with self.subTest(workflow=path):
+                job = yaml.safe_load((ROOT / path).read_text())["jobs"][job_name]
+                steps = job["steps"]
+                qualification = next(step for step in steps if step.get("name") == step_name)
+                runner = "${{ github.workspace }}/scripts/linux-sealed-test-runner.py"
+                self.assertEqual(
+                    qualification["env"]["CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER"],
+                    runner,
+                )
+                self.assertIn(f"--target {target}", qualification["run"])
+                self.assertIn("-p oci-support --test platform --test process_platform",
+                              re.sub(r"\s+", " ", qualification["run"].replace("\\", "")))
+                commands = "\n".join(step.get("run", "") for step in steps)
+                self.assertIn("rustup target add", commands)
+                self.assertIn("musl-tools", commands)
+                if job_name == "guest":
+                    self.assertEqual(
+                        qualification["env"]["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER"],
+                        runner,
+                    )
+                    self.assertEqual(
+                        qualification["env"]["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"],
+                        "musl-gcc",
+                    )
+
+    def test_linux_arm64_strict_host_package_has_its_own_bounded_job(self):
+        import yaml
+
+        registered = next(job for job in ci_contract.HARMONY_CHECKS.jobs
+                          if job.name == "Consonance Host Arm64")
+        self.assertEqual((registered.trigger, registered.timeout_minutes, registered.select),
+                         ("pr", 15, "rust_checks"))
+        jobs = yaml.safe_load((ROOT / ci_contract.HARMONY_CHECKS.path).read_text())["jobs"]
+        job = jobs["consonance-host-arm64"]
+        self.assertEqual(job["name"], registered.name)
+        self.assertEqual(job["runs-on"], "ubuntu-24.04-arm")
+        self.assertEqual(job["env"]["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"],
+                         "musl-gcc")
+        self.assertEqual(job["env"]["CC_aarch64_unknown_linux_musl"], "musl-gcc")
+        self.assertEqual(job["timeout-minutes"], registered.timeout_minutes)
+        self.assertEqual(job["needs"], "scope")
+        self.assertEqual(job["if"], "needs.scope.outputs.rust_checks == 'true'")
+        commands = "\n".join(step.get("run", "") for step in job["steps"])
+        for expected in (
+            "rustup target add aarch64-unknown-linux-musl",
+            "cargo build --locked -p harmony-cli --bin harmony",
+            "--target aarch64-unknown-linux-musl",
+            "--features consonance-host --bin harmony-consonance-host",
+            "scripts/test-consonance-host-package.py",
+            "--platform linux",
+            "target/debug/harmony check --offline --json",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, commands)
+        self.assertIn("Check the paired CLI on Arm64",
+                      [step.get("name") for step in job["steps"]])
+        fixture = (ROOT / "scripts/test-consonance-host-package.py").read_text()
+        self.assertIn('package="faults"', fixture)
+
+    def test_linux_cli_consumers_restore_a_paired_strict_host(self):
+        import yaml
+
+        builder = (ROOT / "scripts/build-consonance-cli-pair.sh").read_text()
+        self.assertIn("--manifest-path \"$manifest\"", builder)
+        self.assertIn("--target x86_64-unknown-linux-musl", builder)
+        self.assertIn("--features consonance-host --bin harmony-consonance-host", builder)
+        self.assertIn('source="$target/x86_64-unknown-linux-musl/release/$binary"', builder)
+
+        def workflow(path):
+            return yaml.safe_load((ROOT / path).read_text())["jobs"]
+
+        def commands(job):
+            return "\n".join(str(step.get("run", "")) for step in job["steps"])
+
+        oci = workflow(ci_contract.HARMONY_OCI_CHECKS.path)
+        package = oci["postgresql-cli-package"]
+        self.assertIn("PostgreSQL CLI Package", [job.name for job in ci_contract.HARMONY_OCI_CHECKS.jobs])
+        self.assertEqual(package["timeout-minutes"], 45)
+        self.assertIn("scripts/build-consonance-cli-pair.sh paired-cli", commands(package))
+        self.assertIn("scripts/test-consonance-host-package.py", commands(package))
+        self.assertIn("postgresql-cli-package", oci["postgresql"]["needs"])
+        self.assertIn("postgresql-cli-package-${{ github.run_id }}",
+                      str(oci["postgresql"]["steps"]))
+        self.assertIn("chmod +x target/release/harmony target/release/harmony-consonance-host",
+                      commands(oci["postgresql"]))
+        self.assertNotIn("cargo build", commands(oci["postgresql"]))
+        self.assertIn("scripts/build-consonance-cli-pair.sh target/release",
+                      commands(oci["nested-runtime"]))
+
+        languages = workflow(ci_contract.HARMONY_LANGUAGES_CHECKS.path)
+        self.assertIn("Language CLI Tools", [job.name for job in ci_contract.HARMONY_LANGUAGES_CHECKS.jobs])
+        self.assertEqual(languages["tools"]["timeout-minutes"], 45)
+        self.assertIn("scripts/build-consonance-cli-pair.sh paired-cli", commands(languages["tools"]))
+        for consumer in ("check", "uml-command"):
+            with self.subTest(consumer=consumer):
+                job = languages[consumer]
+                self.assertIn("tools", job["needs"])
+                downloads = [step.get("with", {}).get("name") for step in job["steps"]
+                             if step.get("uses", "").startswith("actions/download-artifact")]
+                self.assertIn("language-cli-tools", downloads)
+                self.assertIn("chmod +x target/release/harmony target/release/harmony-consonance-host",
+                              commands(job))
+                self.assertNotIn("cargo build", commands(job))
+
+        for registered, artifact, consumer in (
+            (ci_contract.HARMONY_HISTORICAL_BENCHMARKS, "historical-tools", "search"),
+            (ci_contract.HARMONY_UML_CAMPAIGN, "uml-campaign-tools", "search"),
+        ):
+            with self.subTest(workflow=registered.name):
+                jobs = workflow(registered.path)
+                self.assertIn("scripts/build-consonance-cli-pair.sh tools", commands(jobs["tools"]))
+                uploads = [step.get("with", {}).get("path") for step in jobs["tools"]["steps"]
+                           if step.get("uses", "").startswith("actions/upload-artifact")]
+                self.assertIn("tools", uploads)
+                downloads = [step.get("with", {}).get("name") for step in jobs[consumer]["steps"]
+                             if step.get("uses", "").startswith("actions/download-artifact")]
+                self.assertTrue(any(artifact in name for name in downloads))
+                self.assertIn("chmod +x tools/harmony tools/harmony-consonance-host",
+                              commands(jobs[consumer]))
+
+        nested = workflow(ci_contract.CONSONANCE_NESTED_HOST.path)["nested-host"]
+        nested_commands = commands(nested)
+        self.assertIn('"$history/source/Cargo.toml"', nested_commands)
+        self.assertIn("archived source predates the paired Consonance host", nested_commands)
+        self.assertIn("scripts/build-consonance-cli-pair.sh target-cli/release", nested_commands)
+        self.assertIn("nested-host-evidence/harmony-consonance-host", nested_commands)
+
+    def test_c_investigation_has_its_own_bounded_job(self):
+        import yaml
+
+        workflow = ci_contract.HARMONY_LANGUAGES_CHECKS
+        jobs = yaml.safe_load((ROOT / workflow.path).read_text())["jobs"]
+        registered = next(job for job in workflow.jobs if job.name == "C Investigation")
+        investigation = jobs["c-investigation"]
+        self.assertEqual((registered.trigger, registered.timeout_minutes,
+                          registered.select), ("pr", 35, "harmony_languages"))
+        self.assertTrue(registered.exception)
+        self.assertEqual(ci_contract.PR_EXTENDED_CHECK_BUDGETS[
+            (workflow.path, "C Investigation")], 35)
+        self.assertEqual(investigation["timeout-minutes"], registered.timeout_minutes)
+        self.assertEqual(jobs["check"]["timeout-minutes"], 15)
+        self.assertNotIn("cli/tests/investigation.sh", str(jobs["check"]["steps"]))
+        self.assertEqual(investigation["needs"], ["scope", "guest", "images", "tools"])
+        downloads = [step["with"]["name"] for step in investigation["steps"]
+                     if step.get("uses", "").startswith("actions/download-artifact")]
+        self.assertEqual(downloads,
+                         ["language-image-c", "language-guest-runtime", "language-cli-tools"])
+        commands = "\n".join(step.get("run", "") for step in investigation["steps"])
+        self.assertIn("docker load --input language-image/c.tar", commands)
+        self.assertIn("timeout -k 10 1800 bash cli/tests/investigation.sh", commands)
+        self.assertNotIn("scripts/historical-search.sh", commands)
+
+    def test_only_backend_and_store_miri_variants_have_extended_budgets(self):
+        import yaml
+
+        workflow = ci_contract.CONSONANCE_ANALYSIS
+        job = yaml.safe_load((ROOT / workflow.path).read_text())["jobs"]["miri"]
+        registered = next(job for job in workflow.jobs if job.name == "Miri — <Crate>")
+        self.assertEqual(registered.timeout_minutes, 30)
+        self.assertTrue(registered.exception)
+        self.assertEqual(ci_contract.pull_request_budget(workflow.path, registered.name), 30)
+        expression = "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store') && 30 || 15 }}"
+        self.assertEqual(job["timeout-minutes"], expression)
+        self.assertEqual(ci_contract.PR_TIMEOUT_EXPRESSIONS,
+                         {(workflow.path, registered.name): expression})
+
+    def test_release_guest_archive_carries_verified_runtime_pair(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ci_contract.RELEASE.path).read_text())["jobs"]
+        self.assertTrue(any("cargo build --locked --release -p harmony-cli" in step.get("run", "")
+                            for step in jobs["cli"]["steps"]))
+        steps = jobs["guest"]["steps"]
+        names = [step.get("name") for step in steps]
+        verify_inputs = names.index("Verify exact platform inputs")
+        package = names.index("Package the runtime and checksum")
+        verify_archive = names.index("Verify packaged runtime pair")
+        upload = next(index for index, step in enumerate(steps)
+                      if step.get("uses", "").startswith("actions/upload-artifact"))
+        self.assertLess(verify_inputs, package)
+        self.assertLess(package, verify_archive)
+        self.assertLess(verify_archive, upload)
+        self.assertIn('"$isa/runtime-manifest.json"', steps[package]["run"])
+        for check in ('manifest["version"]', 'manifest["architecture"]',
+                      'manifest["source_digest"]', 'manifest["files"][name]'):
+            self.assertIn(check, steps[verify_archive]["run"])
+
+    def test_release_cli_archive_signs_and_packages_strict_host(self):
+        import yaml
+
+        steps = yaml.safe_load((ROOT / ci_contract.RELEASE.path).read_text())["jobs"]["cli"]["steps"]
+        commands = "\n".join(str(step.get("run", "")) for step in steps)
+        for required in (
+            "--no-default-features --features consonance-host --bin harmony-consonance-host",
+            "--options runtime,hard,kill",
+            "--entitlements consonance/vmm-backend/hvf.entitlements.plist",
+            "--library-constraint scripts/macos-os-only-library-constraint.coderequirement",
+            "harmony harmony-consonance-host",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, commands)
+        signed = next(step for step in steps if step.get("name") == "Build and constrain signed Consonance host")
+        self.assertEqual(signed["if"], "runner.os == 'macOS'")
+
     def test_exact_runtime_consumers_wait_for_its_build(self):
         import yaml
 
@@ -56,6 +393,9 @@ class StructureTests(unittest.TestCase):
         runtime = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(runtime)
         return set(runtime.INPUTS)
+
+    def test_platform_runtime_key_excludes_workload_sources(self):
+        self.assertFalse(any(path.startswith("workloads/") for path in self.runtime_inputs()))
 
     def workspace_root(self, crate):
         for directory in (crate, *crate.parents):
@@ -335,10 +675,61 @@ class HostCompatibilityTests(unittest.TestCase):
         self.data = yaml.safe_load((ROOT / self.workflow.path).read_text())
         self.hosts = {key: job for key, job in self.data["jobs"].items() if key != "scope"}
 
+    def test_darwin_rights_qualification_requires_actual_pass_records(self):
+        job = self.hosts["macos-arm64"]
+        step = next(step for step in job["steps"]
+                    if step.get("name") == "Verify Darwin descriptor receive qualification")
+        script = step["run"]
+        self.assertIn('test "$(uname -m)" = arm64', script)
+        self.assertNotIn("cargo ", script)
+        for name in ci_contract.DARWIN_RIGHTS_QUALIFICATION_TESTS:
+            self.assertIn(name, script)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            uname = root / "uname"
+            uname.write_text("#!/bin/sh\nprintf 'arm64\\n'\n")
+            uname.chmod(0o755)
+            env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}"}
+            names = ci_contract.DARWIN_RIGHTS_QUALIFICATION_TESTS
+            cases = [
+                ("pass", [f"PASS [0.01s] consonance-client session::worker::tests::{name}"
+                          for name in names], True),
+                ("progress", [f"PASS [0.01s] ( 1/2) consonance-client session::worker::tests::{name}"
+                              for name in names], True),
+                ("colored", [
+                    "\033[32;1m        PASS\033[0m [   0.021s] (   1/1998) "
+                    "\033[35;1mconsonance-client\033[0m "
+                    "\033[36msession::worker::tests\033[0m\033[36m::\033[0m"
+                    f"\033[34;1m{name}\033[0m" for name in names
+                ], True),
+                ("missing", [], False),
+                ("failed", [f"FAIL [0.01s] consonance-client session::worker::tests::{name}"
+                            for name in names], False),
+                ("skipped", [f"SKIP [0.01s] consonance-client session::worker::tests::{name}"
+                             for name in names], False),
+            ]
+            for missing in names:
+                cases.append((missing, [
+                    f"PASS [0.01s] consonance-client session::worker::tests::{name}"
+                    for name in names if name != missing
+                ], False))
+            for label, lines, expected in cases:
+                with self.subTest(case=label):
+                    (root / "host-tests.log").write_text("\n".join(lines) + "\n")
+                    result = subprocess.run(["bash", "-c", script], cwd=root, env=env,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, expected, result.stderr)
+
     def test_host_jobs_are_selected_and_bounded_on_every_pull_request(self):
         self.assertEqual(
             [job.name for job in self.workflow.jobs if not job.selects],
-            ["macOS Arm64", "Linux Arm64", "Linux Arm64 Qualification"],
+            [
+                "macOS Arm64",
+                "macOS Consonance Host Package",
+                "Linux Arm64",
+                "Linux Arm64 Dissonance",
+                "Linux Arm64 Qualification",
+            ],
         )
         for job in self.workflow.jobs:
             with self.subTest(job=job.name):
@@ -351,13 +742,49 @@ class HostCompatibilityTests(unittest.TestCase):
                     self.assertEqual(actual["if"], "needs.scope.outputs.rust_checks == 'true'")
                     self.assertEqual(actual["timeout-minutes"], job.timeout_minutes)
 
+    def test_arm64_host_runs_the_real_direct_export_copy_accounting_case(self):
+        host = self.hosts["macos-arm64"]
+        self.assertEqual(host["runs-on"], "macos-14")
+        step = next(step for step in host["steps"]
+                    if step.get("name") == "Verify direct extent export copy accounting on Arm64")
+        command = step["run"]
+        self.assertIn('test "$(uname -m)" = arm64', command)
+        self.assertIn("cargo nextest run --workspace --no-fail-fast 2>&1 | tee host-tests.log",
+                      "\n".join(step.get("run", "") for step in host["steps"]))
+        self.assertIn("grep -Eq '^[[:space:]]*PASS[[:space:]]+\\[[^]]+\\][[:space:]]+"
+                      "(\\([[:space:]]*[0-9]+/[0-9]+\\)[[:space:]]+)?consonance-client[[:space:]]+session::live::tests::"
+                      "served_export_writes_once_into_the_allocated_destination$' copy-work-tests.log",
+                      command)
+        self.assertNotIn("cargo test", command)
+
+    def test_direct_export_pass_check_accepts_colored_nextest_and_rejects_missing_or_skipped(self):
+        step = next(step for step in self.hosts["macos-arm64"]["steps"]
+                    if step.get("name") == "Verify direct extent export copy accounting on Arm64")
+        name = "session::live::tests::served_export_writes_once_into_the_allocated_destination"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            uname = root / "uname"
+            uname.write_text("#!/bin/sh\nprintf 'arm64\\n'\n")
+            uname.chmod(0o755)
+            env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}"}
+            for prefix, suffix, expected in [("PASS", "", True), ("SKIP", "", False),
+                                              ("FAIL", "", False), ("PASS", "_other", False)]:
+                line = (f"\033[32;1m        {prefix}\033[0m [ 0.021s] ( 1/1998) "
+                        f"\033[35;1mconsonance-client\033[0m \033[36m{name}{suffix}\033[0m\n")
+                (root / "host-tests.log").write_text(line)
+                result = subprocess.run(["bash", "-c", step["run"]], cwd=root, env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
+
     def test_each_job_names_an_explicit_runner(self):
         runners = {job["name"]: job["runs-on"] for job in self.hosts.values()}
         self.assertEqual(
             runners,
             {
                 "macOS Arm64": "macos-14",
+                "macOS Consonance Host Package": "macos-14",
                 "Linux Arm64": "ubuntu-24.04-arm",
+                "Linux Arm64 Dissonance": "ubuntu-24.04-arm",
                 "Linux Arm64 Qualification": "ubuntu-24.04-arm",
             },
         )
@@ -374,25 +801,54 @@ class HostCompatibilityTests(unittest.TestCase):
             with self.subTest(job=key):
                 self.assertIn("cargo nextest run --workspace", commands[key])
                 self.assertIn("scripts/check-portable-tests.sh", commands[key])
+        self.assertNotIn("--manifest-path dissonance/Cargo.toml", commands["linux-arm64"])
+        self.assertIn("--manifest-path dissonance/Cargo.toml", commands["linux-arm64-dissonance"])
+        self.assertNotIn("cargo nextest run --workspace", commands["linux-arm64-dissonance"])
+        self.assertIn("scripts/check-portable-tests.sh", commands["linux-arm64-dissonance"])
+        self.assertEqual(self.data["env"]["DISSONANCE_PORTABLE_TEST_FLOOR"], 300)
         self.assertNotIn("qualify-host-sha256.py", commands["linux-arm64"])
         self.assertNotIn("cargo nextest run --workspace", commands["linux-arm64-qualification"])
         for key in ("macos-arm64", "linux-arm64-qualification"):
             with self.subTest(job=key):
                 self.assertIn("scripts/qualify-host-sha256.py --check", commands[key])
-                self.assertIn("check --offline --json", commands[key])
+                self.assertNotIn("check --offline --json", commands[key])
         portable_cache = next(
             step["with"] for step in self.hosts["linux-arm64"]["steps"]
+            if step.get("uses") == "Swatinem/rust-cache@v2"
+        )
+        dissonance_cache = next(
+            step["with"] for step in self.hosts["linux-arm64-dissonance"]["steps"]
             if step.get("uses") == "Swatinem/rust-cache@v2"
         )
         qualification_cache = next(
             step["with"] for step in self.hosts["linux-arm64-qualification"]["steps"]
             if step.get("uses") == "Swatinem/rust-cache@v2"
         )
-        self.assertNotEqual(portable_cache["shared-key"], qualification_cache["shared-key"])
+        self.assertEqual(len({cache["shared-key"] for cache in (
+            portable_cache, dissonance_cache, qualification_cache)}), 3)
         self.assertEqual(
             {key: value for key, value in portable_cache.items() if key != "shared-key"},
             {key: value for key, value in qualification_cache.items() if key != "shared-key"},
         )
+
+    def test_macos_package_job_builds_and_signs_the_strict_host(self):
+        commands = "\n".join(
+            str(step.get("run", ""))
+            for step in self.hosts["macos-consonance-host-package"]["steps"]
+        )
+        for required in (
+            "--bin harmony",
+            "--no-default-features",
+            "--features consonance-host --bin harmony-consonance-host",
+            "--options runtime",
+            "--entitlements consonance/vmm-backend/hvf.entitlements.plist",
+            "--library-constraint scripts/macos-os-only-library-constraint.coderequirement",
+            "scripts/test-consonance-host-package.py",
+            "--platform macos",
+            "target/debug/harmony check --offline --json",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, commands)
 
     def test_a_host_job_claims_no_live_hypervisor(self):
         text = (ROOT / self.workflow.path).read_text()
@@ -408,12 +864,12 @@ class HostCompatibilityTests(unittest.TestCase):
 
 
 class IgnoredTestRegistryTests(unittest.TestCase):
-    PATTERN = re.compile(r"[a-z][\w-]*(?:::[\w-]+)? (?:\*|\w+(?:::\w+)*)")
+    PATTERN = re.compile(r"[a-z][\w-]*(?:::(?:[\w-]+|bin/[\w-]+))? (?:\*|\w+(?:::\w+)*)")
 
     def test_every_pattern_names_a_binary_and_a_test(self):
         for pattern, runners in ci_contract.ignored_test_runners().items():
             with self.subTest(pattern=pattern):
-                self.assertRegex(pattern, self.PATTERN)
+                self.assertIsNotNone(self.PATTERN.fullmatch(pattern))
                 self.assertEqual(len(runners), len(set(runners)))
 
     def test_host_tests_are_keyed_by_a_machine(self):

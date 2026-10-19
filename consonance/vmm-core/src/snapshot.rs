@@ -42,9 +42,50 @@ pub struct SnapshotEngine {
     max_chain_len: u32,
 }
 
+pub(crate) struct SnapshotReadTransaction<'store> {
+    transaction: snapshot_store::ReadTransaction<'store>,
+}
+
+impl<'store> SnapshotReadTransaction<'store> {
+    pub(crate) fn read_page(
+        &mut self,
+        snap: SnapshotId,
+        gfn: u64,
+    ) -> Result<&'store [u8; PAGE_SIZE], SnapshotError> {
+        Ok(self.transaction.read_page(snap, gfn)?)
+    }
+
+    pub(crate) fn verify_snapshots(&mut self, snaps: &[SnapshotId]) -> Result<(), SnapshotError> {
+        Ok(self.transaction.verify_snapshots(snaps)?)
+    }
+
+    pub(crate) fn page_delta(
+        &mut self,
+        base: SnapshotId,
+        parent: Option<SnapshotId>,
+        target: SnapshotId,
+    ) -> Result<PageDelta<'store>, SnapshotError> {
+        Ok(self.transaction.page_delta(base, parent, target)?)
+    }
+
+    pub(crate) fn diff_pages(
+        &mut self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+    ) -> Result<Vec<(u64, &'store [u8; PAGE_SIZE])>, SnapshotError> {
+        Ok(self.transaction.diff_pages(from, to)?)
+    }
+}
+
 pub const DEFAULT_MAX_CHAIN_LEN: u32 = 32;
 
 impl SnapshotEngine {
+    pub(crate) fn read_transaction(&self) -> SnapshotReadTransaction<'_> {
+        SnapshotReadTransaction {
+            transaction: self.store.read_transaction(),
+        }
+    }
+
     pub fn new(mem_bytes: usize) -> SnapshotEngine {
         let mem_pages = (mem_bytes / PAGE_SIZE) as u64;
         SnapshotEngine {
@@ -72,14 +113,6 @@ impl SnapshotEngine {
 
     pub fn store_stats(&self) -> StoreStats {
         self.store.store_stats()
-    }
-
-    pub(crate) fn verify_snapshot_pages(&self, snap: SnapshotId) -> Result<(), SnapshotError> {
-        Ok(self.store.verify_snapshot_pages(snap)?)
-    }
-
-    pub(crate) fn verify_snapshots(&self, snaps: &[SnapshotId]) -> Result<(), SnapshotError> {
-        Ok(self.store.verify_snapshots(snaps)?)
     }
 
     pub fn stats(&self, snap: SnapshotId) -> Result<SnapStats, SnapshotError> {

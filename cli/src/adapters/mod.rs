@@ -95,6 +95,19 @@ pub fn select(workload: &Workload) -> Result<&'static dyn Package> {
         .ok_or_else(|| format!("unknown workload package {:?}", workload.package).into())
 }
 pub fn dispatch(request: Request) -> Result<u8> {
+    dispatch_with_diagnostics(request, &mut std::io::stderr())
+}
+
+fn dispatch_with_diagnostics(
+    request: Request,
+    diagnostics: &mut impl std::io::Write,
+) -> Result<u8> {
+    if !matches!(
+        request.operation,
+        Operation::Inspect | Operation::Timeline | Operation::Logs
+    ) {
+        crate::host_boundary::admit_execution(&request.config.runner.kind)?;
+    }
     let package = select(&request.config.workload)?;
     if !package.supports(request.operation) {
         return Err(format!(
@@ -103,6 +116,20 @@ pub fn dispatch(request: Request) -> Result<u8> {
             request.operation
         )
         .into());
+    }
+    if matches!(
+        request.operation,
+        Operation::Replay | Operation::Branch | Operation::Resume | Operation::Search
+    ) && let Some(selection) = &request.selection
+    {
+        let source = crate::runs::locate(&selection.run)?;
+        let manifest = crate::runs::Manifest::read(&source)?;
+        if let Some(warning) = crate::cpu_replay::warning(
+            &manifest.cpu_provenance,
+            &crate::cpu_replay::CpuIdentity::current(),
+        ) {
+            let _ = writeln!(diagnostics, "warning: {warning}");
+        }
     }
     package.execute(request)
 }
@@ -133,14 +160,19 @@ mod tests {
         fn supports(&self, op: Operation) -> bool {
             matches!(
                 op,
-                Operation::Prepare | Operation::Search | Operation::Replay | Operation::Branch
+                Operation::Prepare
+                    | Operation::Search
+                    | Operation::Replay
+                    | Operation::Branch
+                    | Operation::Resume
+                    | Operation::Inspect
             )
         }
         fn init(&self, _: &Path, _: Option<String>, _: Option<String>) -> Result<()> {
             Ok(())
         }
         fn execute(&self, request: Request) -> Result<u8> {
-            if request.operation == Operation::Prepare {
+            if matches!(request.operation, Operation::Prepare | Operation::Inspect) {
                 return Ok(0);
             }
             let parent = request
@@ -173,6 +205,81 @@ mod tests {
         }
     }
     #[test]
+    fn dynamic_dispatch_cannot_execute_a_changed_consonance_recipe() {
+        let mut config = Config::default();
+        config.runner.kind = "consonance".into();
+        let error = dispatch(Request {
+            operation: Operation::Check,
+            config,
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("packaged strict host"));
+    }
+
+    #[test]
+    fn saved_execution_emits_cpu_warning_without_blocking_and_inspection_is_quiet() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workload.package = "counter".into();
+        Counter.validate_runner(&mut config).unwrap();
+        let original = root.path().join("original");
+        dispatch(Request {
+            operation: Operation::Search,
+            config: config.clone(),
+            destination: Destination {
+                out: Some(original.clone()),
+                name: None,
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        let mut recorded = Manifest::read(&original).unwrap();
+        recorded.cpu_provenance.clear();
+        recorded.save(&original).unwrap();
+        for operation in [
+            Operation::Replay,
+            Operation::Branch,
+            Operation::Resume,
+            Operation::Search,
+            Operation::Inspect,
+        ] {
+            let mut diagnostics = Vec::new();
+            let result = dispatch_with_diagnostics(
+                Request {
+                    operation,
+                    config: config.clone(),
+                    selection: Some(Selection {
+                        run: original.display().to_string(),
+                        finding: None,
+                    }),
+                    destination: Destination {
+                        out: Some(root.path().join(format!("{operation:?}"))),
+                        name: None,
+                    },
+                    ..Default::default()
+                },
+                &mut diagnostics,
+            )
+            .unwrap();
+            assert_eq!(result, 0);
+            let output = String::from_utf8(diagnostics).unwrap();
+            if operation == Operation::Inspect {
+                assert!(output.is_empty());
+            } else {
+                assert!(
+                    output.contains("warning: Replay CPU portability warning:"),
+                    "{operation:?}: {output}"
+                );
+                assert!(output.contains(
+                    "Native CPU behavior may produce different result bits or saved state"
+                ));
+                assert!(output.contains("This warning does not block execution"));
+            }
+        }
+    }
+
+    #[test]
     fn third_package_uses_shared_preparation_search_replay_and_branch_dispatch() {
         let root = tempfile::tempdir().unwrap();
         let mut config = Config::default();
@@ -197,6 +304,17 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
+        let mut recorded = Manifest::read(&original).unwrap();
+        let unknown = crate::cpu_replay::CpuIdentity::unknown(std::env::consts::ARCH);
+        recorded.cpu_provenance = vec![unknown.clone()];
+        recorded.save(&original).unwrap();
+        assert!(
+            crate::cpu_replay::warning(
+                &recorded.cpu_provenance,
+                &crate::cpu_replay::CpuIdentity::current(),
+            )
+            .is_some()
+        );
         for (operation, out, point) in [
             (Operation::Replay, copy.clone(), Point::default()),
             (
@@ -225,10 +343,21 @@ mod tests {
         }
         assert_eq!(Manifest::read(&copy).unwrap().payload["sum"], 6);
         assert_eq!(Manifest::read(&branch).unwrap().payload["sum"], 3);
+        for path in [&copy, &branch] {
+            let inherited = Manifest::read(path).unwrap();
+            assert!(inherited.cpu_provenance.contains(&unknown));
+            assert!(
+                crate::cpu_replay::warning(
+                    &inherited.cpu_provenance,
+                    &crate::cpu_replay::CpuIdentity::current(),
+                )
+                .is_some()
+            );
+        }
         let refused = root.path().join("refused");
         assert!(
             crate::workflow::saved(Request {
-                operation: Operation::Resume,
+                operation: Operation::Run,
                 selection: Some(Selection {
                     run: original.display().to_string(),
                     finding: None

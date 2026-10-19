@@ -137,6 +137,7 @@ pub fn translate(spec: &EnvSpec) -> Result<InputSpec, ChannelError> {
     let mut result = InputSpec::seeded(spec.seed());
     if spec.policy() != &FaultPolicy::none() {
         result.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: IDENTITY.to_vec(),
             configuration: spec.policy().to_bytes(),
         });

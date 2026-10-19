@@ -37,6 +37,8 @@ pub fn compare_gic_architecture(
     scalar!(timer_hz);
     scalar!(timer_intid);
     scalar!(gicd_ctlr);
+    scalar!(gicr_propbaser);
+    scalar!(gicr_pendbaser);
     scalar!(pmr);
     scalar!(bpr0);
     scalar!(bpr1);
@@ -159,6 +161,7 @@ impl Arm64ArchitecturalState {
             "debug.watchpoint_control",
             &self.vcpu.debug.watchpoint_control,
         )?;
+        write_u64(&mut out, "debug.mdccint_el1", self.vcpu.debug.mdccint_el1)?;
         write_u64(&mut out, "debug.mdscr_el1", self.vcpu.debug.mdscr_el1)?;
         write_bool(
             &mut out,
@@ -203,6 +206,8 @@ impl Arm64ArchitecturalState {
         write_u64(&mut out, "gic.timer_hz", gic.timer_hz)?;
         writeln!(out, "gic.timer_intid {:08x}", gic.timer_intid)?;
         writeln!(out, "gic.gicd_ctlr {:08x}", gic.gicd_ctlr)?;
+        write_u64(&mut out, "gic.gicr_propbaser", gic.gicr_propbaser)?;
+        write_u64(&mut out, "gic.gicr_pendbaser", gic.gicr_pendbaser)?;
         write_u32_array(&mut out, "gic.group", &gic.group)?;
         write_u32_array(&mut out, "gic.enable", &gic.enable)?;
         write_u32_array(&mut out, "gic.pending", &gic.pending)?;
@@ -394,6 +399,11 @@ pub fn compare_arm64_architecture(
         "debug.watchpoint_control",
         a.debug.watchpoint_control,
         b.debug.watchpoint_control
+    );
+    scalar!(
+        "debug.mdccint_el1",
+        a.debug.mdccint_el1,
+        b.debug.mdccint_el1
     );
     scalar!("debug.mdscr_el1", a.debug.mdscr_el1, b.debug.mdscr_el1);
     scalar!(
@@ -738,6 +748,18 @@ mod comparator_tests {
                 index: None,
             })
         );
+        for field in ["gicr_propbaser", "gicr_pendbaser"] {
+            let mut planted = expected.clone();
+            if field == "gicr_propbaser" {
+                planted.gicr_propbaser = 0x1234_5180;
+            } else {
+                planted.gicr_pendbaser = 0x1234_0580;
+            }
+            assert_eq!(
+                compare_gic_architecture(&expected, &planted),
+                Err(GicArchitectureDifference { field, index: None })
+            );
+        }
         let mut planted = expected.clone();
         planted.bpr1 = 7;
         assert_eq!(
@@ -807,6 +829,9 @@ mod comparator_tests {
                     smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
                     psci_profile: vmm_backend::Arm64PsciProfile::KvmPsci10,
                     gic_ctlr_fixed_bits: 0x8400,
+                    gicd_iidr: 0x4b00_243b,
+                    gicd_typer2: 0,
+                    register_identity: [0; 32],
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();

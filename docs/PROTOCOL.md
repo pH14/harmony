@@ -75,6 +75,7 @@ The observation operations are:
 | Operation | Meaning |
 |---|---|
 | `Hash` | Return a canonical digest for a requested scope. |
+| `EventHistory` | Return the cumulative normalized-event count and ordered commitment separately from state. |
 | `Read` | Read an exact range of guest-physical memory. |
 | `Regs` | Return a versioned register view. |
 | `Console` | Read a page of captured serial bytes. |
@@ -92,10 +93,29 @@ The vocabulary defines whole-state, disk, and memory-region hash scopes. The
 current server implements the whole-state digest. An unavailable scope returns
 `Unsupported` rather than a substitute value.
 
+`EventHistory` is available for V-time-wired VMMs. Fresh wiring starts the count
+and commitment at zero. Version 2 counts commitment records, including normalized
+transport events and completed semantic service exchanges. Each normalized event commits class, payload,
+virtual time and ordered interrupt deadline/vector association. Snapshot capture
+and diagnostic trace retirement are neutral; replay, branch, portable import
+and cache import restore the captured prefix. Local snapshot/schedule IDs and
+checkpoint hashes are excluded. A clockevent delivered during an otherwise
+raw-only ARM exit records a semantic delivery event at that actual boundary;
+it does not change interrupt timing. A backend without history returns `Unsupported`.
+The compact commitment does not retain event bytes or certify arbitrary guest
+instruction history. Completed doorbell exchanges additionally commit canonical
+request kind, service, opcode, sequence, payload, response status and response
+payload. Malformed requests bind their advertised length and observed bytes.
+Immediate completions follow the enclosing transport record; deferred
+completions contribute once when their response is written, using captured
+request state. They neither charge virtual time nor change diagnostic normalized
+event ordinals. Faults compares it with source-bound replay certificates,
+including final terminal and zero-action job results; UML remains unavailable.
+
 ## Intervention plane
 
 `Perturb` stages a bounded mechanical effect at a `Moment`: memory write or memory
-XOR. Protocol version 12 and input format version 5 bind
+XOR. Protocol version 14 and input format version 8 bind
 this vocabulary to the negotiated contract. Workload fault tooling translates
 its fault definitions into these operations. `Exec` injects an interactive
 serial command and runs to a completion marker or deadline. Each operation has
@@ -136,12 +156,13 @@ machine.
 
 ## Hash vocabulary
 
-Three related names have separate roles:
+State, output and ordered history have separate roles:
 
 | Name | Role |
 |---|---|
 | `state_hash` | Digest of modeled state that can affect future execution, including latent state. |
 | `observable_digest` | Digest of output deliberately emitted by the guest. |
+| `EventHistory` | Count and v1 SHA-256 commitment of ordered normalized execution events; distinct from endpoint state. |
 | `Hash { scope }` | Protocol operation used to request a digest. |
 
 `state_hash` establishes replay identity. `observable_digest` describes visible

@@ -8,13 +8,14 @@ use environment::input_spec::{ServiceConfig, nominal_factory};
 use serde_json::{Value, json};
 use snapshot_store::{PAGE_SIZE, PageHash};
 use uml::{
-    Capture, Checkpoint, Checkpoints, Event, Exit, Guest, Launch, MemoryError, Profile, Session,
-    SessionError, Stop, VerifiedProfile, event_hash,
+    Capture, Checkpoint, Checkpoints, Event, Exit, ExitReason, Guest, Launch, MemoryError, Profile,
+    Session, SessionError, Stop, VerifiedProfile, event_hash,
 };
 
 use crate::filter;
 use crate::linux::{Options, check, summary};
 use crate::replay::{FIXTURES, SEED, completed, first_difference, seeded};
+use crate::state_diagnostics::StateDiagnostics;
 
 #[derive(Default)]
 struct Costs {
@@ -93,9 +94,157 @@ pub fn checks(options: &Options, profile: &VerifiedProfile) -> io::Result<Vec<Va
             json!({"reference": summary(&reference)}),
         ));
     }
+    checks.push(host_dirty_page_failure(options, profile));
+    checks.push(work_directory_restore_isolation(options, profile));
     checks.push(console_branch_restore(options, profile));
     checks.push(console_terminal(options, profile));
     Ok(checks)
+}
+
+fn work_directory_restore_isolation(options: &Options, profile: &VerifiedProfile) -> Value {
+    let outcome = (|| -> Result<Value, SessionError> {
+        let source_root = tempfile::Builder::new()
+            .prefix("source directory ")
+            .tempdir_in(&options.work)?;
+        let target_root = tempfile::Builder::new()
+            .prefix("destination directory with a different length ")
+            .tempdir_in(&options.work)?;
+        let mut source_launch = seeded(options, "schedule", SEED);
+        source_launch.work_parent = source_root.path().to_path_buf();
+        let reference = Guest::spawn(&source_launch, profile)?.wait()?;
+        let points = points(&reference).ok_or_else(|| {
+            SessionError::Protocol("directory isolation fixture did not complete".into())
+        })?;
+        let checkpoints = Checkpoints::new();
+        let work = source_launch.work_directory()?;
+        let source_path = work.path().to_path_buf();
+        let command = source_launch.command(profile, work.path())?;
+        let mut source = Session::start(command, work, &source_launch, &checkpoints, None, None)?;
+        if let Some(failure) = pause(&mut source, points.first, &reference.events)? {
+            return Ok(json!({"failure": failure}));
+        }
+        let first = source.capture(Capture::default())?;
+        let source_pid_path = source_path.join("harmony/pid");
+        let source_pid = std::fs::read(&source_pid_path)?;
+        let mut target_launch = source_launch.clone();
+        target_launch.work_parent = target_root.path().to_path_buf();
+        let target_work = target_launch.work_directory()?;
+        let target_path = target_work.path().to_path_buf();
+        let command = target_launch.command(profile, target_work.path())?;
+        let mut target = Session::start(
+            command,
+            target_work,
+            &target_launch,
+            &checkpoints,
+            Some(&first),
+            None,
+        )?;
+        let mut costs = Costs::default();
+        if target.events() != &reference.events[..points.first] {
+            return Ok(json!({"failure": "fresh directory restore changed the captured prefix"}));
+        }
+        let detour = diamond_paused_steps(&mut target, &reference.events, &points, &mut costs)?;
+        let target_failure = finished(target.run()?, &reference.events)?;
+        let source_directory_after_target = std::fs::read(&source_pid_path);
+        let source_directory_preserved = source_directory_after_target
+            .as_ref()
+            .is_ok_and(|contents| *contents == source_pid);
+        let source_directory_error = source_directory_after_target
+            .err()
+            .map(|error| error.to_string());
+        let source_failure = finished(source.run()?, &reference.events)?;
+        Ok(json!({
+            "detour": detour,
+            "target_failure": target_failure,
+            "source_failure": source_failure,
+            "source_directory_preserved": source_directory_preserved,
+            "source_directory_error": source_directory_error,
+            "source_removed": !source_path.exists(),
+            "target_removed": !target_path.exists(),
+            "distinct_directories": source_path != target_path,
+            "costs": costs.report(),
+        }))
+    })();
+    match outcome {
+        Ok(detail) => check(
+            "checkpoint_work_directory_restore_isolation",
+            detail["detour"].is_null()
+                && detail["target_failure"].is_null()
+                && detail["source_failure"].is_null()
+                && detail["source_directory_preserved"] == json!(true)
+                && detail["source_removed"] == json!(true)
+                && detail["target_removed"] == json!(true)
+                && detail["distinct_directories"] == json!(true),
+            detail,
+        ),
+        Err(error) => check(
+            "checkpoint_work_directory_restore_isolation",
+            false,
+            json!({"error": error.to_string()}),
+        ),
+    }
+}
+
+fn host_dirty_page_failure(options: &Options, profile: &VerifiedProfile) -> Value {
+    let result = (|| -> Result<Value, SessionError> {
+        let base = seeded(options, "schedule", SEED);
+        let work = base.work_directory()?;
+        let mut command = base.command(profile, work.path())?;
+        filter::deny_checkpoint_unprotect(&mut command);
+        let checkpoints = Checkpoints::new();
+        let mut session = Session::start(
+            command,
+            work,
+            &base,
+            &checkpoints,
+            None,
+            Some(base.wall_limit),
+        )?;
+        if session.run_to(1)? != Stop::Event {
+            return Err(SessionError::Protocol(
+                "the injected guest did not reach its first event".into(),
+            ));
+        }
+        let before = session.events().to_vec();
+        let capture_error = match session.capture(Capture::default()) {
+            Ok(_) => {
+                return Err(SessionError::Protocol(
+                    "the injected dirty-page failure published a checkpoint".into(),
+                ));
+            }
+            Err(error) => error,
+        };
+        let terminal = session.settle_terminal_console(base.wall_limit);
+        let stopped = matches!(
+            terminal,
+            Err(SessionError::Stopped(ExitReason::HostFailure))
+        );
+        let exit = session.kill()?;
+        let passed = stopped
+            && exit.reason == ExitReason::HostFailure
+            && exit.events == before
+            && crate::linux::contains(
+                &exit,
+                "Harmony checkpoint host failure: unprotect dirty page",
+            )
+            && !crate::linux::contains(&exit, "Kernel panic")
+            && crate::linux::clean(&exit);
+        Ok(
+            json!({"passed": passed, "capture_error": capture_error.to_string(), "events_before": before.len(), "exit": summary(&exit)}),
+        )
+    })();
+    match result {
+        Ok(detail) => check(
+            "checkpoint_host_dirty_page_failure",
+            detail["passed"] == json!(true),
+            detail,
+        ),
+        Err(error) => check(
+            "checkpoint_host_dirty_page_failure",
+            false,
+            json!({"error": error.to_string()}),
+        ),
+    }
 }
 
 fn console_terminal(options: &Options, profile: &VerifiedProfile) -> Value {
@@ -109,7 +258,7 @@ fn console_terminal(options: &Options, profile: &VerifiedProfile) -> Value {
         let factory = nominal_factory();
         let handler = factory(&ServiceConfig::default())
             .map_err(|error| SessionError::Protocol(error.to_string()))?;
-        session.branch(SEED, handler, vec![vec![b'P']])?;
+        session.branch(SEED, handler, vec![vec![b'P']], None)?;
         let mut terminal = false;
         for _ in 0..4 {
             match session.run_until(u64::MAX)? {
@@ -165,7 +314,7 @@ fn console_branch_restore(options: &Options, profile: &VerifiedProfile) -> Value
         let factory = nominal_factory();
         let handler = factory(&ServiceConfig::default())
             .map_err(|error| SessionError::Protocol(error.to_string()))?;
-        session.branch(SEED, handler, vec![vec![b'P']])?;
+        session.branch(SEED, handler, vec![vec![b'P']], None)?;
         if session.run_to(2)? != Stop::Event {
             return Ok(json!({"error": "the abandoned branch did not reach its event"}));
         }
@@ -175,7 +324,7 @@ fn console_branch_restore(options: &Options, profile: &VerifiedProfile) -> Value
         session.restore(&checkpoint)?;
         let handler = factory(&ServiceConfig::default())
             .map_err(|error| SessionError::Protocol(error.to_string()))?;
-        session.branch(SEED, handler, vec![vec![b'S']])?;
+        session.branch(SEED, handler, vec![vec![b'S']], None)?;
         let restored = session.run()?;
 
         let other = Checkpoints::new();
@@ -185,7 +334,7 @@ fn console_branch_restore(options: &Options, profile: &VerifiedProfile) -> Value
         }
         let handler = factory(&ServiceConfig::default())
             .map_err(|error| SessionError::Protocol(error.to_string()))?;
-        fresh.branch(SEED, handler, vec![vec![b'S']])?;
+        fresh.branch(SEED, handler, vec![vec![b'S']], None)?;
         let reference = fresh.run()?;
         Ok(json!({
             "abandoned_contains_marker": abandoned_contains_marker,
@@ -348,6 +497,15 @@ fn diamond_steps(
     if let Some(failure) = pause(session, points.first, reference)? {
         return Ok(Some(failure));
     }
+    diamond_paused_steps(session, reference, points, costs)
+}
+
+fn diamond_paused_steps(
+    session: &mut Session,
+    reference: &[Event],
+    points: &Points,
+    costs: &mut Costs,
+) -> Result<Option<Value>, SessionError> {
     let first = costs.capture(session, Capture::default())?;
     if let Some(failure) = pause(session, points.second, reference)? {
         return Ok(Some(failure));
@@ -438,7 +596,7 @@ fn imported(
     points: &Points,
     fixture: &str,
 ) -> Value {
-    let (passed, detail) = match import(profile, base, reference, points) {
+    let (passed, detail) = match import(profile, base, reference, points, fixture) {
         Ok(detail) => (
             detail["failures"]
                 .as_array()
@@ -455,17 +613,26 @@ fn import(
     base: &Launch,
     reference: &[Event],
     points: &Points,
+    fixture: &str,
 ) -> Result<Value, SessionError> {
+    let diagnostics = StateDiagnostics::from_environment(fixture)?;
     let checkpoints = Checkpoints::new();
     let mut session = start(profile, base, false, &checkpoints, None)?;
     if let Some(failure) = pause(&mut session, points.first, reference)? {
         return Ok(json!({"failures": [failure]}));
     }
     let setup = session.capture(Capture::default())?;
+    if let Some(diagnostics) = &diagnostics {
+        diagnostics.export("source-setup", &checkpoints, &setup, None)?;
+        diagnostics.repeats("source-setup-repeat", &checkpoints, &mut session)?;
+    }
     if let Some(failure) = pause(&mut session, points.second, reference)? {
         return Ok(json!({"failures": [failure]}));
     }
     let target = session.capture(Capture::default())?;
+    if let Some(diagnostics) = &diagnostics {
+        diagnostics.export("source-target", &checkpoints, &target, None)?;
+    }
     if let Some(failure) = pause(&mut session, points.third, reference)? {
         return Ok(json!({"failures": [failure]}));
     }
@@ -486,12 +653,18 @@ fn import(
     let checkpoint = checkpoints.import(&setup, &near, &rows, &sidecar, &nominal_factory())?;
     let mut failures = Vec::new();
     session.restore(&checkpoint)?;
+    if let Some(diagnostics) = &diagnostics {
+        diagnostics.repeats("in-place-target", &checkpoints, &mut session)?;
+    }
     failures.push(if session.events() == checkpoint.events() {
         finished(session.run()?, reference)?
     } else {
         Some(json!({"step": "restore import", "events": session.events().len()}))
     });
-    let fresh = start(profile, base, true, &checkpoints, Some(&checkpoint))?;
+    let mut fresh = start(profile, base, true, &checkpoints, Some(&checkpoint))?;
+    if let Some(diagnostics) = &diagnostics {
+        diagnostics.repeats("fresh-target", &checkpoints, &mut fresh)?;
+    }
     failures.push(if fresh.events() == checkpoint.events() {
         finished(fresh.run()?, reference)?
     } else {
@@ -499,10 +672,15 @@ fn import(
     });
     let other = Checkpoints::new();
     let mut second = start(profile, base, false, &other, None)?;
-    let same_setup = match pause(&mut second, points.first, reference)? {
+    let second_setup = match pause(&mut second, points.first, reference)? {
         Some(failure) => return Ok(json!({"failures": [failure]})),
-        None => second.capture(Capture::default())?.digest()? == setup.digest()?,
+        None => second.capture(Capture::default())?,
     };
+    let same_setup = second_setup.digest()? == setup.digest()?;
+    if let Some(diagnostics) = &diagnostics {
+        diagnostics.export("independent-setup", &other, &second_setup, None)?;
+        diagnostics.repeats("independent-setup-repeat", &other, &mut second)?;
+    }
     let before = other.stats();
     let events = second.events().to_vec();
     let rejected = matches!(

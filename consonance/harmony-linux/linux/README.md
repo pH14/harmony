@@ -38,6 +38,17 @@ rwsems use Linux's existing blocking and wakeup path.
 
 ## Canonical artifacts
 
+`build-continuation-initramfs.sh` builds a separate x86 Linux qualification
+fixture, `build/initramfs-continuation.cpio.gz`. Its static, libc-free PID 1
+initializes a 4 KiB memory pattern, XMM15 and an x87 stack value, then announces
+`X3_READY` and waits for a console line. `A` reads those guest values back,
+waits for a virtual timer, reads monotonic time and kernel entropy, and emits
+one `X3_RESULT` record. `B` changes the memory and floating-point values and
+waits again after `X3_DETOUR`. Compiler-generated vector code is disabled so
+the named SIMD register stays live across the console syscalls. This fixture
+does not replace the standard initramfs or OCI runtime and adds no execution
+policy to the VMM. See the [continuation cells](../../../scripts/qualification/README.md#composed-linux-continuation).
+
 The x86 build publishes `build/x86_64/bzImage` and
 `build/x86_64/initramfs-oci.cpio.gz`. The native arm64 build publishes
 `build/aarch64/Image` and `build/aarch64/initramfs-oci.cpio.gz`. Each runtime
@@ -54,6 +65,11 @@ consonance/harmony-linux/scripts/build-platform-runtime.sh
 The build requires `nightly-2026-06-16` with `rust-src` and the native Linux
 musl target. It builds the matching kernel and static guest binaries, packages
 the platform OCI fixture, and records a source and artifact manifest. The
+canonical entry point rejects `N6_TRAPS_OFF`, `TASK_PARK_PROFILE`,
+`NESTED_HOST_PROFILE`, and nondefault `ARM64_KERNEL_PROFILE`; build those
+separate profile kernels through the architecture's kernel builder. A profile
+build must not leave an older default kernel to be sealed as the current
+canonical runtime. The
 lower-level `build-oci-runtime-initramfs.sh` accepts the built platform init and
 supervisor through `HARMONY_RUNTIME_INIT` and `HARMONY_RUNTIME_SUPERVISOR`.
 It fails when a required input is missing. Every ARM executable must satisfy
@@ -91,6 +107,126 @@ later JIT code, executable remapping, or file mutation.
 
 The supported workload guest is the shipped 64-bit Linux kernel and its
 initramfs. The x86 loader requires the [64-bit Linux boot entry](https://docs.kernel.org/arch/x86/boot.html).
+The x86 kernel build rejects RDTSC, RDTSCP, RDRAND, and RDSEED decoded at
+canonical kernel-proper instruction starts. It requires direct branches to
+target those starts and checks the physical entry separately. Setup's loaded
+file bytes and the decompressor's executable sections are raw-scanned for the
+same encodings.
+Counter-shaped kernel operand and reviewed-data bytes, along with the compressed
+payload while mapped executable, remain computed-entry limits
+([#657](https://github.com/pH14/harmony/issues/657)).
+The scan checks that the known
+linker-defined code sections present in each image are marked executable before
+relying on section-based disassembly. It rejects unknown or duplicate allocated
+data sections and scans opcode bytes in loaded file ranges outside reviewed
+sections. Kernel reviewed data and the decompressor's compressed payload are
+exempt from raw-byte scanning because ordinary tables and compressed bytes can
+contain the same sequences by chance. Setup
+raw-scans every file-backed PT_LOAD byte across its mixed 16-/32-bit execution.
+The decompressor raw-scans every executable section because its 32-bit startup
+calls helpers in `.text` before switching modes; `.text` is also disassembled
+in both 64-bit modes. Even opcode-shaped immediates in decompressor code fail
+closed. The hardware-RNG raw scan checks every byte start, including overlapping
+`0f c7` encodings, so an earlier benign match cannot hide a later RDRAND or
+RDSEED. An unreadable or empty disassembly also fails the build. This guards
+against an executable image whose section flags or sizes hide code from `objdump -d`.
+Read-only data shares some executable ELF segments, so segment flags alone do
+not identify instruction bytes. `test_x86_counter_scan.py` exercises hidden
+code in shortened, non-executable, separately allocated, and duplicate-name
+sections, and opcode-shaped data that is inert in 64-bit artifacts but rejected
+in setup. A new data section name requires review before the image can be
+published. The raw segment
+walk also rejects an opcode split from code into nearby code or reviewed data,
+and opcode-shaped code bytes within one maximum instruction length after a code
+section ends. An x86 instruction can cross a section or short data gap and
+change how the CPU decodes the next code section, while section-by-section
+disassembly starts decoding it anew. The scan rejects an incomplete instruction
+starting in the final 14 bytes of a code section when another code section
+begins within those 14 bytes. This catches a truncated opcode followed by
+otherwise complete instructions and a prefix chain that shifts decoding
+farther than one maximum instruction length into the next section. Code that
+ends before loaded non-code bytes or a later PT_LOAD must instead end with
+fifteen consecutive INT3 bytes. The pinned x86 linker patch emits these fences
+without moving setup's fixed boot header. Because an x86 instruction is at
+most fifteen bytes long, straight-line execution in any 16-, 32-, or 64-bit
+decoder mode cannot consume the entire fence as part of an earlier instruction
+or continue into the following data or load. This includes zero-filled gaps,
+page slack, and loads without the executable ELF flag; setup and the
+decompressor do not use that flag as an execution boundary. For the kernel,
+an in-place PT_LOAD copy leaves buffer bytes beyond its file-backed range
+untouched, even when the load declares no larger memory range. Kernel code
+ending at that boundary always needs the fence. The scanner rejects overlapping
+PT_LOAD memory ranges so one load cannot overwrite another's fence. Kernel
+loads are also checked by physical address because the decompressor copies
+each segment there. Physical overlaps are rejected. All kernel loads must use
+one virtual-to-physical offset, so physical adjacency matches the virtual
+adjacency used by the opcode scan. The scan also rejects
+an earlier kernel load whose physical destination, conservatively including
+its memory tail, intersects the file source of a later load. Linux copies the
+file-backed loads in program-header order within one buffer; such an
+intersection could change executable bytes after scanning. Decoded direct
+branches from kernel or decompressor code into loaded non-code bytes, including
+reviewed data and load slack, fail admission. Every kernel direct branch target
+must be a canonical instruction start in a loaded executable section. Direct
+branches from either image outside all loaded sections are rejected: the VM
+loader can place unscanned initramfs bytes at such a target under executable
+boot page tables. The
+kernel ELF's physical entry must map uniquely to a complete loaded executable
+section. If that entry is inside a canonical instruction, the scanner decodes
+again from the entry byte; an executable-section flag alone does not make the
+ordinary disassembly's instruction boundary safe. The pinned kernel enters
+`.init.text`, which is executable even though its containing PT_LOAD is writable.
+The decompressor head is decoded as 32-bit code before `startup_64` and in both
+64-bit modes afterward; missing mode anchors or a truncated decode at a symbol
+boundary fail. `startup_64` must be exactly 0x200 bytes after the packed image
+start, matching the VM's 64-bit entry offset. A single executable `.head.text`
+must be the first loaded section, because its `startup_32` bytes begin the
+packed decompressor image.
+Its 32-bit startup must end in a far return even without zero alignment
+before `startup_64`, and the scan rejects direct branches into that padding.
+Indirect or computed transfers into the executable compressed payload and code
+copied out of data
+require separate admission review. The decompressor's other reviewed data
+sections are raw-scanned for counter and hardware-RNG instruction bytes,
+including encodings split across any chain of address-adjacent PT_LOADs, even
+when a middle load contains only one byte. A near or far
+return cannot start one of those instructions in the reviewed data itself.
+Direct branches from the 32-bit head seed an i386 reachability scan through
+executable decompressor sections. It restarts decoding at every reachable
+branch target, including a target inside an earlier instruction, and checks
+branches back into the head against its reviewed instruction starts. A path
+into loaded non-code or an unresolved control transfer fails admission.
+After Kbuild finishes, the publisher seals snapshots of all three ELFs,
+`bzImage`, and the build configuration before running the scan. It derives the
+kernel's physical load base from `CONFIG_PHYSICAL_START` and
+`CONFIG_PHYSICAL_ALIGN` and requires it to match the scanned loads. The
+publisher also requires the stripped embedded `vmlinux` to retain the scanned
+ELF entry, ordered program headers, and every loaded file-source byte. It
+verifies that the compressed kernel embedded in the decompressor expands to
+that stripped `vmlinux`, and that the packed image exactly matches Kbuild's
+setup binary padded to a 4 KiB
+boundary followed by the decompressor binary. The setup header's `setup_sects`
+must point the VM loader to that same decompressor boundary before its 64-bit
+entry offset is applied. Allocated setup and decompressor
+sections must map uniquely to loaded bytes without overlap; the publisher also
+raw-scans the complete setup binary and checks that the embedded compressed
+kernel bytes survive the decompressor binary conversion. It publishes the
+verified image snapshot at both guest artifact paths and the scanned `vmlinux`
+snapshot using atomic replacement for each destination. A concurrent change to
+a build-tree path therefore cannot substitute different bytes between
+qualification and publication.
+For 64-bit kernel code and the decompressor's `.text`, the scanner disassembles
+both AMD64 and Intel64 modes; operand-size prefixes can change instruction
+boundaries on Intel hardware. ELF symbols can restart objdump inside an
+instruction, so the scanner also decodes the bounded path across every
+truncated instruction at a symbol boundary until it rejoins ordinary decoding
+or terminates. An unresolved branch or path fails admission. The section-boundary
+tail check requires both raw and symbol-aware dual-mode decoding to end on a
+complete instruction. A direct branch into an executable section must land on
+an instruction boundary in both disassemblies; otherwise operand bytes could
+become a counter instruction even though the ordinary section disassembly
+does not show one.
+
 The Linux VMM rejects non-long-mode CPU records at snapshot publication and
 before snapshot restore. State hashes can observe transient CPU modes during
 boot without admitting them as restorable snapshots. These checks observe boundaries;

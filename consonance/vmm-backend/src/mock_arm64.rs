@@ -54,6 +54,9 @@ const MOCK_ARM64_CAPS: MockArm64Caps = Capabilities {
         smccc_workaround_levels: crate::arch::arm64::Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
         psci_profile: crate::arch::arm64::Arm64PsciProfile::HvfSingleVcpu,
         gic_ctlr_fixed_bits: 0,
+        gicd_iidr: 0,
+        gicd_typer2: 0,
+        register_identity: [0; 32],
     },
 };
 
@@ -477,6 +480,9 @@ mod tests {
                     crate::arch::arm64::Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
                 psci_profile: crate::arch::arm64::Arm64PsciProfile::KvmPsci10,
                 gic_ctlr_fixed_bits: 0x88400,
+                gicd_iidr: 0x4b00_243b,
+                gicd_typer2: 0,
+                register_identity: [0; 32],
             },
         };
         let mock = MockArm64Backend::with_capabilities(caps);

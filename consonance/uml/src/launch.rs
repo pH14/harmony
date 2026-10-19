@@ -36,6 +36,8 @@ const SWEEP_LIMIT: Duration = Duration::from_secs(5);
 const BRIDGE_FD: i32 = 3;
 pub(crate) const PHYSMEM_FD: i32 = 4;
 const HIGH_FD: i32 = 10;
+const GUEST_PANIC_STATUS: i32 = 86;
+const HOST_CLONE_FAILURE_STATUS: i32 = 87;
 
 #[cfg(test)]
 static TEST_EVENT_CUT_FINISH_PID: AtomicI32 = AtomicI32::new(0);
@@ -87,8 +89,8 @@ fn enforce_host_cpu(command: &mut Command, cpu: usize, shared: bool) -> Result<(
     if !shared && !processor_allowed(cpu)? {
         return Err(LaunchError::HostCpuUnavailable(cpu));
     }
-    // SAFETY: this is the final pre_exec callback installed by Guest. It only
-    // changes the forked child's affinity using a captured stack-sized mask;
+    // SAFETY: this callback only changes the forked child's affinity using
+    // a captured stack-sized mask;
     // every subsequent UML process inherits that single-CPU affinity.
     unsafe {
         command.pre_exec(move || {
@@ -128,6 +130,8 @@ pub struct Launch {
 pub enum ExitReason {
     Exited(i32),
     Signaled(i32),
+    GuestPanic,
+    HostFailure,
     WallLimit,
     ConsoleLimit,
     Killed,
@@ -189,6 +193,7 @@ pub struct Guest {
     started: Instant,
     wall_limit: Duration,
     finished: bool,
+    shutdown: Option<Result<(), String>>,
 }
 
 enum ConsoleRead {
@@ -393,7 +398,7 @@ impl Launch {
         }
     }
 
-    pub fn command(&self, profile: &VerifiedProfile, work: &Path) -> Result<Command, LaunchError> {
+    pub fn command(&self, profile: &VerifiedProfile, _work: &Path) -> Result<Command, LaunchError> {
         if let Some(argument) = self
             .kernel_arguments
             .iter()
@@ -408,6 +413,10 @@ impl Launch {
             .map_or_else(|| profile.rootfs(), |image| image.path());
         #[cfg(not(target_os = "linux"))]
         let initramfs = self.initramfs.clone().unwrap_or_else(|| profile.rootfs());
+        #[cfg(target_os = "linux")]
+        let work = Path::new("/proc/self/fd/243");
+        #[cfg(not(target_os = "linux"))]
+        let work = _work;
         let mut command = Command::new(profile.executable());
         command
             .arg(format!("mem={}M", self.memory_mib))
@@ -533,6 +542,7 @@ impl Guest {
             command.env("HARMONY_UML_MINSIGSTKSZ", host.auxv.minsigstksz.to_string());
             command.env("HARMONY_UML_PLATFORM", &host.auxv.platform);
             enforce_host_cpu(&mut command, host.processor, launch.shared_host)?;
+            pass_work_directory(&mut command, work.path())?;
         }
         let child = command.spawn()?;
         drop(command);
@@ -641,6 +651,7 @@ impl Guest {
             started: now(),
             wall_limit: launch.wall_limit,
             finished: false,
+            shutdown: None,
         };
         Ok((guest, held))
     }
@@ -676,6 +687,9 @@ impl Guest {
     }
 
     pub fn wait_for(&mut self, needle: &str, timeout: Duration) -> io::Result<bool> {
+        if self.finished {
+            return Err(io::Error::other("guest teardown was already attempted"));
+        }
         let deadline = now() + timeout;
         loop {
             if self.console_contains(needle) {
@@ -683,7 +697,7 @@ impl Guest {
             }
             if now() >= deadline
                 || self.over_limit.load(Ordering::Acquire)
-                || self.child.try_wait()?.is_some()
+                || self.poll_owned_child()?.is_some()
             {
                 return Ok(self.console_contains(needle));
             }
@@ -693,6 +707,10 @@ impl Guest {
 
     pub fn wait(mut self) -> io::Result<Exit> {
         let reason = loop {
+            let stopped = self.stopped()?;
+            if stopped == Some(ExitReason::HostFailure) {
+                break ExitReason::HostFailure;
+            }
             if self.over_limit.load(Ordering::Acquire) {
                 break ExitReason::ConsoleLimit;
             }
@@ -701,7 +719,7 @@ impl Guest {
                 bridge::FAILED => break ExitReason::BridgeFailure,
                 _ => {}
             }
-            if let Some(reason) = self.stopped()? {
+            if let Some(reason) = stopped {
                 break reason;
             }
             std::thread::sleep(POLL);
@@ -709,11 +727,36 @@ impl Guest {
         self.finish(reason)
     }
 
+    fn poll_owned_child(&mut self) -> io::Result<Option<ExitStatus>> {
+        if self.finished {
+            return Err(io::Error::other("guest teardown was already attempted"));
+        }
+        #[cfg(test)]
+        OWNED_POLLS.with(|calls| calls.set(calls.get() + 1));
+        #[cfg(test)]
+        let result = if FAIL_OWNED_POLL.with(|fail| fail.get()) {
+            Err(io::Error::other("injected owned poll failure"))
+        } else {
+            self.child.try_wait()
+        };
+        #[cfg(not(test))]
+        let result = self.child.try_wait();
+        if let Err(error) = &result {
+            self.finished = true;
+            self.shutdown = Some(Err(format!("owned child wait failed: {error}")));
+        }
+        result
+    }
+
     pub(crate) fn stopped(&mut self) -> io::Result<Option<ExitReason>> {
+        let status = self.poll_owned_child()?;
+        if status.is_some_and(|status| exit_reason(status) == ExitReason::HostFailure) {
+            return Ok(Some(ExitReason::HostFailure));
+        }
         if self.over_limit.load(Ordering::Acquire) {
             return Ok(Some(ExitReason::ConsoleLimit));
         }
-        if let Some(status) = self.child.try_wait()? {
+        if let Some(status) = status {
             return Ok(Some(exit_reason(status)));
         }
         if self.started.elapsed() >= self.wall_limit {
@@ -726,12 +769,49 @@ impl Guest {
         self.finish(ExitReason::Killed)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn shutdown(&mut self) -> io::Result<()> {
+        if let Some(result) = &self.shutdown {
+            return result.clone().map_err(io::Error::other);
+        }
+        self.finish(ExitReason::Killed)?;
+        self.shutdown
+            .as_ref()
+            .expect("finish records shutdown")
+            .clone()
+            .map_err(io::Error::other)
+    }
+
     pub(crate) fn finish(&mut self, reason: ExitReason) -> io::Result<Exit> {
+        if self.finished {
+            return Err(io::Error::other("guest teardown was already attempted"));
+        }
         self.finished = true;
+        self.shutdown = Some(Err("guest teardown did not confirm exit".into()));
         let wall = self.started.elapsed();
         kill_group(self.pid);
-        self.child.wait()?;
+        #[cfg(test)]
+        {
+            OWNED_WAITS.with(|calls| calls.set(calls.get() + 1));
+            if FAIL_OWNED_WAIT.with(|fail| fail.get()) {
+                return Err(io::Error::other("injected owned wait failure"));
+            }
+        }
+        let status = self.child.wait()?;
+        let reason = if exit_reason(status) == ExitReason::HostFailure {
+            ExitReason::HostFailure
+        } else {
+            reason
+        };
         let leftovers = sweep(self.pid);
+        self.shutdown = Some(if leftovers.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "guest teardown left {} group processes",
+                leftovers.len()
+            ))
+        });
         #[cfg(test)]
         if reason == ExitReason::EventCut
             && TEST_EVENT_CUT_FINISH_PID.load(Ordering::Acquire) == self.pid
@@ -763,9 +843,14 @@ impl Guest {
         let tail = self.console.lock().unwrap_or_else(PoisonError::into_inner);
         let (console, console_bytes) = (tail.bytes(), tail.total());
         drop(tail);
-        let reason = if reason != ExitReason::Killed && self.over_limit.load(Ordering::Acquire) {
+        let reason = if reason == ExitReason::HostFailure {
+            reason
+        } else if reason != ExitReason::Killed && self.over_limit.load(Ordering::Acquire) {
             ExitReason::ConsoleLimit
-        } else if matches!(reason, ExitReason::Exited(_) | ExitReason::Signaled(_)) {
+        } else if matches!(
+            reason,
+            ExitReason::Exited(_) | ExitReason::Signaled(_) | ExitReason::GuestPanic
+        ) {
             match self.bridge_state.load(Ordering::Acquire) {
                 bridge::CUT => ExitReason::EventCut,
                 bridge::FAILED => ExitReason::BridgeFailure,
@@ -814,6 +899,8 @@ fn now() -> Instant {
 
 fn exit_reason(status: ExitStatus) -> ExitReason {
     match (status.code(), status.signal()) {
+        (Some(GUEST_PANIC_STATUS), _) => ExitReason::GuestPanic,
+        (Some(HOST_CLONE_FAILURE_STATUS), _) => ExitReason::HostFailure,
         (Some(code), _) => ExitReason::Exited(code),
         (None, Some(signal)) => ExitReason::Signaled(signal),
         (None, None) => ExitReason::Signaled(0),
@@ -840,7 +927,17 @@ fn sweep(group: i32) -> Vec<i32> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static GROUP_SIGNALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static OWNED_WAITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static OWNED_POLLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FAIL_OWNED_WAIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_OWNED_POLL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 fn kill_group(group: i32) {
+    #[cfg(test)]
+    GROUP_SIGNALS.with(|calls| calls.set(calls.get() + 1));
     // SAFETY: killpg(2) takes plain integers and has no memory effects. The
     // group id is the launched child's pid, which leads its own process group.
     unsafe {
@@ -876,6 +973,41 @@ fn set_parent_death_signal(command: &mut Command) {
 #[cfg(not(target_os = "linux"))]
 fn set_parent_death_signal(_command: &mut Command) {}
 
+#[cfg(target_os = "linux")]
+fn pass_work_directory(command: &mut Command, path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    crate::profile::reserved_child_fds()?;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)?;
+    pass_open_work_directory(command, &directory)
+}
+
+#[cfg(target_os = "linux")]
+fn pass_open_work_directory(command: &mut Command, directory: &std::fs::File) -> io::Result<()> {
+    let directory = rustix::io::fcntl_dupfd_cloexec(directory, HIGH_FD)?;
+    command.env("TMPDIR", "/proc/self/fd/243");
+    // SAFETY: the closure owns the open directory through spawn and calls only
+    // dup2(2) and fcntl(2) on the child descriptor table before exec. Its source
+    // is above stdio and bridge targets, and the reserved target cannot alias it.
+    unsafe {
+        command.pre_exec(move || {
+            let target = crate::profile::WORK_DIRECTORY_FD;
+            if libc::dup2(directory.as_raw_fd(), target) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let flags = libc::fcntl(target, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(target, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
 fn pass_bridge(command: &mut Command, guest: OwnedFd, physmem: Option<OwnedFd>) {
     // SAFETY: the closure runs in the forked child before exec and calls only
     // fcntl(2), dup2(2) and close(2), which are async-signal-safe. Both
@@ -909,6 +1041,95 @@ fn pass_bridge(command: &mut Command, guest: OwnedFd, physmem: Option<OwnedFd>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    const UNAME26: libc::c_int = 0x0020000;
+
+    #[test]
+    fn kernel_statuses_are_distinct_from_guest_exit_statuses() {
+        assert_eq!(
+            exit_reason(ExitStatus::from_raw(GUEST_PANIC_STATUS << 8)),
+            ExitReason::GuestPanic
+        );
+        assert_eq!(
+            exit_reason(ExitStatus::from_raw(HOST_CLONE_FAILURE_STATUS << 8)),
+            ExitReason::HostFailure
+        );
+        assert_eq!(exit_reason(ExitStatus::from_raw(0)), ExitReason::Exited(0));
+        assert_eq!(
+            exit_reason(ExitStatus::from_raw(7 << 8)),
+            ExitReason::Exited(7)
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn owned_work_directory_overrides_an_earlier_fd_and_isolates_guests() {
+        let root = tempfile::tempdir().unwrap();
+        let foreign = tempfile::tempdir().unwrap();
+        let launch = Launch::new(root.path().to_path_buf());
+        let mut guests = Vec::new();
+        for marker in ["first", "second"] {
+            let work = launch.work_directory().unwrap();
+            let path = work.path().to_path_buf();
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(format!(
+                "test \"$TMPDIR\" = /proc/self/fd/243 && printf '%s' {marker} > \"$TMPDIR/marker\" && cat \"$TMPDIR/marker\""
+            ));
+            let wrong = std::fs::File::open(foreign.path()).unwrap();
+            // SAFETY: the callback owns its directory and duplicates it only
+            // into the child's reserved work-directory slot before exec.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::dup2(wrong.as_raw_fd(), crate::profile::WORK_DIRECTORY_FD) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let guest = Guest::start(command, work, &launch).unwrap();
+            guests.push((guest, path, marker));
+        }
+        for (guest, path, marker) in guests {
+            let exit = guest.wait().unwrap();
+            assert_eq!(exit.reason, ExitReason::Exited(0));
+            assert_eq!(exit.console, marker.as_bytes());
+            assert!(exit.work_removed);
+            assert!(!path.exists());
+        }
+        assert!(!foreign.path().join("marker").exists());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn work_directory_source_survives_an_earlier_descriptor_replacement() {
+        crate::profile::reserved_child_fds().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let foreign = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("marker"), b"owned").unwrap();
+        std::fs::write(foreign.path().join("marker"), b"foreign").unwrap();
+        let directory = std::fs::File::open(root.path()).unwrap();
+        let original = directory.as_raw_fd();
+        let wrong = std::fs::File::open(foreign.path()).unwrap();
+        let mut command = Command::new("sh");
+        command.args(["-c", "cat /proc/self/fd/243/marker"]);
+        // SAFETY: both sources remain owned until spawn finishes. The callback
+        // replaces only the child's copy of the original source descriptor.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(wrong.as_raw_fd(), original) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        pass_open_work_directory(&mut command, &directory).unwrap();
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"owned");
+    }
 
     #[cfg(target_os = "linux")]
     fn deny_fixed_layout(command: &mut Command, deny_zero: bool) {
@@ -974,7 +1195,7 @@ mod tests {
                 if libc::personality(0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
-                if libc::personality(libc::UNAME26 as libc::c_ulong) < 0 {
+                if libc::personality(UNAME26 as libc::c_ulong) < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
@@ -991,7 +1212,7 @@ mod tests {
                     if libc::personality(0) < 0 {
                         return Err(io::Error::last_os_error());
                     }
-                    if libc::personality(libc::UNAME26 as libc::c_ulong) < 0 {
+                    if libc::personality(UNAME26 as libc::c_ulong) < 0 {
                         return Err(io::Error::last_os_error());
                     }
                 }
@@ -1316,7 +1537,7 @@ mod tests {
         assert!(output.status.success());
         let inherited =
             u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
-        assert_ne!(inherited & libc::UNAME26 as u32, 0);
+        assert_ne!(inherited & UNAME26 as u32, 0);
         assert_eq!(inherited & libc::ADDR_NO_RANDOMIZE as u32, 0);
 
         let mut command = Command::new("/bin/cat");
@@ -1345,7 +1566,7 @@ mod tests {
         assert!(output.status.success());
         let inherited =
             u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
-        assert_eq!(inherited, libc::UNAME26 as u32);
+        assert_eq!(inherited, UNAME26 as u32);
 
         let mut command = Command::new("/bin/cat");
         command.arg("/proc/self/personality");
@@ -1417,9 +1638,7 @@ mod tests {
         let output = unsafe {
             let inherited = libc::personality(u32::MAX as libc::c_ulong);
             assert!(inherited >= 0);
-            if libc::personality((inherited as libc::c_ulong) | (libc::UNAME26 as libc::c_ulong))
-                < 0
-            {
+            if libc::personality((inherited as libc::c_ulong) | (UNAME26 as libc::c_ulong)) < 0 {
                 let error = io::Error::last_os_error();
                 if error.raw_os_error() == Some(libc::EPERM) {
                     return;
@@ -1434,7 +1653,7 @@ mod tests {
         let flags =
             u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
         assert_ne!(flags & libc::ADDR_NO_RANDOMIZE as u32, 0);
-        assert_eq!(flags & libc::UNAME26 as u32, 0);
+        assert_eq!(flags & UNAME26 as u32, 0);
     }
 
     #[test]
@@ -1495,6 +1714,130 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", script]).process_group(0);
         Guest::start(command, work, launch).unwrap()
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn explicit_shutdown_confirms_owned_child_and_never_resignals_finished_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "exec sleep 60");
+        let before = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits = OWNED_WAITS.with(|calls| calls.get());
+        guest.shutdown().unwrap();
+        assert_eq!(GROUP_SIGNALS.with(|calls| calls.get()), before + 1);
+        assert!(guest.child.try_wait().unwrap().is_some());
+        guest.shutdown().unwrap();
+        let polls = OWNED_POLLS.with(|calls| calls.get());
+        assert!(guest.stopped().is_err());
+        assert!(guest.wait_for("", Duration::ZERO).is_err());
+        assert_eq!(OWNED_POLLS.with(|calls| calls.get()), polls);
+        assert!(guest.finish(ExitReason::Killed).is_err());
+        drop(guest);
+        assert_eq!(GROUP_SIGNALS.with(|calls| calls.get()), before + 1);
+        assert_eq!(OWNED_WAITS.with(|calls| calls.get()), waits + 1);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn explicit_shutdown_preserves_ambiguous_receipt_without_signal_or_wait_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "exec sleep 60");
+        guest.finished = true;
+        guest.shutdown = Some(Err("injected ambiguous teardown".into()));
+        let before = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits = OWNED_WAITS.with(|calls| calls.get());
+        let results: Vec<_> = (0..2)
+            .map(|_| guest.shutdown().err().map(|error| error.to_string()))
+            .collect();
+        let polls = OWNED_POLLS.with(|calls| calls.get());
+        let stopped = guest.stopped().is_err();
+        let wait_for = guest.wait_for("", Duration::ZERO).is_err();
+        let polls_after = OWNED_POLLS.with(|calls| calls.get());
+        let signals_after = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits_after = OWNED_WAITS.with(|calls| calls.get());
+        let running = guest.child.try_wait().unwrap().is_none();
+        if running {
+            guest.child.kill().unwrap();
+            guest.child.wait().unwrap();
+        }
+        assert!(results.iter().all(|result| {
+            result
+                .as_ref()
+                .is_some_and(|error| error.contains("ambiguous"))
+        }));
+        assert!(stopped && wait_for);
+        assert_eq!(polls_after, polls);
+        assert_eq!(signals_after, before);
+        assert_eq!(waits_after, waits);
+        assert!(running);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn explicit_shutdown_latches_an_injected_owned_wait_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "exec sleep 60");
+        let before = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits = OWNED_WAITS.with(|calls| calls.get());
+        FAIL_OWNED_WAIT.with(|fail| fail.set(true));
+        let first = guest.shutdown().err().map(|error| error.to_string());
+        FAIL_OWNED_WAIT.with(|fail| fail.set(false));
+        let second = guest.shutdown().err().map(|error| error.to_string());
+        let polls = OWNED_POLLS.with(|calls| calls.get());
+        let stopped = guest.stopped().is_err();
+        let wait_for = guest.wait_for("", Duration::ZERO).is_err();
+        let polls_after = OWNED_POLLS.with(|calls| calls.get());
+        let signals_after = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits_after = OWNED_WAITS.with(|calls| calls.get());
+        let status = guest.child.wait().unwrap();
+        if let Some(reader) = guest.reader.take() {
+            reader.join().unwrap();
+        }
+        assert!(first.is_some_and(|error| error.contains("injected owned wait failure")));
+        assert!(second.is_some_and(|error| error.contains("did not confirm exit")));
+        assert!(stopped && wait_for);
+        assert_eq!(polls_after, polls);
+        assert!(!status.success());
+        assert_eq!(signals_after, before + 1);
+        assert_eq!(waits_after, waits + 1);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn explicit_shutdown_refuses_after_an_injected_owned_poll_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "exec sleep 60");
+        let signals = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits = OWNED_WAITS.with(|calls| calls.get());
+        FAIL_OWNED_POLL.with(|fail| fail.set(true));
+        let first = guest.stopped().err().map(|error| error.to_string());
+        FAIL_OWNED_POLL.with(|fail| fail.set(false));
+        let polls = OWNED_POLLS.with(|calls| calls.get());
+        let closed = guest.shutdown().err().map(|error| error.to_string());
+        let stopped = guest.stopped().is_err();
+        let wait_for = guest.wait_for("", Duration::ZERO).is_err();
+        let after = (
+            GROUP_SIGNALS.with(|calls| calls.get()),
+            OWNED_WAITS.with(|calls| calls.get()),
+            OWNED_POLLS.with(|calls| calls.get()),
+        );
+        guest.child.kill().unwrap();
+        guest.child.wait().unwrap();
+        if let Some(reader) = guest.reader.take() {
+            reader.join().unwrap();
+        }
+        assert!(first.is_some_and(|error| error.contains("injected owned poll failure")));
+        assert!(closed.is_some_and(|error| error.contains("owned child wait failed")));
+        assert!(stopped && wait_for);
+        assert_eq!(after, (signals, waits, polls));
     }
 
     #[test]
@@ -1716,6 +2059,18 @@ mod tests {
         assert_eq!(exit.console_bytes, 20);
         assert!(exit.leftovers.is_empty());
         assert!(exit.work_removed);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn console_text_cannot_claim_host_clone_failure() {
+        let parent = tempfile::tempdir().unwrap();
+        let launch = launch(parent.path());
+        let exit = shell(&launch, "echo Harmony UML host clone failed; exit 0")
+            .wait()
+            .unwrap();
+        assert_eq!(exit.reason, ExitReason::Exited(0));
     }
 
     #[test]

@@ -8,9 +8,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use iced_x86::{Decoder, DecoderOptions, Mnemonic};
+use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind};
 use object::read::elf::ProgramHeader;
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, ObjectSymbol};
+
+mod xstate;
+
+#[cfg(test)]
+#[path = "admission/xstate_tests.rs"]
+mod xstate_tests;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -241,7 +247,7 @@ impl ImageReport {
                         matches!(
                             site.instruction.as_str(),
                             "RDRAND" | "RDSEED" | "RNDR" | "RNDRRS" | "RDPID" | "LSL"
-                        )
+                        ) || uml_transaction_entry(&site.instruction)
                     })
                     .map(|site| {
                         format!(
@@ -255,7 +261,7 @@ impl ImageReport {
             Ok(())
         } else {
             Err(format!(
-                "User-mode Linux executes hardware entropy and CPU-identity instructions natively; these image sites cannot be admitted even when reviewed:\n{}",
+                "User-mode Linux executes host-input instructions and transaction entry natively; these image sites cannot be admitted even when reviewed:\n{}",
                 native_host_inputs.join("\n")
             )
             .into())
@@ -351,6 +357,9 @@ fn finish_scan(
     reviewed: &BTreeMap<InstructionSite, String>,
 ) {
     for site in found {
+        if uml_transaction_entry(&site.instruction) {
+            continue;
+        }
         if !reviewed.contains_key(site) {
             let paths = report
                 .executables
@@ -500,13 +509,21 @@ where
     }
 }
 
-fn x86_host_input_name(mnemonic: Mnemonic) -> Option<&'static str> {
-    match mnemonic {
+fn uml_transaction_entry(name: &str) -> bool {
+    matches!(name, "XBEGIN" | "XACQUIRE")
+}
+
+fn x86_host_input_name(instruction: &Instruction) -> Option<&'static str> {
+    if instruction.has_xacquire_prefix() {
+        return Some("XACQUIRE");
+    }
+    match instruction.mnemonic() {
+        Mnemonic::Xbegin => Some("XBEGIN"),
         Mnemonic::Rdrand => Some("RDRAND"),
         Mnemonic::Rdseed => Some("RDSEED"),
         Mnemonic::Rdpid => Some("RDPID"),
         Mnemonic::Lsl => Some("LSL"),
-        _ => None,
+        _ => xstate::name(instruction),
     }
 }
 
@@ -529,6 +546,17 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     ) {
         return Err("unsupported ELF architecture".into());
     }
+    if elf.architecture() == object::Architecture::X86_64 {
+        x86_dynamic_policy(bytes, &elf)?;
+    }
+    let entries: BTreeSet<_> = std::iter::once(elf.entry())
+        .chain(
+            elf.symbols()
+                .chain(elf.dynamic_symbols())
+                .filter(|s| !s.is_undefined() && s.kind() == object::SymbolKind::Text)
+                .map(|s| s.address()),
+        )
+        .collect();
     let writable_executable = object::elf::PF_W | object::elf::PF_X;
     let mut sites = Vec::new();
     let mut executable_segments = 0;
@@ -580,6 +608,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                 code.resize(mapped_len, 0);
                 let mut mapped_sections = 0;
                 let mut mapped_ranges = Vec::new();
+                let mut page_edges = BTreeSet::from([page_head + usize::try_from(file_size)?]);
                 for section in elf.sections() {
                     let object::SectionFlags::Elf { sh_flags } = section.flags() else {
                         continue;
@@ -591,6 +620,17 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                         .address()
                         .checked_add(section.size())
                         .ok_or("mapped ELF section address overflow")?;
+                    if elf.architecture() == object::Architecture::X86_64 {
+                        for edge in [section.address(), section_end] {
+                            if let Some(offset) = edge
+                                .checked_sub(mapped_start)
+                                .and_then(|n| usize::try_from(n).ok())
+                                .filter(|offset| *offset <= code.len())
+                            {
+                                page_edges.insert(offset);
+                            }
+                        }
+                    }
                     if section.address() >= end || section_end <= start {
                         continue;
                     }
@@ -681,7 +721,14 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                 } else {
                     mapped_ranges.sort_unstable();
                     let mut anchors = BTreeSet::from([0, page_head]);
-                    let mut boundaries = BTreeSet::new();
+                    anchors.extend(entries.iter().filter_map(|entry| {
+                        entry
+                            .checked_sub(mapped_start)
+                            .and_then(|offset| usize::try_from(offset).ok())
+                            .filter(|offset| *offset < code.len())
+                    }));
+                    anchors.extend(page_edges.iter().copied());
+                    let mut boundaries = page_edges;
                     for (range_start, range_end) in mapped_ranges {
                         anchors.insert(range_start);
                         boundaries.insert(range_start);
@@ -714,22 +761,20 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     let mut group_code = Vec::new();
     let mut group_anchors = BTreeSet::new();
     let mut group_boundaries = BTreeSet::new();
+    let mut groups = Vec::new();
     for (start, code, anchors, boundaries) in x86_executable_loads {
         if let Some(first) = group_start
             && first.checked_add(u64::try_from(group_code.len())?) != Some(start)
         {
-            push_x86_sites(
+            let code = std::mem::take(&mut group_code);
+            groups.push((
                 first,
-                &group_code,
-                &group_anchors,
-                &group_boundaries,
-                digest,
-                &mut sites,
-            )?;
+                vec![false; code.len()],
+                code,
+                std::mem::take(&mut group_anchors),
+                std::mem::take(&mut group_boundaries),
+            ));
             group_start = None;
-            group_code.clear();
-            group_anchors.clear();
-            group_boundaries.clear();
         }
         if group_start.is_none() {
             group_start = Some(start);
@@ -746,18 +791,181 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
         }
     }
     if let Some(first) = group_start {
-        push_x86_sites(
+        let code = std::mem::take(&mut group_code);
+        groups.push((
             first,
-            &group_code,
-            &group_anchors,
-            &group_boundaries,
+            vec![false; code.len()],
+            code,
+            group_anchors,
+            group_boundaries,
+        ));
+    }
+    let mut pending = VecDeque::new();
+    for (start, visited, code, anchors, boundaries) in &mut groups {
+        pending.extend(push_x86_sites(
+            *start, code, anchors, boundaries, visited, digest, &mut sites,
+        )?);
+    }
+    let mut seen_targets = BTreeSet::new();
+    while let Some(target) = pending.pop_front() {
+        if !seen_targets.insert(target) {
+            continue;
+        }
+        let Some((start, visited, code, _, _)) =
+            groups.iter_mut().find(|(start, _, code, _, _)| {
+                *start <= target
+                    && usize::try_from(target - *start).is_ok_and(|offset| offset < code.len())
+            })
+        else {
+            continue;
+        };
+        let offset = usize::try_from(target - *start)?;
+        pending.extend(push_x86_sites(
+            *start,
+            code,
+            &BTreeSet::from([offset]),
+            &BTreeSet::new(),
+            visited,
             digest,
             &mut sites,
-        )?;
+        )?);
+    }
+    if elf.architecture() == object::Architecture::X86_64
+        && sites.iter().any(|site| xstate::is_site(&site.instruction))
+    {
+        let mut decoded = BTreeMap::new();
+        for (start, visited, code, _, _) in &groups {
+            for (offset, &seen) in visited.iter().enumerate() {
+                if seen {
+                    let instruction = Decoder::with_ip(
+                        64,
+                        &code[offset..],
+                        start + offset as u64,
+                        DecoderOptions::NONE,
+                    )
+                    .decode();
+                    decoded.insert(instruction.ip(), instruction);
+                }
+            }
+            for site in &sites {
+                if let Some(offset) = site
+                    .address
+                    .checked_sub(*start)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .filter(|offset| *offset < code.len())
+                {
+                    decoded.entry(site.address).or_insert_with(|| {
+                        Decoder::with_ip(64, &code[offset..], site.address, DecoderOptions::NONE)
+                            .decode()
+                    });
+                }
+            }
+        }
+        let mut targets: BTreeSet<_> = decoded
+            .values()
+            .filter(|i| {
+                matches!(
+                    i.op0_kind(),
+                    OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
+                )
+            })
+            .map(|i| i.near_branch_target())
+            .collect();
+        for (start, _, _, anchors, _) in &groups {
+            targets.extend(anchors.iter().map(|offset| start + *offset as u64));
+        }
+        xstate::validate(decoded, &targets)?;
+        sites.retain(|site| !xstate::is_site(&site.instruction));
     }
     sites.sort();
     sites.dedup();
     Ok(Some(sites))
+}
+
+fn x86_dynamic_policy(
+    bytes: &[u8],
+    elf: &object::read::elf::ElfFile64<'_>,
+) -> Result<(), Box<dyn Error>> {
+    use object::read::elf::Dyn;
+    let mut tags: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    let mut dynamic = false;
+    for header in elf.elf_program_headers() {
+        if let Some(table) = header.dynamic(elf.endian(), bytes)? {
+            if dynamic {
+                return Err("duplicate ELF dynamic segment".into());
+            }
+            dynamic = true;
+            let mut terminated = false;
+            for item in table {
+                let tag = item.d_tag(elf.endian());
+                if tag == 0 {
+                    terminated = true;
+                    break;
+                }
+                tags.entry(tag).or_default().push(item.d_val(elf.endian()));
+            }
+            if !terminated {
+                return Err("unterminated ELF dynamic table".into());
+            }
+        }
+    }
+    if [0x6fff_fef6, 0x6fff_fef7]
+        .iter()
+        .any(|tag| tags.contains_key(tag))
+    {
+        return Err("TLSdesc relocation in executable closure".into());
+    }
+    if tags.contains_key(&22) || tags.get(&30).is_some_and(|v| v.iter().any(|v| v & 4 != 0)) {
+        return Err("ELF text relocations".into());
+    }
+    let mut tables = vec![(7, 8, 24), (17, 18, 16)];
+    if tags.contains_key(&23) {
+        let stride = match tags.get(&20).map(Vec::as_slice) {
+            Some([7]) => 24,
+            Some([17]) => 16,
+            _ => return Err("unsupported PLT relocation format".into()),
+        };
+        tables.push((23, 2, stride));
+    }
+    for (address_tag, size_tag, stride) in tables {
+        let address = tags.get(&address_tag);
+        let size = tags.get(&size_tag);
+        if address.is_none() && size.is_none() {
+            continue;
+        }
+        let (Some([address]), Some([size])) = (address.map(Vec::as_slice), size.map(Vec::as_slice))
+        else {
+            return Err("missing or duplicate ELF relocation table".into());
+        };
+        if size % stride != 0 {
+            return Err("invalid ELF relocation table size".into());
+        }
+        if *size == 0 {
+            continue;
+        }
+        let mut mapped = None;
+        for header in elf
+            .elf_program_headers()
+            .iter()
+            .filter(|h| h.p_type(elf.endian()) == object::elf::PT_LOAD)
+        {
+            if let Some(data) = header
+                .data_range(elf.endian(), bytes, *address, *size)
+                .map_err(|()| "ELF relocation table outside file")?
+                && mapped.replace(data).is_some()
+            {
+                return Err("ambiguous ELF relocation table mapping".into());
+            }
+        }
+        let data = mapped.ok_or("ELF relocation table is not file-backed")?;
+        for entry in data.chunks_exact(stride as usize) {
+            let info = u64::from_le_bytes(entry[8..16].try_into()?);
+            if matches!(info as u32, 34..=36) {
+                return Err("TLSdesc relocation in executable closure".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn push_x86_sites(
@@ -765,9 +973,10 @@ fn push_x86_sites(
     code: &[u8],
     anchors: &BTreeSet<usize>,
     boundaries: &BTreeSet<usize>,
+    visited: &mut [bool],
     digest: &str,
     sites: &mut Vec<InstructionSite>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Vec<u64>, Box<dyn Error>> {
     for &boundary in boundaries {
         if boundary == 0 || boundary >= code.len() {
             continue;
@@ -779,7 +988,7 @@ fn push_x86_sites(
             let mut decoder =
                 Decoder::with_ip(64, &code[candidate_start..], address, DecoderOptions::NONE);
             let instruction = decoder.decode();
-            if let Some(name) = x86_host_input_name(instruction.mnemonic())
+            if let Some(name) = x86_host_input_name(&instruction)
                 && candidate_start + instruction.len() > boundary
             {
                 sites.push(InstructionSite {
@@ -790,24 +999,50 @@ fn push_x86_sites(
             }
         }
     }
-    for &offset in anchors {
+    let mut pending: VecDeque<_> = anchors.iter().copied().collect();
+    let mut external_targets = Vec::new();
+    while let Some(offset) = pending.pop_front() {
         if offset >= code.len() {
             continue;
         }
         let address = start
             .checked_add(u64::try_from(offset)?)
             .ok_or("executable ELF segment address overflow")?;
-        for (address, instruction) in
-            scan_code(object::Architecture::X86_64, address, &code[offset..])?
-        {
-            sites.push(InstructionSite {
-                digest: digest.to_owned(),
-                address,
-                instruction: instruction.into(),
-            });
+        let mut decoder = Decoder::with_ip(64, &code[offset..], address, DecoderOptions::NONE);
+        while decoder.can_decode() {
+            let instruction_offset = offset + decoder.position();
+            let instruction = decoder.decode();
+            if visited[instruction_offset] {
+                break;
+            }
+            visited[instruction_offset] = true;
+            if let Some(name) = x86_host_input_name(&instruction) {
+                sites.push(InstructionSite {
+                    digest: digest.to_owned(),
+                    address: instruction.ip(),
+                    instruction: name.into(),
+                });
+            }
+            if matches!(
+                instruction.op0_kind(),
+                OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
+            ) {
+                let target = instruction.near_branch_target();
+                if let Some(target_offset) = target
+                    .checked_sub(start)
+                    .and_then(|relative| usize::try_from(relative).ok())
+                    .filter(|offset| *offset < code.len())
+                {
+                    if !visited[target_offset] {
+                        pending.push_back(target_offset);
+                    }
+                } else {
+                    external_targets.push(target);
+                }
+            }
         }
     }
-    Ok(())
+    Ok(external_targets)
 }
 
 fn scan_code(
@@ -819,7 +1054,7 @@ fn scan_code(
     if architecture == object::Architecture::X86_64 {
         let decoder = Decoder::with_ip(64, data, address, DecoderOptions::NONE);
         for instruction in decoder {
-            if let Some(name) = x86_host_input_name(instruction.mnemonic()) {
+            if let Some(name) = x86_host_input_name(&instruction) {
                 sites.push((instruction.ip(), name));
             }
         }
@@ -855,7 +1090,7 @@ mod tests {
     use super::*;
     use oci_support::image::{Ownership, RuntimeConfig, StagedImage};
 
-    fn elf(code: &[u8], load_flags: u32, stack_flags: u32) -> Vec<u8> {
+    pub(super) fn elf(code: &[u8], load_flags: u32, stack_flags: u32) -> Vec<u8> {
         let mut bytes = vec![0; 4097 + code.len()];
         bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
         for (offset, value) in [
@@ -903,6 +1138,122 @@ mod tests {
         bytes[368..376].copy_from_slice(&1_u64.to_le_bytes());
         bytes[4096..4096 + code.len()].copy_from_slice(code);
         bytes
+    }
+
+    #[test]
+    fn native_math_is_admitted_in_vm_and_uml_without_instruction_reviews() {
+        for code in [
+            vec![0x0f, 0x53, 0xc0, 0xc3],
+            vec![0x0f, 0x52, 0xc0, 0xc3],
+            vec![0xf3, 0x0f, 0x53, 0xc0, 0xc3],
+            vec![0xf3, 0x0f, 0x52, 0xc0, 0xc3],
+            vec![0xd9, 0xfe, 0xc3],
+            vec![0xd9, 0xf9, 0xc3],
+            vec![0xc5, 0xf8, 0x53, 0xc0, 0xc3],
+            vec![0x62, 0xf2, 0x7d, 0x48, 0x4c, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x48, 0x4c, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x08, 0x4d, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x48, 0x4e, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x08, 0x4f, 0xc0, 0xc3],
+            vec![0xeb, 1, 0xb8, 0x62, 0xf6, 0x7d, 0x48, 0x4c, 0xc0, 0xc3],
+            vec![0xeb, 1, 0xb8, 0x0f, 0x53, 0xc0, 0xc3, 0xc3],
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("node"), elf(&code, 5, 6)).unwrap();
+            let report = inspect_root(root.path()).unwrap();
+            assert!(report.scan_passed(), "{report:?}");
+            assert!(report.require_for(ExecutionMode::Vm).is_ok(), "{report:?}");
+            assert!(report.require_for(ExecutionMode::Uml).is_ok(), "{report:?}");
+            assert!(report.executables[0].sites.is_empty(), "{report:?}");
+        }
+        assert!(scan_elf(&elf(&[0x0f, 0x51, 0xc0, 0xc3], 5, 6), "control").is_ok());
+    }
+
+    #[test]
+    fn native_math_does_not_exempt_hardware_entropy_from_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let code = [0xd9, 0xf9, 0x0f, 0x52, 0xc0, 0x48, 0x0f, 0xc7, 0xf0, 0xc3];
+        fs::write(root.path().join("node"), elf(&code, 5, 6)).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(
+            report
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("RDRAND")),
+            "{report:?}"
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+        assert!(report.require_for(ExecutionMode::Uml).is_err());
+        assert_eq!(report.executables[0].sites.len(), 1);
+        assert_eq!(report.executables[0].sites[0].instruction, "RDRAND");
+    }
+
+    #[test]
+    fn uml_refuses_transaction_entry_even_when_reviewed_without_instrumentation() {
+        for (code, name) in [
+            (&[0xc7, 0xf8, 0, 0, 0, 0][..], "XBEGIN"),
+            (&[0x66, 0xc7, 0xf8, 0, 0][..], "XBEGIN"),
+            (&[0xf2, 0xf0, 0x83, 0, 1][..], "XACQUIRE"),
+            (&[0xf2, 0x87, 0][..], "XACQUIRE"),
+            (&[0xf2, 0xf0, 0x0f, 0xc7, 8][..], "XACQUIRE"),
+            (&[0xf3, 0xf2, 0xf0, 0x83, 0, 1][..], "XACQUIRE"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("node"), elf(code, 5, 6)).unwrap();
+            let report = inspect_root(root.path()).unwrap();
+            assert!(report.scan_passed(), "{report:?}");
+            assert!(!report.instrumented_events());
+            assert!(report.require_for(ExecutionMode::Vm).is_ok());
+            assert_eq!(report.executables[0].sites[0].instruction, name);
+            assert!(
+                report
+                    .require_for(ExecutionMode::Uml)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(name)
+            );
+            fs::create_dir_all(root.path().join("etc/harmony")).unwrap();
+            fs::write(
+                root.path().join(ALLOWLIST_PATH),
+                format!("{} 0x1000 {name} reviewed\n", report.executables[0].digest),
+            )
+            .unwrap();
+            let reviewed = inspect_root(root.path()).unwrap();
+            assert!(reviewed.scan_passed());
+            assert!(reviewed.require_for(ExecutionMode::Vm).is_ok());
+            assert!(reviewed.require_for(ExecutionMode::Uml).is_err());
+        }
+    }
+
+    #[test]
+    fn standalone_transaction_controls_and_ordinary_prefixes_do_not_enter_transactions() {
+        for code in [
+            &[0x0f, 1, 0xd5][..],
+            &[0xc6, 0xf8, 1][..],
+            &[0x0f, 1, 0xd6][..],
+            &[0xf2, 0x0f, 1, 0xe8][..],
+            &[0xf2, 0x0f, 1, 0xe9][..],
+            &[0xf3, 0xf0, 0x83, 0, 1][..],
+            &[0xf3, 0xc7, 0, 0, 0, 0, 0][..],
+            &[0xf2, 0xf3, 0xf0, 0x83, 0, 1][..],
+            &[0xf3, 0xa4][..],
+            &[0xf2, 0xa6][..],
+            &[0xf3, 0x90][..],
+            &[0xf3, 0x0f, 0x10, 0xc0][..],
+            &[0xf2, 0x0f, 0x10, 0xc0][..],
+            &[0xf3, 0xc3][..],
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("node"), elf(code, 5, 6)).unwrap();
+            let report = inspect_root(root.path()).unwrap();
+            assert!(report.scan_passed(), "{code:02x?}: {report:?}");
+            assert!(
+                report.executables[0].sites.is_empty(),
+                "{code:02x?}: {report:?}"
+            );
+            assert!(report.require_for(ExecutionMode::Vm).is_ok());
+            assert!(report.require_for(ExecutionMode::Uml).is_ok());
+        }
     }
 
     fn adjacent_x86_elf(left_tail: &[u8], right: &[u8]) -> Vec<u8> {
@@ -1354,8 +1705,85 @@ mod tests {
         let sites = scan_elf(&elf(&code, 5, 6), "").unwrap().unwrap();
         assert_eq!(
             sites.iter().map(|site| site.address).collect::<Vec<_>>(),
-            [0x100c, 0x1010]
+            [0x100c, 0x1010, 0x1011]
         );
+    }
+
+    #[test]
+    fn direct_transfer_into_x86_immediate_is_scanned_at_its_real_target() {
+        for (code, address, instruction) in [
+            (
+                vec![0xeb, 0x01, 0xb8, 0x0f, 0xc7, 0xf0, 0x90, 0xc3],
+                0x1003,
+                "RDRAND",
+            ),
+            (
+                vec![0x75, 0x01, 0xb8, 0x0f, 0xc7, 0xf8, 0x90, 0xc3],
+                0x1003,
+                "RDSEED",
+            ),
+            (
+                vec![0xe8, 0x01, 0, 0, 0, 0xb8, 0x0f, 0xc7, 0xf0, 0x90, 0xc3],
+                0x1006,
+                "RDRAND",
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("probe"), elf(&code, 5, 6)).unwrap();
+            let report = inspect_root(root.path()).unwrap();
+            assert_eq!(
+                report.executables[0]
+                    .sites
+                    .iter()
+                    .map(|site| (site.address, site.instruction.as_str()))
+                    .collect::<Vec<_>>(),
+                if instruction == "RDSEED" {
+                    vec![(address, instruction), (address + 1, "XBEGIN")]
+                } else {
+                    vec![(address, instruction)]
+                },
+                "{report:?}"
+            );
+            assert!(report.require_for(ExecutionMode::Uml).is_err());
+        }
+        assert!(
+            scan_elf(&elf(&[0xb8, 0x0f, 0xc7, 0xf0, 0x90, 0xc3], 5, 6), "")
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+        let mut cross_section = elf(
+            &[0xeb, 0x03, 0x90, 0xc3, 0xb8, 0x0f, 0xc7, 0xf0, 0x90, 0xc3],
+            5,
+            6,
+        );
+        cross_section[288..296].copy_from_slice(&4_u64.to_le_bytes());
+        assert_eq!(
+            scan_elf(&cross_section, "").unwrap().unwrap()[0].address,
+            0x1005
+        );
+    }
+
+    #[test]
+    fn direct_transfer_to_a_separate_executable_load_restarts_at_its_target() {
+        let mut bytes = adjacent_x86_elf(&[], &[0xb8, 0x0f, 0xc7, 0xf0, 0x90, 0xc3]);
+        bytes[4096..4101].copy_from_slice(&[0xe9, 0xfc, 0x1f, 0, 0]);
+        for address_offset in [136, 144, 336] {
+            bytes[address_offset..address_offset + 8].copy_from_slice(&0x3000_u64.to_le_bytes());
+        }
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), bytes).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert_eq!(
+            report.executables[0]
+                .sites
+                .iter()
+                .map(|site| (site.address, site.instruction.as_str()))
+                .collect::<Vec<_>>(),
+            [(0x3001, "RDRAND")],
+            "{report:?}"
+        );
+        assert!(report.require_for(ExecutionMode::Uml).is_err());
     }
 
     #[test]
@@ -1492,7 +1920,11 @@ mod tests {
                         .iter()
                         .map(|site| (site.address, site.instruction.as_str()))
                         .collect::<Vec<_>>(),
-                    [(0x1000, mnemonic)],
+                    if mnemonic == "RDSEED" {
+                        vec![(0x1000, mnemonic), (0x1001, "XBEGIN")]
+                    } else {
+                        vec![(0x1000, mnemonic)]
+                    },
                     "{mnemonic} crossing section end {section_size}"
                 );
             }
@@ -1506,7 +1938,11 @@ mod tests {
                     .iter()
                     .map(|site| (site.address, site.instruction.as_str()))
                     .collect::<Vec<_>>(),
-                [(0x1000, mnemonic)],
+                if mnemonic == "RDSEED" {
+                    vec![(0x1000, mnemonic), (0x1001, "XBEGIN")]
+                } else {
+                    vec![(0x1000, mnemonic)]
+                },
                 "{mnemonic} crossing section start"
             );
         }
@@ -1598,11 +2034,13 @@ mod tests {
             0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x0f, 0x03, 0x84, 0x24, 0, 0, 0, 0,
         ];
         let mut sites = Vec::new();
+        let mut visited = vec![false; code.len()];
         push_x86_sites(
             0x1000,
             &code,
             &BTreeSet::new(),
             &BTreeSet::from([14]),
+            &mut visited,
             "probe",
             &mut sites,
         )
@@ -1723,7 +2161,11 @@ mod tests {
                         .iter()
                         .map(|site| (site.address, site.instruction.as_str()))
                         .collect::<Vec<_>>(),
-                    [(0x1ffe, mnemonic)],
+                    if mnemonic == "RDSEED" {
+                        vec![(0x1ffe, mnemonic), (0x1fff, "XBEGIN")]
+                    } else {
+                        vec![(0x1ffe, mnemonic)]
+                    },
                     "{mnemonic} with left file size {left_file_size}"
                 );
                 if left_file_size == 4096 {

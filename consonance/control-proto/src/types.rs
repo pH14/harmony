@@ -76,6 +76,16 @@ pub enum HashScope {
     Region { base: u64, len: u64 },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct EventHistory {
+    pub count: u64,
+    pub digest: [u8; 32],
+}
+
+impl EventHistory {
+    pub const VERSION: u16 = 2;
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Request {
     Hello(Caps),
@@ -113,6 +123,7 @@ pub enum Request {
         deadline: Moment,
     },
     RecordedEnv,
+    EventHistory,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -121,6 +132,7 @@ pub enum Reply {
     Unit,
     Stop(StopReason),
     Hash([u8; 32]),
+    EventHistory(EventHistory),
     SdkEvents(Vec<(u64, u32, Vec<u8>)>),
     Console {
         total: u32,

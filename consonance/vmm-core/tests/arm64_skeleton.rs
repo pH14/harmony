@@ -75,6 +75,61 @@ fn arm64_system_registers_survive_codec_and_affect_identity() {
     }
 }
 
+#[test]
+fn arm64_mdccint_survives_codec_and_affects_identity() {
+    use vmm_core::vendor::arm64::{
+        Arm64ArchitecturalState, Arm64ArchitectureDifference, compare_arm64_architecture,
+    };
+
+    let mut state = Arm64VcpuState::default();
+    state.debug.mdccint_el1 = 1 << 30;
+    for hashing in [false, true] {
+        let mut baseline = vmm(vec![]);
+        if hashing {
+            baseline.wire_snapshot_hashing();
+        }
+        let baseline_hash = baseline.state_hash().unwrap();
+
+        let mut backend = MockArm64Backend::new();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.set_state(state);
+        let mut source = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+        if hashing {
+            source.wire_snapshot_hashing();
+        }
+        assert_ne!(source.state_hash().unwrap(), baseline_hash);
+        let encoded = source.save_vm_state().unwrap().encode().unwrap();
+        let snapshot = Arm64VmState::decode(&encoded).unwrap();
+        let mut restored = vmm(vec![]);
+        restored.restore_vm_state(&snapshot).unwrap();
+        assert_eq!(restored.vcpu_record().unwrap().debug, state.debug);
+
+        let expected = Arm64ArchitecturalState {
+            vcpu: Arm64VcpuState::default(),
+            gic: None,
+        };
+        let changed = Arm64ArchitecturalState {
+            vcpu: state,
+            gic: None,
+        };
+        let difference = compare_arm64_architecture(&expected, &changed).unwrap_err();
+        assert_eq!(
+            difference,
+            Arm64ArchitectureDifference::Vcpu {
+                field: "debug.mdccint_el1",
+                index: None,
+            }
+        );
+        let mut text = Vec::new();
+        changed.write_text(&mut text).unwrap();
+        assert!(
+            String::from_utf8(text)
+                .unwrap()
+                .contains("debug.mdccint_el1 0000000040000000\n")
+        );
+    }
+}
+
 fn vmm(exits: Vec<Exit<Arm64>>) -> Vmm<MockArm64Backend> {
     let mut b = MockArm64Backend::with_exits(exits);
     b.set_policy(&Arm64Policy::default()).unwrap();

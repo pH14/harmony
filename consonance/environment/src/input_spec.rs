@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::channel::{
-    Answer, ChannelError, Effect, MAX_CHANNEL_BYTES, MAX_RECORDED_STATE_BYTES, NominalHandler,
-    RecordedEnv, ServiceHandler,
+    Answer, ChannelError, CoverageSchedule, Effect, MAX_CHANNEL_BYTES, MAX_RECORDED_STATE_BYTES,
+    NominalHandler, RecordedEnv, ServiceHandler,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 pub struct ServiceConfig {
     pub identity: Vec<u8>,
     pub configuration: Vec<u8>,
+    pub local_services: Vec<u16>,
 }
 impl Default for ServiceConfig {
     fn default() -> Self {
@@ -18,6 +19,7 @@ impl Default for ServiceConfig {
         Self {
             identity: handler.identity().to_vec(),
             configuration: handler.configuration().to_vec(),
+            local_services: handler.local_services().to_vec(),
         }
     }
 }
@@ -31,12 +33,19 @@ impl ServiceConfig {
     fn encode_into(&self, out: &mut Vec<u8>) {
         put(out, &self.identity);
         put(out, &self.configuration);
+        let policy: Vec<_> = self
+            .local_services
+            .iter()
+            .flat_map(|id| id.to_le_bytes())
+            .collect();
+        put(out, &policy);
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         let mut r = Reader(bytes);
         let result = Self {
             identity: r.bytes()?.to_vec(),
             configuration: r.bytes()?.to_vec(),
+            local_services: crate::channel::decode_local_services(r.bytes()?)?,
         };
         r.finish()?;
         Ok(result)
@@ -61,11 +70,12 @@ pub struct InputSpec {
     effects: BTreeMap<u64, Effect>,
     reseeds: BTreeMap<u64, u64>,
     payloads: Option<Vec<Vec<u8>>>,
+    coverage_schedule: Option<CoverageSchedule>,
     answers: BTreeMap<(u64, u16, u64), Answer>,
     request_bindings: BTreeMap<(u64, u16, u64), [u8; 32]>,
 }
 impl InputSpec {
-    pub const BLOB_VERSION: u16 = 6;
+    pub const BLOB_VERSION: u16 = 8;
     pub const MAX_REPRODUCER_BYTES: usize = MAX_RECORDED_STATE_BYTES - MAX_CHANNEL_BYTES;
     pub fn seeded(seed: u64) -> Self {
         Self {
@@ -74,6 +84,7 @@ impl InputSpec {
             effects: BTreeMap::new(),
             reseeds: BTreeMap::new(),
             payloads: None,
+            coverage_schedule: None,
             answers: BTreeMap::new(),
             request_bindings: BTreeMap::new(),
         }
@@ -98,6 +109,12 @@ impl InputSpec {
     }
     pub fn set_payloads(&mut self, payloads: Option<Vec<Vec<u8>>>) {
         self.payloads = payloads;
+    }
+    pub fn coverage_schedule(&self) -> Option<&CoverageSchedule> {
+        self.coverage_schedule.as_ref()
+    }
+    pub fn set_coverage_schedule(&mut self, schedule: Option<CoverageSchedule>) {
+        self.coverage_schedule = schedule;
     }
     pub fn record_reseed(&mut self, at: u64, seed: u64) {
         self.reseeds.insert(at, seed);
@@ -146,9 +163,11 @@ impl InputSpec {
         &self,
         factory: &ServiceFactory,
     ) -> Result<RecordedEnv<Box<dyn ServiceHandler>>, ChannelError> {
+        crate::channel::validate_local_services(&self.config.local_services)?;
         let handler = factory(&self.config)?;
         if handler.identity() != self.config.identity
             || handler.configuration() != self.config.configuration
+            || handler.local_services() != self.config.local_services
         {
             return Err(ChannelError::Handler(
                 "factory returned a different service contract".into(),
@@ -157,12 +176,14 @@ impl InputSpec {
         let mut env = RecordedEnv::new(self.seed, handler);
         if env.handler().identity() != self.config.identity
             || env.handler().configuration() != self.config.configuration
+            || env.handler().local_services() != self.config.local_services
         {
             return Err(ChannelError::Handler(
                 "reseed changed the service contract".into(),
             ));
         }
         env.set_payloads(self.payloads.clone())?;
+        env.set_coverage_schedule(self.coverage_schedule.clone());
         for (&(at, service, request), answer) in &self.answers {
             match self.request_bindings.get(&(at, service, request)) {
                 Some(&digest) => {
@@ -196,6 +217,13 @@ impl InputSpec {
                 for p in payloads {
                     put(&mut out, p);
                 }
+            }
+        }
+        match &self.coverage_schedule {
+            None => out.push(0),
+            Some(schedule) => {
+                out.push(1);
+                put(&mut out, &schedule.encode());
             }
         }
         out.extend((self.answers.len() as u32).to_le_bytes());
@@ -297,6 +325,11 @@ impl InputSpec {
             }
             _ => return Err(ChannelError::Malformed),
         };
+        result.coverage_schedule = match r.take(1)?[0] {
+            0 => None,
+            1 => Some(CoverageSchedule::decode(r.bytes()?)?),
+            _ => return Err(ChannelError::Malformed),
+        };
         let mut previous = None;
         for _ in 0..r.count(19)? {
             let key = (r.u64()?, r.u16()?, r.u64()?);
@@ -388,6 +421,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel::RecordedState;
 
     #[derive(Clone)]
     struct ReseedChangesContract {
@@ -444,9 +478,28 @@ mod tests {
     }
 
     #[test]
+    fn local_policy_roundtrip_rejects_noncanonical_bytes_and_factory_mismatch() {
+        let mut spec = InputSpec::seeded(7);
+        spec.config.local_services = vec![19, 25];
+        assert_eq!(InputSpec::decode(&spec.encode()).unwrap(), spec);
+        assert!(spec.materialize(&nominal_factory()).is_err());
+        let wrong: ServiceFactory = Arc::new(|_| Ok(Box::new(NominalHandler)));
+        assert!(spec.materialize(&wrong).is_err());
+        for policy in [vec![19, 19], vec![25, 19], vec![4]] {
+            spec.config.local_services = policy;
+            assert!(InputSpec::decode(&spec.encode()).is_err());
+            assert!(spec.materialize(&wrong).is_err());
+        }
+        let mut old = InputSpec::seeded(7).encode();
+        old[4..6].copy_from_slice(&7_u16.to_le_bytes());
+        assert!(InputSpec::decode(&old).is_err());
+    }
+
+    #[test]
     fn materialize_rejects_service_contract_changed_by_initial_reseed() {
         let mut spec = InputSpec::seeded(7);
         spec.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: b"reseed-changes-contract".to_vec(),
             configuration: b"before".to_vec(),
         });
@@ -459,6 +512,23 @@ mod tests {
             });
             assert!(spec.materialize(&factory).is_err());
         }
+    }
+
+    #[test]
+    fn coverage_schedule_survives_reproducer_and_materialization() {
+        let schedule = CoverageSchedule::new(1024, vec![(10, 20, 1), (30, 40, 9)]).unwrap();
+        let mut spec = InputSpec::seeded(41);
+        spec.set_coverage_schedule(Some(schedule.clone()));
+        let replay = InputSpec::decode_reproducer(&spec.try_encode_reproducer().unwrap()).unwrap();
+        assert_eq!(replay.coverage_schedule(), Some(&schedule));
+        let env = replay.materialize(&nominal_factory()).unwrap();
+        assert_eq!(env.coverage_schedule(), Some(&schedule));
+        let state = RecordedState::decode(&env.snapshot_state().unwrap().encode()).unwrap();
+        let mut restored = InputSpec::seeded(41)
+            .materialize(&nominal_factory())
+            .unwrap();
+        state.restore_into(&mut restored).unwrap();
+        assert_eq!(restored.coverage_schedule(), Some(&schedule));
     }
     mod buffered_reference {
         use crate as environment;
@@ -475,6 +545,7 @@ mod tests {
             for payloads in [None, Some(vec![]), Some(vec![vec![], vec![1, 2, 3]])] {
                 let mut spec = InputSpec::seeded(0x1234_5678);
                 spec.set_config(ServiceConfig {
+                    local_services: Vec::new(),
                     identity: vec![0x47; bytes],
                     configuration: vec![1, 2, 3],
                 });
@@ -541,6 +612,7 @@ mod tests {
         let mut spec = InputSpec::seeded(1);
         assert!(spec.materialize(&factory).is_ok());
         spec.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: b"unknown-extension".to_vec(),
             configuration: vec![],
         });
@@ -608,6 +680,7 @@ mod tests {
         assert!(spec.reseeds().is_empty());
         assert!(spec.answers().is_empty());
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"service".to_vec(),
             configuration: b"options".to_vec(),
         };
@@ -749,6 +822,7 @@ mod tests {
     #[test]
     fn service_config_is_strict_and_reader_checks_counts_before_consumption() {
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"identifier".to_vec(),
             configuration: vec![1, 2, 3],
         };
@@ -804,6 +878,7 @@ mod tests {
             bytes.extend(43u64.to_le_bytes());
         }
         bytes.push(0);
+        bytes.push(0);
         bytes.extend((answers.len() as u32).to_le_bytes());
         for (at, service, request) in answers {
             bytes.extend(at.to_le_bytes());
@@ -842,10 +917,17 @@ mod tests {
             );
         }
         let mut bad_payload_tag = ordered_wire(&[], &[], &[]);
-        let at = bad_payload_tag.len() - 5;
+        let at = bad_payload_tag.len() - 6;
         bad_payload_tag[at] = 2;
         assert_eq!(
             InputSpec::decode(&bad_payload_tag),
+            Err(ChannelError::Malformed)
+        );
+        let mut bad_schedule_tag = ordered_wire(&[], &[], &[]);
+        let at = bad_schedule_tag.len() - 5;
+        bad_schedule_tag[at] = 2;
+        assert_eq!(
+            InputSpec::decode(&bad_schedule_tag),
             Err(ChannelError::Malformed)
         );
         let mut bad_answer_tag = ordered_wire(&[], &[], &[key]);

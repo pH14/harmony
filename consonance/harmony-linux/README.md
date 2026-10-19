@@ -89,6 +89,19 @@ prints readiness and powers off; the archive contains no libvoidstar or dynamic
 dependencies. `build-initramfs.sh --busybox FILE` selects that binary explicitly;
 the standalone builder still builds its own BusyBox.
 
+Failed N6 builds from the locked platform builder preserve the rejected guest
+binaries, generated assembly/header and entropy-audit logs under
+`OUTPUT/diagnostics/n6` before deleting the temporary build workspace. The
+`guest-images` flake alias uses this platform builder. Retained diagnostics do
+not turn a failed build into a qualified guest bundle; its exit status remains
+nonzero and the strict executable-byte entropy audit still applies.
+
+The standalone N6 producer builds the pinned musl runtime for its native
+architecture by default, matching the other platform fixtures. This avoids
+host-libc changes importing unused stdio machinery or opcode-shaped call
+operands into the audited executable. `HARMONY_N6_CC` selects an explicit
+compiler; every resulting executable still passes the same full-byte audit.
+
 ## x86 XSAVE behavior
 
 The guest kernel canonicalizes complete XSAVE buffers while keeping AVX. The
@@ -111,14 +124,27 @@ read and do not establish coverage of this later conditional failure. External
 NMI/MCE injection and arbitrary imported pending events are outside this
 contract; the generic backend can represent them.
 
-Outside the patched kernel, workloads must not execute XSAVE-family saves or
+Outside the patched kernel, workloads must not execute FXSAVE/XSAVE-family saves or
 XGETBV with ECX=1. XGETBV with a proven zero selector remains allowed. Static
 linking alone does not exclude libc save routines; glibc's resolver trampolines
-hold XSAVE instructions but never run, because every image boots with
+hold FXSAVE/XSAVE instructions but never run, because every image boots with
 `LD_BIND_NOW=1` and the scanner rejects TLSdesc relocations. Generated code,
 JITs, code mutation and writable executable memory are excluded by policy. These
 restrictions do not qualify arbitrary images, SQL, ROMs or imported machine
 states.
+
+Production Faults preparation enforces the same static x86 save/selector rules
+from packed ELF bytes for VM and UML execution, using typed iced-x86 decoding.
+The complete loader shapes and unique nonoverlapping XGETBV selector-zero proof
+remain the only static exceptions; TLSdesc and text relocations are refused.
+A Linux conformance fixture sends the same retained compiled ELF bytes through
+production preparation and this Python checker, including permitted restore
+operations and standard math. This alignment does not enforce executable
+provenance after loading or after memory perturbations.
+A retained development-host KVM execution confirmed that an admitted program
+can decode FXSAVE into writable memory, switch it to executable memory and run
+it. This establishes a runtime instruction-domain escape, not replay divergence;
+static admission and ordinary logical-state identity do not prove closure.
 
 Raw XSAVE presence remains in restore data. Snapshot identity uses the core
 layer's [logical identity](../vmm-core/README.md#published-xsave-identity-check),
@@ -138,13 +164,25 @@ python3 consonance/harmony-linux/scripts/x86-xstate-admission.py inventory ROOTF
 python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify ROOTFS --output result.json
 python3 consonance/harmony-linux/scripts/x86-xstate-admission.py inventory-initramfs INITRAMFS --output candidate.json
 python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramfs INITRAMFS --output result.json
+python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify ROOTFS --execution-mode uml --output uml-result.json
 ```
 
 `--objdump` selects the disassembler. Inventory discovers every ELF by file
 contents regardless of executable permissions and records file digests, metadata,
-symlink targets and every XSAVE-family instruction site. Verify checks the
+symlink targets and every FXSAVE/XSAVE-family instruction site. Verify checks the
 executable properties listed below on that same inventory. It compares nothing
 against a stored digest, so rebuilding an image does not require a new approval.
+Verification records its execution mode. The default is `vm`; all current
+prepared-composition and virtual-time callers explicitly select that KVM mode.
+UML checks must select `--execution-mode uml`, which refuses native transaction
+entry through `XBEGIN` or a valid `XACQUIRE` prefix. Inventory also records the
+related non-entry transactional controls. GNU objdump's `xbeginw` spelling is
+normalized to `xbegin`; ordinary F2/F3 prefixes are not treated as transactions.
+The Rust application preparation path independently applies the same UML rule
+to the exact archived image without requiring instrumentation. Standalone
+`XEND`, `XABORT`, `XTEST`, `XRELEASE` and TSX load-tracking controls do not enter
+transactions and are admitted. Native math and standard libraries retain their
+existing admission and advisory CPU-portability policy.
 Actual launch configuration, kernel, ordered archive composition, ROM and SQL
 inputs are additionally checked by the workload composition checker under
 `workloads/guest-images/`.
@@ -157,27 +195,67 @@ Missing dependencies, differing duplicate SONAMEs and ambiguous resolutions
 fail closed. Other interpreters, loader caches, RPATH/RUNPATH and glibc-hwcaps
 search are unsupported. Launch environment overrides are outside the contract.
 
-Executable segments are scanned for XSAVE-family instructions and XGETBV;
+The scanner covers the complete page-rounded executable mapping, including file
+bytes before and after each declared load. It preserves the load, ELF entry,
+allocated-section edges and function-symbol entries as decode anchors, follows
+direct branches into operand bytes and other executable mappings of the same
+ELF, and checks instructions crossing section or adjacent-load boundaries.
+Overlapping executable mappings and data-page aliases are refused. The shared
+coverage pass supplies both state-save and native-arithmetic policy checks.
+Direct transfers outside the ELF and indirect entries still require control-flow
+review of the full immutable dependency closure; scanning alone does not prove
+those transfers safe.
+
+Executable mappings are scanned for FXSAVE/XSAVE-family instructions and XGETBV;
 restore instructions are inventoried separately. Verification rejects W+X
 PT_LOAD segments, executable PT_GNU_STACK, DT_TEXTREL/DF_TEXTREL images and
 TLSdesc relocations anywhere in the closure. Every XGETBV site must have a
-recognized straight-line ECX-zero sequence. The bounded recognizer rejects
-intervening ECX writes, branches, calls, unknown instructions and observed
-alternate direct entries. Trusted control flow must also exclude indirect entry
-that bypasses initialization; linear disassembly cannot enforce that condition
-for arbitrary code.
+recognized ECX-zero sequence within 32 unique fallthrough predecessors. The
+recognizer follows full-width GPR copies and respects partial-register aliases
+and CPUID clobbers. Ordinary conditional branches may leave the proved path;
+no observed branch may enter it. LOOP-family instructions, calls and unknown
+operations stop the proof. Selector and loader-trampoline proofs require unique decoded
+predecessors and refuse any instruction overlapping another decode stream.
+Address sorting alone cannot establish that a zeroing instruction dominates a
+selector read. Boundary scanning reuses known instruction starts and deduplicates
+unknown starts; its conservative prefix/opcode filter covers every refused
+family before invoking the disassembler. Trusted control flow must also exclude
+indirect entry that bypasses initialization; linear disassembly cannot enforce
+that condition for arbitrary code.
 
-Every XSAVE-family site must sit inside one of glibc's two loader trampolines.
+Every FXSAVE/XSAVE/XSAVEC site must sit inside one of glibc's two loader
+trampolines; other save variants are refused without an exemption.
 The scanner recognizes each trampoline by its complete straight-line shape: the
-stack alignment prologue, the register spills, the XSAVE mask setup, a save to
-`0x40(%rsp)`, one direct call, the matching `xrstor`, the register reloads and
-the exit. No branch may enter the trampoline after its first instruction. No
+stack alignment prologue, the register spills, a save to `0x40(%rsp)`, one
+direct call, a matching restore, the register reloads and the exit. XSAVE
+shapes require 64-byte alignment and equal save/restore masks. Legacy FXSAVE
+shapes require 16-byte alignment, a 0x240-byte stack frame and paired FXRSTOR
+with the same operand and encoding. No branch may enter the trampoline after its first instruction. No
 address or file digest is pinned, so a rebuilt glibc or a static binary passes
 when its trampolines keep this shape. `eager-resolver` is the lazy-binding
 resolver; every image boots with `LD_BIND_NOW=1`, so it never runs.
 `unused-tlsdesc` is the dynamic TLS descriptor trampoline; the scanner rejects
 TLSdesc relocations anywhere in the closure, so it never runs either. A save
 instruction anywhere else rejects the image.
+
+Native arithmetic and standard math libraries are admitted. Reciprocal and
+reciprocal-square-root estimates (RCP/RSQRT and their VEX/EVEX forms, including
+FP16), and x87 transcendental operations can produce different result bits on
+different CPU implementations. The rootfs checker inventories those operations
+without refusing them; the production Faults scan does not require instruction
+reviews for native arithmetic. Admission therefore does not establish universal
+cross-CPU numerical reproducibility. Saved CLI replay warns about changed or
+unknown CPU implementations through [CPU provenance](../../cli/README.md);
+retained cross-implementation execution evidence is needed
+to establish agreement for a particular composition and input.
+
+| Native variation | Disposition | Boundary |
+| --- | --- | --- |
+| SYSCALL-saved AF | Clear both flags and R11 before the first tick | Owned x86 syscall ingress; arbitrary interrupted R11 is preserved |
+| Native FXSAVE/XSAVE image bytes | Refuse workload saves; canonicalize owned kernel saves | Controlled rootfs and patched guest kernel |
+| Reciprocal and x87 transcendental approximations | Admit native semantics; warn on CPU changes | CPU replay diagnostics; no universal result-bit equivalence |
+| UML initial extended registers and PKRU | Clear XSAVE header and extended bytes; restore architectural init state | Owned x86 UML startup patch |
+| Other permitted native arithmetic | Restricted qualification claim | Exact artifact, contract and implementation classes tested; no universal cross-vendor claim |
 
 The initramfs adapter accepts one raw newc `070701` archive or its gzip encoding
 and binds the exact input bytes. It inventories device nodes as metadata without

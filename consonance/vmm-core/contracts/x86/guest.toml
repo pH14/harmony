@@ -15,7 +15,7 @@
 #   * insn mirrors markdown §4; timer/cmos/mmio mirror §5.
 
 [contract]
-version = 6
+version = 7
 # Guest-visible vendor identity; this does not restrict the physical host.
 vendor = "GenuineIntel"
 kernel-tag = "v6.18.35"
@@ -59,7 +59,7 @@ subleaf = "0x00000000"
 eax = "0x000906ec"
 ebx = "0x00010800"
 ecx = "dyn:osxsave:0x36da3203"
-edx = "0x0f8bbb7f"
+edx = "0x078bbb7f"
 
 [[cpuid.entry]]
 leaf = "0x00000002"

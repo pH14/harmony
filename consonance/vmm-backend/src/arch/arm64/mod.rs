@@ -7,7 +7,9 @@ pub use state::{
     Arm64GicIdleState, Arm64GicState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile,
     Arm64VcpuState, Arm64VtimerState,
 };
-pub(crate) use state::{canonicalize_core_regs, has_noncanonical_core_regs};
+pub(crate) use state::{
+    canonicalize_core_regs, has_noncanonical_core_regs, has_unsupported_execution_mode,
+};
 
 use crate::arch::{Arch, ArchExit};
 use crate::exit::ExitReason;
@@ -99,6 +101,9 @@ pub struct Arm64Caps {
     pub smccc_workaround_levels: [u64; 3],
     pub psci_profile: Arm64PsciProfile,
     pub gic_ctlr_fixed_bits: u64,
+    pub gicd_iidr: u32,
+    pub gicd_typer2: u32,
+    pub register_identity: [u8; 32],
 }
 
 impl Arm64Caps {

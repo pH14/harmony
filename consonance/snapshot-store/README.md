@@ -64,6 +64,16 @@ classifying the delta, the store rehashes each distinct resident page reachable
 from the base, parent, or target and rejects stale content. This includes pages
 that will be omitted as unchanged or represented only by a return to the base.
 Shared resident pages are checked once across those snapshots.
+Each immutable read phase starts with an empty resident-slot membership set.
+Small phases use a sparse tree. A dense slot bitmap replaces it after at least
+64 distinct resident slots and at least as many verified slots as allocated
+64-bit words. Promotion also requires the allocator's slot high-water mark to
+be at most eight times the live slot count and the bitmap to be at most 1 MiB.
+Sparse retained high-slot stores keep the tree. The bitmap never outlives the
+original read phase. Verification results are not reused across callbacks,
+writes, or another operation.
+Recycled slots are checked afresh in the next phase. Hash counts and corruption
+detection remain unchanged.
 On the same Apple-silicon host, a local release benchmark of ten empty deltas
 over 8,192 distinct 4 KiB pages (32 MiB) averaged 22.76 ms per delta; 8,192
 references to one interned page averaged 1.32 ms per delta. This verifies the
@@ -100,6 +110,17 @@ resolved snapshot, including inherited pages. Sparse archive consumers use it
 before trusting a cached base-RAM digest; implicit zero pages need no read.
 `verify_snapshots` checks multiple resolved snapshots with one set of verified
 resident pages, so content shared by the base and target is hashed once.
+
+`read_transaction` shares the resident-slot verification set across delta
+planning, page differences, checked page reads, and complete-image verification.
+A transaction holds an immutable store borrow; page storage cannot be rewritten,
+released, collected, or reused while that transaction or its returned page
+references remain live. Verified slot identities stay private to that store and
+transaction. A new transaction verifies the resident bytes again, including
+unchanged, inherited, and omitted pages reached by complete-image verification.
+Standalone read, delta, difference, and verification operations begin fresh
+transactions. This boundary removes duplicate integrity hashing within one
+operation without carrying trust across operations or changing commitment bytes.
 
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their
@@ -150,3 +171,44 @@ The store uses ordered layer/page metadata wherever iteration is observable;
 content-addressed page lookup is private and lookup-only. Builder drops release
 any buffered page references. Oracle, stateful, integrity, copy-on-write,
 and performance-shape tests cover the storage semantics.
+
+## Physical integrity telemetry
+
+`Store::verification_telemetry` returns monotonic, saturating host counters,
+separate from `StoreStats` and budget policy. `snapshot.verify.page_requests`
+counts resolved page-record checks, including zero and alias requests;
+`memo_hits` counts resident slots already verified in the current read
+transaction. `zero_requests` counts implicit zero checks, which hash no resident
+bytes. `resident_hashes` and `resident_bytes` count actual BLAKE3 feeds. `ns` measures
+resident verification envelopes. Full verification includes layer traversal and
+memo checks in one batch. Full-image restore includes frame resolution and memo
+checks. Flattening times verification of the already resolved inherited records;
+materialization times verification of the already resolved frames. Those batches
+exclude initial record-map construction and subsequent image allocation/copying.
+Standalone checks time the individual digest. It is not pure BLAKE3 CPU time. Batches avoid clock
+reads per resident page and retain elapsed time on errors. This includes
+unchanged-page checks outside read transactions. Materialization keeps its
+existing per-frame checks; it does not acquire a new memoization policy.
+`errors` counts failed page-record integrity checks, including missing slots.
+Invalid snapshot/range validation before a page-record check is not a page hash
+attempt. VM-state verification has separate `vm_state_hashes`, `vm_state_bytes`,
+`vm_state_ns` and `vm_state_errors` leaves. New-page interning/seal hashes and the
+initial implicit-zero digest are creation work, not resident verification.
+Standalone per-hash clock reads and batch clock reads add measurement overhead.
+Clock granularity is platform-dependent; aggregate nanoseconds are not
+cycle-accurate page costs.
+
+Distinctness is per read transaction. A later transaction verifies a resident
+slot again, and corrupted pages still reject before use. Diagnostic queries
+never certify pages, extend memoization across operations, alter serialized
+state or affect retention. The VMM exposes these totals through its existing
+host telemetry map without adding them to snapshot payloads or StoreStats.
+
+`copy_telemetry()` is runtime-only, cumulative per Store and separate from
+StoreStats. It counts actual new owned page payload copies at interning and
+public read-into-buffer copies. Intern calls and successful equal-content hits
+are distinct: a hit increments references without copying payload; zero and
+unchanged writes may bypass interning. Copies remain counted after a discarded
+builder or later failure. Borrowed transaction reads copy no payload. These are
+explicit copy-site bytes, not allocator traffic, resident memory, hash input,
+or import-row counts, and never influence retention or snapshot commitments.

@@ -1,8 +1,9 @@
 # Contributing to Harmony
 
-Harmony is a Rust project with a root workspace for consonance and a separate
-workspace in `dissonance/`. The checked-in toolchain and CI configuration are
-the authorities for supported versions and validation commands.
+Harmony is a Rust project with a root workspace for the CLI and consonance, and
+a separate workspace in `dissonance/`. The checked-in toolchain and CI
+configuration are the authorities for supported versions and validation
+commands.
 
 ## Setup
 

@@ -337,6 +337,7 @@ impl NestedWorkload {
 }
 
 impl CampaignTypes for NestedWorkload {
+    type JobObservation = ();
     type Target = Target;
     type Action = u64;
     type Key = Key;
@@ -517,6 +518,14 @@ impl Reporting for NestedWorkload {
         }
         campaign::postcard_result_sha256(&canonical)
     }
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        let mut logical = snapshot.clone();
+        logical.state = logical.state.logical_identity()?;
+        campaign::postcard_value_sha256(&logical)
+    }
     fn evidence_checkpoint(evidence: &Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
         Ok(serde_json::to_vec(evidence)?)
     }
@@ -695,19 +704,12 @@ mod tests {
         .unwrap();
         assert!(result.actions.is_empty());
         assert_eq!(result.preparation_failure, Some(vec![observation.clone()]));
-        let workload = NestedWorkload::new(
-            &[],
-            &[],
-            &Options {
-                seed: 42,
-                executions: 1,
-                ram_mib: 256,
-                wall_seconds: None,
-                output: PathBuf::new(),
-            },
-            [0; 32],
-        )
-        .unwrap();
+        let workload = NestedWorkload {
+            kernel: Vec::new(),
+            initramfs: Vec::new(),
+            config: SessionConfig::default(),
+            identity: "nested-report-fixture".into(),
+        };
         let mut evidence = Evidence::default();
         workload
             .merge_preparation_failure(&mut evidence, result.preparation_failure.as_ref().unwrap());

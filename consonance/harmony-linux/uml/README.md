@@ -25,12 +25,15 @@ sequence of guest events.
 
 The launcher still creates a private, randomly named host tempdir for each
 boot. Both owned UML kernels omit that path from their normal startup console
-messages, because the captured console becomes replay evidence. Launch
+messages so repeated boots on one host have comparable diagnostic logs. Launch
 qualification compares the complete console bytes across repeated boots of
-one profile. The arm64 kernel also omits the host stack and stub addresses
-from its startup message; Docker may refuse UML's attempt to disable host ASLR,
-so those private addresses change between otherwise identical boots. The
-guest TASK_SIZE remains in the console for diagnosis.
+one profile under unchanged host settings. Raw boot logs are retained for
+diagnosis; replay compares bridge events and, for commands, application
+output. Early host messages can still reflect inherited core-file limits or
+whether the work directory is on tmpfs. The arm64 kernel also omits the host
+stack and stub addresses from its startup message; Docker may refuse UML's
+attempt to disable host ASLR, so those private addresses change between boots.
+The guest TASK_SIZE remains in the console for diagnosis.
 
 - Virtual time starts at zero and moves only by the cost model. Each guest
   system call costs `CONFIG_HARMONY_UML_SYSCALL_VNS` (100,000 ns) before it
@@ -58,6 +61,10 @@ guest TASK_SIZE remains in the console for diagnosis.
   `cntvct_el0` and `cntvctss_el0` on arm64, each returning nanoseconds.
   `cntfrq_el0` returns 1 GHz. The arm64 vDSO has no clock functions, so C
   library clock calls are system calls and follow virtual time.
+- On x86-64, each stub records its native FS and GS bases when a guest stop
+  reaches the UML kernel. This also records bases changed directly by
+  `WRFSBASE` or `WRGSBASE` on hosts that permit FSGSBASE, so checkpoints and
+  guest `arch_prctl` reads use the same bases as native guest instructions.
 - `/proc/cpuinfo` no longer shows the host `uname` line. The CPU flags and
   model still come from the host and `cpuid` runs natively, so the recording
   names both. The launcher captures the host CPU-info lines the owned kernel
@@ -75,13 +82,29 @@ guest TASK_SIZE remains in the console for diagnosis.
   31:24, or the x2APIC ID in leaves 0xB and 0x1F) gets the ID of the host
   CPU it happens to run on; workloads must not use them. Fault-workload image
   preparation, search and command runs refuse scanned hardware entropy and
-  CPU-identity instructions for UML, including reviewed call sites. The current
-  x86 Bookworm language and historical images contain such sites and are refused
+  CPU-identity instructions for UML, including reviewed call sites. The
+  admission rule also refuses native transaction entry (`XBEGIN` and valid
+  `XACQUIRE` forms), regardless of instrumentation or a review entry. Transaction
+  commit/abort can depend on host resources and asynchronous events. Recording
+  CPUID or hiding its TSX flags does not establish forced-abort semantics.
+  Related standalone controls cannot initiate a transaction and remain admitted;
+  ordinary REP/SSE prefixes and native math are unaffected. See the
+  [image admission policy](../../../workloads/faults/README.md#image-admission).
+  The current x86 Bookworm language and historical images contain such sites and are refused
   for UML until built without them. This does not trap an instruction supplied
   by dynamic code or hidden from the executable-load scan.
 - Host stops and continues of stub processes no longer raise guest
-  interrupts. A stub that dies without the kernel killing it panics the
-  guest.
+  interrupts. A stub that dies without the kernel killing it abandons execution
+  with reserved host-failure status 87. The guest panic path exits with reserved
+  status 86 after cleaning up its
+  host process group, so a real guest panic is distinct from a host signal
+  trap. This replaces the panic core dump; a fatal UML SIGSEGV trap still
+  produces one. If the host cannot clone a userspace stub, the UML process writes a
+  fixed stderr diagnostic and exits with reserved status 87. That host
+  resource failure never becomes a guest `fork` error or a normal guest exit;
+  a genuine guest-local `fork` limit is still returned to the guest. Writes
+  to `/proc/exitcode` cannot select either reserved host process status,
+  including integers with the same low byte.
 - Guest physical memory has a fixed layout. UML turns off host address
   randomization by re-executing itself, which Docker's default seccomp
   profile refuses. The range reserved for the host heap covers the host's
@@ -140,6 +163,39 @@ buffer, the environment pointer and the descriptors stay those of the running
 process. The kernel acknowledges the restore and waits for the answer that was
 pending at the capture.
 
+On x86-64, a rebuilt stub restores the saved native FS and GS bases before
+guest execution resumes. The bases are sampled at guest stops, before the
+kernel processes a syscall or checkpoint.
+
+Host failures in checkpoint allocation, protection, descriptor cleanup, signal
+restoration, stub reconstruction, TLS/heap restoration, and interrupt
+registration/removal exit with reserved infrastructure status 87. They never
+invoke the guest panic notifier. Destructive restoration cannot safely return
+an ordinary error after changing host memory, so it abandons the process.
+Pre-mutation image validation still returns a control refusal. Close does not
+retry Linux EINTR; signal draining and child waits do retry interruption, and
+an absent epoll registration is a valid removal result. Each IRQ entry retains
+its actual successful-registration state in the checkpoint. Only those entries
+are removed and reconstructed; an unpollable null console remains unregistered,
+while failure to reconstruct a previously registered descriptor abandons.
+Failed ADD/MOD preserves an existing registration; zero-event removal clears
+the flag only after successful or already-absent deletion. A resumed capture
+does not close its saved image descriptor number: restore has already closed
+the current image, and that saved number may now belong to another resource.
+
+The compiled boundary regressions execute both carried patch postimages with
+injected host failures and successful/expected-absence controls. Qualification
+also denies one-page RWX protection changes to prove that the real dirty-page
+fault path abandons a first capture. A required native Linux test on both
+architectures continues those protection changes through a successful capture
+and restore, then arms a seccomp notification supervisor only after publication.
+The next protection change returns ENOMEM: the session must report HostFailure,
+publish no second checkpoint or additional guest event, preserve the first
+checkpoint, and clean up its process group. The helper itself does not request
+one-page RWX mappings; the notification filter is inherited by the test and UML
+processes. This native-only test requires seccomp user notifications; the static
+first-capture injection also runs inside the Docker qualification matrix.
+
 The host stores the image and the physical memory of every checkpoint as
 pages in one `snapshot-store` store, each checkpoint a delta on its parent.
 
@@ -155,11 +211,16 @@ latest virtual time and the pending answer.
 nix run .#uml-images -- --output "$PWD/uml-output"
 ```
 
-The flake supplies gcc 13 and static glibc, the pinned kernel source for the
+The flake supplies gcc 13, static glibc and dwarves/pahole, the pinned kernel source for the
 host architecture, musl, and a copy of the repository. `nix-build.sh` runs `build-uml.sh` in a fresh
 temporary directory and copies four files to the output: `linux`, `config`,
 `initramfs.cpio.gz`, and `profile.json`. Two builds from the same commit are
-byte-identical; CI checks this on every pull request.
+byte-identical; CI checks this on every pull request. The kernel records the
+available pahole version in `config` even without BTF debug information, so
+the Nix build supplies it rather than inheriting the host program. UML does
+not build Rust kernel code, yet Kconfig records the installed rustc version;
+the Nix build binds that optional probe to a fixed failing command so both
+Rust version fields remain zero on every host.
 
 `build-uml.sh` also runs outside Nix on a Linux host with a C toolchain and the
 static C library, after `make -C consonance/harmony-linux fetch` on x86-64 or
@@ -169,6 +230,13 @@ host architecture. It extracts a source tree of its own under
 `linux/patches/um` or `linux/patches/um-arm64`, configures `defconfig` with
 `config-fragment` merged last (and `config-fragment-arm64` after it on arm64),
 and asserts the symbols the profile depends on.
+
+`consonance/uml/reviewed-profiles` contains the reviewed manifest for each
+architecture. The launcher admits only the matching tuple, and CI checks
+both independent Nix builds against it. Release packaging makes the same
+comparison before publishing. A deliberate kernel, patch, config or fixture
+change must update the corresponding manifest with reviewed build evidence;
+an arbitrary locally built profile is not admitted by a production launcher.
 
 ## Profile contents
 
@@ -190,7 +258,9 @@ and asserts the symbols the profile depends on.
   The `harmony_fixture=` boot parameter selects a mode: `boot` forks 16
   children, checks their exit codes and powers off; `hang` spins without system
   calls; `flood` writes the console forever; `orphans` leaves 16 sleeping
-  children and spins; `exit` returns from init so the kernel panics.
+  children and spins; `exit` returns from init so the kernel panics;
+  `exitcode_spoof` attempts reserved host-status writes to `/proc/exitcode`
+  and powers off after reporting whether each write was rejected.
   Four modes write their observations to `/dev/harmony` as events: `values`
   reports clocks, counters, random values, addresses, IDs, the auxiliary
   vector and the `/proc` files a program reads at startup, then runs
@@ -211,7 +281,9 @@ and asserts the symbols the profile depends on.
   emulation, host child signals, the fixed memory layout, checkpoints, and
   the initial FPU state for every new program, as x86 Linux does; UML
   otherwise copies the vector registers of a stub process, which hold
-  leftovers of host strings such as the command line.
+  leftovers of host strings such as the command line. The x86 series also
+  records native FS and GS bases at guest stops so direct FSGSBASE writes are
+  preserved across checkpoints.
   `linux/patches/um-arm64/` ports the same series to the arm64 RFC. Its
   counter emulation also answers the frequency register, and the stub waits
   for the kernel without the RFC's counter-bounded spin, because its own
@@ -293,7 +365,17 @@ the host's bridge state. The first two diamonds compare every physical page
 with the stored checkpoint after each capture and restore, and fail on a
 page that changed without being reported. The report gives capture and
 restore times from the other diamonds, image sizes and the bytes each
-checkpoint owns in the store.
+checkpoint owns in the store. An inherited seccomp negative control denies
+one-page RWX host `mprotect` calls. It must first reach a normal fixture event,
+then fail during checkpoint dirty-page unprotection with its specific host
+memory diagnostic. Capture must refuse without returning a checkpoint or
+adding guest events; the final status must be infrastructure failure, with no
+guest panic and no remaining process group or work directory. The ordinary
+diamonds and launch-suite guest panic remain successful controls. Compiled
+patch probes independently inject allocation, whole-map unprotection,
+protection-reset, destructive-restore, stub-rebuild, and async/epoll
+registration failures for both architectures. The IRQ probes preserve unioned
+event masks and the successful empty-mask removal path.
 
 The event hash is SHA-256 over each event's virtual time, ID, length and
 data.

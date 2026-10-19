@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, time::Instant};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +30,16 @@ pub struct AdmissionWaits {
     pub idle_no_job_ns: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CompletedBufferTelemetry {
+    pub results_live: u64,
+    pub results_peak: u64,
+    pub actions_live: u64,
+    pub actions_peak: u64,
+    pub candidates_live: u64,
+    pub candidates_peak: u64,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct CampaignTelemetry {
     pub bootstrap_ns: u64,
@@ -37,6 +47,7 @@ pub struct CampaignTelemetry {
     pub persistence_ns: u64,
     pub coordinator: serde_json::Value,
     pub admission: AdmissionWaits,
+    pub completed_buffer: CompletedBufferTelemetry,
     pub workers: Vec<WorkerTelemetry>,
     pub target: TargetCounters,
 }
@@ -61,13 +72,46 @@ impl CampaignTelemetry {
     }
 }
 
-pub(crate) fn nanos_since(started: Instant) -> u64 {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type Moment = std::time::Instant;
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Moment;
+
+#[cfg(target_arch = "wasm32")]
+impl Moment {
+    pub(crate) const fn elapsed(self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+}
+
+pub(crate) fn nanos_since(started: Moment) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn now() -> Instant {
-    Instant::now()
+pub(crate) fn now() -> Moment {
+    std::time::Instant::now()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) const fn now() -> Moment {
+    Moment
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) const fn unix_seconds() -> u64 {
+    0
 }
 
 pub(crate) fn thread_schedstat() -> Option<(u64, u64)> {
@@ -115,7 +159,7 @@ pub(crate) struct IdleClock {
     workers: usize,
     busy: usize,
     reason: IdleReason,
-    since: Instant,
+    since: Moment,
     admission_order_ns: u64,
     no_job_ns: u64,
 }

@@ -150,12 +150,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&args.core)?));
+    let execution_sha256 = machine::quicknes::prepared_execution_sha256(&args.core, &core_sha256)?;
     let prefix = match &args.prefix_input {
         Some(path) => serde_json::from_slice::<Mm2Input>(&fs::read(path)?)?.actions,
         None => power_on_walk(),
     };
-    let game = Mm2Game::new_at_stage_after(&rom, &args.core, &core_sha256, prefix, args.stage)
-        .with_champion_input_path(args.output.join("champion-input.json"));
+    let game = Mm2Game::new_at_stage_after(
+        &rom,
+        &args.core,
+        &core_sha256,
+        &execution_sha256,
+        prefix,
+        args.stage,
+    )
+    .with_champion_input_path(args.output.join("champion-input.json"));
     let config = campaign_config(&args);
     if args.marketing_soak {
         run_marketing_soak(&game, &config, &args.output)

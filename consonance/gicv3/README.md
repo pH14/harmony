@@ -18,13 +18,21 @@ input stays pending while asserted. Redistributor SGI/PPI trigger configuration
 is read-only. SGIs start edge-triggered; PPIs and SPIs start level-triggered.
 The initial SPI level behavior remains until the guest programs an edge trigger.
 
-`GicState` is the complete fixed-size snapshot record. Restore validates the
+`GicState` is the complete fixed-size snapshot record. Shared record version 9
+also rejects older ARM KVM snapshots that lacked debug OS-lock admission proof;
+the lock itself remains fixed unlocked by the backend. Restore validates the
 configuration and clears state beyond the configured SPI limit. It retains the
 trigger configuration for every implemented INTID. The firing
 deadline is derived from the current V-time and timer registers rather than
 stored in the state record.
 The record also carries the GIC CPU-interface binary points, control, group
 enables, and active-priority registers needed by KVM's in-kernel controller.
+It carries the KVM redistributor property and pending base registers so their
+guest-visible readback enters snapshots and identity. The userspace model
+reports zero for both and rejects a nonzero value on restore.
+`validate_shared_snapshot` checks the record shape without applying that
+userspace-only rule; the KVM backend validates its redistributor base bits
+before restoring the in-kernel device.
 The userspace controller's current Group-1 arbitration uses its own PMR and
 active INTID state; these additional CPU-interface fields remain zero on HVF.
 `input_unmasked` checks the individual input's distributor, redistributor,

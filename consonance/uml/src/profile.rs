@@ -31,6 +31,8 @@ const KERNEL_FD: i32 = 240;
 const ROOTFS_FD: i32 = 241;
 #[cfg(target_os = "linux")]
 const INITRAMFS_FD: i32 = 242;
+#[cfg(target_os = "linux")]
+pub(crate) const WORK_DIRECTORY_FD: i32 = 243;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -128,12 +130,26 @@ pub enum ProfileError {
     HostLibraries(usize),
     #[error("{0} is not a static 64-bit little-endian ELF executable")]
     NotStatic(String),
+    #[error("no reviewed UML profile exists for host architecture {0}")]
+    UnsupportedArchitecture(String),
+    #[error("the built-in reviewed UML profile is malformed: {0}")]
+    ReviewedCatalog(serde_json::Error),
+    #[error("profile does not match the reviewed {0} UML bundle")]
+    UnreviewedProfile(String),
     #[error("cannot pin profile artifact {name}: {source}")]
     Pin { name: String, source: io::Error },
 }
 
 impl Profile {
     pub fn load(directory: &Path) -> Result<VerifiedProfile, ProfileError> {
+        let reviewed = reviewed_profile()?;
+        Self::load_with_reviewed(directory, &reviewed)
+    }
+
+    fn load_with_reviewed(
+        directory: &Path,
+        reviewed: &Profile,
+    ) -> Result<VerifiedProfile, ProfileError> {
         let path = directory.join("profile.json");
         let text = std::fs::read(&path).map_err(|source| ProfileError::Read {
             path: path.clone(),
@@ -141,6 +157,11 @@ impl Profile {
         })?;
         let profile: Profile = serde_json::from_slice(&text)?;
         profile.verify(directory)?;
+        if &profile != reviewed {
+            return Err(ProfileError::UnreviewedProfile(
+                profile.architecture.clone(),
+            ));
+        }
         let identity_sha256 = hex(&Sha256::digest(serde_json::to_vec(&profile)?));
         #[cfg(target_os = "linux")]
         let pinned = Some(Arc::new(PinnedArtifacts::new(directory, &profile)?));
@@ -193,6 +214,15 @@ impl Profile {
         }
         Ok(())
     }
+}
+
+fn reviewed_profile() -> Result<Profile, ProfileError> {
+    let catalog = match std::env::consts::ARCH {
+        "x86_64" => include_str!("../reviewed-profiles/x86_64.json"),
+        "aarch64" => include_str!("../reviewed-profiles/aarch64.json"),
+        other => return Err(ProfileError::UnsupportedArchitecture(other.to_owned())),
+    };
+    serde_json::from_str(catalog).map_err(ProfileError::ReviewedCatalog)
 }
 
 impl VerifiedProfile {
@@ -336,13 +366,13 @@ fn child_path(fd: i32) -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn reserved_child_fds() -> io::Result<&'static [OwnedFd; 3]> {
-    static RESERVED: OnceLock<Result<[OwnedFd; 3], String>> = OnceLock::new();
+pub(crate) fn reserved_child_fds() -> io::Result<&'static [OwnedFd; 4]> {
+    static RESERVED: OnceLock<Result<[OwnedFd; 4], String>> = OnceLock::new();
     RESERVED
         .get_or_init(|| {
             let source = File::open("/dev/null").map_err(|error| error.to_string())?;
             let mut reserved = Vec::new();
-            for target in [KERNEL_FD, ROOTFS_FD, INITRAMFS_FD] {
+            for target in [KERNEL_FD, ROOTFS_FD, INITRAMFS_FD, WORK_DIRECTORY_FD] {
                 // SAFETY: fcntl(2) duplicates a live source descriptor, and
                 // from_raw_fd takes ownership only after a successful call.
                 let duplicate =
@@ -780,10 +810,67 @@ mod tests {
         assert_eq!(child_path(KERNEL_FD), PathBuf::from("/proc/self/fd/240"));
         assert_eq!(child_path(ROOTFS_FD), PathBuf::from("/proc/self/fd/241"));
         assert_eq!(child_path(INITRAMFS_FD), PathBuf::from("/proc/self/fd/242"));
-        const { assert!(KERNEL_FD > 4 && KERNEL_FD < ROOTFS_FD && ROOTFS_FD < INITRAMFS_FD) };
+        assert_eq!(
+            child_path(WORK_DIRECTORY_FD),
+            PathBuf::from("/proc/self/fd/243")
+        );
+        const {
+            assert!(
+                KERNEL_FD > 4
+                    && KERNEL_FD < ROOTFS_FD
+                    && ROOTFS_FD < INITRAMFS_FD
+                    && INITRAMFS_FD < WORK_DIRECTORY_FD
+            )
+        };
     }
 
-    fn write_profile(directory: &Path, edit: impl FnOnce(&mut Profile)) {
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn occupied_work_directory_slot_is_refused_without_overwriting_its_owner() {
+        use std::os::unix::process::CommandExt;
+
+        const CHILD: &str = "HARMONY_WORK_DIRECTORY_SLOT_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let error = reserved_child_fds().unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("launcher descriptor 243 is already in use")
+            );
+            assert_eq!(std::fs::read("/proc/self/fd/243").unwrap(), b"owned");
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("owner");
+        std::fs::write(&path, b"owned").unwrap();
+        let owner = File::open(path).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "profile::tests::occupied_work_directory_slot_is_refused_without_overwriting_its_owner",
+        ]);
+        command.env(CHILD, "1");
+        // SAFETY: the callback owns its source file and duplicates it only
+        // into the child descriptor table before exec, retaining its owner.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(owner.as_raw_fd(), WORK_DIRECTORY_FD) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
+    fn write_profile(directory: &Path, edit: impl FnOnce(&mut Profile)) -> Profile {
         std::fs::write(directory.join("linux"), elf(&[1])).unwrap();
         std::fs::write(directory.join("config"), b"CONFIG_UML=y\n").unwrap();
         std::fs::write(directory.join("initramfs.cpio.gz"), b"rootfs").unwrap();
@@ -812,26 +899,137 @@ mod tests {
             serde_json::to_vec_pretty(&profile).unwrap(),
         )
         .unwrap();
+        profile
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn production_loader_refuses_self_consistent_unreviewed_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        write_profile(directory.path(), |_| {});
+        assert!(matches!(
+            Profile::load(directory.path()),
+            Err(ProfileError::UnreviewedProfile(_))
+        ));
+    }
+
+    #[test]
+    #[ignore = "requires a CI-built UML profile"]
+    fn reviewed_ci_bundle_admits_only_its_approved_bytes() {
+        let source = PathBuf::from(std::env::var_os("HARMONY_UML_REVIEWED_PROFILE").unwrap());
+        let approved = reviewed_profile().unwrap();
+        let verified = Profile::load(&source).unwrap();
+        assert_eq!(verified.profile(), &approved);
+
+        for name in ["linux", "config", "initramfs.cpio.gz"] {
+            let directory = tempfile::tempdir().unwrap();
+            for artifact in [&approved.executable, &approved.config, &approved.rootfs] {
+                std::fs::copy(
+                    source.join(&artifact.name),
+                    directory.path().join(&artifact.name),
+                )
+                .unwrap();
+            }
+            let mut changed = approved.clone();
+            let path = directory.path().join(name);
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes.push(0);
+            std::fs::write(&path, bytes).unwrap();
+            let artifact = match name {
+                "linux" => &mut changed.executable,
+                "config" => &mut changed.config,
+                _ => &mut changed.rootfs,
+            };
+            artifact.sha256 = sha256_file(&path).unwrap();
+            std::fs::write(
+                directory.path().join("profile.json"),
+                serde_json::to_vec_pretty(&changed).unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                Profile::load(directory.path()),
+                Err(ProfileError::UnreviewedProfile(_))
+            ));
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn reviewed_profile_rejects_self_consistent_artifact_and_metadata_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let reviewed = write_profile(directory.path(), |_| {});
+        for name in ["linux", "config", "initramfs.cpio.gz"] {
+            write_profile(directory.path(), |_| {});
+            let path = directory.path().join(name);
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes.push(0);
+            std::fs::write(&path, bytes).unwrap();
+            let mut changed = reviewed.clone();
+            let artifact = match name {
+                "linux" => &mut changed.executable,
+                "config" => &mut changed.config,
+                _ => &mut changed.rootfs,
+            };
+            artifact.sha256 = sha256_file(&path).unwrap();
+            std::fs::write(
+                directory.path().join("profile.json"),
+                serde_json::to_vec_pretty(&changed).unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                Profile::load_with_reviewed(directory.path(), &reviewed),
+                Err(ProfileError::UnreviewedProfile(_))
+            ));
+        }
+
+        for changed in [
+            Profile {
+                kernel_version: "7.2-rc4".to_owned(),
+                ..reviewed.clone()
+            },
+            Profile {
+                patch_series_sha256: "1".repeat(64),
+                ..reviewed.clone()
+            },
+            Profile {
+                virtual_time: VirtualTimeCosts {
+                    syscall_vns: 100_001,
+                    ..reviewed.virtual_time
+                },
+                ..reviewed.clone()
+            },
+        ] {
+            write_profile(directory.path(), |_| {});
+            std::fs::write(
+                directory.path().join("profile.json"),
+                serde_json::to_vec_pretty(&changed).unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                Profile::load_with_reviewed(directory.path(), &reviewed),
+                Err(ProfileError::UnreviewedProfile(_))
+            ));
+        }
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
     fn verified_profile_rejects_changed_bytes_and_modes() {
         let directory = tempfile::tempdir().unwrap();
-        write_profile(directory.path(), |_| {});
-        let verified = Profile::load(directory.path()).unwrap();
+        let reviewed = write_profile(directory.path(), |_| {});
+        let verified = Profile::load_with_reviewed(directory.path(), &reviewed).unwrap();
         assert_eq!(verified.identity_sha256.len(), 64);
 
         write_profile(directory.path(), |profile| profile.schema = 2);
         assert!(matches!(
-            Profile::load(directory.path()),
+            Profile::load_with_reviewed(directory.path(), &reviewed),
             Err(ProfileError::Schema(2))
         ));
         write_profile(directory.path(), |_| {});
 
         std::fs::write(directory.path().join("config"), b"CONFIG_UML=n\n").unwrap();
         assert!(matches!(
-            Profile::load(directory.path()),
+            Profile::load_with_reviewed(directory.path(), &reviewed),
             Err(ProfileError::Digest { name, .. }) if name == "config"
         ));
 
@@ -839,7 +1037,7 @@ mod tests {
             profile.userspace = "ptrace".to_owned()
         });
         assert!(matches!(
-            Profile::load(directory.path()),
+            Profile::load_with_reviewed(directory.path(), &reviewed),
             Err(ProfileError::Userspace(_))
         ));
 
@@ -847,7 +1045,7 @@ mod tests {
             profile.rootfs.name = "../initramfs.cpio.gz".to_owned()
         });
         assert!(matches!(
-            Profile::load(directory.path()),
+            Profile::load_with_reviewed(directory.path(), &reviewed),
             Err(ProfileError::ArtifactName(_))
         ));
 
@@ -858,7 +1056,7 @@ mod tests {
             })
         });
         assert!(matches!(
-            Profile::load(directory.path()),
+            Profile::load_with_reviewed(directory.path(), &reviewed),
             Err(ProfileError::HostLibraries(1))
         ));
     }
@@ -867,13 +1065,13 @@ mod tests {
     #[cfg(all(target_os = "linux", not(miri)))]
     fn verified_profile_keeps_the_bytes_it_verified() {
         let directory = tempfile::tempdir().unwrap();
-        write_profile(directory.path(), |_| {});
-        let verified = Profile::load(directory.path()).unwrap();
+        let reviewed = write_profile(directory.path(), |_| {});
+        let verified = Profile::load_with_reviewed(directory.path(), &reviewed).unwrap();
         let original = verified.pinned.as_ref().unwrap().rootfs.bytes().unwrap();
 
         std::fs::write(directory.path().join("initramfs.cpio.gz"), b"changed").unwrap();
         assert!(matches!(
-            Profile::load(directory.path()),
+            Profile::load_with_reviewed(directory.path(), &reviewed),
             Err(ProfileError::Digest { name, .. }) if name == "initramfs.cpio.gz"
         ));
         assert_eq!(
@@ -886,8 +1084,8 @@ mod tests {
     #[cfg(all(target_os = "linux", not(miri)))]
     fn command_keeps_pinned_profile_alive_until_spawn() {
         let directory = tempfile::tempdir().unwrap();
-        write_profile(directory.path(), |_| {});
-        let verified = Profile::load(directory.path()).unwrap();
+        let reviewed = write_profile(directory.path(), |_| {});
+        let verified = Profile::load_with_reviewed(directory.path(), &reviewed).unwrap();
         let rootfs = verified.rootfs();
         let parent_path = verified.pinned.as_ref().unwrap().rootfs.parent_path();
         let mut command = Command::new("cat");

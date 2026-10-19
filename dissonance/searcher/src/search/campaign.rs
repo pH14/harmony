@@ -4,21 +4,21 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
-    io::Write,
+    io::{BufReader, Read, Write},
     num::{NonZeroU64, NonZeroUsize},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
-    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail,
-    ContinuationAccounting, Edge, Input, Position, ProgressPoint, RetentionPolicy,
-    SELECTOR_IDENTIFIER, SelectorAccounting, SelectorDraw, SelectorPath,
-    retention_policy_from_identifier, retention_policy_identifier,
+    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, ContinuationAccounting, Edge, Input,
+    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SelectorAccounting,
+    SelectorDraw, SelectorPath, SnapshotRetention, retention_policy_from_identifier,
+    retention_policy_identifier,
 };
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, CheckpointWriter, SEARCH_CHECKPOINT_FORMAT,
@@ -39,12 +39,49 @@ use crate::search::duration::{
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const LONGEST_SPLICE_TAIL: usize = 128;
-use crate::search::parallel::with_worker_pool;
+use crate::search::parallel::{WorkerPoolError, with_worker_pool_observed};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
-    CampaignTelemetry, HostTimes, IdleClock, IdleReason, TargetCounters, nanos_since, now,
-    thread_schedstat,
+    CampaignTelemetry, CompletedBufferTelemetry, HostTimes, Moment, TargetCounters, now,
+    unix_seconds,
 };
+
+#[path = "campaign_coordinator.rs"]
+mod coordinator;
+
+pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
+
+pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
+
+pub trait CampaignWatch<G: Workload>: Sync {
+    type Note: Send;
+
+    fn run(
+        &self,
+        job: &JobSpec<G>,
+        run: impl FnOnce() -> Result<JobOutcome<G>, Box<dyn Error>>,
+    ) -> WatchedJob<G, Self::Note>;
+
+    fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>);
+
+    fn start(&self, _campaign: &mut CampaignCoordinator<'_, G>) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+}
+
+impl<G: Workload> CampaignWatch<G> for () {
+    type Note = ();
+
+    fn run(
+        &self,
+        _job: &JobSpec<G>,
+        run: impl FnOnce() -> Result<JobOutcome<G>, Box<dyn Error>>,
+    ) -> WatchedJob<G, ()> {
+        Ok((run()?, ()))
+    }
+
+    fn admitted(&self, _note: (), _campaign: &mut CampaignCoordinator<'_, G>) {}
+}
 
 pub type CampaignOutcome<G> = (
     CampaignModeReport<<G as CampaignTypes>::Action, <G as CampaignTypes>::ArchiveReport>,
@@ -56,7 +93,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 13;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 15;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window; each job's planned finish is the planned finish of the admission before its \
@@ -112,7 +149,7 @@ pub const fn default_window(workers: u32) -> usize {
     workers as usize
 }
 
-const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_v5";
+const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_v6";
 const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "planned_finish_window_";
 const DEFAULT_MIXTURE_WEIGHT: u8 = 128;
 
@@ -178,13 +215,14 @@ pub const SNAPSHOT_ROOT_RESUME_IDENTIFIER: &str = "snapshot_root";
 pub type WorkloadPolicies = BTreeMap<String, String>;
 
 pub trait CampaignTypes: Sync {
+    type JobObservation: Copy + Send + 'static;
     type Target;
     type Action: Copy + Ord + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Key: ArchiveKey + Debug + Eq + Send + Sync;
     type Milestones: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Progress: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Snapshot: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    type Observations: Clone + Debug + Eq + Send + Sync + Serialize;
+    type Observations: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Evidence: Clone + Default;
     type ArchiveReport: Clone;
     type Run: Clone + Sync;
@@ -226,6 +264,15 @@ pub trait Reporting: CampaignTypes {
     fn action_cost_unit(&self) -> &'static str;
     fn execution_work_unit(&self) -> &'static str;
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
+    fn certified_result_sha256(
+        &self,
+        result: &CampaignJobResult<Self>,
+        _target: &Self::Target,
+    ) -> Result<String, Box<dyn Error>> {
+        self.result_sha256(result)
+    }
+    fn snapshot_identity_sha256(&self, snapshot: &Self::Snapshot)
+    -> Result<String, Box<dyn Error>>;
     fn archive_report(
         &self,
         evidence: &Self::Evidence,
@@ -401,7 +448,21 @@ pub trait InputPolicy: CampaignTypes {
 }
 
 pub trait TargetExecution: CampaignTypes {
+    fn begin_job_observation(&self) {}
+    fn take_job_observation(&self) -> Option<Self::JobObservation> {
+        None
+    }
+    fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
     fn new_target(&self) -> Result<Self::Target, String>;
+    fn begin_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+    fn finish_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
     fn reset(&self, target: &mut Self::Target);
     fn restore(
         &self,
@@ -414,12 +475,24 @@ pub trait TargetExecution: CampaignTypes {
     }
     fn action_cost_fn(&self) -> fn(&Self::Action) -> u64;
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
+    fn snapshot_retention() -> Option<Box<dyn SnapshotRetention<Self::Snapshot>>> {
+        None
+    }
     fn apply_action(
         &self,
         target: &mut Self::Target,
         action: &Self::Action,
         milestones: &mut Self::Milestones,
     ) -> Result<(), Box<dyn Error>>;
+    fn apply_action_and_snapshot(
+        &self,
+        target: &mut Self::Target,
+        action: &Self::Action,
+        milestones: &mut Self::Milestones,
+    ) -> Result<Option<Self::Snapshot>, Box<dyn Error>> {
+        self.apply_action(target, action, milestones)?;
+        Ok(None)
+    }
     fn rollout_observations(&self, _target: &Self::Target) -> Vec<Self::Observations> {
         Vec::new()
     }
@@ -433,6 +506,48 @@ pub trait TargetExecution: CampaignTypes {
         Ok(true)
     }
     fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>>;
+    fn candidate_replay_certificate(
+        &self,
+        _snapshot: &Self::Snapshot,
+    ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+        Ok(None)
+    }
+    fn current_replay_certificate(
+        &self,
+        _target: &Self::Target,
+    ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+        Ok(None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn execute_job_certified(
+        &self,
+        run: &Self::Run,
+        target: &mut Self::Target,
+        origin_snapshot: &Self::Snapshot,
+        replay: &[Self::Action],
+        replay_certificates: &[Option<[u8; 32]>],
+        parent_milestones: Self::Milestones,
+        suffix: &[Self::Action],
+        retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
+    ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>
+    where
+        Self: Workload + Sized,
+    {
+        if replay.len() != replay_certificates.len() {
+            return Err("replay certificate count does not match the action path".into());
+        }
+        self.execute_job(
+            run,
+            target,
+            origin_snapshot,
+            replay,
+            parent_milestones,
+            suffix,
+            retention,
+            stop_rollout_on_objective,
+        )
+    }
     #[allow(clippy::too_many_arguments)]
     fn execute_job(
         &self,
@@ -558,14 +673,61 @@ pub enum CampaignOrigin<G: Workload + ?Sized> {
     },
     Archive {
         path: String,
-        file_sha256: String,
-        report: Box<G::ArchiveReport>,
+        source: ArchiveSource<G::ArchiveReport>,
         checkpoint: Option<CampaignCheckpoint<G::Snapshot>>,
     },
     SearchCheckpoint {
         path: PathBuf,
         expected_sha256: Option<String>,
     },
+}
+
+#[derive(Clone)]
+pub struct ArchiveSource<R> {
+    file_sha256: String,
+    report: R,
+}
+
+struct ArchiveHashReader<R> {
+    inner: R,
+    digest: Sha256,
+}
+
+impl<R: Read> Read for ArchiveHashReader<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(bytes)?;
+        self.digest.update(&bytes[..read]);
+        Ok(read)
+    }
+}
+
+impl<R: DeserializeOwned> ArchiveSource<R> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        Self::from_reader(bytes)
+    }
+
+    pub fn from_reader(source: impl Read) -> Result<Self, Box<dyn Error>> {
+        let mut reader = BufReader::new(ArchiveHashReader {
+            inner: source,
+            digest: Sha256::new(),
+        });
+        let report = serde_json::from_reader(&mut reader)?;
+        std::io::copy(&mut reader, &mut std::io::sink())?;
+        Ok(Self {
+            file_sha256: format!("{:x}", reader.into_inner().digest.finalize()),
+            report,
+        })
+    }
+}
+
+impl<R> ArchiveSource<R> {
+    pub fn file_sha256(&self) -> &str {
+        &self.file_sha256
+    }
+
+    pub fn report(&self) -> &R {
+        &self.report
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -588,6 +750,11 @@ pub struct SnapshotCheckpointEntry<S> {
     pub id: u64,
     pub snapshot: S,
 }
+
+type ArchiveMaterialization<G> = (
+    <G as CampaignTypes>::ArchiveReport,
+    Vec<(u64, <G as CampaignTypes>::Snapshot)>,
+);
 
 impl<S: Serialize + DeserializeOwned> SnapshotCheckpoint<S> {
     pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -1118,7 +1285,7 @@ fn record_mixture_outcome(
     Ok(())
 }
 
-fn mixture_weights(energy: &MixtureEnergy, mixture: DrawMixture) -> (u8, u8) {
+pub(super) fn mixture_weights(energy: &MixtureEnergy, mixture: DrawMixture) -> (u8, u8) {
     match mixture {
         DrawMixture::Energy { scale } => (energy.biased_weight(scale), 0),
         DrawMixture::EnergySplice { scale } => energy.splice_weights(scale),
@@ -1172,7 +1339,7 @@ fn stop_reservations_after_work_budget(
         .is_some_and(|budget| bootstrap_execution_work.saturating_add(job_execution_work) >= budget)
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(bound = "")]
 pub struct CampaignCandidate<G: CampaignTypes + ?Sized> {
     pub key: G::Key,
@@ -1208,7 +1375,7 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignCandidate<G> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(bound = "")]
 pub struct CampaignActionResult<G: CampaignTypes + ?Sized> {
     pub action: G::Action,
@@ -1254,7 +1421,7 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(bound = "")]
 pub struct CampaignJobResult<G: CampaignTypes + ?Sized> {
     pub preparation_failure: Option<Vec<G::Observations>>,
@@ -1367,6 +1534,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Self {
         let mut archive = Archive::new(workload.action_cost_fn());
         archive.max_entries = archive_entry_limit;
+        archive.set_snapshot_retention(G::snapshot_retention());
         if let Some(memory_budget_mib) = memory_budget_mib {
             let total = memory_budget_mib.saturating_mul(1024 * 1024);
             let draw_reserve = workload
@@ -1573,20 +1741,23 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         source: &G::ArchiveReport,
         checkpoint: Option<&SnapshotCheckpoint<G::Snapshot>>,
     ) -> Result<TreeImportCounts, Box<dyn Error>> {
-        let checkpointed: BTreeMap<u64, &G::Snapshot> = checkpoint
-            .map(|checkpoint| {
-                checkpoint
-                    .entries
-                    .iter()
-                    .map(|entry| (entry.id, &entry.snapshot))
-                    .collect()
-            })
-            .unwrap_or_default();
-        workload.merge_origin_evidence(&mut self.evidence, source);
+        if let Some(checkpoint) = checkpoint {
+            validate_archive_checkpoint_entries(workload, source, checkpoint)?;
+        }
         let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
         self.archive.preserve_inactive_snapshots(true)?;
         self.bootstrap(workload, run, target)?;
         let genesis_id = 0;
+        let checkpointed = checkpoint
+            .map(|checkpoint| {
+                checkpoint
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.id, entry.snapshot.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let checkpointed = checkpointed.into_iter().collect::<BTreeMap<_, _>>();
         let mut counts = TreeImportCounts::default();
         let mut index_of: BTreeMap<u64, usize> = BTreeMap::new();
         let source_entries = workload.source_entries(source);
@@ -1594,6 +1765,15 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         for (index, entry) in source_entries.iter().enumerate() {
             index_of.insert(entry.id, index);
             if entry.input.actions.is_empty() {
+                if let Some(expected) = entry.snapshot_identity_sha256.as_deref() {
+                    let genesis = self.archive.entries[genesis_id]
+                        .snapshot
+                        .as_deref()
+                        .ok_or("whole-tree import genesis snapshot was released early")?;
+                    if workload.snapshot_identity_sha256(genesis)? != expected {
+                        return Err("imported genesis differs from its source entry digest".into());
+                    }
+                }
                 imported.push(Some(genesis_id));
                 continue;
             }
@@ -1630,7 +1810,78 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             let parent_entry = &self.archive.entries[parent_id];
             let mut milestones = parent_entry.milestones;
             let prefix = entry.input.clone();
-            let snapshot = if let Some(snapshot) = checkpointed.get(&entry.id) {
+            let suffix = prefix
+                .actions
+                .get(parent_input_len..)
+                .ok_or("source archive input is shorter than its imported parent")?
+                .to_vec();
+            let checkpoint_snapshot = checkpointed.get(&entry.id);
+            let checkpoint_certificate = checkpoint_snapshot
+                .map(|snapshot| workload.candidate_replay_certificate(snapshot))
+                .transpose()?
+                .flatten();
+            let mut replay_certificates = vec![None; suffix.len()];
+            let reconstructed = if checkpoint_snapshot.is_none() || checkpoint_certificate.is_some()
+            {
+                workload.restore(
+                    target,
+                    parent_entry
+                        .snapshot
+                        .as_deref()
+                        .ok_or("whole-tree import parent snapshot was released early")?,
+                )?;
+                let mut terminal = false;
+                let mut captured_endpoint = None;
+                for (index, action) in suffix.iter().enumerate() {
+                    captured_endpoint =
+                        workload.apply_action_and_snapshot(target, action, &mut milestones)?;
+                    if workload
+                        .rollout_outcome(run, target)?
+                        .disposition
+                        .is_terminal()
+                    {
+                        terminal = true;
+                        break;
+                    }
+                    replay_certificates[index] = match captured_endpoint.as_ref() {
+                        Some(snapshot) => workload.candidate_replay_certificate(snapshot)?,
+                        None => workload.current_replay_certificate(target)?,
+                    };
+                }
+                if terminal {
+                    None
+                } else {
+                    let rebuilt = match captured_endpoint {
+                        Some(snapshot) => snapshot,
+                        None => workload.snapshot(target)?,
+                    };
+                    if workload.candidate_replay_certificate(&rebuilt)?.is_some()
+                        && replay_certificates.iter().any(Option::is_none)
+                    {
+                        return Err(
+                            "certified imported path lacks an action-prefix certificate".into()
+                        );
+                    }
+                    Some(rebuilt)
+                }
+            } else {
+                None
+            };
+            let snapshot = if let Some(snapshot) = checkpoint_snapshot {
+                if checkpoint_certificate.is_some() {
+                    let rebuilt = reconstructed.as_ref().ok_or(
+                        "checkpointed source prefix stopped during certificate reconstruction",
+                    )?;
+                    if workload.candidate_replay_certificate(rebuilt)? != checkpoint_certificate
+                        || workload.snapshot_identity_sha256(rebuilt)?
+                            != workload.snapshot_identity_sha256(snapshot)?
+                    {
+                        return Err(
+                            "checkpointed source prefix differs from its reconstructed endpoint"
+                                .into(),
+                        );
+                    }
+                }
                 workload.restore(target, snapshot)?;
                 milestones = merge_max(workload, milestones, entry.milestones);
                 counts.checkpointed = counts.checkpointed.saturating_add(1);
@@ -1641,57 +1892,45 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 {
                     None
                 } else {
-                    Some((*snapshot).clone())
+                    Some(snapshot.clone())
                 }
             } else {
-                workload.restore(
-                    target,
-                    parent_entry
-                        .snapshot
-                        .as_deref()
-                        .ok_or("whole-tree import parent snapshot was released early")?,
-                )?;
-                let mut terminal = false;
-                for action in &entry.input.actions[parent_input_len..] {
-                    workload.apply_action(target, action, &mut milestones)?;
-                    if workload
-                        .rollout_outcome(run, target)?
-                        .disposition
-                        .is_terminal()
-                    {
-                        terminal = true;
-                        break;
-                    }
-                }
-                if terminal {
-                    None
-                } else {
-                    Some(workload.snapshot(target)?)
-                }
+                reconstructed
             };
             let Some(snapshot) = snapshot else {
+                if entry.snapshot_identity_sha256.is_some() {
+                    return Err(
+                        "imported endpoint with a source entry digest did not reconstruct".into(),
+                    );
+                }
                 counts.terminal = counts.terminal.saturating_add(1);
                 imported.push(None);
                 continue;
             };
+            if let Some(expected) = entry.snapshot_identity_sha256.as_deref()
+                && workload.snapshot_identity_sha256(&snapshot)? != expected
+            {
+                return Err("imported endpoint differs from its source entry digest".into());
+            }
             workload.merge_import_evidence(&mut self.evidence, milestones, &prefix);
             let key = workload.current_key(target)?;
-            let suffix = prefix
-                .actions
-                .get(parent_input_len..)
-                .ok_or("source archive input is shorter than its imported parent")?
-                .to_vec();
             let inserted_before = self.archive.entries.len();
-            match self.archive.insert(
-                Some(parent_id),
-                0,
-                ArchiveCandidate {
-                    suffix,
-                    key,
-                    milestones,
-                },
-                snapshot,
-            )? {
+            match self
+                .archive
+                .insert_after_certified(
+                    Some(parent_id),
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix,
+                        key,
+                        milestones,
+                    },
+                    snapshot,
+                    Some(replay_certificates.as_slice()),
+                )?
+                .0
+            {
                 Some(id) if id == inserted_before => {
                     counts.imported = counts.imported.saturating_add(1);
                     imported.push(Some(id));
@@ -1711,6 +1950,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         }
         self.archive
             .preserve_inactive_snapshots(preserve_inactive_snapshots)?;
+        workload.merge_origin_evidence(&mut self.evidence, source);
         Ok(counts)
     }
 
@@ -1734,6 +1974,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         limited: bool,
         mut tracked_action: impl FnMut(&G::Action) -> bool,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>, DurationAdmission), Box<dyn Error>> {
+        workload.verify_integrity()?;
         let CampaignJobResult {
             preparation_failure,
             actions,
@@ -1754,6 +1995,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         }
         let mut current_parent = parent_index;
         let mut pending_suffix = Vec::new();
+        let mut pending_certificates = Vec::new();
         let mut previous_key = None;
         let mut decisions = Vec::new();
         let mut duration = DurationAdmission::default();
@@ -1767,7 +2009,14 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         for action in actions {
             let tracked = tracked_action(&action.action) && !action.outcome.disposition.is_failed();
             duration.applied |= tracked;
+            let certificate = action
+                .candidate
+                .as_ref()
+                .map(|candidate| workload.candidate_replay_certificate(&candidate.snapshot))
+                .transpose()?
+                .flatten();
             pending_suffix.push(action.action);
+            pending_certificates.push(certificate);
             workload.merge_action_evidence(&mut self.evidence, &action, sequence, || {
                 let mut input = self
                     .archive
@@ -1815,8 +2064,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     decisions.push(CampaignAdmissionDecision::ProbeRefused);
                     continue;
                 }
+                if certificate.is_some() && pending_certificates.iter().any(Option::is_none) {
+                    return Err("certified campaign path lacks an action-prefix certificate".into());
+                }
                 let retained_before = self.archive.retained;
-                let (admitted, key) = self.archive.insert_after(
+                let (admitted, key) = self.archive.insert_after_certified(
                     Some(current_parent),
                     previous_key,
                     sequence,
@@ -1826,6 +2078,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
+                    Some(&pending_certificates),
                 )?;
                 left_place |= key.place() != parent_place;
                 match admitted {
@@ -1839,6 +2092,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         });
                         current_parent = id;
                         pending_suffix.clear();
+                        pending_certificates.clear();
                         previous_key = None;
                     }
                     Some(id) => {
@@ -1850,6 +2104,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         });
                         current_parent = id;
                         pending_suffix.clear();
+                        pending_certificates.clear();
                         previous_key = None;
                     }
                     None => {
@@ -1917,13 +2172,31 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         workload: &G,
         campaign_seed: u64,
         materialize_final_artifacts: bool,
-    ) -> (G::ArchiveReport, Vec<(u64, G::Snapshot)>) {
+    ) -> Result<ArchiveMaterialization<G>, Box<dyn Error>> {
         let selector = self.archive.selector_report();
-        let (entries, snapshots) = if materialize_final_artifacts {
+        let (mut entries, snapshots) = if materialize_final_artifacts {
             self.archive.take_entry_reports_and_snapshots()
         } else {
             (Vec::new(), Vec::new())
         };
+        let entry_indexes = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.id, index))
+            .collect::<BTreeMap<_, _>>();
+        if entry_indexes.len() != entries.len() {
+            return Err("archive report contains duplicate entry IDs".into());
+        }
+        for (id, snapshot) in &snapshots {
+            let index = entry_indexes
+                .get(id)
+                .ok_or("archive snapshot has no matching entry")?;
+            let entry = &mut entries[*index];
+            if entry.snapshot_identity_sha256.is_some() {
+                return Err("archive report contains duplicate snapshot IDs".into());
+            }
+            entry.snapshot_identity_sha256 = Some(workload.snapshot_identity_sha256(snapshot)?);
+        }
         let report = workload.archive_report(
             &self.evidence,
             ArchiveReportState {
@@ -1939,7 +2212,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 selector,
             },
         );
-        (report, snapshots)
+        Ok((report, snapshots))
     }
 }
 
@@ -2013,8 +2286,7 @@ fn resolve_origin<G: Workload>(
         ),
         CampaignOrigin::Archive {
             path,
-            file_sha256,
-            report,
+            source,
             checkpoint,
         } => {
             if let Some(checkpoint) = checkpoint {
@@ -2023,9 +2295,9 @@ fn resolve_origin<G: Workload>(
             (
                 ORIGIN_ARCHIVE.to_owned(),
                 Some(path.clone()),
-                Some(file_sha256.clone()),
+                Some(source.file_sha256().to_owned()),
                 checkpoint.as_ref(),
-                workload.resume_input(report)?,
+                workload.resume_input(source.report())?,
             )
         }
     };
@@ -2347,11 +2619,11 @@ fn record_compaction_elapsed(
     }
 }
 
-fn profile_now() -> Instant {
+fn profile_now() -> Moment {
     now()
 }
 
-fn profile_elapsed(started: Instant) -> u128 {
+fn profile_elapsed(started: Moment) -> u128 {
     started.elapsed().as_nanos()
 }
 
@@ -2387,7 +2659,8 @@ fn build_report<G: Workload>(
     counters: &CampaignCounters,
     stream_sha256: String,
     materialize_final_artifacts: bool,
-) -> CampaignOutcome<G> {
+) -> Result<CampaignOutcome<G>, Box<dyn Error>> {
+    workload.verify_integrity()?;
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
     let terminal_endpoints = core.terminal_endpoints;
@@ -2416,7 +2689,7 @@ fn build_report<G: Workload>(
         workload,
         header.campaign_seed,
         materialize_final_artifacts,
-    );
+    )?;
     let checkpoint = SnapshotCheckpoint {
         format: workload.checkpoint_format().to_owned(),
         entries: snapshots
@@ -2482,7 +2755,7 @@ fn build_report<G: Workload>(
         archive,
         telemetry: CampaignTelemetry::default(),
     };
-    (report, checkpoint)
+    Ok((report, checkpoint))
 }
 
 struct PostcardSha256(Sha256);
@@ -2511,20 +2784,58 @@ pub fn postcard_result_sha256<G: Workload + ?Sized>(
     postcard_value_sha256(result)
 }
 
+#[derive(Serialize)]
+struct SemanticCandidate<'a, K> {
+    key: &'a K,
+    viable: bool,
+}
+
+#[derive(Serialize)]
+struct SemanticAction<'a, A, O, M, K> {
+    action: &'a A,
+    observations: &'a [O],
+    milestones: &'a M,
+    outcome: crate::search::rollout::Outcome,
+    candidate: Option<SemanticCandidate<'a, K>>,
+}
+
+#[derive(Serialize)]
+struct SemanticResult<'a, A, O, M, K> {
+    preparation_failure: &'a Option<Vec<O>>,
+    actions: Vec<SemanticAction<'a, A, O, M, K>>,
+}
+
+pub fn postcard_semantic_result_sha256<G: CampaignTypes + ?Sized>(
+    result: &CampaignJobResult<G>,
+) -> Result<String, Box<dyn Error>> {
+    postcard_value_sha256(&SemanticResult {
+        preparation_failure: &result.preparation_failure,
+        actions: result
+            .actions
+            .iter()
+            .map(|action| SemanticAction {
+                action: &action.action,
+                observations: &action.observations,
+                milestones: &action.milestones,
+                outcome: action.outcome,
+                candidate: action
+                    .candidate
+                    .as_ref()
+                    .map(|candidate| SemanticCandidate {
+                        key: &candidate.key,
+                        viable: candidate.viable,
+                    }),
+            })
+            .collect(),
+    })
+}
+
 pub fn postcard_value_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn Error>> {
     let digest = postcard::serialize_with_flavor::<_, PostcardSha256, sha2::digest::Output<Sha256>>(
         value,
         PostcardSha256(Sha256::new()),
     )?;
     Ok(format!("{digest:x}"))
-}
-
-struct JobSpec<G: Workload + ?Sized> {
-    reservation: usize,
-    snapshot: Arc<G::Snapshot>,
-    replay: Vec<G::Action>,
-    parent_milestones: G::Milestones,
-    suffix: Vec<G::Action>,
 }
 
 type SelectedJob<G> = (JobSpec<G>, PendingJob<G>);
@@ -2545,6 +2856,7 @@ fn planned_finish<G: Workload + ?Sized>(
 #[serde(bound = "")]
 struct JobSpecRecord<G: Workload + ?Sized> {
     replay: Vec<G::Action>,
+    replay_certificates: Vec<Option<[u8; 32]>>,
     parent_milestones: G::Milestones,
     suffix: Vec<G::Action>,
 }
@@ -2553,6 +2865,7 @@ impl<G: Workload + ?Sized> JobSpecRecord<G> {
     fn of(spec: &JobSpec<G>) -> Self {
         Self {
             replay: spec.replay.clone(),
+            replay_certificates: spec.replay_certificates.clone(),
             parent_milestones: spec.parent_milestones,
             suffix: spec.suffix.clone(),
         }
@@ -2627,11 +2940,86 @@ struct PendingJob<G: Workload + ?Sized> {
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
-    held_since: Option<std::time::Instant>,
+    held_since: Option<Moment>,
     pending: PendingJob<G>,
-    result: CampaignJobResult<G>,
-    execution_work: u64,
-    result_sha256: String,
+    outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+}
+
+struct CompletedBuffer<K: Ord, V> {
+    entries: BTreeMap<K, V>,
+    telemetry: CompletedBufferTelemetry,
+    records: fn(&V) -> (u64, u64),
+}
+
+impl<K: Ord, V> CompletedBuffer<K, V> {
+    fn new(records: fn(&V) -> (u64, u64)) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            telemetry: CompletedBufferTelemetry::default(),
+            records,
+        }
+    }
+
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.entries.contains_key(&key) {
+            return Some(value);
+        }
+        let (actions, candidates) = (self.records)(&value);
+        self.entries.insert(key, value);
+        let stats = &mut self.telemetry;
+        stats.results_live = stats.results_live.saturating_add(1);
+        stats.actions_live = stats.actions_live.saturating_add(actions);
+        stats.candidates_live = stats.candidates_live.saturating_add(candidates);
+        stats.results_peak = stats.results_peak.max(stats.results_live);
+        stats.actions_peak = stats.actions_peak.max(stats.actions_live);
+        stats.candidates_peak = stats.candidates_peak.max(stats.candidates_live);
+        None
+    }
+
+    fn remove(&mut self, key: &K) -> Option<V> {
+        let value = self.entries.remove(key)?;
+        let (actions, candidates) = (self.records)(&value);
+        let stats = &mut self.telemetry;
+        stats.results_live = stats
+            .results_live
+            .checked_sub(1)
+            .expect("completed result accounting");
+        stats.actions_live = stats
+            .actions_live
+            .checked_sub(actions)
+            .expect("completed action accounting");
+        stats.candidates_live = stats
+            .candidates_live
+            .checked_sub(candidates)
+            .expect("completed candidate accounting");
+        Some(value)
+    }
+}
+
+impl<K: Ord, V> std::ops::Deref for CompletedBuffer<K, V> {
+    type Target = BTreeMap<K, V>;
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+fn completed_job_records<G: Workload + ?Sized>(job: &CompletedJob<G>) -> (u64, u64) {
+    completed_result_records(&job.outcome)
+}
+
+fn completed_result_records<G: CampaignTypes + ?Sized>(
+    outcome: &Result<(CampaignJobResult<G>, u64, String), String>,
+) -> (u64, u64) {
+    outcome.as_ref().map_or((0, 0), |(result, _, _)| {
+        (
+            result.actions.len() as u64,
+            result
+                .actions
+                .iter()
+                .filter(|action| action.candidate.is_some())
+                .count() as u64,
+        )
+    })
 }
 
 fn replay_suffix_limit(drawn: bool, recorded: Option<u8>) -> Result<Option<u8>, Box<dyn Error>> {
@@ -2783,21 +3171,40 @@ fn write_live_progress<G: Workload>(
     counters: &CampaignCounters,
     profile: Option<(&LiveCoordinatorProfile, HostTimes)>,
     draw_state_memory_bytes: usize,
-    telemetry_started: Instant,
+    telemetry_started: Moment,
     final_census: bool,
     sink: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
+    let line = serde_json::to_string(&progress_record(
+        core,
+        counters,
+        profile,
+        draw_state_memory_bytes,
+        telemetry_started,
+        final_census,
+    )?)?;
+    sink.write_all(line.as_bytes())?;
+    sink.write_all(b"\n")?;
+    sink.flush()?;
+    Ok(())
+}
+
+fn progress_record<G: Workload>(
+    core: &CoordinatorCore<G>,
+    counters: &CampaignCounters,
+    profile: Option<(&LiveCoordinatorProfile, HostTimes)>,
+    draw_state_memory_bytes: usize,
+    telemetry_started: Moment,
+    final_census: bool,
+) -> Result<CampaignProgressRecord<G::Key>, Box<dyn Error>> {
     let sequence = core.sequence;
-    #[allow(clippy::disallowed_methods)]
-    let unix_time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
+    let unix_time = unix_seconds();
     let (deepest_key, cheapest, retained) = core
         .archive
         .live_progress()
         .map(|(key, cheapest, retained)| (Some(key), cheapest, retained))
         .unwrap_or((None, 0, 0));
-    let line = serde_json::to_string(&CampaignProgressRecord {
+    Ok(CampaignProgressRecord {
         workload_diagnostics: G::diagnostics(&core.evidence),
         retained_diagnostics: final_census
             .then(|| G::retained_diagnostics(core.archive.retained_snapshots()))
@@ -2848,11 +3255,7 @@ fn write_live_progress<G: Workload>(
             core.archive.selector_counters()
         },
         continuations: core.archive.continuation_report(),
-    })?;
-    sink.write_all(line.as_bytes())?;
-    sink.write_all(b"\n")?;
-    sink.flush()?;
-    Ok(())
+    })
 }
 
 fn bootstrap_core<G: Workload>(
@@ -2864,12 +3267,12 @@ fn bootstrap_core<G: Workload>(
 ) -> Result<Option<TreeImportCounts>, Box<dyn Error>> {
     match origin {
         CampaignOrigin::Archive {
-            report, checkpoint, ..
+            source, checkpoint, ..
         } => Ok(Some(core.import_tree(
             workload,
             run,
             target,
-            report,
+            source.report(),
             checkpoint.as_ref().map(|checkpoint| &checkpoint.snapshots),
         )?)),
         CampaignOrigin::Genesis => {
@@ -2897,6 +3300,36 @@ impl Write for CheckpointHashWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+fn validate_archive_checkpoint_entries<G: Workload + ?Sized>(
+    workload: &G,
+    source: &G::ArchiveReport,
+    checkpoint: &SnapshotCheckpoint<G::Snapshot>,
+) -> Result<(), Box<dyn Error>> {
+    let mut expected = BTreeMap::new();
+    for entry in workload.source_entries(source) {
+        if expected
+            .insert(entry.id, entry.snapshot_identity_sha256.as_deref())
+            .is_some()
+        {
+            return Err("source archive has duplicate entry IDs".into());
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for entry in &checkpoint.entries {
+        if !seen.insert(entry.id) {
+            return Err("archive snapshot checkpoint has duplicate entry IDs".into());
+        }
+        let bound = expected
+            .get(&entry.id)
+            .ok_or("archive snapshot checkpoint has an unknown entry ID")?
+            .ok_or("source archive entry lacks a snapshot digest")?;
+        if workload.snapshot_identity_sha256(&entry.snapshot)? != *bound {
+            return Err("archive snapshot checkpoint differs from its source entry digest".into());
+        }
+    }
+    Ok(())
 }
 
 fn validate_archive_checkpoint<G: Workload + ?Sized>(
@@ -2966,125 +3399,84 @@ where
     )
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn run_campaign_checkpointed_with_options<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
-    mut progress: Option<&mut dyn Write>,
+    progress: Option<&mut dyn Write>,
     options: CampaignExecutionOptions,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
 {
-    let executable_identity = workload.executable_identity()?;
-    let work_budget = options.work_budget;
-    let placement = options.placement.as_ref();
-    let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
-    if work_budget == Some(0) {
-        return Err("work budget must be nonzero".into());
-    }
-    if config.workers == 0 {
-        return Err("campaign mode requires at least one worker".into());
-    }
-    if !archive_entry_limit_is_valid(config.archive_entry_limit) {
-        return Err("campaign archive entry limit is outside its bounded range".into());
-    }
-    if config.window == 0 {
-        return Err("campaign admission window must hold at least one reservation".into());
-    }
-    if config.memory_budget_mib == Some(0) {
-        return Err("campaign memory budget must be nonzero".into());
-    }
-    if let Some(memory_budget_mib) = config.memory_budget_mib {
-        let budget = memory_budget_mib.saturating_mul(1024 * 1024);
-        if budget
-            <= workload
-                .draw_state_memory_reserve_bytes(&config.run)
-                .saturating_add(duration_memory_reserve)
-        {
-            return Err("campaign memory budget is too small for the bounded draw state".into());
-        }
-    }
-    let mut search_checkpoint = match origin {
-        CampaignOrigin::SearchCheckpoint {
-            path,
-            expected_sha256,
-        } => {
-            let reader = CheckpointReader::open(path)?;
-            if expected_sha256
-                .as_deref()
-                .is_some_and(|expected| expected != reader.file_sha256.as_str())
-            {
-                return Err("selected search checkpoint changed before resume".into());
-            }
-            Some(reader)
-        }
-        _ => None,
-    };
-    let origin_record = resolve_origin(
+    run_campaign_checkpointed_observed(workload, config, origin, stream, progress, options, None)
+}
+
+pub fn run_campaign_checkpointed_observed<G: Workload>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+    observer: Option<crate::search::job_observation::JobObserver<'_, G::JobObservation>>,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    run_campaign(
         workload,
         config,
         origin,
-        search_checkpoint.as_ref(),
-        &executable_identity,
-    )?;
-    let draw_origin = match origin {
-        CampaignOrigin::Genesis => None,
-        CampaignOrigin::SnapshotRoot { .. } => None,
-        CampaignOrigin::SearchCheckpoint { .. } => None,
-        CampaignOrigin::Archive {
-            file_sha256,
-            report,
-            ..
-        } => Some((file_sha256.as_str(), report.as_ref())),
-    };
-    let (mut draw_state, draw_header) = initial_draw_state(workload, &config.run, draw_origin)?;
-    let mut duration_policies = DurationPolicies::<G::Key>::new();
-    if !memory_is_within_reserve(
-        workload.draw_state_memory_bytes(&draw_state),
-        workload.draw_state_memory_reserve_bytes(&config.run),
-    ) {
-        return Err("initial draw state exceeds its deterministic memory reserve".into());
-    }
-    let mut header = stream_header(
-        workload,
-        config,
-        &origin_record,
-        draw_header,
-        &executable_identity,
-    );
-    header.work_budget = work_budget;
-    let mut writer = StreamWriter::new(stream);
-    writer.write_line(&header)?;
+        stream,
+        progress,
+        options,
+        &(),
+        observer,
+    )
+}
 
-    let mut core = CoordinatorCore::new(
-        workload,
-        &config.run,
-        config.archive_entry_limit,
-        config.memory_budget_mib,
-    );
-    let mut counters = CampaignCounters::new();
-    let mut telemetry = CampaignTelemetry::default();
-    let workers = config.workers as usize;
-    let mut rand = RomuDuoJrRand::with_seed(derive_selection_seed(config.campaign_seed));
+pub fn run_campaign_watched<G: Workload, W: CampaignWatch<G>>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+    watch: &W,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    run_campaign(
+        workload, config, origin, stream, progress, options, watch, None,
+    )
+}
 
-    #[allow(clippy::disallowed_methods)]
-    let mut telemetry_started = std::time::Instant::now();
-    let mut reserved = 0_u64;
-    let profile_printed = std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some();
-    let mut coordinator_profile = LiveCoordinatorProfile::default();
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn run_campaign<G: Workload, W: CampaignWatch<G>>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+    watch: &W,
+    mut observer: Option<crate::search::job_observation::JobObserver<'_, G::JobObservation>>,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    crate::search::job_observation::bounded::<G::JobObservation>();
+    let mut sink_disabled = false;
+    workload.verify_integrity()?;
+    let placement = options.placement.clone();
+    let placement = placement.as_ref();
     let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
     let first_worker_start = Mutex::new(first_worker_start);
-    let mut spec_records = BTreeMap::<usize, JobSpecRecord<G>>::new();
-    let action_cost = workload.action_cost_fn();
-
-    let retention = config.retention;
-    let mut admission = telemetry.admission.clone();
-    let mut idle_clock = IdleClock::new(workers);
-    let mut coordinator_schedstat = None;
-    let ((), worker_telemetry) = with_worker_pool(
+    let mut coordinator = None;
+    let ((), worker_telemetry) = with_worker_pool_observed(
         config.workers,
         |worker| {
             if worker == 0 {
@@ -3097,920 +3489,201 @@ where
             ThreadPlacement::place(placement, PlacedThread::Worker(worker))?;
             workload.new_target()
         },
-        |target, spec: JobSpec<G>| {
-            let reservation = spec.reservation;
-            let work_before = workload.execution_work(target);
-            workload
-                .execute_job(
-                    &config.run,
-                    target,
-                    &spec.snapshot,
-                    &spec.replay,
-                    spec.parent_milestones,
-                    &spec.suffix,
-                    retention,
-                    config.stop_rollout_on_objective,
-                )
-                .and_then(|result| {
-                    let result_sha256 = workload
-                        .result_sha256(&result)
-                        .map_err(|error| error.to_string())?;
-                    let execution_work = execution_work_delta(
-                        work_before,
-                        workload.execution_work(target),
-                        "worker",
-                    )?;
-                    Ok((reservation, result, execution_work, result_sha256))
-                })
-                .map_err(|error| error.to_string())
+        |_| workload.new_target(),
+        |target, job: JobSpec<G>| {
+            let reservation = job.reservation;
+            let outcome = watch
+                .run(&job, || run_job(workload, config, target, &job))
+                .map_err(|error| error.to_string());
+            Ok((reservation, outcome))
         },
         |target| workload.telemetry(target),
+        || workload.begin_job_observation(),
+        || workload.take_job_observation(),
+        observer
+            .as_ref()
+            .map(|observer| observer.diagnostics.clone()),
         |pool| -> Result<(), Box<dyn Error>> {
             ThreadPlacement::place(placement, PlacedThread::Coordinator)?;
-            let bootstrap_started = now();
-            let resume = match search_checkpoint.take() {
-                Some(reader) => Some(restore_search_checkpoint(
-                    workload,
-                    config,
-                    &executable_identity,
-                    reader,
-                    &mut core,
-                    &mut draw_state,
-                    &mut duration_policies,
-                    &mut counters,
-                )?),
-                None => {
-                    bootstrap_campaign(
-                        workload,
-                        config,
-                        origin,
-                        &mut core,
-                        &draw_state,
-                        &duration_policies,
-                        &mut counters,
-                    )?;
-                    None
-                }
-            };
-            telemetry.bootstrap_ns = nanos_since(bootstrap_started);
-            if let (Some(path), Some(input)) =
-                (&config.objective_witness_path, &core.objective_witness)
-            {
-                std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
-            }
-
+            let campaign = coordinator.insert(CampaignCoordinator::start(
+                workload,
+                config,
+                origin,
+                stream,
+                progress.map(|sink| -> &mut dyn Write { sink }),
+                options,
+            )?);
+            watch.start(campaign)?;
             bootstrapped.send(())?;
             drop(bootstrapped);
-            #[allow(clippy::disallowed_methods)]
-            let search_started = std::time::Instant::now();
-            telemetry_started = search_started;
-            let started = config.wall_budget.map(|_| telemetry_started);
-            let mut admitted = 0_usize;
-            let mut planned_clock = 0_u64;
-            let mut resumed_in_flight = None;
-            if let Some(resume) = resume {
-                rand = resume.rand;
-                reserved = resume.reserved;
-                coordinator_profile = resume.profile;
-                admitted = resume.admitted;
-                planned_clock = resume.planned_clock;
-                resumed_in_flight = Some(resume.in_flight);
+            pool.wait_ready(config.workers)?;
+            while campaign.reserve_next()? {
+                for job in campaign.plan(usize::MAX) {
+                    pool.dispatch((job.planned_finish, job.reservation), job)?;
+                }
             }
-            let mut checkpoints = options
-                .checkpoints
-                .clone()
-                .map(|plan| {
-                    CheckpointWriter::create(
-                        plan,
-                        G::checkpoint_marks(&core.evidence),
-                        core.archive.top_progress(),
-                    )
-                })
-                .transpose()?;
-            idle_clock = IdleClock::new(workers);
-            coordinator_schedstat = thread_schedstat();
-            let select = |core: &mut CoordinatorCore<G>,
-                          rand: &mut RomuDuoJrRand,
-                          draw_state: &mut DrawTables<G::Action>,
-                          duration_policies: &DurationPolicies<G::Key>,
-                          writer: &mut StreamWriter<'_>,
-                          counters: &mut CampaignCounters,
-                          reserved: &mut u64|
-             -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
-                if *reserved >= config.execution_budget
-                    || stop_reservations_after_work_budget(
-                        work_budget,
-                        counters.bootstrap_execution_work,
-                        counters.job_execution_work,
-                    )
-                    || stop_reservations_after_objective(
-                        config.stop_campaign_on_objective,
-                        core.objective_witness.is_some(),
-                    )
-                {
-                    return Ok(None);
+            loop {
+                for job in campaign.plan(usize::MAX) {
+                    pool.dispatch((job.planned_finish, job.reservation), job)?;
                 }
-                if let (Some(started), Some(wall_budget)) = (started, config.wall_budget)
-                    && started.elapsed() >= wall_budget
-                {
-                    return Ok(None);
-                }
-                let mut consecutive_skips = 0_u64;
-                let (continuation_energy, continuation) =
-                    continuation_attempt(core, config.campaign_seed, *reserved);
-                if let Some(continuation) = continuation {
-                    let parent_index = continuation.parent_index;
-                    let suffix = continuation.suffix;
-                    let (mixture_weight, splice_weight) = (0, u8::MAX);
-                    let mut mutation_seed = rand.next_u64();
-                    while energy_strategy(mutation_seed, mixture_weight, splice_weight)?
-                        != EnergyStrategy::Splice
-                    {
-                        mutation_seed = rand.next_u64();
-                    }
-                    let parent_id = continuation.parent_id;
-                    let selector = SelectorDraw {
-                        path: SelectorPath::Continuation,
-                        tier_rank: None,
-                        best_preference: None,
-                    };
-                    let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
-                    let splice = Some(CampaignSpliceRecord::Tail {
-                        donor_id: continuation.donor,
-                        leaf_id: continuation.leaf,
-                        tail_postcard: postcard::to_allocvec(&suffix)?,
-                    });
-                    *reserved = reserved.saturating_add(1);
-                    core.archive.pin_metadata(parent_id)?;
-                    let (snapshot, replay, snapshot_id) =
-                        core.archive.pin_job_origin(parent_index)?;
-                    let entry = &core.archive.entries[parent_index];
-                    return Ok(Some((
-                        JobSpec {
-                            reservation: 0,
-                            snapshot,
-                            replay,
-                            parent_milestones: entry.milestones,
-                            suffix,
-                        },
-                        PendingJob {
-                            snapshot_id,
-                            parent_id,
-                            continuation_energy,
-                            continuation_wave: continuation.wave.saturating_add(1),
-                            continuation_edge: Some((
-                                continuation.source,
-                                continuation.destination,
-                            )),
-                            mutation_seed,
-                            mixture_weight,
-                            splice_weight,
-                            splice,
-                            selector,
-                            draw_checkpoint_before,
-                            duration_draw: None,
-                            duration_admission_sequence_at_draw: None,
-                            duration_remaining_work: None,
-                            duration_checkpoint_at_draw: None,
-                            suffix_limit: None,
-                            planned_finish: 0,
-                        },
-                    )));
-                }
-                loop {
-                    let (parent_index, selector) = core.archive.select_parent(rand)?;
-                    let parent_id = core
-                        .archive
-                        .stable_id(parent_index)
-                        .ok_or("selected archive slot is missing")?;
-                    let mutation_seed = rand.next_u64();
-                    let (mixture_weight, splice_weight) =
-                        mixture_weights(&core.mixture_energy, config.mixture);
-                    let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
-                    let (spliced, splice) =
-                        if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
-                            == EnergyStrategy::Splice
-                        {
-                            match core
-                                .archive
-                                .splice_tail_for_campaign(parent_index, LONGEST_SPLICE_TAIL)
-                            {
-                                Some(CampaignSpliceTail {
-                                    donor_id,
-                                    leaf_id,
-                                    actions,
-                                }) => {
-                                    let tail_postcard = postcard::to_allocvec(&actions)?;
-                                    (
-                                        Some(actions),
-                                        Some(CampaignSpliceRecord::Tail {
-                                            donor_id: core
-                                                .archive
-                                                .stable_id(donor_id)
-                                                .ok_or("splice donor slot is missing")?,
-                                            leaf_id: core
-                                                .archive
-                                                .stable_id(leaf_id)
-                                                .ok_or("splice leaf slot is missing")?,
-                                            tail_postcard,
-                                        }),
-                                    )
-                                }
-                                None => (None, Some(CampaignSpliceRecord::Unavailable)),
-                            }
-                        } else {
-                            (None, None)
-                        };
-                    let remaining_work = work_budget.and_then(|budget| {
-                        NonZeroU64::new(
-                            budget.saturating_sub(
-                                counters
-                                    .bootstrap_execution_work
-                                    .saturating_add(counters.job_execution_work),
-                            ),
-                        )
-                    });
-                    let mut duration_checkpoint_at_draw = None;
-                    let duration_draw = if spliced.is_none() {
-                        workload
-                            .duration_request(
-                                &config.run,
-                                core.archive.entries[parent_index].key,
-                                remaining_work,
-                            )
-                            .map(|request| {
-                                duration_checkpoint_at_draw =
-                                    duration_policies.context_checkpoint(request.context);
-                                let mut duration_rand = RomuDuoJrRand::with_seed(mutation_seed);
-                                duration_policies.draw(
-                                    request.context,
-                                    &mut duration_rand,
-                                    request.max_duration,
-                                )
-                            })
-                    } else {
-                        None
-                    };
-                    let duration_remaining_work = duration_draw.and(remaining_work);
-                    let duration_admission_sequence_at_draw = duration_draw.map(|_| core.sequence);
-                    let previous = core.archive.last_action(parent_index);
-                    let suffix_limit = spliced
-                        .is_none()
-                        .then(|| core.suffix_limit(parent_id, parent_index));
-                    let mut suffix = match (spliced, duration_draw) {
-                        (Some(tail), _) => tail,
-                        (None, Some(draw)) => workload.expand_suffix_duration(
-                            &config.run,
-                            draw_state,
-                            MixtureDraw {
-                                mixture: config.mixture,
-                                weight: mixture_weight,
-                                splice_weight,
-                            },
-                            mutation_seed,
-                            previous,
-                            draw,
-                        )?,
-                        (None, None) => workload.expand_suffix(
-                            &config.run,
-                            draw_state,
-                            MixtureDraw {
-                                mixture: config.mixture,
-                                weight: mixture_weight,
-                                splice_weight,
-                            },
-                            mutation_seed,
-                            previous,
-                        )?,
-                    };
-                    if let Some(limit) = suffix_limit {
-                        suffix.truncate(usize::from(limit));
-                    }
-                    let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
-                        && core.all_prefixes_archived(parent_index, &suffix);
-                    if all_prefixes_archived {
-                        let duration_checkpoint_before = duration_draw
-                            .and_then(|draw| duration_policies.context_checkpoint(draw.context));
-                        let draw_checkpoint_after = workload.finish_stream_record(
-                            &config.run,
-                            draw_state,
-                            &[],
-                            &core.evidence,
-                        )?;
-                        writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
-                            reservation: *reserved,
-                            parent_id,
-                            mutation_seed,
-                            mixture_weight,
-                            splice_weight,
-                            splice,
-                            selector,
-                            draw_checkpoint_before,
-                            draw_checkpoint_after,
-                            duration_draw,
-                            duration_admission_sequence_at_draw,
-                            duration_remaining_work,
-                            duration_checkpoint_at_draw,
-                            duration_checkpoint_after: duration_checkpoint_before.clone(),
-                            duration_checkpoint_before,
-                            suffix_limit,
-                        }))?;
-                        core.archive.record_selection(parent_index, &selector);
-                        core.archive.maintain_memory_budget()?;
-                        core.archive.prepare_selection();
-                        counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
-                        consecutive_skips = consecutive_skips.saturating_add(1);
-                        continue;
-                    }
-                    *reserved = reserved.saturating_add(1);
-                    core.start_suffix_job(parent_id, suffix_limit);
-                    core.archive.pin_metadata(parent_id)?;
-                    let (snapshot, replay, snapshot_id) =
-                        core.archive.pin_job_origin(parent_index)?;
-                    let entry = &core.archive.entries[parent_index];
-                    return Ok(Some((
-                        JobSpec {
-                            reservation: 0,
-                            snapshot,
-                            replay,
-                            parent_milestones: entry.milestones,
-                            suffix,
-                        },
-                        PendingJob {
-                            snapshot_id,
-                            parent_id,
-                            continuation_energy,
-                            continuation_wave: 0,
-                            continuation_edge: None,
-                            mutation_seed,
-                            mixture_weight,
-                            splice_weight,
-                            splice,
-                            selector,
-                            draw_checkpoint_before,
-                            duration_draw,
-                            duration_admission_sequence_at_draw,
-                            duration_remaining_work,
-                            duration_checkpoint_at_draw,
-                            suffix_limit,
-                            planned_finish: 0,
-                        },
-                    )));
-                }
-            };
-
-            let pipeline_depth = config.window;
-            let mut pending = BTreeMap::<usize, PendingJob<G>>::new();
-            let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
-            let mut schedule = BTreeSet::<(u64, usize)>::new();
-            let mut running = 0_usize;
-            for job in resumed_in_flight.take().unwrap_or_default() {
-                let index = core
-                    .archive
-                    .index_of_id(job.pending.snapshot_id)
-                    .ok_or("search checkpoint in-flight job names a missing snapshot entry")?;
-                let snapshot = core.archive.entries[index]
-                    .snapshot
-                    .clone()
-                    .ok_or("search checkpoint in-flight job has no stored snapshot")?;
-                core.start_suffix_job(job.pending.parent_id, job.pending.suffix_limit);
-                let key = (job.pending.planned_finish, job.reservation);
-                schedule.insert(key);
-                pool.dispatch(
-                    key,
-                    JobSpec {
-                        reservation: job.reservation,
-                        snapshot,
-                        replay: job.spec.replay.clone(),
-                        parent_milestones: job.spec.parent_milestones,
-                        suffix: job.spec.suffix.clone(),
-                    },
-                )?;
-                running += 1;
-                if checkpoints.is_some() {
-                    spec_records.insert(job.reservation, job.spec);
-                }
-                pending.insert(job.reservation, job.pending);
-            }
-            let prefill = pipeline_depth.saturating_sub(pending.len());
-            for _ in 0..prefill {
-                let selection_started = profile_now();
-                let selected = select(
-                    &mut core,
-                    &mut rand,
-                    &mut draw_state,
-                    &duration_policies,
-                    &mut writer,
-                    &mut counters,
-                    &mut reserved,
-                )?;
-                coordinator_profile.selection_ns = coordinator_profile
-                    .selection_ns
-                    .saturating_add(profile_elapsed(selection_started));
-                coordinator_profile.selections = coordinator_profile.selections.saturating_add(1);
-                let Some((mut spec, mut pending_job)) = selected else {
+                if campaign.finished() {
                     break;
-                };
-                coordinator_profile.note_dispatch(
-                    &spec,
-                    matches!(pending_job.splice, Some(CampaignSpliceRecord::Tail { .. })),
-                    action_cost,
-                );
-                let reservation = usize::try_from(reserved.saturating_sub(1))?;
-                spec.reservation = reservation;
-                pending_job.planned_finish = planned_finish(planned_clock, &spec, action_cost);
-                let key = (pending_job.planned_finish, reservation);
-                if pending.insert(reservation, pending_job).is_some() {
-                    return Err("campaign reserved one job twice".into());
                 }
-                if checkpoints.is_some() {
-                    spec_records.insert(reservation, JobSpecRecord::of(&spec));
-                }
-                schedule.insert(key);
-                pool.dispatch(key, spec)?;
-                running += 1;
-            }
-            idle_clock.update(running, IdleReason::NoJob);
-
-            while !pending.is_empty() || !completed.is_empty() {
-                let next_admission = schedule.first().map(|(_, reservation)| *reservation);
-                let mut ready_reply = if next_admission
-                    .is_some_and(|reservation| completed.contains_key(&reservation))
-                {
-                    pool.try_receive()?
-                } else if pending.is_empty() {
-                    return Err("campaign reorder window ended with an admission gap".into());
-                } else {
-                    let receive_started = profile_now();
-                    let reply = pool.receive()?;
-                    let waited = profile_elapsed(receive_started);
-                    coordinator_profile.receive_wait_ns =
-                        coordinator_profile.receive_wait_ns.saturating_add(waited);
-                    let waited = u64::try_from(waited).unwrap_or(u64::MAX);
-                    if completed.is_empty() {
-                        admission.receive_all_running_ns =
-                            admission.receive_all_running_ns.saturating_add(waited);
-                    } else {
-                        admission.receive_head_of_line_ns =
-                            admission.receive_head_of_line_ns.saturating_add(waited);
+                let receive_started = profile_now();
+                let reply = match pool.receive() {
+                    Ok(reply) => reply,
+                    Err(WorkerPoolError::RepliesClosed) => {
+                        let reservation = campaign
+                            .next_admission()
+                            .ok_or("campaign lost its planned admission while waiting")?;
+                        return Err(format!(
+                            "campaign reservation {reservation} failed: every worker exited before reporting its result"
+                        )
+                        .into());
                     }
-                    Some(reply)
+                    Err(error) => return Err(error.into()),
                 };
-                while let Some(reply) = ready_reply {
-                    coordinator_profile.receives = coordinator_profile.receives.saturating_add(1);
+                campaign.note_receive_wait(profile_elapsed(receive_started));
+                let mut ready_reply = Some(reply);
+                while let Some(mut reply) = ready_reply {
                     let physical_worker = reply.worker;
-                    let outcome = reply.outcome.map_err(|error| -> Box<dyn Error> {
-                        format!("campaign worker {physical_worker} failed: {error}").into()
-                    })?;
                     if physical_worker >= config.workers {
                         return Err(
                             "campaign worker replied with an unknown physical identifier".into(),
                         );
                     }
-                    running = running
-                        .checked_sub(1)
-                        .ok_or("campaign worker replied without queued work")?;
-                    let (reservation, result, execution_work, result_sha256) = outcome;
-                    let held = Some(reservation) != next_admission;
-                    idle_clock.update(
-                        running,
-                        if held {
-                            IdleReason::AdmissionOrder
-                        } else {
-                            IdleReason::NoJob
-                        },
-                    );
-                    let pending_job = pending
-                        .remove(&reservation)
-                        .ok_or("campaign worker replied for an unknown reservation")?;
-                    if completed
-                        .insert(
-                            reservation,
-                            CompletedJob {
-                                held_since: held.then(now),
-                                pending: pending_job,
-                                result,
-                                execution_work,
-                                result_sha256,
-                            },
-                        )
-                        .is_some()
-                    {
-                        return Err("campaign worker completed one reservation twice".into());
-                    }
-                    ready_reply = pool.try_receive()?;
-                }
-
-                while let Some(&(finish, reservation)) = schedule.first() {
-                    let Some(completed_job) = completed.remove(&reservation) else {
-                        break;
+                    let (planned_finish, reservation) = reply.key;
+                    let outcome = match reply.outcome {
+                        Ok((claimed, outcome)) if claimed == reservation => outcome,
+                        Ok(_) => {
+                            return Err("campaign worker replied for another reservation".into());
+                        }
+                        Err(error) => Err(error),
                     };
-                    schedule.pop_first();
-                    planned_clock = finish;
-                    spec_records.remove(&reservation);
-                    let pending_job = completed_job.pending;
-                    let result = completed_job.result;
-                    let execution_work = completed_job.execution_work;
-                    let result_sha256 = completed_job.result_sha256;
-                    if let Some(since) = completed_job.held_since {
-                        let held = nanos_since(since);
-                        admission.results_held = admission.results_held.saturating_add(1);
-                        admission.results_held_ns = admission.results_held_ns.saturating_add(held);
-                        admission.results_held_max_ns = admission.results_held_max_ns.max(held);
-                    }
-                    let tracked_duration = pending_job
-                        .duration_draw
-                        .filter(|_| execution_work > 0)
-                        .map(|draw| draw.duration);
-                    let duration_checkpoint_before = pending_job
-                        .duration_draw
-                        .and_then(|draw| duration_policies.context_checkpoint(draw.context));
-                    let objectives_before = core.objectives_reached;
-                    let admission_started = profile_now();
-                    core.archive
-                        .set_admission_wave(pending_job.continuation_wave);
-                    core.finish_suffix_job(pending_job.parent_id, pending_job.suffix_limit);
-                    let (sequence, decisions, duration_admission) = core.admit_job_tracking(
-                        workload,
-                        pending_job.parent_id,
-                        result,
-                        pending_job.suffix_limit.is_some(),
-                        |action| {
-                            tracked_duration.is_some_and(|duration| {
-                                workload.duration_of_action(&config.run, action) == Some(duration)
-                            })
-                        },
-                    )?;
-                    if duration_admission.applied {
-                        let draw = pending_job
-                            .duration_draw
-                            .ok_or("duration application was reported without a duration draw")?;
-                        duration_policies.observe(
-                            draw.context,
-                            draw.duration,
-                            duration_admission.useful,
-                            NonZeroU64::new(execution_work)
-                                .ok_or("duration application requires positive execution work")?,
-                        )?;
-                    }
-                    let duration_checkpoint_after = pending_job
-                        .duration_draw
-                        .and_then(|draw| duration_policies.context_checkpoint(draw.context));
-                    coordinator_profile.admission_ns = coordinator_profile
-                        .admission_ns
-                        .saturating_add(profile_elapsed(admission_started));
-                    coordinator_profile.admissions =
-                        coordinator_profile.admissions.saturating_add(1);
-                    let bookkeeping_started = profile_now();
-                    let parent_index = core
-                        .archive
-                        .index_of_id(pending_job.parent_id)
-                        .ok_or("completed job parent is no longer resident")?;
-                    let isolated_continuation =
-                        pending_job.selector.path == SelectorPath::Continuation;
-                    if isolated_continuation {
-                        core.archive.record_isolated_continuation(parent_index);
-                    } else {
-                        core.archive
-                            .record_selection(parent_index, &pending_job.selector);
-                    }
-                    let retained_ids = retained_archive_indexes(&core, &decisions);
-                    let new_cell_descendant = retained_ids
-                        .iter()
-                        .any(|id| core.archive.opened_new_cell(*id));
-                    let new_slot_descendant = retained_ids
-                        .iter()
-                        .any(|id| core.archive.opened_new_slot(*id));
-                    if !isolated_continuation {
-                        core.archive
-                            .record_selection_outcome(parent_index, !retained_ids.is_empty());
-                    }
-                    if isolated_continuation {
-                        let (landed, replaced) = continuation_arrival::<G>(
-                            &core.archive,
-                            pending_job.continuation_edge,
-                            &decisions,
-                        );
-                        core.archive.record_continuation_outcome(
-                            landed,
-                            replaced,
-                            new_cell_descendant,
-                            pending_job.continuation_wave,
-                        );
-                        core.archive.add_continuation_execution_work(execution_work);
-                    }
-                    record_mixture_outcome(
-                        &mut core.mixture_energy,
-                        config.mixture,
-                        pending_job.selector.path,
-                        pending_job.mutation_seed,
-                        (pending_job.mixture_weight, pending_job.splice_weight),
-                        new_slot_descendant,
-                        execution_work,
-                    )?;
-                    if objectives_before == 0
-                        && let (Some(path), Some(input)) =
-                            (&config.objective_witness_path, &core.objective_witness)
+                    if let Some(observer) = observer.as_mut()
+                        && !sink_disabled
+                        && let Some((parent_id, snapshot_id)) = campaign.pending_origin(reservation)
                     {
-                        std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
-                    }
-                    let draw_checkpoint_after =
-                        finish_record(workload, &config.run, &mut draw_state, &core, &decisions)?;
-                    let draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
-                    if !memory_is_within_reserve(
-                        draw_state_memory_bytes,
-                        workload.draw_state_memory_reserve_bytes(&config.run),
-                    ) {
-                        return Err(
-                            "live draw state exceeds its deterministic memory reserve".into()
-                        );
-                    }
-                    if !memory_is_within_reserve(
-                        duration_policies.memory_bytes(),
-                        duration_memory_reserve,
-                    ) {
-                        return Err(
-                            "live adaptive duration state exceeds its memory reserve".into()
-                        );
-                    }
-                    core.archive.unpin_job_origin(pending_job.snapshot_id);
-                    core.archive.unpin_metadata(pending_job.parent_id);
-                    let compaction_started = profile_now();
-                    let compactions_before = core.archive.history_compactions();
-                    core.archive.maintain_memory_budget()?;
-                    core.archive.prepare_selection();
-                    record_compaction_elapsed(
-                        &mut coordinator_profile,
-                        compactions_before,
-                        core.archive.history_compactions(),
-                        profile_elapsed(compaction_started),
-                    );
-                    coordinator_profile.bookkeeping_ns = coordinator_profile
-                        .bookkeeping_ns
-                        .saturating_add(profile_elapsed(bookkeeping_started));
-                    let stream_started = profile_now();
-                    writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
-                        continuation_energy: pending_job.continuation_energy,
-                        sequence,
-                        reservation: u64::try_from(reservation)?,
-                        parent_id: pending_job.parent_id,
-                        mutation_seed: pending_job.mutation_seed,
-                        execution_work,
-                        result_sha256,
-                        decisions,
-                        mixture_weight: pending_job.mixture_weight,
-                        splice_weight: pending_job.splice_weight,
-                        splice: pending_job.splice,
-                        selector: pending_job.selector,
-                        draw_checkpoint_before: pending_job.draw_checkpoint_before,
-                        draw_checkpoint_after,
-                        duration_draw: pending_job.duration_draw,
-                        duration_admission_sequence_at_draw: pending_job
-                            .duration_admission_sequence_at_draw,
-                        duration_remaining_work: pending_job.duration_remaining_work,
-                        duration_checkpoint_at_draw: pending_job.duration_checkpoint_at_draw,
-                        duration_checkpoint_before,
-                        duration_checkpoint_after,
-                        suffix_limit: pending_job.suffix_limit,
-                    }))?;
-                    coordinator_profile.stream_write_ns = coordinator_profile
-                        .stream_write_ns
-                        .saturating_add(profile_elapsed(stream_started));
-                    counters.job_execution_work =
-                        counters.job_execution_work.saturating_add(execution_work);
-                    if objectives_before == 0 && core.objectives_reached > 0 {
-                        counters.note_first_objective(sequence);
-                    }
-                    if let Some(sink) = progress.as_deref_mut()
-                        && progress_checkpoint_due(sequence)
-                    {
-                        let host_times = profile_printed.then(|| {
-                            HostTimes::measure(coordinator_schedstat, idle_clock.totals())
-                        });
-                        write_live_progress(
-                            &core,
-                            &counters,
-                            host_times.map(|host_times| (&coordinator_profile, host_times)),
-                            draw_state_memory_bytes,
-                            telemetry_started,
-                            false,
-                            sink,
-                        )?;
-                        if let Some(host_times) = host_times {
-                            eprintln!(
-                                "coordinator-profile executions={sequence} coordinator_cpu_ns={} coordinator_run_wait_ns={} idle_admission_order_ns={} idle_no_job_ns={} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} cell_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} completed_buffered={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
-                                host_times.coordinator_cpu_ns,
-                                host_times.coordinator_run_wait_ns,
-                                host_times.idle_admission_order_ns,
-                                host_times.idle_no_job_ns,
-                                coordinator_profile.receive_wait_ns,
-                                coordinator_profile.admission_ns,
-                                coordinator_profile.bookkeeping_ns,
-                                coordinator_profile.history_compaction_ns,
-                                coordinator_profile.stream_write_ns,
-                                coordinator_profile.selection_ns,
-                                coordinator_profile.receives,
-                                coordinator_profile.admissions,
-                                coordinator_profile.selections,
-                                core.archive.entries.len(),
-                                core.archive.active_count(),
-                                core.archive.historical_input_actions(),
-                                core.archive.stored_input_actions(),
-                                core.archive.input_index_nodes(),
-                                core.archive.resident_snapshot_count(),
-                                core.archive.resident_snapshot_bytes(),
-                                core.archive.entry_metadata_memory_bytes(),
-                                core.archive.input_index_memory_bytes(),
-                                core.archive.cell_memory_bytes(),
-                                core.archive.history_memory_bytes(),
-                                draw_state_memory_bytes,
-                                core.archive
-                                    .resident_memory_bytes()
-                                    .saturating_add(draw_state_memory_bytes),
-                                core.archive.snapshot_evictions(),
-                                core.archive.history_compactions(),
-                                core.archive.historical_entries_dropped(),
-                                core.archive.input_reconstructions(),
-                                completed.len(),
-                                counters.job_execution_work,
-                                coordinator_profile.replay_jobs,
-                                coordinator_profile.replay_actions,
-                                coordinator_profile.replay_cost,
-                                coordinator_profile.suffix_actions,
-                                coordinator_profile.suffix_cost,
-                            );
+                        let receipt = reply.observation.take();
+                        let has_payload = receipt.payload.is_some();
+                        let completion = crate::search::job_observation::CompletionObservation {
+                            worker: physical_worker,
+                            reservation,
+                            planned_finish,
+                            parent_id,
+                            snapshot_id,
+                            job_failed: outcome.is_err(),
+                            receipt,
+                        };
+                        observer
+                            .diagnostics
+                            .add(crate::search::job_observation::Counter::SinkAttempts);
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            (observer.sink)(completion)
+                        })) {
+                            Ok(Ok(())) => {
+                                if has_payload {
+                                    observer
+                                        .diagnostics
+                                        .add(crate::search::job_observation::Counter::Delivered);
+                                }
+                            }
+                            failure => {
+                                observer.diagnostics.add(if failure.is_err() {
+                                    crate::search::job_observation::Counter::SinkPanics
+                                } else {
+                                    crate::search::job_observation::Counter::SinkErrors
+                                });
+                                if has_payload {
+                                    observer
+                                        .diagnostics
+                                        .add(crate::search::job_observation::Counter::Discarded);
+                                }
+                                sink_disabled = true;
+                            }
                         }
                     }
-                    admitted = admitted.saturating_add(1);
-                    let selection_started = profile_now();
-                    let selected = select(
-                        &mut core,
-                        &mut rand,
-                        &mut draw_state,
-                        &duration_policies,
-                        &mut writer,
-                        &mut counters,
-                        &mut reserved,
-                    )?;
-                    coordinator_profile.selection_ns = coordinator_profile
-                        .selection_ns
-                        .saturating_add(profile_elapsed(selection_started));
-                    coordinator_profile.selections =
-                        coordinator_profile.selections.saturating_add(1);
-                    if let Some((mut spec, mut pending_job)) = selected {
-                        coordinator_profile.note_dispatch(
-                            &spec,
-                            matches!(pending_job.splice, Some(CampaignSpliceRecord::Tail { .. })),
-                            action_cost,
-                        );
-                        let reservation = usize::try_from(reserved.saturating_sub(1))?;
-                        spec.reservation = reservation;
-                        pending_job.planned_finish =
-                            planned_finish(planned_clock, &spec, action_cost);
-                        let key = (pending_job.planned_finish, reservation);
-                        if pending.insert(reservation, pending_job).is_some() {
-                            return Err("campaign reserved one job twice".into());
+                    match outcome {
+                        Ok((outcome, note)) => {
+                            if outcome.reservation != reservation {
+                                return Err(
+                                    "campaign worker replied for another reservation".into()
+                                );
+                            }
+                            campaign.admit(outcome)?;
+                            watch.admitted(note, campaign);
                         }
-                        if checkpoints.is_some() {
-                            spec_records.insert(reservation, JobSpecRecord::of(&spec));
-                        }
-                        schedule.insert(key);
-                        pool.dispatch(key, spec)?;
-                        running += 1;
+                        Err(error) => campaign.fail(reservation, error)?,
                     }
-                    idle_clock.update(
-                        running,
-                        if completed.is_empty() {
-                            IdleReason::NoJob
-                        } else {
-                            IdleReason::AdmissionOrder
-                        },
-                    );
-                    if let Some(checkpoints) = checkpoints.as_mut()
-                        && let Some(reason) = checkpoints.due(
-                            core.sequence,
-                            G::checkpoint_marks(&core.evidence),
-                            core.archive.top_progress(),
-                        )
-                    {
-                        write_search_checkpoint(
-                            workload,
-                            config,
-                            &executable_identity,
-                            checkpoints,
-                            reason,
-                            &core,
-                            &draw_state,
-                            &duration_policies,
-                            &rand,
-                            &counters,
-                            &coordinator_profile,
-                            reserved,
-                            admitted,
-                            planned_clock,
-                            &schedule,
-                            &pending,
-                            &completed,
-                            &spec_records,
-                        )?;
-                    }
+                    ready_reply = match pool.try_receive() {
+                        Ok(reply) => reply,
+                        Err(WorkerPoolError::RepliesClosed) => None,
+                        Err(error) => return Err(error.into()),
+                    };
                 }
-                idle_clock.update(
-                    running,
-                    if completed.is_empty() {
-                        IdleReason::NoJob
-                    } else {
-                        IdleReason::AdmissionOrder
-                    },
-                );
-            }
-            if !completed.is_empty() || !schedule.is_empty() {
-                return Err("campaign reorder window ended with an admission gap".into());
-            }
-            if let Some(checkpoints) = checkpoints.as_mut() {
-                write_search_checkpoint(
-                    workload,
-                    config,
-                    &executable_identity,
-                    checkpoints,
-                    "final",
-                    &core,
-                    &draw_state,
-                    &duration_policies,
-                    &rand,
-                    &counters,
-                    &coordinator_profile,
-                    reserved,
-                    admitted,
-                    planned_clock,
-                    &schedule,
-                    &pending,
-                    &completed,
-                    &spec_records,
-                )?;
             }
             pool.close();
             Ok(())
         },
     )?;
-    telemetry.search_ns = nanos_since(telemetry_started);
-    telemetry.admission = admission;
-    telemetry.workers = worker_telemetry;
-    idle_clock.finish(&mut telemetry.admission);
-    telemetry.sum_targets();
-    telemetry.coordinator = serde_json::to_value(&coordinator_profile)?;
-    let persistence_started = now();
+    coordinator
+        .ok_or("campaign coordinator never started")?
+        .finish(worker_telemetry)
+}
 
-    core.archive.preserve_inactive_snapshots(false)?;
-    core.archive.compact_history_for_final_report()?;
-    core.finish_curve();
-    if let Some(sink) = progress {
-        write_live_progress(
-            &core,
-            &counters,
-            profile_printed.then(|| {
-                (
-                    &coordinator_profile,
-                    HostTimes::measure(
-                        coordinator_schedstat,
-                        (
-                            telemetry.admission.idle_admission_order_ns,
-                            telemetry.admission.idle_no_job_ns,
-                        ),
-                    ),
-                )
-            }),
-            workload
-                .draw_state_memory_bytes(&draw_state)
-                .saturating_add(duration_policies.memory_bytes()),
-            telemetry_started,
-            true,
-            sink,
-        )?;
+struct CoordinatorSession<'a, G: TargetExecution> {
+    workload: &'a G,
+    finished: bool,
+    begun: bool,
+}
+impl<G: TargetExecution> CoordinatorSession<'_, G> {
+    fn finish(&mut self) -> Result<(), Box<dyn Error>> {
+        self.finished = true;
+        self.workload.finish_coordinator_session()
     }
-    writer.write_line(
-        &CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::End(CampaignEndRecord {
-            jobs: reserved,
-            skips: counters.duplicates_skipped,
-            executions_completed: core.sequence,
-        }),
-    )?;
-    let stream_sha256 = writer.finish()?;
-    counters.draw_state_memory_bytes = workload
-        .draw_state_memory_bytes(&draw_state)
-        .saturating_add(duration_policies.memory_bytes());
-    let (mut report, checkpoint) = build_report(
+}
+impl<G: TargetExecution> Drop for CoordinatorSession<'_, G> {
+    fn drop(&mut self) {
+        if self.begun && !self.finished {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = self.finish();
+            }));
+        }
+    }
+}
+fn with_coordinator_session<G: TargetExecution, T>(
+    workload: &G,
+    operation: impl FnOnce() -> Result<T, Box<dyn Error>>,
+) -> Result<T, Box<dyn Error>> {
+    let mut scope = CoordinatorSession {
         workload,
-        &header,
-        origin_record,
-        core,
-        &counters,
-        stream_sha256,
-        config.materialize_final_artifacts,
-    );
-    telemetry.persistence_ns = nanos_since(persistence_started);
-    report.telemetry = telemetry;
-    Ok((report, checkpoint))
+        finished: false,
+        begun: false,
+    };
+    workload.begin_coordinator_session()?;
+    scope.begun = true;
+    let result = operation();
+    let cleanup = scope.finish();
+    coordinator_session_result(result, cleanup, &mut std::io::stderr())
+}
+
+fn coordinator_session_result<T>(
+    result: Result<T, Box<dyn Error>>,
+    cleanup: Result<(), Box<dyn Error>>,
+    diagnostics: &mut dyn Write,
+) -> Result<T, Box<dyn Error>> {
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            let _ = writeln!(
+                diagnostics,
+                "coordinator session finalization also failed: {cleanup}"
+            );
+            Err(error)
+        }
+    }
 }
 
 fn bootstrap_campaign<G: Workload>(
@@ -4199,6 +3872,7 @@ fn restore_search_checkpoint<G: Workload>(
     reader.finish()?;
     core.restore_state(state)?;
     core.archive = archive;
+    core.archive.set_snapshot_retention(G::snapshot_retention());
     let charge: fn(&G::Snapshot) -> usize = G::snapshot_memory_charge;
     core.archive
         .restore_runtime(workload.action_cost_fn(), Some(charge), snapshots)?;
@@ -4280,6 +3954,7 @@ fn write_search_checkpoint<G: Workload>(
     completed: &BTreeMap<usize, CompletedJob<G>>,
     spec_records: &BTreeMap<usize, JobSpecRecord<G>>,
 ) -> Result<(), Box<dyn Error>> {
+    workload.verify_integrity()?;
     let reservations = schedule
         .iter()
         .map(|(_, reservation)| *reservation)
@@ -4449,12 +4124,17 @@ impl ReplaySkipSchedule {
     fn accept_skip(
         &mut self,
         reservation: u64,
-        selected: usize,
+        admissions: usize,
+        window: usize,
         total: usize,
     ) -> Result<(), Box<dyn Error>> {
         let slot = usize::try_from(reservation)?;
-        if slot >= selected || slot >= total {
+        if slot >= admissions.saturating_add(window).min(total) || slot >= total {
             return Err("recorded skip names a reservation outside the selection window".into());
+        }
+        let selection_admission = if slot < window { 0 } else { slot - window + 1 };
+        if admissions != selection_admission {
+            return Err("recorded skip was not drawn at its selection boundary".into());
         }
         if self.admitted.contains(&reservation) {
             return Err("recorded skip follows its job admission".into());
@@ -4482,7 +4162,7 @@ impl ReplaySkipSchedule {
 pub fn replay_campaign_checkpointed<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
-    origin_report: Option<&G::ArchiveReport>,
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
@@ -4491,7 +4171,7 @@ where
     replay_campaign_checkpointed_inner(
         workload,
         stream_bytes,
-        origin_report,
+        origin_source,
         origin_checkpoint,
         true,
     )
@@ -4500,7 +4180,7 @@ where
 pub fn replay_campaign_prefix_checkpointed<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
-    origin_report: Option<&G::ArchiveReport>,
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
@@ -4509,23 +4189,45 @@ where
     replay_campaign_checkpointed_inner(
         workload,
         stream_bytes,
-        origin_report,
+        origin_source,
         origin_checkpoint,
         false,
     )
 }
 
-#[allow(clippy::too_many_lines)]
 fn replay_campaign_checkpointed_inner<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
-    origin_report: Option<&G::ArchiveReport>,
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
     require_terminal: bool,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
 {
+    with_coordinator_session(workload, || {
+        replay_campaign_checkpointed_in_session(
+            workload,
+            stream_bytes,
+            origin_source,
+            origin_checkpoint,
+            require_terminal,
+        )
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn replay_campaign_checkpointed_in_session<G: Workload>(
+    workload: &G,
+    stream_bytes: &[u8],
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
+    origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
+    require_terminal: bool,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    workload.verify_integrity()?;
     let executable_identity = workload.executable_identity()?;
     let stream_sha256 = format!("{:x}", Sha256::digest(stream_bytes));
     let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
@@ -4687,7 +4389,7 @@ where
         .collect::<Vec<_>>();
     let resume_input = match header.origin_kind.as_str() {
         ORIGIN_GENESIS => {
-            if origin_report.is_some() {
+            if origin_source.is_some() {
                 return Err("genesis campaign replay does not take a source archive".into());
             }
             if origin_checkpoint.is_some() {
@@ -4696,7 +4398,7 @@ where
             Input::default()
         }
         ORIGIN_SNAPSHOT_ROOT => {
-            if origin_report.is_some() {
+            if origin_source.is_some() {
                 return Err("snapshot-root replay does not take a source archive".into());
             }
             if origin_checkpoint.is_none() {
@@ -4706,13 +4408,18 @@ where
         }
         ORIGIN_ARCHIVE => {
             let source =
-                origin_report.ok_or("archive campaign replay requires the source archive")?;
+                origin_source.ok_or("archive campaign replay requires the source archive")?;
+            if header.origin_archive_sha256.as_deref() != Some(source.file_sha256()) {
+                return Err(
+                    "campaign replay source archive bytes do not match the recorded digest".into(),
+                );
+            }
             if header.origin_checkpoint_sha256.is_some() != origin_checkpoint.is_some() {
                 return Err(
                     "archive campaign replay checkpoint does not match the recorded stream".into(),
                 );
             }
-            workload.resume_input(source)?
+            workload.resume_input(source.report())?
         }
         ORIGIN_SEARCH_CHECKPOINT => {
             return Err("a stream that resumes from a search checkpoint cannot be replayed".into());
@@ -4755,8 +4462,12 @@ where
     }
     let draw_origin = match header.origin_kind.as_str() {
         ORIGIN_ARCHIVE => Some((
-            header.origin_archive_sha256.as_deref().unwrap_or_default(),
-            origin_report.ok_or("archive campaign replay requires the source archive")?,
+            origin_source
+                .ok_or("archive campaign replay requires the source archive")?
+                .file_sha256(),
+            origin_source
+                .ok_or("archive campaign replay requires the source archive")?
+                .report(),
         )),
         ORIGIN_GENESIS | ORIGIN_SNAPSHOT_ROOT => None,
         _ => return Err("campaign stream origin kind is not recognized".into()),
@@ -4813,13 +4524,17 @@ where
             )?;
             None
         }
-        ORIGIN_ARCHIVE => Some(core.import_tree(
-            workload,
-            &replay_run,
-            &mut target,
-            origin_report.ok_or("archive campaign replay requires the source archive")?,
-            origin_checkpoint.map(|checkpoint| &checkpoint.snapshots),
-        )?),
+        ORIGIN_ARCHIVE => Some(
+            core.import_tree(
+                workload,
+                &replay_run,
+                &mut target,
+                origin_source
+                    .ok_or("archive campaign replay requires the source archive")?
+                    .report(),
+                origin_checkpoint.map(|checkpoint| &checkpoint.snapshots),
+            )?,
+        ),
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_execution_work = execution_work_delta(
@@ -4891,7 +4606,7 @@ where
     let mut duration_work = VecDeque::from([(0, counters.bootstrap_execution_work)]);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
     let mut replay_job_snapshots =
-        BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, u64)>::new();
+        BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, Vec<Option<[u8; 32]>>, u64)>::new();
     let mut replay_continuations = BTreeMap::<usize, ContinuationReservation<G>>::new();
     let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
     let mut replay_job_weights = BTreeMap::<usize, (u8, u8)>::new();
@@ -4961,11 +4676,15 @@ where
             CampaignStreamRecord::Skip(skip) => {
                 replay_skips.accept_skip(
                     skip.reservation,
-                    replay_admissions
-                        .saturating_add(replay_window_depth)
-                        .min(replay_job_parents.len()),
+                    replay_admissions,
+                    replay_window_depth,
                     replay_job_parents.len(),
                 )?;
+                if replay_continuations.contains_key(&usize::try_from(skip.reservation)?) {
+                    return Err(
+                        "campaign replay recorded a skip before a taken continuation".into(),
+                    );
+                }
                 if stop_reservations_after_objective(
                     header.stop_campaign_on_objective,
                     core.objective_witness.is_some(),
@@ -5183,7 +4902,7 @@ where
                     .archive
                     .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
-                let ((snapshot, replay, snapshot_id), parent_milestones) = {
+                let ((snapshot, replay, replay_certificates, snapshot_id), parent_milestones) = {
                     let entry = core
                         .archive
                         .entries
@@ -5291,11 +5010,12 @@ where
                 last_admitted = Some((finish, replay_job_slot));
                 replay_planned_clock = finish;
                 let job_execution_work_before = workload.execution_work(&target);
-                let result = workload.execute_job(
+                let result = workload.execute_job_certified(
                     &replay_run,
                     &mut target,
                     &snapshot,
                     &replay,
+                    &replay_certificates,
                     parent_milestones,
                     &suffix,
                     replay_retention,
@@ -5313,7 +5033,7 @@ where
                     )
                     .into());
                 }
-                let digest = workload.result_sha256(&result)?;
+                let digest = workload.certified_result_sha256(&result, &target)?;
                 if digest != job.result_sha256 {
                     return Err(format!(
                         "replayed job {} result digest {digest} diverged from recorded {}",
@@ -5610,7 +5330,7 @@ where
         &counters,
         stream_sha256,
         true,
-    );
+    )?;
     if !require_terminal {
         outcome.0.mode = "campaign-prefix".to_owned();
     }
@@ -5623,27 +5343,31 @@ mod continuation_tests;
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex, mpsc},
+    };
 
     use super::{
-        ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
-        CampaignCheckpoint, CampaignConfig, CampaignCounters, CampaignExecutionOptions,
-        CampaignJobRecord, CampaignJobResult, CampaignOrigin, CampaignOutcome,
-        CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-        CampaignTypes, ContinuationAccounting, CoordinatorCore, DrawTables, DurationAdmission,
-        EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LONGEST_SPLICE_TAIL,
-        LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL,
-        PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry,
-        TargetExecution, ThreadPlacement, WorkloadPolicies, archive_entry_limit_is_valid,
-        compact_progress_curve, default_window, draws_continuation, draws_highest_preference,
+        ArchiveReportState, ArchiveSource, CampaignActionResult, CampaignAdmissionDecision,
+        CampaignCandidate, CampaignCheckpoint, CampaignConfig, CampaignCoordinator,
+        CampaignCounters, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
+        CampaignOrigin, CampaignOutcome, CampaignProgressRecord, CampaignSpliceRecord,
+        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, ContinuationAccounting,
+        CoordinatorCore, DrawTables, DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy,
+        Evaluation, InputPolicy, JobOutcome, JobSpec, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile,
+        MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting,
+        RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution,
+        ThreadPlacement, WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve,
+        coordinator_session_result, default_window, draws_continuation, draws_highest_preference,
         execution_work_delta, finish_record, full_selector_report_due, is_zero_usize,
         memory_is_within_reserve, postcard_value_sha256, profile_elapsed, progress_checkpoint_due,
         progress_line_interval, progress_policy_is_supported, record_compaction_elapsed,
         record_mixture_outcome, replay_campaign_checkpointed, replay_campaign_prefix_checkpointed,
         replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
-        run_campaign_checkpointed, run_campaign_checkpointed_with_options,
+        run_campaign_checkpointed, run_campaign_checkpointed_with_options, run_job,
         schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
-        stop_reservations_after_objective,
+        stop_reservations_after_objective, with_coordinator_session,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -5708,12 +5432,26 @@ mod tests {
 
     const INHERITS_PARENT_PLACE: u8 = u8::MAX;
 
+    type TestActionHook = dyn Fn(TestAction) -> Result<(), String> + Send + Sync;
+
+    struct BootstrapReadiness {
+        coordinator: std::thread::ThreadId,
+        finalized: std::sync::atomic::AtomicBool,
+        worker_starts: std::sync::atomic::AtomicUsize,
+    }
     #[derive(Default)]
     struct LiveTargets {
+        bootstrap_readiness: Option<BootstrapReadiness>,
         refuse: bool,
+        integrity_invalidated: std::sync::atomic::AtomicBool,
+        fail_next_target: std::sync::atomic::AtomicBool,
+        first_action_started: std::sync::atomic::AtomicBool,
+        second_selection_waits_for_first_action: std::sync::atomic::AtomicBool,
         live: std::sync::atomic::AtomicUsize,
         most: std::sync::atomic::AtomicUsize,
         objective_after_work: std::sync::atomic::AtomicU64,
+        action_hook: Mutex<Option<Arc<TestActionHook>>>,
+        selections: std::sync::atomic::AtomicUsize,
     }
 
     #[derive(Default)]
@@ -5750,13 +5488,24 @@ mod tests {
     struct TestArchiveReport {
         #[serde(with = "entries_by_suffix")]
         entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
+        #[serde(default)]
+        marker: u8,
     }
 
     struct TestWorkload {
         bootstrap_objective: bool,
         targets: Option<Arc<LiveTargets>>,
     }
+    std::thread_local! {
+        static FINALIZATION: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, false)) };
+        static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
+        static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
+        static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
     impl CampaignTypes for TestWorkload {
+        type JobObservation = ();
         type Target = TestTarget;
         type Action = TestAction;
         type Key = TestKey;
@@ -5764,12 +5513,18 @@ mod tests {
         type Progress = ();
         type Snapshot = u8;
         type Observations = ();
-        type Evidence = ();
+        type Evidence = u8;
         type ArchiveReport = TestArchiveReport;
         type Run = ();
     }
 
     impl Reporting for TestWorkload {
+        fn evidence_checkpoint(evidence: &u8) -> Result<Vec<u8>, Box<dyn Error>> {
+            Ok(vec![*evidence])
+        }
+        fn evidence_from_checkpoint(bytes: &[u8]) -> Result<u8, Box<dyn Error>> {
+            Ok(bytes.first().copied().unwrap_or_default())
+        }
         fn stream_format(&self) -> &'static str {
             "test-campaign-v1"
         }
@@ -5791,14 +5546,21 @@ mod tests {
         ) -> Result<String, Box<dyn Error>> {
             postcard_value_sha256(result)
         }
+        fn snapshot_identity_sha256(
+            &self,
+            snapshot: &Self::Snapshot,
+        ) -> Result<String, Box<dyn Error>> {
+            postcard_value_sha256(snapshot)
+        }
 
         fn archive_report(
             &self,
-            _evidence: &Self::Evidence,
+            evidence: &Self::Evidence,
             state: ArchiveReportState<Self>,
         ) -> Self::ArchiveReport {
             TestArchiveReport {
                 entries: state.entries,
+                marker: *evidence,
             }
         }
     }
@@ -5821,6 +5583,7 @@ mod tests {
         ) -> Result<Self::Action, Box<dyn Error>> {
             Ok(TestAction::new(rand.next_u64() as u8, 1))
         }
+        #[allow(clippy::disallowed_methods)]
         fn expand_suffix(
             &self,
             _run: &Self::Run,
@@ -5829,6 +5592,30 @@ mod tests {
             mutation_seed: u64,
             _previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+            if let Some(targets) = &self.targets {
+                let selection = targets
+                    .selections
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                if selection == 2
+                    && targets
+                        .second_selection_waits_for_first_action
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !targets
+                        .first_action_started
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        if Instant::now() >= deadline {
+                            return Err(
+                                "the first job never started before the second selection".into()
+                            );
+                        }
+                        std::thread::yield_now();
+                    }
+                }
+            }
             let long = mutation_seed >> 32 & 1 == 1;
             let length = 1 + usize::from(long);
             Ok(vec![
@@ -5849,13 +5636,78 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct TestIntegrityViolation;
+
+    impl std::fmt::Display for TestIntegrityViolation {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("injected determinism contradiction")
+        }
+    }
+
+    impl Error for TestIntegrityViolation {}
+
     impl TargetExecution for TestWorkload {
+        fn take_job_observation(&self) -> Option<Self::JobObservation> {
+            Some(())
+        }
+        fn finish_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
+            FINALIZATION.with(|state| {
+                let (calls, fail) = state.get();
+                state.set((calls + 1, fail));
+                if fail {
+                    Err("test shutdown unconfirmed".into())
+                } else {
+                    if let Some(readiness) = self
+                        .targets
+                        .as_ref()
+                        .and_then(|targets| targets.bootstrap_readiness.as_ref())
+                    {
+                        readiness
+                            .finalized
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Ok(())
+                }
+            })
+        }
+        fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
+            if self.targets.as_ref().is_some_and(|targets| {
+                targets
+                    .integrity_invalidated
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            }) {
+                return Err(Box::new(TestIntegrityViolation));
+            }
+            Ok(())
+        }
+
         fn new_target(&self) -> Result<Self::Target, String> {
             let Some(targets) = &self.targets else {
                 return Ok(TestTarget::default());
             };
+            if let Some(readiness) = &targets.bootstrap_readiness
+                && std::thread::current().id() != readiness.coordinator
+            {
+                assert!(
+                    readiness
+                        .finalized
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    "worker started before bootstrap session finalized"
+                );
+                readiness
+                    .worker_starts
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+
             if targets.refuse {
                 return Err("the test target refused to start".to_owned());
+            }
+            if targets
+                .fail_next_target
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err("the replacement target refused to start".to_owned());
             }
             let live = targets
                 .live
@@ -5895,11 +5747,65 @@ mod tests {
             action: &Self::Action,
             _milestones: &mut Self::Milestones,
         ) -> Result<(), Box<dyn Error>> {
+            let hook = target._counted.as_ref().and_then(|count| {
+                count
+                    .0
+                    .action_hook
+                    .lock()
+                    .expect("test action hook lock")
+                    .clone()
+            });
+            if let Some(hook) = hook {
+                hook(*action)?;
+            }
             target.apply(action);
             Ok(())
         }
+        fn apply_action_and_snapshot(
+            &self,
+            target: &mut Self::Target,
+            action: &Self::Action,
+            milestones: &mut Self::Milestones,
+        ) -> Result<Option<Self::Snapshot>, Box<dyn Error>> {
+            self.apply_action(target, action, milestones)?;
+            if FUSED_IMPORT.with(|enabled| enabled.get())
+                && !OMIT_IMPORT_CAPTURE.with(|omitted| omitted.get() == Some(target.value))
+            {
+                IMPORT_CALLS.with(|calls| {
+                    let (captured, current, snapshots) = calls.get();
+                    calls.set((captured + 1, current, snapshots));
+                });
+                Ok(Some(target.value))
+            } else {
+                Ok(None)
+            }
+        }
         fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
+            IMPORT_CALLS.with(|calls| {
+                let (captured, current, snapshots) = calls.get();
+                calls.set((captured, current, snapshots + 1));
+            });
             target.snapshot()
+        }
+        fn candidate_replay_certificate(
+            &self,
+            snapshot: &Self::Snapshot,
+        ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+            Ok(CERTIFIED_IMPORT.with(|enabled| enabled.get().then_some([*snapshot; 32])))
+        }
+        fn current_replay_certificate(
+            &self,
+            target: &Self::Target,
+        ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+            IMPORT_CALLS.with(|calls| {
+                let (captured, current, snapshots) = calls.get();
+                calls.set((captured, current + 1, snapshots));
+            });
+            Ok(CERTIFIED_IMPORT.with(|enabled| {
+                (enabled.get()
+                    && !OMIT_TEST_PREFIX_CERTIFICATE.with(|omit| omit.get() && target.value == 3))
+                .then_some([target.value; 32])
+            }))
         }
         fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
             test_action_cost
@@ -5947,9 +5853,10 @@ mod tests {
         fn aggregate_progress(_evidence: &Self::Evidence) -> Self::Progress {}
         fn merge_origin_evidence(
             &self,
-            _evidence: &mut Self::Evidence,
-            _source: &Self::ArchiveReport,
+            evidence: &mut Self::Evidence,
+            source: &Self::ArchiveReport,
         ) {
+            *evidence = source.marker;
         }
         fn merge_snapshot_root_evidence(
             &self,
@@ -6089,6 +5996,121 @@ mod tests {
             self.target.value = *snapshot;
             Ok(true)
         }
+    }
+
+    #[test]
+    fn bootstrap_session_scope_finalizes_success_error_and_unwind_once() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        for fail in [false, true] {
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result = with_coordinator_session(&workload, || Ok(7));
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result: Result<(), Box<dyn Error>> =
+                with_coordinator_session(&workload, || Err(Box::new(TestIntegrityViolation)));
+            assert!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<TestIntegrityViolation>()
+                    .is_some()
+            );
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _: Result<(), Box<dyn Error>> =
+                    with_coordinator_session(&workload, || panic!("bootstrap unwind"));
+            }));
+            assert!(result.is_err());
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+        }
+        FINALIZATION.with(|state| state.set((0, false)));
+    }
+
+    #[test]
+    fn bootstrap_primary_error_survives_failed_secondary_diagnostic_write() {
+        struct Broken {
+            attempts: usize,
+        }
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                self.attempts += 1;
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut diagnostics = Broken { attempts: 0 };
+        let result: Result<(), Box<dyn Error>> = coordinator_session_result(
+            Err(Box::new(TestIntegrityViolation)),
+            Err("shutdown unconfirmed".into()),
+            &mut diagnostics,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<TestIntegrityViolation>()
+                .is_some()
+        );
+        assert_eq!(diagnostics.attempts, 1);
+    }
+
+    #[test]
+    fn campaign_finalizes_bootstrap_before_worker_readiness_and_refuses_unconfirmed_exit() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 0;
+        for fail in [false, true] {
+            let targets = Arc::new(LiveTargets {
+                bootstrap_readiness: Some(BootstrapReadiness {
+                    coordinator: std::thread::current().id(),
+                    finalized: std::sync::atomic::AtomicBool::new(false),
+                    worker_starts: std::sync::atomic::AtomicUsize::new(0),
+                }),
+                ..LiveTargets::default()
+            });
+            let workload = TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets.clone()),
+            };
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut Vec::new(),
+                None,
+            );
+            assert_eq!(result.is_err(), fail);
+            if fail {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("shutdown unconfirmed")
+                );
+            }
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            let readiness = targets.bootstrap_readiness.as_ref().unwrap();
+            assert_eq!(
+                readiness
+                    .worker_starts
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(!fail)
+            );
+            assert_eq!(
+                readiness
+                    .finalized
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                !fail
+            );
+        }
+        FINALIZATION.with(|state| state.set((0, false)));
     }
 
     fn test_core() -> (TestWorkload, (), CoordinatorCore<TestWorkload>, TestTarget) {
@@ -6637,6 +6659,73 @@ mod tests {
     }
 
     #[test]
+    fn standalone_full_and_prefix_replay_finalize_coordinator_sessions_on_all_results() {
+        let (workload, lines) = five_job_campaign_stream();
+        for prefix in [false, true] {
+            let stream = if prefix {
+                lines[..lines.len() - 1].join("\n")
+            } else {
+                lines.join("\n")
+            };
+            for fail in [false, true] {
+                FINALIZATION.with(|state| state.set((0, fail)));
+                let result = if prefix {
+                    replay_campaign_prefix_checkpointed(&workload, stream.as_bytes(), None, None)
+                } else {
+                    replay_campaign_checkpointed(&workload, stream.as_bytes(), None, None)
+                };
+                assert_eq!(
+                    result.is_err(),
+                    fail,
+                    "prefix={prefix} fail={fail}: {:?}",
+                    result.as_ref().err().map(ToString::to_string)
+                );
+                if fail {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("shutdown unconfirmed")
+                    );
+                }
+                assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            }
+            FINALIZATION.with(|state| state.set((0, false)));
+            let refusing = TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::new(LiveTargets {
+                    refuse: true,
+                    ..LiveTargets::default()
+                })),
+            };
+            let error = if prefix {
+                replay_campaign_prefix_checkpointed(&refusing, stream.as_bytes(), None, None)
+            } else {
+                replay_campaign_checkpointed(&refusing, stream.as_bytes(), None, None)
+            }
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("failed to build the replay target")
+            );
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, false)));
+            let mut incomplete = lines.clone();
+            incomplete.pop();
+            let result = replay_campaign_checkpointed(
+                &workload,
+                incomplete.join("\n").as_bytes(),
+                None,
+                None,
+            );
+            assert!(result.is_err());
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+        }
+        FINALIZATION.with(|state| state.set((0, false)));
+    }
+
+    #[test]
     fn replay_rejects_forged_execution_provenance_labels() {
         let (workload, original_lines) = five_job_campaign_stream();
         for (field, forged) in [
@@ -6697,10 +6786,8 @@ mod tests {
         )
         .expect("source campaign");
         let source_archive = source.archive;
-        let source_archive_sha256 = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&source_archive).unwrap())
-        );
+        let source_archive =
+            ArchiveSource::from_bytes(&serde_json::to_vec(&source_archive).unwrap()).unwrap();
         let source_checkpoint = CampaignCheckpoint {
             path: "source.snapshots".to_owned(),
             file_sha256: format!("{:x}", Sha256::digest(snapshots.to_bytes().unwrap())),
@@ -6711,8 +6798,7 @@ mod tests {
             let mut archive_stream = Vec::new();
             let archive_origin = CampaignOrigin::Archive {
                 path: "source.archive".to_owned(),
-                file_sha256: source_archive_sha256.clone(),
-                report: Box::new(source_archive.clone()),
+                source: source_archive.clone(),
                 checkpoint: checkpoint.clone(),
             };
             run_campaign_checkpointed(
@@ -6749,8 +6835,7 @@ mod tests {
                 let mut changed_stream = Vec::new();
                 let changed_origin = CampaignOrigin::Archive {
                     path: "source.archive".to_owned(),
-                    file_sha256: source_archive_sha256.clone(),
-                    report: Box::new(source_archive.clone()),
+                    source: source_archive.clone(),
                     checkpoint: Some(changed),
                 };
                 assert!(
@@ -6788,6 +6873,215 @@ mod tests {
                 result.unwrap().0.origin
             );
         }
+    }
+
+    #[test]
+    fn archive_checkpoint_cannot_assign_another_sources_state_to_an_input() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        let mut sources = Vec::<(u8, TestArchiveReport, SnapshotCheckpoint<u8>)>::new();
+        for seed in 1..=32 {
+            config.campaign_seed = seed;
+            let (campaign, snapshots) = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut Vec::new(),
+                None,
+            )
+            .expect("independent source campaign");
+            let Some(saved) = snapshots.entries.iter().find(|entry| entry.id == 1) else {
+                continue;
+            };
+            let value = saved.snapshot;
+            if value == 0
+                || value == INHERITS_PARENT_PLACE
+                || sources.iter().any(|(existing, _, _)| *existing == value)
+            {
+                continue;
+            }
+            let entry = campaign
+                .archive
+                .entries
+                .iter()
+                .find(|entry| entry.id == 1)
+                .expect("snapshot belongs to an archive entry");
+            assert_eq!(entry.key, TestKey(value));
+            assert_eq!(
+                entry
+                    .input
+                    .actions
+                    .iter()
+                    .fold(0_u8, |sum, action| sum.wrapping_add(action.input)),
+                value
+            );
+            sources.push((value, campaign.archive, snapshots));
+            if sources.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(sources.len(), 2, "two distinct saved states are required");
+        let (source_value, source_report, source_snapshots) = sources.remove(0);
+        let (foreign_value, _, foreign_snapshots) = sources.remove(0);
+        let source = ArchiveSource::from_bytes(&serde_json::to_vec(&source_report).unwrap())
+            .expect("archive source");
+        let checkpoint_for = |path: &str, snapshots: SnapshotCheckpoint<u8>| {
+            let bytes = snapshots.to_bytes().expect("encode checkpoint");
+            CampaignCheckpoint {
+                path: path.to_owned(),
+                file_sha256: format!("{:x}", Sha256::digest(&bytes)),
+                snapshots: SnapshotCheckpoint::from_bytes(&bytes, workload.checkpoint_format())
+                    .expect("decode checkpoint"),
+            }
+        };
+        config.campaign_seed = 101;
+        config.execution_budget = 0;
+        let matched_checkpoint = checkpoint_for("source.snapshots", source_snapshots.clone());
+        let mut matched_stream = Vec::new();
+        let (matched_report, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Archive {
+                path: "source.archive".to_owned(),
+                source: source.clone(),
+                checkpoint: Some(matched_checkpoint.clone()),
+            },
+            &mut matched_stream,
+            None,
+        )
+        .expect("matching serialized source and checkpoint import");
+        assert_eq!(
+            replay_campaign_checkpointed(
+                &workload,
+                &matched_stream,
+                Some(&source),
+                Some(&matched_checkpoint),
+            )
+            .expect("matching serialized source and checkpoint replay")
+            .0
+            .archive,
+            matched_report.archive
+        );
+        let checkpoint = checkpoint_for("foreign.snapshots", foreign_snapshots);
+        let mut stream = Vec::new();
+        let mixed = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Archive {
+                path: "source.archive".to_owned(),
+                source: source.clone(),
+                checkpoint: Some(checkpoint.clone()),
+            },
+            &mut stream,
+            None,
+        );
+        assert_ne!(source_value, foreign_value);
+        assert!(
+            mixed
+                .unwrap_err()
+                .to_string()
+                .contains("source entry digest")
+        );
+        let mut changed = source_snapshots.clone();
+        changed
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == 1)
+            .expect("saved source entry")
+            .snapshot = foreign_value;
+        let changed_checkpoint = checkpoint_for("changed.snapshots", changed);
+        let mut changed_stream = Vec::new();
+        let changed_result = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Archive {
+                path: "source.archive".to_owned(),
+                source: source.clone(),
+                checkpoint: Some(changed_checkpoint.clone()),
+            },
+            &mut changed_stream,
+            None,
+        );
+        assert!(
+            changed_result
+                .unwrap_err()
+                .to_string()
+                .contains("source entry digest")
+        );
+        let mut lines = matched_stream
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| String::from_utf8(line.to_vec()).unwrap())
+            .collect::<Vec<_>>();
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["origin_checkpoint_path"] = serde_json::json!(changed_checkpoint.path);
+        header["origin_checkpoint_sha256"] = serde_json::json!(changed_checkpoint.file_sha256);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let replay_result = replay_campaign_checkpointed(
+            &workload,
+            lines.join("\n").as_bytes(),
+            Some(&source),
+            Some(&changed_checkpoint),
+        );
+        assert!(
+            replay_result
+                .unwrap_err()
+                .to_string()
+                .contains("source entry digest")
+        );
+        let reject_entries = |report: TestArchiveReport,
+                              snapshots: SnapshotCheckpoint<u8>,
+                              expected: &str| {
+            let source = ArchiveSource::from_bytes(&serde_json::to_vec(&report).unwrap()).unwrap();
+            let checkpoint = checkpoint_for("invalid.snapshots", snapshots);
+            let result = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::Archive {
+                    path: "source.archive".to_owned(),
+                    source,
+                    checkpoint: Some(checkpoint),
+                },
+                &mut Vec::new(),
+                None,
+            );
+            assert!(
+                result.unwrap_err().to_string().contains(expected),
+                "expected {expected}"
+            );
+        };
+        let mut duplicate = source_snapshots.clone();
+        duplicate.entries.push(
+            duplicate
+                .entries
+                .iter()
+                .find(|entry| entry.id == 1)
+                .unwrap()
+                .clone(),
+        );
+        reject_entries(source_report.clone(), duplicate, "duplicate entry IDs");
+        let mut unknown = source_snapshots.clone();
+        unknown
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == 1)
+            .unwrap()
+            .id = u64::MAX;
+        reject_entries(source_report.clone(), unknown, "unknown entry ID");
+        let mut unbound = source_report;
+        unbound
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == 1)
+            .unwrap()
+            .snapshot_identity_sha256 = None;
+        reject_entries(unbound, source_snapshots, "lacks a snapshot digest");
     }
 
     #[test]
@@ -6971,15 +7265,15 @@ mod tests {
         assert!(error.contains("suffix limit"), "{error}");
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":13,"format":"campaign-v1","campaign_seed":7,
-"schedule_policy":"planned_finish_window_2_v5","progress_policy":"mechanical_watermark_bounded_1024_v2",
+    const RECORDED_HEADER: &str = r#"{"schema_version":15,"format":"campaign-v1","campaign_seed":7,
+"schedule_policy":"planned_finish_window_2_v6","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
 "archive_entry_limit":128,"action_vocabulary":"test_inputs",
 "key_policy":"test_key","duration_policy":"stratified",
 "step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
-"parent_scheduler":"tier_pace_yield_cell_recent_count_decay_v1","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
+"parent_scheduler":"tier_progress_cascade_pace_yield_cell_recent_count_decay_v2","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
 "selection_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd","executable_identity":"test-executable",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
@@ -7359,7 +7653,9 @@ mod tests {
                 actions: vec![winning]
             })
         );
-        let (report, _) = core.into_archive_report_and_snapshots(&workload, 0, true);
+        let (report, _) = core
+            .into_archive_report_and_snapshots(&workload, 0, true)
+            .expect("report and snapshots");
         assert_eq!(
             report.entries.len(),
             3,
@@ -7384,6 +7680,7 @@ mod tests {
                 input: Input { actions },
                 key: TestKey(0),
                 milestones: (),
+                snapshot_identity_sha256: None,
                 selector: None,
             };
         let source = TestArchiveReport {
@@ -7394,6 +7691,7 @@ mod tests {
                 entry(3, Some(1), vec![action(0x01), action(0x80)]),
                 entry(9, Some(7), vec![action(0x01), action(0x02), action(0x40)]),
             ],
+            marker: 0,
         };
         let mut core = CoordinatorCore::new(&workload, &run, 32_768, None);
         let suffix_json = serde_json::to_string(&source).expect("serialize source archive");
@@ -7422,6 +7720,312 @@ mod tests {
             reports.len(),
             usize::try_from(counts.imported).expect("imported count") + 1
         );
+    }
+
+    #[test]
+    fn whole_tree_import_reuses_bounded_captures_and_keeps_every_prefix_certificate() {
+        for (fused, omitted) in [
+            (false, None),
+            (true, None),
+            (true, Some(3)),
+            (true, Some(6)),
+        ] {
+            let workload = TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            };
+            let actions = vec![
+                TestAction::new(1, 1),
+                TestAction::new(2, 1),
+                TestAction::new(3, 1),
+            ];
+            let source = TestArchiveReport {
+                entries: vec![
+                    ArchiveEntryReport {
+                        id: 0,
+                        parent_id: None,
+                        created_execution: 0,
+                        input: Input::default(),
+                        key: TestKey(0),
+                        milestones: (),
+                        snapshot_identity_sha256: None,
+                        selector: None,
+                    },
+                    ArchiveEntryReport {
+                        id: 1,
+                        parent_id: Some(0),
+                        created_execution: 0,
+                        input: Input {
+                            actions: actions.clone(),
+                        },
+                        key: TestKey(6),
+                        milestones: (),
+                        snapshot_identity_sha256: Some(
+                            workload.snapshot_identity_sha256(&6).unwrap(),
+                        ),
+                        selector: None,
+                    },
+                ],
+                marker: 0,
+            };
+            CERTIFIED_IMPORT.with(|enabled| enabled.set(true));
+            FUSED_IMPORT.with(|enabled| enabled.set(fused));
+            OMIT_IMPORT_CAPTURE.with(|capture| capture.set(omitted));
+            IMPORT_CALLS.with(|calls| calls.set((0, 0, 0)));
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            core.archive.set_memory_budget(usize::MAX, |_| 1);
+            let result =
+                core.import_tree(&workload, &(), &mut TestTarget::default(), &source, None);
+            FUSED_IMPORT.with(|enabled| enabled.set(false));
+            OMIT_IMPORT_CAPTURE.with(|capture| capture.set(None));
+            CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
+            assert_eq!(result.unwrap().imported, 1);
+            assert_eq!(
+                IMPORT_CALLS.with(|calls| calls.get()),
+                match (fused, omitted) {
+                    (false, _) => (0, 3, 2),
+                    (true, None) => (3, 0, 1),
+                    (true, Some(3)) => (2, 1, 1),
+                    (true, Some(6)) => (2, 1, 2),
+                    _ => unreachable!(),
+                }
+            );
+            let child = core.archive.index_of_id(1).unwrap();
+            core.archive
+                .set_memory_budget(core.archive.history_memory_bytes() + 1, |_| 1);
+            for _ in 0..8 {
+                core.archive.maintain_memory_budget().unwrap();
+            }
+            assert!(core.archive.entries[child].snapshot.is_none());
+            let (_, replay, certificates, pin) = core.archive.pin_job_origin(child).unwrap();
+            assert_eq!(replay, actions);
+            assert_eq!(
+                certificates,
+                vec![Some([1; 32]), Some([3; 32]), Some([6; 32])]
+            );
+            core.archive.unpin_job_origin(pin);
+        }
+    }
+
+    #[test]
+    fn whole_tree_import_certifies_evicted_replay_prefixes_with_or_without_source_snapshots() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let actions = vec![
+            TestAction::new(1, 1),
+            TestAction::new(2, 1),
+            TestAction::new(3, 1),
+        ];
+        let source = TestArchiveReport {
+            entries: vec![
+                ArchiveEntryReport {
+                    id: 0,
+                    parent_id: None,
+                    created_execution: 0,
+                    input: Input::default(),
+                    key: TestKey(0),
+                    milestones: (),
+                    snapshot_identity_sha256: None,
+                    selector: None,
+                },
+                ArchiveEntryReport {
+                    id: 1,
+                    parent_id: Some(0),
+                    created_execution: 1,
+                    input: Input {
+                        actions: actions.clone(),
+                    },
+                    key: TestKey(6),
+                    milestones: (),
+                    snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&6).unwrap()),
+                    selector: None,
+                },
+            ],
+            marker: 0,
+        };
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(true));
+        let result = (|| -> Result<(), Box<dyn Error>> {
+            for checkpoint in [
+                None,
+                Some(SnapshotCheckpoint {
+                    format: workload.checkpoint_format().to_owned(),
+                    entries: vec![SnapshotCheckpointEntry { id: 1, snapshot: 6 }],
+                }),
+            ] {
+                let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+                core.archive.set_memory_budget(usize::MAX, |_| 1);
+                let mut target = TestTarget::default();
+                let counts =
+                    core.import_tree(&workload, &(), &mut target, &source, checkpoint.as_ref())?;
+                assert_eq!(counts.imported, 1);
+                core.archive.set_memory_budget(
+                    core.archive.history_memory_bytes().saturating_add(1),
+                    |_| 1,
+                );
+                for _ in 0..8 {
+                    core.archive.maintain_memory_budget()?;
+                    if core.archive.snapshot_evictions() > 0 {
+                        break;
+                    }
+                }
+                let child = core.archive.index_of_id(1).unwrap();
+                assert!(
+                    core.archive.entries[child].snapshot.is_none(),
+                    "evictions={}, resident={}, history={}, snapshots={}",
+                    core.archive.snapshot_evictions(),
+                    core.archive.resident_memory_bytes(),
+                    core.archive.history_memory_bytes(),
+                    core.archive.resident_snapshot_count(),
+                );
+                let (_, replay, certificates, pin) = core.archive.pin_job_origin(child)?;
+                assert_eq!(replay, actions);
+                assert_eq!(
+                    certificates,
+                    vec![Some([1; 32]), Some([3; 32]), Some([6; 32])]
+                );
+                core.archive.unpin_job_origin(pin);
+            }
+            let mut conflicting_source = source.clone();
+            conflicting_source.entries[1].snapshot_identity_sha256 =
+                Some(workload.snapshot_identity_sha256(&7)?);
+            let conflicting_checkpoint = SnapshotCheckpoint {
+                format: workload.checkpoint_format().to_owned(),
+                entries: vec![SnapshotCheckpointEntry { id: 1, snapshot: 7 }],
+            };
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            core.archive.set_memory_budget(usize::MAX, |_| 1);
+            let mut target = TestTarget::default();
+            let error = core
+                .import_tree(
+                    &workload,
+                    &(),
+                    &mut target,
+                    &conflicting_source,
+                    Some(&conflicting_checkpoint),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("differs from its reconstructed endpoint"),
+                "{error}"
+            );
+            assert_eq!(core.archive.entries.len(), 1);
+            assert_eq!(core.archive.input_index_nodes(), 1);
+            OMIT_TEST_PREFIX_CERTIFICATE.with(|omit| omit.set(true));
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            let mut target = TestTarget::default();
+            let missing = core
+                .import_tree(&workload, &(), &mut target, &source, None)
+                .unwrap_err()
+                .to_string();
+            OMIT_TEST_PREFIX_CERTIFICATE.with(|omit| omit.set(false));
+            assert!(
+                missing.contains("lacks an action-prefix certificate"),
+                "{missing}"
+            );
+            assert_eq!(core.archive.entries.len(), 1);
+            assert_eq!(core.archive.input_index_nodes(), 1);
+            Ok(())
+        })();
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
+        result.unwrap();
+    }
+
+    #[test]
+    fn whole_tree_import_rejects_mismatched_source_snapshot_without_checkpoint() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let source = TestArchiveReport {
+            entries: vec![
+                ArchiveEntryReport {
+                    id: 0,
+                    parent_id: None,
+                    created_execution: 0,
+                    input: Input::default(),
+                    key: TestKey(0),
+                    milestones: (),
+                    snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&0).unwrap()),
+                    selector: None,
+                },
+                ArchiveEntryReport {
+                    id: 1,
+                    parent_id: Some(0),
+                    created_execution: 1,
+                    input: Input {
+                        actions: vec![TestAction::new(1, 1), TestAction::new(2, 1)],
+                    },
+                    key: TestKey(3),
+                    milestones: (),
+                    snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&3).unwrap()),
+                    selector: None,
+                },
+            ],
+            marker: 9,
+        };
+        for (entry, conflicting_value) in [(1, 4), (0, 1)] {
+            let mut conflicting = source.clone();
+            conflicting.entries[entry].snapshot_identity_sha256 = Some(
+                workload
+                    .snapshot_identity_sha256(&conflicting_value)
+                    .unwrap(),
+            );
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            let mut target = TestTarget::default();
+            let error = core
+                .import_tree(&workload, &(), &mut target, &conflicting, None)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("source entry digest"), "{error}");
+            assert_eq!(core.archive.entries.len(), 1);
+            assert_eq!(core.archive.input_index_nodes(), 1);
+            assert_eq!(core.evidence, 0);
+        }
+    }
+
+    #[test]
+    fn certified_admission_rejects_a_missing_prefix_before_archiving() {
+        let (workload, _, mut core, _) = test_core();
+        let first = TestAction::new(1, 1);
+        let second = TestAction::new(2, 1);
+        let result = CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            actions: vec![
+                CampaignActionResult {
+                    action: first,
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: Outcome::default(),
+                    candidate: None,
+                },
+                CampaignActionResult {
+                    action: second,
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: Outcome::default(),
+                    candidate: Some(CampaignCandidate {
+                        key: TestKey(3),
+                        viable: true,
+                        snapshot: 3,
+                    }),
+                },
+            ],
+        };
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(true));
+        let error = core
+            .admit_job(&workload, 0, result)
+            .unwrap_err()
+            .to_string();
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
+        assert!(
+            error.contains("lacks an action-prefix certificate"),
+            "{error}"
+        );
+        assert_eq!(core.archive.entries.len(), 1);
+        assert_eq!(core.archive.input_index_nodes(), 1);
     }
 
     #[test]
@@ -7607,14 +8211,15 @@ mod tests {
     #[test]
     fn schedule_policy_dispatch_accepts_only_current_windows() {
         let current = schedule_policy_identifier(default_window(1));
-        assert_eq!(current, "planned_finish_window_1_v5");
+        assert_eq!(current, "planned_finish_window_1_v6");
         assert_eq!(schedule_policy_window(&current), Some(1));
-        assert!(schedule_policy_is_supported("planned_finish_window_64_v5"));
+        assert!(schedule_policy_is_supported("planned_finish_window_64_v6"));
+        assert!(!schedule_policy_is_supported("planned_finish_window_64_v5"));
         assert!(!schedule_policy_is_supported("deterministic_window_64_v4"));
-        assert!(!schedule_policy_is_supported("planned_finish_window_0_v5"));
+        assert!(!schedule_policy_is_supported("planned_finish_window_0_v6"));
         assert!(!schedule_policy_is_supported("unknown-schedule"));
         assert_eq!(
-            schedule_policy_window("planned_finish_window_16_v5"),
+            schedule_policy_window("planned_finish_window_16_v6"),
             Some(16)
         );
     }
@@ -7657,7 +8262,7 @@ mod tests {
         let compact = RECORDED_HEADER.replace('\n', "");
         let header: CampaignStreamHeader<()> =
             serde_json::from_str(&compact).expect("recorded header parses");
-        assert_eq!(header.schedule_policy, "planned_finish_window_2_v5");
+        assert_eq!(header.schedule_policy, "planned_finish_window_2_v6");
         assert_eq!(
             header.progress_policy,
             "mechanical_watermark_bounded_1024_v2"
@@ -7898,6 +8503,90 @@ mod tests {
     }
 
     #[test]
+    fn completed_buffer_counts_owned_records_and_balances_removal() {
+        let result = |flags: &[bool]| {
+            Ok((
+                CampaignJobResult::<TestWorkload> {
+                    preparation_failure: None,
+                    actions: flags
+                        .iter()
+                        .map(|&candidate| CampaignActionResult {
+                            action: TestAction::new(1, 1),
+                            observations: Vec::new(),
+                            milestones: (),
+                            outcome: Outcome::default(),
+                            candidate: candidate.then_some(CampaignCandidate {
+                                key: TestKey(1),
+                                viable: false,
+                                snapshot: 1,
+                            }),
+                        })
+                        .collect(),
+                },
+                0,
+                String::new(),
+            ))
+        };
+        let mut buffer =
+            super::CompletedBuffer::new(super::completed_result_records::<TestWorkload>);
+        assert!(buffer.insert(2, result(&[true, false, true])).is_none());
+        assert!(
+            buffer
+                .insert(3, Err("failed worker result".into()))
+                .is_none()
+        );
+        assert!(buffer.insert(4, result(&[])).is_none());
+        assert_eq!(buffer.telemetry.results_live, 3);
+        assert_eq!(buffer.telemetry.actions_live, 3);
+        assert_eq!(buffer.telemetry.candidates_live, 2);
+        let before = buffer.telemetry;
+        assert!(buffer.insert(2, result(&[true])).is_some());
+        assert_eq!(buffer.telemetry, before);
+        assert!(buffer.remove(&99).is_none());
+        assert_eq!(buffer.telemetry, before);
+        assert!(buffer.remove(&2).unwrap().is_ok());
+        assert_eq!(buffer.telemetry.results_live, 2);
+        assert_eq!(buffer.telemetry.actions_live, 0);
+        assert_eq!(buffer.telemetry.candidates_live, 0);
+        assert!(buffer.remove(&3).unwrap().is_err());
+        buffer.remove(&4).unwrap().unwrap();
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.telemetry.results_live, 0);
+        assert_eq!(buffer.telemetry.results_peak, 3);
+        assert_eq!(buffer.telemetry.actions_peak, 3);
+        assert_eq!(buffer.telemetry.candidates_peak, 2);
+    }
+
+    #[test]
+    fn completed_buffer_reordering_changes_only_occupancy_not_admission_content() {
+        let run = |order: &[u64]| {
+            let mut buffer =
+                super::CompletedBuffer::new(|value: &u64| (*value, u64::from(*value > 0)));
+            let mut next = 0;
+            let mut admitted = Vec::new();
+            for &reservation in order {
+                assert!(buffer.insert(reservation, reservation).is_none());
+                while let Some(value) = buffer.remove(&next) {
+                    admitted.push((next, value));
+                    next += 1;
+                }
+            }
+            assert!(buffer.is_empty());
+            assert_eq!(buffer.telemetry.results_live, 0);
+            assert_eq!(buffer.telemetry.actions_live, 0);
+            assert_eq!(buffer.telemetry.candidates_live, 0);
+            (admitted, buffer.telemetry)
+        };
+        let ordered = run(&[0, 1, 2]);
+        let reordered = run(&[2, 1, 0]);
+        assert_eq!(ordered.0, reordered.0);
+        assert_eq!(ordered.1.results_peak, 1);
+        assert_eq!(reordered.1.results_peak, 3);
+        assert_eq!(reordered.1.actions_peak, 3);
+        assert_eq!(reordered.1.candidates_peak, 2);
+    }
+
+    #[test]
     fn the_report_carries_worker_telemetry_that_replay_equality_ignores() {
         let config = three_worker_config();
         let workload = TestWorkload {
@@ -7928,10 +8617,25 @@ mod tests {
             live.0.execution_work - live.0.bootstrap_execution_work
         );
         assert!(telemetry.search_ns > 0);
+        assert!(telemetry.completed_buffer.results_peak > 0);
+        assert!(telemetry.completed_buffer.actions_peak > 0);
+        assert!(telemetry.completed_buffer.candidates_peak > 0);
+        assert_eq!(telemetry.completed_buffer.results_live, 0);
+        assert_eq!(telemetry.completed_buffer.actions_live, 0);
+        assert_eq!(telemetry.completed_buffer.candidates_live, 0);
+        let serialized = serde_json::to_value(telemetry).unwrap();
+        assert_eq!(
+            serialized["completed_buffer"]["results_peak"],
+            telemetry.completed_buffer.results_peak
+        );
         assert!(telemetry.coordinator["admissions"].as_u64() == Some(live.0.executions_completed));
         let replayed =
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert!(replayed.0.telemetry.workers.is_empty());
+        assert_eq!(
+            serde_json::to_vec(&replayed.0).unwrap(),
+            serde_json::to_vec(&live.0).unwrap()
+        );
         assert_eq!(replayed, live);
     }
 
@@ -7987,6 +8691,691 @@ mod tests {
         let replayed =
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert_eq!(replayed, live);
+    }
+
+    #[test]
+    fn a_single_threaded_caller_writes_the_same_campaign_as_the_worker_pool() {
+        let mut config = three_worker_config();
+        config.window = 6;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut pooled_stream = Vec::new();
+        let pooled = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut pooled_stream,
+            None,
+        )
+        .expect("pooled campaign");
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .expect("coordinator");
+        while coordinator.reserve_next().expect("reserve window") {}
+        let mut target = workload.new_target().expect("target");
+        while !coordinator.finished() {
+            let jobs = coordinator.plan(2);
+            assert!(!jobs.is_empty());
+            for job in jobs.into_iter().rev() {
+                let job: JobSpec<TestWorkload> =
+                    postcard::from_bytes(&postcard::to_allocvec(&job).expect("job bytes"))
+                        .expect("job");
+                let outcome = run_job(&workload, &config, &mut target, &job).expect("job runs");
+                let outcome: JobOutcome<TestWorkload> =
+                    postcard::from_bytes(&postcard::to_allocvec(&outcome).expect("outcome bytes"))
+                        .expect("outcome");
+                coordinator.admit(outcome).expect("admission");
+            }
+        }
+        assert_eq!(coordinator.executions(), config.execution_budget);
+        let stepped = coordinator.finish(Vec::new()).expect("finish");
+        assert_eq!(stream, pooled_stream);
+        assert_eq!(stepped, pooled);
+    }
+
+    #[test]
+    fn determinism_contradiction_invalidates_live_campaign_without_a_completed_report() {
+        let targets = Arc::new(LiveTargets::default());
+        let invalidate = Arc::clone(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |_| {
+            invalidate
+                .integrity_invalidated
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }));
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(Arc::clone(&targets)),
+        };
+        let mut stream = Vec::new();
+        let result = run_campaign_checkpointed(
+            &workload,
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("a disputed campaign must not return a report"),
+        };
+        assert!(
+            error.downcast_ref::<TestIntegrityViolation>().is_some(),
+            "{error}"
+        );
+        assert!(
+            targets
+                .integrity_invalidated
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+        assert!(job_lines(&stream).is_empty());
+        assert!(
+            !std::str::from_utf8(&stream)
+                .unwrap()
+                .lines()
+                .skip(1)
+                .any(|line| matches!(
+                    serde_json::from_str::<CampaignStreamRecord<EmpiricalStepCheckpoint>>(line)
+                        .unwrap(),
+                    CampaignStreamRecord::End(_)
+                ))
+        );
+        assert_eq!(targets.live.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn execution_failure_waits_for_earlier_planned_admission() {
+        struct JobLineStream {
+            bytes: Vec<u8>,
+            first_job: mpsc::Sender<()>,
+        }
+
+        impl Write for JobLineStream {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                if self.bytes.iter().filter(|&&byte| byte == b'\n').count() >= 2 {
+                    let _ = self.first_job.send(());
+                }
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut config = three_worker_config();
+        config.workers = 2;
+        config.window = 2;
+        config.execution_budget = 2;
+        config.mixture = DrawMixture::Energy { scale: 6 };
+        let (baseline, earlier, later) = (0..32)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut baseline = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut baseline,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&baseline);
+                (jobs.len() == 2
+                    && jobs[0].0 == 1
+                    && jobs[1].0 == 2
+                    && jobs[0].1.mutation_seed as u8 != jobs[1].1.mutation_seed as u8)
+                    .then(|| {
+                        (
+                            baseline,
+                            (jobs[0].1.reservation, jobs[0].1.mutation_seed as u8),
+                            (jobs[1].1.reservation, jobs[1].1.mutation_seed as u8),
+                        )
+                    })
+            })
+            .expect("two distinct jobs in planned-finish order");
+        let expected_prefix = format!(
+            "{}\n",
+            std::str::from_utf8(&baseline)
+                .unwrap()
+                .lines()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let run_order = |held_input: u8, label: &str, panicking: bool| {
+            let directory = std::env::temp_dir().join(format!(
+                "dissonance-failure-prefix-{}-{label}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&directory);
+            let (entered_sender, entered_receiver) = mpsc::channel();
+            let (release_sender, release_receiver) = mpsc::channel();
+            let (job_sender, job_receiver) = mpsc::channel();
+            let release_receiver = Arc::new(Mutex::new(Some(release_receiver)));
+            let targets = Arc::new(LiveTargets::default());
+            *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+                if action.input == earlier.1 || action.input == later.1 {
+                    entered_sender.send(action.input).unwrap();
+                }
+                if action.input == held_input
+                    && let Some(release) = release_receiver.lock().unwrap().take()
+                {
+                    release.recv().map_err(|error| error.to_string())?;
+                }
+                if action.input == later.1 {
+                    if panicking {
+                        panic!("injected execution panic");
+                    }
+                    return Err("planned execution failure".to_owned());
+                }
+                Ok(())
+            }));
+            let (error, stream, observed, job_before_release) = std::thread::scope(|scope| {
+                let directory_for_run = directory.clone();
+                let run = scope.spawn(|| {
+                    let mut stream = JobLineStream {
+                        bytes: Vec::new(),
+                        first_job: job_sender,
+                    };
+                    let error = run_campaign_checkpointed_with_options(
+                        &TestWorkload {
+                            bootstrap_objective: false,
+                            targets: Some(targets),
+                        },
+                        &config,
+                        &CampaignOrigin::Genesis,
+                        &mut stream,
+                        None,
+                        CampaignExecutionOptions {
+                            checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                                directory: directory_for_run,
+                                every: std::num::NonZeroU64::new(1),
+                                on_marks: false,
+                                on_top_progress: false,
+                                checkpoint_owner: None,
+                            }),
+                            ..CampaignExecutionOptions::default()
+                        },
+                    )
+                    .expect_err("later job fails")
+                    .to_string();
+                    (error, stream.bytes)
+                });
+                let mut observed = BTreeSet::new();
+                while observed.len() < 2 {
+                    let Ok(input) = entered_receiver.recv_timeout(Duration::from_secs(5)) else {
+                        break;
+                    };
+                    observed.insert(input);
+                }
+                let job_before_release = held_input == later.1
+                    && job_receiver.recv_timeout(Duration::from_secs(5)).is_ok();
+                release_sender.send(()).unwrap();
+                let (error, stream) = run.join().unwrap();
+                (error, stream, observed, job_before_release)
+            });
+            assert_eq!(observed, BTreeSet::from([earlier.1, later.1]));
+            if held_input == later.1 {
+                assert!(
+                    job_before_release,
+                    "earlier job did not admit while failure waited"
+                );
+            }
+            (error, stream, directory)
+        };
+        let (failure_first, first_stream, first_directory) =
+            run_order(earlier.1, "failure-first", false);
+        let (success_first, second_stream, second_directory) =
+            run_order(later.1, "success-first", false);
+        let expected_error = format!(
+            "campaign reservation {} failed: planned execution failure",
+            later.0
+        );
+        assert_eq!(failure_first, expected_error);
+        assert_eq!(success_first, expected_error);
+        assert_eq!(first_stream, second_stream);
+        assert_eq!(std::str::from_utf8(&first_stream).unwrap(), expected_prefix);
+        let checkpoint_path =
+            |directory: &std::path::Path| directory.join("000000000001-interval.ckpt");
+        let stable_checkpoint = |directory: &std::path::Path| {
+            let mut reader =
+                crate::search::checkpoint::CheckpointReader::open(&checkpoint_path(directory))
+                    .expect("the earlier planned admission wrote a checkpoint");
+            let header = reader.header.clone();
+            assert_eq!(header.executions, 1);
+            assert_eq!(header.admitted, 1);
+            assert_eq!(header.reserved, 2);
+            let core: super::CoreCheckpoint<TestWorkload> = reader.next().unwrap();
+            let archive: crate::search::archive::Archive<TestAction, TestKey, (), u8> =
+                reader.next().unwrap();
+            let evidence: Vec<u8> = reader.next().unwrap();
+            let draw: Vec<u8> = reader.next().unwrap();
+            let durations: crate::search::duration::DurationPoliciesCheckpoint<TestKey> =
+                reader.next().unwrap();
+            let rand: RomuDuoJrRand = reader.next().unwrap();
+            let counters: CampaignCounters = reader.next().unwrap();
+            let _profile: LiveCoordinatorProfile = reader.next().unwrap();
+            let in_flight: Vec<super::InFlightJob<TestWorkload>> = reader.next().unwrap();
+            let snapshots = reader.snapshots::<u8>().unwrap();
+            reader.finish().unwrap();
+            let in_flight = in_flight
+                .iter()
+                .map(|job| super::InFlightJobRef {
+                    reservation: job.reservation,
+                    spec: &job.spec,
+                    pending: &job.pending,
+                })
+                .collect::<Vec<_>>();
+            [
+                postcard::to_allocvec(&header).unwrap(),
+                postcard::to_allocvec(&core).unwrap(),
+                postcard::to_allocvec(&archive).unwrap(),
+                postcard::to_allocvec(&evidence).unwrap(),
+                postcard::to_allocvec(&draw).unwrap(),
+                postcard::to_allocvec(&durations).unwrap(),
+                postcard::to_allocvec(&rand).unwrap(),
+                postcard::to_allocvec(&counters).unwrap(),
+                postcard::to_allocvec(&in_flight).unwrap(),
+                postcard::to_allocvec(&snapshots).unwrap(),
+            ]
+        };
+        assert_eq!(
+            stable_checkpoint(&first_directory),
+            stable_checkpoint(&second_directory)
+        );
+        let resume = |directory: &std::path::Path| {
+            FINALIZATION.with(|state| state.set((0, true)));
+            let error = run_campaign_checkpointed(
+                &TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                },
+                &config,
+                &CampaignOrigin::SearchCheckpoint {
+                    path: checkpoint_path(directory),
+                    expected_sha256: None,
+                },
+                &mut Vec::new(),
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("shutdown unconfirmed"));
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, false)));
+            let mut stream = Vec::new();
+            let outcome = run_campaign_checkpointed(
+                &TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                },
+                &config,
+                &CampaignOrigin::SearchCheckpoint {
+                    path: checkpoint_path(directory),
+                    expected_sha256: None,
+                },
+                &mut stream,
+                None,
+            )
+            .expect("checkpoint resumes without the injected failure");
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            (outcome, stream)
+        };
+        let (first_resume, first_resume_stream) = resume(&first_directory);
+        let (second_resume, second_resume_stream) = resume(&second_directory);
+        assert_eq!(first_resume.0.archive, second_resume.0.archive);
+        assert_eq!(first_resume.1, second_resume.1);
+        assert_eq!(
+            job_lines(&first_resume_stream),
+            job_lines(&second_resume_stream)
+        );
+        let (panic_first, panic_stream, panic_directory) =
+            run_order(earlier.1, "panic-first", true);
+        let (success_before_panic, later_panic_stream, later_panic_directory) =
+            run_order(later.1, "success-before-panic", true);
+        let expected_panic = format!(
+            "campaign reservation {} failed: worker panicked during execution",
+            later.0
+        );
+        assert_eq!(panic_first, expected_panic);
+        assert_eq!(success_before_panic, expected_panic);
+        assert_eq!(panic_stream, first_stream);
+        assert_eq!(later_panic_stream, first_stream);
+        assert_eq!(
+            stable_checkpoint(&panic_directory),
+            stable_checkpoint(&first_directory)
+        );
+        assert_eq!(
+            stable_checkpoint(&later_panic_directory),
+            stable_checkpoint(&first_directory)
+        );
+        std::fs::remove_dir_all(first_directory).unwrap();
+        std::fs::remove_dir_all(second_directory).unwrap();
+        std::fs::remove_dir_all(panic_directory).unwrap();
+        std::fs::remove_dir_all(later_panic_directory).unwrap();
+    }
+
+    #[test]
+    fn sole_worker_panic_reports_its_reservation_after_reply_disconnect() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        let (baseline, first_job) = (0..32)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&stream);
+                (jobs.len() == 1).then(|| (stream, jobs[0].clone()))
+            })
+            .expect("single-worker campaign executes a job");
+        let panic_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let targets = Arc::new(LiveTargets::default());
+        let panic_count_for_hook = Arc::clone(&panic_count);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |_| {
+            panic_count_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("injected sole-worker panic");
+        }));
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect_err("sole worker panic fails the campaign")
+        .to_string();
+        assert_eq!(panic_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            error,
+            format!(
+                "campaign reservation {} failed: worker panicked during execution",
+                first_job.1.reservation
+            )
+        );
+        let expected_prefix = format!(
+            "{}\n",
+            std::str::from_utf8(&baseline)
+                .unwrap()
+                .lines()
+                .take(first_job.0)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert_eq!(std::str::from_utf8(&stream).unwrap(), expected_prefix);
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn sole_worker_recovers_for_an_earlier_planned_job_after_panic() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 2;
+        config.execution_budget = 3;
+        let (baseline, failed_reservation, failed_input, failed_index) = (0..128)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&stream);
+                let failed = jobs.iter().find(|(_, job)| job.reservation == 0)?;
+                (jobs.len() == 3
+                    && jobs[0].0 == 1
+                    && jobs[0].1.reservation == 1
+                    && failed.0 > jobs[0].0
+                    && jobs.iter().all(|(_, job)| {
+                        job.reservation == 0
+                            || job.mutation_seed as u8 != failed.1.mutation_seed as u8
+                    }))
+                .then_some((
+                    stream,
+                    failed.1.reservation,
+                    failed.1.mutation_seed as u8,
+                    failed.0,
+                ))
+            })
+            .expect("the first dispatched job can have a later planned finish");
+        let targets = Arc::new(LiveTargets::default());
+        targets
+            .second_selection_waits_for_first_action
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let weak_targets = Arc::downgrade(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+            if action.input == failed_input {
+                let targets = weak_targets.upgrade().unwrap();
+                targets
+                    .first_action_started
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while targets.selections.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                    if Instant::now() >= deadline {
+                        return Err("the second reservation was never selected".to_owned());
+                    }
+                    std::thread::yield_now();
+                }
+                panic!("later-planned reservation panicked");
+            }
+            Ok(())
+        }));
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-single-worker-panic-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed_with_options(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: std::num::NonZeroU64::new(1),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .expect_err("later-planned panic fails at its scheduled turn")
+        .to_string();
+        assert_eq!(
+            error,
+            format!(
+                "campaign reservation {failed_reservation} failed: worker panicked during execution"
+            )
+        );
+        let expected_prefix = format!(
+            "{}\n",
+            std::str::from_utf8(&baseline)
+                .unwrap()
+                .lines()
+                .take(failed_index)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert_eq!(std::str::from_utf8(&stream).unwrap(), expected_prefix);
+        assert!(directory.join("000000000001-interval.ckpt").is_file());
+        std::fs::remove_dir_all(directory).unwrap();
+
+        let targets = Arc::new(LiveTargets::default());
+        targets
+            .second_selection_waits_for_first_action
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let weak_targets = Arc::downgrade(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+            if action.input == failed_input {
+                let targets = weak_targets.upgrade().unwrap();
+                targets
+                    .first_action_started
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while targets.selections.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                    if Instant::now() >= deadline {
+                        return Err("the second reservation was never selected".to_owned());
+                    }
+                    std::thread::yield_now();
+                }
+                targets
+                    .fail_next_target
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("later-planned reservation panicked before failed recovery");
+            }
+            Ok(())
+        }));
+        let mut failed_stream = Vec::new();
+        let error = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut failed_stream,
+            None,
+        )
+        .expect_err("missing earlier job fails with its own reservation")
+        .to_string();
+        assert_eq!(
+            error,
+            "campaign reservation 1 failed: every worker exited before reporting its result"
+        );
+        assert_eq!(
+            std::str::from_utf8(&failed_stream).unwrap(),
+            format!(
+                "{}\n",
+                std::str::from_utf8(&baseline)
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn failed_recovery_preserves_an_admitted_success_before_the_next_failure() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 2;
+        config.execution_budget = 3;
+        let (baseline, failed_input) = (0..128)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&stream);
+                let failed = jobs.iter().find(|(_, job)| job.reservation == 1)?;
+                (jobs.len() == 3
+                    && jobs[0].0 == 1
+                    && jobs[0].1.reservation == 0
+                    && jobs[1].1.reservation == 1
+                    && jobs.iter().all(|(_, job)| {
+                        job.reservation == 1
+                            || job.mutation_seed as u8 != failed.1.mutation_seed as u8
+                    }))
+                .then_some((stream, failed.1.mutation_seed as u8))
+            })
+            .expect("the first dispatched job can finish first");
+        let targets = Arc::new(LiveTargets::default());
+        let weak_targets = Arc::downgrade(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+            if action.input == failed_input {
+                let targets = weak_targets.upgrade().unwrap();
+                targets
+                    .fail_next_target
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("second reservation panicked before failed recovery");
+            }
+            Ok(())
+        }));
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::clone(&targets)),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect_err("campaign must fail after reporting its successful prefix")
+        .to_string();
+        assert_eq!(
+            targets.selections.load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+        assert_eq!(
+            error,
+            "campaign reservation 1 failed: worker panicked during execution"
+        );
+        assert_eq!(
+            std::str::from_utf8(&stream).unwrap(),
+            format!(
+                "{}\n",
+                std::str::from_utf8(&baseline)
+                    .unwrap()
+                    .lines()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        );
     }
 
     #[test]
@@ -8122,12 +9511,94 @@ mod tests {
     fn multi_window_reservations_each_allow_the_full_skip_limit() {
         let mut schedule = super::ReplaySkipSchedule::default();
         for _ in 0..super::CONSECUTIVE_SKIP_LIMIT {
-            schedule.accept_skip(0, 2, 2).unwrap();
+            schedule.accept_skip(0, 0, 2, 2).unwrap();
         }
         for _ in 0..super::CONSECUTIVE_SKIP_LIMIT {
-            schedule.accept_skip(1, 2, 2).unwrap();
+            schedule.accept_skip(1, 0, 2, 2).unwrap();
         }
-        assert!(schedule.accept_skip(1, 2, 2).is_err());
+        assert!(schedule.accept_skip(1, 0, 2, 2).is_err());
+    }
+
+    #[test]
+    fn skips_follow_the_admission_that_opens_their_window_slot() {
+        let mut schedule = super::ReplaySkipSchedule::default();
+        schedule.accept_skip(0, 0, 2, 4).unwrap();
+        schedule.accept_skip(1, 0, 2, 4).unwrap();
+        schedule.admit(1);
+        assert!(schedule.accept_skip(1, 1, 2, 4).is_err());
+        schedule.accept_skip(2, 1, 2, 4).unwrap();
+        schedule.admit(0);
+        schedule.accept_skip(3, 2, 2, 4).unwrap();
+
+        let mut curtailed = super::ReplaySkipSchedule::default();
+        curtailed.accept_skip(0, 0, 2, 1).unwrap();
+        assert!(curtailed.accept_skip(0, 1, 2, 1).is_err());
+
+        for (reservation, admissions) in [(0, 1), (1, 1), (2, 0), (2, 2), (3, 1)] {
+            let mut schedule = super::ReplaySkipSchedule::default();
+            assert!(schedule.accept_skip(reservation, admissions, 2, 4).is_err());
+        }
+    }
+
+    #[test]
+    fn replay_rejects_a_skip_moved_past_a_later_reservations_admission() {
+        let mut config = three_worker_config();
+        config.campaign_seed = 1;
+        config.workers = 1;
+        config.window = 2;
+        config.execution_budget = 2;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("source campaign");
+        let jobs = job_lines(&stream);
+        let [(first_index, first), (second_index, second)] = jobs.as_slice() else {
+            panic!("source campaign did not admit exactly two jobs");
+        };
+        assert_eq!((first.reservation, second.reservation), (1, 0));
+        assert_eq!((first.parent_id, second.parent_id), (0, 0));
+        assert!(
+            first
+                .decisions
+                .iter()
+                .any(|decision| matches!(decision, CampaignAdmissionDecision::Retained { .. }))
+        );
+        replay_campaign_checkpointed(&workload, &stream, None, None)
+            .expect("original campaign replays");
+        let mut lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let first_value: serde_json::Value = serde_json::from_str(&lines[*first_index]).unwrap();
+        let skip = serde_json::json!({
+            "event": "skip",
+            "reservation": 0,
+            "parent_id": 0,
+            "mutation_seed": first.mutation_seed,
+            "mixture_weight": first.mixture_weight,
+            "splice_weight": first.splice_weight,
+            "selector": first_value["selector"],
+            "suffix_limit": 1,
+        });
+        lines.insert(*second_index, serde_json::to_string(&skip).unwrap());
+        let mut end: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        end["skips"] = serde_json::json!(1);
+        *lines.last_mut().unwrap() = serde_json::to_string(&end).unwrap();
+        let changed = format!("{}\n", lines.join("\n"));
+        let error = replay_campaign_checkpointed(&workload, changed.as_bytes(), None, None)
+            .expect_err("replay accepted impossible skip after later reservation admission")
+            .to_string();
+        assert!(error.contains("selection boundary"), "{error}");
     }
 
     #[test]
@@ -8255,8 +9726,109 @@ mod tests {
         assert_eq!(targets.live.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
+    #[derive(Default)]
+    struct StaggeredWatch {
+        offset: usize,
+        notes: std::sync::Mutex<Vec<usize>>,
+        admitted: std::sync::Mutex<Vec<usize>>,
+        refuse_start: bool,
+    }
+
+    impl super::CampaignWatch<TestWorkload> for StaggeredWatch {
+        type Note = usize;
+
+        fn run(
+            &self,
+            job: &JobSpec<TestWorkload>,
+            run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+        ) -> super::WatchedJob<TestWorkload, usize> {
+            let delay = (job.reservation * 7 + self.offset) % 4;
+            std::thread::sleep(Duration::from_micros(250 * delay as u64));
+            Ok((run()?, job.reservation))
+        }
+
+        fn admitted(&self, note: usize, campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+            self.notes.lock().unwrap().push(note);
+            self.admitted.lock().unwrap().extend(
+                campaign
+                    .take_admissions()
+                    .into_iter()
+                    .map(|admission| admission.reservation),
+            );
+        }
+
+        fn start(
+            &self,
+            campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+        ) -> Result<(), Box<dyn Error>> {
+            if self.refuse_start {
+                return Err("the watch refused to start".into());
+            }
+            campaign.watch_admissions();
+            Ok(())
+        }
+    }
+
+    fn watched_stream(watch: &StaggeredWatch) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut stream = Vec::new();
+        super::run_campaign_watched(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            },
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+            watch,
+        )?;
+        Ok(stream)
+    }
+
+    #[test]
+    fn a_watched_campaign_writes_the_unwatched_stream_and_sees_every_admission() {
+        let mut plain = Vec::new();
+        run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            },
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut plain,
+            None,
+        )
+        .expect("campaign");
+        for offset in 0..3 {
+            let watch = StaggeredWatch {
+                offset,
+                ..StaggeredWatch::default()
+            };
+            assert_eq!(watched_stream(&watch).expect("watched campaign"), plain);
+            let mut notes = watch.notes.into_inner().unwrap();
+            let mut admitted = watch.admitted.into_inner().unwrap();
+            notes.sort_unstable();
+            admitted.sort_unstable();
+            assert!(!notes.is_empty());
+            assert_eq!(notes, admitted);
+        }
+    }
+
+    #[test]
+    fn a_watch_that_fails_to_start_stops_the_campaign() {
+        let watch = StaggeredWatch {
+            refuse_start: true,
+            ..StaggeredWatch::default()
+        };
+        let error = watched_stream(&watch).expect_err("the campaign must stop");
+        assert!(error.to_string().contains("the watch refused to start"));
+        assert!(watch.notes.into_inner().unwrap().is_empty());
+    }
+
     #[test]
     fn a_failed_bootstrap_returns_its_error_with_workers_waiting() {
+        FINALIZATION.with(|state| state.set((0, false)));
         let error = run_campaign_checkpointed(
             &TestWorkload {
                 bootstrap_objective: false,
@@ -8277,6 +9849,7 @@ mod tests {
                 .contains("failed to build the bootstrap target"),
             "{error}"
         );
+        assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
     }
 
     #[test]
@@ -8337,6 +9910,74 @@ mod tests {
             let error = run_placed(placement).expect_err("refused placement");
             assert!(error.contains("refused"), "{error}");
         }
+    }
+
+    #[test]
+    fn startup_failures_are_ordered_before_campaign_selection() {
+        let mut config = three_worker_config();
+        config.workers = 2;
+        config.window = 2;
+        config.execution_budget = 2;
+        let targets = Arc::new(LiveTargets::default());
+        let (one_failed_sender, one_failed_receiver) = mpsc::channel();
+        let (release_zero_sender, release_zero_receiver) = mpsc::channel();
+        let release_zero_receiver = Mutex::new(release_zero_receiver);
+        let placement = ThreadPlacement::new(move |thread| match thread {
+            PlacedThread::Worker(0) => {
+                release_zero_receiver
+                    .lock()
+                    .unwrap()
+                    .recv()
+                    .map_err(|error| error.to_string())?;
+                Err("worker zero refused startup".to_owned())
+            }
+            PlacedThread::Worker(1) => {
+                one_failed_sender.send(()).unwrap();
+                Err("worker one refused startup".to_owned())
+            }
+            PlacedThread::Coordinator => Ok(()),
+            _ => unreachable!(),
+        });
+        let (error, stream) = std::thread::scope(|scope| {
+            let targets_for_run = Arc::clone(&targets);
+            let run = scope.spawn(|| {
+                let mut stream = Vec::new();
+                let error = run_campaign_checkpointed_with_options(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: Some(targets_for_run),
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions {
+                        placement: Some(placement),
+                        ..CampaignExecutionOptions::default()
+                    },
+                )
+                .expect_err("both workers refuse startup")
+                .to_string();
+                (error, stream)
+            });
+            let one_started = one_failed_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .is_ok();
+            release_zero_sender.send(()).unwrap();
+            let outcome = run.join().unwrap();
+            assert!(one_started, "worker one never attempted startup");
+            outcome
+        });
+        assert_eq!(
+            error,
+            "campaign worker 0 failed to start: worker zero refused startup"
+        );
+        assert_eq!(
+            targets.selections.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "selection ran before startup failures were resolved"
+        );
+        assert_eq!(job_lines(&stream).len(), 0);
     }
 
     fn three_worker_config() -> CampaignConfig<TestWorkload> {
@@ -8448,14 +10089,11 @@ mod tests {
             None,
         )
         .unwrap();
-        let source_archive = source.archive;
+        let source_archive =
+            ArchiveSource::from_bytes(&serde_json::to_vec(&source.archive).unwrap()).unwrap();
         let origin = CampaignOrigin::Archive {
             path: "source.archive".to_owned(),
-            file_sha256: format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&source_archive).unwrap())
-            ),
-            report: Box::new(source_archive.clone()),
+            source: source_archive.clone(),
             checkpoint: None,
         };
         let config = CampaignConfig {
@@ -8499,5 +10137,243 @@ mod tests {
                 .expect_err("replay certified a skip limit live selection did not record")
                 .to_string();
         assert!(error.contains("skip suffix limit"), "{error}");
+    }
+
+    #[test]
+    fn archive_replay_rejects_changed_source_evidence_under_the_original_digest() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut config = three_worker_config();
+        config.execution_budget = 5;
+        config.window = 2;
+        let mut source_stream = Vec::new();
+        let (source, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut source_stream,
+            None,
+        )
+        .unwrap();
+        let source_report = source.archive;
+        let source_bytes = serde_json::to_vec(&source_report).unwrap();
+        config.execution_budget = 0;
+        let source = ArchiveSource::from_bytes(&source_bytes).unwrap();
+        let origin = CampaignOrigin::Archive {
+            path: "source.archive".to_owned(),
+            source: source.clone(),
+            checkpoint: None,
+        };
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed(&workload, &config, &origin, &mut stream, None)
+            .expect("record archive-origin campaign");
+        assert_eq!(live.archive.marker, 0);
+        assert_eq!(
+            live.origin.archive_sha256.as_deref(),
+            Some(source.file_sha256())
+        );
+        replay_campaign_checkpointed(&workload, &stream, Some(&source), None)
+            .expect("unchanged source replays");
+        let mut prefix_lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>();
+        let end: serde_json::Value = serde_json::from_str(prefix_lines.pop().unwrap()).unwrap();
+        assert_eq!(end["event"], "end");
+        let prefix = prefix_lines.join("\n");
+        let (prefix_replay, _) =
+            replay_campaign_prefix_checkpointed(&workload, prefix.as_bytes(), Some(&source), None)
+                .expect("unchanged source prefix replays");
+        assert_eq!(prefix_replay.archive.marker, 0);
+        let mut changed = source_report;
+        changed.marker = 37;
+        assert_eq!(changed.entries, source.report().entries);
+        assert_eq!(
+            workload.resume_input(&changed).unwrap(),
+            workload.resume_input(source.report()).unwrap()
+        );
+        let changed_source =
+            ArchiveSource::from_bytes(&serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert_ne!(source.file_sha256(), changed_source.file_sha256());
+        let error = replay_campaign_checkpointed(&workload, &stream, Some(&changed_source), None)
+            .expect_err("replay accepted changed source evidence under the recorded digest")
+            .to_string();
+        assert!(error.contains("source archive bytes"), "{error}");
+        let error = replay_campaign_prefix_checkpointed(
+            &workload,
+            prefix.as_bytes(),
+            Some(&changed_source),
+            None,
+        )
+        .expect_err("prefix replay accepted changed source evidence")
+        .to_string();
+        assert!(error.contains("source archive bytes"), "{error}");
+        let mut whitespace_changed = source_bytes;
+        whitespace_changed.extend_from_slice(b" \n\t");
+        let same_report_source = ArchiveSource::from_bytes(&whitespace_changed).unwrap();
+        assert_eq!(same_report_source.report(), source.report());
+        assert_ne!(same_report_source.file_sha256(), source.file_sha256());
+        let error =
+            replay_campaign_checkpointed(&workload, &stream, Some(&same_report_source), None)
+                .expect_err("replay accepted semantically equal but byte-distinct source archive")
+                .to_string();
+        assert!(error.contains("source archive bytes"), "{error}");
+    }
+    #[test]
+    fn job_observer_delivery_failures_preserve_logical_bytes_and_complete_counts() {
+        use crate::search::job_observation::{
+            JobObserver, ObservationDiagnostics, ObservationSinkError,
+        };
+        let mut config = three_worker_config();
+        config.execution_budget = 8;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut baseline = Vec::new();
+        let expected = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut baseline,
+            None,
+        )
+        .unwrap();
+        let records = job_lines(&baseline);
+        let by_reservation = records
+            .iter()
+            .map(|(_, job)| (job.reservation as usize, job))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(expected.0.telemetry.coordinator["replay_actions"], 0);
+        assert!(by_reservation.values().any(|job| job.parent_id != 0));
+        let mut expected_finish = std::collections::BTreeMap::new();
+        for reservation in 0..config.window {
+            expected_finish.insert(reservation, by_reservation[&reservation].execution_work * 2);
+        }
+        let mut next = config.window;
+        for (_, job) in &records {
+            let finish = expected_finish[&(job.reservation as usize)];
+            if next < config.execution_budget as usize {
+                expected_finish.insert(next, finish + by_reservation[&next].execution_work * 2);
+                next += 1;
+            }
+        }
+        for fail in [0, 1, 2] {
+            let diagnostics = ObservationDiagnostics::default();
+            let mut seen = Vec::new();
+            let mut sink = |row: crate::search::job_observation::CompletionObservation<()>| {
+                seen.push(row);
+                if fail == 1 {
+                    return Err(ObservationSinkError);
+                }
+                if fail == 2 {
+                    panic!("sink panic");
+                }
+                Ok(())
+            };
+            let mut stream = Vec::new();
+            let actual = super::run_campaign_checkpointed_observed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default(),
+                Some(JobObserver {
+                    diagnostics: diagnostics.clone(),
+                    sink: &mut sink,
+                }),
+            )
+            .unwrap();
+            assert_eq!(stream, baseline);
+            assert_eq!(actual, expected);
+            let counts = diagnostics.snapshot();
+            assert_eq!(counts.eligible, 8);
+            assert_eq!(counts.collected, 8);
+            assert_eq!(counts.collected, counts.delivered + counts.discarded);
+            if fail == 0 {
+                assert_eq!(seen.len(), 8);
+                assert_eq!(counts.delivered, 8);
+                assert_eq!(counts.discarded, 0);
+            } else {
+                assert_eq!(seen.len(), 1);
+                assert_eq!(counts.discarded, 8);
+                assert_eq!(counts.sink_errors, u64::from(fail == 1));
+                assert_eq!(counts.sink_panics, u64::from(fail == 2));
+            }
+            for row in &seen {
+                let job = by_reservation[&row.reservation];
+                assert!(row.worker < config.workers);
+                assert_eq!(row.parent_id, job.parent_id);
+                assert_eq!(row.snapshot_id, job.parent_id);
+                assert_eq!(row.planned_finish, expected_finish[&row.reservation]);
+                assert!(!row.job_failed);
+                assert!(row.receipt.payload.is_some());
+            }
+            if fail == 0 {
+                let mut per_worker = vec![0u64; config.workers as usize];
+                for row in &seen {
+                    per_worker[row.worker as usize] += 1;
+                }
+                assert_eq!(
+                    per_worker,
+                    actual
+                        .0
+                        .telemetry
+                        .workers
+                        .iter()
+                        .map(|worker| worker.jobs)
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    seen.iter()
+                        .map(|row| row.reservation)
+                        .collect::<BTreeSet<_>>(),
+                    (0..config.execution_budget as usize).collect()
+                );
+            }
+        }
+    }
+    #[test]
+    fn job_observer_panic_does_not_mask_the_primary_execution_error() {
+        use crate::search::job_observation::{JobObserver, ObservationDiagnostics};
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        let targets = Arc::new(LiveTargets::default());
+        *targets.action_hook.lock().unwrap() =
+            Some(Arc::new(|_| Err("primary execution refused".to_owned())));
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let diagnostics = ObservationDiagnostics::default();
+        let mut sink = |row: crate::search::job_observation::CompletionObservation<()>| {
+            assert!(row.job_failed);
+            panic!("observer failure")
+        };
+        let error = super::run_campaign_checkpointed_observed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut Vec::new(),
+            None,
+            CampaignExecutionOptions::default(),
+            Some(JobObserver {
+                diagnostics: diagnostics.clone(),
+                sink: &mut sink,
+            }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("primary execution refused"));
+        let counts = diagnostics.snapshot();
+        assert_eq!(counts.eligible, 1);
+        assert_eq!(counts.collected, 1);
+        assert_eq!(counts.sink_panics, 1);
+        assert_eq!(counts.discarded, 1);
+        assert_eq!(counts.delivered, 0);
     }
 }

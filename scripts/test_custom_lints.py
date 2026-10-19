@@ -507,6 +507,25 @@ class JobContractTests(unittest.TestCase):
         self.assertFalse(self.check("    timeout-minutes: 15\n    steps: []"))
         self.assertEqual(self.check("    steps: []"), ["ci-pr-job-timeout"])
 
+    def test_backend_miri_requires_its_exact_scoped_timeout_expression(self):
+        workflow = ci_contract.CONSONANCE_ANALYSIS
+        registered = next(job for job in workflow.jobs if job.name == "Miri — <Crate>")
+        expression = ci_contract.PR_TIMEOUT_EXPRESSIONS[(workflow.path, registered.name)]
+        for timeout in (expression, 30, 15, True,
+                        expression.replace("|| 15", "|| 30"),
+                        expression.replace("vmm-backend", "vmm-core")):
+            with self.subTest(timeout=timeout):
+                job = {"timeout-minutes": timeout, "steps": []}
+                violations = LINTS.check_job_contract(
+                    workflow.path, "miri", job, registered._replace(select=""), True)
+                errors = [v for v in violations if v.rule == "ci-pr-job-timeout"]
+                self.assertEqual(bool(errors), timeout != expression)
+        job = {"timeout-minutes": expression, "steps": []}
+        violations = LINTS.check_job_contract(
+            ".github/workflows/example.yml", "miri", job,
+            registered._replace(select=""), True)
+        self.assertIn("ci-pr-job-timeout", [v.rule for v in violations])
+
     def test_a_pull_request_job_cannot_exceed_the_bound(self):
         rules = self.check("    timeout-minutes: 16\n    steps: []",
                            job=ci_contract.Job("Guest Memory", "pr", 16))
@@ -583,6 +602,15 @@ class JobContractTests(unittest.TestCase):
         self.assertFalse(self.check(step, job=exact))
         whole = ci_contract.Job("Guest Memory", "pr", 15, ignored_tests=("vmm-backend::kvm_smoke *",))
         self.assertFalse(self.check(step, job=whole))
+
+    def test_an_ignored_cli_binary_uses_the_named_bin_target(self):
+        job = ci_contract.Job("Guest Memory", "pr", 15,
+                              ignored_tests=("harmony-cli::bin/harmony reviewed_bundle",))
+        body = "    timeout-minutes: 15\n    steps:\n      - run: cargo test -p harmony-cli --bin {} reviewed_bundle -- --ignored\n"
+        self.assertFalse(self.check(body.format("harmony"), job=job))
+        self.assertEqual(self.check(body.format("other"), job=job), ["ci-ignored-tests"])
+        without_bin = "    timeout-minutes: 15\n    steps:\n      - run: cargo test -p harmony-cli reviewed_bundle -- --ignored\n"
+        self.assertEqual(self.check(without_bin, job=job), ["ci-ignored-tests"])
 
     def test_a_job_runs_the_ignored_tests_it_registers(self):
         job = ci_contract.Job("Guest Memory", "pr", 15,

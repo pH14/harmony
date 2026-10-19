@@ -8,12 +8,17 @@ use std::{
 };
 
 use nes_workload::{
+    famidash::{
+        campaign::{FamidashCampaignRun, FamidashGame},
+        levels::{Side, Stage},
+    },
     film::{Capture, FilmMetadata, Filmable, Reel},
     search::archive::Input,
     stb::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
     },
+    twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
     witness::replay_witness,
 };
 use serde_json::{Value, json};
@@ -31,6 +36,8 @@ struct Args {
     rom_sha256: String,
     core_sha256: String,
     ai: Option<String>,
+    level: u8,
+    goal: Option<u8>,
     input: PathBuf,
     evidence: PathBuf,
     out: PathBuf,
@@ -47,6 +54,8 @@ impl Args {
         let mut rom_sha256 = None;
         let mut core_sha256 = None;
         let mut ai = None;
+        let mut level = 0;
+        let mut goal = None;
         let mut input = None;
         let mut evidence = None;
         let mut out = None;
@@ -71,6 +80,8 @@ impl Args {
                 "--rom-sha256" => rom_sha256 = Some(text()?),
                 "--core-sha256" => core_sha256 = Some(text()?),
                 "--ai" => ai = Some(text()?),
+                "--level" => level = text()?.parse()?,
+                "--goal" => goal = Some(text()?.parse()?),
                 "--input" => input = Some(PathBuf::from(&value)),
                 "--evidence" => evidence = Some(PathBuf::from(&value)),
                 "--out" => out = Some(PathBuf::from(&value)),
@@ -87,6 +98,8 @@ impl Args {
             rom_sha256: rom_sha256.ok_or("missing --rom-sha256")?,
             core_sha256: core_sha256.ok_or("missing --core-sha256")?,
             ai,
+            level,
+            goal,
             input: input.ok_or("missing --input")?,
             evidence: evidence.ok_or("missing --evidence")?,
             out: out.ok_or("missing --out")?,
@@ -226,9 +239,12 @@ fn main() -> Result<()> {
     if sha256(&rom) != args.rom_sha256 || sha256(&core) != args.core_sha256 {
         return Err("ROM/core checksum mismatch".into());
     }
+    let execution_sha256 =
+        machine::quicknes::prepared_execution_sha256(&args.core, &args.core_sha256)?;
     let identity = json!({
         "game": args.game,
         "ai": args.ai,
+        "prepared_execution_sha256": execution_sha256,
     });
     match args.game.as_str() {
         "stb" => {
@@ -239,13 +255,44 @@ fn main() -> Result<()> {
                 _ => return Err("unknown STB difficulty".into()),
             };
             produce(
-                StbGame::with_ai(&rom, &args.core, &args.core_sha256, ai),
+                StbGame::with_ai(&rom, &args.core, &args.core_sha256, &execution_sha256, ai),
                 StbCampaignRun,
                 &args,
                 identity,
             )
         }
-        _ => Err("nes-film renders the STB benchmark scenario".into()),
+        "twin-dragons" => {
+            if args.ai.is_some() {
+                return Err("Twin Dragons takes no ai option".into());
+            }
+            produce(
+                TwinDragonsGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                TwinDragonsCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        "famidash" => {
+            if args.ai.is_some() {
+                return Err("Famidash takes no ai option".into());
+            }
+            let side =
+                Side::from_rom(&rom).ok_or("the ROM is not a pinned Famidash 1.2.8 release")?;
+            let stage = Stage::new(side, args.level, args.goal.unwrap_or(args.level))?;
+            produce(
+                FamidashGame::new(
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                    stage,
+                ),
+                FamidashCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        _ => Err("nes-film renders the STB, Twin Dragons and Famidash scenarios".into()),
     }
 }
 

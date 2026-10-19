@@ -125,6 +125,23 @@ and installed artifacts under `share/harmony/guest/ARCH`. The cache uses
 `HARMONY_DATA_DIR`, otherwise `XDG_DATA_HOME/harmony`, macOS
 `~/Library/Application Support/Harmony`, or Linux `~/.local/share/harmony`.
 New release assets become available when their release is published.
+Automatic discovery selects the first directory containing a current-source
+`runtime-manifest.json`, the architecture's kernel, and
+`initramfs-oci.cpio.gz`, with both file hashes matching the manifest. It skips
+stale, incomplete, or changed local bundles and applies the same check to
+cached and downloaded bundles before use. UML also checks an automatically
+selected base initramfs this way. An older cached release without a manifest
+must be removed and fetched again. For KVM and HVF, a single artifact override
+takes its counterpart from the same resolved directory and requires the same
+manifest check. Supplying both paths explicitly permits a custom layout, for
+which the caller must provide a qualified kernel and base initramfs pair.
+Selected artifact bytes are checked again when loaded, so a concurrent rebuild
+cannot replace a qualified kernel or base before execution. An explicit UML
+base initramfs is likewise the caller's choice. Capturing
+artifact hashes for replay identity does not qualify an older kernel for the
+current boot command line. The platform source key includes the CLI sources
+that supply and assemble the default x86 and Arm kernel command lines.
+Workload command lines belong to each workload's execution and cache identity.
 
 NES defaults to the QuickNES runner:
 
@@ -255,7 +272,9 @@ selector. Point-filtered logs show the console captured at that boundary.
 
 The `nested` package preserves the nested VM search supported by the runtime.
 Select it explicitly with an OCI driver input, `runner.kind = "consonance"` and
-`runner.options.kernel` pointing to a kernel built with nested KVM support.
+both `runner.options.kernel` pointing to a kernel built with nested KVM support
+and `runner.options.base_initramfs` pointing to its matching OCI base. This
+noncanonical profile pair is caller-qualified and must be supplied together.
 It requires Linux x86-64 with nested KVM enabled. Search and finding summaries
 are supported; branching, shell, continuation and console timelines are not yet
 implemented by this package. Replay requires the saved campaign stream to match
@@ -266,6 +285,84 @@ the same verified stream bytes, so a completed replay can itself be replayed.
 Failed or incomplete saved campaigns cannot become replay sources, even if a
 producer wrote a report before the failure. The saved seed, execution budget and
 wall limit must agree with the producer report before replay begins.
+
+## Independent campaigns on two hosts
+
+Run a complete local search on each host with a different seed to explore more
+histories concurrently. Each search owns its coordinator, workers and cache;
+this does not preserve one globally ordered campaign or exchange search
+archives. This recipe is checked against the CLI source, not an executed two-
+host qualification or a measured speedup.
+
+Use the same installed release pair (`harmony` and `harmony-consonance-host`),
+architecture and backend on both hosts; pin the backend in `CONFIG` rather than
+using `auto`. Start with already admitted, identical workload and runtime
+artifact bytes, setup and configuration; use a saved OCI file and omit build
+directives to avoid rebuilding independently. `--offline` prevents Harmony
+release downloads, not configured builds or their container-builder network
+access. The normal strict-host and runtime admission checks still apply. Replay
+requires the exact recorded host executable and runner identity. CPU provenance
+warnings are advisory: matching metadata does not prove numerical or whole-
+state portability, and different metadata can explain replay divergence.
+
+On each host, choose a distinct `SEED`, an execution ceiling `EXECUTIONS`, a
+wall budget `WALL` (such as a duration ending in `s` or `m`), and a fresh `RUN`
+directory. Set `CONFIG` to the prepared configuration file. Choose budgets and
+available cores and memory before starting; the CLI derives workers and cache
+capacity from local resources, so different hosts can explore different work.
+Run these existing commands separately on each host:
+
+```sh
+harmony check --config "${CONFIG:?}" --offline --json || exit $?
+harmony search --config "${CONFIG:?}" --offline --seed "${SEED:?}" \
+  --executions "${EXECUTIONS:?}" --for "${WALL:?}" --out "${RUN:?}"
+harmony show "${RUN:?}" --json
+```
+
+Retain stdout, stderr and each command's exit status. A faults search report
+returns `0` without confirmed bugs, unmet reachability assertions, execution
+failures or watchdog cutoffs; unconfirmed hits can still appear. `1` means a
+confirmed bug or unmet reachability assertion. Failures or watchdog cutoffs
+take precedence with `2`; CLI, admission and setup errors also exit `2`,
+sometimes without a run directory. Inspect the report and manifest as well as
+the exit status: a completed manifest can accompany any of these codes. `show`
+displays saved evidence; it does not verify artifacts or perform a fresh
+replay. A search wall budget is not a hard process-cleanup deadline. Use the
+host's process supervisor to track the campaign and its children, and confirm
+their exit before reusing resources after completion or interruption. The CLI
+does not supply a process-tree cleanup receipt; uncertain shutdown must not be
+treated as confirmed cleanup.
+
+Only a complete recording can serve as a replay source. After the run has
+stopped and its files are stable, copy the **whole run directory** to a
+compatible replay host, retaining the manifest, report, artifacts, streams and
+checkpoints. Create a checksum list of all regular run files on the producer
+with host tools such as `sha256sum`, retain it outside the run, and check it
+after transfer; do not rewrite manifests or copy only `first-bug-input.json`.
+Keep each host's directory distinct. For a producer-confirmed finding, set
+`COPIED_RUN`, its one-based `FINDING`, a positive repeat count `REPEATS` and a
+fresh `REPLAY_OUT`, then use:
+
+```sh
+harmony debug replay "${COPIED_RUN:?}" --finding "${FINDING:?}" \
+  --repeat "${REPEATS:?}" --out "${REPLAY_OUT:?}"
+```
+
+Replay verifies the saved recording and runs fresh executions. Keep refusals,
+divergence and CPU warnings with the result; do not weaken identity checks to
+make another host accept it. Search confirmation reproduces bug evidence; exact
+replay is a separate status. UML additionally binds its admitted physical
+processor; its unavailable full-state identity cannot certify exact
+reproduction. Replay has no wall-budget flag, so plan its resource and cleanup
+limits separately.
+
+Report per-host seeds, artifacts, CPU/backend identity, actual worker and cache
+sizes, completed executions, errors, watchdogs and confirmed finding records.
+Keep exact replay outcomes separate. Summing finding records does not count
+unique bugs: independent runs can rediscover the same input or cause. Compare
+useful confirmed outcomes and observed elapsed time across a seed panel before
+claiming a scaling benefit. Cooperating campaigns and globally ordered remote
+shards require additional protocols; these commands implement neither.
 
 ## Developer qualification
 
@@ -284,20 +381,87 @@ the reference for a fresh replay.
 These are developer qualification tools. Ordinary investigation uses a branch,
 and further exploration uses `search`.
 
+## Build the paired binaries from source
+
+A source build for Consonance needs both executables in one directory. Release
+archives already contain the pair. On Linux, install the host's musl linker
+(for example, `musl-tools` on Ubuntu), then build the native frontend and the
+static host from the repository root. Choose the musl target for the host
+architecture:
+
+```sh
+musl_target=x86_64-unknown-linux-musl  # use aarch64-unknown-linux-musl on Arm64
+rustup target add "$musl_target"
+cargo build --locked --release -p harmony-cli --bin harmony
+cargo build --locked --release -p harmony-cli --target "$musl_target" \
+  --no-default-features --features consonance-host --bin harmony-consonance-host
+cp "target/$musl_target/release/harmony-consonance-host" target/release/
+./target/release/harmony check
+```
+
+On macOS, build the second executable for the native target and sign it with
+the same hardened runtime, Hypervisor entitlement and OS-only library constraint
+used by the release package:
+
+```sh
+cargo build --locked --release -p harmony-cli --bin harmony
+cargo build --locked --release -p harmony-cli --no-default-features \
+  --features consonance-host --bin harmony-consonance-host
+codesign --force --sign - --identifier org.harmony.consonance-host \
+  --options runtime,hard,kill \
+  --entitlements consonance/vmm-backend/hvf.entitlements.plist \
+  --library-constraint scripts/macos-os-only-library-constraint.coderequirement \
+  target/release/harmony-consonance-host
+./target/release/harmony check
+```
+
+These commands leave the native QuickNES frontend beside its strict Consonance
+host. A Consonance command refuses an absent or unqualified companion.
+
 ## Storage and boundaries
 
-The v3 manifest contains the loaded Harmony executable identity, resolved
+The Linux and macOS CLI installations pair `harmony` with
+`harmony-consonance-host` in the same `bin` directory. `harmony` keeps the native
+QuickNES runner and dispatches Consonance commands to the paired host. On Linux,
+it copies the static-musl host into a fresh executable memfd, seals its complete
+contents against writes and resizing, then executes it. The host checks those
+seals, the full loaded ELF bytes (including writable initializers), and its
+executable mappings before it parses a command. On macOS, the paired host is a
+hardened signed executable with the OS-only library constraint and Hypervisor
+entitlement. It checks the kernel-loaded code hash, exact signing policy and
+loaded system images before command dispatch. A missing or invalid host stops
+Consonance commands. The paired host reparses the original command and its
+configuration; the frontend's runner choice cannot authorize a later changed
+recipe. Saved Consonance recordings retain this strict host identity. Native
+QuickNES recordings retain their native loaded-image identity.
+Linux hosts must permit executable memfds; `vm.memfd_noexec=2` prevents
+Consonance execution and produces an explicit error.
+
+The v4 manifest contains the loaded Harmony executable identity, resolved
 workload and runner identities, artifact hashes, parent recording and a
 package-owned payload. Shared recording storage never decodes
 fault actions or controller inputs. Package adapters own payload schemas and
 operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
-Replay verifies the loaded CLI executable identity, architecture and saved artifact hashes.
-Linux hashes the executable image through `/proc/self/exe`; macOS records the
-running process's code-directory hash. Both remain bound to the loaded image
-when its pathname is replaced while the process is running. If the host cannot
-provide a loaded-image identity, recording and replay fail closed.
+Saved runs also retain `cpu_provenance`, an advisory history of observed CPU
+implementation metadata. Replay, branching, and continued search print a warning
+to stderr if the recording and current CPU differ or either identity is unknown,
+incomplete, or heterogeneous. Older manifests without this field warn as unknown;
+derived runs retain that uncertainty. Standard math libraries remain supported,
+and the warning does not block execution. Native CPU behavior can change result
+bits or saved state, including x87 instruction-pointer metadata. Matching
+metadata is not proof of numerical or whole-state equivalence. These warnings
+belong to CLI dispatch; lower-level APIs
+do not automatically emit them. Snapshot, cache, and runner identities are
+unchanged, and existing incompatibility errors still apply.
+
+Replay verifies the recorded host executable identity, architecture and saved artifact hashes.
+Consonance recording and replay require the strict host at the manifest boundary,
+including when package code is called without the frontend. Linux worker reexec
+uses the sealed image through `/proc/self/exe`, so a mutable pathname cannot
+replace the worker executable. If the host cannot provide its strict identity,
+recording and replay fail closed.
 Faults replay, branching and search from a branch also compare the saved
 `report.json` or `run.json` outcome with its manifest copy before using that
 evidence. Replay and branch selection use that verified manifest copy, even

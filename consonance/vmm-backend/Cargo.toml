@@ -20,6 +20,7 @@ contract-tests = []
 
 [dependencies]
 thiserror = "2"
+sha2 = "0.10"
 # Linux-only frontier deps (reviewed rule-5 whitelist EXCEPTION, recorded in
 # consonance/vmm-backend/README.md and the PR description — NOT a deny.toml
 # edit; deny.toml has no crate allowlist). These check `KvmBackend` only; a macOS

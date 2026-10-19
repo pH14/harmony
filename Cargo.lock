@@ -203,14 +203,17 @@ version = "0.1.0"
 dependencies = [
  "control-proto",
  "environment",
+ "host-code-identity",
  "hypercall-proto",
  "libc",
+ "memmap2",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "thiserror",
  "uml",
+ "vm-state",
  "vmm-backend",
  "vmm-core",
  "vtime",
@@ -349,6 +352,7 @@ dependencies = [
  "iced-x86",
  "object",
  "oci-support",
+ "postcard",
  "process-proto",
  "searcher",
  "serde",
@@ -450,6 +454,7 @@ dependencies = [
  "faults-workload",
  "flate2",
  "getrandom 0.3.4",
+ "host-code-identity",
  "nes-workload",
  "nested-driver",
  "oci-support",
@@ -487,6 +492,16 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "host-code-identity"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "memmap2",
+ "sha2",
+ "tempfile",
+]
 
 [[package]]
 name = "hypercall-doorbell"
@@ -630,6 +645,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nes-games"
+version = "0.1.0"
+dependencies = [
+ "lz4_flex",
+ "machine",
+ "postcard",
+ "searcher",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "nes-protocol"
 version = "0.1.0"
 
@@ -641,6 +669,7 @@ dependencies = [
  "libc",
  "lz4_flex",
  "machine",
+ "nes-games",
  "oci-support",
  "postcard",
  "searcher",
@@ -1111,6 +1140,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "environment",
+ "host-code-identity",
  "hypercall-proto",
  "libc",
  "rustix",
@@ -1176,6 +1206,7 @@ dependencies = [
  "libc",
  "proptest",
  "rustix",
+ "sha2",
  "thiserror",
 ]
 

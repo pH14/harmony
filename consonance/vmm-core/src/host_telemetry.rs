@@ -55,9 +55,147 @@ impl ExitTelemetry {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum HashSite {
+    WholeRequest,
+    Checkpoint,
+    PortableExport,
+    PortableImport,
+    SparseBase,
+    PortableExportEnvelope,
+    PortableImportEnvelope,
+}
+
+impl HashSite {
+    const ALL: [Self; 7] = [
+        Self::WholeRequest,
+        Self::Checkpoint,
+        Self::PortableExport,
+        Self::PortableImport,
+        Self::SparseBase,
+        Self::PortableExportEnvelope,
+        Self::PortableImportEnvelope,
+    ];
+    fn name(self) -> &'static str {
+        match self {
+            Self::WholeRequest => "whole_request",
+            Self::Checkpoint => "checkpoint",
+            Self::PortableExport => "portable_export",
+            Self::PortableImport => "portable_import",
+            Self::SparseBase => "sparse_base",
+            Self::PortableExportEnvelope => "portable_export_envelope",
+            Self::PortableImportEnvelope => "portable_import_envelope",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct HashCost {
+    pub calls: u64,
+    pub ram_bytes: u64,
+    pub suffix_bytes: u64,
+    pub metadata_bytes: u64,
+    pub nanos: u64,
+    pub errors: u64,
+}
+
+impl HashCost {
+    fn merge(&mut self, other: Self) {
+        self.calls = self.calls.saturating_add(other.calls);
+        self.ram_bytes = self.ram_bytes.saturating_add(other.ram_bytes);
+        self.suffix_bytes = self.suffix_bytes.saturating_add(other.suffix_bytes);
+        self.metadata_bytes = self.metadata_bytes.saturating_add(other.metadata_bytes);
+        self.nanos = self.nanos.saturating_add(other.nanos);
+        self.errors = self.errors.saturating_add(other.errors);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HashTelemetry {
+    costs: [HashCost; 7],
+}
+
+impl HashTelemetry {
+    #[cfg(test)]
+    pub(crate) fn cost(&self, site: HashSite) -> HashCost {
+        self.costs[site as usize]
+    }
+    pub fn merge(&mut self, other: &Self) {
+        for (cost, other) in self.costs.iter_mut().zip(other.costs) {
+            cost.merge(other);
+        }
+    }
+    fn counters(&self, out: &mut Vec<(String, u64)>) {
+        for site in HashSite::ALL {
+            let cost = self.costs[site as usize];
+            for (name, value) in [
+                ("calls", cost.calls),
+                ("ram_bytes", cost.ram_bytes),
+                ("suffix_bytes", cost.suffix_bytes),
+                ("metadata_bytes", cost.metadata_bytes),
+                ("ns", cost.nanos),
+                ("errors", cost.errors),
+            ] {
+                out.push((format!("hash.{}.{name}", site.name()), value));
+            }
+        }
+    }
+}
+
+pub(crate) struct HashWork {
+    started: std::time::Instant,
+    cost: HashCost,
+}
+
+impl HashWork {
+    #[allow(clippy::disallowed_methods)]
+    pub(crate) fn new() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            cost: HashCost::default(),
+        }
+    }
+    pub(crate) fn ram(&mut self, bytes: usize) {
+        self.cost.ram_bytes = self
+            .cost
+            .ram_bytes
+            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+    pub(crate) fn suffix(&mut self, bytes: usize) {
+        self.cost.suffix_bytes = self
+            .cost
+            .suffix_bytes
+            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+    pub(crate) fn metadata(&mut self, bytes: usize) {
+        self.cost.metadata_bytes = self
+            .cost
+            .metadata_bytes
+            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+    pub(crate) fn finish(
+        mut self,
+        telemetry: &std::cell::Cell<HashTelemetry>,
+        site: HashSite,
+        failed: bool,
+    ) {
+        self.cost.calls = 1;
+        self.cost.errors = u64::from(failed);
+        self.cost.nanos = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let mut total = telemetry.get();
+        total.costs[site as usize].merge(self.cost);
+        telemetry.set(total);
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HostTelemetry {
+    pub sdk_dispatch: crate::sdk_telemetry::SdkDispatchTelemetry,
     pub exits: ExitTelemetry,
+    pub hashes: HashTelemetry,
+    pub verification: snapshot_store::VerificationTelemetry,
+    pub copies: snapshot_store::CopyTelemetry,
+    pub physical: vmm_backend::PhysicalTelemetry,
     pub seals: Cost,
     pub seal_pages: u64,
     pub restores: Cost,
@@ -99,6 +237,11 @@ impl HostTelemetry {
             ("snapshot.import_ns".to_owned(), self.imports.nanos),
             ("snapshot.import_pages".to_owned(), self.import_pages),
         ];
+        self.hashes.counters(&mut out);
+        out.extend(self.sdk_dispatch.counters());
+        out.extend(self.verification.counters());
+        out.extend(self.copies.counters());
+        out.extend(self.physical.counters());
         let mut total = Cost::default();
         for (site, cost) in &self.exits.exits {
             total.merge(*cost);
@@ -121,6 +264,67 @@ impl HostTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_inventory_is_exported_with_platform_and_purpose() {
+        let mut telemetry = HostTelemetry::default();
+        telemetry.physical.measure(
+            vmm_backend::RunPlatform::KvmX86,
+            vmm_backend::RunPurpose::Completion,
+            || ((), vmm_backend::RunReturn::Returned(6)),
+        );
+        let counters = telemetry.counters();
+        assert!(counters.contains(&("backend.kvm_x86.completion.entries".to_owned(), 1)));
+        assert!(counters.contains(&("backend.kvm_x86.completion.returns".to_owned(), 1)));
+        assert!(counters.contains(&("backend.kvm_x86.completion.raw_exit.6.count".to_owned(), 1)));
+        assert!(
+            !counters
+                .iter()
+                .any(|(key, _)| key.starts_with("backend.hvf_arm64"))
+        );
+    }
+
+    #[test]
+    fn hash_totals_saturate_and_export_disjoint_site_names() {
+        let mut telemetry = HashTelemetry::default();
+        telemetry.costs[HashSite::WholeRequest as usize] = HashCost {
+            calls: u64::MAX,
+            ram_bytes: u64::MAX,
+            suffix_bytes: u64::MAX,
+            metadata_bytes: u64::MAX,
+            nanos: u64::MAX,
+            errors: u64::MAX,
+        };
+        let mut incoming = HashTelemetry::default();
+        incoming.costs[HashSite::WholeRequest as usize] = HashCost {
+            calls: 1,
+            ram_bytes: 1,
+            suffix_bytes: 1,
+            metadata_bytes: 1,
+            nanos: 1,
+            errors: 1,
+        };
+        telemetry.merge(&incoming);
+        assert_eq!(
+            telemetry.cost(HashSite::WholeRequest),
+            HashCost {
+                calls: u64::MAX,
+                ram_bytes: u64::MAX,
+                suffix_bytes: u64::MAX,
+                metadata_bytes: u64::MAX,
+                nanos: u64::MAX,
+                errors: u64::MAX
+            }
+        );
+        assert_eq!(telemetry.cost(HashSite::Checkpoint), HashCost::default());
+        let counters = HostTelemetry {
+            hashes: telemetry,
+            ..HostTelemetry::default()
+        }
+        .counters();
+        assert!(counters.contains(&("hash.whole_request.ram_bytes".to_owned(), u64::MAX)));
+        assert!(counters.contains(&("hash.checkpoint.ram_bytes".to_owned(), 0)));
+    }
 
     #[test]
     fn merged_exit_telemetry_sums_every_site() {

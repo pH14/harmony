@@ -14,7 +14,7 @@ use crate::vmm::{SdkSnapshot, SdkStop};
 use snapshot_store::PAGE_SIZE;
 
 const MAGIC: [u8; 8] = *b"HMSNAP01";
-const VERSION: u16 = 7;
+const VERSION: u16 = 10;
 const FLAG_SDK: u16 = 1;
 const FLAG_TAINTED: u16 = 1 << 1;
 const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_TAINTED;
@@ -28,7 +28,7 @@ const MAX_CONTROL_LEN: usize = MAX_SDK_LEN;
 #[cfg(test)]
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
-const SPARSE_VERSION: u16 = 9;
+const SPARSE_VERSION: u16 = 12;
 const SPARSE_FLAG_SDK: u16 = 1;
 const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
 const SPARSE_FLAG_TARGET_PAGES: u16 = 1 << 2;
@@ -41,7 +41,7 @@ const MAX_SPARSE_SIDECAR_LEN: usize = MAX_VM_STATE_LEN
     .saturating_add(MAX_CONTROL_LEN)
     .saturating_add(MAX_POLICY_LEN)
     .saturating_add(MAX_SUFFIX_LEN)
-    .saturating_add(160);
+    .saturating_add(201);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SparsePortableSnapshot {
@@ -63,6 +63,7 @@ pub struct SparsePortableSnapshotReceipt {
     pub sdk_events: u64,
     pub trace_events: u64,
     pub trace_schedules: u64,
+    pub event_history: Option<control_proto::EventHistory>,
     pub tainted: bool,
 }
 
@@ -83,6 +84,7 @@ pub(crate) struct SparsePortableSidecar {
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
     pub(crate) trace_schedules: u64,
+    pub(crate) event_history: Option<control_proto::EventHistory>,
     pub(crate) tainted: bool,
     pub(crate) base_ram_digest: [u8; 32],
     pub(crate) target_pages_digest: Option<[u8; 32]>,
@@ -98,6 +100,7 @@ pub(crate) struct SparsePortableSidecarRef<'a> {
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
     pub(crate) trace_schedules: u64,
+    pub(crate) event_history: Option<control_proto::EventHistory>,
     pub(crate) tainted: bool,
     pub(crate) base_ram_digest: [u8; 32],
     pub(crate) state_blob_suffix: &'a [u8],
@@ -113,6 +116,7 @@ pub(crate) struct PortableSnapshot {
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
     pub(crate) trace_schedules: u64,
+    pub(crate) event_history: Option<control_proto::EventHistory>,
     pub(crate) tainted: bool,
     pub(crate) state_hash: [u8; 32],
     pub(crate) control_state: Vec<u8>,
@@ -127,6 +131,7 @@ pub(crate) struct PortableSnapshotRef<'a> {
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
     pub(crate) trace_schedules: u64,
+    pub(crate) event_history: Option<control_proto::EventHistory>,
     pub(crate) tainted: bool,
     pub(crate) state_hash: [u8; 32],
     pub(crate) control_state: &'a [u8],
@@ -160,8 +165,46 @@ pub enum PortableSnapshotError {
     UnknownSnapshot(u64),
 }
 
+fn write_event_history<W: Write>(
+    writer: &mut W,
+    history: Option<control_proto::EventHistory>,
+) -> Result<(), PortableSnapshotError> {
+    writer.write_all(&[u8::from(history.is_some())])?;
+    if let Some(history) = history {
+        put_u64(writer, history.count)?;
+        writer.write_all(&history.digest)?;
+    }
+    Ok(())
+}
+
+fn read_event_history<R: Read>(
+    reader: &mut R,
+) -> Result<Option<control_proto::EventHistory>, PortableSnapshotError> {
+    let mut tag = [0];
+    reader.read_exact(&mut tag)?;
+    match tag[0] {
+        0 => Ok(None),
+        1 => {
+            let count = get_u64(reader)?;
+            let mut digest = [0; 32];
+            reader.read_exact(&mut digest)?;
+            Ok(Some(control_proto::EventHistory { count, digest }))
+        }
+        _ => Err(PortableSnapshotError::Malformed("event history presence")),
+    }
+}
+
 impl PortableSnapshotRef<'_> {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<(), PortableSnapshotError> {
+    #[cfg(test)]
+    pub(crate) fn write_to<W: Write>(&self, writer: W) -> Result<(), PortableSnapshotError> {
+        self.write_to_counted(writer, &mut crate::host_telemetry::HashWork::new())
+    }
+
+    pub(crate) fn write_to_counted<W: Write>(
+        &self,
+        mut writer: W,
+        work: &mut crate::host_telemetry::HashWork,
+    ) -> Result<(), PortableSnapshotError> {
         let sdk = self.sdk.map(encode_sdk).transpose()?;
         let policy = self.policy.encode();
         if self.vm_state.is_empty() {
@@ -176,7 +219,7 @@ impl PortableSnapshotRef<'_> {
             flags |= FLAG_TAINTED;
         }
 
-        let mut out = HashWriter::new(&mut writer);
+        let mut out = HashWriter::new(&mut writer, work);
         out.write_all(&MAGIC)?;
         put_u16(&mut out, VERSION)?;
         put_u16(&mut out, flags)?;
@@ -190,13 +233,16 @@ impl PortableSnapshotRef<'_> {
         put_u64(&mut out, self.trace_events)?;
         put_u64(&mut out, self.trace_schedules)?;
         out.write_all(&self.state_hash)?;
+        out.ram = true;
         out.write_all(self.memory)?;
+        out.ram = false;
         out.write_all(self.vm_state)?;
         if let Some(bytes) = &sdk {
             out.write_all(bytes)?;
         }
         out.write_all(&policy)?;
         out.write_all(self.control_state)?;
+        write_event_history(&mut out, self.event_history)?;
         out.flush()?;
         let digest = out.finish();
         writer.write_all(&digest)?;
@@ -207,10 +253,22 @@ impl PortableSnapshotRef<'_> {
 
 impl PortableSnapshot {
     pub(crate) fn read_from<R: Read>(
-        mut reader: R,
+        reader: R,
         expected_memory_len: usize,
     ) -> Result<Self, PortableSnapshotError> {
-        let mut input = HashReader::new(&mut reader);
+        Self::read_from_counted(
+            reader,
+            expected_memory_len,
+            &mut crate::host_telemetry::HashWork::new(),
+        )
+    }
+
+    pub(crate) fn read_from_counted<R: Read>(
+        mut reader: R,
+        expected_memory_len: usize,
+        work: &mut crate::host_telemetry::HashWork,
+    ) -> Result<Self, PortableSnapshotError> {
+        let mut input = HashReader::new(&mut reader, work);
         let mut magic = [0; 8];
         input.read_exact(&mut magic)?;
         if magic != MAGIC {
@@ -246,11 +304,14 @@ impl PortableSnapshot {
         let trace_schedules = get_u64(&mut input)?;
         let mut state_hash = [0; 32];
         input.read_exact(&mut state_hash)?;
+        input.ram = true;
         let memory = read_vec(&mut input, expected_memory_len)?;
+        input.ram = false;
         let vm_state = read_vec(&mut input, vm_state_len)?;
         let sdk_bytes = read_vec(&mut input, sdk_len)?;
         let policy_bytes = read_vec(&mut input, policy_len)?;
         let control_state = read_vec(&mut input, control_len)?;
+        let event_history = read_event_history(&mut input)?;
         let calculated = input.finish();
         let mut recorded = [0; 32];
         reader.read_exact(&mut recorded)?;
@@ -272,6 +333,7 @@ impl PortableSnapshot {
             sdk_events,
             trace_events,
             trace_schedules,
+            event_history,
             tainted: flags & FLAG_TAINTED != 0,
             state_hash,
             control_state,
@@ -310,26 +372,37 @@ pub fn compare_portable_execution_state(
     })
 }
 
-#[cfg(target_arch = "x86_64")]
 pub fn logical_x86_sparse_sidecar(bytes: &[u8]) -> Result<Vec<u8>, PortableSnapshotError> {
     let sidecar = decode_sparse_sidecar(bytes)?;
-    let mut state = vm_state::VmState::decode(&sidecar.vm_state)
+    let state = vm_state::VmState::decode(&sidecar.vm_state)
         .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))?;
+    let vm_state = logical_x86_vm_state(state)?;
+    encode_sparse_sidecar_with_vm_state(&sidecar, &vm_state)
+}
+
+fn logical_x86_vm_state(mut state: vm_state::VmState) -> Result<Vec<u8>, PortableSnapshotError> {
     state.xsave_restore_bv =
         vmm_backend::logical_xsave_restore_bv(&state.xsave.0, state.xsave_restore_bv)
             .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse XSAVE state"))?;
-    let vm_state = state
+    state
         .encode()
-        .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))?;
+        .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))
+}
+
+fn encode_sparse_sidecar_with_vm_state(
+    sidecar: &SparsePortableSidecar,
+    vm_state: &[u8],
+) -> Result<Vec<u8>, PortableSnapshotError> {
     encode_sparse_sidecar_with_target_pages(
         &SparsePortableSidecarRef {
-            vm_state: &vm_state,
+            vm_state,
             sdk: sidecar.sdk.as_ref(),
             policy: &sidecar.policy,
             at: sidecar.at,
             sdk_events: sidecar.sdk_events,
             trace_events: sidecar.trace_events,
             trace_schedules: sidecar.trace_schedules,
+            event_history: sidecar.event_history,
             tainted: sidecar.tainted,
             base_ram_digest: sidecar.base_ram_digest,
             state_blob_suffix: &sidecar.state_blob_suffix,
@@ -391,6 +464,7 @@ pub(crate) fn encode_sparse_sidecar_with_target_pages(
     out.extend_from_slice(&policy);
     out.extend_from_slice(sidecar.state_blob_suffix);
     out.extend_from_slice(sidecar.control_state);
+    write_event_history(&mut out, sidecar.event_history)?;
     Ok(out)
 }
 
@@ -436,6 +510,17 @@ pub(crate) fn decode_sparse_sidecar(
     let policy_bytes = input.section(policy_len)?;
     let state_blob_suffix = input.section(suffix_len)?;
     let control_state = input.section(control_len)?;
+    let history_tag = input.take(1)?[0];
+    let event_history = match history_tag {
+        0 => None,
+        1 => {
+            let count = input.u64()?;
+            let mut digest = [0; 32];
+            digest.copy_from_slice(input.take(32)?);
+            Some(control_proto::EventHistory { count, digest })
+        }
+        _ => return Err(PortableSnapshotError::Malformed("event history presence")),
+    };
     input.finish("sparse sidecar")?;
     let sdk = has_sdk.then(|| decode_sdk(&sdk_bytes)).transpose()?;
     let policy = ServiceConfig::decode(&policy_bytes)?;
@@ -447,12 +532,37 @@ pub(crate) fn decode_sparse_sidecar(
         sdk_events,
         trace_events,
         trace_schedules,
+        event_history,
         tainted: flags & SPARSE_FLAG_TAINTED != 0,
         base_ram_digest,
         target_pages_digest,
         state_blob_suffix,
         control_state,
     })
+}
+
+pub fn sparse_delta_target_commitment(sidecar: &[u8]) -> Result<[u8; 32], PortableSnapshotError> {
+    let decoded = decode_sparse_sidecar(sidecar)?;
+    if decoded.target_pages_digest.is_none() {
+        return Err(PortableSnapshotError::Malformed(
+            "sparse delta sidecar lacks target pages digest",
+        ));
+    }
+    let vm_state = match vm_state::VmState::decode(&decoded.vm_state) {
+        Ok(state) => logical_x86_vm_state(state)?,
+        Err(vm_state::VmStateError::UnsupportedArch(vm_state::ARCH_AARCH64)) => {
+            let state = vm_state::Arm64VmState::decode(&decoded.vm_state)
+                .map_err(|_| PortableSnapshotError::Malformed("invalid Arm64 sparse CPU state"))?;
+            vm_state::SnapshotRecords::encode_for_hash(&state)
+                .map_err(|_| PortableSnapshotError::Malformed("invalid Arm64 sparse CPU state"))?
+        }
+        Err(_) => return Err(PortableSnapshotError::Malformed("invalid sparse CPU state")),
+    };
+    let logical_sidecar = encode_sparse_sidecar_with_vm_state(&decoded, &vm_state)?;
+    let mut digest = Sha256::new();
+    digest.update(b"consonance-sparse-delta-target-commitment-v3\0");
+    digest.update(&logical_sidecar);
+    Ok(digest.finalize().into())
 }
 
 fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
@@ -552,6 +662,32 @@ fn encode_pending_stop(out: &mut Vec<u8>, stop: Option<&SdkStop>) {
             put_vec_len(out, question.payload().len());
             out.extend_from_slice(question.payload());
         }
+        Some(SdkStop::CoverageDecision {
+            moment,
+            seq,
+            question,
+            ready,
+        }) => {
+            out.push(4);
+            out.extend_from_slice(&moment.to_le_bytes());
+            out.extend_from_slice(&seq.to_le_bytes());
+            out.extend_from_slice(&question.service().to_le_bytes());
+            out.extend_from_slice(&question.request_id().to_le_bytes());
+            put_vec_len(out, question.payload().len());
+            out.extend_from_slice(question.payload());
+            out.extend_from_slice(&ready.to_le_bytes());
+        }
+        Some(SdkStop::DeferredDoorbell {
+            moment,
+            requested_len,
+            request,
+        }) => {
+            out.push(5);
+            out.extend_from_slice(&moment.to_le_bytes());
+            out.extend_from_slice(&requested_len.to_le_bytes());
+            put_vec_len(out, request.len());
+            out.extend_from_slice(request);
+        }
     }
 }
 
@@ -573,10 +709,55 @@ fn decode_pending_stop(
             let payload = input.bytes()?;
             let question = channel::Question::with_request_id(request, service, payload)
                 .map_err(|_| PortableSnapshotError::Malformed("SDK pending question"))?;
-            Some(SdkStop::Decision {
+            let stop = SdkStop::Decision {
                 moment,
                 seq,
                 question,
+            };
+            if crate::service_transcript::pending_request(&stop).is_none() {
+                return Err(PortableSnapshotError::Malformed("SDK pending question"));
+            }
+            Some(stop)
+        }
+        4 => {
+            let moment = input.u64()?;
+            let seq = input.u32()?;
+            let service = input.u16()?;
+            let request = input.u64()?;
+            let payload = input.bytes()?;
+            let ready = input.u32()?;
+            if service != channel::SERVICE_COVERAGE_QUANTUM
+                || u32::try_from(request).is_err()
+                || payload.len() != 8
+                || ready == 0
+            {
+                return Err(PortableSnapshotError::Malformed("SDK coverage decision"));
+            }
+            let question = channel::Question::with_request_id(request, service, payload)
+                .map_err(|_| PortableSnapshotError::Malformed("SDK coverage decision"))?;
+            Some(SdkStop::CoverageDecision {
+                moment,
+                seq,
+                question,
+                ready,
+            })
+        }
+        5 => {
+            let moment = input.u64()?;
+            let requested_len = input.u32()?;
+            let frame_len = usize::try_from(input.u64()?)
+                .map_err(|_| PortableSnapshotError::Malformed("SDK deferred doorbell"))?;
+            if frame_len > PAGE_SIZE
+                || (requested_len as usize <= PAGE_SIZE && frame_len != requested_len as usize)
+                || (requested_len as usize > PAGE_SIZE && frame_len != 0)
+            {
+                return Err(PortableSnapshotError::Malformed("SDK deferred doorbell"));
+            }
+            let request = input.section(frame_len)?;
+            Some(SdkStop::DeferredDoorbell {
+                moment,
+                requested_len,
+                request,
             })
         }
         _ => return Err(PortableSnapshotError::Malformed("SDK pending stop")),
@@ -664,15 +845,19 @@ fn get_u64<R: Read>(input: &mut R) -> Result<u64, std::io::Error> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-struct HashWriter<W> {
+struct HashWriter<'a, W> {
+    work: &'a mut crate::host_telemetry::HashWork,
+    ram: bool,
     inner: W,
     digest: Sha256,
 }
 
-impl<W> HashWriter<W> {
-    fn new(inner: W) -> Self {
+impl<'a, W> HashWriter<'a, W> {
+    fn new(inner: W, work: &'a mut crate::host_telemetry::HashWork) -> Self {
         Self {
             inner,
+            work,
+            ram: false,
             digest: Sha256::new(),
         }
     }
@@ -682,10 +867,15 @@ impl<W> HashWriter<W> {
     }
 }
 
-impl<W: Write> Write for HashWriter<W> {
+impl<W: Write> Write for HashWriter<'_, W> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let written = self.inner.write(bytes)?;
         self.digest.update(&bytes[..written]);
+        if self.ram {
+            self.work.ram(written);
+        } else {
+            self.work.metadata(written);
+        }
         Ok(written)
     }
 
@@ -694,15 +884,19 @@ impl<W: Write> Write for HashWriter<W> {
     }
 }
 
-struct HashReader<R> {
+struct HashReader<'a, R> {
+    work: &'a mut crate::host_telemetry::HashWork,
+    ram: bool,
     inner: R,
     digest: Sha256,
 }
 
-impl<R> HashReader<R> {
-    fn new(inner: R) -> Self {
+impl<'a, R> HashReader<'a, R> {
+    fn new(inner: R, work: &'a mut crate::host_telemetry::HashWork) -> Self {
         Self {
             inner,
+            work,
+            ram: false,
             digest: Sha256::new(),
         }
     }
@@ -712,10 +906,15 @@ impl<R> HashReader<R> {
     }
 }
 
-impl<R: Read> Read for HashReader<R> {
+impl<R: Read> Read for HashReader<'_, R> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         let read = self.inner.read(bytes)?;
         self.digest.update(&bytes[..read]);
+        if self.ram {
+            self.work.ram(read);
+        } else {
+            self.work.metadata(read);
+        }
         Ok(read)
     }
 }
@@ -843,6 +1042,7 @@ mod tests {
                 vm_state: &state.encode().unwrap(),
                 sdk: None,
                 policy: &ServiceConfig {
+                    local_services: Vec::new(),
                     identity: b"identity".to_vec(),
                     configuration: b"configuration".to_vec(),
                 },
@@ -850,6 +1050,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted: true,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"state-suffix",
@@ -858,6 +1059,55 @@ mod tests {
             Some([0x3c; 32]),
         )
         .unwrap()
+    }
+
+    fn arm64_sidecar(state: &vm_state::Arm64VmState) -> Vec<u8> {
+        encode_sparse_sidecar_with_target_pages(
+            &SparsePortableSidecarRef {
+                vm_state: &state.encode().unwrap(),
+                sdk: None,
+                policy: &ServiceConfig::default(),
+                at: 23,
+                sdk_events: 0,
+                trace_events: 17,
+                trace_schedules: 5,
+                event_history: None,
+                tainted: false,
+                base_ram_digest: [0xa5; 32],
+                state_blob_suffix: b"state-suffix",
+                control_state: b"control-state",
+            },
+            Some([0x3c; 32]),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sparse_target_commitment_deduplicates_equal_logical_arm_counter() {
+        let mut state = vm_state::Arm64VmState::default();
+        state.vtimer.counter = 10;
+        let first = arm64_sidecar(&state);
+        let first_commitment = sparse_delta_target_commitment(&first).unwrap();
+        state.vtimer.counter = 20;
+        let second = arm64_sidecar(&state);
+        assert_ne!(first, second);
+        assert_eq!(
+            sparse_delta_target_commitment(&second).unwrap(),
+            first_commitment
+        );
+        state.regs.x[0] = 1;
+        assert_ne!(
+            sparse_delta_target_commitment(&arm64_sidecar(&state)).unwrap(),
+            first_commitment
+        );
+        state.regs.x[0] = 0;
+        let mut changed = decode_sparse_sidecar(&arm64_sidecar(&state)).unwrap();
+        changed.control_state.push(1);
+        let changed = encode_sparse_sidecar_with_vm_state(&changed, &changed.vm_state).unwrap();
+        assert_ne!(
+            sparse_delta_target_commitment(&changed).unwrap(),
+            first_commitment
+        );
     }
 
     #[test]
@@ -907,6 +1157,56 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn sparse_target_commitment_deduplicates_equal_logical_xsave_state() {
+        let mut state = vm_state::VmState::default();
+        state.xsave.0 = vec![0; 576];
+        vmm_backend::arch::x86::canonicalize_xsave(&mut state.xsave.0);
+        let mut expected = None;
+        for raw in [0, 2, 3] {
+            state.xsave_restore_bv = Some(raw);
+            let sidecar = x86_sidecar(&state);
+            let commitment = sparse_delta_target_commitment(&sidecar).unwrap();
+            if let Some(first) = expected {
+                assert_eq!(commitment, first);
+            } else {
+                expected = Some(commitment);
+            }
+        }
+        state.regs.rbx = 1;
+        assert_ne!(
+            sparse_delta_target_commitment(&x86_sidecar(&state)).unwrap(),
+            expected.unwrap()
+        );
+        state.regs.rbx = 0;
+        state.xsave.0[160] = 0x79;
+        state.xsave.0[512] = 2;
+        state.xsave_restore_bv = Some(2);
+        let active = sparse_delta_target_commitment(&x86_sidecar(&state)).unwrap();
+        state.xsave.0[160] ^= 1;
+        assert_ne!(
+            sparse_delta_target_commitment(&x86_sidecar(&state)).unwrap(),
+            active
+        );
+    }
+
+    #[test]
+    fn sparse_target_commitment_rejects_unknown_or_invalid_cpu_architecture() {
+        let sidecar =
+            decode_sparse_sidecar(&arm64_sidecar(&vm_state::Arm64VmState::default())).unwrap();
+        for arch in [0u16, 3, u16::MAX] {
+            let mut vm_state = sidecar.vm_state.clone();
+            vm_state[6..8].copy_from_slice(&arch.to_le_bytes());
+            let encoded = encode_sparse_sidecar_with_vm_state(&sidecar, &vm_state).unwrap();
+            assert!(sparse_delta_target_commitment(&encoded).is_err());
+        }
+        let mut vm_state = sidecar.vm_state.clone();
+        vm_state[0] ^= 1;
+        let encoded = encode_sparse_sidecar_with_vm_state(&sidecar, &vm_state).unwrap();
+        assert!(sparse_delta_target_commitment(&encoded).is_err());
+    }
+
+    #[test]
     #[cfg_attr(
         miri,
         ignore = "MiB-scale codec size regression; small codec and truncated-length tests run under Miri"
@@ -914,6 +1214,7 @@ mod tests {
     fn version_six_round_trips_large_sections_with_optional_control() {
         let (memory, vm, sdk, _) = fixture();
         let policy = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"large".to_vec(),
             configuration: vec![0x45; MAX_POLICY_LEN],
         };
@@ -928,6 +1229,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted: true,
                 state_hash: [0xa5; 32],
                 control_state: control,
@@ -956,6 +1258,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted: true,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"suffix",
@@ -1003,6 +1306,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             base_ram_digest: [0xa5; 32],
             state_blob_suffix: &suffix,
@@ -1048,6 +1352,7 @@ mod tests {
             sdk_events: 65,
             trace_events: 0,
             trace_schedules: 0,
+            event_history: None,
             tainted: false,
             state_hash: [0xa5; 32],
             control_state: &[],
@@ -1066,6 +1371,7 @@ mod tests {
             sdk_events: 65,
             trace_events: 0,
             trace_schedules: 0,
+            event_history: None,
             tainted: false,
             base_ram_digest: [0xa5; 32],
             state_blob_suffix: &[],
@@ -1154,14 +1460,14 @@ mod tests {
     #[test]
     fn wire_constants_are_exact_contract_values() {
         assert_eq!(MAGIC, *b"HMSNAP01");
-        assert_eq!(VERSION, 7);
+        assert_eq!(VERSION, 10);
         assert_eq!((FLAG_SDK, FLAG_TAINTED, KNOWN_FLAGS), (1, 2, 3));
         assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
         assert_eq!(MAX_SDK_LEN, 64 * 1024 * 1024);
         assert_eq!(MAX_CONTROL_LEN, MAX_SDK_LEN);
         assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
         assert_eq!(SPARSE_MAGIC, *b"HMSSNAP1");
-        assert_eq!(SPARSE_VERSION, 9);
+        assert_eq!(SPARSE_VERSION, 12);
         assert_eq!(
             (
                 SPARSE_FLAG_SDK,
@@ -1179,10 +1485,10 @@ mod tests {
                 + MAX_CONTROL_LEN
                 + MAX_POLICY_LEN
                 + MAX_SUFFIX_LEN
-                + 160
+                + 201
         );
 
-        for old_version in [1_u16, 2, 3, 4, 5, 6, VERSION + 1] {
+        for old_version in (1..VERSION).chain([VERSION + 1]) {
             let mut old = encoded();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             refresh_digest(&mut old);
@@ -1205,6 +1511,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             state_hash: [0xa5; 32],
             control_state: &[],
@@ -1230,6 +1537,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             state_hash: [0xa5; 32],
             control_state,
@@ -1271,7 +1579,7 @@ mod tests {
             116,
             vm_state_start,
             sdk_last_threshold,
-            left.len() - 33,
+            left.len() - 34,
         ] {
             let mut right = left.clone();
             right[index] ^= 1;
@@ -1322,6 +1630,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             base_ram_digest: [0xa5; 32],
             state_blob_suffix: b"canonical-suffix",
@@ -1340,6 +1649,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             base_ram_digest: [0xa5; 32],
             state_blob_suffix: b"canonical-suffix",
@@ -1400,6 +1710,7 @@ mod tests {
                 sdk_events: decoded.sdk_events,
                 trace_events: decoded.trace_events,
                 trace_schedules: decoded.trace_schedules,
+                event_history: decoded.event_history,
                 tainted: decoded.tainted,
                 state_hash: decoded.state_hash,
                 control_state: &decoded.control_state,
@@ -1437,6 +1748,7 @@ mod tests {
                 sdk_events: decoded.sdk_events,
                 trace_events: decoded.trace_events,
                 trace_schedules: decoded.trace_schedules,
+                event_history: decoded.event_history,
                 tainted: decoded.tainted,
                 base_ram_digest: decoded.base_ram_digest,
                 state_blob_suffix: &decoded.state_blob_suffix,
@@ -1478,7 +1790,7 @@ mod tests {
         ));
 
         let mut corrupted = good;
-        let body_last = corrupted.len() - 33;
+        let body_last = corrupted.len() - 34;
         corrupted[body_last] ^= 1;
         assert!(matches!(
             PortableSnapshot::read_from(corrupted.as_slice(), 8192),
@@ -1534,7 +1846,7 @@ mod tests {
             decode_sparse_sidecar(&bad_version),
             Err(PortableSnapshotError::BadVersion(u16::MAX))
         ));
-        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, 8, SPARSE_VERSION + 1] {
+        for old_version in (1..SPARSE_VERSION).chain([SPARSE_VERSION + 1]) {
             let mut old = original.clone();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             assert!(matches!(
@@ -1562,6 +1874,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"canonical-suffix",
@@ -1576,7 +1889,8 @@ mod tests {
 
     #[test]
     fn sparse_sidecar_target_page_digest_is_optional_and_bounded() {
-        let (_, vm_state, _, policy) = fixture();
+        let vm_state = vm_state::Arm64VmState::default().encode().unwrap();
+        let policy = ServiceConfig::default();
         let sidecar = SparsePortableSidecarRef {
             vm_state: &vm_state,
             sdk: None,
@@ -1585,17 +1899,25 @@ mod tests {
             sdk_events: 0,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: false,
             base_ram_digest: [0xa5; 32],
             state_blob_suffix: b"canonical-suffix",
             control_state: &[],
         };
         let without = encode_sparse_sidecar(&sidecar).unwrap();
+        assert!(matches!(
+            sparse_delta_target_commitment(&without),
+            Err(PortableSnapshotError::Malformed(
+                "sparse delta sidecar lacks target pages digest"
+            ))
+        ));
         assert_eq!(
             decode_sparse_sidecar(&without).unwrap().target_pages_digest,
             None
         );
         let with = encode_sparse_sidecar_with_target_pages(&sidecar, Some([0x3c; 32])).unwrap();
+        assert_ne!(sparse_delta_target_commitment(&with).unwrap(), [0; 32]);
         assert_eq!(with.len(), without.len() + 32);
         assert_eq!(
             decode_sparse_sidecar(&with).unwrap().target_pages_digest,
@@ -1662,6 +1984,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: 0,
                 trace_schedules: 0,
+                event_history: None,
                 tainted: false,
                 state_hash: [0; 32],
                 control_state: &[],
@@ -1680,6 +2003,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: 0,
                 trace_schedules: 0,
+                event_history: None,
                 tainted: false,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"suffix",
@@ -1714,6 +2038,7 @@ mod tests {
             sdk_events: 0,
             trace_events: 0,
             trace_schedules: 0,
+            event_history: None,
             tainted: false,
             state_hash: [7; 32],
             control_state: &[],
@@ -1749,6 +2074,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: 0,
                 trace_schedules: 0,
+                event_history: None,
                 tainted: false,
                 state_hash: [0; 32],
                 control_state: &[],
@@ -1856,6 +2182,7 @@ mod tests {
             sdk_events: 0,
             trace_events: 0,
             trace_schedules: 0,
+            event_history: None,
             tainted: false,
             state_hash: [0; 32],
             control_state: &[],
@@ -1895,6 +2222,7 @@ mod tests {
             sdk_events: 0,
             trace_events: 0,
             trace_schedules: 0,
+            event_history: None,
             tainted: false,
             state_hash: [0; 32],
             control_state: &[],
@@ -2050,6 +2378,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             state_hash: [0xa5; 32],
             control_state: &[],
@@ -2115,6 +2444,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted: false,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: suffix,
@@ -2196,7 +2526,7 @@ mod tests {
         let vm_state_start = memory_start + memory_len;
         let sdk_start = vm_state_start + vm_state_len;
         let policy_start = sdk_start + sdk_len;
-        assert_eq!(policy_start + policy_len + 32, original.len());
+        assert_eq!(policy_start + policy_len + 1 + 32, original.len());
         for index in [memory_start, vm_state_start, sdk_start, policy_start] {
             let mut planted = original.clone();
             planted[index] ^= 1;
@@ -2250,6 +2580,77 @@ mod tests {
         ));
     }
     #[test]
+    fn pending_decision_must_fit_the_service_frame_in_full_and_sparse_imports() {
+        let limit = hypercall_proto::MAX_PAYLOAD - 10;
+        for payload_len in [limit, limit + 1] {
+            let (memory, vm_state, mut sdk, policy) = fixture();
+            sdk.pending_stop = Some(SdkStop::Decision {
+                moment: 31,
+                seq: 42,
+                question: channel::Question::with_request_id(77, 19, vec![0x5a; payload_len])
+                    .unwrap(),
+            });
+            let mut full = Vec::new();
+            PortableSnapshotRef {
+                memory: &memory,
+                vm_state: &vm_state,
+                sdk: Some(&sdk),
+                policy: &policy,
+                at: 31,
+                sdk_events: 2,
+                trace_events: 0,
+                trace_schedules: 0,
+                event_history: None,
+                tainted: false,
+                state_hash: [0; 32],
+                control_state: &[],
+            }
+            .write_to(&mut full)
+            .unwrap();
+            let imported = PortableSnapshot::read_from(full.as_slice(), memory.len());
+            let sparse = encode_sparse_sidecar(&SparsePortableSidecarRef {
+                vm_state: &vm_state,
+                sdk: Some(&sdk),
+                policy: &policy,
+                at: 31,
+                sdk_events: 2,
+                trace_events: 0,
+                trace_schedules: 0,
+                event_history: None,
+                tainted: false,
+                base_ram_digest: [0xa5; 32],
+                state_blob_suffix: b"suffix",
+                control_state: &[],
+            })
+            .unwrap();
+            let sparse = decode_sparse_sidecar(&sparse);
+            if payload_len == limit {
+                let full_stop = imported.unwrap().sdk.unwrap().pending_stop.unwrap();
+                let sparse_stop = sparse.unwrap().sdk.unwrap().pending_stop.unwrap();
+                assert_eq!(full_stop, sparse_stop);
+                let request = crate::service_transcript::pending_request(&full_stop).unwrap();
+                assert_eq!(
+                    request.len(),
+                    hypercall_proto::HEADER_LEN + hypercall_proto::MAX_PAYLOAD
+                );
+                assert_eq!(
+                    hypercall_proto::decode(&request).unwrap().1.len(),
+                    hypercall_proto::MAX_PAYLOAD
+                );
+            } else {
+                assert!(matches!(
+                    imported,
+                    Err(PortableSnapshotError::Malformed("SDK pending question"))
+                ));
+                assert!(matches!(
+                    sparse,
+                    Err(PortableSnapshotError::Malformed("SDK pending question"))
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn pending_stops_round_trip_and_reject_truncated_or_unknown_variants() {
         let stops = [
             None,
@@ -2262,6 +2663,22 @@ mod tests {
                 moment: 31,
                 seq: 42,
                 question: channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap(),
+            }),
+            Some(SdkStop::CoverageDecision {
+                moment: 31,
+                seq: 42,
+                question: channel::Question::with_request_id(
+                    7,
+                    channel::SERVICE_COVERAGE_QUANTUM,
+                    1_u64.to_le_bytes().to_vec(),
+                )
+                .unwrap(),
+                ready: 2,
+            }),
+            Some(SdkStop::DeferredDoorbell {
+                moment: 31,
+                requested_len: 3,
+                request: vec![8, 9, 10],
             }),
         ];
         for stop in stops {
@@ -2283,6 +2700,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 0,
                 trace_schedules: 0,
+                event_history: None,
                 tainted: false,
                 state_hash: [0; 32],
                 control_state: &[],
@@ -2299,6 +2717,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 0,
                 trace_schedules: 0,
+                event_history: None,
                 tainted: false,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"suffix",
@@ -2319,10 +2738,31 @@ mod tests {
                 assert!(decode_pending_stop(&mut SliceReader::new(&bytes[..end])).is_err());
             }
         }
-        assert!(decode_pending_stop(&mut SliceReader::new(&[4])).is_err());
+        assert!(decode_pending_stop(&mut SliceReader::new(&[6])).is_err());
         let mut bytes = vec![3];
         bytes.extend_from_slice(&[0; 22]);
         bytes.extend_from_slice(&u64::MAX.to_le_bytes());
         assert!(decode_pending_stop(&mut SliceReader::new(&bytes)).is_err());
+
+        let mut deferred = Vec::new();
+        encode_pending_stop(
+            &mut deferred,
+            Some(&SdkStop::DeferredDoorbell {
+                moment: 31,
+                requested_len: 3,
+                request: vec![8, 9, 10],
+            }),
+        );
+        deferred[9..13].copy_from_slice(&4_u32.to_le_bytes());
+        assert!(matches!(
+            decode_pending_stop(&mut SliceReader::new(&deferred)),
+            Err(PortableSnapshotError::Malformed("SDK deferred doorbell"))
+        ));
+        deferred[9..13].copy_from_slice(&3_u32.to_le_bytes());
+        deferred[13..21].copy_from_slice(&((PAGE_SIZE as u64) + 1).to_le_bytes());
+        assert!(matches!(
+            decode_pending_stop(&mut SliceReader::new(&deferred)),
+            Err(PortableSnapshotError::Malformed("SDK deferred doorbell"))
+        ));
     }
 }

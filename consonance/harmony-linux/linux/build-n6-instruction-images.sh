@@ -9,8 +9,7 @@ cd "$(dirname "$0")"
 # shellcheck source=lib-build.sh disable=SC1091
 . ./lib-build.sh
 
-n6_cc=${HARMONY_N6_CC:-cc}
-require_tools "$n6_cc" cc gzip objdump python3
+require_tools cc gzip python3
 extract_kernel # usr/gen_init_cpio.c is the deterministic packer.
 
 repo_root=$(cd ../../.. && pwd)
@@ -38,13 +37,28 @@ case "$(uname -m)" in
         march=()
         negative_body='.byte 0x0f, 0xc7, 0xf0
 .byte 0x0f, 0xc7, 0xf8'
-        false_positive_body='.byte 0x48, 0x8d, 0x3d, 0x0f, 0xc7, 0xf8, 0x00'
+        displacement_body='.byte 0x48, 0x8d, 0x3d, 0x0f, 0xc7, 0xf8, 0x00'
         ;;
     *)
         echo "FAIL: N6 guest images require native Linux/aarch64 or Linux/x86_64" >&2
         exit 1
         ;;
 esac
+
+if [ -n "${HARMONY_N6_CC:-}" ]; then
+    n6_cc=$HARMONY_N6_CC
+elif [ "$arch" = x86_64 ]; then
+    require_tools make nproc
+    echo "== N6: build pinned x86_64 musl runtime"
+    build_x86_musl
+    n6_cc=$X86_MUSL_PREFIX/bin/musl-gcc
+else
+    require_tools make nproc patch
+    echo "== N6: build pinned arm64 musl runtime"
+    build_arm64_musl
+    n6_cc=$ARM64_MUSL_PREFIX/bin/musl-gcc
+fi
+require_tools "$n6_cc"
 
 echo "== N6: generator/verifier negative controls"
 python3 "$generator" --table "$table" self-test
@@ -120,18 +134,27 @@ fi
 echo "ok: mislabeled executable section still rejected"
 
 if [ "$arch" = x86_64 ]; then
-    false_positive=$n6_root/n6-entropy-false-positive.S
-    cat >"$false_positive" <<EOF
+    displacement=$n6_root/n6-entropy-displacement.S
+    cat >"$displacement" <<EOF
 .text
 .global _start
 _start:
-$false_positive_body
+$displacement_body
 ret
 EOF
     "$n6_cc" -nostdlib -static -Wl,-e,_start \
-        -o "$n6_root/n6-entropy-false-positive" "$false_positive"
-    python3 "$entropy_scan" "$n6_root/n6-entropy-false-positive"
-    echo "ok: entropy scanner ignored opcode-shaped LEA displacement"
+        -o "$n6_root/n6-entropy-displacement" "$displacement"
+    if python3 "$entropy_scan" "$n6_root/n6-entropy-displacement" \
+        >"$n6_root/n6-entropy-displacement.log" 2>&1; then
+        echo "FAIL: entropy scanner accepted opcode-shaped LEA displacement" >&2
+        exit 1
+    fi
+    if ! grep -q '^N6_ENTROPY_REJECT .* hits=1$' "$n6_root/n6-entropy-displacement.log"; then
+        echo "FAIL: entropy scanner did not identify the LEA displacement" >&2
+        cat "$n6_root/n6-entropy-displacement.log" >&2
+        exit 1
+    fi
+    echo "ok: opcode-shaped LEA displacement rejected"
 fi
 
 build_guest() {
@@ -147,7 +170,7 @@ build_guest() {
         -I"$n6_root" -DN6_ARCH='"'"$arch"'"' -DN6_AUDIT_REJECTED=1 \
         "${extra[@]}" -o "$binary" \
         "$LINUX_DIR/n6-instruction-guest.c" "$n6_root/n6-generated.S"
-    python3 "$entropy_scan" "$binary"
+    python3 "$entropy_scan" "$binary" | tee "$binary.entropy-audit.txt"
 }
 
 echo "== N6: compile table-generated JIT guests"

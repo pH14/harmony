@@ -15,11 +15,11 @@ use crate::{
     search::{
         archive::RetentionPolicy,
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
-            CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, Reporting,
-            SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_value_sha256,
-            replay_campaign_checkpointed, run_campaign_checkpointed,
+            ArchiveReportState, ArchiveSource, CampaignActionResult, CampaignCandidate,
+            CampaignCheckpoint, CampaignConfig, CampaignJobResult, CampaignModeReport,
+            CampaignOrigin, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
+            Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+            postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::DrawMixture,
         draw_tables::DrawTableHeader,
@@ -56,29 +56,35 @@ pub struct StbGame {
     rom: Vec<u8>,
     core_path: PathBuf,
     core_sha256: String,
+    execution_sha256: String,
     identity: String,
     ai: StbAi,
 }
 
 impl StbGame {
     #[must_use]
-    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
-        Self::with_ai(rom, core_path, core_sha256, StbAi::Easy)
+    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str, execution_sha256: &str) -> Self {
+        Self::with_ai(rom, core_path, core_sha256, execution_sha256, StbAi::Easy)
     }
 
     #[must_use]
-    pub fn with_ai(rom: &[u8], core_path: &Path, core_sha256: &str, ai: StbAi) -> Self {
+    pub fn with_ai(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        ai: StbAi,
+    ) -> Self {
         let ai_level = ai.level();
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-full-postcard-1.1.3-sha256-hex-v6;sha256={core_sha256}",
-            machine::quicknes::QUICKNES_REVISION,
-            machine::quicknes::QUICKNES_BUILD,
-            machine::quicknes::QUICKNES_OPTIONS,
+            "{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-full-postcard-1.1.3-sha256-hex-v6;sha256={core_sha256};prepared-execution-sha256={execution_sha256}",
+            machine::quicknes::core_identity(),
         );
         Self {
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
+            execution_sha256: execution_sha256.to_owned(),
             identity,
             ai,
         }
@@ -90,7 +96,9 @@ impl StbGame {
                 .ok_or("HARMONY_QUICKNES_CORE must name the pinned QuickNES core")?,
         );
         let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core_path)?));
-        Ok(Self::new(rom, &core_path, &core_sha256))
+        let execution_sha256 =
+            machine::quicknes::prepared_execution_sha256(&core_path, &core_sha256)?;
+        Ok(Self::new(rom, &core_path, &core_sha256, &execution_sha256))
     }
 }
 
@@ -306,6 +314,7 @@ fn action_champion_key(observations: &[StbObservations]) -> Option<StbChampionKe
 }
 
 impl CampaignTypes for StbGame {
+    type JobObservation = ();
     type Target = StbTarget;
     type Action = ButtonChord;
     type Key = StbArchiveKey;
@@ -393,6 +402,13 @@ impl Reporting for StbGame {
         stb_result_sha256(result)
     }
 
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        postcard_value_sha256(snapshot)
+    }
+
     fn archive_report(
         &self,
         evidence: &StbCampaignEvidence,
@@ -476,10 +492,11 @@ impl TargetExecution for StbGame {
     }
 
     fn new_target(&self) -> Result<StbTarget, String> {
-        StbTarget::from_rom_bytes_headless_with_ai(
+        StbTarget::from_rom_bytes_headless_with_ai_and_identity(
             &self.rom,
             &self.core_path,
             &self.core_sha256,
+            &self.execution_sha256,
             self.ai,
         )
         .map_err(|error| error.to_string())
@@ -666,10 +683,10 @@ pub fn run_stb_campaign_checkpointed(
 pub fn replay_stb_campaign_checkpointed(
     game: &StbGame,
     stream_bytes: &[u8],
-    origin_report: Option<&StbArchiveReport>,
+    origin_source: Option<&ArchiveSource<StbArchiveReport>>,
     origin_checkpoint: Option<&StbCampaignCheckpoint>,
 ) -> Result<(StbCampaignModeReport, StbSnapshotCheckpoint), Box<dyn Error>> {
-    replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
+    replay_campaign_checkpointed(game, stream_bytes, origin_source, origin_checkpoint)
 }
 
 impl crate::film::Filmable for StbGame {
@@ -797,7 +814,7 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("STB_COMMIT="))
             .unwrap();
-        let game = StbGame::new(&[], Path::new("core.so"), &"a".repeat(64));
+        let game = StbGame::new(&[], Path::new("core.so"), &"a".repeat(64), &"b".repeat(64));
         assert!(
             game.emulator_identity()
                 .contains(&format!("source=sgadrat/super-tilt-bro@{commit};"))
@@ -806,7 +823,7 @@ mod tests {
 
     #[test]
     fn previous_key_policy_requires_its_previous_implementation() {
-        let game = StbGame::new(&[], Path::new("core.so"), &"a".repeat(64));
+        let game = StbGame::new(&[], Path::new("core.so"), &"a".repeat(64), &"b".repeat(64));
         let mut policies = game.policies(&StbCampaignRun);
         policies.insert(
             KEY_POLICY_FIELD.to_owned(),
@@ -817,7 +834,12 @@ mod tests {
 
     #[test]
     fn recorded_policy_set_is_exact_and_game_owned() {
-        let game = StbGame::new(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64));
+        let game = StbGame::new(
+            &[1, 2, 3],
+            Path::new("core.so"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+        );
         let policies = game.policies(&StbCampaignRun);
         let StbCampaignRun = game.resolve_recorded(&policies).expect("resolve");
         let mut foreign = policies;
@@ -827,9 +849,15 @@ mod tests {
 
     #[test]
     fn recordings_reject_another_ai_difficulty() {
-        let easy = StbGame::new(&[], Path::new("core.so"), &"a".repeat(64));
+        let easy = StbGame::new(&[], Path::new("core.so"), &"a".repeat(64), &"b".repeat(64));
         for ai in [StbAi::Fair, StbAi::Hard] {
-            let harder = StbGame::with_ai(&[], Path::new("core.so"), &"a".repeat(64), ai);
+            let harder = StbGame::with_ai(
+                &[],
+                Path::new("core.so"),
+                &"a".repeat(64),
+                &"b".repeat(64),
+                ai,
+            );
             assert!(
                 harder
                     .emulator_identity()
@@ -854,10 +882,31 @@ mod tests {
 
     #[test]
     fn local_ai_mode_is_part_of_recorded_machine_identity() {
-        let game = StbGame::new(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64));
+        let game = StbGame::new(
+            &[1, 2, 3],
+            Path::new("core.so"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+        );
         assert!(
             game.emulator_identity()
                 .contains("mode=local;stocks=4;ai=1;stage=0")
+        );
+    }
+
+    #[test]
+    fn native_policy_rejects_a_changed_prepared_execution() {
+        let first = StbGame::new(&[0], Path::new("core.so"), "core", "first");
+        let second = StbGame::new(&[0], Path::new("core.so"), "core", "second");
+        assert!(
+            first
+                .emulator_identity()
+                .contains("prepared-execution-sha256=first")
+        );
+        assert!(
+            second
+                .resolve_recorded(&first.policies(&StbCampaignRun))
+                .is_err()
         );
     }
 
@@ -883,5 +932,30 @@ mod tests {
             stb_result_sha256(&first).expect("first digest"),
             stb_result_sha256(&second).expect("changed digest"),
         );
+    }
+
+    #[test]
+    fn campaign_suffix_continues_through_respawn_without_a_terminal_endpoint() {
+        use nes_games::stb::target::scripted::ScriptedMachine;
+        for stop_on_objective in [false, true] {
+            let mut target = StbTarget::from_machine(ScriptedMachine::respawn_timeline()).unwrap();
+            let result = execute_suffix(
+                &mut target,
+                StbMilestones::default(),
+                &[ButtonChord::new(1, 1), ButtonChord::new(2, 1)],
+                RetentionPolicy::Unprobed,
+                stop_on_objective,
+            )
+            .expect("respawn suffix");
+            assert_eq!(result.actions.len(), 2);
+            assert!(result.actions.iter().all(|action| {
+                action.outcome.disposition == ExecutionDisposition::Runnable
+                    && !action.outcome.objective_reached
+            }));
+            assert!(result.actions[0].candidate.is_none());
+            assert!(result.actions[1].candidate.is_some());
+            assert_eq!(result.actions[1].milestones.opponent_kos, 1);
+            assert_eq!(target.observe().frame_count, 2);
+        }
     }
 }

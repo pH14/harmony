@@ -214,9 +214,6 @@ impl ArchiveKey for HeldKey {
     fn preferences() -> usize {
         1
     }
-    fn tier_rank_shift() -> u32 {
-        1
-    }
     fn preference_cmp(self, _preference: usize, other: Self) -> std::cmp::Ordering {
         self.time_left.cmp(&other.time_left)
     }
@@ -226,7 +223,7 @@ impl ArchiveKey for HeldKey {
     fn record(_lineage: &mut (), _key: Self) {}
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Observation {
     after: State,
     work_in_job: u64,
@@ -299,6 +296,7 @@ pub fn change_one_control(rand: &mut RomuDuoJrRand, previous: u8) -> Result<u8, 
 }
 
 impl CampaignTypes for HeldWorkload {
+    type JobObservation = ();
     type Target = Target;
     type Action = Chord;
     type Key = HeldKey;
@@ -329,6 +327,12 @@ impl Reporting for HeldWorkload {
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
         postcard_value_sha256(result)
+    }
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        postcard_value_sha256(snapshot)
     }
     fn archive_report(&self, evidence: &Evidence, state: ArchiveReportState<Self>) -> Report {
         Report {

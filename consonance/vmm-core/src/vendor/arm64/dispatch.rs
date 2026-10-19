@@ -1032,7 +1032,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                         have.timer_intid
                     )));
                 }
-                let _ = gicv3::Gicv3::restore(gs, s.vtime.snapshot_vns).map_err(|_| {
+                gicv3::Gicv3::validate_shared_snapshot(gs, s.vtime.snapshot_vns).map_err(|_| {
                     SnapshotError::DeviceRestore("incoherent GicState in device blob")
                 })?;
                 None
@@ -1206,6 +1206,7 @@ pub(crate) fn encode_vcpu_state(s: &Arm64VcpuState) -> Vec<u8> {
             v.extend_from_slice(&value.to_le_bytes());
         }
     }
+    v.extend_from_slice(&s.debug.mdccint_el1.to_le_bytes());
     v.extend_from_slice(&s.debug.mdscr_el1.to_le_bytes());
     v.push(u8::from(s.debug.trap_debug_exceptions));
     v.push(u8::from(s.debug.trap_debug_reg_accesses));
@@ -1309,6 +1310,7 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
             debug.extend_from_slice(&value.to_le_bytes());
         }
     }
+    debug.extend_from_slice(&s.debug.mdccint_el1.to_le_bytes());
     debug.extend_from_slice(&s.debug.mdscr_el1.to_le_bytes());
     debug.push(u8::from(s.debug.trap_debug_exceptions));
     debug.push(u8::from(s.debug.trap_debug_reg_accesses));
@@ -1776,6 +1778,9 @@ mod tests {
                 smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
                 psci_profile: vmm_backend::Arm64PsciProfile::KvmPsci10,
                 gic_ctlr_fixed_bits: 0x8400,
+                gicd_iidr: 0x4b00_243b,
+                gicd_typer2: 0,
+                register_identity: [0; 32],
             },
         });
         backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -1809,6 +1814,47 @@ mod tests {
     }
 
     #[test]
+    fn register_inventory_identity_rejects_snapshot_and_import_before_mutation() {
+        use vmm_backend::{Arm64AsidBits, Arm64Caps, Capabilities};
+        let machine = |identity| {
+            let mut backend = MockArm64Backend::with_capabilities(Capabilities {
+                name: "mock-arm64",
+                arch: Arm64Caps {
+                    in_kernel_gic: false,
+                    asid_bits: Arm64AsidBits::Eight,
+                    smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                    psci_profile: vmm_backend::Arm64PsciProfile::HvfSingleVcpu,
+                    gic_ctlr_fixed_bits: 0,
+                    gicd_iidr: 0,
+                    gicd_typer2: 0,
+                    register_identity: identity,
+                },
+            });
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let mut source = machine([1; 32]);
+        let mut same = machine([1; 32]);
+        let mut different = machine([2; 32]);
+        let snapshot = source.save_vm_state().unwrap();
+        let snapshot = vm_state::Arm64VmState::decode(&snapshot.encode().unwrap()).unwrap();
+        let memory = source.guest_memory().to_vec();
+        same.restore_snapshot(&memory, &snapshot).unwrap();
+        assert_eq!(source.state_hash().unwrap(), same.state_hash().unwrap());
+        assert_ne!(
+            source.state_hash().unwrap(),
+            different.state_hash().unwrap()
+        );
+        let before = different.save_vm_state().unwrap();
+        assert!(matches!(
+            different.restore_snapshot(&memory, &snapshot),
+            Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+        ));
+        assert_eq!(different.save_vm_state().unwrap(), before);
+        assert_eq!(different.guest_memory(), memory);
+    }
+
+    #[test]
     fn firmware_workaround_levels_distinguish_restore_and_state_identity() {
         use vmm_backend::{Arm64AsidBits, Arm64Caps, Capabilities};
 
@@ -1821,6 +1867,9 @@ mod tests {
                     smccc_workaround_levels: levels,
                     psci_profile: vmm_backend::Arm64PsciProfile::HvfSingleVcpu,
                     gic_ctlr_fixed_bits: 0,
+                    gicd_iidr: 0,
+                    gicd_typer2: 0,
+                    register_identity: [0; 32],
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -1897,6 +1946,9 @@ mod tests {
                     smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
                     psci_profile: vmm_backend::Arm64PsciProfile::KvmPsci10,
                     gic_ctlr_fixed_bits: 0x8400,
+                    gicd_iidr: 0x4b00_243b,
+                    gicd_typer2: 0,
+                    register_identity: [0; 32],
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -1993,7 +2045,64 @@ mod tests {
     }
 
     #[test]
-    fn public_kvm_restore_rejects_unproven_physical_timer_records_before_mutation() {
+    fn public_kvm_restore_preserves_guest_redistributor_bases() {
+        use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm};
+
+        let machine = |bases: [u64; 2]| {
+            let mut fake = FakeKvm::new();
+            fake.set_vgic_attr(5, 0x1_0c00, false, 0xaaaa_aaaa).unwrap();
+            for (offset, value) in [(0x70, bases[0]), (0x78, bases[1])] {
+                fake.set_vgic_attr(5, offset, false, u64::from(value as u32))
+                    .unwrap();
+                fake.set_vgic_attr(5, offset + 4, false, u64::from((value >> 32) as u32))
+                    .unwrap();
+            }
+            fake.vcpu_init().unwrap();
+            let mut backend = Arm64KvmBackend::new(fake);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let bases = [0x0001_0000_1234_5180, 0x0002_0000_1234_0580];
+        let mut source = machine(bases);
+        let saved = source.save_vm_state().unwrap();
+        let saved_gic = records::decode_device_blob(&saved.devices.0)
+            .unwrap()
+            .gic
+            .unwrap();
+        assert_eq!([saved_gic.gicr_propbaser, saved_gic.gicr_pendbaser], bases);
+        let source_hash = source.state_hash().unwrap();
+
+        let mut target = machine([0, 0]);
+        target.validate_restore_vm_state(&saved).unwrap();
+        target.restore_vm_state(&saved).unwrap();
+        let restored = target.backend_mut().save().unwrap().gic.unwrap();
+        assert_eq!([restored.gicr_propbaser, restored.gicr_pendbaser], bases);
+        assert_eq!(target.state_hash().unwrap(), source_hash);
+
+        for (propbaser, pendbaser) in [
+            (bases[0] | (1 << 6), bases[1]),
+            (0, bases[1]),
+            (bases[0] | (2 << 10), bases[1]),
+            (bases[0], bases[1] | (2 << 56)),
+        ] {
+            let mut invalid = saved.clone();
+            let mut devices = records::decode_device_blob(&invalid.devices.0).unwrap();
+            let gic = devices.gic.as_mut().unwrap();
+            gic.gicr_propbaser = propbaser;
+            gic.gicr_pendbaser = pendbaser;
+            invalid.devices = records::encode_device_blob(&devices);
+            let mut rejected = machine([0, 0]);
+            let before = rejected.save_vm_state().unwrap();
+            assert!(matches!(
+                rejected.restore_vm_state(&invalid),
+                Err(VmmError::ContractViolation(message)) if message.contains("backend rejected snapshot shape")
+            ));
+            assert_eq!(rejected.save_vm_state().unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn public_kvm_restore_rejects_unproven_timer_and_os_lock_records_before_mutation() {
         use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm};
 
         let machine = || {
@@ -2008,7 +2117,7 @@ mod tests {
         let valid = source.save_vm_state().unwrap();
         let mut target = machine();
         let before = target.save_vm_state().unwrap();
-        for version in [5, 6] {
+        for version in [5, 6, 7, 8] {
             let mut legacy = valid.clone();
             let mut dev = records::decode_device_blob(&legacy.devices.0).unwrap();
             dev.gic.as_mut().unwrap().version = version;
@@ -2116,6 +2225,9 @@ mod tests {
                     smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
                     psci_profile: vmm_backend::Arm64PsciProfile::KvmPsci10,
                     gic_ctlr_fixed_bits: 0x8400,
+                    gicd_iidr: 0x4b00_243b,
+                    gicd_typer2: 0,
+                    register_identity: [0; 32],
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -2218,7 +2330,7 @@ mod tests {
     #[test]
     #[ignore = "live ARM KVM; run with --ignored on a /dev/kvm host"]
     fn live_in_kernel_preemption_matches_guest_acknowledgment() {
-        use vmm_backend::{Arm64KvmBackend, GicIntId, LiveKvm};
+        use vmm_backend::{Arm64Kvm, Arm64KvmBackend, GicIntId, LiveKvm};
 
         const RAM: u64 = 0x4000_0000;
         const OUTPUT: u64 = 0x0900_0000;
@@ -2270,7 +2382,13 @@ mod tests {
             let saved_gic = backend.save().unwrap().gic.unwrap();
             assert_eq!(saved_gic.bpr1, bpr1);
             assert_eq!(saved_gic.ap1r[0], 1 << active_index);
-            let model = gicv3::Gicv3::restore(&records::gic_from_backend(&saved_gic), 0).unwrap();
+            assert_eq!(backend.kvm().get_vgic_attr(5, 0, false).unwrap() & 1, 0);
+            assert_eq!(saved_gic.gicr_propbaser & !0xfff, 0);
+            assert_eq!(saved_gic.gicr_pendbaser & !0xffff, 0);
+            let mut projected = records::gic_from_backend(&saved_gic);
+            projected.gicr_propbaser = 0;
+            projected.gicr_pendbaser = 0;
+            let model = gicv3::Gicv3::restore(&projected, 0).unwrap();
             assert!(model.input_unmasked(PVCLOCK_PPI));
             assert!(model.input_deliverable(PVCLOCK_PPI));
             let idle_gic = Arm64GicIdleState::from_gic(&saved_gic, PVCLOCK_PPI).unwrap();
@@ -2304,6 +2422,9 @@ mod tests {
                     smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
                     psci_profile: profile,
                     gic_ctlr_fixed_bits: 0,
+                    gicd_iidr: 0,
+                    gicd_typer2: 0,
+                    register_identity: [0; 32],
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();

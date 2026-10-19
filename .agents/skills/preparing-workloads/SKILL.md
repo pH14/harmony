@@ -18,7 +18,7 @@ Every target image must meet three conditions:
 2. Machine code comes only from scanned files or from a reviewed code generator.
 3. Every application loop reaches a libvoidstar callback.
 
-Admission scans every executable and shared object in the image. It rejects writable and executable segments, executable stacks, and unreviewed RDRAND, RDSEED, RNDR or RNDRRS sites. Counter reads need no review, because the guest kernel traps them. Admission cannot scan code that a runtime generates. Turn off each code generator in the recipe, or review the generator's source for entropy encodings and check that review at build time, as the Java recipe does for HotSpot. Check `/proc/self/maps` in the fixture.
+Admission scans every executable and shared object in the image. It rejects writable and executable segments, executable stacks, and unreviewed RDRAND, RDSEED, RNDR, RNDRRS, RDPID or LSL sites. Counter reads need no review, because the guest kernel traps them. Admission cannot scan code that a runtime generates. Turn off each code generator in the recipe, or review the generator's source for entropy encodings and check that review at build time, as the Java recipe does for HotSpot. Check `/proc/self/maps` in the fixture.
 
 Read the reference for the language:
 

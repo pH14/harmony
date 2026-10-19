@@ -35,6 +35,7 @@ what owns it, and the linter rejects them.
 | `Checks / Consonance` | `consonance-checks.yml` | pull_request, push |
 | `Checks / Consonance / Analysis` | `consonance-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Consonance / Hardware Qualification` | `consonance-hardware-qualification.yml` | schedule, workflow_dispatch |
+| `Checks / Consonance / Native Math Qualification` | `consonance-native-math-qualification.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance / Nested Host Qualification` | `consonance-nested-host-qualification.yml` | push, schedule, workflow_dispatch |
 | `Checks / Consonance / Kernel XSAVE Qualification` | `consonance-kernel-xsave-qualification.yml` | workflow_dispatch |
@@ -53,13 +54,61 @@ what owns it, and the linter rejects them.
 | `Release / Harmony` | `release.yml` | push (version tags) |
 | `Maintenance / Repository` | `repository-maintenance.yml` | schedule, workflow_dispatch |
 
-`Checks / Harmony Host Compatibility` selects both Linux Arm64 jobs through
-`rust_checks`. `Linux Arm64` compiles the backend and enforces the portable-test
-floor; `Linux Arm64 Qualification` runs the SHA-256 and CLI checks. Each
-retains the 15-minute pull-request limit, giving qualification its own job
-budget. The two Linux Arm64 jobs use separate Rust build caches so each can
-save its own build artifacts on main. The macOS Arm64 job continues to run
-both groups of checks in one job.
+The `Archive` job in `Checks / Dissonance` also checks that the searcher builds
+for `wasm32-unknown-unknown`, so the browser demo can run the campaign
+coordinator.
+
+The release CLI archive contains both `harmony` and `harmony-consonance-host`.
+Linux builds the Consonance host as a static musl executable; the frontend
+copies and seals it before execution. macOS signs the separate host with the
+Hypervisor entitlement, hardened runtime, and an operating-system-only library
+constraint. Each release build tests the paired launch before it packages the
+two executables together, so the frontend can hand Consonance commands to the
+admitted host.
+`Checks / Harmony` builds both Linux executables on x86-64 and Arm64 in
+separate 15-minute pull-request jobs. Both package jobs prove that a
+disk-backed host is refused, the paired frontend enters the sealed host, and
+native QuickNES remains on the frontend. The package fixture uses the Faults
+runner on both Linux architectures. A separate x86-64 musl job runs the public
+Session, worker reexec and failure recovery, UML shutdown, timeout, branch,
+handler, and root-import commitment tests, executable-map rejection and cache
+revocation, Recording, and terminal console limits through
+`scripts/linux-sealed-test-runner.py`, which copies each test binary into a
+fully sealed executable memfd before execution. All 18 exact tests require
+one test to start and pass. The musl positive tests fail if strict host
+admission is unavailable, so a missing runner cannot produce a green skip.
+The list includes shared-launcher telemetry-owner isolation, exact executable
+read/hash/comparison bytes and their partial-failure accounting, and mapping
+refusal with publication revocation.
+`Checks / Harmony Host Compatibility` also runs the Arm64-only direct leased-extent
+export regression in its existing macOS Arm64 workspace nextest suite, whose
+unified features enable the client mock backend. An exact-name PASS assertion
+in the ANSI-stripped `host-tests.log` prevents a skipped or omitted case from satisfying coverage,
+without a second build. This covers real Session extent-copy telemetry without
+requiring a guest hardware run.
+`Checks / Harmony Host Compatibility` has a separate macOS-14 package job
+that builds the frontend and Consonance host, signs the host with the release
+entitlement and operating-system-only library constraint, then checks signed
+host admission, paired frontend routing, native QuickNES routing, and CLI
+readiness. It runs on pull requests so a broken macOS package is caught before
+release. The Arm64 Linux package job likewise checks readiness with the musl
+host beside its frontend.
+
+`Checks / Harmony Host Compatibility / macOS Arm64` runs the portable workspace
+suites on `macos-14`. Its existing `host-tests.log` must contain exact nextest
+PASS records for the Darwin descriptor receive-bound and frame-remainder
+qualification tests. Missing in-process feature selection, a skipped test or a
+failed test cannot satisfy this check. It does not add another Cargo build.
+
+`Checks / Harmony Host Compatibility` selects all three Linux Arm64 jobs through
+`rust_checks`. `Linux Arm64` compiles the backend and runs the portable
+Consonance and Harmony tests; `Linux Arm64 Dissonance` runs the portable
+Dissonance tests; `Linux Arm64 Qualification` runs the SHA-256 checks.
+Each suite enforces its own portable-test floor. Splitting the Dissonance suite
+keeps the full Arm test coverage within separate 15-minute pull-request jobs.
+The jobs use separate Rust build caches so each can save its own build artifacts
+on main. The macOS Arm64 job continues to run both portable suites and the
+qualification checks in one job; the signed-package check has its own cache.
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
@@ -75,17 +124,47 @@ gh workflow run consonance-analysis.yml --ref <branch> -f job=miri-whole-crate -
 ```
 
 `Checks / Consonance / UML` owns the User-mode Linux profiles for x86-64 and
-arm64. `UML Launcher` lints and tests the `uml` crate. `UML Artifacts —
+arm64. Artifact and qualification checks run on both architectures. `UML Launcher`
+lints and tests `uml` and `host-code-identity` on x86-64, then runs
+`scripts/test-loaded-code-identity.py` on Linux. That public regression builds
+ordinary `$ORIGIN` linked library A/B variants, a constructor-cleared preload,
+an anonymous executable mapping, and read-only library variants. Each must be
+refused by the strict public Session identity before it can record or replay a
+guest. The witness needs no guest profile. `UML Artifacts —
 <Architecture>` builds the profile twice from the locked Nix toolchain and
-fails unless every artifact is byte-identical; two cold builds have a
+fails unless every artifact is byte-identical and both profile manifests
+match the source-reviewed architecture-specific tuple embedded in the
+launcher. The release, language and UML campaign profile jobs check that
+same tuple before packaging or uploading. The artifact jobs also load the
+approved bundle and refuse self-consistent kernel, config and fixture edits
+through the production verifier. They bind the CLI recording to the reviewed
+kernel and run the guest panic, reserved exit-status and host-clone failure
+regressions; x86-64 also checks native FS and GS bases across restores. A
+failed profile comparison retains both generated configs and profiles for
+diagnosis. Two cold builds have a
 registered 45-minute exception. The arm64 profile builds from the pinned RFC
-port, and every check below runs on an x86-64 and an arm64 runner.
-`UML Qualification — <Target>` runs three suites of `harmony-uml-qualify` in
-sequence as the runner's ordinary UID, natively and under Docker's default
-seccomp profile with every capability dropped. A failing suite does not stop
-the others, and the job fails if any suite fails. The qualifier denies ptrace
-and KVM ioctls to itself and every guest, and fails when the host is root or
-has effective capabilities.
+port.
+
+The root Nextest configuration starts Linux test binaries through
+`scripts/linux-clean-loader-test.sh`, which removes Cargo's code-selecting
+loader variables before the test begins. The Fault Injection, NES Adapter,
+and Nested Host Qualification jobs use that runner for their Linux Cargo test
+steps. Container Execution, extended guest runtime qualification, and release
+runtime qualification instead build static-musl OCI tests and launch them
+through `scripts/linux-sealed-test-runner.py`; their public Session calls
+require a fully sealed executable host. These test runners do not change
+production identity admission or Miri execution.
+
+`UML Qualification — <Target>` runs three suites of the static-musl
+`harmony-uml-qualify` in sequence as the runner's ordinary UID. The qualifier
+copies itself into a fully sealed executable memfd before using the public
+Recording and Session APIs, both natively and under Docker's default seccomp
+profile with every capability dropped. Its checkpoint suite injects a host
+one-page unprotection failure after reaching a normal guest event and requires
+infrastructure abandonment without a checkpoint or additional guest events. A failing suite does not stop the
+others, and the job fails if any suite fails. The qualifier denies ptrace and
+KVM ioctls to itself and every guest, and fails when the host is root or has
+effective capabilities.
 
 - `launch` runs repeated boots, a hanging guest, the console limit, child
   cleanup, a refused seccomp filter and guest init exits.
@@ -108,6 +187,11 @@ interpretation without a virtual machine.
 the backend it runs, and the linter requires it to keep a bounded Checks
 workflow and a full Benchmarks workflow, and requires each workflow to actually
 run its registered backend.
+
+The `NES Adapter` job in `Checks / Harmony` lints and tests the host-side NES
+manifests, `workloads/nes-games` among them. It also checks that
+`workloads/nes-games` builds for `wasm32-unknown-unknown`, so the browser demo
+can use the same game logic as the native workload.
 
 `Checks / Consonance` and `Checks / Harmony Workloads / OCI` each start with an
 `Exact Runtime Artifacts` job. It runs the shared `exact-platform-runtime`
@@ -132,10 +216,24 @@ Every job declares a trigger class.
   `merge_group`. Artifact-build prerequisites are the exceptions, each capped
   at 45 minutes for a cold build: `UML Artifacts — <Architecture>` builds the UML kernels,
   `Exact Runtime Artifacts` builds the exact guest runtime,
-  `Language Guest Runtime` builds the guest for the language checks, and
+  `Language Guest Runtime` builds the guest for the language checks,
+  `Language UML Profile` builds the pinned UML profile for the language checks,
+  `PostgreSQL CLI Package` and `Language CLI Tools` build the paired native
+  frontend and static Consonance host once for their consumers, and
   `Language Image — <Language>` builds each language workload image. Their
-  consumers keep the 15-minute budget. `PR_ARTIFACT_BUILD_BUDGETS` registers
-  each prerequisite; it does not permit full searches on pull requests.
+  consumers keep the 15-minute budget. The separate `C Investigation` job has
+  a 35-minute exception for its bounded branch and search continuation under
+  sealed-host identity checks.
+  The selected `vmm-backend` and `snapshot-store` Miri checks have a 30-minute
+  exception for interpreted snapshot/register-inventory coverage and the Store's
+  full resident-verification suite, respectively. The Store retains its whole
+  library selector, including promotion, fresh corruption checks and retained
+  high-slot/recycled-storage fixtures; that coverage exceeded the 15-minute job
+  budget. Every other Miri matrix target keeps 15 minutes. The registry binds
+  the exact timeout expression, so the extended budget cannot silently cover
+  every variant.
+  `PR_ARTIFACT_BUILD_BUDGETS` and `PR_EXTENDED_CHECK_BUDGETS` register these
+  named exceptions; neither permits a full capability search on pull requests.
 - **`full`** jobs run on a schedule, a manual dispatch, or a path-filtered push
   to main, and declare their own ceiling.
 
@@ -163,9 +261,18 @@ budgets are registered separately and apply only to the named prerequisite.
 `Language Guest Runtime` builds the exact guest runtime when no cached copy
 exists. Each `Language Image — <Language>` job builds one language layer from
 source when its cache misses, then composes the current shared runtime onto it.
-Both have a 45-minute artifact budget. Each `Check — <Language>` job keeps the
-15-minute bound. A language layer's cache key is the hash of its own recipe
+`Language CLI Tools` builds and verifies the native frontend and static host
+once for all language and UML command consumers; the 15-minute language smokes
+and separate C investigation restore the pair. The scoped
+`PostgreSQL CLI Package` does the same before the 15-minute PostgreSQL search.
+These artifact jobs each have a 45-minute cold build budget. A language layer's
+cache key is the hash of its own recipe
 inputs. Weekly runs and `rebuild_images` dispatches rebuild every layer.
+
+Scheduled OCI, historical-bug, UML campaign, and nested-host workflows also
+build or restore both executables together. A nested historical rebuild uses
+the archived source for both binaries; an archive predating the strict host
+fails explicitly rather than replaying with a different or dynamic host.
 
 ## Change selection
 
@@ -336,6 +443,41 @@ hypervisor or a built guest image. Each one has a runner in
 x86-64 Linux, arm64 Linux and arm64 macOS. It lists every ignored test that
 builds on that host and fails on one with no runner. A test that no job or
 machine runs is deleted.
+
+## Cross-host execution qualification
+
+The separate `Native Math Qualification` workflow builds one static baseline
+x86-64 executable and runs three pinned repetitions on each of six hosts. Its
+comparator requires AMD/Intel diversity and retains exact input/result/status
+bits for every differing pair, plus matching subsets by operation and floating
+point mode. Successful evidence collection may include numerical differences;
+missing diversity, instability, or artifact mismatch fails. The bounded scope,
+compiler/library provenance, and exclusions are documented beside the
+[corpus](../scripts/qualification/native-math/README.md). This does not alter
+standard-library admission or advisory CPU replay warnings.
+
+The hardware workflow's Linux composed continuation jobs retain one static
+executable and its exact kernel/initramfs, export a completed Linux cut, and
+run fresh imports on six distinct runner instances. The required aggregate
+checks local uninterrupted/capture/fresh/reused controls, READY/DONE/terminal whole-VMM
+hashes, composed portable-snapshot histories, bounded RAM/SIMD/x87 goldens and
+two-seed sensitivity with equal positive work and exact guest termination. It
+retains independent timer/entropy observations and requires a successful Intel/AMD
+host-pair import. Documented admission refusals remain explicit evidence and
+cannot satisfy that supported migration requirement. The bounded registry,
+commands and exclusions are in
+[`scripts/qualification/README.md`](../scripts/qualification/README.md#composed-linux-continuation).
+
+The hardware workflow builds `x86_kvm_virtual_time` once as a static musl test
+executable and distributes the exact retained bytes to both X1 replicas. Each
+replica runs the registered repeatability, placement and negative-control tests
+and retains their logs, executable identity, source/contract digests and host
+identity. Results requires every hardware job to succeed, checks every required
+receipt against its retained logs, and compares X1 state/event digests across
+the two hosts. A missing replica or a contradiction fails the result.
+`scripts/qualification/consonance.json` defines the bounded claim; it excludes
+whole-VMM identity and cross-host snapshot migration. Independently rebuilt
+Linux and snapshot suites retain their narrower existing scopes.
 
 ## Audiovisual evidence
 
@@ -583,9 +725,31 @@ is separate from repository lint.
 The Guest Memory job includes the nested driver’s portable arithmetic and
 mapping checks. Its mapping composition runs in the bounded Consonance Miri
 matrix; the full matrix interprets the driver library.
+The consonance-client Miri suite retains default filesystem isolation. A separate
+exact-test invocation permits filesystem access only for the borrowed descriptor
+metadata test, which creates and resizes a temporary file and checks that the
+descriptor remains open. Both pull-request and whole-crate jobs run that test.
+The host-code-identity Miri target exercises the loader callback's unsafe
+program-header copy with a synthetic record on pull requests that change that
+crate. Its whole library runs in scheduled Consonance analysis.
 
-The release workflow publishes the CLI, a guest kernel and base initramfs,
+The release workflow publishes the CLI, a guest kernel and base initramfs with
+their source-bound runtime manifest,
 a pinned UML profile, and the source SDK for language preparation. Guest, UML
 and SDK archives carry SHA-256 sidecars. `harmony check` and `harmony prepare`
 fetch assets for the CLI version and host architecture into the user data
 cache; development builds can supply explicit runtime paths and `HARMONY_SDK_DIR`.
+
+The Twin Dragons browser lane (`Checks / Dissonance Workloads / Twin Dragons
+Browser`) owns the standalone `demos/twin-dragons/rust` adapter. It builds
+QuickNES into WebAssembly, fetches the pinned silent-effects Twin Dragons ROM
+through `workloads/nes/scripts/build-twin-dragons-rom.sh`, runs adapter
+checks, and uploads the static `twin-dragons-browser-dist` with corresponding
+sources. Its two browser jobs reuse that build: `games` runs the per-game
+search and replay suites and `interface` runs the tour and interaction suites,
+so each stays within the 15-minute pull-request limit. Both verify exact
+selected-history replays and upload `twin-dragons-browser-evidence-<suite>`
+screenshots. The bounded browser check asserts
+liveness, authentic starts in all 3 levels, exact replay and rooted
+branching, and desktop/phone interactions rather than a specific seed’s game
+progress.

@@ -156,7 +156,7 @@ because their stream starts at the checkpoint.
 | `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
 | `smb-regression-three.json` | The same case at 256 MiB on the first three seeds, the check run on every build that changes only the Metroid side. Every cell must solve. |
-| `throughput.json` | Short isolated 24-worker runs across all five games, three seeds, a two-reservation window and 512 MiB. Whole-game completion is not required in this work-limited panel. |
+| `throughput.json` | Short isolated 24-worker runs across all four games, three seeds, a two-reservation window and 512 MiB. Whole-game completion is not required in this work-limited panel. |
 
 Seeds 20260905–20260907 form the development pilot. The dedicated SMB check adds
 20260908–20260909; those seeds have now been observed in count-policy validation.
@@ -271,7 +271,7 @@ Performance runs hash and discard the full event stream while retaining compact
 reports and a best/winning input. This bounds disk growth without pretending a
 full verification stream was saved. Each witness is replayed twice on fresh
 native targets; every claimed victory must reproduce. Qualification uses
-`verification: campaign`, limited to at most 5,000 executions, and additionally
+`verification: campaign`, limited to at most 10,000 executions, and additionally
 re-executes the complete stream and compares the report and portable checkpoint.
 These modes and verification time are explicit in the matrix. No large-run
 full-campaign verification is implied by a witness-only result.

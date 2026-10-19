@@ -7,14 +7,14 @@ mod types;
 pub use codec::{decode_reply, decode_request, encode_reply, encode_request};
 pub use error::{ControlError, ProtocolError};
 pub use types::{
-    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, EventRef,
-    HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, Resolution, SnapId,
-    StopConditions, StopMask, StopReason, class_bit,
+    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, EventHistory,
+    EventRef, HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, Resolution,
+    SnapId, StopConditions, StopMask, StopReason, class_bit,
 };
 
 pub const PROTO_VERSION: u16 = 1;
 
-pub const APP_PROTOCOL_VERSION: u16 = 12;
+pub const APP_PROTOCOL_VERSION: u16 = 14;
 
 pub const READ_CAP: u32 = 1 << 18;
 
@@ -28,7 +28,8 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216);
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 12);
+        assert_eq!(APP_PROTOCOL_VERSION, 14);
+        assert_eq!(EventHistory::VERSION, 2);
         assert_eq!(READ_CAP, 262_144);
     }
 }

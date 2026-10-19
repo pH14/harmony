@@ -4,8 +4,8 @@ use crate::{
     search::{
         archive::{ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{
-            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, Workload,
-            replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
+            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, CampaignWatch, Workload,
+            replay_campaign_checkpointed, run_campaign_watched,
         },
         checkpoint::CheckpointPlan,
         draw::draw_mixture_from_identifier,
@@ -53,6 +53,7 @@ pub struct Request {
     pub memory_mib: usize,
     pub window: usize,
     pub wall_seconds: u64,
+    #[serde(default)]
     pub mixture: String,
     pub verification: String,
     #[serde(default)]
@@ -69,6 +70,10 @@ pub struct Request {
     pub checkpoint_on_progress: bool,
     #[serde(default)]
     pub resume: Option<PathBuf>,
+    #[serde(default)]
+    pub live: Option<String>,
+    #[serde(default)]
+    pub live_site: Option<PathBuf>,
 }
 
 struct StreamDigest {
@@ -114,8 +119,28 @@ pub fn evaluate<G: Workload>(
     game: G,
     run: G::Run,
     request: &Request,
+    execution_sha256: &str,
     out: &Path,
     started: Instant,
+) -> Result<()>
+where
+    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+    G::Snapshot: crate::witness::EndpointIdentity,
+{
+    if request.live.is_some() {
+        return Err("this game has no live view".into());
+    }
+    evaluate_watched(game, run, request, execution_sha256, out, started, &())
+}
+
+pub fn evaluate_watched<G: Workload, W: CampaignWatch<G>>(
+    game: G,
+    run: G::Run,
+    request: &Request,
+    execution_sha256: &str,
+    out: &Path,
+    started: Instant,
+    watch: &W,
 ) -> Result<()>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
@@ -125,8 +150,8 @@ where
     if request.verification != "witness" && !full {
         return Err("verification must be campaign or witness".into());
     }
-    if full && request.executions > 5000 {
-        return Err("full campaign verification is bounded to 5000 executions; use witness verification for performance runs".into());
+    if full && request.executions > 10000 {
+        return Err("full campaign verification is bounded to 10000 executions; use witness verification for performance runs".into());
     }
     if full && request.resume.is_some() {
         return Err("a run resumed from a search checkpoint has no stream to replay; use witness verification".into());
@@ -177,7 +202,7 @@ where
     }
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v4", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
+        &json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -192,7 +217,7 @@ where
     let preparation_seconds = started.elapsed().as_secs_f64();
     phase(out, "search", started)?;
     let search_started = telemetry_now();
-    let (report, checkpoint) = run_campaign_checkpointed_with_options(
+    let (report, checkpoint) = run_campaign_watched(
         &game,
         &config,
         &origin,
@@ -203,6 +228,7 @@ where
             checkpoints,
             placement: None,
         },
+        watch,
     )?;
     stream.flush()?;
     progress.flush()?;

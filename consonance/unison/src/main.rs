@@ -73,8 +73,9 @@ fn factories(
     (toy, flaky)
 }
 
-fn exit_for_verdict(v: &Verdict) -> ExitCode {
-    match v {
+fn exit_for_report(report: &CompareReport) -> ExitCode {
+    match &report.verdict {
+        Verdict::MatchingCheckpoints if report.checkpoints_compared == 0 => ExitCode::from(3),
         Verdict::MatchingCheckpoints => ExitCode::SUCCESS,
         Verdict::Diverged { .. }
         | Verdict::UnreplayableDivergence { .. }
@@ -101,7 +102,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let (toy, flaky) = factories(program_seed, min_work, diverge_at);
             let report = compare_runs(&toy, &flaky, seed, checkpoint_every, limit)?;
             print_json(&report)?;
-            Ok(exit_for_verdict(&report.verdict))
+            Ok(exit_for_report(&report))
         }
         Cmd::ToyBisect {
             seed,
@@ -114,7 +115,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let checkpoint_every = (limit / 16).max(1);
             let compare = compare_runs(&toy, &flaky, seed, checkpoint_every, limit)?;
             let point = first_divergence_from_report(&toy, &flaky, seed, &compare)?;
-            let code = exit_for_verdict(&compare.verdict);
+            let code = exit_for_report(&compare);
             print_json(&BisectOutput { compare, point })?;
             Ok(code)
         }

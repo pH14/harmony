@@ -7,26 +7,50 @@ use std::{
     marker::PhantomData,
 };
 
+#[cfg(all(not(miri), target_os = "linux"))]
+use std::os::fd::FromRawFd;
+#[cfg(all(not(miri), target_os = "linux"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(miri))]
 use std::{
     ffi::CString,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{self, Read, Write},
-    os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
-    path::{Path, PathBuf},
+    os::fd::AsRawFd,
+    path::Path,
+};
+#[cfg(all(not(miri), target_os = "macos"))]
+use std::{
+    fs::OpenOptions,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use crate::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
-    nes::{ButtonChord, WRAM_SIZE, actions_of},
+    nes::{ButtonChord, STATE_MAGIC, WRAM_SIZE, actions_of},
 };
 #[cfg(not(miri))]
 use sha2::{Digest, Sha256};
 
 pub use crate::SharedState;
+pub use crate::nes::STATE_HEADER_LEN;
+
+#[cfg(all(not(miri), target_os = "linux", not(target_env = "gnu")))]
+#[path = "quicknes/identity_musl.rs"]
+mod identity;
+#[cfg(all(not(miri), any(not(target_os = "linux"), target_env = "gnu")))]
+mod identity;
+#[cfg(not(miri))]
+mod loader_guard;
 
 pub const QUICKNES_REVISION: &str = "26bb785c9deddb66a17717b21bb4e328f03ade32";
+
+#[must_use]
+pub fn core_identity() -> String {
+    format!("quicknes-libretro:{QUICKNES_REVISION};{QUICKNES_BUILD};{QUICKNES_OPTIONS}")
+}
 
 const QUICKNES_LIBRARY_VERSION: &str = "1.0-WIP26bb785c9deddb66a17717b21bb4e328f03ade32";
 
@@ -83,8 +107,6 @@ define_quicknes_options!(
 pub const QUICKNES_BUILD: &str =
     "DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32";
 
-const STATE_MAGIC: &[u8; 8] = b"HQNESST2";
-const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 8;
 const QUICKNES_FILE_MAGIC: &[u8; 8] = b"NESS\xff\xff\xff\xff";
 const QUICKNES_BLOCK_HEADER_LEN: usize = 8;
 const QUICKNES_PPU_STATE_LEN: usize = 52;
@@ -123,6 +145,9 @@ pub const QUICKNES_AUDIO_CHANNELS: u8 = 2;
 const MAX_AUDIO_FRAMES_PER_BATCH: usize = 1_048_576;
 const MAX_BUFFERED_VIDEO_FRAMES: usize = 4_096;
 const MAX_BUFFERED_AUDIO_SAMPLES: usize = 16_777_216;
+
+#[cfg(all(not(miri), target_os = "linux"))]
+static RETAINED_PRIVATE_CORE: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static INPUT_BITS: Cell<u16> = const { Cell::new(0) };
@@ -203,50 +228,193 @@ impl CoreApi {
     }
 }
 
+fn guarded_native<T>(
+    api: CoreApi,
+    operation: impl FnOnce() -> Result<T, MachineError>,
+) -> Result<T, MachineError> {
+    #[cfg(any(test, feature = "test-loopback"))]
+    if api.loopback_id.is_some() {
+        return operation();
+    }
+    #[cfg(not(miri))]
+    {
+        let _ = api;
+        loader_guard::call(operation)
+    }
+    #[cfg(miri)]
+    {
+        let _ = api;
+        operation()
+    }
+}
+
+fn guarded_native_checked<T>(
+    api: CoreApi,
+    operation: impl FnOnce(&dyn Fn() -> Result<(), MachineError>) -> Result<T, MachineError>,
+) -> Result<T, MachineError> {
+    #[cfg(any(test, feature = "test-loopback"))]
+    if api.loopback_id.is_some() {
+        return operation(&|| Ok(()));
+    }
+    #[cfg(not(miri))]
+    {
+        let _ = api;
+        loader_guard::call_checked(operation)
+    }
+    #[cfg(miri)]
+    {
+        let _ = api;
+        operation(&|| Ok(()))
+    }
+}
+
+fn guarded_native_cleanup<T>(
+    api: CoreApi,
+    operation: impl FnOnce() -> Result<T, MachineError>,
+) -> Result<T, MachineError> {
+    #[cfg(any(test, feature = "test-loopback"))]
+    if api.loopback_id.is_some() {
+        return operation();
+    }
+    #[cfg(not(miri))]
+    {
+        let _ = api;
+        loader_guard::cleanup(operation)
+    }
+    #[cfg(miri)]
+    {
+        let _ = api;
+        operation()
+    }
+}
+
 #[cfg(not(miri))]
 struct Library {
     handle: usize,
+    base: usize,
+    _private: PrivateCore,
 }
 
 #[cfg(not(miri))]
 impl Library {
     fn open_private(source: &Path, expected_sha256: &str) -> Result<Self, MachineError> {
-        let (temporary, sha256) = private_copy(source)?;
-        if sha256 != expected_sha256 {
-            let _ = std::fs::remove_file(&temporary);
+        #[cfg(target_os = "linux")]
+        if RETAINED_PRIVATE_CORE.load(Ordering::SeqCst) {
+            return Err(MachineError::Backend(
+                "a private QuickNES core remained loaded after dlclose".to_owned(),
+            ));
+        }
+        let mut private = private_copy(source)?;
+        if private.sha256 != expected_sha256 {
             return Err(MachineError::Backend(
                 "QuickNES core SHA-256 does not match the supplied identity".to_owned(),
             ));
         }
-        let path = match CString::new(temporary.as_os_str().as_bytes()) {
-            Ok(path) => path,
-            Err(_) => {
-                let _ = std::fs::remove_file(&temporary);
-                return Err(MachineError::Backend(
-                    "QuickNES core path contains NUL".to_owned(),
-                ));
+        loader_guard::open(move || {
+            let path = private.loader_path();
+            let mut bases = identity::core_bases()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            #[cfg(target_os = "linux")]
+            {
+                if RETAINED_PRIVATE_CORE.load(Ordering::SeqCst) {
+                    return Err(MachineError::Backend(
+                        "a private QuickNES core remained loaded after dlclose".to_owned(),
+                    ));
+                }
+                // SAFETY: RTLD_NOLOAD only queries the loader cache for this live
+                // descriptor path; a returned reference is released below.
+                let cached = unsafe {
+                    libc::dlopen(
+                        path.as_ptr(),
+                        libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_NOLOAD,
+                    )
+                };
+                if !cached.is_null() {
+                    // SAFETY: RTLD_NOLOAD returned an additional live reference.
+                    unsafe { libc::dlclose(cached) };
+                    RETAINED_PRIVATE_CORE.store(true, Ordering::SeqCst);
+                    return Err(MachineError::Backend(
+                        "a private QuickNES core is cached under a reused descriptor path"
+                            .to_owned(),
+                    ));
+                }
             }
-        };
-        // SAFETY: `path` is a live NUL-terminated pathname. RTLD_LOCAL keeps
-        // this private image's exported globals out of the process namespace.
-        let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-        let open_error = (handle.is_null()).then(dl_error);
-        let unlink_result = std::fs::remove_file(&temporary);
-        if let Some(error) = open_error {
-            return Err(MachineError::Backend(format!(
-                "could not load private QuickNES core: {error}"
-            )));
-        }
-        if let Err(error) = unlink_result {
-            // SAFETY: `handle` is non-null and came from the successful dlopen above.
-            unsafe { libc::dlclose(handle) };
-            return Err(MachineError::Backend(format!(
-                "could not unlink private QuickNES core image: {error}"
-            )));
-        }
-        Ok(Self {
-            handle: handle as usize,
+            // SAFETY: `path` names the still-open descriptor of the hashed private
+            // image. RTLD_LOCAL keeps its exports out of the process namespace.
+            let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+            if handle.is_null() {
+                let error = dl_error();
+                return Err(MachineError::Backend(format!(
+                    "could not load private QuickNES core: {error}"
+                )));
+            }
+            // SAFETY: the non-null handle remains live; the symbol name is a
+            // static NUL-terminated string used to identify the loaded image.
+            let marker = unsafe { libc::dlsym(handle, c"retro_get_system_info".as_ptr()) };
+            let base = if marker.is_null() {
+                Err(MachineError::Backend(format!(
+                    "QuickNES core is missing retro_get_system_info: {}",
+                    dl_error()
+                )))
+            } else {
+                identity::validate_core_owner(
+                    marker,
+                    &path,
+                    #[cfg(target_os = "macos")]
+                    private
+                        .path
+                        .as_ref()
+                        .expect("macOS private image has a name"),
+                )
+            };
+            let base = match base {
+                Ok(base) => base,
+                Err(error) => {
+                    close_private_handle(handle, &path)?;
+                    return Err(error);
+                }
+            };
+            bases.insert(base);
+            if let Err(error) = private.unlink() {
+                bases.remove(&base);
+                close_private_handle(handle, &path)?;
+                return Err(MachineError::Backend(format!(
+                    "could not unlink private QuickNES core image: {error}"
+                )));
+            }
+            Ok(Self {
+                handle: handle as usize,
+                base,
+                _private: private,
+            })
         })
+    }
+
+    fn execution_sha256(&self, core_sha256: &str, api: CoreApi) -> Result<String, MachineError> {
+        let bindings = [
+            ("retro_set_environment", api.set_environment as usize),
+            ("retro_set_video_refresh", api.set_video_refresh as usize),
+            ("retro_set_audio_sample", api.set_audio_sample as usize),
+            (
+                "retro_set_audio_sample_batch",
+                api.set_audio_sample_batch as usize,
+            ),
+            ("retro_set_input_poll", api.set_input_poll as usize),
+            ("retro_set_input_state", api.set_input_state as usize),
+            ("retro_init", api.init as usize),
+            ("retro_deinit", api.deinit as usize),
+            ("retro_get_system_info", api.get_system_info as usize),
+            ("retro_load_game", api.load_game as usize),
+            ("retro_unload_game", api.unload_game as usize),
+            ("retro_run", api.run as usize),
+            ("retro_serialize_size", api.serialize_size as usize),
+            ("retro_serialize", api.serialize as usize),
+            ("retro_unserialize", api.unserialize as usize),
+            ("retro_get_memory_data", api.get_memory_data as usize),
+            ("retro_get_memory_size", api.get_memory_size as usize),
+        ];
+        identity::fingerprint(core_sha256, self.base, &bindings)
     }
 
     fn symbol(&self, name: &'static [u8]) -> Result<*mut c_void, MachineError> {
@@ -264,14 +432,67 @@ impl Library {
             Ok(symbol)
         }
     }
+
+    fn close_handle(&mut self) -> Result<(), MachineError> {
+        if self.handle == 0 {
+            return Ok(());
+        }
+        loader_guard::close(|| {
+            let mut bases = identity::core_bases()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let handle = std::mem::replace(&mut self.handle, 0);
+            let path = self._private.loader_path();
+            let result = close_private_handle(handle as *mut c_void, &path);
+            bases.remove(&self.base);
+            result
+        })
+    }
 }
 
 #[cfg(not(miri))]
 impl Drop for Library {
     fn drop(&mut self) {
-        // SAFETY: this handle was returned by dlopen and is closed exactly once.
-        unsafe { libc::dlclose(self.handle as *mut c_void) };
+        let _ = self.close_handle();
     }
+}
+
+#[cfg(not(miri))]
+fn close_private_handle(handle: *mut c_void, path: &CStr) -> Result<(), MachineError> {
+    // SAFETY: `handle` is a non-null result of dlopen and is closed exactly
+    // once; the private descriptor behind `path` remains open throughout.
+    let closed = unsafe { libc::dlclose(handle) };
+    let close_error = if closed == 0 { None } else { Some(dl_error()) };
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: RTLD_NOLOAD only checks whether the loader retained the
+        // just-closed image under the still-live descriptor path.
+        let retained = unsafe {
+            libc::dlopen(
+                path.as_ptr(),
+                libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_NOLOAD,
+            )
+        };
+        if !retained.is_null() {
+            // SAFETY: RTLD_NOLOAD returned one additional reference to the
+            // retained image, which is released exactly once here.
+            unsafe { libc::dlclose(retained) };
+            RETAINED_PRIVATE_CORE.store(true, Ordering::SeqCst);
+            return Err(MachineError::Backend(
+                "a private QuickNES core remained loaded after dlclose".to_owned(),
+            ));
+        }
+        if close_error.is_some() {
+            RETAINED_PRIVATE_CORE.store(true, Ordering::SeqCst);
+        }
+    }
+    let _ = path;
+    if let Some(error) = close_error {
+        return Err(MachineError::Backend(format!(
+            "could not close private QuickNES core: {error}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(not(miri))]
@@ -290,7 +511,97 @@ fn dl_error() -> String {
 }
 
 #[cfg(not(miri))]
-fn private_copy(source: &Path) -> Result<(PathBuf, String), MachineError> {
+struct PrivateCore {
+    file: File,
+    sha256: String,
+    #[cfg(target_os = "macos")]
+    path: Option<PathBuf>,
+}
+
+#[cfg(not(miri))]
+impl PrivateCore {
+    fn loader_path(&self) -> CString {
+        #[cfg(target_os = "linux")]
+        let path = format!("/proc/self/fd/{}", self.file.as_raw_fd());
+        #[cfg(target_os = "macos")]
+        let path = format!("/dev/fd/{}", self.file.as_raw_fd());
+        CString::new(path).expect("descriptor path contains no NUL")
+    }
+
+    fn unlink(&mut self) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        if let Some(path) = self.path.take() {
+            return std::fs::remove_file(path);
+        }
+        #[cfg(target_os = "linux")]
+        {}
+        Ok(())
+    }
+}
+
+#[cfg(all(not(miri), target_os = "macos"))]
+impl Drop for PrivateCore {
+    fn drop(&mut self) {
+        let _ = self.unlink();
+    }
+}
+
+#[cfg(not(miri))]
+fn copy_and_hash(source: &Path, destination: &mut File) -> Result<String, MachineError> {
+    let mut source_file = File::open(source)
+        .map_err(|error| MachineError::Backend(format!("could not open QuickNES core: {error}")))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let length = source_file.read(&mut buffer).map_err(|error| {
+            MachineError::Backend(format!("could not copy QuickNES core: {error}"))
+        })?;
+        if length == 0 {
+            break;
+        }
+        destination.write_all(&buffer[..length]).map_err(|error| {
+            MachineError::Backend(format!("could not copy QuickNES core: {error}"))
+        })?;
+        hasher.update(&buffer[..length]);
+    }
+    destination
+        .flush()
+        .map_err(|error| MachineError::Backend(format!("could not copy QuickNES core: {error}")))?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(all(not(miri), target_os = "linux"))]
+fn private_copy(source: &Path) -> Result<PrivateCore, MachineError> {
+    // SAFETY: memfd_create returns a new descriptor owned by this process.
+    let fd = unsafe {
+        libc::memfd_create(
+            c"harmony-quicknes".as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    };
+    if fd < 0 {
+        return Err(MachineError::Backend(format!(
+            "could not create private QuickNES core image: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: the descriptor is fresh and ownership transfers to File.
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    let sha256 = copy_and_hash(source, &mut file)?;
+    let seals = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+    // SAFETY: the descriptor remains owned by `file`, and the seal flags are
+    // valid for a memfd created with MFD_ALLOW_SEALING.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) } < 0 {
+        return Err(MachineError::Backend(format!(
+            "could not seal private QuickNES core image: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    Ok(PrivateCore { file, sha256 })
+}
+
+#[cfg(all(not(miri), target_os = "macos"))]
+fn private_copy(source: &Path) -> Result<PrivateCore, MachineError> {
     static NEXT_COPY: AtomicU64 = AtomicU64::new(0);
     let extension = source
         .extension()
@@ -304,41 +615,31 @@ fn private_copy(source: &Path) -> Result<(PathBuf, String), MachineError> {
             std::process::id()
         ));
         match OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&path)
         {
-            Ok(mut destination) => {
-                let mut source_file = match File::open(source) {
-                    Ok(file) => file,
+            Ok(mut file) => {
+                let sha256 = match copy_and_hash(source, &mut file) {
+                    Ok(sha256) => sha256,
                     Err(error) => {
                         let _ = std::fs::remove_file(&path);
-                        return Err(MachineError::Backend(format!(
-                            "could not open QuickNES core: {error}"
-                        )));
+                        return Err(error);
                     }
                 };
-                let mut hasher = Sha256::new();
-                let mut buffer = [0_u8; 64 * 1024];
-                let copied = (|| -> io::Result<()> {
-                    loop {
-                        let length = source_file.read(&mut buffer)?;
-                        if length == 0 {
-                            break;
-                        }
-                        destination.write_all(&buffer[..length])?;
-                        hasher.update(&buffer[..length]);
-                    }
-                    destination.flush()
-                })();
-                if let Err(error) = copied {
+                if let Err(error) = file.set_permissions(std::fs::Permissions::from_mode(0o400)) {
                     let _ = std::fs::remove_file(&path);
                     return Err(MachineError::Backend(format!(
-                        "could not copy QuickNES core: {error}"
+                        "could not protect private QuickNES core image: {error}"
                     )));
                 }
-                return Ok((path, format!("{:x}", hasher.finalize())));
+                return Ok(PrivateCore {
+                    file,
+                    sha256,
+                    path: Some(path),
+                });
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 last_error = Some(error);
@@ -431,24 +732,46 @@ fn validate_core_revision(api: CoreApi) -> Result<(), MachineError> {
         need_fullpath: false,
         block_extract: false,
     };
-    // SAFETY: `info` is writable for the synchronous libretro query, and the
-    // pinned ABI initializes the full structure.
-    unsafe { (api.get_system_info)(&raw mut info) };
-    if info.library_version.is_null() {
-        return Err(MachineError::Backend(
-            "QuickNES core supplied no library version".to_owned(),
-        ));
-    }
-    // SAFETY: libretro requires library_version to name a NUL-terminated
-    // string that remains live until the core is unloaded.
-    let actual = unsafe { CStr::from_ptr(info.library_version) };
-    if actual.to_bytes() != QUICKNES_LIBRARY_VERSION.as_bytes() {
-        return Err(MachineError::Backend(format!(
-            "QuickNES core revision mismatch: expected {QUICKNES_LIBRARY_VERSION}, found {}",
-            actual.to_string_lossy()
-        )));
-    }
-    Ok(())
+    guarded_native_checked(api, |check| {
+        // SAFETY: `info` is writable for the synchronous libretro query, and
+        // the pinned ABI initializes the full structure.
+        unsafe { (api.get_system_info)(&raw mut info) };
+        check()?;
+        if info.library_version.is_null() {
+            return Err(MachineError::Backend(
+                "QuickNES core supplied no library version".to_owned(),
+            ));
+        }
+        // SAFETY: after the loader-generation check, the pinned libretro core
+        // keeps the NUL-terminated library version live until its own unload.
+        let actual = unsafe { CStr::from_ptr(info.library_version) };
+        if actual.to_bytes() != QUICKNES_LIBRARY_VERSION.as_bytes() {
+            return Err(MachineError::Backend(format!(
+                "QuickNES core revision mismatch: expected {QUICKNES_LIBRARY_VERSION}, found {}",
+                actual.to_string_lossy()
+            )));
+        }
+        Ok(())
+    })
+}
+
+#[cfg(not(miri))]
+pub fn prepared_execution_sha256(
+    core_path: &Path,
+    core_sha256: &str,
+) -> Result<String, MachineError> {
+    validate_sha256(core_sha256)?;
+    let mut library = Library::open_private(core_path, core_sha256)?;
+    let result = loader_guard::call(|| {
+        let api = load_api(&library)?;
+        Ok((api, library.execution_sha256(core_sha256, api)?))
+    });
+    let result = result.and_then(|(api, execution_sha256)| {
+        validate_core_revision(api)?;
+        Ok(execution_sha256)
+    });
+    library.close_handle()?;
+    result
 }
 
 pub struct QuickNesMachine {
@@ -456,6 +779,7 @@ pub struct QuickNesMachine {
     #[cfg(not(miri))]
     _library: Option<Library>,
     core_sha256: [u8; 64],
+    execution_sha256: [u8; 64],
     state_len: usize,
     snapshots: BTreeMap<u64, Vec<u8>>,
     next_snap: u64,
@@ -490,10 +814,40 @@ impl QuickNesMachine {
         core_path: &Path,
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
+        Self::from_rom_bytes_inner(rom, core_path, core_sha256, None)
+    }
+
+    #[cfg(not(miri))]
+    pub fn from_rom_bytes_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        expected_execution_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        validate_sha256(expected_execution_sha256)?;
+        Self::from_rom_bytes_inner(rom, core_path, core_sha256, Some(expected_execution_sha256))
+    }
+
+    #[cfg(not(miri))]
+    fn from_rom_bytes_inner(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        expected_execution_sha256: Option<&str>,
+    ) -> Result<Self, MachineError> {
         let identity = validate_sha256(core_sha256)?;
         let library = Library::open_private(core_path, core_sha256)?;
-        let api = load_api(&library)?;
+        let (api, execution_sha256) = loader_guard::call(|| {
+            let api = load_api(&library)?;
+            Ok((api, library.execution_sha256(core_sha256, api)?))
+        })?;
+        if expected_execution_sha256.is_some_and(|expected| expected != execution_sha256) {
+            return Err(MachineError::Backend(
+                "QuickNES loaded-image identity changed before worker initialization".to_owned(),
+            ));
+        }
         let mut machine = Self::from_api(rom, identity, api)?;
+        machine.execution_sha256 = validate_sha256(&execution_sha256)?;
         machine._library = Some(library);
         Ok(machine)
     }
@@ -502,65 +856,93 @@ impl QuickNesMachine {
         api.activate();
         reset_capture_state();
         validate_core_revision(api)?;
-        // SAFETY: each callback has the exact libretro ABI and remains valid
-        // for the process lifetime. The API belongs to this private image.
-        unsafe {
-            (api.set_environment)(environment_callback);
-            (api.set_video_refresh)(video_callback);
-            (api.set_audio_sample)(audio_callback);
-            (api.set_audio_sample_batch)(audio_batch_callback);
-            (api.set_input_poll)(input_poll_callback);
-            (api.set_input_state)(input_state_callback);
-            (api.init)();
-        }
-        let info = RetroGameInfo {
-            path: std::ptr::null(),
-            data: rom.as_ptr().cast::<c_void>(),
-            size: rom.len(),
-            meta: std::ptr::null(),
-        };
-        // SAFETY: `info` and its ROM bytes remain valid for the synchronous
-        // load call; libretro requires the core to consume/copy them there.
-        if !unsafe { (api.load_game)(&raw const info) } {
-            // SAFETY: retro_init completed, but no game was accepted.
-            unsafe { (api.deinit)() };
-            return Err(MachineError::Backend(
-                "pinned QuickNES core rejected the ROM".to_owned(),
-            ));
-        }
-        // SAFETY: a game is loaded and these queries are side-effect-free
-        // parts of the libretro ABI.
-        let (state_len, memory_len, memory) = unsafe {
-            (
-                (api.serialize_size)(),
-                (api.get_memory_size)(RETRO_MEMORY_SYSTEM_RAM),
-                (api.get_memory_data)(RETRO_MEMORY_SYSTEM_RAM),
-            )
-        };
-        if state_len == 0 || memory_len != WRAM_SIZE || memory.is_null() {
-            // SAFETY: the game was loaded successfully and is torn down once.
+        let initialized = Cell::new(false);
+        let loaded = Cell::new(false);
+        let state = guarded_native_checked(api, |check| {
+            // SAFETY: each callback has the exact libretro ABI and remains valid
+            // for the process lifetime. The API belongs to this private image.
             unsafe {
-                (api.unload_game)();
-                (api.deinit)();
+                (api.set_environment)(environment_callback);
+                (api.set_video_refresh)(video_callback);
+                (api.set_audio_sample)(audio_callback);
+                (api.set_audio_sample_batch)(audio_batch_callback);
+                (api.set_input_poll)(input_poll_callback);
+                (api.set_input_state)(input_state_callback);
+                (api.init)();
             }
-            return Err(MachineError::Backend(format!(
-                "QuickNES ABI mismatch: state={state_len} bytes, system RAM={memory_len} bytes"
-            )));
-        }
-        // SAFETY: the region is the one the core just reported for this
-        // loaded game; the length is validated before the write.
-        unsafe {
-            let cartridge = (api.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>();
-            let cartridge_len = (api.get_memory_size)(RETRO_MEMORY_SAVE_RAM);
+            initialized.set(true);
+            check()?;
+            let info = RetroGameInfo {
+                path: std::ptr::null(),
+                data: rom.as_ptr().cast::<c_void>(),
+                size: rom.len(),
+                meta: std::ptr::null(),
+            };
+            // SAFETY: `info` and its ROM bytes remain valid for the synchronous
+            // load call; libretro requires the core to consume/copy them there.
+            let accepted = unsafe { (api.load_game)(&raw const info) };
+            loaded.set(accepted);
+            check()?;
+            if !accepted {
+                return Err(MachineError::Backend(
+                    "pinned QuickNES core rejected the ROM".to_owned(),
+                ));
+            }
+            // SAFETY: a game is loaded and these queries are side-effect-free
+            // parts of the libretro ABI.
+            let state_len = unsafe { (api.serialize_size)() };
+            check()?;
+            // SAFETY: a loaded game owns its synchronous system-RAM size query.
+            let memory_len = unsafe { (api.get_memory_size)(RETRO_MEMORY_SYSTEM_RAM) };
+            check()?;
+            // SAFETY: a loaded game owns its synchronous system-RAM pointer query.
+            let memory = unsafe { (api.get_memory_data)(RETRO_MEMORY_SYSTEM_RAM) };
+            check()?;
+            if state_len == 0 || memory_len != WRAM_SIZE || memory.is_null() {
+                return Err(MachineError::Backend(format!(
+                    "QuickNES ABI mismatch: state={state_len} bytes, system RAM={memory_len} bytes"
+                )));
+            }
+            // SAFETY: this queries the loaded core's save RAM pointer.
+            let cartridge = unsafe { (api.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>() };
+            check()?;
+            // SAFETY: this queries the size of the same loaded core's save RAM.
+            let cartridge_len = unsafe { (api.get_memory_size)(RETRO_MEMORY_SAVE_RAM) };
+            check()?;
             if !cartridge.is_null() && (1..=MAX_SAVE_RAM_SIZE).contains(&cartridge_len) {
-                std::ptr::write_bytes(cartridge, 0xff, cartridge_len);
+                // SAFETY: the loader epoch was checked after both queries;
+                // the bounded region belongs to this exclusively owned core.
+                unsafe {
+                    std::ptr::write_bytes(cartridge, 0xff, cartridge_len);
+                }
             }
-        }
+            Ok(state_len)
+        });
+        let state_len = match state {
+            Ok(state_len) => state_len,
+            Err(error) => {
+                if initialized.get() {
+                    let _ = guarded_native_cleanup(api, || {
+                        // SAFETY: only completed libretro initialization and
+                        // successful game loading are torn down, once each.
+                        unsafe {
+                            if loaded.get() {
+                                (api.unload_game)();
+                            }
+                            (api.deinit)();
+                        }
+                        Ok(())
+                    });
+                }
+                return Err(error);
+            }
+        };
         Ok(Self {
             api,
             #[cfg(not(miri))]
             _library: None,
             core_sha256,
+            execution_sha256: core_sha256,
             state_len,
             snapshots: BTreeMap::new(),
             next_snap: 0,
@@ -600,20 +982,24 @@ impl QuickNesMachine {
 
     pub fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
         self.api.activate();
-        let mut wram = [0_u8; WRAM_SIZE];
-        // SAFETY: construction validated a non-null system-RAM block of
-        // exactly WRAM_SIZE. The private core has one owner, the destination
-        // is a distinct live array, and the copy completes synchronously.
-        unsafe {
-            let memory = (self.api.get_memory_data)(RETRO_MEMORY_SYSTEM_RAM).cast::<u8>();
+        guarded_native_checked(self.api, |check| {
+            let mut wram = [0_u8; WRAM_SIZE];
+            // SAFETY: this is the owned loaded core's synchronous libretro RAM query.
+            let memory =
+                unsafe { (self.api.get_memory_data)(RETRO_MEMORY_SYSTEM_RAM).cast::<u8>() };
+            check()?;
             if memory.is_null() {
                 return Err(MachineError::Backend(
                     "QuickNES system RAM disappeared".to_owned(),
                 ));
             }
-            std::ptr::copy_nonoverlapping(memory, wram.as_mut_ptr(), WRAM_SIZE);
-        }
-        Ok(wram)
+            // SAFETY: construction validated a WRAM_SIZE region, the image
+            // still has the approved loader epoch, and the copy is synchronous.
+            unsafe {
+                std::ptr::copy_nonoverlapping(memory, wram.as_mut_ptr(), WRAM_SIZE);
+            }
+            Ok(wram)
+        })
     }
 
     pub fn read_save_ram(&self) -> Result<Vec<u8>, MachineError> {
@@ -622,50 +1008,54 @@ impl QuickNesMachine {
 
     fn with_save_ram<T>(&self, read: impl FnOnce(&[u8]) -> T) -> Result<T, MachineError> {
         self.api.activate();
-        // SAFETY: both calls are synchronous libretro memory queries on this
-        // machine's exclusively owned core image. The pointer is checked and
-        // copied before another core call can invalidate it.
-        let (memory, length) = unsafe {
-            (
-                (self.api.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>(),
-                (self.api.get_memory_size)(RETRO_MEMORY_SAVE_RAM),
-            )
-        };
-        if memory.is_null() || length == 0 || length > MAX_SAVE_RAM_SIZE {
-            return Err(MachineError::Backend(format!(
-                "QuickNES supplied invalid save RAM length {length}"
-            )));
-        }
-        // SAFETY: the checked non-null region is readable for the bounded
-        // length reported by the same core. `read` gets only a shared slice
-        // and no core call runs before it returns, so the region stays valid.
-        Ok(read(unsafe { std::slice::from_raw_parts(memory, length) }))
+        guarded_native_checked(self.api, |check| {
+            // SAFETY: both calls are synchronous libretro memory queries on this
+            // machine's exclusively owned core image. The pointer is checked and
+            // copied before another core call can invalidate it.
+            let memory = unsafe { (self.api.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>() };
+            check()?;
+            // SAFETY: this queries the loaded core's save RAM length.
+            let length = unsafe { (self.api.get_memory_size)(RETRO_MEMORY_SAVE_RAM) };
+            check()?;
+            if memory.is_null() || length == 0 || length > MAX_SAVE_RAM_SIZE {
+                return Err(MachineError::Backend(format!(
+                    "QuickNES supplied invalid save RAM length {length}"
+                )));
+            }
+            // SAFETY: the checked non-null region is readable for the bounded
+            // length reported by the same core. `read` gets only a shared slice
+            // and no core call runs before it returns, so the region stays valid.
+            Ok(read(unsafe { std::slice::from_raw_parts(memory, length) }))
+        })
     }
 
     pub fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError> {
         self.api.activate();
-        // SAFETY: both calls are synchronous libretro memory queries on this
-        // machine's exclusively owned core image. The reported range is fully
-        // validated before the source bytes are copied into it.
-        let (memory, length) = unsafe {
-            (
-                (self.api.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>(),
-                (self.api.get_memory_size)(RETRO_MEMORY_SAVE_RAM),
-            )
-        };
-        let end = offset.checked_add(bytes.len()).ok_or_else(|| {
-            MachineError::Backend("QuickNES save RAM write range overflowed".to_owned())
-        })?;
-        if memory.is_null() || length == 0 || length > MAX_SAVE_RAM_SIZE || end > length {
-            return Err(MachineError::Backend(format!(
-                "QuickNES rejected save RAM write {offset}..{end} for length {length}"
-            )));
-        }
-        // SAFETY: `memory` is non-null and `offset..end` is within the bounded
-        // region reported by the core. `bytes` is a distinct immutable Rust
-        // slice and the copy completes before another core call.
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), memory.add(offset), bytes.len()) };
-        Ok(())
+        guarded_native_checked(self.api, |check| {
+            // SAFETY: both calls are synchronous libretro memory queries on this
+            // machine's exclusively owned core image. The reported range is fully
+            // validated before the source bytes are copied into it.
+            let memory = unsafe { (self.api.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>() };
+            check()?;
+            // SAFETY: this queries the loaded core's save RAM length.
+            let length = unsafe { (self.api.get_memory_size)(RETRO_MEMORY_SAVE_RAM) };
+            check()?;
+            let end = offset.checked_add(bytes.len()).ok_or_else(|| {
+                MachineError::Backend("QuickNES save RAM write range overflowed".to_owned())
+            })?;
+            if memory.is_null() || length == 0 || length > MAX_SAVE_RAM_SIZE || end > length {
+                return Err(MachineError::Backend(format!(
+                    "QuickNES rejected save RAM write {offset}..{end} for length {length}"
+                )));
+            }
+            // SAFETY: `memory` is non-null and `offset..end` is within the bounded
+            // region reported by the core. `bytes` is a distinct immutable Rust
+            // slice and the copy completes before another core call.
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), memory.add(offset), bytes.len())
+            };
+            Ok(())
+        })
     }
 
     pub fn set_video_capture(&mut self, enabled: bool) {
@@ -750,19 +1140,25 @@ impl QuickNesMachine {
     }
 
     #[doc(hidden)]
-    pub fn poke_wram(&mut self, addr: usize, byte: u8) {
+    pub fn poke_wram(&mut self, addr: usize, byte: u8) -> Result<(), MachineError> {
         if addr >= WRAM_SIZE {
-            return;
+            return Err(MachineError::ReadOutOfBounds);
         }
         self.api.activate();
-        // SAFETY: construction validated a non-null WRAM block of WRAM_SIZE;
-        // `addr` is checked within it and the private core has one owner.
-        unsafe {
-            let memory = (self.api.get_memory_data)(RETRO_MEMORY_SYSTEM_RAM).cast::<u8>();
+        guarded_native_checked(self.api, |check| {
+            // SAFETY: this queries the exclusively owned loaded core's WRAM.
+            let memory =
+                unsafe { (self.api.get_memory_data)(RETRO_MEMORY_SYSTEM_RAM).cast::<u8>() };
+            check()?;
             if !memory.is_null() {
-                *memory.add(addr) = byte;
+                // SAFETY: construction validated WRAM_SIZE, `addr` is in
+                // range, and the loader epoch still matches after the query.
+                unsafe {
+                    *memory.add(addr) = byte;
+                }
             }
-        }
+            Ok(())
+        })
     }
 
     fn capture(&self) -> Result<Vec<u8>, MachineError> {
@@ -773,27 +1169,30 @@ impl QuickNesMachine {
 
     pub fn capture_into(&self, bytes: &mut Vec<u8>) -> Result<(), MachineError> {
         self.api.activate();
-        bytes.clear();
-        bytes.resize(STATE_HEADER_LEN + self.state_len, 0);
-        bytes[..8].copy_from_slice(STATE_MAGIC);
-        bytes[8..48].copy_from_slice(QUICKNES_REVISION.as_bytes());
-        bytes[48..112].copy_from_slice(&self.core_sha256);
-        bytes[112..120].copy_from_slice(&(self.state_len as u64).to_le_bytes());
-        // SAFETY: the output tail has exactly the size returned by the loaded
-        // core, is writable for the call, and no alias reaches it.
-        let okay = unsafe {
-            (self.api.serialize)(
-                bytes[STATE_HEADER_LEN..].as_mut_ptr().cast::<c_void>(),
-                self.state_len,
-            )
-        };
-        if !okay {
-            return Err(MachineError::Backend(
-                "QuickNES serialize failed".to_owned(),
-            ));
-        }
-        canonicalize_quicknes_state(&mut bytes[STATE_HEADER_LEN..])?;
-        Ok(())
+        guarded_native(self.api, || {
+            bytes.clear();
+            bytes.resize(STATE_HEADER_LEN + self.state_len, 0);
+            bytes[..8].copy_from_slice(STATE_MAGIC);
+            bytes[8..48].copy_from_slice(QUICKNES_REVISION.as_bytes());
+            bytes[48..112].copy_from_slice(&self.core_sha256);
+            bytes[112..176].copy_from_slice(&self.execution_sha256);
+            bytes[176..184].copy_from_slice(&(self.state_len as u64).to_le_bytes());
+            // SAFETY: the output tail has exactly the size returned by the loaded
+            // core, is writable for the call, and no alias reaches it.
+            let okay = unsafe {
+                (self.api.serialize)(
+                    bytes[STATE_HEADER_LEN..].as_mut_ptr().cast::<c_void>(),
+                    self.state_len,
+                )
+            };
+            if !okay {
+                return Err(MachineError::Backend(
+                    "QuickNES serialize failed".to_owned(),
+                ));
+            }
+            canonicalize_quicknes_state(&mut bytes[STATE_HEADER_LEN..])?;
+            Ok(())
+        })
     }
 
     fn restore_core(&self, bytes: &[u8]) -> Result<(), MachineError> {
@@ -802,13 +1201,14 @@ impl QuickNesMachine {
             || &bytes[..8] != STATE_MAGIC
             || &bytes[8..48] != QUICKNES_REVISION.as_bytes()
             || bytes[48..112] != self.core_sha256
+            || bytes[112..176] != self.execution_sha256
         {
             return Err(MachineError::Backend(
                 "snapshot is not compatible with this QuickNES revision/build".to_owned(),
             ));
         }
         let stored_len = u64::from_le_bytes(
-            bytes[112..120]
+            bytes[176..184]
                 .try_into()
                 .map_err(|_| MachineError::MalformedEnv)?,
         );
@@ -818,14 +1218,16 @@ impl QuickNesMachine {
             ));
         }
         validate_canonical_quicknes_state(&bytes[STATE_HEADER_LEN..])?;
-        // SAFETY: the state tail is readable for exactly the core's declared
-        // size and belongs to the same pinned core identity.
-        if !unsafe {
-            (self.api.unserialize)(
-                bytes[STATE_HEADER_LEN..].as_ptr().cast::<c_void>(),
-                self.state_len,
-            )
-        } {
+        if !guarded_native(self.api, || {
+            // SAFETY: the state tail is readable for exactly the core's
+            // declared size and belongs to the same pinned core identity.
+            Ok(unsafe {
+                (self.api.unserialize)(
+                    bytes[STATE_HEADER_LEN..].as_ptr().cast::<c_void>(),
+                    self.state_len,
+                )
+            })
+        })? {
             return Err(MachineError::Backend(
                 "QuickNES unserialize failed".to_owned(),
             ));
@@ -855,8 +1257,13 @@ impl QuickNesMachine {
         INPUT_BITS.with(|input| input.set(bits));
         // SAFETY: construction initialized and loaded the private core; all
         // callbacks are installed and the call is confined to this owner.
-        unsafe { (self.api.run)() };
+        let run_result = guarded_native(self.api, || {
+            // SAFETY: this owner initialized and loaded the private core.
+            unsafe { (self.api.run)() };
+            Ok(())
+        });
         INPUT_BITS.with(|input| input.set(0));
+        run_result?;
         self.vtime = self.vtime.saturating_add(1);
         if let Some(detail) = CALLBACK_ERROR.with(|error| error.borrow_mut().take()) {
             return Err(MachineError::Backend(detail));
@@ -956,12 +1363,15 @@ impl Drop for QuickNesMachine {
     fn drop(&mut self) {
         self.api.activate();
         reset_capture_state();
-        // SAFETY: this machine exclusively owns one initialized, loaded core
-        // image, and Drop runs these operations exactly once.
-        unsafe {
-            (self.api.unload_game)();
-            (self.api.deinit)();
-        }
+        let _ = guarded_native_cleanup(self.api, || {
+            // SAFETY: this machine exclusively owns one initialized, loaded
+            // core image, and Drop runs these operations exactly once.
+            unsafe {
+                (self.api.unload_game)();
+                (self.api.deinit)();
+            }
+            Ok(())
+        });
         #[cfg(any(test, feature = "test-loopback"))]
         if let Some(id) = self.api.loopback_id {
             loopback::remove(id);
@@ -1059,10 +1469,13 @@ impl Machine for QuickNesMachine {
         };
         let length = usize::try_from(len).map_err(|_| MachineError::ReadOutOfBounds)?;
         self.api.activate();
-        // SAFETY: the construction-time memory checks establish the system
-        unsafe {
-            let memory = (self.api.get_memory_data)(memory_id).cast::<u8>();
-            let available = (self.api.get_memory_size)(memory_id);
+        guarded_native_checked(self.api, |check| {
+            // SAFETY: this queries the exclusively owned loaded core's memory.
+            let memory = unsafe { (self.api.get_memory_data)(memory_id).cast::<u8>() };
+            check()?;
+            // SAFETY: this queries the size of that same core memory region.
+            let available = unsafe { (self.api.get_memory_size)(memory_id) };
+            check()?;
             let valid_length = if memory_id == RETRO_MEMORY_SYSTEM_RAM {
                 available == WRAM_SIZE
             } else {
@@ -1074,8 +1487,10 @@ impl Machine for QuickNesMachine {
                     "QuickNES memory window disappeared or has an invalid length".to_owned(),
                 ));
             }
-            Ok(std::slice::from_raw_parts(memory.add(offset), length).to_vec())
-        }
+            // SAFETY: construction established this bounded region, both
+            // queries preserved the loader epoch, and the copy is synchronous.
+            Ok(unsafe { std::slice::from_raw_parts(memory.add(offset), length).to_vec() })
+        })
     }
 
     fn export(
@@ -1669,6 +2084,537 @@ mod tests {
     use crate::{Machine, Moment, StopConditions, StopReason, nes};
 
     #[cfg(all(unix, not(miri)))]
+    fn isolated_loader_test(name: &str) -> bool {
+        use std::process::Command;
+
+        if std::env::var("HARMONY_QUICKNES_LOADER_TEST").is_ok_and(|selected| selected == name) {
+            return true;
+        }
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env("HARMONY_QUICKNES_LOADER_TEST", name)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&child.stdout).contains("running 1 test"),
+            "isolated {name} did not run: {}",
+            String::from_utf8_lossy(&child.stdout)
+        );
+        false
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn failed_private_open_keeps_missing_symbol_diagnostic() {
+        use sha2::{Digest, Sha256};
+        use std::{fs, process::Command};
+
+        if !isolated_loader_test(
+            "quicknes::tests::failed_private_open_keeps_missing_symbol_diagnostic",
+        ) {
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("quicknes-missing-symbol-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("core.c");
+        fs::write(&source, "int unrelated_core_symbol(void) { return 1; }\n").unwrap();
+        #[cfg(target_os = "macos")]
+        let core = directory.join("core.dylib");
+        #[cfg(target_os = "linux")]
+        let core = directory.join("core.so");
+        let mut compiler = Command::new("cc");
+        #[cfg(target_os = "macos")]
+        compiler.arg("-dynamiclib");
+        #[cfg(target_os = "linux")]
+        compiler.args(["-shared", "-fPIC"]);
+        assert!(
+            compiler
+                .arg("-o")
+                .arg(&core)
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let sha256 = format!("{:x}", Sha256::digest(fs::read(&core).unwrap()));
+        let error = match super::Library::open_private(&core, &sha256) {
+            Ok(_) => panic!("core without libretro exports was admitted"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("missing retro_get_system_info"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("native loader changed"),
+            "{error}"
+        );
+        let retry = match super::Library::open_private(&core, &sha256) {
+            Ok(_) => panic!("poisoned native loader was admitted"),
+            Err(error) => error,
+        };
+        assert!(
+            retry.to_string().contains("native loader changed"),
+            "{retry}"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    fn standalone_core(
+        directory: &std::path::Path,
+        label: &str,
+        value: i32,
+        retained: Option<&str>,
+    ) -> (std::path::PathBuf, String) {
+        use sha2::{Digest, Sha256};
+        use std::{fs, process::Command};
+
+        #[cfg(target_os = "macos")]
+        let extension = "dylib";
+        #[cfg(target_os = "linux")]
+        let extension = "so";
+        let source = directory.join("standalone.cc");
+        fs::write(
+            &source,
+            include_str!("../tests/fixtures/quicknes_standalone_core.cc"),
+        )
+        .unwrap();
+        let output = directory.join(format!("{label}.{extension}"));
+        let mut compiler = Command::new("c++");
+        #[cfg(target_os = "macos")]
+        compiler.arg("-dynamiclib");
+        #[cfg(target_os = "linux")]
+        compiler.args(["-shared", "-fPIC"]);
+        compiler.arg(format!("-DVALUE={value}"));
+        #[cfg(target_os = "linux")]
+        match retained {
+            Some("nodelete") => {
+                compiler.arg("-Wl,-z,nodelete");
+            }
+            Some("unique") => {
+                compiler.arg("-DQUICKNES_GNU_UNIQUE");
+            }
+            None => {}
+            Some(other) => panic!("unknown retention kind: {other}"),
+        }
+        #[cfg(target_os = "macos")]
+        assert!(retained.is_none());
+        assert!(
+            compiler
+                .arg("-o")
+                .arg(&output)
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let sha256 = format!("{:x}", Sha256::digest(fs::read(&output).unwrap()));
+        (output, sha256)
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn worker_rejects_wrong_loaded_identity_before_rom_initialization() {
+        use std::{fs, process::Command};
+
+        if let Some(directory) = std::env::var_os("HARMONY_QUICKNES_WORKER_IDENTITY_CHILD") {
+            let directory = std::path::Path::new(&directory);
+            let (core, core_sha256) = standalone_core(directory, "core", 13, None);
+            let prepared = super::prepared_execution_sha256(&core, &core_sha256).unwrap();
+            let machine =
+                QuickNesMachine::from_rom_bytes_with_identity(&[0], &core, &core_sha256, &prepared)
+                    .unwrap();
+            assert_eq!(machine.read_wram().unwrap()[0], 13);
+            drop(machine);
+            let mut wrong = prepared.clone();
+            wrong.replace_range(0..1, if prepared.starts_with('0') { "1" } else { "0" });
+            let error =
+                QuickNesMachine::from_rom_bytes_with_identity(&[0], &core, &core_sha256, &wrong)
+                    .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("loaded-image identity changed before worker initialization"),
+                "{error}"
+            );
+            return;
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-worker-identity-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "quicknes::tests::worker_rejects_wrong_loaded_identity_before_rom_initialization",
+                "--nocapture",
+            ])
+            .env("HARMONY_QUICKNES_WORKER_IDENTITY_CHILD", &directory)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&child.stdout).contains("running 1 test"),
+            "worker identity child did not run: {}",
+            String::from_utf8_lossy(&child.stdout)
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", not(miri)))]
+    fn retained_core_child(directory: &std::path::Path, kind: &str, mode: &str) {
+        use std::{ffi::c_void, os::fd::AsRawFd};
+
+        let (first, first_sha256) = standalone_core(directory, "first", 13, Some(kind));
+        let (second, second_sha256) = standalone_core(directory, "second", 27, Some(kind));
+        if mode == "guard" {
+            let error = super::prepared_execution_sha256(&first, &first_sha256).unwrap_err();
+            assert!(
+                error.to_string().contains("remained loaded after dlclose"),
+                "{error}"
+            );
+            let error = match super::Library::open_private(&second, &second_sha256) {
+                Ok(_) => panic!("retained private core was admitted"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains("remained loaded after dlclose"),
+                "{error}"
+            );
+        } else {
+            let first_private = super::private_copy(&first).unwrap();
+            let first_fd = first_private.file.as_raw_fd();
+            let first_path = first_private.loader_path();
+            // SAFETY: this is a live descriptor path to a compiled fixture;
+            // the successful handle is closed before the descriptor drops.
+            let first_handle =
+                unsafe { libc::dlopen(first_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+            assert!(!first_handle.is_null(), "{}", super::dl_error());
+            // SAFETY: the successful handle is closed exactly once.
+            assert_eq!(unsafe { libc::dlclose(first_handle) }, 0);
+            drop(first_private);
+
+            let second_private = super::private_copy(&second).unwrap();
+            assert_eq!(second_private.file.as_raw_fd(), first_fd);
+            let second_path = second_private.loader_path();
+            // SAFETY: the reused descriptor names the second compiled fixture;
+            // this call intentionally tests the dynamic loader's path cache.
+            let second_handle =
+                unsafe { libc::dlopen(second_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+            assert!(!second_handle.is_null(), "{}", super::dl_error());
+            // SAFETY: the successful handle stays live and the fixture exports
+            // quicknes_image_marker with the declared C ABI.
+            let symbol = unsafe { libc::dlsym(second_handle, c"quicknes_image_marker".as_ptr()) };
+            assert!(!symbol.is_null());
+            // SAFETY: the fixture exports quicknes_image_marker with this ABI.
+            let marker =
+                unsafe { std::mem::transmute::<*mut c_void, extern "C" fn() -> i32>(symbol) };
+            assert_eq!(marker(), 13);
+            // SAFETY: the successful handle is closed exactly once.
+            assert_eq!(unsafe { libc::dlclose(second_handle) }, 0);
+            drop(second_private);
+
+            let error = match super::Library::open_private(&second, &second_sha256) {
+                Ok(_) => panic!("cached private core was admitted"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("cached under a reused descriptor path"),
+                "{error}"
+            );
+        }
+    }
+
+    #[cfg(all(target_os = "linux", not(miri)))]
+    #[test]
+    fn retained_private_core_cannot_reuse_a_loader_descriptor_path() {
+        use std::{fs, process::Command};
+
+        if let (Some(directory), Some(kind), Some(mode)) = (
+            std::env::var_os("HARMONY_QUICKNES_RETENTION_DIRECTORY"),
+            std::env::var_os("HARMONY_QUICKNES_RETENTION_KIND"),
+            std::env::var_os("HARMONY_QUICKNES_RETENTION_MODE"),
+        ) {
+            retained_core_child(
+                std::path::Path::new(&directory),
+                &kind.to_string_lossy(),
+                &mode.to_string_lossy(),
+            );
+            return;
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-retained-loader-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        for kind in ["nodelete", "unique"] {
+            for mode in ["raw", "guard"] {
+                let child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "quicknes::tests::retained_private_core_cannot_reuse_a_loader_descriptor_path",
+                        "--nocapture",
+                    ])
+                    .env("HARMONY_QUICKNES_RETENTION_DIRECTORY", &directory)
+                    .env("HARMONY_QUICKNES_RETENTION_KIND", kind)
+                    .env("HARMONY_QUICKNES_RETENTION_MODE", mode)
+                    .output()
+                    .unwrap();
+                assert!(
+                    child.status.success(),
+                    "{kind}/{mode}: {} {}",
+                    String::from_utf8_lossy(&child.stdout),
+                    String::from_utf8_lossy(&child.stderr)
+                );
+                assert!(
+                    String::from_utf8_lossy(&child.stdout).contains("running 1 test"),
+                    "{kind}/{mode} did not run: {}",
+                    String::from_utf8_lossy(&child.stdout)
+                );
+            }
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn ordinary_private_cores_load_sequentially_without_retention() {
+        use std::{ffi::c_void, fs};
+
+        if !isolated_loader_test(
+            "quicknes::tests::ordinary_private_cores_load_sequentially_without_retention",
+        ) {
+            return;
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-sequential-loader-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        for value in [13, 27] {
+            let (core, sha256) = standalone_core(&directory, &format!("core-{value}"), value, None);
+            let mut library = super::Library::open_private(&core, &sha256).unwrap();
+            let symbol = library.symbol(b"quicknes_image_marker\0").unwrap();
+            // SAFETY: the fixture exports quicknes_image_marker with this ABI,
+            // and the library remains live through this call.
+            let marker =
+                unsafe { std::mem::transmute::<*mut c_void, extern "C" fn() -> i32>(symbol) };
+            assert_eq!(marker(), value);
+            library.close_handle().unwrap();
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn two_live_workers_keep_their_approved_loader_generation() {
+        use std::fs;
+
+        if !isolated_loader_test(
+            "quicknes::tests::two_live_workers_keep_their_approved_loader_generation",
+        ) {
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("quicknes-two-workers-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let (first_core, first_sha256) = standalone_core(&directory, "first", 13, None);
+        let (second_core, second_sha256) = standalone_core(&directory, "second", 27, None);
+        let first_execution = super::prepared_execution_sha256(&first_core, &first_sha256).unwrap();
+        let second_execution =
+            super::prepared_execution_sha256(&second_core, &second_sha256).unwrap();
+        let mut first = QuickNesMachine::from_rom_bytes_with_identity(
+            &[0],
+            &first_core,
+            &first_sha256,
+            &first_execution,
+        )
+        .unwrap();
+        let mut second = QuickNesMachine::from_rom_bytes_with_identity(
+            &[0],
+            &second_core,
+            &second_sha256,
+            &second_execution,
+        )
+        .unwrap();
+        first.run_frame().unwrap();
+        second.run_frame().unwrap();
+        assert_eq!(first.read_wram().unwrap()[0], 14);
+        assert_eq!(second.read_wram().unwrap()[0], 28);
+        drop(first);
+        second.run_frame().unwrap();
+        assert_eq!(second.read_wram().unwrap()[0], 29);
+        drop(second);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn a_late_loaded_helper_cannot_change_a_prepared_run() {
+        use sha2::{Digest, Sha256};
+        use std::{ffi::CString, fs, process::Command};
+
+        if let Some(directory) = std::env::var_os("HARMONY_QUICKNES_LATE_CHILD") {
+            let directory = std::path::Path::new(&directory);
+            #[cfg(target_os = "macos")]
+            let extension = "dylib";
+            #[cfg(target_os = "linux")]
+            let extension = "so";
+            let core = directory.join(format!("core.{extension}"));
+            let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core).unwrap()));
+            let helper = std::env::var_os("HARMONY_QUICKNES_LATE_HELPER").unwrap();
+            let helper = std::path::Path::new(&helper);
+            let prepared = super::prepared_execution_sha256(&core, &core_sha256).unwrap();
+            let mut machine =
+                QuickNesMachine::from_rom_bytes_with_identity(&[0], &core, &core_sha256, &prepared)
+                    .unwrap();
+            let result = machine.run_frame();
+            let outcome = match result {
+                Ok(()) => format!("accepted:({})", machine.read_wram().unwrap()[0]),
+                Err(error) => format!("rejected:({error})"),
+            };
+            let path = CString::new(helper.to_string_lossy().as_bytes()).unwrap();
+            // SAFETY: RTLD_NOLOAD checks whether the test-built helper remains
+            // mapped; a returned reference is closed below.
+            let loaded = unsafe {
+                libc::dlopen(
+                    path.as_ptr(),
+                    libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_NOLOAD,
+                )
+            };
+            let transient = loaded.is_null();
+            if !loaded.is_null() {
+                // SAFETY: RTLD_NOLOAD returned a live reference above.
+                unsafe { libc::dlclose(loaded) };
+            }
+            println!("QUICKNES_LATE_RESULT:{prepared}:{outcome}:{transient}");
+            return;
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-late-helper-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let core_source = directory.join("core.c");
+        fs::write(
+            &core_source,
+            include_str!("../tests/fixtures/quicknes_late_helper_core.c"),
+        )
+        .unwrap();
+        #[cfg(target_os = "macos")]
+        let extension = "dylib";
+        #[cfg(target_os = "linux")]
+        let extension = "so";
+        let core = directory.join(format!("core.{extension}"));
+        let mut compiler = Command::new("cc");
+        #[cfg(target_os = "macos")]
+        compiler.arg("-dynamiclib");
+        #[cfg(target_os = "linux")]
+        compiler.args(["-shared", "-fPIC"]);
+        assert!(
+            compiler
+                .arg("-o")
+                .arg(&core)
+                .arg(&core_source)
+                .arg("-ldl")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let helper_source = directory.join("helper.c");
+        let mut results = Vec::new();
+        for value in [13, 27] {
+            fs::write(
+                &helper_source,
+                format!("int quicknes_late_value(void) {{ return {value}; }}\n"),
+            )
+            .unwrap();
+            let helper = directory.join(format!("helper-{value}.{extension}"));
+            let mut compiler = Command::new("cc");
+            #[cfg(target_os = "macos")]
+            compiler.arg("-dynamiclib");
+            #[cfg(target_os = "linux")]
+            compiler.args(["-shared", "-fPIC"]);
+            assert!(
+                compiler
+                    .arg("-o")
+                    .arg(&helper)
+                    .arg(&helper_source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "quicknes::tests::a_late_loaded_helper_cannot_change_a_prepared_run",
+                    "--nocapture",
+                ])
+                .env("HARMONY_QUICKNES_LATE_CHILD", &directory)
+                .env("HARMONY_QUICKNES_LATE_HELPER", &helper)
+                .output()
+                .unwrap();
+            assert!(
+                child.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&child.stdout),
+                String::from_utf8_lossy(&child.stderr)
+            );
+            let output = String::from_utf8(child.stdout).unwrap();
+            let line = output
+                .lines()
+                .find_map(|line| line.strip_prefix("QUICKNES_LATE_RESULT:"))
+                .unwrap();
+            let (digest, outcome) = line.split_once(':').unwrap();
+            results.push((digest.to_owned(), outcome.to_owned()));
+        }
+        assert_eq!(results[0].0, results[1].0);
+        if results
+            .iter()
+            .all(|(_, outcome)| outcome.starts_with("accepted:"))
+        {
+            assert!(results[0].1.starts_with("accepted:(13):"), "{results:?}");
+            assert!(results[1].1.starts_with("accepted:(27):"), "{results:?}");
+        }
+        assert!(
+            results
+                .iter()
+                .all(|(_, outcome)| outcome.ends_with(":true")),
+            "{results:?}"
+        );
+        assert!(
+            results
+                .iter()
+                .all(|(_, outcome)| outcome.contains("rejected:(machine backend failed: QuickNES native loader changed outside the approved core lifecycle)")),
+            "one prepared identity accepted divergent late-helper output: {results:?}"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(unix, not(miri)))]
     #[test]
     fn mismatched_private_core_never_reaches_the_dynamic_loader() {
         let error = QuickNesMachine::from_rom_bytes(
@@ -1684,14 +2630,268 @@ mod tests {
         );
     }
 
-    #[cfg(all(unix, not(miri)))]
+    #[cfg(all(target_os = "macos", not(miri)))]
     #[test]
     fn private_core_copy_is_accessible_only_to_its_owner() {
         use std::os::unix::fs::PermissionsExt;
-        let (path, _) = super::private_copy(std::path::Path::new("/dev/null")).unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        std::fs::remove_file(path).unwrap();
+        let private = super::private_copy(std::path::Path::new("/dev/null")).unwrap();
+        let mode = std::fs::metadata(private.path.as_ref().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o077, 0);
+    }
+
+    #[cfg(all(target_os = "linux", not(miri)))]
+    #[test]
+    fn private_core_copy_is_sealed() {
+        use std::os::fd::AsRawFd;
+        let private = super::private_copy(std::path::Path::new("/dev/null")).unwrap();
+        // SAFETY: the descriptor remains owned by `private`, and F_GET_SEALS
+        // accepts no additional argument.
+        let seals = unsafe { libc::fcntl(private.file.as_raw_fd(), libc::F_GET_SEALS) };
+        assert_eq!(
+            seals,
+            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL
+        );
+    }
+
+    #[cfg(all(target_os = "macos", not(miri)))]
+    #[test]
+    fn private_core_loader_uses_hashed_image_after_private_path_replacement() {
+        if !isolated_loader_test(
+            "quicknes::tests::private_core_loader_uses_hashed_image_after_private_path_replacement",
+        ) {
+            return;
+        }
+        private_core_loader_uses_hashed_image_after_replacement();
+    }
+
+    #[cfg(all(target_os = "linux", not(miri)))]
+    #[test]
+    fn private_core_copy_keeps_bytes_after_source_path_replacement() {
+        if !isolated_loader_test(
+            "quicknes::tests::private_core_copy_keeps_bytes_after_source_path_replacement",
+        ) {
+            return;
+        }
+        private_core_loader_uses_hashed_image_after_replacement();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    fn private_core_loader_uses_hashed_image_after_replacement() {
+        use std::{ffi::c_void, fs, process::Command};
+
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-private-loader-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("source.c");
+        let original = directory.join("original.dylib");
+        let alternate = directory.join("alternate.dylib");
+        for (path, value) in [(&original, 13), (&alternate, 27)] {
+            fs::write(
+                &source,
+                format!("int quicknes_image_marker(void) {{ return {value}; }}\n"),
+            )
+            .unwrap();
+            let mut compiler = Command::new("cc");
+            #[cfg(target_os = "macos")]
+            compiler.arg("-dynamiclib");
+            #[cfg(target_os = "linux")]
+            compiler.args(["-shared", "-fPIC"]);
+            assert!(
+                compiler
+                    .arg("-o")
+                    .arg(path)
+                    .arg(&source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let mut private = super::private_copy(&original).unwrap();
+        #[cfg(target_os = "macos")]
+        fs::rename(&alternate, private.path.as_ref().unwrap()).unwrap();
+        #[cfg(target_os = "linux")]
+        fs::rename(&alternate, &original).unwrap();
+        let path = private.loader_path();
+        // SAFETY: the descriptor path is NUL-terminated and remains live until
+        // dlclose; the library built above exports the tested function.
+        let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        assert!(!handle.is_null(), "{}", super::dl_error());
+        // SAFETY: `handle` is a successful dlopen result, and the static symbol
+        // name is NUL-terminated; the fixture declares the exact function ABI.
+        let symbol = unsafe { libc::dlsym(handle, c"quicknes_image_marker".as_ptr()) };
+        assert!(!symbol.is_null(), "{}", super::dl_error());
+        // SAFETY: the fixture exports quicknes_image_marker with this ABI.
+        let marker = unsafe { std::mem::transmute::<*mut c_void, extern "C" fn() -> i32>(symbol) };
+        assert_eq!(marker(), 13);
+        // SAFETY: the successful handle is closed exactly once.
+        unsafe { libc::dlclose(handle) };
+        private.unlink().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn two_live_private_cores_never_share_a_loader_descriptor_path() {
+        use sha2::{Digest, Sha256};
+        use std::{ffi::c_void, fs, process::Command};
+
+        if !isolated_loader_test(
+            "quicknes::tests::two_live_private_cores_never_share_a_loader_descriptor_path",
+        ) {
+            return;
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-two-private-cores-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("source.c");
+        let mut libraries = Vec::new();
+        for value in [13, 27] {
+            let path = directory.join(format!("core-{value}.dylib"));
+            fs::write(
+                &source,
+                format!(
+                    "int quicknes_image_marker(void) {{ return {value}; }}\nvoid retro_get_system_info(void) {{}}\n"
+                ),
+            )
+            .unwrap();
+            let mut compiler = Command::new("cc");
+            #[cfg(target_os = "macos")]
+            compiler.arg("-dynamiclib");
+            #[cfg(target_os = "linux")]
+            compiler.args(["-shared", "-fPIC"]);
+            assert!(
+                compiler
+                    .arg("-o")
+                    .arg(&path)
+                    .arg(&source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let digest = format!("{:x}", Sha256::digest(fs::read(&path).unwrap()));
+            libraries.push(super::Library::open_private(&path, &digest).unwrap());
+        }
+        assert_ne!(libraries[0].base, libraries[1].base);
+        for (library, expected) in libraries.iter().zip([13, 27]) {
+            let symbol = library.symbol(b"quicknes_image_marker\0").unwrap();
+            // SAFETY: the fixture declares quicknes_image_marker with this ABI,
+            // and `library` keeps its image loaded until the call completes.
+            let marker =
+                unsafe { std::mem::transmute::<*mut c_void, extern "C" fn() -> i32>(symbol) };
+            assert_eq!(marker(), expected);
+        }
+        drop(libraries);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn native_loader_rejects_changed_non_system_helper_with_same_core_hash() {
+        use sha2::{Digest, Sha256};
+        use std::{fs, process::Command};
+
+        if !isolated_loader_test(
+            "quicknes::tests::native_loader_rejects_changed_non_system_helper_with_same_core_hash",
+        ) {
+            return;
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-helper-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let core_source = directory.join("core.c");
+        let helper_source = directory.join("helper.c");
+        fs::write(
+            &core_source,
+            include_str!("../tests/fixtures/quicknes_helper_core.c"),
+        )
+        .unwrap();
+        #[cfg(target_os = "macos")]
+        let extension = "dylib";
+        #[cfg(target_os = "linux")]
+        let extension = "so";
+        let helper = directory.join(format!("libprobe.{extension}"));
+        let mut variants = Vec::new();
+        for value in [1, 2] {
+            fs::write(
+                &helper_source,
+                format!("int probe_value(void) {{ return {value}; }}\n"),
+            )
+            .unwrap();
+            let variant = directory.join(format!("libprobe-{value}.{extension}"));
+            let mut compiler = Command::new("cc");
+            #[cfg(target_os = "macos")]
+            compiler.arg("-dynamiclib");
+            #[cfg(target_os = "linux")]
+            compiler.args(["-shared", "-fPIC"]);
+            assert!(
+                compiler
+                    .arg(format!(
+                        "-Wl,{},{}",
+                        if cfg!(target_os = "macos") {
+                            "-install_name"
+                        } else {
+                            "-soname"
+                        },
+                        helper.display()
+                    ))
+                    .arg("-o")
+                    .arg(&variant)
+                    .arg(&helper_source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            variants.push(variant);
+        }
+        fs::copy(&variants[0], &helper).unwrap();
+        let core = directory.join(format!("core.{extension}"));
+        let mut compiler = Command::new("cc");
+        #[cfg(target_os = "macos")]
+        compiler.arg("-dynamiclib");
+        #[cfg(target_os = "linux")]
+        compiler.args(["-shared", "-fPIC"]);
+        assert!(
+            compiler
+                .arg("-o")
+                .arg(&core)
+                .arg(&core_source)
+                .arg(format!("-L{}", directory.display()))
+                .arg("-lprobe")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core).unwrap()));
+        for variant in variants {
+            fs::copy(variant, &helper).unwrap();
+            let error = super::prepared_execution_sha256(&core, &core_sha256).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("unsupported non-system QuickNES dependency"),
+                "{error}"
+            );
+            assert!(error.to_string().contains("libprobe"), "{error}");
+            assert_eq!(
+                format!("{:x}", Sha256::digest(fs::read(&core).unwrap())),
+                core_sha256
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2189,6 +3389,17 @@ mod tests {
             .expect("foreign core");
         let imported = foreign.import_snapshot(&canonical);
         assert!(foreign.replay(imported).is_err());
+
+        let mut foreign_execution = QuickNesMachine::loopback_for_tests(&[0]).unwrap();
+        foreign_execution.execution_sha256 =
+            validate_sha256(&"c".repeat(64)).expect("foreign execution");
+        let imported = foreign_execution.import_snapshot(&canonical);
+        assert!(foreign_execution.replay(imported).is_err());
+
+        let mut old_format = canonical;
+        old_format[..8].copy_from_slice(b"HQNESST2");
+        let imported = machine.import_snapshot(&old_format);
+        assert!(machine.replay(imported).is_err());
     }
 
     #[test]

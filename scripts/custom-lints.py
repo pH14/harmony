@@ -34,6 +34,7 @@ GAME_NAMES = [
     r"mm2",
     r"zelda",
     r"tetris",
+    r"twin[\s_-]*dragons",
 ]
 
 # Emulator and runtime names.
@@ -122,7 +123,7 @@ NUMBERED_NAME_ALLOWLIST = re.compile(
     # Bit-width suffixes (u8, u32, i64, f64, ...).
     r"(?:u|i|f)(?:8|16|32|64|128)$"
     # Architecture and hardware names.
-    r"|(?:x86|arm64|Arm64|X86|Gicv3|gicv3)$"
+    r"|(?:x86|arm64|aarch64|Arm64|X86|Gicv3|gicv3)$"
     # Architectural x86 control register names.
     r"|(?:cr[02348])$"
     # Hardware device names (Pl011, Uart8250, ...).
@@ -496,7 +497,7 @@ def check_numbered_names(repo_root: Path, files: list[str]) -> list[Violation]:
 
 MISPLACED_WORKLOAD_FILE_RE = re.compile(
     r"(?:^|[-_/])"
-    r"(?:game|nes|smb|mario|metroid|tetanes|tetris|postgres|etcd|cockroach|k3s|docker|faultlab|fault[-_]library)"
+    r"(?:game|nes|twin[-_]dragons|smb|mario|metroid|tetanes|tetris|postgres|etcd|cockroach|k3s|docker|faultlab|fault[-_]library)"
     r"(?:[-_./]|$)",
     re.IGNORECASE,
 )
@@ -1019,7 +1020,13 @@ def check_job_contract(rel_path: str, job_id: str, job: dict, registered, pr_tri
 
     violations = []
     timeout = job.get("timeout-minutes")
-    declared = isinstance(timeout, int) and not isinstance(timeout, bool)
+    expression = ci_contract.PR_TIMEOUT_EXPRESSIONS.get((rel_path, registered.name))
+    if expression is not None:
+        declared = timeout == expression
+        if declared:
+            timeout = registered.timeout_minutes
+    else:
+        declared = isinstance(timeout, int) and not isinstance(timeout, bool)
     runs_on_pr = pr_triggered and not _job_skips_pr(str(job.get("if", "")))
     if registered.trigger == "pr":
         if pr_triggered and not runs_on_pr:
@@ -1076,14 +1083,21 @@ def check_job_ignored_tests(rel_path: str, job_id: str, job: dict, registered) -
     violations = []
     for pattern in registered.ignored_tests:
         binary_id, test = pattern.split(" ", 1)
-        names = [binary_id.split("::")[-1]]
+        binary = binary_id.split("::")[-1]
+        if binary.startswith("bin/"):
+            executable = binary.removeprefix("bin/")
+            names = [] if re.search(r"(?<!\S)--bin\s+" + re.escape(executable) + r"(?![\w-])",
+                                     commands) else [f"--bin {executable}"]
+        else:
+            names = [] if _names_word(commands, binary) else [binary]
         if test != "*":
-            names.append(test.split("::")[-1])
-        missing = [name for name in names if not _names_word(commands, name)]
-        if missing:
+            name = test.split("::")[-1]
+            if not _names_word(commands, name):
+                names.append(name)
+        if names:
             violations.append(Violation("ci-ignored-tests", rel_path, 0,
                 f"job '{job_id}' registers '{pattern}' but its steps never name "
-                f"{', '.join(missing)}"))
+                f"{', '.join(names)}"))
     return violations
 
 
@@ -1735,6 +1749,7 @@ TOPLEVEL_DIR_ALLOWLIST = {
     "cli",
     "consonance",
     "dissonance",
+    "demos",
     "docs",
     "scripts",
     "workloads",
@@ -2031,7 +2046,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "ci-pr-job-timeout": (
             f"Every job a pull request reaches must finish inside "
-            f"{PR_JOB_MAX_TIMEOUT_MINUTES} minutes except registered artifact-build prerequisites, and every job's declared bound must "
+            f"{PR_JOB_MAX_TIMEOUT_MINUTES} minutes except registered artifact-build prerequisites and extended checks, and every job's declared bound must "
             "match the budget scripts/ci_contract.py records for it. Split the work, or "
             "register the long run as a schedule or dispatch job with its reason."
         ),

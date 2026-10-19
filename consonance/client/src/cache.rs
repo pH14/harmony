@@ -2,12 +2,13 @@
 
 mod budget;
 pub mod extent;
+mod lock_work;
 pub mod segments;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Bound,
-    sync::{Arc, Mutex, MutexGuard, Weak},
+    sync::{Arc, Mutex, Weak},
 };
 
 use sha2::{Digest, Sha256};
@@ -18,18 +19,41 @@ pub use segments::{CommittedExtent, PageSegments, SEGMENT_BYTES, WritableExtent}
 pub const ANCHOR_DEPTH: u32 = 32;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Namespace([u8; 32]);
+pub struct Namespace([u8; 32], KeyMode);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum KeyMode {
+    Prefix,
+    Exact,
+}
 
 impl Namespace {
     #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    #[must_use]
     pub fn new(parts: &[&[u8]]) -> Self {
+        Self::with_mode(parts, KeyMode::Prefix)
+    }
+
+    #[must_use]
+    pub fn exact(parts: &[&[u8]]) -> Self {
+        Self::with_mode(parts, KeyMode::Exact)
+    }
+
+    fn with_mode(parts: &[&[u8]], mode: KeyMode) -> Self {
         let mut digest = Sha256::new();
-        digest.update(b"consonance-snapshot-cache-namespace-v1");
+        digest.update(match mode {
+            KeyMode::Prefix => b"consonance-snapshot-cache-namespace-v1".as_slice(),
+            KeyMode::Exact => b"consonance-snapshot-cache-exact-namespace-v1".as_slice(),
+        });
         for part in parts {
             digest.update((part.len() as u64).to_le_bytes());
             digest.update(part);
         }
-        Self(digest.finalize().into())
+        Self(digest.finalize().into(), mode)
     }
 }
 
@@ -78,8 +102,33 @@ pub enum CacheError {
     ForeignExtent,
     #[error("malformed snapshot cache extent: {0}")]
     Malformed(&'static str),
+    #[error(
+        "snapshot cache key {:?} in namespace {:?} names target {:?}, not {:?}",
+        .evidence.key, .evidence.namespace,
+        .evidence.existing.target_commitment, .evidence.published.target_commitment
+    )]
+    DivergentDuplicate { evidence: Arc<CacheDivergence> },
+    #[error("snapshot cache namespace {namespace:?} is quarantined after a determinism violation")]
+    Quarantined {
+        namespace: Namespace,
+        evidence: Arc<CacheDivergence>,
+    },
     #[error("snapshot cache segment: {0}")]
     Segment(#[from] std::io::Error),
+}
+
+#[derive(Clone, Debug)]
+pub struct CacheWitness {
+    pub target_commitment: [u8; 32],
+    pub chain: Vec<CommittedExtent>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CacheDivergence {
+    pub namespace: Namespace,
+    pub key: Vec<u8>,
+    pub existing: CacheWitness,
+    pub published: CacheWitness,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -123,6 +172,11 @@ impl CacheStats {
 }
 
 pub trait CacheIndex: Send + Sync + std::fmt::Debug {
+    fn divergences(&self) -> Vec<Arc<CacheDivergence>>;
+    fn verify_namespace(&self, namespace: Namespace) -> Result<(), CacheError>;
+    fn verify_integrity(&self) -> Result<(), CacheError>;
+    fn verify_lease(&self, lease: &Lease) -> Result<(), CacheError>;
+
     fn lookup(&self, namespace: Namespace, key: &[u8]) -> Option<Lease>;
     fn extent(&self, len: usize) -> Result<WritableExtent, CacheError>;
     fn publish(
@@ -131,13 +185,19 @@ pub trait CacheIndex: Send + Sync + std::fmt::Debug {
         key: &[u8],
         parent: Option<&Lease>,
         extent: WritableExtent,
+        target_commitment: [u8; 32],
         cost: u64,
     ) -> Result<Lease, CacheError>;
+    fn target_commitment(&self, lease: &Lease) -> Result<[u8; 32], CacheError>;
     fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError>;
     fn release(&self, lease: Lease);
+    fn revoke(&self, lease: Lease);
     fn report_store(&self, holder: u64, bytes: u64) -> bool;
     fn forget_store(&self, holder: u64);
     fn stats(&self) -> CacheStats;
+    fn lock_counters(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
 }
 
 #[derive(Debug)]
@@ -147,6 +207,7 @@ struct Entry {
     parent: Option<u64>,
     depth: u32,
     extent: CommittedExtent,
+    target_commitment: [u8; 32],
     cost: u64,
     leases: u32,
     children: u32,
@@ -167,6 +228,7 @@ struct State {
     entries: BTreeMap<u64, Entry>,
     keys: BTreeMap<Namespace, BTreeMap<Vec<u8>, u64>>,
     evictable: BTreeSet<(u128, u64)>,
+    divergences: BTreeMap<Namespace, Arc<CacheDivergence>>,
     stores: BTreeMap<u64, usize>,
     stored: usize,
     next_id: u64,
@@ -175,8 +237,34 @@ struct State {
 }
 
 impl State {
-    fn longest_prefix(&self, namespace: Namespace, key: &[u8]) -> Option<u64> {
+    fn verify_namespace(&self, namespace: Namespace) -> Result<(), CacheError> {
+        if let Some(evidence) = self.divergences.get(&namespace) {
+            Err(CacheError::Quarantined {
+                namespace,
+                evidence: Arc::clone(evidence),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn chain(&self, mut cursor: Option<u64>) -> Result<Vec<CommittedExtent>, CacheError> {
+        let mut chain = Vec::new();
+        while let Some(id) = cursor {
+            let entry = self.entries.get(&id).ok_or(CacheError::UnknownLease(id))?;
+            chain.push(entry.extent.clone());
+            cursor = entry.parent;
+        }
+        chain.reverse();
+        Ok(chain)
+    }
+
+    fn lookup_key(&self, namespace: Namespace, key: &[u8]) -> Option<u64> {
+        self.verify_namespace(namespace).ok()?;
         let keys = self.keys.get(&namespace)?;
+        if namespace.1 == KeyMode::Exact {
+            return keys.get(key).copied();
+        }
         let mut probe = key;
         loop {
             let (found, id) = keys
@@ -213,6 +301,7 @@ impl State {
 
     fn settle(&mut self, id: u64) {
         if let Some(entry) = self.entries.get(&id)
+            && !self.divergences.contains_key(&entry.namespace)
             && entry.leases == 0
             && entry.children == 0
         {
@@ -221,6 +310,14 @@ impl State {
     }
 
     fn evict(&mut self, id: u64) {
+        if self
+            .entries
+            .get(&id)
+            .is_some_and(|entry| self.divergences.contains_key(&entry.namespace))
+        {
+            return;
+        }
+
         let Some(entry) = self.entries.remove(&id) else {
             return;
         };
@@ -240,6 +337,29 @@ impl State {
         }
         self.segments.free_committed(entry.extent);
         self.stats.evictions += 1;
+    }
+
+    fn revoke(&mut self, id: u64) {
+        if !self.entries.contains_key(&id) {
+            return;
+        }
+        let mut children = BTreeMap::<u64, Vec<u64>>::new();
+        for (&child, entry) in &self.entries {
+            if let Some(parent) = entry.parent {
+                children.entry(parent).or_default().push(child);
+            }
+        }
+        let mut descendants = Vec::new();
+        let mut pending = vec![id];
+        while let Some(parent) = pending.pop() {
+            descendants.push(parent);
+            if let Some(children) = children.get(&parent) {
+                pending.extend(children.iter().copied());
+            }
+        }
+        for descendant in descendants.into_iter().rev() {
+            self.evict(descendant);
+        }
     }
 
     fn make_room(&mut self, needed: usize) -> Result<(), CacheError> {
@@ -279,6 +399,7 @@ impl State {
 #[derive(Clone, Debug)]
 pub struct LocalIndex {
     state: Arc<Mutex<State>>,
+    lock_work: Arc<lock_work::LockWork>,
 }
 
 impl LocalIndex {
@@ -298,6 +419,7 @@ impl LocalIndex {
     #[must_use]
     pub fn with_segments(budget: usize, segments: PageSegments) -> Self {
         Self {
+            lock_work: Arc::default(),
             state: Arc::new(Mutex::new(State {
                 owner: Arc::new(()),
                 budget,
@@ -305,6 +427,7 @@ impl LocalIndex {
                 entries: BTreeMap::new(),
                 keys: BTreeMap::new(),
                 evictable: BTreeSet::new(),
+                divergences: BTreeMap::new(),
                 stores: BTreeMap::new(),
                 stored: 0,
                 next_id: 0,
@@ -314,36 +437,65 @@ impl LocalIndex {
         }
     }
 
-    fn state(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn state(&self, site: lock_work::Site) -> lock_work::Guard<'_, State> {
+        self.lock_work.lock(&self.state, site)
     }
 
-    fn abandon(state: Weak<Mutex<State>>) -> segments::Abandon {
-        Box::new(move |segment_id, offset, len| {
+    fn abandon(state: Weak<Mutex<State>>, work: Arc<lock_work::LockWork>) -> segments::Abandon {
+        Box::new(move |reclamation| {
             if let Some(state) = state.upgrade() {
-                state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                work.lock(&state, lock_work::Site::Abandon)
                     .segments
-                    .free(segment_id, offset, len);
+                    .reclaim(reclamation);
             }
         })
     }
 }
 
 impl CacheIndex for LocalIndex {
+    fn divergences(&self) -> Vec<Arc<CacheDivergence>> {
+        self.state(lock_work::Site::Divergences)
+            .divergences
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    fn verify_namespace(&self, namespace: Namespace) -> Result<(), CacheError> {
+        self.state(lock_work::Site::VerifyNamespace)
+            .verify_namespace(namespace)
+    }
+
+    fn verify_integrity(&self) -> Result<(), CacheError> {
+        let state = self.state(lock_work::Site::VerifyIntegrity);
+        match state.divergences.keys().next() {
+            Some(&namespace) => state.verify_namespace(namespace),
+            None => Ok(()),
+        }
+    }
+
+    fn verify_lease(&self, lease: &Lease) -> Result<(), CacheError> {
+        let state = self.state(lock_work::Site::VerifyLease);
+        if !Arc::ptr_eq(&lease.owner, &state.owner) {
+            return Err(CacheError::ForeignLease);
+        }
+        let entry = state
+            .entries
+            .get(&lease.entry)
+            .ok_or(CacheError::UnknownLease(lease.entry))?;
+        state.verify_namespace(entry.namespace)
+    }
+
     fn lookup(&self, namespace: Namespace, key: &[u8]) -> Option<Lease> {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::Lookup);
         state.stats.lookups += 1;
-        let id = state.longest_prefix(namespace, key)?;
+        let id = state.lookup_key(namespace, key)?;
         state.stats.hits += 1;
         state.lease(id).ok()
     }
 
     fn extent(&self, len: usize) -> Result<WritableExtent, CacheError> {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::Extent);
         let needed =
             segments::rounded(len.max(1)).ok_or(CacheError::Malformed("extent size overflow"))?;
         if let Err(error) = state.make_room(needed) {
@@ -351,7 +503,10 @@ impl CacheIndex for LocalIndex {
             return Err(error);
         }
         let mut extent = state.segments.allocate(needed)?;
-        extent.set_abandon(Self::abandon(Arc::downgrade(&self.state)));
+        extent.set_abandon(Self::abandon(
+            Arc::downgrade(&self.state),
+            Arc::clone(&self.lock_work),
+        ));
         Ok(extent)
     }
 
@@ -361,41 +516,82 @@ impl CacheIndex for LocalIndex {
         key: &[u8],
         parent: Option<&Lease>,
         extent: WritableExtent,
+        target_commitment: [u8; 32],
         cost: u64,
     ) -> Result<Lease, CacheError> {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::Publish);
         if !state.segments.owns(&extent) {
             return Err(CacheError::ForeignExtent);
         }
         let committed = extent.commit();
+        if let Err(error) = state.verify_namespace(namespace) {
+            state.segments.free_committed(committed);
+            return Err(error);
+        }
+        let validated = (|| {
+            let Some(lease) = parent else { return Ok(0) };
+            if !Arc::ptr_eq(&lease.owner, &state.owner) {
+                return Err(CacheError::ForeignLease);
+            }
+            let parent = state
+                .entries
+                .get(&lease.entry)
+                .ok_or(CacheError::UnknownLease(lease.entry))?;
+            if parent.namespace != namespace {
+                return Err(CacheError::NamespaceMismatch);
+            }
+            if namespace.1 == KeyMode::Prefix
+                && (!key.starts_with(&parent.key) || key.len() <= parent.key.len())
+            {
+                return Err(CacheError::Malformed("parent key is not a prefix"));
+            }
+            parent
+                .depth
+                .checked_add(1)
+                .ok_or(CacheError::Malformed("cache chain depth overflows"))
+        })();
+        let depth = match validated {
+            Ok(depth) => depth,
+            Err(error) => {
+                state.segments.free_committed(committed);
+                return Err(error);
+            }
+        };
         if let Some(&id) = state.keys.get(&namespace).and_then(|keys| keys.get(key)) {
+            let existing_commitment = state.entries[&id].target_commitment;
+            if existing_commitment != target_commitment {
+                let existing = CacheWitness {
+                    target_commitment: existing_commitment,
+                    chain: state.chain(Some(id))?,
+                };
+                let mut chain = state.chain(parent.map(|lease| lease.entry))?;
+                chain.push(committed);
+                let evidence = Arc::new(CacheDivergence {
+                    namespace,
+                    key: key.to_vec(),
+                    existing,
+                    published: CacheWitness {
+                        target_commitment,
+                        chain,
+                    },
+                });
+                state.divergences.insert(namespace, Arc::clone(&evidence));
+                let pinned: BTreeSet<_> = state
+                    .entries
+                    .iter()
+                    .filter(|(_, entry)| entry.namespace == namespace)
+                    .map(|(&id, entry)| (entry.priority, id))
+                    .collect();
+                state.evictable.retain(|entry| !pinned.contains(entry));
+                return Err(CacheError::DivergentDuplicate { evidence });
+            }
             state.segments.free_committed(committed);
             state.stats.duplicates += 1;
             return state.lease(id);
         }
-        let depth = match parent {
-            Some(lease) => {
-                if !Arc::ptr_eq(&lease.owner, &state.owner) {
-                    state.segments.free_committed(committed);
-                    return Err(CacheError::ForeignLease);
-                }
-                let Some(parent) = state.entries.get_mut(&lease.entry) else {
-                    state.segments.free_committed(committed);
-                    return Err(CacheError::UnknownLease(lease.entry));
-                };
-                if parent.namespace != namespace {
-                    state.segments.free_committed(committed);
-                    return Err(CacheError::NamespaceMismatch);
-                }
-                if !key.starts_with(&parent.key) || key.len() <= parent.key.len() {
-                    state.segments.free_committed(committed);
-                    return Err(CacheError::Malformed("parent key is not a prefix"));
-                }
-                parent.children += 1;
-                parent.depth + 1
-            }
-            None => 0,
-        };
+        if let Some(parent) = parent {
+            state.entries.get_mut(&parent.entry).unwrap().children += 1;
+        }
         let id = state.next_id;
         state.next_id += 1;
         let mut entry = Entry {
@@ -404,6 +600,7 @@ impl CacheIndex for LocalIndex {
             parent: parent.map(|lease| lease.entry),
             depth,
             extent: committed,
+            target_commitment,
             cost,
             leases: 1,
             children: 0,
@@ -425,24 +622,34 @@ impl CacheIndex for LocalIndex {
         })
     }
 
-    fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError> {
-        let state = self.state();
+    fn target_commitment(&self, lease: &Lease) -> Result<[u8; 32], CacheError> {
+        let state = self.state(lock_work::Site::TargetCommitment);
         if !Arc::ptr_eq(&lease.owner, &state.owner) {
             return Err(CacheError::ForeignLease);
         }
-        let mut chain = Vec::new();
-        let mut cursor = Some(lease.entry);
-        while let Some(id) = cursor {
-            let entry = state.entries.get(&id).ok_or(CacheError::UnknownLease(id))?;
-            chain.push(entry.extent.clone());
-            cursor = entry.parent;
+        let entry = state
+            .entries
+            .get(&lease.entry)
+            .ok_or(CacheError::UnknownLease(lease.entry))?;
+        state.verify_namespace(entry.namespace)?;
+        Ok(entry.target_commitment)
+    }
+
+    fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError> {
+        let state = self.state(lock_work::Site::Chain);
+        if !Arc::ptr_eq(&lease.owner, &state.owner) {
+            return Err(CacheError::ForeignLease);
         }
-        chain.reverse();
-        Ok(chain)
+        let entry = state
+            .entries
+            .get(&lease.entry)
+            .ok_or(CacheError::UnknownLease(lease.entry))?;
+        state.verify_namespace(entry.namespace)?;
+        state.chain(Some(lease.entry))
     }
 
     fn release(&self, lease: Lease) {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::Release);
         if !Arc::ptr_eq(&lease.owner, &state.owner) {
             return;
         }
@@ -452,8 +659,15 @@ impl CacheIndex for LocalIndex {
         }
     }
 
+    fn revoke(&self, lease: Lease) {
+        let mut state = self.state(lock_work::Site::Revoke);
+        if Arc::ptr_eq(&lease.owner, &state.owner) {
+            state.revoke(lease.entry);
+        }
+    }
+
     fn report_store(&self, holder: u64, bytes: u64) -> bool {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::ReportStore);
         state.set_store(holder, Some(usize::try_from(bytes).unwrap_or(usize::MAX)));
         while state.over_budget() {
             let Some(&(_, id)) = state.evictable.first() else {
@@ -474,11 +688,12 @@ impl CacheIndex for LocalIndex {
     }
 
     fn forget_store(&self, holder: u64) {
-        self.state().set_store(holder, None);
+        self.state(lock_work::Site::ForgetStore)
+            .set_store(holder, None);
     }
 
     fn stats(&self) -> CacheStats {
-        let state = self.state();
+        let state = self.state(lock_work::Site::Stats);
         CacheStats {
             budget: state.budget,
             charged: state.segments.charged(),
@@ -498,6 +713,9 @@ impl CacheIndex for LocalIndex {
             ..state.stats
         }
     }
+    fn lock_counters(&self) -> Vec<(String, u64)> {
+        self.lock_work.counters()
+    }
 }
 
 #[cfg(test)]
@@ -505,6 +723,38 @@ mod tests {
     use super::extent::{HashedPage, extent_len, read_extent, resolve, write_extent};
     use super::segments::PAGE;
     use super::*;
+
+    #[test]
+    fn lock_work_is_shared_only_by_clones_and_abandon_does_not_keep_state_alive() {
+        let index = LocalIndex::with_segment_bytes(PAGE * 4, PAGE * 4);
+        let cloned = index.clone();
+        let separate = LocalIndex::with_segment_bytes(PAGE * 4, PAGE * 4);
+        assert!(index.lock_counters().is_empty());
+        assert!(index.lookup(ns("missing"), b"key").is_none());
+        assert_eq!(cloned.lock_counters(), index.lock_counters());
+        assert!(separate.lock_counters().is_empty());
+        let before = index.stats();
+        let counters = index.lock_counters();
+        assert_eq!(index.stats(), before);
+        assert!(!counters.is_empty());
+        let extent = cloned.extent(PAGE).unwrap();
+        drop(extent);
+        let values = index
+            .lock_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(values["abandon.attempts"], 1);
+        assert_eq!(values["abandon.completed"], 1);
+        let extent = index.extent(PAGE).unwrap();
+        let weak = Arc::downgrade(&index.state);
+        let work = Arc::clone(&index.lock_work);
+        drop(index);
+        drop(cloned);
+        assert!(weak.upgrade().is_none());
+        drop(extent);
+        let values = work.counters().into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(values["abandon.completed"], 1);
+    }
 
     fn ns(name: &str) -> Namespace {
         Namespace::new(&[name.as_bytes()])
@@ -529,13 +779,15 @@ mod tests {
         let len = extent_len(rows.len(), reverted.len(), key.len()).unwrap();
         let mut extent = index.extent(len)?;
         write_extent(extent.bytes_mut(), &rows, reverted, key)?;
-        index.publish(namespace, key, parent, extent, 1)
+        let target_commitment = Sha256::digest(extent.bytes_mut()).into();
+        index.publish(namespace, key, parent, extent, target_commitment, 1)
     }
 
     fn put_empty(index: &LocalIndex, key: &[u8], cost: u64) -> Result<Lease, CacheError> {
         let mut extent = index.extent(extent_len(0, 0, key.len()).unwrap())?;
         write_extent(extent.bytes_mut(), &[], &[], key).unwrap();
-        index.publish(ns("a"), key, None, extent, cost)
+        let target_commitment = Sha256::digest(extent.bytes_mut()).into();
+        index.publish(ns("a"), key, None, extent, target_commitment, cost)
     }
 
     fn put_costing(index: &LocalIndex, key: &[u8], cost: u64) {
@@ -545,10 +797,35 @@ mod tests {
 
     fn held(index: &LocalIndex, key: &[u8]) -> bool {
         index
-            .state()
+            .state(lock_work::Site::Stats)
             .keys
             .get(&ns("a"))
             .is_some_and(|keys| keys.contains_key(key))
+    }
+
+    #[test]
+    fn revoking_a_published_entry_invalidates_existing_leases_and_descendants() {
+        let index = LocalIndex::new(1 << 20);
+        let root = put_empty(&index, b"r", 1).unwrap();
+        let other = index.lookup(ns("a"), b"r").unwrap();
+        let child = put(&index, ns("a"), b"r1", Some(&root), &[], &[]).unwrap();
+        index.revoke(root);
+        assert!(index.lookup(ns("a"), b"r1").is_none());
+        assert!(index.lookup(ns("a"), b"r").is_none());
+        assert!(matches!(
+            index.chain(&other),
+            Err(CacheError::UnknownLease(_))
+        ));
+        assert!(matches!(
+            index.chain(&child),
+            Err(CacheError::UnknownLease(_))
+        ));
+        index.release(other);
+        index.release(child);
+        assert_eq!((index.stats().entries, index.stats().leased), (0, 0));
+        let replacement = put_empty(&index, b"r", 1).unwrap();
+        assert_eq!(index.chain(&replacement).unwrap().len(), 1);
+        index.release(replacement);
     }
 
     fn resolved(index: &LocalIndex, lease: &Lease) -> (Vec<(u64, u8)>, Vec<u8>) {
@@ -566,6 +843,126 @@ mod tests {
                 .collect(),
             resolved.sidecar.to_vec(),
         )
+    }
+
+    #[test]
+    fn exact_keys_resolve_the_supplied_parent_and_never_match_a_prefix() {
+        let index = LocalIndex::new(1 << 20);
+        let space = Namespace::exact(&[b"opaque"]);
+        let prefix = Namespace::new(&[b"opaque"]);
+        assert_ne!(space.as_bytes(), prefix.as_bytes());
+        let root = put(&index, space, &[9; 32], None, &[(0, 1)], &[]).unwrap();
+        let child = put(&index, space, &[3; 32], Some(&root), &[(1, 2)], &[]).unwrap();
+        assert_eq!(child.depth(), 1);
+        assert_eq!(resolved(&index, &child).0, vec![(0, 1), (1, 2)]);
+        assert_eq!(index.chain(&child).unwrap().len(), 2);
+        let found = index.lookup(space, &[3; 32]).unwrap();
+        assert_eq!(found, child);
+        index.release(found);
+        let mut longer = vec![3; 32];
+        longer.push(0);
+        for probe in [&longer[..], &[3; 31][..], &[][..]] {
+            assert!(index.lookup(space, probe).is_none());
+        }
+        assert!(index.lookup(prefix, &[3; 32]).is_none());
+        index.release(child);
+        index.release(root);
+    }
+
+    #[test]
+    fn exact_parent_checks_reject_foreign_revoked_and_other_namespace_leases() {
+        let index = LocalIndex::new(1 << 20);
+        let other = LocalIndex::new(1 << 20);
+        let space = Namespace::exact(&[b"opaque"]);
+        let foreign = put(&other, space, &[9; 32], None, &[(0, 1)], &[]).unwrap();
+        assert!(matches!(
+            put(&index, space, &[3; 32], Some(&foreign), &[(1, 2)], &[]),
+            Err(CacheError::ForeignLease)
+        ));
+        let wrong = put(
+            &index,
+            Namespace::exact(&[b"other"]),
+            &[9; 32],
+            None,
+            &[(0, 1)],
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            put(&index, space, &[3; 32], Some(&wrong), &[(1, 2)], &[]),
+            Err(CacheError::NamespaceMismatch)
+        ));
+        let prefix = put(
+            &index,
+            Namespace::new(&[b"opaque"]),
+            &[9; 32],
+            None,
+            &[(0, 1)],
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            put(&index, space, &[3; 32], Some(&prefix), &[(1, 2)], &[]),
+            Err(CacheError::NamespaceMismatch)
+        ));
+        let root = put(&index, space, &[9; 32], None, &[(0, 1)], &[]).unwrap();
+        let revoked = index.lookup(space, &[9; 32]).unwrap();
+        index.revoke(root);
+        assert!(matches!(
+            put(&index, space, &[3; 32], Some(&revoked), &[(1, 2)], &[]),
+            Err(CacheError::UnknownLease(_))
+        ));
+        index.release(revoked);
+        index.release(prefix);
+        index.release(wrong);
+        other.release(foreign);
+    }
+
+    #[test]
+    fn exact_duplicate_ancestor_does_not_reparent_or_create_a_cycle() {
+        let index = LocalIndex::new(1 << 20);
+        let space = Namespace::exact(&[b"opaque"]);
+        let root = put(&index, space, &[9; 32], None, &[(0, 1)], &[]).unwrap();
+        let child = put(&index, space, &[3; 32], Some(&root), &[(0, 2)], &[]).unwrap();
+        let duplicate = put(&index, space, &[9; 32], Some(&child), &[(0, 1)], &[]).unwrap();
+        assert_eq!(duplicate, root);
+        assert_eq!(index.chain(&duplicate).unwrap().len(), 1);
+        assert_eq!(index.chain(&child).unwrap().len(), 2);
+        assert_eq!(resolved(&index, &duplicate).0, vec![(0, 1)]);
+        assert_eq!(resolved(&index, &child).0, vec![(0, 2)]);
+        assert_eq!(index.stats().entries, 2);
+        index.release(duplicate);
+        index.release(child);
+        index.release(root);
+    }
+
+    #[test]
+    fn conflicting_exact_key_quarantines_both_actual_witness_chains() {
+        let index = LocalIndex::new(1 << 20);
+        let space = Namespace::exact(&[b"opaque"]);
+        let parent = put(&index, space, &[9; 32], None, &[(0, 1)], &[]).unwrap();
+        let first = put(&index, space, &[3; 32], Some(&parent), &[(1, 2)], &[]).unwrap();
+        let error = put(&index, space, &[3; 32], Some(&parent), &[(1, 3)], &[]).unwrap_err();
+        let CacheError::DivergentDuplicate { evidence } = error else {
+            panic!("expected divergent duplicate")
+        };
+        assert_eq!(evidence.existing.chain.len(), 2);
+        assert_eq!(evidence.published.chain.len(), 2);
+        assert_ne!(
+            evidence.existing.target_commitment,
+            evidence.published.target_commitment
+        );
+        assert!(matches!(
+            index.target_commitment(&first),
+            Err(CacheError::Quarantined { .. })
+        ));
+        assert!(index.lookup(space, &[3; 32]).is_none());
+        assert!(matches!(
+            put(&index, space, &[7; 32], Some(&parent), &[(1, 4)], &[]),
+            Err(CacheError::Quarantined { .. })
+        ));
+        index.release(first);
+        index.release(parent);
     }
 
     #[test]
@@ -643,7 +1040,7 @@ mod tests {
             let mut extent = a.extent(extent_len(0, 0, 0).unwrap()).unwrap();
             write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
             assert!(matches!(
-                b.publish(space, key, None, extent, 1),
+                b.publish(space, key, None, extent, [0; 32], 1),
                 Err(CacheError::ForeignExtent)
             ));
             assert_eq!(a.stats().charged, 0);
@@ -658,12 +1055,149 @@ mod tests {
         let space = ns("a");
         let first = put(&index, space, b"k", None, &[(0, 1)], &[]).unwrap();
         let charged = index.stats().charged;
-        let second = put(&index, space, b"k", None, &[(0, 2)], &[]).unwrap();
+        let second = put(&index, space, b"k", None, &[(0, 1)], &[]).unwrap();
         assert_eq!(first, second);
         assert_eq!(resolved(&index, &second).0, vec![(0, 1)]);
         let stats = index.stats();
         assert_eq!((stats.entries, stats.duplicates), (1, 1));
         assert!(stats.charged >= charged);
+    }
+
+    #[test]
+    fn a_divergent_duplicate_key_must_not_return_the_first_lease() {
+        let index = LocalIndex::with_segment_bytes(1 << 20, 4 * PAGE);
+        let space = ns("a");
+        let first = put(&index, space, b"k", None, &[(0, 1)], &[]).unwrap();
+        let existing_commitment =
+            index.state(lock_work::Site::Stats).entries[&first.entry].target_commitment;
+        let page = [2; PAGE];
+        let mut extent = index.extent(extent_len(1, 0, 1).unwrap()).unwrap();
+        write_extent(extent.bytes_mut(), &[(0, &[2; 32], &page)], &[], b"k").unwrap();
+        let published_commitment = Sha256::digest(extent.bytes_mut()).into();
+        let result = index.publish(space, b"k", None, extent, published_commitment, 1);
+        assert!(matches!(
+            result,
+            Err(CacheError::DivergentDuplicate { evidence }) if evidence.namespace == space
+                && evidence.key == b"k"
+                && evidence.existing.target_commitment == existing_commitment
+                && evidence.published.target_commitment == published_commitment
+        ));
+        assert!(matches!(
+            index.chain(&first),
+            Err(CacheError::Quarantined { .. })
+        ));
+        assert!(index.lookup(space, b"k").is_none());
+        let evidence = index.divergences();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(
+            read_extent(evidence[0].existing.chain[0].bytes())
+                .unwrap()
+                .pages[0]
+                .2[0],
+            1
+        );
+        assert_eq!(
+            read_extent(evidence[0].published.chain[0].bytes())
+                .unwrap()
+                .pages[0]
+                .2[0],
+            2
+        );
+        assert_eq!(index.stats().entries, 1);
+        assert_eq!(index.stats().duplicates, 0);
+    }
+
+    #[test]
+    fn quarantine_blocks_inflight_dependents_and_preserves_both_witness_chains() {
+        let index = LocalIndex::new(1 << 20);
+        let space = ns("disputed");
+        let parent = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
+        let first = put(&index, space, b"ab", Some(&parent), &[(1, 2)], &[]).unwrap();
+        let descendant = put(&index, space, b"abc", Some(&first), &[(2, 3)], &[]).unwrap();
+        let pending = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+        let pending_anchor = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+        let healthy = put(&index, ns("healthy"), b"a", None, &[(0, 9)], &[]).unwrap();
+        index.release(healthy);
+        let error = put(&index, space, b"ab", Some(&parent), &[(1, 4)], &[]).unwrap_err();
+        let evidence = match error {
+            CacheError::DivergentDuplicate { evidence, .. } => evidence,
+            error => panic!("wrong error: {error}"),
+        };
+        assert_eq!(evidence.namespace, space);
+        assert_eq!(evidence.key, b"ab");
+        for lease in [&parent, &first, &descendant] {
+            assert!(matches!(
+                index.chain(lease),
+                Err(CacheError::Quarantined { .. })
+            ));
+            assert!(matches!(
+                index.verify_lease(lease),
+                Err(CacheError::Quarantined { .. })
+            ));
+        }
+        assert!(index.lookup(space, b"abc").is_none());
+        assert!(matches!(
+            index.publish(space, b"abcd", Some(&descendant), pending, [1; 32], 1),
+            Err(CacheError::Quarantined { .. })
+        ));
+        assert!(matches!(
+            index.publish(space, b"z", None, pending_anchor, [1; 32], 1),
+            Err(CacheError::Quarantined { .. })
+        ));
+        index.revoke(first);
+        index.release(parent);
+        index.release(descendant);
+        assert!(index.report_store(1, 1 << 20));
+        assert!(index.lookup(ns("healthy"), b"a").is_none());
+        let retained = match index.verify_integrity().unwrap_err() {
+            CacheError::Quarantined { evidence, .. } => evidence,
+            error => panic!("wrong error: {error}"),
+        };
+        assert!(Arc::ptr_eq(&retained, &evidence));
+        drop(index);
+        for (witness, expected) in [(&retained.existing, 2), (&retained.published, 4)] {
+            let deltas: Vec<_> = witness
+                .chain
+                .iter()
+                .map(|extent| read_extent(extent.bytes()).unwrap())
+                .collect();
+            let resolved = resolve(&deltas).unwrap();
+            assert_eq!(
+                resolved
+                    .pages
+                    .iter()
+                    .map(|&(gfn, _, data)| (gfn, data[0]))
+                    .collect::<Vec<_>>(),
+                vec![(0, 1), (1, expected)]
+            );
+            assert_eq!(resolved.sidecar, b"ab");
+        }
+    }
+
+    #[test]
+    fn equal_target_with_different_parent_delta_keeps_the_first_lease() {
+        let index = LocalIndex::new(1 << 20);
+        let space = ns("a");
+        let parent = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
+        let target_commitment = [7; 32];
+        let publish = |parent: Option<&Lease>, pages: &[(u64, u8)]| {
+            let owned: Vec<_> = pages
+                .iter()
+                .map(|&(gfn, fill)| (gfn, [fill; 32], [fill; PAGE]))
+                .collect();
+            let rows: Vec<HashedPage<'_>> = owned
+                .iter()
+                .map(|(gfn, hash, data)| (*gfn, hash, data))
+                .collect();
+            let mut extent = index.extent(extent_len(rows.len(), 0, 0).unwrap()).unwrap();
+            write_extent(extent.bytes_mut(), &rows, &[], &[]).unwrap();
+            index.publish(space, b"ab", parent, extent, target_commitment, 1)
+        };
+        let anchor = publish(None, &[(0, 1), (1, 2)]).unwrap();
+        let duplicate = publish(Some(&parent), &[(1, 2)]).unwrap();
+        assert_eq!(anchor, duplicate);
+        assert_eq!(resolved(&index, &duplicate).0, vec![(0, 1), (1, 2)]);
+        assert_eq!(index.stats().duplicates, 1);
     }
 
     #[test]

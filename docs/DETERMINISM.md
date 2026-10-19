@@ -135,6 +135,20 @@ normalization and canonicalization. Hardware qualification tests specific CPU
 and backend compositions. It does not establish behavior for every instruction
 encoding or future processor.
 
+Standard math libraries remain supported. Native approximate arithmetic and
+x87 transcendental operations can depend on the CPU implementation. Native
+CPU state metadata can differ too: the composed Linux continuation fixture
+reproduces an x87 instruction-pointer difference in CPU state and the guest
+kernel's saved FPU image on AMD versus Intel. The current qualification suite
+does not prove numerical or whole-state equivalence across CPUs
+([tracked portability work](https://github.com/pH14/harmony/issues/733)).
+Saved CLI runs retain observed CPU implementation metadata. Replay, branching,
+and continued search warn on different, unavailable, incomplete, or mixed CPU
+identities without rejecting the operation. Matching metadata suppresses this
+advisory warning but is not numerical or whole-state qualification. Existing snapshot and
+runner compatibility checks remain mandatory. This CLI warning does not add a
+CPU restriction to lower-level execution APIs or change snapshot/cache keys.
+
 ## Scope
 
 The current determinism claim has these limits:

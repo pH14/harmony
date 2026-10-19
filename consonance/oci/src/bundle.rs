@@ -99,10 +99,10 @@ impl LaunchRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedExecution {
-    pub rootfs_segment: Vec<u8>,
-    pub control_segment: Vec<u8>,
-    pub execution: ExecutionSpec,
-    pub identity: [u8; 32],
+    rootfs_segment: Vec<u8>,
+    control_segment: Vec<u8>,
+    execution: ExecutionSpec,
+    identity: [u8; 32],
 }
 
 pub struct ArchivedRootfs {
@@ -133,6 +133,22 @@ impl ArchivedRootfs {
 }
 
 impl PreparedExecution {
+    pub fn rootfs_segment(&self) -> &[u8] {
+        &self.rootfs_segment
+    }
+
+    pub fn control_segment(&self) -> &[u8] {
+        &self.control_segment
+    }
+
+    pub fn execution(&self) -> &ExecutionSpec {
+        &self.execution
+    }
+
+    pub fn identity(&self) -> &[u8; 32] {
+        &self.identity
+    }
+
     pub fn archived_rootfs(&self) -> Result<ArchivedRootfs, BundleError> {
         let segment = &self.rootfs_segment;
         if segment.len() < 18 || segment[..10] != [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 4, 255] {

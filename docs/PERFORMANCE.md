@@ -1,9 +1,91 @@
 # Performance
 
 How fast could a search run on a given chip, and where does the time go when
-it falls short? We estimate that ceiling from the native CPU time of the
-workload, then account for the gap using measurements of host overhead,
-repeated work, and worker utilization.
+it falls short? Estimate that ceiling from the native CPU time of the workload,
+then account for the gap using host overhead, repeated work and worker
+utilization. The cost ranges and arithmetic examples below are illustrative
+model assumptions, not a baseline for the current executable. Measure them for
+the chip, backend and workload being evaluated.
+
+## Measurement boundaries
+
+Measure a fixed logical job separately from a whole campaign. Restore,
+extension, capture and import exercise different paths. Report whether an
+extension uses a fused operation or separate apply and capture calls; their
+summed timings do not establish fused-operation throughput. Include creation,
+boot, prefix construction and final persistence in the campaign total, or
+state explicitly which phase excludes them.
+
+A retained parent can restore without replaying historical actions. A missing
+parent may require an ancestor restore and reconstruction. Record the actual
+source, selected depth, reconstruction work and executing worker before
+interpreting locality or restore cost. A direct-target import experiment does
+not measure adaptive selection, admission or campaign effectiveness.
+
+### Counter ownership
+
+Cumulative work counters and live residency diagnostics answer different
+questions. Snapshot work counters without walking retained snapshots for
+ownership queries. Request residency diagnostics explicitly, and preserve an
+unknown charge as unavailable. Work collection still has a fixed guarded
+worker telemetry exchange; record that observer effect rather than subtracting
+an estimated cost from elapsed time.
+
+- Campaign target totals already include worker profiles. Shared index,
+  launcher and retired coordinator profiles have separate owners.
+- Sending and receiving a descriptor observe the same transfer. Extent
+  references, distinct backing allocations, FD handles, mapped views, copied
+  bytes and resident memory are distinct quantities. Repeated allocation
+  identity does not establish unique physical RAM or persistent registration.
+- Guard, SDK callback, VM run and import timers can nest. Concurrent worker
+  times cannot be added to obtain campaign wall time. Event shape witnesses
+  are subsets of opcode totals, not additional work or semantic outcomes.
+- Logical ticks and normalized history are separate from physical backend
+  entries. Callback counts describe actual callback sites, not an assumed
+  request-to-response ratio or successful response writes.
+- Report counter overflow, saturation and missing coverage. A successful run
+  with no reported errors does not qualify failing-path observation retention.
+
+### Integrity and callback phases
+
+Retained memory can change outside tracked writes. Fresh integrity checks must
+therefore remain at their operation boundaries. A cached digest or a previously
+verified page ID cannot authorize current bytes. A sealed executable file does
+not make private live code mappings immutable; matching live and backing read
+streams does not establish that either still matches admission.
+
+A sparse import resolves its extent chain before importing it. Resident page
+verification occurs before the user service-factory callback and again after
+it. Keep the verification sets separate: the callback can change retained
+memory. Repeated resident hash bytes can represent these distinct fresh phases,
+not necessarily duplicate imports or amplification with parent depth. Measure
+phase-specific work before attributing a cause. A faster membership data
+structure may reduce bookkeeping while retaining every required page hash.
+
+### Comparable experiments
+
+Bind raw results to source, executable, toolchain, lock files, workload inputs,
+backend and admission receipts. Preserve the complete typed stream and logical
+report. Compare equivalent paths within the same binary; a different build
+needs its own reference and cannot inherit an earlier replay oracle. Record
+host-only runtime qualification separately from an exact runtime-input match.
+Keep run records, measured tables and raw output outside the repository; put
+the numbers supporting a change and their limitations in its pull request.
+
+Hold logical work, seed, admission window, RAM and cache budgets fixed when
+varying workers. Compare complete streams and logical reports, and record
+actual reservations and worker assignments. Measure parent reuse as well as
+root-only work. Distinguish performance from useful outcomes: a faster fixed
+job does not establish better search effectiveness. Independent campaigns on
+separate hosts do not preserve one campaign's global ordering.
+
+Use repeated, bounded trials and report their spread, run order and host load.
+Pin equivalent core types and include a single-worker reference for each core
+used. Separate cold, warm and constrained-cache cases. Sampled PSS is neither a
+guaranteed peak nor total cache ownership; account for unmapped cache backing
+and use cgroup memory for campaign capacity. Preserve owned-session exit
+receipts and sampled process identities, and refuse uncertain cleanup instead
+of treating leader exit as proof that all workers stopped.
 
 ## The model
 
@@ -77,39 +159,6 @@ search to reach the ceiling.
 | Worker waiting | Worker wall time over worker busy time | Busy and wall time per worker |
 | Contention | Guest time per unit of new work with every worker running, over that time with one | Guest cycles on a full run against a one-worker run on the same core type |
 
-> [!NOTE]
-> **Worked example: Pokémon Blue at native speed.**
->
-> On an M1 Max (Firestorm), the Game Boy core runs Pokémon Blue at 9,904 frames
-> per second in a bare loop and 9,932 frames per second inside one search worker.
-> Within measurement error, the search adds no host overhead. It also repeats no
-> guest work: every frame it runs belongs to a requested action. Snapshots are
-> small enough to retain every endpoint, at 58 KiB each, or about 17,000 per
-> gigabyte. That leaves core utilization, worker waiting, and contention to
-> explain any gap when scaling to the whole chip.
-
-> [!NOTE]
-> **Worked example: etcd on one core.**
->
-> For the etcd historical case, we ran a Consonance search with one worker
-> pinned to a core of each type. We estimated guest time by multiplying the
-> worker's busy time by the fraction of cycles spent in the guest, and measured
-> re-execution as total virtual time run divided by new virtual time.
->
-> | | Intel 285HX P-core | Intel 285HX E-core | CIX CP8180 (Cortex-A720) | CIX CP8180 (Cortex-A520) |
-> |---|---|---|---|---|
-> | New guest time per execution | 60 ms | 87 ms | 215 ms | 838 ms |
-> | Ceiling per core | 16.6/s | 11.5/s | 4.7/s | 1.2/s |
-> | Measured rate | 2.14/s | 1.19/s | 0.40/s | 0.066/s |
-> | Host overhead | 3.2x | 4.0x | 4.9x | 8.2x |
-> | Re-execution | 2.4x | 2.4x | 2.4x | 2.2x |
-> | Gap | 7.8x | 9.7x | 11.7x | 18x |
->
-> Each worker stayed busy throughout its run, so the worker-waiting factor is
-> one. These single-worker runs also provide the baseline for contention. The
-> E-core achieved 0.56 of the P-core's execution rate, while the Cortex-A520
-> achieved 0.17 of the Cortex-A720's rate.
-
 A search report's `telemetry` records the inputs to each factor: worker busy,
 idle, and scheduler wait time, host time by exit site and snapshot operation,
 and new against re-run work in both host and virtual time. Estimate guest time
@@ -126,9 +175,10 @@ advance the virtual clock, add to this minimum.
 The cost depends on how often the guest exits relative to the work it does
 between exits. Multiply the exit count by the cost per exit, then divide by
 guest time to get the overhead. At 2.5 µs per exit, exiting every 25 µs of
-guest work adds 10%; exiting every 2.5 µs doubles the total time. In a Linux
-guest, most exits are ticks that advance the virtual clock, and a register the
-guest writes each time it unmasks interrupts can cost more than any device.
+guest work adds 10%; exiting every 2.5 µs doubles the total time. Attribute physical exits and SDK scheduling exchanges by operation before
+identifying a dominant cost. Coverage exchanges select scheduling decisions
+and the next threshold; they are distinct from logical kernel ticks. Callback
+shape alone does not establish that register publication dominates.
 
 ## Pages
 
@@ -244,29 +294,14 @@ one-worker run gets the fastest, so compare against one-worker runs on each
 core the full run uses. Boot time and final persistence can also dominate
 short campaigns spread across many workers.
 
-> [!NOTE]
-> **Worked example: etcd on seven Cortex-A720 workers.**
->
-> On a CIX CP8180, seven Cortex-A720 workers run the etcd search at about
-> 27,700 executions per hour, and one worker runs about 6,000. The shared
-> snapshot cache holds every selected state, so re-execution is 1.00, and
-> restores take 5% of busy time. Seven workers run 4.6 times one. Most of the
-> remaining gap comes from the chip:
->
-> | Setup | Guest time per exit |
-> |---|---|
-> | One search alone on a 2.6 GHz core | 13.2 µs |
-> | One search alone on a 2.2 GHz core | 15.7 µs |
-> | Four one-worker searches at once | 16.0 to 18.5 µs |
-> | One four-worker search on the same cores | 16.9 µs |
->
-> The chip's Cortex-A720 cores run at 2.2 to 2.6 GHz, and one worker gets the
-> fastest. Separate guests slow each other by about 20% through shared caches
-> and memory; a four-worker search is no slower than four separate searches.
-
 Weak scaling increases the campaign size along with the worker count. This
 still runs into coordinator capacity as jobs per second increase, and memory
 capacity as more guests need to fit on the host.
+
+For independent trials across hosts, use the CLI's
+[independent-campaign recipe](../cli/README.md#independent-campaigns-on-two-hosts).
+It keeps search state local and uses existing saved-run replay; it is not a
+qualification of multi-host speedup or one globally ordered campaign.
 
 ## Checks
 

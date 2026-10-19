@@ -4,6 +4,8 @@ pub type Result<T> = core::result::Result<T, BackendError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
+    #[error("ARM register {register:#018x}: {reason}")]
+    Arm64RegisterInventory { register: u64, reason: &'static str },
     #[error("backend does not support: {what}")]
     Unsupported { what: &'static str },
 
@@ -37,6 +39,11 @@ pub enum BackendError {
     #[error("AMD KVM cannot safely restore a previously run vCPU; use a fresh VM")]
     AmdReusedVcpuRestoreUnsafe,
 
+    #[error(
+        "ARM KVM cannot safely restore translations or executable bytes in a previously run vCPU; use a fresh VM"
+    )]
+    Arm64ReusedVcpuRestoreUnsafe,
+
     #[error("snapshot host core class {saved:?} differs from this backend's {current:?}")]
     HostCoreClassMismatch {
         saved: Option<crate::HostCoreClass>,
@@ -50,6 +57,17 @@ pub enum BackendError {
         encoding: u32,
         requested: u64,
         host: u64,
+    },
+
+    #[error(
+        "KVM CPUID {leaf:#010x}.{subleaf:#x} {register} requires {requested:#010x}, available {available:#010x}"
+    )]
+    CpuidUnavailable {
+        leaf: u32,
+        subleaf: u32,
+        register: &'static str,
+        requested: u32,
+        available: u32,
     },
 
     #[error("backend internal error: {0}")]

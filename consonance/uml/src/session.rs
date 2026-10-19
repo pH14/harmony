@@ -7,9 +7,10 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
-use environment::channel::ServiceHandler;
+use environment::channel::{HandlerFingerprint, Question, ServiceHandler};
 use environment::input_spec::ServiceFactory;
 use hypercall_proto::MAX_FRAME;
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use sha2::{Digest, Sha256};
 use snapshot_store::{PAGE_SIZE, PageHash};
 use tempfile::TempDir;
@@ -71,6 +72,7 @@ pub enum Stop {
     SnapshotPoint(u64),
     Violation { moment: u64, id: u32, data: Vec<u8> },
     Exhausted(u64),
+    Decision { moment: u64, question: Question },
     Closed,
 }
 
@@ -109,6 +111,8 @@ pub enum SessionError {
     StateHashUnavailable,
     #[error("bridge protocol: {0}")]
     Protocol(String),
+    #[error("service resolution: {0}")]
+    BadResolution(String),
     #[error("the guest refused the {operation}: errno {errno}")]
     Refused { operation: &'static str, errno: i64 },
     #[error("restoring at boot failed: {error}; console: {console}")]
@@ -150,6 +154,35 @@ pub struct Session {
     image_at: Option<Snapshot>,
     audit: bool,
     missed: Vec<u64>,
+    host_guard: HostGuard,
+}
+
+#[derive(Clone, Copy)]
+enum HostGuard {
+    Strict(host_code_identity::StrictExecutableGuard),
+    #[cfg(test)]
+    TestFixture,
+}
+
+fn capture_host_guard() -> Result<HostGuard, SessionError> {
+    #[cfg(target_os = "linux")]
+    host_code_identity::reject_loader_overrides()?;
+    Ok(HostGuard::Strict(
+        host_code_identity::StrictExecutableGuard::capture()?.1,
+    ))
+}
+
+fn check_host_guard(expected: HostGuard) -> Result<(), SessionError> {
+    match expected {
+        HostGuard::Strict(admitted) => {
+            #[cfg(target_os = "linux")]
+            host_code_identity::reject_loader_overrides()?;
+            admitted.check()?;
+        }
+        #[cfg(test)]
+        HostGuard::TestFixture => {}
+    }
+    Ok(())
 }
 
 impl Checkpoint {
@@ -303,12 +336,33 @@ impl Session {
     }
 
     pub fn start(
+        command: Command,
+        work: TempDir,
+        launch: &Launch,
+        checkpoints: &Checkpoints,
+        restore: Option<&Checkpoint>,
+        progress_limit: Option<Duration>,
+    ) -> Result<Self, SessionError> {
+        let host_guard = capture_host_guard()?;
+        Self::start_with_guard(
+            command,
+            work,
+            launch,
+            checkpoints,
+            restore,
+            progress_limit,
+            host_guard,
+        )
+    }
+
+    fn start_with_guard(
         mut command: Command,
         work: TempDir,
         launch: &Launch,
         checkpoints: &Checkpoints,
         restore: Option<&Checkpoint>,
         progress_limit: Option<Duration>,
+        host_guard: HostGuard,
     ) -> Result<Self, SessionError> {
         if let Some(checkpoint) = restore {
             checkpoints.require_owned_snapshot(&checkpoint.memory)?;
@@ -327,6 +381,7 @@ impl Session {
             Some(memory.physmem.try_clone()?),
         )?;
         let socket = socket.ok_or(SessionError::NoBridge)?;
+        check_host_guard(host_guard)?;
         let mut session = Self {
             guest,
             socket,
@@ -342,6 +397,7 @@ impl Session {
             image_at: None,
             audit: false,
             missed: Vec::new(),
+            host_guard,
         };
         if let Some(checkpoint) = restore
             && let Err(error) = session.restore_at_boot(checkpoint)
@@ -351,6 +407,7 @@ impl Session {
                 console: session.console_tail(),
             });
         }
+        check_host_guard(host_guard)?;
         Ok(session)
     }
 
@@ -385,10 +442,15 @@ impl Session {
         seed: u64,
         handler: Box<dyn ServiceHandler>,
         payloads: Vec<Vec<u8>>,
+        coverage_schedule: Option<environment::channel::CoverageSchedule>,
     ) -> Result<(), SessionError> {
-        self.services
-            .branch(seed, handler, payloads)
-            .map_err(SessionError::Protocol)
+        check_host_guard(self.host_guard)?;
+        let result = self
+            .services
+            .branch(seed, handler, payloads, coverage_schedule)
+            .map_err(SessionError::Protocol);
+        check_host_guard(self.host_guard)?;
+        result
     }
 
     pub fn run_to(&mut self, events: usize) -> Result<Stop, SessionError> {
@@ -402,6 +464,31 @@ impl Session {
         self.serve(Until::Moment(deadline))
     }
 
+    pub fn resolve_and_run(
+        &mut self,
+        deadline: u64,
+        moment: u64,
+        service: u16,
+        id: u64,
+        answer: &[u8],
+    ) -> Result<Stop, SessionError> {
+        check_host_guard(self.host_guard)?;
+        let request = self
+            .pending
+            .as_deref()
+            .ok_or_else(|| SessionError::BadResolution("no service decision is pending".into()))?;
+        let prepared = self
+            .services
+            .prepare_resolution(request, moment, service, id, answer);
+        check_host_guard(self.host_guard)?;
+        let (services, response) = prepared.map_err(SessionError::BadResolution)?;
+        let sent = bridge::send(&self.socket, &response);
+        self.transport_result(sent)?;
+        self.services = services;
+        self.pending = None;
+        self.serve(Until::Moment(deadline))
+    }
+
     pub fn run_to_snapshot_point(&mut self, deadline: u64) -> Result<Stop, SessionError> {
         self.serve(Until::SnapshotPoint(deadline))
     }
@@ -410,18 +497,36 @@ impl Session {
         self.pending.is_some()
     }
 
+    pub fn service_handler_fingerprint(&self) -> Result<HandlerFingerprint, SessionError> {
+        self.services
+            .handler_fingerprint()
+            .map_err(|error| SessionError::Protocol(format!("service handler: {error}")))
+    }
+
+    pub fn verify_service_handler_unchanged(
+        &self,
+        before: &HandlerFingerprint,
+    ) -> Result<(), SessionError> {
+        self.services
+            .verify_handler_unchanged(before)
+            .map_err(|error| SessionError::Protocol(format!("service handler: {error}")))
+    }
+
     pub fn state_hash(&self) -> Result<[u8; 32], SessionError> {
         Err(SessionError::StateHashUnavailable)
     }
 
     pub fn bridge_state_digest(&self) -> Result<[u8; 32], SessionError> {
+        check_host_guard(self.host_guard)?;
         let mut digest = Sha256::new();
         digest.update(b"harmony-uml-bridge-state-v1\0");
         digest.update(self.services.encode().map_err(SessionError::Protocol)?);
         if let Some(request) = &self.pending {
             digest.update(request);
         }
-        Ok(digest.finalize().into())
+        let digest = digest.finalize().into();
+        check_host_guard(self.host_guard)?;
+        Ok(digest)
     }
 
     pub fn run(mut self) -> Result<Exit, SessionError> {
@@ -435,6 +540,10 @@ impl Session {
         self.finish(reason)
     }
 
+    pub fn shutdown(&mut self) -> Result<(), SessionError> {
+        self.guest.shutdown().map_err(Into::into)
+    }
+
     pub fn kill(mut self) -> Result<Exit, SessionError> {
         self.finish(ExitReason::Killed)
     }
@@ -443,7 +552,11 @@ impl Session {
         let waited = now();
         let reason = loop {
             match self.guest.stopped()? {
-                Some(reason @ (ExitReason::Exited(_) | ExitReason::Signaled(_))) => break reason,
+                Some(
+                    reason @ (ExitReason::Exited(_)
+                    | ExitReason::Signaled(_)
+                    | ExitReason::GuestPanic),
+                ) => break reason,
                 Some(reason) => return Err(SessionError::Stopped(reason)),
                 None if waited.elapsed() >= limit => return Err(SessionError::Hung(limit)),
                 None => std::thread::sleep(POLL),
@@ -457,12 +570,13 @@ impl Session {
             )));
         }
         match exit.reason {
-            ExitReason::Exited(_) | ExitReason::Signaled(_) => Ok(exit.reason),
+            ExitReason::Exited(_) | ExitReason::GuestPanic => Ok(exit.reason),
             reason => Err(SessionError::Stopped(reason)),
         }
     }
 
     pub fn capture(&mut self, capture: Capture) -> Result<Checkpoint, SessionError> {
+        check_host_guard(self.host_guard)?;
         let request = self.pending.clone().ok_or(SessionError::NotPaused)?;
         let flags = if capture.omit_host_memory {
             OMIT_HOST_MEMORY
@@ -548,6 +662,7 @@ impl Session {
         let memory = checkpoints.adopt(id);
         self.memory_at = Some(memory.share());
         self.image_at = Some(memory.share());
+        check_host_guard(self.host_guard)?;
         Ok(Checkpoint {
             memory,
             services: self.services.clone(),
@@ -556,10 +671,13 @@ impl Session {
     }
 
     pub fn restore(&mut self, checkpoint: &Checkpoint) -> Result<(), SessionError> {
+        check_host_guard(self.host_guard)?;
         if self.pending.is_none() {
             return Err(SessionError::NotPaused);
         }
-        self.restore_from(checkpoint)
+        let result = self.restore_from(checkpoint);
+        check_host_guard(self.host_guard)?;
+        result
     }
 
     fn restore_from(&mut self, checkpoint: &Checkpoint) -> Result<(), SessionError> {
@@ -697,6 +815,13 @@ impl Session {
     }
 
     fn serve(&mut self, until: Until) -> Result<Stop, SessionError> {
+        check_host_guard(self.host_guard)?;
+        let result = self.serve_inner(until);
+        check_host_guard(self.host_guard)?;
+        result
+    }
+
+    fn serve_inner(&mut self, until: Until) -> Result<Stop, SessionError> {
         if let Some(moment) = self.pending.as_deref().and_then(stamp)
             && matches!(
                 until,
@@ -716,6 +841,9 @@ impl Session {
                 let length = match self.receive() {
                     Ok(0) => return Ok(due.unwrap_or(Stop::Closed)),
                     Ok(length) => length,
+                    Err(error @ SessionError::Stopped(ExitReason::HostFailure)) => {
+                        return Err(error);
+                    }
                     Err(SessionError::Stopped(_)) => return Ok(due.unwrap_or(Stop::Closed)),
                     Err(error) => return Err(error),
                 };
@@ -743,17 +871,28 @@ impl Session {
                 }
                 length
             };
-            let reply = match self
-                .services
-                .exchange(&self.request[..length], &mut self.response)
-            {
+            let host_guard = self.host_guard;
+            let reply = match self.services.exchange_guarded(
+                || check_host_guard(host_guard).map_err(|error| error.to_string()),
+                &self.request[..length],
+                &mut self.response,
+            ) {
                 Ok(reply) => reply,
                 Err(failure) => {
                     self.failure = Some(failure.clone());
                     return Err(SessionError::Protocol(failure));
                 }
             };
-            bridge::send(&self.socket, &self.response[..reply.length])?;
+            check_host_guard(self.host_guard)?;
+            if let Some(Signal::Decision(question)) = &reply.signal {
+                self.pending = Some(self.request[..length].to_vec());
+                return Ok(Stop::Decision {
+                    moment: self.services.latest,
+                    question: question.clone(),
+                });
+            }
+            let sent = bridge::send(&self.socket, &self.response[..reply.length]);
+            self.transport_result(sent)?;
             let moment = self.services.latest;
             match reply.signal {
                 Some(_) if until == Until::End => {}
@@ -762,35 +901,79 @@ impl Session {
                 }
                 Some(Signal::Exhausted) => due = Some(Stop::Exhausted(moment)),
                 Some(Signal::SnapshotPoint) => snapshot_point = true,
+                Some(Signal::Decision(_)) => unreachable!(),
                 None => {}
             }
         }
     }
 
+    fn poll_bridge(&self, timeout: &Timespec) -> io::Result<PollFlags> {
+        let mut waiting = [PollFd::new(&self.socket, PollFlags::IN | PollFlags::RDHUP)];
+        match poll(&mut waiting, Some(timeout)) {
+            Ok(_) => Ok(waiting[0].revents()),
+            Err(rustix::io::Errno::INTR) => Ok(PollFlags::empty()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn disconnected(&mut self, waited: Instant) -> SessionError {
+        loop {
+            match self.guest.stopped() {
+                Ok(Some(reason)) => return SessionError::Stopped(reason),
+                Err(error) => return error.into(),
+                Ok(None) => {}
+            }
+            if let Some(limit) = self.progress_limit
+                && waited.elapsed() >= limit
+            {
+                return SessionError::Hung(limit);
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
+    fn transport_result<T>(&mut self, result: io::Result<T>) -> Result<T, SessionError> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::NotConnected
+                        | io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                Err(self.disconnected(now()))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn receive(&mut self) -> Result<usize, SessionError> {
         let waited = now();
+        let timeout = Timespec::try_from(POLL).map_err(io::Error::other)?;
         loop {
-            let mut poll = libc::pollfd {
-                fd: self.socket.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let timeout = i32::try_from(POLL.as_millis()).unwrap_or(i32::MAX);
-            // SAFETY: `poll` is one live, writable pollfd for the call.
-            let ready = unsafe { libc::poll(&mut poll, 1, timeout) };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error.into());
-            }
-            if ready > 0 {
-                let length = bridge::receive(&self.socket, &mut self.request)?;
+            let ready = self.poll_bridge(&timeout)?;
+            if !ready.is_empty() {
+                let received = bridge::receive(&self.socket, &mut self.request);
+                let length = self.transport_result(received)?;
                 if length > self.request.len() {
                     return Err(SessionError::Protocol(format!("request of {length} bytes")));
                 }
-                return Ok(length);
+                if length != 0 {
+                    return Ok(length);
+                }
+                if self
+                    .poll_bridge(&Timespec::default())?
+                    .intersects(PollFlags::HUP | PollFlags::RDHUP)
+                {
+                    return Err(self.disconnected(waited));
+                }
+                return Err(SessionError::Protocol(
+                    "empty bridge packet from a live peer".into(),
+                ));
             }
             #[cfg(test)]
             if self.guest.pid() == TEST_TERMINAL_POLL_PID.load(Ordering::Acquire) {
@@ -810,19 +993,20 @@ impl Session {
         }
     }
 
-    fn send_control(&mut self, command: u32, flags: u64, image: bool) -> io::Result<()> {
+    fn send_control(&mut self, command: u32, flags: u64, image: bool) -> Result<(), SessionError> {
         let mut message = [0_u8; CONTROL_LEN];
         message[..4].copy_from_slice(&CONTROL_MAGIC.to_le_bytes());
         message[4..8].copy_from_slice(&command.to_le_bytes());
         message[8..].copy_from_slice(&flags.to_le_bytes());
-        if image {
+        let result = if image {
             send_with_fd(&self.socket, &message, &self.memory.image)
         } else {
             bridge::send(&self.socket, &message)
-        }
+        };
+        self.transport_result(result)
     }
 
-    fn send_continue(&mut self) -> io::Result<()> {
+    fn send_continue(&mut self) -> Result<(), SessionError> {
         self.send_control(CONTINUE, 0, false)
     }
 
@@ -998,6 +1182,47 @@ mod tests {
 
     const PHYSMEM_BYTES: usize = 4 * PAGE_SIZE;
 
+    #[derive(Clone)]
+    struct WaitingHandler;
+
+    impl ServiceHandler for WaitingHandler {
+        fn identity(&self) -> &[u8] {
+            b"waiting-handler"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            &[]
+        }
+
+        fn respond(
+            &mut self,
+            _: u64,
+            _: &Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            panic!("guest answers require a recorded decision")
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            if state.is_empty() {
+                Ok(())
+            } else {
+                Err(environment::channel::ChannelError::Malformed)
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
     fn snapshot(
         checkpoints: &Checkpoints,
         parent: Option<&Snapshot>,
@@ -1027,6 +1252,49 @@ mod tests {
             services,
             request: moment.map_or_else(Vec::new, |moment| moment.to_le_bytes().to_vec()),
         }
+    }
+
+    #[test]
+    fn checkpoint_digest_names_logical_target_across_parent_delta_layouts() {
+        let checkpoints = Checkpoints::new();
+        let setup = checkpoint(snapshot(&checkpoints, None, &[]), 7, Some(120));
+        let parent = checkpoint(
+            snapshot(&checkpoints, Some(&setup.memory), &[(1, 1)]),
+            7,
+            Some(120),
+        );
+        let through_parent = checkpoint(
+            snapshot(&checkpoints, Some(&parent.memory), &[(2, 2)]),
+            7,
+            Some(120),
+        );
+        let direct = checkpoint(
+            snapshot(&checkpoints, Some(&setup.memory), &[(1, 1), (2, 2)]),
+            7,
+            Some(120),
+        );
+        let anchor = checkpoints
+            .delta(&setup, None, &through_parent, |pages, _| {
+                pages.iter().map(|page| page.0).collect::<Vec<_>>()
+            })
+            .unwrap();
+        let child = checkpoints
+            .delta(&setup, Some(&parent), &through_parent, |pages, _| {
+                pages.iter().map(|page| page.0).collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(anchor, vec![1, 2]);
+        assert_eq!(child, vec![2]);
+        assert_eq!(through_parent.digest().unwrap(), direct.digest().unwrap());
+        let divergent = checkpoint(
+            snapshot(&checkpoints, Some(&direct.memory), &[(1, 3)]),
+            7,
+            Some(120),
+        );
+        assert_ne!(
+            through_parent.digest().unwrap(),
+            divergent.digest().unwrap()
+        );
     }
 
     #[test]
@@ -1373,17 +1641,285 @@ mod tests {
         launch.console_limit_bytes = 0;
         launch.wall_limit = Duration::from_secs(1);
         assert!(matches!(
-            Session::start(
+            Session::start_with_guard(
                 Command::new("false"),
                 tempfile::tempdir().unwrap(),
                 &launch,
                 &second,
                 Some(&foreign),
                 None,
+                HostGuard::TestFixture,
             ),
             Err(SessionError::Memory(MemoryError::ForeignSnapshot))
         ));
         assert!(second.stats().is_none());
+    }
+
+    fn controlled_peer(
+        directory: &std::path::Path,
+        status: i32,
+        limit: Duration,
+    ) -> (Session, OwnedFd, std::path::PathBuf) {
+        controlled_peer_with_limits(directory, status, Some(limit), Duration::from_secs(5))
+    }
+
+    fn controlled_peer_with_limits(
+        directory: &std::path::Path,
+        status: i32,
+        limit: Option<Duration>,
+        wall_limit: Duration,
+    ) -> (Session, OwnedFd, std::path::PathBuf) {
+        let release = directory.join("release");
+        let mut launch = Launch::new(directory.to_path_buf());
+        launch.bridge = Some(bridge::Bridge::new(7));
+        launch.wall_limit = wall_limit;
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "while [ ! -e \"$1\" ]; do sleep 0.001; done; sleep 0.02; case \"$2\" in -*) kill -\"${2#-}\" $$;; *) exit \"$2\";; esac",
+                "checkpoint-peer",
+            ])
+            .arg(&release)
+            .arg(status.to_string())
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let mut session = Session::start_with_guard(
+            command,
+            launch.work_directory().unwrap(),
+            &launch,
+            &checkpoints,
+            None,
+            limit,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
+        let (socket, peer) = bridge::socket_pair().unwrap();
+        session.socket = socket;
+        session.pending = Some(120_u64.to_le_bytes().to_vec());
+        rustix::fs::ftruncate(&session.memory.physmem, PHYSMEM_BYTES as u64).unwrap();
+        (session, peer, release)
+    }
+
+    fn memory_ack(peer: &OwnedFd, bitmap: bool) {
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&CONTROL_MAGIC.to_le_bytes());
+        packet.extend_from_slice(&MEMORY.to_le_bytes());
+        packet.extend_from_slice(&(if bitmap { 0_i64 } else { MEMORY_ALL }).to_le_bytes());
+        bridge::send(peer, &packet).unwrap();
+        if bitmap {
+            bridge::send(peer, &[0; 8]).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn capture_and_restore_peer_closure_preserves_actual_child_status() {
+        for restore in [false, true] {
+            for final_ack in [false, true] {
+                for (status, expected) in [
+                    (0, ExitReason::Exited(0)),
+                    (86, ExitReason::GuestPanic),
+                    (87, ExitReason::HostFailure),
+                ] {
+                    let directory = tempfile::tempdir().unwrap();
+                    let (mut session, peer, release) =
+                        controlled_peer(directory.path(), status, Duration::from_secs(2));
+                    let saved = checkpoint(snapshot(&session.checkpoints, None, &[]), 7, Some(120));
+                    let responder = std::thread::spawn(move || {
+                        let mut packet = [0; CONTROL_LEN];
+                        assert_eq!(bridge::receive(&peer, &mut packet).unwrap(), CONTROL_LEN);
+                        if final_ack {
+                            memory_ack(&peer, true);
+                            assert_eq!(bridge::receive(&peer, &mut packet).unwrap(), CONTROL_LEN);
+                            assert_eq!(
+                                u32::from_le_bytes(packet[4..8].try_into().unwrap()),
+                                CONTINUE
+                            );
+                        }
+                        drop(peer);
+                        std::fs::write(release, []).unwrap();
+                    });
+                    let result = if restore {
+                        session.restore(&saved)
+                    } else {
+                        session.capture(Capture::default()).map(|_| ())
+                    };
+                    assert!(
+                        matches!(result, Err(SessionError::Stopped(reason)) if reason == expected),
+                        "restore={restore}, final_ack={final_ack}, status={status}: {result:?}"
+                    );
+                    responder.join().unwrap();
+                    let exit = session.kill().unwrap();
+                    assert!(exit.leftovers.is_empty());
+                    assert!(exit.work_removed);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn disconnected_decision_reply_preserves_status_and_does_not_publish_the_answer() {
+        use hypercall_proto::{ServiceId, encode_request};
+
+        for (status, expected) in [
+            (0, ExitReason::Exited(0)),
+            (86, ExitReason::GuestPanic),
+            (87, ExitReason::HostFailure),
+            (-9, ExitReason::Signaled(9)),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut session, peer, release) =
+                controlled_peer(directory.path(), status, Duration::from_secs(2));
+            session
+                .services
+                .branch(7, Box::new(WaitingHandler), Vec::new(), None)
+                .unwrap();
+            let mut payload = 19_u16.to_le_bytes().to_vec();
+            payload.extend(7_u64.to_le_bytes());
+            payload.extend(b"choose");
+            let mut request = vec![0; STAMP_LEN + MAX_FRAME];
+            request[..STAMP_LEN].copy_from_slice(&120_u64.to_le_bytes());
+            let length =
+                encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request[STAMP_LEN..]).unwrap();
+            request.truncate(STAMP_LEN + length);
+            let mut response = [0; MAX_FRAME];
+            assert!(matches!(
+                session
+                    .services
+                    .exchange(&request, &mut response)
+                    .unwrap()
+                    .signal,
+                Some(Signal::Decision(_))
+            ));
+            session.pending = Some(request);
+            let before = session.bridge_state_digest().unwrap();
+            drop(peer);
+            std::fs::write(release, []).unwrap();
+            let answer = environment::channel::Answer::Data(vec![42]).encode();
+            let error = session
+                .resolve_and_run(200, 120, 19, 7, &answer)
+                .unwrap_err();
+            assert!(
+                matches!(error, SessionError::Stopped(reason) if reason == expected),
+                "status={status}: {error}"
+            );
+            assert!(session.paused());
+            assert_eq!(session.bridge_state_digest().unwrap(), before);
+            let exit = session.kill().unwrap();
+            assert!(exit.leftovers.is_empty());
+            assert!(exit.work_removed);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn disconnected_live_control_peer_obeys_the_progress_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let limit = Duration::from_millis(25);
+        let (mut session, peer, _) = controlled_peer(directory.path(), 87, limit);
+        let responder = std::thread::spawn(move || {
+            let mut packet = [0; CONTROL_LEN];
+            assert_eq!(bridge::receive(&peer, &mut packet).unwrap(), CONTROL_LEN);
+            drop(peer);
+        });
+        assert!(
+            matches!(session.capture(Capture::default()), Err(SessionError::Hung(got)) if got == limit)
+        );
+        responder.join().unwrap();
+        assert!(session.guest.stopped().unwrap().is_none());
+        let exit = session.kill().unwrap();
+        assert!(exit.leftovers.is_empty());
+        assert!(exit.work_removed);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn disconnected_peer_without_progress_limit_still_obeys_the_owned_wall_limit() {
+        for send in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut session, peer, _) =
+                controlled_peer_with_limits(directory.path(), 87, None, Duration::from_millis(25));
+            drop(peer);
+            let error = if send {
+                session.send_continue().unwrap_err()
+            } else {
+                session.receive().unwrap_err()
+            };
+            assert!(matches!(
+                error,
+                SessionError::Stopped(ExitReason::WallLimit)
+            ));
+            let exit = session.kill().unwrap();
+            assert!(exit.leftovers.is_empty());
+            assert!(exit.work_removed);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn empty_and_malformed_live_control_packets_remain_protocol_errors() {
+        for frame in [Vec::new(), vec![1]] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut session, peer, _) =
+                controlled_peer(directory.path(), 87, Duration::from_secs(2));
+            let (release, hold) = std::sync::mpsc::channel();
+            let responder = std::thread::spawn(move || {
+                let mut packet = [0; CONTROL_LEN];
+                assert_eq!(bridge::receive(&peer, &mut packet).unwrap(), CONTROL_LEN);
+                bridge::send(&peer, &frame).unwrap();
+                hold.recv().unwrap();
+            });
+            assert!(matches!(
+                session.capture(Capture::default()),
+                Err(SessionError::Protocol(_))
+            ));
+            assert!(session.guest.stopped().unwrap().is_none());
+            release.send(()).unwrap();
+            responder.join().unwrap();
+            let exit = session.kill().unwrap();
+            assert!(exit.leftovers.is_empty());
+            assert!(exit.work_removed);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn disconnected_sends_preserve_child_status_without_parsing_error_text() {
+        for (status, expected) in [
+            (0, ExitReason::Exited(0)),
+            (86, ExitReason::GuestPanic),
+            (87, ExitReason::HostFailure),
+        ] {
+            for operation in 0..6 {
+                let directory = tempfile::tempdir().unwrap();
+                let (mut session, peer, release) =
+                    controlled_peer(directory.path(), status, Duration::from_secs(2));
+                drop(peer);
+                std::fs::write(release, []).unwrap();
+                let error = match operation {
+                    0 => session.send_control(CAPTURE, 0, true),
+                    1 => session.send_continue(),
+                    other => session.transport_result(Err(io::Error::from(
+                        [
+                            io::ErrorKind::ConnectionReset,
+                            io::ErrorKind::ConnectionAborted,
+                            io::ErrorKind::NotConnected,
+                            io::ErrorKind::UnexpectedEof,
+                        ][other - 2],
+                    ))),
+                }
+                .unwrap_err();
+                assert!(
+                    matches!(error, SessionError::Stopped(reason) if reason == expected),
+                    "operation={operation}, status={status}: {error}"
+                );
+                let exit = session.kill().unwrap();
+                assert!(exit.leftovers.is_empty());
+                assert!(exit.work_removed);
+            }
+        }
     }
 
     #[test]
@@ -1398,13 +1934,14 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "sleep 30"]).process_group(0);
         let limit = Duration::from_millis(25);
-        let error = match Session::start(
+        let error = match Session::start_with_guard(
             command,
             launch.work_directory().unwrap(),
             &launch,
             &checkpoints,
             Some(&saved),
             Some(limit),
+            HostGuard::TestFixture,
         ) {
             Ok(_) => panic!("a restore-mode guest sent no request"),
             Err(error) => error,
@@ -1486,7 +2023,16 @@ mod tests {
             .process_group(0);
         let checkpoints = Checkpoints::new();
         let work = launch.work_directory().unwrap();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         let pid = session.guest.pid();
         TEST_TERMINAL_POLL_READY.store(false, Ordering::Release);
         TEST_HOLD_TERMINAL_POLL.store(true, Ordering::Release);
@@ -1556,7 +2102,16 @@ mod tests {
             .process_group(0);
         let checkpoints = Checkpoints::new();
         let work = launch.work_directory().unwrap();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         let pid = session.guest.pid();
         crate::launch::TEST_TERMINAL_CONSOLE_READY.store(false, Ordering::Release);
         crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(true, Ordering::Release);
@@ -1662,7 +2217,16 @@ mod tests {
             .env("HARMONY_UML_DEADLINE_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         let first = session.run_until(0).unwrap();
         let zero_hash = session.bridge_state_digest().unwrap();
         assert!(matches!(
@@ -1686,6 +2250,163 @@ mod tests {
         assert_eq!(continued, Stop::Deadline(200));
         assert_eq!(continued_events, 1);
         assert_ne!(continued_hash, zero_hash);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_custom_service_pauses_the_socket_until_a_matching_answer_is_recorded() {
+        use std::os::fd::AsFd;
+
+        use hypercall_proto::{ServiceId, Status, decode, encode_request};
+
+        if let Some(marker) = std::env::var_os("HARMONY_UML_DECISION_MARKER") {
+            let socket = std::io::stdin().as_fd().try_clone_to_owned().unwrap();
+            let mut payload = 19_u16.to_le_bytes().to_vec();
+            payload.extend(7_u64.to_le_bytes());
+            payload.extend(b"choose");
+            let mut request = vec![0_u8; STAMP_LEN + MAX_FRAME];
+            request[..STAMP_LEN].copy_from_slice(&100_u64.to_le_bytes());
+            let length =
+                encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request[STAMP_LEN..]).unwrap();
+            bridge::send(&socket, &request[..STAMP_LEN + length]).unwrap();
+            std::thread::sleep(Duration::from_millis(25));
+            let mut waiting = [rustix::event::PollFd::new(
+                &socket,
+                rustix::event::PollFlags::IN,
+            )];
+            assert_eq!(
+                rustix::event::poll(&mut waiting, Some(&rustix::event::Timespec::default()))
+                    .unwrap(),
+                0
+            );
+            std::fs::write(marker, []).unwrap();
+            let mut response = vec![0; MAX_FRAME];
+            let length = bridge::receive(&socket, &mut response).unwrap();
+            let (header, body) = decode(&response[..length]).unwrap();
+            assert_eq!(header.status, Status::Ok as u16);
+            assert_eq!(body, &[1, 42]);
+            request[..STAMP_LEN].copy_from_slice(&400_u64.to_le_bytes());
+            let length = encode_request(
+                ServiceId::Event,
+                1,
+                2,
+                b"\x00\x00\x00\x00{}",
+                &mut request[STAMP_LEN..],
+            )
+            .unwrap();
+            bridge::send(&socket, &request[..STAMP_LEN + length]).unwrap();
+            bridge::receive(&socket, &mut response).unwrap();
+            return;
+        }
+
+        let parent = tempfile::tempdir().unwrap();
+        let marker = parent.path().join("decision-held");
+        let mut launch = Launch::new(parent.path().to_path_buf());
+        launch.bridge = Some(crate::bridge::Bridge::new(7));
+        launch.wall_limit = Duration::from_secs(5);
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("exec 0<&3; exec \"$0\" --exact session::tests::a_custom_service_pauses_the_socket_until_a_matching_answer_is_recorded --nocapture")
+            .arg(std::env::current_exe().unwrap())
+            .env("HARMONY_UML_DECISION_MARKER", &marker)
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
+        session
+            .branch(7, Box::new(WaitingHandler), Vec::new(), None)
+            .unwrap();
+        let stop = session.run_until(300).unwrap();
+        assert!(matches!(
+            stop,
+            Stop::Decision { moment: 100, ref question }
+                if question.service() == 19 && question.request_id() == 7 && question.payload() == b"choose"
+        ));
+        assert!(session.paused());
+        let deadline = now() + Duration::from_secs(5);
+        while !marker.exists() {
+            assert!(now() < deadline, "guest did not verify the held socket");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let before = session.bridge_state_digest().unwrap();
+        let answer = environment::channel::Answer::Data(vec![42]).encode();
+        assert!(matches!(
+            session.resolve_and_run(300, 100, 19, 8, &answer),
+            Err(SessionError::BadResolution(_))
+        ));
+        assert_eq!(session.bridge_state_digest().unwrap(), before);
+        assert_eq!(
+            session.resolve_and_run(300, 100, 19, 7, &answer).unwrap(),
+            Stop::Deadline(400)
+        );
+        session.kill().unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn imported_held_service_decision_replays_the_same_answer_and_state() {
+        use hypercall_proto::{ServiceId, Status, decode, encode_request};
+
+        let checkpoints = Checkpoints::new();
+        let mut services = Services::new(7);
+        services
+            .branch(7, Box::new(WaitingHandler), Vec::new(), None)
+            .unwrap();
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(7_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut request = vec![0; STAMP_LEN + MAX_FRAME];
+        request[..STAMP_LEN].copy_from_slice(&100_u64.to_le_bytes());
+        let length =
+            encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request[STAMP_LEN..]).unwrap();
+        request.truncate(STAMP_LEN + length);
+        let mut response = [0; MAX_FRAME];
+        assert!(matches!(
+            services.exchange(&request, &mut response).unwrap().signal,
+            Some(Signal::Decision(_))
+        ));
+        let held = Checkpoint {
+            memory: snapshot(&checkpoints, None, &[(0, 1)]),
+            services,
+            request,
+        };
+        let factory: ServiceFactory = std::sync::Arc::new(|config| {
+            if config.identity != b"waiting-handler" || !config.configuration.is_empty() {
+                return Err(environment::channel::ChannelError::Malformed);
+            }
+            Ok(Box::new(WaitingHandler))
+        });
+        let imported = checkpoints
+            .import(&held, &held, &[], &held.sidecar().unwrap(), &factory)
+            .unwrap();
+        assert_eq!(imported.digest().unwrap(), held.digest().unwrap());
+        let answer = environment::channel::Answer::Data(vec![42]).encode();
+        let (original_services, original_reply) = held
+            .services
+            .prepare_resolution(&held.request, 100, 19, 7, &answer)
+            .unwrap();
+        let (replayed_services, replayed_reply) = imported
+            .services
+            .prepare_resolution(&imported.request, 100, 19, 7, &answer)
+            .unwrap();
+        assert_eq!(replayed_reply, original_reply);
+        assert_eq!(
+            replayed_services.encode().unwrap(),
+            original_services.encode().unwrap()
+        );
+        let (header, body) = decode(&replayed_reply).unwrap();
+        assert_eq!(header.status, Status::Ok as u16);
+        assert_eq!(body, &[1, 42]);
     }
 
     #[test]

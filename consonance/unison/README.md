@@ -109,8 +109,10 @@ instrument for validating detection and bisection, not a production machine
 adapter.
 
 The `unison` binary runs the toy comparison and prints JSON; exit code 0 means
-no difference was observed, 2 reports a detected difference, and 1 reports an
-input or harness error. Unit, property, mutation, CLI, determinism, and public-
+nonzero checkpoints matched, 2 reports a detected difference, 3 reports an
+inconclusive match with no execution checkpoints, and 1 reports an input or
+harness error. Initial-state comparison remains available at limit zero, but
+a matching initial state alone never produces CLI success. Unit, property, mutation, CLI, determinism, and public-
 API tests cover exact counts, edge cases, and serialized reports.
 
 ## Host hashing

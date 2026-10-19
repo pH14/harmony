@@ -1,0 +1,24 @@
+{
+  "architecture": "x86_64",
+  "config": {
+    "name": "config",
+    "sha256": "79d41d786ac0217a4f022abe2e6ec966621bd8c35f8d37b92cfe6f34b6fdf99a"
+  },
+  "executable": {
+    "name": "linux",
+    "sha256": "fe078d6149769230fa5abc4183c445bb1f12bc56cc8ae15719952f116ccc7d2f"
+  },
+  "host_libraries": [],
+  "kernel_version": "6.18.35",
+  "patch_series_sha256": "bbbea82a3b4a614849304272688cacb33c56012ce8de2dc4fdc48be1024731fb",
+  "rootfs": {
+    "name": "initramfs.cpio.gz",
+    "sha256": "9887a37a27dec6ee457e7bbadbb91791648315e47d61007302ec39cff878aa9f"
+  },
+  "schema": 4,
+  "userspace": "seccomp",
+  "virtual_time": {
+    "clock_read_vns": 1,
+    "syscall_vns": 100000
+  }
+}

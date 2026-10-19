@@ -17,10 +17,23 @@ use crate::virtual_time::LiveVirtualTimeTrace;
 use environment::{
     channel,
     input_spec::ServiceConfig,
-    sdk::{self, EventClass, ServiceOutcome},
+    sdk::{self, CoverageOutcome, EventClass, ServiceOutcome},
 };
 
+use crate::sdk_telemetry::{Attribution, Callback, Kind, SdkDispatchTelemetry};
+
 pub type VcpuOf<B> = <<B as Backend>::A as Arch>::VcpuState;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostOperationSite {
+    ControlBefore,
+    ControlAfter,
+    SdkRequest,
+    SdkResponse,
+}
+
+pub type HostOperationGuard =
+    std::sync::Arc<dyn Fn(HostOperationSite) -> Result<(), String> + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalReason {
@@ -47,6 +60,17 @@ pub enum SdkStop {
         moment: u64,
         seq: u32,
         question: channel::Question,
+    },
+    CoverageDecision {
+        moment: u64,
+        seq: u32,
+        question: channel::Question,
+        ready: u32,
+    },
+    DeferredDoorbell {
+        moment: u64,
+        requested_len: u32,
+        request: Vec<u8>,
     },
 }
 
@@ -279,6 +303,19 @@ pub(crate) struct SdkChannel {
     pending_snapshot: bool,
 }
 
+pub(crate) struct LocalServiceAnswer {
+    answer: channel::Answer,
+    moment: u64,
+    question: channel::Question,
+    environment: channel::RecordedEnv<Box<dyn channel::ServiceHandler>>,
+}
+
+impl LocalServiceAnswer {
+    pub(crate) fn answer(&self) -> &channel::Answer {
+        &self.answer
+    }
+}
+
 pub(crate) struct PvclockChannel {
     gpa: Option<u64>,
     armed: bool,
@@ -326,7 +363,9 @@ where
     pub(crate) virtual_time_progress: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pub(crate) virtual_time_trace: Option<LiveVirtualTimeTrace>,
     pub(crate) doorbell_exits: u64,
+    sdk_dispatch_telemetry: std::cell::RefCell<SdkDispatchTelemetry>,
     exit_telemetry: crate::host_telemetry::ExitTelemetry,
+    hash_telemetry: std::cell::Cell<crate::host_telemetry::HashTelemetry>,
     pub(crate) deferred_virtual_time_checkpoints: bool,
     virtual_time_checkpoint_events: BTreeSet<u64>,
     pub(crate) completion_staged: bool,
@@ -337,9 +376,11 @@ where
     checkpoint_hash_preimage_armed: bool,
     checkpoint_hash_preimage: Option<CheckpointHashPreimage>,
     pub(crate) idle_wake_vns: Option<u64>,
+    run_deadline_vns: Option<u64>,
     pub(crate) last_step_control_idle_landing_vns: Option<u64>,
     pub(crate) sdk: Option<SdkChannel>,
     pub(crate) pvclock: Option<PvclockChannel>,
+    host_operation_guard: Option<HostOperationGuard>,
 }
 
 enum RestoreValidation {
@@ -400,7 +441,9 @@ where
             virtual_time_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             virtual_time_trace: None,
             doorbell_exits: 0,
+            sdk_dispatch_telemetry: std::cell::RefCell::default(),
             exit_telemetry: crate::host_telemetry::ExitTelemetry::default(),
+            hash_telemetry: std::cell::Cell::default(),
             deferred_virtual_time_checkpoints: false,
             virtual_time_checkpoint_events: BTreeSet::new(),
             completion_staged: false,
@@ -411,10 +454,49 @@ where
             checkpoint_hash_preimage_armed: false,
             checkpoint_hash_preimage: None,
             idle_wake_vns: None,
+            run_deadline_vns: None,
             last_step_control_idle_landing_vns: None,
             sdk: None,
             pvclock: None,
+            host_operation_guard: None,
         }
+    }
+
+    pub fn set_host_operation_guard(&mut self, guard: HostOperationGuard) {
+        self.host_operation_guard = Some(guard);
+    }
+
+    fn check_host_operation_guard(&self, site: HostOperationSite) -> Result<(), VmmError> {
+        if let Some(guard) = &self.host_operation_guard {
+            guard(site).map_err(VmmError::ContractViolation)?;
+        }
+        Ok(())
+    }
+
+    pub fn sdk_dispatch_telemetry(&self) -> SdkDispatchTelemetry {
+        self.sdk_dispatch_telemetry.borrow().clone()
+    }
+
+    fn measure_sdk_guard(&self, site: HostOperationSite) -> (Result<(), VmmError>, Callback) {
+        #[allow(clippy::disallowed_methods)]
+        let started = std::time::Instant::now();
+        self.measure_sdk_guard_using(site, || {
+            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+        })
+    }
+
+    fn measure_sdk_guard_using(
+        &self,
+        site: HostOperationSite,
+        elapsed: impl FnOnce() -> u64,
+    ) -> (Result<(), VmmError>, Callback) {
+        let result = self.check_host_operation_guard(site);
+        let work = Callback::measured(
+            self.host_operation_guard.is_some(),
+            result.is_err(),
+            elapsed(),
+        );
+        (result, work)
     }
 
     pub fn wire_vtime(&mut self, wiring: VtimeWiring) -> &mut Self {
@@ -432,9 +514,30 @@ where
         self.virtual_time_trace.as_ref()
     }
 
+    pub fn event_history(&self) -> Option<control_proto::EventHistory> {
+        self.virtual_time_trace
+            .as_ref()
+            .map(LiveVirtualTimeTrace::event_history)
+    }
+
+    pub(crate) fn restore_event_history(
+        &mut self,
+        history: control_proto::EventHistory,
+    ) -> Result<(), VmmError> {
+        self.virtual_time_trace
+            .as_mut()
+            .ok_or_else(|| {
+                VmmError::ContractViolation("event history requires V-time wiring".into())
+            })?
+            .restore_event_history(history);
+        Ok(())
+    }
+
     pub(crate) fn take_virtual_time_trace(&mut self) -> Option<LiveVirtualTimeTrace> {
         self.virtual_time_checkpoint_events.clear();
-        self.virtual_time_trace.as_mut().map(std::mem::take)
+        self.virtual_time_trace
+            .as_mut()
+            .map(LiveVirtualTimeTrace::retire)
     }
 
     pub fn defer_virtual_time_checkpoint_hashes(&mut self) -> Result<(), VmmError> {
@@ -484,7 +587,9 @@ where
     }
 
     pub fn checkpoint_virtual_time_trace(&mut self) -> Result<(), VmmError> {
-        let hash = self.state_hash()?;
+        let hash = self
+            .state_hash_preimage(crate::host_telemetry::HashSite::Checkpoint)?
+            .0;
         self.virtual_time_trace
             .as_mut()
             .ok_or_else(|| {
@@ -1063,6 +1168,10 @@ where
         self.completion_staged = false;
         self.sdk_snapshot_reentry_required = engine_state.sdk_snapshot_reentry_required;
         self.snapshot_ready = true;
+        if let Some(vt) = self.vtime.as_ref() {
+            self.virtual_time_progress
+                .store(vt.virtual_time_vns(), std::sync::atomic::Ordering::Release);
+        }
         Ok(())
     }
 
@@ -1097,9 +1206,36 @@ where
     }
 
     pub fn step(&mut self) -> Result<Step, VmmError> {
+        self.step_until(None)
+    }
+
+    pub(crate) fn step_until(&mut self, deadline_vns: Option<u64>) -> Result<Step, VmmError> {
+        self.run_deadline_vns = deadline_vns;
+        let result = self.step_inner();
+        self.run_deadline_vns = None;
+        result
+    }
+
+    fn step_inner(&mut self) -> Result<Step, VmmError> {
         self.last_step_control_idle_landing_vns = None;
         if self.pending_service_question().is_some() {
             return Ok(Step::SdkStop);
+        }
+        if let Some((moment, requested_len, request)) = self.pending_deferred_doorbell() {
+            if self
+                .run_deadline_vns
+                .is_some_and(|deadline| moment >= deadline)
+            {
+                return Ok(Step::SdkStop);
+            }
+            self.sdk
+                .as_mut()
+                .expect("deferred doorbell has SDK")
+                .pending_stop = None;
+            let step = self.finish_doorbell(moment, requested_len, &request)?;
+            self.pvclock_refresh()?;
+            <B::A as Vendor>::post_exit(self)?;
+            return Ok(step);
         }
         if let Some(reason) = self.terminal {
             return Ok(Step::Terminal(reason));
@@ -1161,9 +1297,9 @@ where
                 let reason = exit.reason();
                 let backend_debug = format!("{reason:?}");
                 trace
-                    .record_raw_only(reason, backend_debug)
+                    .begin_raw(reason, backend_debug)
                     .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
-                false
+                true
             }
         } else {
             false
@@ -1186,7 +1322,12 @@ where
         self.pvclock_refresh()?;
         <B::A as Vendor>::post_exit(self)?;
         let next = <B::A as Vendor>::finish_exit(self)?;
-        if trace_started {
+        if trace_started
+            && self
+                .virtual_time_trace
+                .as_ref()
+                .is_some_and(LiveVirtualTimeTrace::normalized_event_pending)
+        {
             let event_index = self
                 .virtual_time_trace
                 .as_ref()
@@ -1201,7 +1342,8 @@ where
                 *checkpoint_due && next.is_none(),
                 self.deferred_virtual_time_checkpoints,
             ) {
-                let (hash, suffix, memory_prefix_hash) = self.state_hash_preimage()?;
+                let (hash, suffix, memory_prefix_hash) =
+                    self.state_hash_preimage(crate::host_telemetry::HashSite::Checkpoint)?;
                 if self.checkpoint_hash_preimage_armed {
                     self.checkpoint_hash_preimage = Some(CheckpointHashPreimage {
                         event_index,
@@ -1228,6 +1370,12 @@ where
                 .as_mut()
                 .expect("trace was started")
                 .finish(vns_after, state_hash)
+                .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
+        } else if trace_started {
+            self.virtual_time_trace
+                .as_mut()
+                .expect("raw trace was started")
+                .finish_raw()
                 .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
         }
         Ok(ExitProgress {
@@ -1413,18 +1561,34 @@ where
     }
 
     pub fn state_hash(&mut self) -> Result<[u8; 32], VmmError> {
-        self.state_hash_preimage().map(|(hash, _, _)| hash)
+        self.state_hash_preimage(crate::host_telemetry::HashSite::WholeRequest)
+            .map(|(hash, _, _)| hash)
     }
 
-    fn state_hash_preimage(&mut self) -> Result<StateHashPreimage, VmmError> {
-        let mut hasher = Sha256::new();
-        hasher.update(b"MEM\0");
-        hasher.update((self.ram.as_bytes().len() as u64).to_le_bytes());
-        hasher.update(self.ram.as_bytes());
-        let memory_prefix_hash = hasher.clone().finalize().into();
-        let suffix = self.state_blob_suffix()?;
-        hasher.update(&suffix);
-        Ok((hasher.finalize().into(), suffix, memory_prefix_hash))
+    pub(crate) fn hash_telemetry(&self) -> crate::host_telemetry::HashTelemetry {
+        self.hash_telemetry.get()
+    }
+
+    fn state_hash_preimage(
+        &mut self,
+        site: crate::host_telemetry::HashSite,
+    ) -> Result<StateHashPreimage, VmmError> {
+        let mut work = crate::host_telemetry::HashWork::new();
+        let result = (|| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"MEM\0");
+            hasher.update((self.ram.as_bytes().len() as u64).to_le_bytes());
+            work.metadata(12);
+            hasher.update(self.ram.as_bytes());
+            work.ram(self.ram.as_bytes().len());
+            let memory_prefix_hash = hasher.clone().finalize().into();
+            let suffix = self.state_blob_suffix()?;
+            hasher.update(&suffix);
+            work.suffix(suffix.len());
+            Ok((hasher.finalize().into(), suffix, memory_prefix_hash))
+        })();
+        work.finish(&self.hash_telemetry, site, result.is_err());
+        result
     }
 
     pub fn state_components(&mut self) -> Result<Vec<(&'static str, [u8; 32])>, VmmError> {
@@ -1507,6 +1671,10 @@ where
 
     pub fn doorbell_exits(&self) -> u64 {
         self.doorbell_exits
+    }
+
+    pub(crate) fn physical_telemetry(&self) -> vmm_backend::PhysicalTelemetry {
+        self.backend.physical_telemetry()
     }
 
     pub fn exit_telemetry(&self) -> crate::host_telemetry::ExitTelemetry {
@@ -1902,16 +2070,91 @@ where
             .verify_handler_fingerprint_unchanged(before)
     }
 
-    pub fn sdk_snapshot_after_answer(
+    pub(crate) fn prepare_local_service_answer(
+        &self,
+    ) -> Result<Option<LocalServiceAnswer>, channel::ChannelError> {
+        let Some(sdk) = &self.sdk else {
+            return Ok(None);
+        };
+        let Some(SdkStop::Decision {
+            moment, question, ..
+        }) = &sdk.pending_stop
+        else {
+            return Ok(None);
+        };
+        channel::validate_local_services(sdk.env.handler().local_services())?;
+        if sdk
+            .env
+            .handler()
+            .local_services()
+            .binary_search(&question.service())
+            .is_err()
+        {
+            return Ok(None);
+        }
+        let before = sdk.env.handler_fingerprint()?;
+        let mut environment = sdk.env.checked_clone()?;
+        environment.set_moment(*moment);
+        let response = environment.decide(question);
+        let after = environment.handler_fingerprint();
+        sdk.env.verify_handler_fingerprint_unchanged(&before)?;
+        let response = response?;
+        let channel::ServiceResponse::Answered(answer) = response else {
+            return Ok(None);
+        };
+        if after? != before {
+            return Err(channel::ChannelError::Handler(
+                "local service answers must not change captured handler state".into(),
+            ));
+        }
+        Ok(Some(LocalServiceAnswer {
+            answer,
+            moment: *moment,
+            question: question.clone(),
+            environment,
+        }))
+    }
+
+    pub(crate) fn sdk_snapshot_after_answer(
         &self,
         moment: u64,
         question: &channel::Question,
         answer: &channel::Answer,
+        local: Option<&LocalServiceAnswer>,
     ) -> Result<(), channel::ChannelError> {
         if let Some(sdk) = &self.sdk {
-            let mut projected = sdk.env.clone();
+            let mut projected = if let Some(local) = local {
+                if local.moment != moment || local.question != *question || local.answer != *answer
+                {
+                    return Err(channel::ChannelError::Malformed);
+                }
+                local.environment.checked_clone()?
+            } else {
+                sdk.env.checked_clone()?
+            };
             projected.record_question(moment, question, answer.clone());
             projected.snapshot_state_with_binding_reserve()?;
+            if let Some(SdkStop::CoverageDecision { ready, .. }) = &sdk.pending_stop {
+                let observed = <[u8; 8]>::try_from(question.payload())
+                    .map(u64::from_le_bytes)
+                    .map_err(|_| channel::ChannelError::Malformed)?;
+                let thread = u32::try_from(question.request_id())
+                    .map_err(|_| channel::ChannelError::Malformed)?;
+                let mut thresholds = sdk.coverage_thresholds.clone();
+                if !matches!(
+                    sdk::decide_coverage(
+                        &mut projected,
+                        &mut thresholds,
+                        moment,
+                        thread,
+                        observed,
+                        *ready,
+                    ),
+                    Ok(CoverageOutcome::Answered(_))
+                ) {
+                    return Err(channel::ChannelError::Malformed);
+                }
+            }
         }
         Ok(())
     }
@@ -1945,7 +2188,14 @@ where
 
     pub fn take_sdk_stop(&mut self) -> Option<SdkStop> {
         self.sdk.as_mut().and_then(|s| {
-            if matches!(s.pending_stop, Some(SdkStop::Decision { .. })) {
+            if matches!(
+                s.pending_stop,
+                Some(
+                    SdkStop::Decision { .. }
+                        | SdkStop::CoverageDecision { .. }
+                        | SdkStop::DeferredDoorbell { .. }
+                )
+            ) {
                 s.pending_stop.clone()
             } else {
                 s.pending_stop.take()
@@ -1953,9 +2203,32 @@ where
         })
     }
 
+    fn pending_deferred_doorbell(&self) -> Option<(u64, u32, Vec<u8>)> {
+        match self.sdk.as_ref()?.pending_stop.as_ref()? {
+            SdkStop::DeferredDoorbell {
+                moment,
+                requested_len,
+                request,
+            } => Some((*moment, *requested_len, request.clone())),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn pending_sdk_stop_moment(&self) -> Option<u64> {
+        match self.sdk.as_ref()?.pending_stop.as_ref()? {
+            SdkStop::Decision { moment, .. }
+            | SdkStop::CoverageDecision { moment, .. }
+            | SdkStop::DeferredDoorbell { moment, .. } => Some(*moment),
+            _ => None,
+        }
+    }
+
     pub fn pending_service_question(&self) -> Option<(u64, &channel::Question)> {
         match self.sdk.as_ref()?.pending_stop.as_ref()? {
             SdkStop::Decision {
+                moment, question, ..
+            }
+            | SdkStop::CoverageDecision {
                 moment, question, ..
             } => Some((*moment, question)),
             _ => None,
@@ -1969,32 +2242,177 @@ where
             .unwrap_or_default()
     }
 
-    pub fn resolve_service_answer(
+    fn write_service_response(
         &mut self,
-        answer: channel::Answer,
-    ) -> Result<(u64, channel::Question), VmmError> {
+        moment: u64,
+        request: &[u8],
+        opcode: u16,
+        seq: u32,
+        status: Status,
+        payload: &[u8],
+    ) -> Result<(), VmmError> {
+        let mut response = [0; HC_PAGE];
+        let len = encode_response(ServiceId::Sdk, opcode, seq, status, payload, &mut response)
+            .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
+        self.complete_doorbell(
+            moment,
+            request.len() as u32,
+            request,
+            &response[..len],
+            Attribution::kind(match opcode {
+                2 => Kind::Coverage,
+                3 => Kind::Service,
+                _ => Kind::ResponseUnknown,
+            }),
+        )
+    }
+
+    pub(crate) fn resolve_service_binding_mismatch(&mut self) -> Result<(), VmmError> {
+        let sdk = self
+            .sdk
+            .as_ref()
+            .ok_or(channel::ChannelError::RequestIdentityMismatch)?;
         let Some(SdkStop::Decision {
             moment,
             seq,
             question,
-        }) = self.sdk.as_ref().and_then(|sdk| sdk.pending_stop.clone())
+        }) = &sdk.pending_stop
         else {
-            return Err(VmmError::ContractViolation(
-                "no service request is pending".into(),
-            ));
+            return Err(channel::ChannelError::RequestIdentityMismatch.into());
         };
-        let payload = sdk::answer_bytes(&answer).ok_or_else(|| {
-            VmmError::ContractViolation("service answer exceeds the doorbell frame".into())
+        let before = sdk.env.handler_fingerprint()?;
+        let mut probe = sdk.env.checked_clone()?;
+        probe.set_moment(*moment);
+        let decision = probe.decide_recorded(question);
+        sdk.env.verify_handler_fingerprint_unchanged(&before)?;
+        if !matches!(
+            decision,
+            Err(channel::ChannelError::RequestIdentityMismatch)
+        ) {
+            return Err(channel::ChannelError::RequestIdentityMismatch.into());
+        }
+        let request = crate::service_transcript::pending_request(
+            sdk.pending_stop
+                .as_ref()
+                .expect("validated pending SDK request"),
+        )
+        .ok_or_else(|| {
+            VmmError::ContractViolation("pending service request cannot be encoded".into())
         })?;
-        let mut response = [0; HC_PAGE];
-        let len = encode_response(ServiceId::Sdk, 3, seq, Status::Ok, &payload, &mut response)
-            .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
-        self.write_doorbell_response(&response[..len])?;
+        let moment = *moment;
+        let seq = *seq;
+        self.write_service_response(moment, &request, 3, seq, Status::BadRequest, &[])?;
+        self.sdk
+            .as_mut()
+            .expect("validated pending SDK request")
+            .pending_stop = None;
+        Ok(())
+    }
+
+    pub(crate) fn resolve_service_answer(
+        &mut self,
+        answer: channel::Answer,
+        local: Option<LocalServiceAnswer>,
+    ) -> Result<(u64, channel::Question), VmmError> {
+        let stop = self
+            .sdk
+            .as_ref()
+            .and_then(|sdk| sdk.pending_stop.clone())
+            .ok_or_else(|| VmmError::ContractViolation("no service request is pending".into()))?;
+        let request = crate::service_transcript::pending_request(&stop).ok_or_else(|| {
+            VmmError::ContractViolation("pending service request cannot be encoded".into())
+        })?;
+        let (moment, seq, question, opcode, payload, coverage_commit) = match stop {
+            SdkStop::Decision {
+                moment,
+                seq,
+                question,
+            } => {
+                let payload = sdk::answer_bytes(&answer).ok_or_else(|| {
+                    VmmError::ContractViolation("service answer exceeds the doorbell frame".into())
+                })?;
+                (moment, seq, question, 3, payload, None)
+            }
+            SdkStop::CoverageDecision {
+                moment,
+                seq,
+                question,
+                ready,
+            } => {
+                let thread = u32::try_from(question.request_id())
+                    .map_err(|_| VmmError::ContractViolation("invalid coverage thread".into()))?;
+                let observed = <[u8; 8]>::try_from(question.payload())
+                    .map(u64::from_le_bytes)
+                    .map_err(|_| {
+                        VmmError::ContractViolation("invalid coverage observation".into())
+                    })?;
+                let sdk = self
+                    .sdk
+                    .as_ref()
+                    .expect("pending request requires SDK channel");
+                let mut env = sdk.env.checked_clone()?;
+                env.record_question(moment, &question, answer.clone());
+                let mut thresholds = sdk.coverage_thresholds.clone();
+                let CoverageOutcome::Answered(coverage) = sdk::decide_coverage(
+                    &mut env,
+                    &mut thresholds,
+                    moment,
+                    thread,
+                    observed,
+                    ready,
+                )
+                .map_err(|_| VmmError::ContractViolation("invalid coverage answer".into()))?
+                else {
+                    return Err(VmmError::ContractViolation(
+                        "unresolved coverage answer".into(),
+                    ));
+                };
+                (
+                    moment,
+                    seq,
+                    question,
+                    2,
+                    coverage.encode().to_vec(),
+                    Some((env, thresholds, coverage)),
+                )
+            }
+            _ => {
+                return Err(VmmError::ContractViolation(
+                    "no service request is pending".into(),
+                ));
+            }
+        };
+        if let Some(local) = &local
+            && (local.moment != moment
+                || local.question != question
+                || local.answer != answer
+                || opcode != 3)
+        {
+            return Err(VmmError::ContractViolation(
+                "prepared service question differs".into(),
+            ));
+        }
+        self.write_service_response(moment, &request, opcode, seq, Status::Ok, &payload)?;
         let sdk = self
             .sdk
             .as_mut()
             .expect("pending request requires SDK channel");
-        sdk.env.record_question(moment, &question, answer);
+        if let Some((env, thresholds, coverage)) = coverage_commit {
+            sdk.env = env;
+            sdk.coverage_thresholds = thresholds;
+            sdk.coverage.push((
+                moment,
+                coverage.thread,
+                coverage.observed,
+                coverage.ready,
+                coverage.selected,
+            ));
+        } else {
+            if let Some(local) = local {
+                sdk.env = local.environment;
+            }
+            sdk.env.record_question(moment, &question, answer);
+        }
         sdk.pending_stop = None;
         Ok((moment, question))
     }
@@ -2007,28 +2425,97 @@ where
     }
 
     pub(crate) fn service_doorbell(&mut self, req_len: u32) -> Result<Step, VmmError> {
-        if req_len as usize > HC_PAGE {
-            let mut resp = [0_u8; HC_PAGE];
-            let n = encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], &mut resp)
-                .unwrap_or(0);
-            self.write_doorbell_response(&resp[..n])?;
-            return Ok(Step::Continued);
+        let (checked, callback) = self.measure_sdk_guard(HostOperationSite::SdkRequest);
+        if checked.is_err() {
+            self.sdk_dispatch_telemetry.borrow_mut().request(
+                Attribution::kind(Kind::Refused),
+                callback,
+                false,
+            );
+            checked?;
         }
-        let req_len = req_len as usize;
-        let Some(req) = self
-            .guest_slice(REQ_GPA as u64, req_len)
-            .map(<[u8]>::to_vec)
-        else {
-            return Err(VmmError::ContractViolation(format!(
-                "doorbell request page {REQ_GPA:#x}+{req_len} is not backed — x86 keeps the \
-                 transport ABI pages in the GPA-0 RAM; an arm64 boot must map them (a dedicated \
-                 low-GPA memslot; RAM is high)"
-            )));
-        };
         let moment = self.effective_vns().unwrap_or(0);
+        let req = if req_len as usize > HC_PAGE {
+            Vec::new()
+        } else {
+            self.guest_slice(REQ_GPA as u64, req_len as usize)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| {
+                    self.sdk_dispatch_telemetry.borrow_mut().request(Attribution::kind(Kind::Unreadable), callback, false);
+                    VmmError::ContractViolation(format!(
+                        "doorbell request page {REQ_GPA:#x}+{req_len} is not backed — x86 keeps the \
+                         transport ABI pages in the GPA-0 RAM; an arm64 boot must map them (a dedicated \
+                         low-GPA memslot; RAM is high)"
+                    ))
+                })?
+        };
+        let at_run_deadline = self
+            .run_deadline_vns
+            .is_some_and(|deadline| moment >= deadline);
+        let sdk_decision = at_run_deadline
+            && decode(&req).ok().is_some_and(|(header, payload)| {
+                if !header.is_request() || header.service != ServiceId::Sdk as u16 {
+                    return false;
+                }
+                let Some(sdk) = self.sdk.as_ref() else {
+                    return false;
+                };
+                match header.opcode {
+                    3 => sdk::service_question(payload).is_ok(),
+                    2 => sdk::coverage_request(payload).is_ok_and(|(thread, observed, ready)| {
+                        sdk::coverage_question(&sdk.coverage_thresholds, thread, observed, ready)
+                            .is_ok()
+                    }),
+                    _ => false,
+                }
+            });
+        self.sdk_dispatch_telemetry.borrow_mut().request(
+            if req_len as usize > HC_PAGE {
+                Attribution::kind(Kind::Unreadable)
+            } else {
+                Attribution::request(&req)
+            },
+            callback,
+            at_run_deadline && !sdk_decision,
+        );
+        if at_run_deadline && !sdk_decision {
+            let sdk = self.sdk.as_mut().ok_or_else(|| {
+                VmmError::ContractViolation(
+                    "control deadline deferral requires an SDK channel".to_owned(),
+                )
+            })?;
+            sdk.pending_stop = Some(SdkStop::DeferredDoorbell {
+                moment,
+                requested_len: req_len,
+                request: req,
+            });
+            return Ok(Step::SdkStop);
+        }
+        self.finish_doorbell(moment, req_len, &req)
+    }
+
+    fn finish_doorbell(&mut self, moment: u64, req_len: u32, req: &[u8]) -> Result<Step, VmmError> {
         let mut resp = [0_u8; HC_PAGE];
-        let (resp_len, stop) = self.dispatch_doorbell(moment, &req, &mut resp);
-        self.write_doorbell_response(&resp[..resp_len])?;
+        let (resp_len, stop) = if req_len as usize > HC_PAGE {
+            (
+                encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], &mut resp)
+                    .unwrap_or(0),
+                None,
+            )
+        } else {
+            self.dispatch_doorbell(moment, req, &mut resp)
+        };
+        self.complete_doorbell(
+            moment,
+            req_len,
+            req,
+            &resp[..resp_len],
+            if req_len as usize > HC_PAGE {
+                Attribution::kind(Kind::Unreadable)
+            } else {
+                Attribution::request(req)
+            },
+        )?;
         match stop {
             Some(s) => {
                 if let Some(sdk) = self.sdk.as_mut() {
@@ -2064,7 +2551,47 @@ where
         db.as_mut_bytes().get_mut(off..end)
     }
 
+    fn complete_doorbell(
+        &mut self,
+        moment: u64,
+        requested_len: u32,
+        request: &[u8],
+        response: &[u8],
+        attribution: Attribution,
+    ) -> Result<(), VmmError> {
+        if response.is_empty() {
+            return self.write_attributed_response(response, attribution);
+        }
+        if let Some(trace) = self.virtual_time_trace.as_ref() {
+            trace
+                .preflight_service_completion()
+                .map_err(|message| VmmError::ContractViolation(message.into()))?;
+        }
+        let exchange = crate::service_transcript::exchange_digest(requested_len, request, response);
+        self.write_attributed_response(response, attribution)?;
+        if let Some(trace) = self.virtual_time_trace.as_mut() {
+            trace
+                .complete_service(moment, exchange)
+                .map_err(|message| VmmError::ContractViolation(message.into()))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn write_doorbell_response(&mut self, resp: &[u8]) -> Result<(), VmmError> {
+        self.write_attributed_response(resp, Attribution::kind(Kind::ResponseUnknown))
+    }
+
+    fn write_attributed_response(
+        &mut self,
+        resp: &[u8],
+        attribution: Attribution,
+    ) -> Result<(), VmmError> {
+        let (checked, callback) = self.measure_sdk_guard(HostOperationSite::SdkResponse);
+        self.sdk_dispatch_telemetry
+            .borrow_mut()
+            .response(attribution, callback);
+        checked?;
         let Some(dst) = self.guest_slice_mut(RESP_GPA as u64, resp.len()) else {
             return Err(VmmError::ContractViolation(format!(
                 "doorbell response page {RESP_GPA:#x}+{} is not backed",
@@ -2097,6 +2624,9 @@ where
             );
             return (n, None);
         }
+        let at_run_deadline = self
+            .run_deadline_vns
+            .is_some_and(|deadline| moment >= deadline);
         if header.service == ServiceId::Pvclock as u16 {
             if !self.pvclock_available() {
                 let n = encode_error(
@@ -2286,6 +2816,22 @@ where
                     None,
                 );
             };
+            if at_run_deadline {
+                return match sdk::service_question(payload) {
+                    Ok(question) => (
+                        0,
+                        Some(SdkStop::Decision {
+                            moment,
+                            seq: header.seq,
+                            question,
+                        }),
+                    ),
+                    Err(status) => (
+                        encode_error(header.service, header.opcode, header.seq, status, resp),
+                        None,
+                    ),
+                };
+            }
             return match sdk::decide_service(&mut sdk.env, moment, payload) {
                 Ok(ServiceOutcome::Answered(bytes)) => (
                     encode_response(ServiceId::Sdk, 3, header.seq, Status::Ok, &bytes, resp)
@@ -2327,8 +2873,31 @@ where
                     return (n, None);
                 }
             };
+            if at_run_deadline {
+                let sdk = self.sdk.as_ref().expect("SDK presence checked above");
+                return match sdk::coverage_question(
+                    &sdk.coverage_thresholds,
+                    thread,
+                    observed,
+                    ready,
+                ) {
+                    Ok(question) => (
+                        0,
+                        Some(SdkStop::CoverageDecision {
+                            moment,
+                            seq: header.seq,
+                            question,
+                            ready,
+                        }),
+                    ),
+                    Err(status) => (
+                        encode_error(header.service, header.opcode, header.seq, status, resp),
+                        None,
+                    ),
+                };
+            }
             match self.decide_coverage(moment, thread, observed, ready) {
-                Ok(coverage) => {
+                Ok(CoverageOutcome::Answered(coverage)) => {
                     let n = encode_response(
                         ServiceId::Sdk,
                         2,
@@ -2339,6 +2908,17 @@ where
                     )
                     .unwrap_or(0);
                     return (n, None);
+                }
+                Ok(CoverageOutcome::External(question)) => {
+                    return (
+                        0,
+                        Some(SdkStop::CoverageDecision {
+                            moment,
+                            seq: header.seq,
+                            question,
+                            ready,
+                        }),
+                    );
                 }
                 Err(status) => {
                     let n = encode_response(ServiceId::Sdk, 2, header.seq, status, &[], resp)
@@ -2427,7 +3007,7 @@ where
         thread: u32,
         observed: u64,
         ready: u32,
-    ) -> Result<sdk::Coverage, Status> {
+    ) -> Result<CoverageOutcome, Status> {
         let Some(sdk) = self.sdk.as_mut() else {
             return Err(Status::UnknownService);
         };
@@ -2439,8 +3019,10 @@ where
             observed,
             ready,
         )?;
-        sdk.coverage
-            .push((moment, thread, observed, ready, coverage.selected));
+        if let CoverageOutcome::Answered(answer) = &coverage {
+            sdk.coverage
+                .push((moment, thread, observed, ready, answer.selected));
+        }
         Ok(coverage)
     }
 
@@ -2743,6 +3325,32 @@ fn append_sdk_hash_channel(
             v.extend_from_slice(&(question.payload().len() as u32).to_le_bytes());
             v.extend_from_slice(question.payload());
         }
+        Some(SdkStop::CoverageDecision {
+            moment,
+            seq,
+            question,
+            ready,
+        }) => {
+            v.push(4);
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&seq.to_le_bytes());
+            v.extend_from_slice(&question.service().to_le_bytes());
+            v.extend_from_slice(&question.request_id().to_le_bytes());
+            v.extend_from_slice(&(question.payload().len() as u32).to_le_bytes());
+            v.extend_from_slice(question.payload());
+            v.extend_from_slice(&ready.to_le_bytes());
+        }
+        Some(SdkStop::DeferredDoorbell {
+            moment,
+            requested_len,
+            request,
+        }) => {
+            v.push(5);
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&requested_len.to_le_bytes());
+            v.extend_from_slice(&(request.len() as u32).to_le_bytes());
+            v.extend_from_slice(request);
+        }
     }
     v.push(u8::from(pending_snapshot));
     if !coverage_thresholds.is_empty() {
@@ -2785,6 +3393,11 @@ mod tests {
     };
     use crate::vendor::x86::records as snapshot;
 
+    mod service_transcript_tests {
+        use super::*;
+        include!("service_transcript_tests.rs");
+    }
+
     const TEST_RAM: usize = if cfg!(miri) { 0x1_0000 } else { 0x2_0000 };
 
     mod buffered_sdk_encoding {
@@ -2825,6 +3438,22 @@ mod tests {
                 moment: 37,
                 seq: 12,
                 question: channel::Question::with_request_id(91, 19, vec![1, 3, 5]).unwrap(),
+            }),
+            Some(SdkStop::CoverageDecision {
+                moment: 37,
+                seq: 12,
+                question: channel::Question::with_request_id(
+                    3,
+                    channel::SERVICE_COVERAGE_QUANTUM,
+                    1_u64.to_le_bytes().to_vec(),
+                )
+                .unwrap(),
+                ready: 2,
+            }),
+            Some(SdkStop::DeferredDoorbell {
+                moment: 37,
+                requested_len: 3,
+                request: vec![1, 2, 3],
             }),
         ] {
             sdk.pending_stop = stop;
@@ -2943,6 +3572,24 @@ mod tests {
                 .project_state_blob_suffix_from_snapshot(&snapshot, &sdk)
                 .unwrap();
             assert_eq!(projected, live);
+            let mut other_backend =
+                MockArm64Backend::with_capabilities(vmm_backend::Capabilities {
+                    name: "mock-arm64",
+                    arch: vmm_backend::Arm64Caps {
+                        register_identity: [0x91; 32],
+                        ..vmm.backend.capabilities().arch
+                    },
+                });
+            other_backend.set_policy(&Arm64Policy::default()).unwrap();
+            let mut other = Vmm::new(other_backend, GuestRam::new(TEST_RAM).unwrap());
+            let before = other.save_vm_state().unwrap();
+            let ram = other.guest_memory().to_vec();
+            assert!(matches!(
+                other.project_state_blob_suffix_from_snapshot(&snapshot, &sdk),
+                Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+            ));
+            assert_eq!(other.save_vm_state().unwrap(), before);
+            assert_eq!(other.guest_memory(), ram);
             let mut mismatched = snapshot.clone();
             mismatched.contract_hash[0] ^= 1;
             assert!(matches!(
@@ -2984,6 +3631,7 @@ mod tests {
     impl SeededService {
         fn config() -> ServiceConfig {
             ServiceConfig {
+                local_services: Vec::new(),
                 identity: b"vmm-seeded-service.v1".to_vec(),
                 configuration: b"seeded".to_vec(),
             }
@@ -3072,6 +3720,105 @@ mod tests {
         }
     }
 
+    struct MutatingCloneService(std::sync::Arc<std::sync::atomic::AtomicU8>);
+
+    impl channel::ServiceHandler for MutatingCloneService {
+        fn identity(&self) -> &[u8] {
+            b"vmm-mutating-clone-service"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &channel::Question,
+        ) -> Result<channel::ServiceResponse, channel::ChannelError> {
+            panic!("guest service decisions require an explicit answer")
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, channel::ChannelError> {
+            Ok(vec![self.0.load(std::sync::atomic::Ordering::SeqCst)])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), channel::ChannelError> {
+            let [value] = state else {
+                return Err(channel::ChannelError::Malformed);
+            };
+            self.0.store(*value, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn channel::ServiceHandler> {
+            let _ = self.0.compare_exchange(
+                0,
+                1,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Box::new(Self(std::sync::Arc::clone(&self.0)))
+        }
+    }
+
+    fn mutating_clone_vmm() -> (
+        Vmm<MockBackend>,
+        std::sync::Arc<std::sync::atomic::AtomicU8>,
+    ) {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let config = ServiceConfig {
+            local_services: Vec::new(),
+            identity: b"vmm-mutating-clone-service".to_vec(),
+            configuration: Vec::new(),
+        };
+        vmm.enable_sdk(
+            channel::RecordedEnv::new(
+                7,
+                Box::new(MutatingCloneService(std::sync::Arc::clone(&state))),
+            ),
+            &config,
+        );
+        (vmm, state)
+    }
+
+    #[test]
+    fn service_answer_preflight_rejects_a_clone_that_changes_the_live_handler() {
+        let (vmm, state) = mutating_clone_vmm();
+        let question = channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap();
+        assert_eq!(
+            vmm.sdk_snapshot_after_answer(4, &question, &channel::Answer::Nominal, None),
+            Err(channel::ChannelError::Poisoned)
+        );
+        assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(vmm.sdk.as_ref().unwrap().env.is_poisoned());
+    }
+
+    #[test]
+    fn coverage_answer_rejects_a_clone_that_changes_the_live_handler() {
+        let (mut vmm, state) = mutating_clone_vmm();
+        let question = channel::Question::with_request_id(
+            11,
+            channel::SERVICE_COVERAGE_QUANTUM,
+            1_u64.to_le_bytes().to_vec(),
+        )
+        .unwrap();
+        vmm.sdk.as_mut().unwrap().pending_stop = Some(SdkStop::CoverageDecision {
+            moment: 4,
+            seq: 12,
+            question,
+            ready: 2,
+        });
+        assert!(
+            vmm.resolve_service_answer(channel::Answer::Data(7_u64.to_le_bytes().to_vec()), None)
+                .is_err()
+        );
+        assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(vmm.sdk.as_ref().unwrap().env.is_poisoned());
+        assert!(vmm.pending_service_question().is_some());
+    }
+
     fn enable_nominal(vmm: &mut Vmm<MockBackend>, seed: u64) {
         let config = ServiceConfig::default();
         vmm.enable_sdk(
@@ -3086,6 +3833,7 @@ mod tests {
 
     fn enable_oversized(vmm: &mut Vmm<MockBackend>, seed: u64) {
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: TEST_SERVICE_IDENTITY.to_vec(),
             configuration: b"oversized".to_vec(),
         };
@@ -3132,6 +3880,28 @@ mod tests {
         assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_096);
     }
 
+    #[test]
+    fn in_place_restore_resets_virtual_time_progress_before_repeated_tick() {
+        let mut vmm = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+        vmm.advance_virtual_time_vtime(4_096).unwrap();
+        let saved = vmm.save_vm_state().unwrap();
+        let progress = vmm.virtual_time_progress().unwrap();
+
+        vmm.advance_virtual_time_vtime(17).unwrap();
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_113);
+        let mut invalid = saved.clone();
+        invalid.contract_hash = [0; 32];
+        assert!(vmm.restore_vm_state(&invalid).is_err());
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_113);
+
+        vmm.restore_vm_state(&saved).unwrap();
+        assert_eq!(vmm.effective_vns(), Some(4_096));
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_096);
+        vmm.advance_virtual_time_vtime(17).unwrap();
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_113);
+    }
+
     fn configured_mock(exits: Vec<Exit<X86>>) -> MockBackend {
         let mut m = MockBackend::with_exits(exits);
         m.set_policy(&X86Policy {
@@ -3165,6 +3935,24 @@ mod tests {
         expected.update(vmm.state_blob().unwrap());
         let expected: [u8; 32] = expected.finalize().into();
         assert_eq!(vmm.state_hash().unwrap(), expected);
+        let cost = vmm
+            .hash_telemetry()
+            .cost(crate::host_telemetry::HashSite::WholeRequest);
+        assert_eq!(cost.calls, 1);
+        assert_eq!(cost.ram_bytes, 0x1000);
+        assert_eq!(
+            cost.suffix_bytes,
+            vmm.state_blob_suffix().unwrap().len() as u64
+        );
+        assert_eq!(cost.metadata_bytes, 12);
+        assert_eq!(cost.errors, 0);
+        assert_eq!(vmm.state_hash().unwrap(), expected);
+        assert_eq!(
+            vmm.hash_telemetry()
+                .cost(crate::host_telemetry::HashSite::WholeRequest)
+                .calls,
+            2
+        );
     }
 
     fn identity_vmm(state: VcpuState, hashing: bool) -> Vmm<MockBackend> {
@@ -3508,6 +4296,212 @@ mod tests {
         assert_eq!(vmm.drain_dirty_pages().unwrap(), Some(vec![]));
     }
 
+    fn sdk_attribution_counter(vmm: &Vmm<MockBackend>, name: &str) -> u64 {
+        vmm.sdk_dispatch_telemetry()
+            .counters()
+            .into_iter()
+            .find(|(key, _)| key == name)
+            .map_or(0, |(_, value)| value)
+    }
+
+    fn sdk_attribution_event(vmm: &mut Vmm<MockBackend>) -> u32 {
+        let mut frame = [0; HC_PAGE];
+        let mut payload = vec![1, 0, 0, 2, 0];
+        payload.extend(17_u64.to_le_bytes());
+        let n =
+            hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut frame).unwrap();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        n as u32
+    }
+
+    #[test]
+    fn sdk_dispatch_actual_guards_refusals_and_noncanonical_state() {
+        use std::sync::{Arc, Mutex};
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        enable_nominal(&mut vmm, 7);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let captured = calls.clone();
+        vmm.set_host_operation_guard(Arc::new(move |site| {
+            captured.lock().unwrap().push(site);
+            Ok(())
+        }));
+        let n = sdk_attribution_event(&mut vmm);
+        let mut reference = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        enable_nominal(&mut reference, 7);
+        assert_eq!(n, sdk_attribution_event(&mut reference));
+        assert_eq!(
+            vmm.service_doorbell(n).unwrap(),
+            reference.service_doorbell(n).unwrap()
+        );
+        assert_eq!(vmm.state_hash().unwrap(), reference.state_hash().unwrap());
+        assert_eq!(vmm.sdk_events(), reference.sdk_events());
+        assert_eq!(
+            sdk_attribution_counter(&reference, "sdk_dispatch.event.request_guard_calls"),
+            0
+        );
+        assert_eq!(
+            sdk_attribution_counter(&reference, "sdk_dispatch.event.requests"),
+            1
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                HostOperationSite::SdkRequest,
+                HostOperationSite::SdkResponse
+            ]
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.request_guard_calls"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event_shape.2.9.0.response_guard_calls"),
+            1
+        );
+        let hash = vmm.state_hash().unwrap();
+        vmm.sdk_dispatch_telemetry.borrow_mut().request(
+            Attribution::kind(Kind::Unknown),
+            Callback::measured(true, true, 999),
+            false,
+        );
+        assert_eq!(vmm.state_hash().unwrap(), hash);
+        let (_, sample) = vmm.measure_sdk_guard_using(HostOperationSite::SdkRequest, || 73);
+        assert_eq!(
+            sample,
+            Callback {
+                calls: 1,
+                errors: 0,
+                nanos: 73
+            }
+        );
+        vmm.set_host_operation_guard(Arc::new(|_| Err("refused".into())));
+        let before = vmm.sdk_events().len();
+        assert!(vmm.service_doorbell(n).is_err());
+        assert_eq!(vmm.sdk_events().len(), before);
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.predecode_refused.request_guard_errors"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.requests"),
+            1
+        );
+        let (_, sample) = vmm.measure_sdk_guard_using(HostOperationSite::SdkRequest, || 89);
+        assert_eq!(
+            sample,
+            Callback {
+                calls: 1,
+                errors: 1,
+                nanos: 89
+            }
+        );
+        vmm.set_host_operation_guard(Arc::new(|site| {
+            if site == HostOperationSite::SdkResponse {
+                Err("response refused".into())
+            } else {
+                Ok(())
+            }
+        }));
+        let response = vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 64].to_vec();
+        assert!(vmm.service_doorbell(n).is_err());
+        assert_eq!(vmm.sdk_events().len(), before + 1);
+        assert_eq!(vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 64], response);
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.response_guard_errors"),
+            1
+        );
+        vmm.set_host_operation_guard(Arc::new(|_| Ok(())));
+        vmm.service_doorbell(1).unwrap();
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.invalid.request_guard_calls"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.invalid.response_guard_calls"),
+            1
+        );
+        vmm.service_doorbell((HC_PAGE + 1) as u32).unwrap();
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.unreadable.request_guard_calls"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.unreadable.response_guard_calls"),
+            1
+        );
+    }
+
+    #[test]
+    fn sdk_dispatch_deferred_and_pending_response_ownership() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        enable_nominal(&mut vmm, 7);
+        vmm.set_host_operation_guard(std::sync::Arc::new(|_| Ok(())));
+        let n = sdk_attribution_event(&mut vmm);
+        vmm.run_deadline_vns = Some(0);
+        assert_eq!(vmm.service_doorbell(n).unwrap(), Step::SdkStop);
+        let pending = vmm.sdk_snapshot().unwrap().unwrap();
+        assert_eq!(vmm.step_until(Some(0)).unwrap(), Step::SdkStop);
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.requests"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.deferred"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.response_guard_calls"),
+            0
+        );
+        vmm.sdk_restore_events(&pending);
+        vmm.step_until(Some(1)).unwrap();
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.requests"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.response_guard_calls"),
+            1
+        );
+        for opcode in [2, 3] {
+            let question =
+                channel::Question::with_request_id(7, 8, 1_u64.to_le_bytes().to_vec()).unwrap();
+            vmm.sdk.as_mut().unwrap().pending_stop = Some(if opcode == 2 {
+                SdkStop::CoverageDecision {
+                    moment: 0,
+                    seq: 9,
+                    question,
+                    ready: 1,
+                }
+            } else {
+                SdkStop::Decision {
+                    moment: 0,
+                    seq: 9,
+                    question,
+                }
+            });
+            let request = crate::service_transcript::pending_request(
+                vmm.sdk.as_ref().unwrap().pending_stop.as_ref().unwrap(),
+            )
+            .unwrap();
+            vmm.write_service_response(0, &request, opcode, 9, Status::BadRequest, &[])
+                .unwrap();
+            let kind = if opcode == 2 { "coverage" } else { "service" };
+            assert_eq!(
+                sdk_attribution_counter(&vmm, &format!("sdk_dispatch.{kind}.response_guard_calls")),
+                1
+            );
+            assert_eq!(
+                sdk_attribution_counter(&vmm, &format!("sdk_dispatch.{kind}.requests")),
+                0
+            );
+        }
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.response_guard_calls"),
+            1
+        );
+    }
+
     #[test]
     fn doorbell_response_write_is_drained_as_host_dirty() {
         let mut m = configured_mock(vec![]);
@@ -3517,6 +4511,38 @@ mod tests {
         assert_eq!(
             vmm.drain_dirty_pages().unwrap(),
             Some(vec![(RESP_GPA as u64) / 4096])
+        );
+    }
+
+    #[test]
+    fn host_operation_guard_refuses_doorbell_reply_before_guest_memory_write() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let changed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = std::sync::Arc::clone(&changed);
+        let sites = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_sites = std::sync::Arc::clone(&sites);
+        vmm.set_host_operation_guard(std::sync::Arc::new(move |site| {
+            captured_sites.lock().unwrap().push(site);
+            if signal.load(std::sync::atomic::Ordering::SeqCst) {
+                Err("host loader changed".into())
+            } else {
+                Ok(())
+            }
+        }));
+        vmm.write_doorbell_response(&[0xAB; 16]).unwrap();
+        changed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let before = vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 16].to_vec();
+        assert!(matches!(
+            vmm.write_doorbell_response(&[0xCD; 16]),
+            Err(VmmError::ContractViolation(reason)) if reason == "host loader changed"
+        ));
+        assert_eq!(&vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 16], before);
+        assert_eq!(
+            *sites.lock().unwrap(),
+            vec![
+                HostOperationSite::SdkResponse,
+                HostOperationSite::SdkResponse
+            ]
         );
     }
 
@@ -3740,6 +4766,85 @@ mod tests {
     }
 
     #[test]
+    fn unrecorded_coverage_quantum_stops_before_guest_response_and_replays_recorded_answer() {
+        let build = || {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            enable_seeded_service(&mut vmm, 7);
+            vmm
+        };
+        let mut request = [0_u8; SDK_COVERAGE_REQUEST_LEN];
+        request[0..4].copy_from_slice(&7_u32.to_le_bytes());
+        request[4..12].copy_from_slice(&1_u64.to_le_bytes());
+        request[12..16].copy_from_slice(&2_u32.to_le_bytes());
+        let mut frame = [0_u8; HC_PAGE];
+        let n =
+            hypercall_proto::encode_request(ServiceId::Sdk, 2, 9, &request, &mut frame).unwrap();
+        let mut vmm = build();
+        vmm.set_host_operation_guard(std::sync::Arc::new(|_| Ok(())));
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        assert_eq!(vmm.service_doorbell(n as u32).unwrap(), Step::SdkStop);
+        let question = channel::Question::with_request_id(
+            7,
+            channel::SERVICE_COVERAGE_QUANTUM,
+            1_u64.to_le_bytes().to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            vmm.take_sdk_stop(),
+            Some(SdkStop::CoverageDecision {
+                moment: 0,
+                seq: 9,
+                question: question.clone(),
+                ready: 2,
+            })
+        );
+        assert_eq!(&vmm.guest_memory()[RESP_GPA..RESP_GPA + 16], &[0; 16]);
+        assert!(vmm.sdk_coverage().is_empty());
+        let stopped = vmm.state_hash().unwrap();
+        let invalid = channel::Answer::Data(0_u64.to_le_bytes().to_vec());
+        assert!(
+            vmm.sdk_snapshot_after_answer(0, &question, &invalid, None)
+                .is_err()
+        );
+        assert_eq!(vmm.state_hash().unwrap(), stopped);
+        let answer = channel::Answer::Data(64_u64.to_le_bytes().to_vec());
+        vmm.sdk_snapshot_after_answer(0, &question, &answer, None)
+            .unwrap();
+        let before = sdk_attribution_counter(&vmm, "sdk_dispatch.coverage.response_guard_calls");
+        vmm.resolve_service_answer(answer.clone(), None).unwrap();
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.coverage.response_guard_calls"),
+            before + 1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.service.response_guard_calls"),
+            0
+        );
+        let (header, payload) = decode(&vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE]).unwrap();
+        assert_eq!(
+            (header.opcode, header.seq, header.status),
+            (2, 9, Status::Ok as u16)
+        );
+        assert_eq!(u64::from_le_bytes(payload[..8].try_into().unwrap()), 65);
+        let selected = u32::from_le_bytes(payload[8..12].try_into().unwrap());
+        assert!(selected < 2);
+        assert_eq!(vmm.sdk_coverage(), &[(0, 7, 1, 2, selected)]);
+        let after = vmm.state_hash().unwrap();
+
+        let mut replay = build();
+        replay.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        replay
+            .sdk
+            .as_mut()
+            .unwrap()
+            .env
+            .record_question(0, &question, answer);
+        assert_eq!(replay.service_doorbell(n as u32).unwrap(), Step::Continued);
+        assert_eq!(replay.sdk_coverage(), vmm.sdk_coverage());
+        assert_eq!(replay.state_hash().unwrap(), after);
+    }
+
+    #[test]
     fn coverage_threshold_is_enforced_and_snapshot_replay_reproduces() {
         let build = || {
             let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
@@ -3747,7 +4852,9 @@ mod tests {
             vmm
         };
         let mut base = build();
-        let first = base.decide_coverage(4, 1, 1, 2).unwrap();
+        let CoverageOutcome::Answered(first) = base.decide_coverage(4, 1, 1, 2).unwrap() else {
+            panic!("nominal coverage must answer");
+        };
         let snap = base.sdk_snapshot().unwrap().expect("SDK snapshot");
         let hash_after_first = base.state_hash().unwrap();
         assert_eq!(base.decide_coverage(5, 1, 3, 2), Err(Status::BadRequest));
@@ -4270,9 +5377,20 @@ mod tests {
     }
 
     #[test]
-    fn oversized_service_answer_preserves_channel_state() {
+    fn oversized_explicit_service_answer_preserves_channel_state() {
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         enable_oversized(&mut vmm, 7);
+        let mut payload = 4u16.to_le_bytes().to_vec();
+        payload.extend_from_slice(&77u64.to_le_bytes());
+        let mut request = [0; HC_PAGE];
+        let n =
+            hypercall_proto::encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request).unwrap();
+        let mut response = [0; HC_PAGE];
+        let (length, stop) = vmm.dispatch_doorbell(19, &request[..n], &mut response);
+        assert_eq!(length, 0);
+        let stop = stop.expect("custom service must stop for input");
+        assert!(matches!(stop, SdkStop::Decision { .. }));
+        vmm.sdk.as_mut().unwrap().pending_stop = Some(stop.clone());
         let before = vmm
             .sdk
             .as_ref()
@@ -4281,18 +5399,12 @@ mod tests {
             .snapshot_state()
             .unwrap()
             .encode();
-        let mut payload = 4u16.to_le_bytes().to_vec();
-        payload.extend_from_slice(&77u64.to_le_bytes());
-        let mut request = [0; HC_PAGE];
-        let n =
-            hypercall_proto::encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request).unwrap();
-        let mut response = [0; HC_PAGE];
-        let (length, stop) = vmm.dispatch_doorbell(19, &request[..n], &mut response);
-        assert!(stop.is_none());
-        assert_eq!(
-            decode(&response[..length]).unwrap().0.status,
-            Status::Internal as u16
+        assert!(
+            vmm.resolve_service_answer(channel::Answer::Data(vec![0; MAX_PAYLOAD]), None)
+                .is_err()
         );
+        assert_eq!(vmm.take_sdk_stop(), Some(stop));
+        assert!(response.iter().all(|byte| *byte == 0));
         assert_eq!(
             before,
             vmm.sdk
@@ -4337,6 +5449,7 @@ mod tests {
             vmm
         };
         let mut source = build();
+        source.set_host_operation_guard(std::sync::Arc::new(|_| Ok(())));
         let question = channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap();
         let stop = SdkStop::Decision {
             moment: 31,
@@ -4358,14 +5471,24 @@ mod tests {
         branched.sdk_restore_events(&snapshot);
         assert_eq!(branched.take_sdk_stop(), Some(stop));
         let answer = channel::Answer::Data(vec![4, 5, 6]);
-        branched.resolve_service_answer(answer.clone()).unwrap();
+        branched
+            .resolve_service_answer(answer.clone(), None)
+            .unwrap();
         assert_eq!(
-            source.resolve_service_answer(answer.clone()).unwrap(),
+            source.resolve_service_answer(answer.clone(), None).unwrap(),
             (31, question.clone())
         );
         assert_eq!(
-            restored.resolve_service_answer(answer).unwrap(),
+            restored.resolve_service_answer(answer, None).unwrap(),
             (31, question)
+        );
+        assert_eq!(
+            sdk_attribution_counter(&source, "sdk_dispatch.service.response_guard_calls"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&source, "sdk_dispatch.coverage.response_guard_calls"),
+            0
         );
         let source_response = source.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();
         let restored_response = restored.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();
@@ -4378,7 +5501,7 @@ mod tests {
         assert_eq!(restored.sdk_events(), source.sdk_events());
         assert!(
             restored
-                .resolve_service_answer(channel::Answer::Nominal)
+                .resolve_service_answer(channel::Answer::Nominal, None)
                 .is_err()
         );
         let completed = source.sdk_snapshot().unwrap().unwrap();
@@ -7118,6 +8241,13 @@ mod tests {
                 vmm_backend::BackendError::PendingCompletion
             ))
         ));
+        let failed = vmm
+            .hash_telemetry()
+            .cost(crate::host_telemetry::HashSite::WholeRequest);
+        assert_eq!(failed.calls, 1);
+        assert_eq!(failed.errors, 1);
+        assert_eq!(failed.ram_bytes, vmm.guest_memory().len() as u64);
+        assert_eq!(failed.suffix_bytes, 0);
         vmm.backend.complete_hypercall(0).unwrap();
         vmm.backend.retire_pending_completion().unwrap();
         assert!(vmm.restore_vm_state(&before).is_err());
@@ -7268,6 +8398,19 @@ mod tests {
         for _ in 0..256 {
             assert_eq!(armed.step().unwrap(), Step::Continued);
         }
+        let cost = armed
+            .hash_telemetry()
+            .cost(crate::host_telemetry::HashSite::Checkpoint);
+        assert_eq!(cost.calls, 1);
+        assert_eq!(cost.ram_bytes, 0x2000);
+        assert_eq!(cost.errors, 0);
+        assert_eq!(
+            armed
+                .hash_telemetry()
+                .cost(crate::host_telemetry::HashSite::WholeRequest)
+                .calls,
+            0
+        );
         let retained = armed
             .take_checkpoint_hash_preimage()
             .expect("the completed 256th event retains its synchronous hash input");

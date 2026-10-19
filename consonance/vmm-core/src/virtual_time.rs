@@ -64,6 +64,7 @@ pub enum NormalizedEventClass {
     DeviceMmio(DeviceClass),
     TimeRead,
     ArchitecturalControl,
+    InterruptDelivery,
     Idle,
     Terminal,
 }
@@ -77,6 +78,7 @@ impl NormalizedEventClass {
             Self::DeviceMmio(DeviceClass::Paravirtual) => "pv_mmio",
             Self::TimeRead => "time_read",
             Self::ArchitecturalControl => "arch_control",
+            Self::InterruptDelivery => "irq_delivery",
             Self::Idle => "idle",
             Self::Terminal => "terminal",
         }
@@ -92,6 +94,7 @@ impl NormalizedEventClass {
             Self::Idle => 5,
             Self::Terminal => 6,
             Self::ArchitecturalControl => 7,
+            Self::InterruptDelivery => 8,
         }
     }
 }
@@ -224,20 +227,38 @@ struct PendingLiveEvent {
     raw: RawEvent,
     class: NormalizedEventClass,
     payload: Vec<u8>,
+    service: Option<(u64, [u8; 32])>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct LiveVirtualTimeTrace {
+    history: control_proto::EventHistory,
     raw: Vec<RawEvent>,
     normalized: NormalizedLog,
     schedule: Vec<ScheduledInterrupt>,
     next_schedule_index: u64,
     active_clockevent_schedule: Option<u64>,
     pending: Option<PendingLiveEvent>,
+    raw_event_active: bool,
     current_interrupts: Vec<InterruptDelivery>,
 }
 
 impl LiveVirtualTimeTrace {
+    pub fn event_history(&self) -> control_proto::EventHistory {
+        self.history
+    }
+
+    pub(crate) fn restore_event_history(&mut self, history: control_proto::EventHistory) {
+        self.history = history;
+    }
+
+    pub(crate) fn retire(&mut self) -> Self {
+        let history = self.history;
+        let retired = std::mem::take(self);
+        self.history = history;
+        retired
+    }
+
     pub fn raw_log(&self) -> &[RawEvent] {
         &self.raw
     }
@@ -309,7 +330,7 @@ impl LiveVirtualTimeTrace {
         class: NormalizedEventClass,
         payload: Vec<u8>,
     ) -> Result<(), &'static str> {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.raw_event_active {
             return Err("virtual_time trace began a second event before finishing the first");
         }
         let event_index = u64::try_from(self.raw.len()).unwrap_or(u64::MAX);
@@ -324,6 +345,7 @@ impl LiveVirtualTimeTrace {
             },
             class,
             payload,
+            service: None,
         });
         self.current_interrupts.clear();
         Ok(())
@@ -341,7 +363,7 @@ impl LiveVirtualTimeTrace {
         reason: ExitReason,
         backend_debug: String,
     ) -> Result<(), &'static str> {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.raw_event_active {
             return Err("virtual_time trace recorded a raw-only exit during an active event");
         }
         self.raw.push(RawEvent {
@@ -350,6 +372,28 @@ impl LiveVirtualTimeTrace {
             reason,
             backend_debug,
         });
+        Ok(())
+    }
+
+    pub(crate) fn begin_raw(
+        &mut self,
+        reason: ExitReason,
+        backend_debug: String,
+    ) -> Result<(), &'static str> {
+        self.record_raw_only(reason, backend_debug)?;
+        self.raw_event_active = true;
+        Ok(())
+    }
+
+    pub(crate) fn normalized_event_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub(crate) fn finish_raw(&mut self) -> Result<(), &'static str> {
+        if !self.raw_event_active || self.pending.is_some() || !self.current_interrupts.is_empty() {
+            return Err("virtual_time raw event completion has inconsistent pending state");
+        }
+        self.raw_event_active = false;
         Ok(())
     }
 
@@ -380,7 +424,7 @@ impl LiveVirtualTimeTrace {
         &self,
         restored_schedule: bool,
     ) -> Result<(), &'static str> {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.raw_event_active {
             return Err("virtual_time trace restore occurred during an active event");
         }
         if let Some(schedule_index) = self.active_clockevent_schedule {
@@ -486,11 +530,13 @@ impl LiveVirtualTimeTrace {
     }
 
     pub(crate) fn deliver_clockevent(&mut self) -> Result<(), &'static str> {
+        if self.pending.is_none() && !self.raw_event_active {
+            return Err("clockevent delivery has no active normalized event");
+        }
         let schedule_index = self
             .active_clockevent_schedule
-            .take()
             .ok_or("clockevent delivery has no active virtual_time schedule")?;
-        let scheduled = self
+        let scheduled = *self
             .schedule
             .iter()
             .find(|scheduled| scheduled.schedule_index == schedule_index)
@@ -498,7 +544,78 @@ impl LiveVirtualTimeTrace {
         if scheduled.canceled_at_event.is_some() {
             return Err("canceled virtual_time clockevent was delivered");
         }
-        self.current_interrupts.push((*scheduled).into());
+        if self.pending.is_none() {
+            let mut raw = self
+                .raw
+                .pop()
+                .ok_or("interrupt delivery raw event is missing")?;
+            raw.portable_event_index = Some(
+                u64::try_from(self.normalized.events.len())
+                    .map_err(|_| "normalized event index exhausted")?,
+            );
+            self.pending = Some(PendingLiveEvent {
+                raw,
+                class: NormalizedEventClass::InterruptDelivery,
+                payload: Vec::new(),
+                service: None,
+            });
+        }
+        self.active_clockevent_schedule = None;
+        self.current_interrupts.push(scheduled.into());
+        Ok(())
+    }
+
+    pub(crate) fn preflight_service_completion(&self) -> Result<(), &'static str> {
+        let records = match &self.pending {
+            Some(pending)
+                if pending.class == NormalizedEventClass::Doorbell && pending.service.is_none() =>
+            {
+                2
+            }
+            Some(_) => return Err("service completion has inconsistent active event"),
+            None if self.raw_event_active => {
+                return Err("service completion during raw-only event");
+            }
+            None => 1,
+        };
+        self.history
+            .count
+            .checked_add(records)
+            .ok_or("event history count overflow")?;
+        Ok(())
+    }
+
+    pub(crate) fn complete_service(
+        &mut self,
+        moment: u64,
+        exchange: [u8; 32],
+    ) -> Result<(), &'static str> {
+        self.preflight_service_completion()?;
+        if let Some(pending) = self.pending.as_mut() {
+            pending.service = Some((moment, exchange));
+        } else {
+            self.append_service(moment, exchange)?;
+        }
+        Ok(())
+    }
+
+    fn append_service(&mut self, moment: u64, exchange: [u8; 32]) -> Result<(), &'static str> {
+        let count = self
+            .history
+            .count
+            .checked_add(1)
+            .ok_or("event history count overflow")?;
+        let mut digest = Sha256::new();
+        digest.update(b"consonance.ordered-event-history.v2\0");
+        digest.update(self.history.digest);
+        digest.update(count.to_le_bytes());
+        digest.update([1]);
+        digest.update(moment.to_le_bytes());
+        digest.update(exchange);
+        self.history = control_proto::EventHistory {
+            count,
+            digest: digest.finalize().into(),
+        };
         Ok(())
     }
 
@@ -507,19 +624,56 @@ impl LiveVirtualTimeTrace {
         vns_after: u64,
         state_hash: Option<[u8; 32]>,
     ) -> Result<(), &'static str> {
+        let records = 1 + u64::from(
+            self.pending
+                .as_ref()
+                .is_some_and(|pending| pending.service.is_some()),
+        );
+        self.history
+            .count
+            .checked_add(records)
+            .ok_or("event history count overflow")?;
         let pending = self
             .pending
             .take()
             .ok_or("virtual_time trace finished with no active event")?;
+        let service = pending.service;
+        self.raw_event_active = false;
         self.raw.push(pending.raw);
-        self.normalized.events.push(NormalizedEvent {
+        let event = NormalizedEvent {
             event_index: u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX),
             class: pending.class,
             payload_digest: digest_payload(pending.class, &pending.payload),
             vns_after,
             interrupts: std::mem::take(&mut self.current_interrupts),
             state_hash,
-        });
+        };
+        let count = self
+            .history
+            .count
+            .checked_add(1)
+            .ok_or("event history count overflow")?;
+        let mut digest = Sha256::new();
+        digest.update(b"consonance.ordered-event-history.v2\0");
+        digest.update(self.history.digest);
+        digest.update(count.to_le_bytes());
+        digest.update([0]);
+        digest.update([event.class.tag()]);
+        digest.update(event.payload_digest);
+        digest.update(event.vns_after.to_le_bytes());
+        digest.update((event.interrupts.len() as u64).to_le_bytes());
+        for delivery in &event.interrupts {
+            digest.update(delivery.deadline_vns.to_le_bytes());
+            digest.update(delivery.interrupt_id.to_le_bytes());
+        }
+        self.history = control_proto::EventHistory {
+            count,
+            digest: digest.finalize().into(),
+        };
+        self.normalized.events.push(event);
+        if let Some((moment, exchange)) = service {
+            self.append_service(moment, exchange)?;
+        }
         Ok(())
     }
 
@@ -956,6 +1110,7 @@ mod live_trace_tests {
             ),
             (NormalizedEventClass::TimeRead, "time_read"),
             (NormalizedEventClass::ArchitecturalControl, "arch_control"),
+            (NormalizedEventClass::InterruptDelivery, "irq_delivery"),
             (NormalizedEventClass::Idle, "idle"),
             (NormalizedEventClass::Terminal, "terminal"),
         ] {
@@ -1230,5 +1385,256 @@ mod live_trace_tests {
             ..schedule[0]
         }];
         assert_eq!(check_delivery_placement(&future_epoch, &prefix), Ok(()));
+    }
+
+    #[test]
+    fn service_completion_order_is_defer_and_retirement_neutral() {
+        let begin = |trace: &mut LiveVirtualTimeTrace| {
+            trace
+                .begin(
+                    ExitReason::Mmio,
+                    "doorbell".into(),
+                    NormalizedEventClass::Doorbell,
+                    vec![28],
+                )
+                .unwrap();
+        };
+        let mut inline = LiveVirtualTimeTrace::default();
+        begin(&mut inline);
+        inline.complete_service(17, [9; 32]).unwrap();
+        assert_eq!(inline.event_history().count, 0);
+        assert!(inline.complete_service(17, [9; 32]).is_err());
+        inline.finish(17, None).unwrap();
+        assert_eq!(inline.event_history().count, 2);
+        assert_eq!(inline.normalized_log().events.len(), 1);
+        let mut deferred = LiveVirtualTimeTrace::default();
+        begin(&mut deferred);
+        deferred.finish(17, None).unwrap();
+        let prefix = deferred.event_history();
+        deferred.checkpoint_last([7; 32]).unwrap();
+        deferred.retire();
+        assert_eq!(deferred.event_history(), prefix);
+        deferred.complete_service(17, [9; 32]).unwrap();
+        assert_eq!(deferred.event_history(), inline.event_history());
+        let mut different = LiveVirtualTimeTrace::default();
+        different.restore_event_history(prefix);
+        different.complete_service(17, [8; 32]).unwrap();
+        assert_eq!(
+            different.event_history().count,
+            inline.event_history().count
+        );
+        assert_ne!(different.event_history(), inline.event_history());
+        let mut later = LiveVirtualTimeTrace::default();
+        later.restore_event_history(prefix);
+        later.complete_service(18, [9; 32]).unwrap();
+        assert_ne!(later.event_history(), inline.event_history());
+    }
+
+    #[test]
+    fn service_completion_reserves_both_records_before_queuing() {
+        let mut trace = LiveVirtualTimeTrace::default();
+        let history = control_proto::EventHistory {
+            count: u64::MAX - 1,
+            digest: [5; 32],
+        };
+        trace.restore_event_history(history);
+        trace
+            .begin(
+                ExitReason::Mmio,
+                String::new(),
+                NormalizedEventClass::Doorbell,
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            trace.complete_service(17, [9; 32]),
+            Err("event history count overflow")
+        );
+        assert_eq!(trace.event_history(), history);
+        trace.finish(17, None).unwrap();
+        assert_eq!(trace.event_history().count, u64::MAX);
+        assert_eq!(
+            trace.complete_service(17, [9; 32]),
+            Err("event history count overflow")
+        );
+        assert_eq!(trace.event_history().count, u64::MAX);
+    }
+
+    #[test]
+    fn ordered_history_is_capture_and_retirement_neutral() {
+        let event = |trace: &mut LiveVirtualTimeTrace, payload, at| {
+            trace
+                .begin(
+                    ExitReason::Mmio,
+                    "diagnostic".into(),
+                    NormalizedEventClass::DeviceMmio(DeviceClass::Serial),
+                    vec![payload],
+                )
+                .unwrap();
+            trace.finish(at, None).unwrap();
+        };
+        let mut uninterrupted = LiveVirtualTimeTrace::default();
+        event(&mut uninterrupted, 1, 10);
+        event(&mut uninterrupted, 2, 20);
+        let mut segmented = LiveVirtualTimeTrace::default();
+        event(&mut segmented, 1, 10);
+        let before = segmented.event_history();
+        segmented.checkpoint_last([7; 32]).unwrap();
+        assert_eq!(segmented.event_history(), before);
+        let retired = segmented.retire();
+        assert_eq!(retired.event_history(), before);
+        assert_eq!(segmented.event_history(), before);
+        event(&mut segmented, 2, 20);
+        assert_eq!(segmented.event_history(), uninterrupted.event_history());
+        let mut changed = LiveVirtualTimeTrace::default();
+        event(&mut changed, 9, 10);
+        event(&mut changed, 2, 20);
+        assert_eq!(
+            changed.event_history().count,
+            uninterrupted.event_history().count
+        );
+        assert_eq!(
+            changed.normalized_log().events.last().unwrap().vns_after,
+            20
+        );
+        assert_ne!(changed.event_history(), uninterrupted.event_history());
+        let mut reordered = LiveVirtualTimeTrace::default();
+        event(&mut reordered, 2, 10);
+        event(&mut reordered, 1, 20);
+        assert_ne!(reordered.event_history(), uninterrupted.event_history());
+        let mut restored = LiveVirtualTimeTrace::default();
+        restored.restore_event_history(before);
+        event(&mut restored, 2, 20);
+        assert_eq!(restored.event_history(), uninterrupted.event_history());
+    }
+
+    #[test]
+    fn ordered_history_binds_interrupt_association_and_order_without_local_schedule_ids() {
+        let run = |deliveries: Vec<InterruptDelivery>, later: bool| {
+            let mut trace = LiveVirtualTimeTrace::default();
+            for ordinal in 0..2 {
+                trace
+                    .begin(
+                        ExitReason::Idle,
+                        "idle".into(),
+                        NormalizedEventClass::Idle,
+                        vec![],
+                    )
+                    .unwrap();
+                if (ordinal == 1) == later {
+                    trace.current_interrupts = deliveries.clone();
+                }
+                trace.finish(ordinal + 10, None).unwrap();
+            }
+            trace.event_history()
+        };
+        let a = InterruptDelivery {
+            deadline_vns: 5,
+            schedule_index: 0,
+            interrupt_id: 32,
+        };
+        let b = InterruptDelivery {
+            deadline_vns: 5,
+            schedule_index: 1,
+            interrupt_id: 33,
+        };
+        let baseline = run(vec![a, b], false);
+        assert_eq!(
+            baseline,
+            run(
+                vec![
+                    InterruptDelivery {
+                        schedule_index: 91,
+                        ..a
+                    },
+                    InterruptDelivery {
+                        schedule_index: 92,
+                        ..b
+                    }
+                ],
+                false
+            )
+        );
+        assert_ne!(baseline, run(vec![b, a], false));
+        assert_ne!(baseline, run(vec![a, b], true));
+        assert_ne!(
+            baseline,
+            run(
+                vec![
+                    InterruptDelivery {
+                        deadline_vns: 6,
+                        ..a
+                    },
+                    b
+                ],
+                false
+            )
+        );
+        let mut trace = LiveVirtualTimeTrace::default();
+        trace.restore_event_history(control_proto::EventHistory {
+            count: u64::MAX,
+            digest: [4; 32],
+        });
+        trace
+            .begin(
+                ExitReason::Idle,
+                "idle".into(),
+                NormalizedEventClass::Idle,
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(trace.finish(1, None), Err("event history count overflow"));
+    }
+
+    #[test]
+    fn delivery_outside_a_normalized_event_cannot_disappear_from_history() {
+        let mut trace = LiveVirtualTimeTrace::default();
+        trace.restore_clockevent_schedule(Some((10, 32))).unwrap();
+        let before = trace.clone();
+        assert_eq!(
+            trace.deliver_clockevent(),
+            Err("clockevent delivery has no active normalized event")
+        );
+        assert_eq!(trace.event_history(), before.event_history());
+        assert_eq!(trace.schedule, before.schedule);
+        assert_eq!(
+            trace.active_clockevent_schedule,
+            before.active_clockevent_schedule
+        );
+        trace
+            .begin(
+                ExitReason::Idle,
+                "idle".into(),
+                NormalizedEventClass::Idle,
+                vec![],
+            )
+            .unwrap();
+        trace.deliver_clockevent().unwrap();
+        trace.finish(10, None).unwrap();
+        assert_eq!(trace.normalized_log().events[0].interrupts.len(), 1);
+    }
+
+    #[test]
+    fn only_semantic_delivery_promotes_a_raw_exit_to_a_normalized_event() {
+        let mut trace = LiveVirtualTimeTrace::default();
+        trace.restore_clockevent_schedule(Some((10, 32))).unwrap();
+        trace.begin_raw(ExitReason::Sysreg, "raw".into()).unwrap();
+        assert!(trace.preflight_restore_clockevent_schedule(false).is_err());
+        trace.finish_raw().unwrap();
+        assert_eq!(trace.event_history().count, 0);
+        trace
+            .begin_raw(ExitReason::Mmio, "GIC read".into())
+            .unwrap();
+        trace.deliver_clockevent().unwrap();
+        trace.finish(10, None).unwrap();
+        assert_eq!(trace.event_history().count, 1);
+        assert_eq!(trace.raw_log().len(), 2);
+        assert_eq!(trace.raw_log()[0].portable_event_index, None);
+        assert_eq!(trace.raw_log()[1].portable_event_index, Some(0));
+        let event = &trace.normalized_log().events[0];
+        assert_eq!(event.class, NormalizedEventClass::InterruptDelivery);
+        assert_eq!(event.vns_after, 10);
+        assert_eq!(event.interrupts.len(), 1);
+        check_delivery_placement(trace.schedule(), trace.normalized_log()).unwrap();
     }
 }

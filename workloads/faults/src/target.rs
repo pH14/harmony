@@ -245,11 +245,20 @@ mod park_target_serde {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum FaultEndpointCertificate {
+    KvmWholeState([u8; 32]),
+    KvmUnavailableAfterFailure,
+    UmlWholeStateUnavailable,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultSnapshot {
-    pub actions: Vec<FaultAction>,
+    pub history: crate::history::FaultHistory,
     pub observation: FaultObservations,
     pub failed: bool,
+    pub endpoint: Option<FaultEndpointCertificate>,
+    pub event_history: Option<(u64, [u8; 32])>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -262,11 +271,32 @@ pub struct ActionWindows {
     pub root_seal: u64,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TIMELINE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl ActionWindows {
     fn end(self, start: u64, action: &FaultAction) -> Result<u64, String> {
+        #[cfg(test)]
+        TIMELINE_STEPS.with(|steps| steps.set(steps.get() + 1));
         start
             .checked_add(action.ticks() * SUPERVISOR_TICK_NANOS)
             .ok_or_else(|| "action timeline overflows guest time".to_owned())
+    }
+
+    pub fn iter<'a>(
+        self,
+        actions: impl IntoIterator<Item = &'a FaultAction>,
+    ) -> impl Iterator<Item = Result<(u64, u64), String>> {
+        actions
+            .into_iter()
+            .scan(Some(self.root_seal), move |start, action| {
+                let from = (*start)?;
+                let end = self.end(from, action);
+                *start = end.as_ref().ok().copied();
+                Some(end.map(|end| (from, end)))
+            })
     }
 
     pub fn window(self, actions: &[FaultAction], index: usize) -> Result<(u64, u64), String> {
@@ -361,15 +391,10 @@ pub fn action_deltas(
     windows: ActionWindows,
     actions: &[FaultAction],
 ) -> Result<Vec<ActionDelta>, String> {
-    let mut start = windows.root_seal;
     actions
         .iter()
-        .map(|action| {
-            let end = windows.end(start, action)?;
-            let delta = action_delta(*action, (start, end));
-            start = end;
-            Ok(delta)
-        })
+        .zip(windows.iter(actions))
+        .map(|(action, window)| window.map(|window| action_delta(*action, window)))
         .collect()
 }
 
@@ -456,7 +481,256 @@ impl SdkCapture {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct SdkDecoderState {
+    capture: SdkCapture,
+    check_passes: BTreeMap<u64, BTreeSet<String>>,
+    last_moment: u64,
+    offset: u32,
+    action_after: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SdkDecoder {
+    state: std::sync::Arc<SdkDecoderState>,
+}
+
+impl Serialize for SdkDecoder {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.state.as_ref().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SdkDecoder {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        SdkDecoderState::deserialize(deserializer).map(|state| Self {
+            state: std::sync::Arc::new(state),
+        })
+    }
+}
+
+impl SdkDecoder {
+    pub fn offset(&self) -> u32 {
+        self.state.offset
+    }
+    pub fn capture(&self) -> &SdkCapture {
+        &self.state.capture
+    }
+    pub fn moment(&self) -> u64 {
+        self.state.last_moment
+    }
+    pub fn action_after(&self) -> Option<u64> {
+        self.state.action_after
+    }
+    pub fn begin_action(&mut self, after: u64) {
+        if self.state.action_after == Some(after) {
+            return;
+        }
+        let state = std::sync::Arc::make_mut(&mut self.state);
+        state.action_after = Some(after);
+        state.capture.parks.retain(|park| park.moment > after);
+        state.capture.park_reads.retain(|read| read.moment > after);
+    }
+    pub fn retained_allocation(&self) -> (usize, usize) {
+        fn tree_entry<K, V>() -> usize {
+            16 * std::mem::size_of::<(K, V)>() + 16 * std::mem::size_of::<usize>() + 64
+        }
+        let capture = self.capture();
+        let mut bytes = std::mem::size_of::<SdkDecoderState>() + 2 * std::mem::size_of::<usize>();
+        bytes += capture.registers.len() * tree_entry::<u32, u64>();
+        bytes += capture
+            .assertions
+            .0
+            .iter()
+            .map(|(id, outcome)| {
+                tree_entry::<String, AssertionOutcome>()
+                    + id.capacity()
+                    + outcome.message.capacity()
+                    + outcome.location.capacity()
+            })
+            .sum::<usize>();
+        bytes += self
+            .state
+            .check_passes
+            .values()
+            .map(|points| {
+                tree_entry::<u64, BTreeSet<String>>()
+                    + points
+                        .iter()
+                        .map(|point| tree_entry::<String, ()>() + point.capacity())
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+        bytes += capture.parks.capacity() * std::mem::size_of::<ParkLanding>();
+        bytes += capture.park_reads.capacity() * std::mem::size_of::<ParkRead>();
+        if let Some(check) = &capture.completed_check {
+            bytes += check.points.capacity() * std::mem::size_of::<String>();
+            bytes += check.points.iter().map(String::capacity).sum::<usize>();
+        }
+        (std::sync::Arc::as_ptr(&self.state) as usize, bytes)
+    }
+    pub fn append(&mut self, events: &[(u64, u32, Vec<u8>)]) -> Result<usize, String> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+        let count = u32::try_from(events.len()).map_err(|_| "SDK event count overflow")?;
+        let offset = self
+            .offset()
+            .checked_add(count)
+            .ok_or("SDK event offset overflow")?;
+        let mut staged = self.clone();
+        let state = std::sync::Arc::make_mut(&mut staged.state);
+        let capture = &mut state.capture;
+        let check_passes = &mut state.check_passes;
+        let mut processed = 0_usize;
+        for (moment, event_id, bytes) in events {
+            processed += 1;
+            if *event_id == JSON_EVENT_ID && bytes.trim_ascii_start().first() == Some(&b'{') {
+                if let Some(event) = decode_json_event(bytes) {
+                    capture.setup_complete |= event.setup_complete;
+                    if let Some(park) = event.park {
+                        capture.parks.push(ParkLanding {
+                            moment: *moment,
+                            site: park.site,
+                            edges: park.edges,
+                        });
+                    }
+                    if let Some(read) = event.park_read {
+                        capture.park_reads.push(ParkRead {
+                            moment: *moment,
+                            site: read.site,
+                            edges: read.edges,
+                        });
+                    }
+                    if let Some((id, outcome)) = event.assertion {
+                        if let Some(pid) = event.pid
+                            && outcome.feeds_the_key()
+                        {
+                            check_passes.entry(pid).or_default().insert(id.clone());
+                        }
+                        capture.assertions.record(id, outcome);
+                    }
+                }
+                continue;
+            }
+            let namespace = (event_id >> NS_SHIFT) as u8;
+            let local = event_id & ((1 << NS_SHIFT) - 1);
+            match namespace {
+                NS_ASSERT if bytes.len() == ASSERT_PAYLOAD_LEN => {
+                    let (kind, passed) = match bytes[0] {
+                        DISP_HIT => (AssertionKind::Sometimes, true),
+                        DISP_VIOLATION => (AssertionKind::Always, false),
+                        _ => {
+                            return Err("SDK assertion event has an unknown disposition".to_owned());
+                        }
+                    };
+                    capture.assertions.record(
+                        local.to_string(),
+                        AssertionOutcome {
+                            kind,
+                            message: local.to_string(),
+                            location: String::new(),
+                            passed,
+                            failed: !passed,
+                        },
+                    );
+                }
+                NS_STATE if bytes.len() == STATE_PAYLOAD_LEN => {
+                    let value = u64::from_le_bytes(
+                        bytes[1..STATE_PAYLOAD_LEN]
+                            .try_into()
+                            .map_err(|_| "SDK state payload is truncated")?,
+                    );
+                    match bytes[0] {
+                        STATE_SET => {
+                            let previous = capture.registers.insert(local, value);
+                            if local == reg::CHECKS_STARTED && previous != Some(value) {
+                                check_passes.clear();
+                            }
+                            if local == reg::COMPLETED_CHECK_RUN {
+                                capture.note_completed_check(value, check_passes);
+                            }
+                        }
+                        STATE_MAX => {
+                            capture
+                                .registers
+                                .entry(local)
+                                .and_modify(|current| *current = (*current).max(value))
+                                .or_insert(value);
+                        }
+                        _ => return Err("SDK state event has an unknown operation".to_owned()),
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(after) = state.action_after {
+            capture.parks.retain(|park| park.moment > after);
+            capture.park_reads.retain(|read| read.moment > after);
+        }
+        state.last_moment = events.last().map_or(state.last_moment, |event| event.0);
+        state.offset = offset;
+        *self = staged;
+        Ok(processed)
+    }
+}
+
+#[cfg(feature = "consonance")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ObservationCheckpoint {
+    version: u16,
+    receipt: [u8; 32],
+    decoder: SdkDecoder,
+}
+
+#[cfg(feature = "consonance")]
+impl ObservationCheckpoint {
+    pub(crate) fn capture(
+        receipt: &crate::history::HistoryReceipt,
+        decoder: SdkDecoder,
+    ) -> Result<Self, String> {
+        let checkpoint = Self {
+            version: 1,
+            receipt: receipt.root(),
+            decoder,
+        };
+        checkpoint.validate_binding(receipt)?;
+        Ok(checkpoint)
+    }
+    pub(crate) fn decoder(&self) -> &SdkDecoder {
+        &self.decoder
+    }
+    pub(crate) fn validate_binding(
+        &self,
+        receipt: &crate::history::HistoryReceipt,
+    ) -> Result<(), String> {
+        let after = (receipt.depth() != 0).then(|| receipt.previous_moment());
+        let observation = FaultObservations::new(
+            self.decoder.moment(),
+            self.decoder.capture(),
+            FaultStop::Deadline,
+        );
+        if self.version != 1
+            || self.receipt != receipt.root()
+            || self.decoder.action_after() != after
+            || self.decoder.moment() != receipt.moment()
+            || !receipt.matches_observation(&observation)?
+        {
+            return Err("observation checkpoint differs from captured history".to_owned());
+        }
+        self.decoder.capture().check_infrastructure_status()
+    }
+}
+
 pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, String> {
+    let mut decoder = SdkDecoder::default();
+    decoder.append(events)?;
+    Ok(decoder.capture().clone())
+}
+
+#[cfg(test)]
+fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, String> {
     let mut capture = SdkCapture::default();
     let mut check_passes: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
     for (moment, event_id, bytes) in events {
@@ -602,6 +876,8 @@ pub struct FaultObservations {
     #[serde(default)]
     pub watchdog_cutoff: bool,
     #[serde(default)]
+    pub infrastructure_failure: bool,
+    #[serde(default)]
     pub parks: Vec<ParkLanding>,
     #[serde(default)]
     pub park_reads: Vec<ParkRead>,
@@ -645,6 +921,7 @@ impl FaultObservations {
             assertions: capture.assertions.clone(),
             stop,
             watchdog_cutoff: false,
+            infrastructure_failure: false,
             parks: capture.parks.clone(),
             park_reads: capture.park_reads.clone(),
         }
@@ -666,7 +943,9 @@ impl FaultObservations {
 
     #[must_use]
     pub fn is_bug(&self) -> bool {
-        self.stop.is_bug() || !self.violations().is_empty()
+        !self.watchdog_cutoff
+            && !self.infrastructure_failure
+            && (self.stop.is_bug() || !self.violations().is_empty())
     }
 
     #[must_use]
@@ -709,6 +988,121 @@ mod tests {
         let mut bytes = vec![op];
         bytes.extend_from_slice(&value.to_le_bytes());
         (0, ((NS_STATE as u32) << NS_SHIFT) | register, bytes)
+    }
+
+    fn cursor_events() -> Vec<(u64, u32, Vec<u8>)> {
+        let mut events = vec![
+            state_event(reg::CHECK_ENABLED, STATE_SET, 1),
+            state_event(reg::COMPLETED_CHECK_PID, STATE_SET, 40),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+            json_pass(40, "first"),
+            (4, 0, br#"{"harmony_park":{"site":7,"edges":8}}"#.to_vec()),
+            (
+                5,
+                0,
+                br#"{"harmony_park_read":{"site":9,"edges":10}}"#.to_vec(),
+            ),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+            state_event(reg::COMPLETED_CHECK_RUN, STATE_SET, 7),
+            assert_event(3, DISP_HIT),
+            state_event(reg::TICKS, STATE_MAX, 9),
+            state_event(reg::TICKS, STATE_MAX, 2),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 2),
+            state_event(reg::COMPLETED_CHECK_RUN, STATE_SET, 8),
+            json_pass(40, "second"),
+            state_event(reg::COMPLETED_CHECK_RUN, STATE_SET, 9),
+            (99, 0, b"{malformed".to_vec()),
+            (2, u32::MAX, vec![1, 2, 3]),
+        ];
+        events[3].0 = 3;
+        events
+    }
+
+    #[test]
+    fn cursor_decoder_matches_independent_full_reference_at_chunk_boundaries() {
+        let events = cursor_events();
+        for chunk_size in 1..=events.len() {
+            let mut decoder = SdkDecoder::default();
+            let mut end = 0;
+            for chunk in events.chunks(chunk_size) {
+                assert_eq!(decoder.append(chunk).unwrap(), chunk.len());
+                end += chunk.len();
+                assert_eq!(
+                    decoder.capture(),
+                    &decode_sdk_events_reference(&events[..end]).unwrap()
+                );
+                assert_eq!(decoder.offset() as usize, end);
+                assert_eq!(decoder.moment(), events[end - 1].0);
+            }
+            assert_eq!(decoder.append(&[]).unwrap(), 0);
+            assert_eq!(decoder.moment(), 2);
+        }
+        let short = &events[..8];
+        for boundaries in 0..(1_usize << (short.len() - 1)) {
+            let mut decoder = SdkDecoder::default();
+            let mut start = 0;
+            for end in 1..=short.len() {
+                if end == short.len() || boundaries & (1 << (end - 1)) != 0 {
+                    decoder.append(&short[start..end]).unwrap();
+                    assert_eq!(
+                        decoder.capture(),
+                        &decode_sdk_events_reference(&short[..end]).unwrap()
+                    );
+                    start = end;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cursor_decode_errors_preserve_all_visible_and_hidden_state() {
+        let events = cursor_events();
+        let mut decoder = SdkDecoder::default();
+        decoder.append(&events[..8]).unwrap();
+        decoder.begin_action(3);
+        for malformed in [assert_event(1, 9), state_event(reg::CHECKS_STARTED, 9, 2)] {
+            let before = decoder.clone();
+            let bytes = postcard::to_allocvec(&decoder).unwrap();
+            let batch = vec![
+                state_event(reg::CHECKS_STARTED, STATE_SET, 77),
+                json_pass(40, "stale"),
+                events[4].clone(),
+                malformed,
+            ];
+            assert!(decoder.append(&batch).is_err());
+            assert_eq!(decoder, before);
+            assert_eq!(postcard::to_allocvec(&decoder).unwrap(), bytes);
+        }
+        let mut resumed: SdkDecoder =
+            postcard::from_bytes(&postcard::to_allocvec(&decoder).unwrap()).unwrap();
+        resumed.append(&completion(40, 11, 3)).unwrap();
+        assert_eq!(
+            resumed.capture().completed_check.as_ref().unwrap().points,
+            vec!["first"]
+        );
+    }
+
+    #[test]
+    fn cursor_action_projection_preserves_repeated_evidence_and_drops_old_parks() {
+        let events = cursor_events();
+        let mut decoder = SdkDecoder::default();
+        decoder.append(&events[..8]).unwrap();
+        decoder.begin_action(4);
+        let mut expected = decode_sdk_events_reference(&events[..8]).unwrap();
+        expected.parks.retain(|park| park.moment > 4);
+        expected.park_reads.retain(|read| read.moment > 4);
+        assert_eq!(decoder.capture(), &expected);
+        let before = decoder.clone();
+        decoder.append(&[]).unwrap();
+        assert_eq!(decoder, before);
+        decoder.append(&events[8..]).unwrap();
+        expected = decode_sdk_events_reference(&events).unwrap();
+        expected.parks.retain(|park| park.moment > 4);
+        expected.park_reads.retain(|read| read.moment > 4);
+        assert_eq!(decoder.capture(), &expected);
+        decoder.begin_action(5);
+        assert!(decoder.capture().parks.is_empty());
+        assert!(decoder.capture().park_reads.is_empty());
     }
 
     #[test]
@@ -814,6 +1208,65 @@ mod tests {
     }
 
     #[test]
+    fn cumulative_windows_visit_each_duration_once_and_match_indexed_windows() {
+        let actions: Vec<_> = (1..=4096)
+            .map(|index| FaultAction::from(FaultOperation::Wait(ticks(index))))
+            .collect();
+        let visits = std::cell::Cell::new(0);
+        TIMELINE_STEPS.with(|steps| steps.set(0));
+        let rows = WINDOWS
+            .iter(actions.iter().inspect(|_| visits.set(visits.get() + 1)))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(visits.get(), actions.len());
+        assert_eq!(TIMELINE_STEPS.with(std::cell::Cell::get), actions.len());
+        assert_eq!(rows.len(), actions.len());
+        for (index, row) in rows.into_iter().enumerate() {
+            let before = index as u64 * (index as u64 + 1) / 2;
+            assert_eq!(
+                row,
+                (
+                    ROOT + before * TICK,
+                    ROOT + (before + index as u64 + 1) * TICK
+                )
+            );
+            assert_eq!(row, WINDOWS.window(&actions, index).unwrap());
+        }
+    }
+
+    #[test]
+    fn cumulative_windows_check_each_end_and_allow_an_empty_maximum_root() {
+        let action = FaultAction::from(FaultOperation::Wait(NonZeroU16::MIN));
+        let windows = ActionWindows {
+            root_seal: u64::MAX - TICK,
+        };
+        let mut rows = windows.iter([&action, &action, &action]);
+        assert_eq!(rows.next().unwrap().unwrap(), (u64::MAX - TICK, u64::MAX));
+        assert_eq!(
+            rows.next().unwrap().unwrap_err(),
+            "action timeline overflows guest time"
+        );
+        assert!(rows.next().is_none());
+        assert!(
+            ActionWindows {
+                root_seal: u64::MAX
+            }
+            .iter(&[])
+            .next()
+            .is_none()
+        );
+        assert!(
+            ActionWindows {
+                root_seal: u64::MAX
+            }
+            .iter([&action])
+            .next()
+            .unwrap()
+            .is_err()
+        );
+    }
+
+    #[test]
     fn an_overflowing_timeline_is_rejected() {
         let windows = ActionWindows {
             root_seal: u64::MAX - 1,
@@ -907,24 +1360,47 @@ mod tests {
 
     #[test]
     fn event_park_snapshots_round_trip_in_binary_checkpoints() {
+        use searcher::search::campaign::{SnapshotCheckpoint, SnapshotCheckpointEntry};
+        use sha2::{Digest, Sha256};
+
         for target in [None, ParkTarget::new(8, 16)] {
             let snapshot = FaultSnapshot {
-                actions: vec![FaultAction::new(
-                    FaultOperation::EventPark {
-                        node: 1,
-                        edges: 4096,
-                        hold_us: 1000,
-                        ticks: NonZeroU16::new(10).unwrap(),
-                        target,
-                    },
-                    NonZeroU16::new(256).unwrap(),
-                )],
+                history: crate::history::FaultHistory::fixture(
+                    &[FaultAction::new(
+                        FaultOperation::EventPark {
+                            node: 1,
+                            edges: 4096,
+                            hold_us: 1000,
+                            ticks: NonZeroU16::new(10).unwrap(),
+                            target,
+                        },
+                        NonZeroU16::new(256).unwrap(),
+                    )],
+                    &[Some([17; 32])],
+                    Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+                    &(FaultObservations::default()),
+                ),
                 ..FaultSnapshot::default()
             };
             let bytes = postcard::to_allocvec(&snapshot).unwrap();
             assert_eq!(
                 postcard::from_bytes::<FaultSnapshot>(&bytes).unwrap(),
                 snapshot
+            );
+            let checkpoint = SnapshotCheckpoint {
+                format: "fault-test".to_owned(),
+                entries: vec![SnapshotCheckpointEntry {
+                    id: 1,
+                    snapshot: snapshot.clone(),
+                }],
+            };
+            let checkpoint_bytes = checkpoint.to_bytes().unwrap();
+            let restored =
+                SnapshotCheckpoint::<FaultSnapshot>::from_bytes(&checkpoint_bytes, "fault-test")
+                    .unwrap();
+            assert_eq!(
+                Sha256::digest(&bytes),
+                Sha256::digest(postcard::to_allocvec(&restored.entries[0].snapshot).unwrap())
             );
         }
     }

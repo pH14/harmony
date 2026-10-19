@@ -58,9 +58,51 @@ definitions of identity.
 
 ## Corpus
 
-The acceptance manifest registers each test as a cell with a workload, corpus
-kind, oracle set, eligible host class, and virtualization level. A cell that
-cannot run on the selected host is unrun rather than passed.
+`scripts/qualification/consonance.json` registers the production X1 cross-host
+cell, its exact oracle set, host/backend class, instruction surface, state scope,
+and restore mode. `scripts/qualify-consonance.py` builds one static test
+executable containing the guest, runs that retained artifact on both hosts,
+and compares required execution receipts. Missing replicas, missing oracle
+logs, differing artifact identities, empty oracle sets and zero-work evidence
+prevent qualification. The hardware workflow's Results job depends on every
+hardware job and requires the cross-host comparison.
+
+The X1 cell covers normalized events, guest RAM, backend CPU save state and
+virtual-time checkpoints for its embedded real-mode microprogram. It does not
+establish whole-VMM identity, Linux workload portability, snapshot migration,
+cross-ISA conformance, or UML whole-state identity. The other hardware jobs
+retain their own local-repeatability and continuation evidence; they do not
+inherit X1's cross-host result. O1/O2/O3 describe separate acceptance obligations;
+there is not yet a production registry covering all three for every backend.
+UML `state_hash` remains unavailable and cannot satisfy whole-state O1.
+
+`scripts/qualification/linux-continuation.json` separately registers bounded
+O1/O2/O3 evidence for the owned x86 Linux continuation fixture. O1 compares the
+production whole-VMM hash at named READY and DONE cuts and at termination; the composed control
+portable-snapshot path also compares the separate cumulative event history.
+O2 checks the reviewed RAM checksum, XMM15 and x87 constants. O3 repeats two
+explicit seeds, requires different entropy and identical nonentropy readbacks,
+and requires equal positive continuation event counts and virtual time. Both
+runs must reach the owned guest's poweroff-idle terminal outcome. The composed
+portable arm compares cumulative history through that terminal checkpoint, with
+positive, matching DONE-to-termination event and V-time deltas. A planted
+after-DONE port write must remain distinguishable in history even when terminal
+state and output reconverge. Missing,
+zero-work, same-seed and changed-latent-state controls prevent a vacuous cell.
+This is finite x86 KVM Linux evidence, not an oracle registry for every backend
+or a UML whole-state result.
+
+The registry states acceptance obligations, not a passing portability result.
+The final-source [9673f3336 hardware run](https://github.com/pH14/harmony/actions/runs/39159236856)
+passes the AMD local/export and five AMD import arms, but one hosted import
+fails O1 at DONE despite matching READY and independent guest readbacks. A
+separate nested Intel execution of the identical retained binary and AMD cut
+reproduces the differing hash. The difference is x87's last-instruction pointer,
+including its saved copy in guest RAM. Cross-vendor whole-state identity remains
+unqualified; the strict assertion and aggregate continue to reject this result.
+The CPU portability warning remains advisory and standard libraries remain
+supported. This state-metadata witness adds to the numerical limits tracked in
+[#733](https://github.com/pH14/harmony/issues/733).
 
 The corpus has three families:
 

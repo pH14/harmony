@@ -60,9 +60,70 @@ The scan rejects:
 - an arm64 executable load that contains an allocated non-executable section;
 - a review entry that matches no instruction in the image.
 
+Native arithmetic and standard math libraries are admitted for both VM and UML
+images without instruction reviews. Reciprocal/reciprocal-square-root estimates
+and x87 transcendental operations may produce different result bits on different
+CPU implementations. Image admission does not prove a common numerical
+transition rule across CPUs. Saved CLI replay warns about changed or unknown CPU
+implementations through [CPU provenance](../../cli/README.md); exact agreement
+still needs evidence for the particular implementation
+pair, artifacts and inputs.
+
 For User-mode Linux, preparation rejects the scanned hardware entropy and
 CPU-identity instructions even when reviewed. UML runs guest user instructions
 natively, so the VM's hidden feature bits do not protect a guarded call site.
+It also refuses `XBEGIN` and valid `XACQUIRE` instructions before execution,
+including uninstrumented images and reviewed sites. RTM and HLE can abort for
+unmodeled cache, resource and asynchronous conditions; one guest CPU does not
+make their outcome deterministic. The rule applies to both fault-search
+preparation and ordinary application preparation from the archived rootfs.
+It does not add an instruction-review requirement for these sites in VM mode.
+
+The entry-only rule follows Intel's
+[transactional instruction definitions](https://cdrdv2-public.intel.com/671143/334569-sdm-vol-2d.pdf)
+and [asynchronous-abort guidance](https://www.intel.com/content/www/us/en/developer/articles/technical/software-security-guidance/technical-documentation/intel-tsx-asynchronous-abort.html).
+`XEND`, `XABORT`, `XTEST`, `XRELEASE`, `XSUSLDTRK` and `XRESLDTRK` do not start
+a transaction and remain admitted. Outside a transaction, their supporting
+CPUs respectively fault, perform no abort, report inactive, release normally,
+or leave tracking unchanged. This is not a claim that unsupported CPUs execute
+them instead of raising an instruction exception. `XACQUIRE` classification
+requires a valid memory operation, including implicit-lock `XCHG` or a supported
+explicit `LOCK` form; ordinary REP, PAUSE, SSE and `XRELEASE` prefixes remain
+admitted. The scan still requires cooperative control flow and no generated code.
+
+Production preparation applies the x86 xstate policy to the exact packed ELF
+bytes for both VM and UML execution, including ordinary uninstrumented runs.
+FXSAVE/XSAVE-family saves are refused independently of digest/address review.
+Only the complete straight-line glibc eager-resolver and unused-TLSdesc shapes
+receive the loader exception; the save operand, matching restore, mask/reload sequence,
+predecessors, alternate entries and overlapping decodes all participate in the
+check. TLSdesc and text relocations anywhere in the scanned x86 ELF closure are
+refused. XGETBV requires a unique nonoverlapping straight-line proof that ECX
+is zero, bounded to 32 predecessor instructions. The proof follows full-width
+register copies, respects partial-register and CPUID clobbers, and permits
+conditional branches only when no observed entry bypasses the proof. LOOP-family
+instructions, calls and unknown operations stop the proof. Legacy resolver
+FXSAVE/FXRSTOR requires its complete 16-byte-aligned, 0x240-byte frame; the
+XSAVE variants retain the matching mask and 64-byte alignment rules. Restore operations remain
+admitted, and native standard math is unchanged. The Linux fixture compares
+compiled FXSAVE, XSAVE, selector-1, proven selector-0, restore, math and ordinary
+statically linked libc programs
+through both production preparation modes and the Python checker, retaining
+exact ELF bytes and both decisions. The ordinary libc positive runs in VM mode;
+installed glibc can contain transaction entry already refused by UML admission.
+
+This is a static cooperative-code boundary. It does not enforce future
+executable mappings, mutable files, generated code or instruction preservation
+under engine WriteMemory/XorMemory effects. Those effects can change code even
+when the original image was admitted. Ordinary logical XSAVE/cache identity
+continues to require the documented instruction-domain assumptions; the scan
+is not a runtime domain-preservation or exact-replay qualification certificate.
+A retained development-host KVM probe passed static admission, decoded FXSAVE
+into an RW mapping, changed the mapping to RX and executed it successfully.
+That is a confirmed instruction-domain escape, not a replay-divergence witness.
+Arbitrary RAM effects and dynamic execution remain outside the maintained
+static contract even after the production/checker alignment.
+
 The stub's TSC trap does not trap RDPID or LSL. RDPID returns the host CPU's
 identity, and LSL can read the CPU number from the host GDT segment limit.
 This admission check walks executable loads in the packed image, including
@@ -72,10 +133,12 @@ file offset and virtual address disagree within a page. Section headers do
 not determine what the guest loader executes.
 The x86 scan follows instruction streams from each mapped section and gap
 across section and adjacent executable-load boundaries. It starts at each
-load's declared address and rejects overlapping executable mappings, which
-could combine instruction bytes from different loads. The scan still requires
-cooperative workloads: dynamically generated code and instructions hidden
-inside another instruction's operand bytes are outside its guarantee.
+load's declared address, restarts at direct near-branch targets in any
+executable load of the same ELF, including across unmapped gaps, and rejects
+overlapping executable mappings, which could combine instruction bytes from
+different loads. The scan still requires
+cooperative workloads: dynamically generated code and indirect transfers into
+another instruction's operand bytes are outside its guarantee.
 The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
 entropy sites, so UML refuses those images even if a particular workload
 would not call them. Build a UML image without the sites before searching or
@@ -95,8 +158,11 @@ load from its start, regardless of the section's executable flag, and scans
 the gaps separately. Each decode continues through later ranges when their
 virtual addresses are contiguous. This preserves instruction alignment when a
 segment begins with headers or other data while finding an instruction reached
-by falling through a boundary. At each mapped-section or adjacent executable-load
-boundary, it also decodes the first complete instruction from every candidate
+by falling through a boundary. Direct near jumps, calls, and conditional
+branches also start fresh decodes at their targets, including targets within
+an operand that the section-start stream treats as data. At each mapped-section
+or adjacent executable-load boundary, it also decodes the first complete
+instruction from every candidate
 start within the preceding 14 bytes. Entropy and CPU-identity instructions
 whose prefixes, operands, SIB bytes, or displacements cross a boundary become
 exact-address review sites. A VM image can review such a site against its
@@ -138,6 +204,25 @@ the same quantum, so busy-loop scheduling replays along with fault timing:
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once |
 
+Unrecorded standing-service questions stop at an explicit decision. The fault
+client derives an answer from the action's configuration and resumes through a
+recorded resolution before the guest sees it. Worker and UML sessions carry
+the same resolution. Each branch also records a compact schedule of coverage
+quantums from its action windows. The SDK selects that quantum directly, so a
+small quantum does not create one answer-tape entry per callback.
+When reconstructing an earlier prefix, the resolver uses that prefix's installed
+service configuration for requests before its deadline. A request at or beyond
+the deadline remains pending at the action snapshot. The next action's branch
+installs its service configuration before resolving that request.
+
+Before executing an uncached prefix, the client compiles its action timeline
+in one checked cumulative pass. One immutable plan supplies the branch's exact
+standing-service configuration, coverage schedule, local decision handler and
+final deadline. Reconstruction compiles each prefix separately so earlier
+branches retain their original configuration bytes. Compilation and full-prefix
+history materialization remain linear in that prefix's depth; plans are not
+retained across actions.
+
 Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
@@ -160,6 +245,22 @@ be snapshotted, the session is abandoned and the control diagnostic is
 reported. Each session keeps only its current chain of prefix snapshots, at
 most 32 past the setup snapshot. Every sealed prefix is published to the
 search's shared snapshot cache (see [consonance-client](../../consonance/client/README.md)).
+Publishing an action prefix already cached with a different target state
+quarantines its namespace before the fault controller seals a link. A shared
+integrity check invalidates the campaign, including work already running from
+local cache links; it cannot count the contradiction as an ordinary execution
+failure or return a completed campaign report. Existing leases, subsequent
+lookups and publications, and dependent descendants cannot reuse that domain.
+The error path writes `campaign-invalidation.json` with an invalidated verdict
+and `determinism-witnesses/` with both exact anchor-first extent chains, their
+checksums, namespace, action-prefix bytes and commitments. It also retains the
+kernel, initramfs, optional root and UML profile, running host executable, and
+setup configuration. Extents remain sparse relative to setup: reconstruction
+must rebuild setup from those artifacts and verify the setup identity recorded
+in their sidecars. These files preserve disputed cache evidence; UML whole-state
+identity remains unavailable. An incomplete evidence write keeps an invalidated
+marker and reports the persistence failure while retaining the typed original
+error and its witnesses.
 A prefix that the chain does not hold is imported from the longest cached
 prefix in the shared cache, and only the remaining actions run again. Chain
 bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a
@@ -174,7 +275,11 @@ budget. When eviction cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
 its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
-and `shrinks`, under `snapshot_cache`.
+and `shrinks`, under `snapshot_cache`. It samples the shared index once under
+`snapshot_cache_locks` for per-operation acquisition attempts, acquired/completed
+counts and wait/hold nanoseconds; worker/session totals never sum this shared
+owner. `stats` reads have their own site. These host-time diagnostics do not affect
+budget policy or certificates.
 A fault search keeps sixteen reservations per worker in its admission window.
 Each action draws its own
 duration, so one execution can run a hundred times longer than the median, and
@@ -182,10 +287,69 @@ the other workers keep running the jobs behind it until it is admitted.
 Each worker reports its time through the campaign `telemetry`: boot, new
 action runs, prefix rebuilds, and replayed actions, each in host and virtual
 time. It also reports session restore, branch, seal, observation, and drop
-time; the chain's exact hits, ancestor hits, misses, evictions, entries, and
-resident bytes; shared cache imports and publications with their time, and
-refused publications; and the VMM's exit, guest-run, and snapshot counters under
-`vmm.`. `campaign-summary.json` includes the whole telemetry record.
+time; the chain's exact hits, ancestor hits, misses and evictions; shared cache
+imports and publications with their time, and refused publications; and the VMM's exit, guest-run, and snapshot counters under
+`vmm.`. `campaign-summary.json` includes the work telemetry record. The campaign uses
+`thread_work_telemetry`, which collects cumulative work without querying snapshot
+ownership or store size. `thread_residency_diagnostics` explicitly samples the
+live chain's entries, page bytes and observation-checkpoint charge. These typed
+gauges are absent after the live session retires and are never accumulated into
+work counters; unavailable ownership or arithmetic overflow makes page and total
+charge unavailable. Each live point is queried once, so worker mode performs
+real guarded ownership RPCs. Collect these diagnostics separately from phase
+counter snapshots. Actual store-budget enforcement continues to query store
+bytes and report them to the shared index independently of either telemetry API.
+
+Work-counter reads in worker mode still perform one guarded TELEMETRY RPC. Its
+framing and guard work remain observable, and parent/child snapshots occur at
+different points around response publication. These reads are not atomic or free.
+Counter getters do not estimate or subtract their own cost. Host timing, gauges
+and physical request counts do not affect logical selection or certificates.
+
+Optional job locality observations are fixed-size workload-owned values, separate
+from logical fault observations and endpoint certificates. The origin restore
+records its actual selected source: local exact/ancestor or shared import
+exact/ancestor, selected/requested depths, session generation and final outcome.
+A link imported during a previous job is local when subsequently reused.
+Reconstruction is orthogonal to starting source; attempted/completed rebuilt
+steps and archived parent-tail replay are separate counts. Lookup/import counters
+separate origin, action-parent and cached-child work. Source selection preserves
+the existing depth-first search: a shared exact match can precede a local ancestor.
+
+An origin restore succeeds only after the existing backend-specific endpoint,
+event-history and observation checks complete. UML retains its explicit
+whole-state-unavailable contract. Failed/cutoff restores retain their failure stage
+and attempted source when known, without treating a watchdog-converted Ok as
+success. Session generations are checked, per-thread runtime identities paired
+with the actual worker; they are unavailable after exhaustion and are not
+persistent cache identities. Bookkeeping survives Live retirement in a job-local
+TLS value and drains before panic recovery. It retains no snapshot or lease,
+issues no telemetry or ownership RPC, and supplies no restore authority. These
+measurements do not describe host NUMA page placement or change dispatch policy.
+
+`origin.generation` identifies the selected starting session. `end_generation`
+comes from an in-memory TLS-presence census at drain, so retirement through
+current-state or event-history accessors is visible even when it bypasses the
+normal Live-operation wrapper. A retired session does not erase its attempted
+source generation. Generation values are observational, paired with the actual
+worker, and grant no handle or restore authority.
+
+Candidate-path lookup counts exclude the certified-local fast path. Parent and
+cached-child source counts describe validated selections independently of the
+origin summary; cached-child searches are exact. Parent sources count
+action-parent selections for newly executed prefixes, not reserved archive
+parents or parent-tail replay
+actions. They are selection diagnostics, not separate whole-state certificates.
+Import completion means the existing import/binding/install path succeeded; a later restore failure is still
+reported separately. `NotAttempted` on a failed job means execution rejected the
+job before origin restore; it is not a zero-cost restore measurement. The generic
+256-byte bound is checked on campaign entry. Consumers must retain unavailable/
+overflow and sink-discard coverage when aggregating results.
+
+Consumers namespace worker/generation pairs by the observed invocation; thread
+pools, resumed invocations and processes can restart those values. The sink's
+caller-owned run identity supplies that namespace, outside logical campaign data.
+
 The shared session watchdog follows deterministic virtual-time progress, so a
 slowly advancing instrumented guest can finish a long action while one stuck
 at a virtual moment still times out. Replay can apply explicit, bounded Wait
@@ -332,17 +496,39 @@ the digest; readers default a missing marker to the legacy interpretation.
 Earlier UML `engine_digest` values covered only bridge state and cannot prove
 full-state replay equivalence.
 
-The search report and `campaign-summary.json` also record
-`watchdog_cutoffs`, the number of guest action runs and prefix reconstruction
-attempts ended by the session's host watchdog, including waits for a fresh or
-in-place UML restore. A reconstruction cutoff ends that preparation attempt,
-counts one execution failure and one watchdog cutoff, and leaves the worker
-available for later jobs. It
-produces no suffix action, retained candidate, oracle evidence, or duration
-feedback. Other reconstruction errors still fail the campaign. A completed CLI
-with such cutoffs remains a measured campaign;
-an outer CLI timeout is an infrastructure failure. The reports also expose
-`execution_failures`; the nightly check rejects non-watchdog failures. A supervisor
+The session records `watchdog_cutoffs` when a guest action or parent
+reconstruction exceeds its host progress bound, including fresh and in-place
+UML restores. Typed session infrastructure errors and abandoned sessions carry
+an independent `infrastructure_failure` flag; they do not increment the timeout
+counter. Neither cause is guest bug evidence. A campaign treats either cause as
+infrastructure incompleteness:
+the affected reservation returns an error before admission, result certification,
+selection accounting, mixture updates or duration feedback. If a suffix already
+completed some actions, none of that job's actions or candidates are admitted.
+Bootstrap, branch-prefix replay and shared-cache imports preserve the same
+infrastructure-failure classification.
+The campaign stops with an explicit incomplete error instead of writing a
+completed report. Previously admitted stream records are flushed and existing
+search checkpoints remain available; the incomplete stream has no successful
+completion record. A later search can resume an earlier complete checkpoint.
+The recorded `host_failure_policy = host_incomplete_v2` binds this behavior;
+streams and checkpoints with an absent or different policy are refused, including
+the earlier watchdog-only policy. The execution and endpoint-certificate identities
+also advance because observations now encode the distinct infrastructure flag. The
+combined replay endpoint uses certificate domain v3, binding ordered event history
+and infrastructure-marked observations under one schema. Reading ordered history
+preserves typed host failures and rejects a known abandoned matching session as
+incomplete; missing or mismatched session identities remain ordinary errors. The
+shared hash helper retains the actual error even when that call retires the
+session: a timeout stays a timeout and a malformed reply stays an ordinary error.
+A successful hash from a session retired during the call cannot certify a
+continuation. These checks also cover receipt reconstruction and imported roots.
+Execution identity v10 separates the combined contract from the earlier receipt-only
+identity. Ordinary
+guest terminal outcomes retain their existing meaning. An outer CLI timeout is
+also an infrastructure failure. Completed reports still expose
+`execution_failures` and `watchdog_cutoffs`; a host cutoff cannot contribute to
+either counter in a successfully completed campaign. A supervisor
 runtime error has a separate SDK status and cannot turn a PID 1 exit into bug
 evidence.
 
@@ -354,6 +540,163 @@ and whether hooks, workload, checks, or event faults have progressed. Site
 identities and workload-specific concepts do not enter the duration policy.
 Choices and feedback state are recorded in the campaign stream; input replay
 executes the recorded durations directly.
+The archive key's 128-bit assertion digest is a decimal string in JSON
+campaign streams, archive reports, and progress records. This lets the tagged
+job and skip records decode. The binary campaign result hash and checkpoints
+retain the native 128-bit encoding.
+
+Each campaign job's recorded result digest binds its logical result to a tagged
+final endpoint certificate. The v2 result domain also binds versioned ordered-history
+records (v2 includes completed semantic service exchanges) whenever a KVM whole-state endpoint is available, including terminal and
+zero-action jobs. Failed or unavailable endpoints explicitly carry no history;
+that absence cannot stand in for a whole-state endpoint.
+
+Every runnable snapshot carries a persistent, shared action history. Each node
+binds its parent history, action, actual endpoint evidence, action-local
+observation commitment, and observation boundary moments. KVM endpoint evidence
+includes the whole-state certificate and cumulative ordered normalized-event
+count and commitment; UML explicitly records that whole-state
+evidence is unavailable while still committing observations. Nodes are captured
+from stopped execution before their snapshots are published. Candidate clones
+share nodes, and snapshot/result identities hash their history roots rather than
+serializing every ancestor.
+
+A retained endpoint restores directly after comparing its independently captured
+history receipt with the requested history. This requires one endpoint replay and
+whole-state hash on KVM, regardless of action depth. An imported endpoint receives
+its receipt from the integrity-checked cache object, never from the caller's
+expected certificates. Missing suffixes execute and check each actual prefix
+before the next action or publication, so an intermediate divergence cannot be
+hidden by a converged final endpoint. Snapshot standalone capture still reads
+fresh live evidence; no whole-state digest is cached across operations.
+Parent replay compares every archived prefix certificate with the actual receipt
+captured by that same replayed action, without hashing the endpoint a second time.
+The campaign still checks integrity and the typed watchdog-cutoff check before
+accepting the comparison.
+Cached-child hits do not materialize the action prefix. New execution still
+materializes the actions required by branch configuration and window scheduling;
+that work scales with prefix length. Missing-prefix checks traverse the expected
+suffix once and compare borrowed receipts rather than repeatedly walking ancestors.
+
+SDK observation decoding keeps an actual-session cursor separate from the normalized
+ordered-event commitment: its offset counts every transported SDK tuple, including
+ignored events. Successful suffix batches update cumulative registers, assertion
+generations and hidden check passes atomically. Each action retains only parks
+and reads strictly after its actual parent's observation moment. Empty suffixes
+preserve the last tuple moment and repeated observations preserve action evidence.
+Branch and replay install a checkpoint from the selected actual captured Link;
+rollback, new sessions and failures cannot reuse another lineage's cursor.
+
+Captured observation attachments use `fault-observations-v1`, included in the exact
+cache namespace. Imported decoder checkpoints remain untrusted. When a pending
+checkpoint is retained, the normal required machine replay or branch reconstructs
+the full actual SDK history and compares all decoder state, including hidden maps
+and offset. If pressure has discarded the pending checkpoint, restoration instead
+reconstructs actual decoder state and validates the captured receipt without using
+the imported decoder. Missing local checkpoints use that same reconstruction path.
+First import and eviction fallback add full-history fetch and decode work, but no
+additional machine restore.
+Expected campaign snapshots and root payloads provide no decoder authority; fresh
+root imports start from offset zero. Whole-state and ordered-event certificates
+retain their existing formats and fresh integrity checks.
+
+Optional Link checkpoints have an internal 8 MiB retention cap, including for
+sessions without a shared index. This is a performance policy, not a logical
+retention setting. Under shared-cache pressure they are discarded before certified
+VM links. Restoring an evicted checkpoint enforces the cap and reports its charge
+without moving the selected VM Link. `report_store` includes session storage plus
+unique retained decoder allocations and checkpoint metadata. If a session does not
+expose storage bytes, the report still includes the optional checkpoint charge.
+Shared Arc state is charged once by physical identity; map storage uses a
+conservative per-entry bound,
+with owned string/vector capacities and Arc headers counted. Cached charges are
+computed at installation, not by rescanning maps on budget queries. Current working
+decoder and temporary decoding/accounting scratch remain target-private, as the
+previous full-history decoder scratch did; retained checkpoints sharing that state
+are still charged. Dropping optional checkpoints never changes serialized attachment
+bytes, actual receipts or leases.
+
+`observe.events` and `observe.payload_bytes` count successful suffix fetches;
+`observe.decoded_events` counts successful append transitions, including ignored
+records. Payload bytes exclude transport framing. `session.observe_decode` and
+`session.observe_projection` separate successful decode/infrastructure checks from
+capture projection. Full actual reconstruction at restore is reported separately
+as `session.observe_checkpoint_rebuild` and `observe.checkpoint_rebuild_*`, for both
+imports and local eviction fallback. Fetch counts can include batches subsequently
+rejected; failed decode/infrastructure attempts do not contribute completed timing
+samples. Checkpoint rebuild timing counts completed fetch/decode/infrastructure
+checks even when a subsequent decoder comparison or receipt-binding check rejects
+the reconstructed checkpoint. `observe.checkpoint_hits`,
+`observe.checkpoint_evictions` and `observe.full_rebuilds` distinguish reuse and
+fallback. Explicit residency diagnostics retain the VM-page meaning of
+`resident_bytes`; `observation_checkpoint_bytes` is the optional pool charge and
+`charged_bytes` combines both live gauges.
+
+Fault caches use exact fixed-width action-path roots. The cache object commitment
+binds both the admitted machine target and opaque captured-history attachment;
+different histories for one action path quarantine the namespace even if final
+machine states agree. Page, inherited-page, omitted-page, host-image and lease
+checks remain enabled. This removes repeated historical VM work, not the data
+integrity scans required by those checks.
+Child publication selects the lease of the actual restored parent point, including
+when another sibling remains resident. Runnable, terminal and interrupted-rebuild
+observations all exclude park and read evidence at or before the previous endpoint.
+
+Checkpoint histories use a validated flat encoding with explicit versions and
+iterative destruction. Restore canonicalizes validated expected histories into
+actual shared node allocations before rebuilding the memory ledger. Bootstrap
+imports use the admitted live genesis allocation. Before archive installation, a
+typed retention index normalizes a candidate's new tail against currently
+budget-owned nodes. Independent workers therefore
+share actual prefix allocations in both live execution and checkpoint resume.
+Index registration and pruning follow the ledger's first retain and final
+release, and index metadata is charged. Runtime accounting acquires only newly
+unique history nodes and releases them at physical snapshot removal,
+including inactive snapshots still needed by work in flight. Expected-history
+canonicalization does not grant captured execution authority. Branch roots use
+`HMROOT03` to preserve their independently pinned semantic object commitments.
+Old history, snapshot, stream, cache and root formats are refused. Missing,
+malformed, or conflicting certificates stop the campaign.
+
+The v2 replay certificate binds the v1 ordered-history format independently of
+logical endpoint state. An intermediate event change alters the certificate even
+when endpoint, observations, event count and final virtual time agree. Fresh setup
+preserves the boot event prefix. Replay, branch, portable import and cache import
+restore the captured prefix; snapshot capture and diagnostic segmentation add no
+semantic events. Snapshot and schedule IDs never enter that commitment. Missing
+KVM history cannot be replaced by an empty commitment. UML carries no ordered
+normalized-event commitment and remains uncertified for whole state.
+
+The VM stream/snapshot formats are v11/v9 and UML formats v8/v5. The action policy
+is `fault-action-duration-coverage-v5-event-history`; older contracts are refused.
+
+Restoring a source snapshot compares its independently captured receipt and
+reconstructs the SDK observation before using that saved observation, including
+the current action's park and read evidence. Tree import still rebuilds each
+imported action and checks source-bound checkpoint identities. A source entry
+digest commits its history root and ordered endpoint history. Reconstructed
+certificates without a source-bound digest describe the current executor; they
+do not establish the source run's intermediate states.
+
+Campaign suffix execution and whole-tree import capture each runnable candidate
+and certificate in one bounded operation with one whole-state hash. Import keeps
+every action-prefix certificate and reuses its final captured snapshot. Starting
+a search from an explicit action prefix captures the final replayed action in
+that same operation; an empty prefix obtains fresh setup evidence. Integrity and
+typed incomplete-attempt checks run before captured evidence is accepted. Terminal,
+failed or watchdog-interrupted prefixes cannot return an earlier successful
+snapshot. Source identity checks and every intermediate imported certificate remain
+mandatory; candidate construction still clones the owned observation projection.
+Parent reconstruction inside campaign jobs verifies every archived prefix through
+a fresh endpoint check. Standalone snapshot capture hashes fresh live state. A
+healthy job whose last action is runnable reuses that candidate's hash for its
+final certificate; terminal and zero-action jobs obtain fresh final endpoint and
+ordered-history evidence. Missing, foreign, abandoned or
+unhashable sessions cannot supply certified KVM endpoints. Failed KVM jobs use an
+explicit whole-state-unavailable tag while preserving their checked logical
+observations; UML has a separate whole-state-unavailable tag. Whole-state hashes
+still scan RAM at fresh endpoint capture and replay of missing suffixes, and cache
+admission still verifies all required snapshot pages.
 
 Instrumentation actions become available automatically when the staged image
 contains the runtime bridge, nonempty event symbols, and an executable whose
@@ -459,3 +802,55 @@ an instruction to execute those commands again during restoration.
 
 The CLI exposes this through `branch --exec`, `branch --exec-file` and
 `branch --shell`. `search --from BRANCH` restores the saved guest state.
+
+Campaign coordinator bootstrap and checkpoint resume explicitly finish their
+thread-local session before releasing execution-worker readiness. This boundary
+also runs after bootstrap construction or replay errors and on unwinding. It
+removes LIVE before teardown, so a process exit need not run main-thread TLS
+cleanup. Unconfirmed owned-session exit fails an otherwise successful bootstrap;
+a prior typed execution error remains primary, with a secondary cleanup diagnostic.
+Linux targets continue reusing their thread-local session between worker jobs.
+Target Drop is not a universal session-finalization boundary.
+
+Final cumulative telemetry is captured once before explicit session shutdown and
+merged into retired counters without a post-close RPC. It excludes teardown work;
+telemetry failure does not prevent the owned shutdown attempt. Bootstrap scope
+acquisition refuses nesting atomically, preserving the outer scope's ownership.
+
+The generic searcher's standalone full and prefix replay mechanism owns the
+coordinator thread's session for the whole operation and finalizes it on every
+result. macOS target Drop defers to that active scope, preserving session reuse
+inside it. The faults CLI's own replay commands use FaultTarget directly and do
+not enter this generic replay scope.
+
+The standing service declares inactive debug questions local to the installed
+deterministic handler. The attached debug handler declares them external even
+when no message is supplied. The supervisor still makes each actual debug SDK
+request: attachment after a standing reply is delivered at the same next debug
+request, without a dormant flag or an extra tick. Local answering removes only
+an external Decision/resolution exchange; guest doorbells and mandatory guards
+remain. Both handlers decode debug Status before answering. Rejecting malformed
+inactive Status is an intentional tightening: the prior standing handler returned
+empty bytes without decoding it. Standing and debug identities are respectively
+faults-standing-coverage-v3 and faults-debug-terminal-v2.
+
+The generic local-answer capability requires unchanged captured handler state;
+the inactive standing debug response satisfies it. Stateful local responses are
+rejected before publication. Active debug remains on the external path.
+
+Coordinator measurement can read `coordinator_retired_work_telemetry` only when
+the calling thread has no LIVE session. The accessor rejects before any session
+query and returns an owned copy of retired counters. This supports bootstrap
+attribution after explicit coordinator finalization without creating a session,
+querying a closed child, or measuring shared cache counters twice. It does not
+finalize a session or imply teardown success; the lifecycle receipt remains
+independent. Ordinary thread work and residency diagnostics are unchanged.
+
+Thread work reports add final controller counters across retired LIVE sessions.
+For SDK attribution, `vmm.sdk_dispatch.event_shape_slots` therefore sums
+per-session filled-slot memberships and can exceed 32. Equal shape keys from
+different sessions have their values added, so this number need not equal the
+number of distinct named rows in the thread report. The 32-row witness cap
+applies per producer table; the accumulated thread report can retain keys from
+multiple sessions and has no global 32-row bound. Neither this field nor the
+shape rows report current residency or enter archive memory policy.

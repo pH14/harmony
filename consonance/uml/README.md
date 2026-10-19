@@ -7,14 +7,27 @@
 
 - `Profile::load` reads `profile.json`, checks the schema, the SECCOMP
   userspace mode, the host architecture and the empty host library list, then
-  re-hashes the executable, config and rootfs and checks that the executable
-  has no ELF interpreter. `VerifiedProfile::identity_sha256` hashes the parsed
-  profile. On Linux it copies and re-hashes those three files into sealed
+  re-hashes the executable, config and fixture rootfs and checks that the
+  executable has no ELF interpreter. It also requires the entire parsed
+  profile to match the architecture's source-reviewed manifest in
+  `reviewed-profiles`. This manifest pins the kernel, config and fixture
+  rootfs digests, kernel version, patch-series digest and virtual-time costs
+  independently of the caller's `profile.json`; rewriting both an artifact
+  and its self-declared digest cannot admit a different owned kernel.
+  Workload initramfs overrides have a separate image-admission boundary.
+  The x86 qualification check uses a test-only initramfs override with the
+  reviewed kernel to execute direct `WRFSBASE` and `WRGSBASE`, then compares
+  guest-visible FS and GS bases after reused and fresh checkpoint restores.
+  It requires a host that exposes FSGSBASE and leaves the reviewed fixture
+  rootfs unchanged.
+  `VerifiedProfile::identity_sha256` hashes the parsed profile. On Linux it
+  copies and re-hashes those three files into sealed
   memory-backed descriptors before returning. The executable and rootfs
   descriptors remain open through child spawn, so later path changes cannot
   substitute different bytes for the verified profile. The child receives the
   executable at descriptor 240 and rootfs at 241; an initramfs override uses
-  242. These stable numbers let a checkpoint captured by one worker restore in
+  242. The launcher also reserves 243 for each child's owned work directory.
+  These stable numbers let a checkpoint captured by one worker restore in
   another even when their parent descriptor layouts differ. The launcher
   reserves those numbers for its lifetime and refuses profiles if another host
   resource already occupies one.
@@ -52,8 +65,15 @@
 - `Launch` builds the UML command line: memory size, initramfs,
   `seccomp=on`, `time-travel=inf-cpu` starting at zero, console 0 on the
   output pipe, every other console and serial line on `null`, and a
-  per-launch work directory for
-  `TMPDIR` and `uml_dir`. The environment is cleared except for `TMPDIR`,
+  per-launch work directory. On Linux, `TMPDIR` and `uml_dir` both name the
+  stable `/proc/self/fd/243` role, with that descriptor pointing to the child's
+  actual directory. The random host pathname never enters the kernel's
+  arguments or environment. `Guest::start` opens the owned directory without
+  following a symlink, copies its source above the standard I/O and bridge
+  descriptor slots, and installs it after caller callbacks. Earlier bridge
+  remapping cannot replace that source or the final directory descriptor. A fresh restore keeps the new
+  process's directory handle; copied kernel strings continue to address that
+  process's own files. The environment is cleared except for `TMPDIR`,
   `GLIBC_TUNABLES`, and the pinned boot CPU-info and auxiliary-vector values
   passed at `Guest::start`.
   With a `Bridge`, it adds `harmony_fd=3` and the boot seed.
@@ -76,15 +96,30 @@
   stops with `ExitReason::EventCut`. A cut at zero stops the guest before its
   first request and records no events.
 - `Session` holds the bridge socket on the caller's thread instead. Its
-  services answer the same SDK requests as the KVM backend through
-  `environment::sdk`: entropy, events, assertion violations, standing-service
-  questions answered by a `ServiceHandler`, payload pulls and coverage.
-  `branch` installs a seed, handler and payloads after checking that reseeding
-  with both the branch seed and the decode seed zero keeps the handler identity
-  and configuration unchanged. It also rejects a decode-seed probe that changes
-  the original handler. A rejected branch leaves independent live services
-  untouched; if a shallow handler clone changes the live service state, the
-  service channel is poisoned so it cannot export a misleading checkpoint.
+  services answer SDK requests through `environment::sdk`: entropy, events,
+  assertion violations, recorded standing-service answers, payload pulls and
+  coverage. An unrecorded custom service or coverage quantum pauses the socket
+  before a guest reply. `resolve_and_run` accepts a matching answer, records it
+  against the held question, and then sends the guest response. Invalid
+  resolutions leave the held request and services state unchanged. A recorded
+  coverage schedule supplies a branch's window quantum without per-callback
+  decisions.
+  It records the host process loader generation before starting the guest,
+  checks it across session operations, and checks again after every service
+  decision immediately before sending the guest reply. A handler that loads
+  and unloads a library during one decision fails the run even if the set of
+  loaded images is the same afterward. The client also holds its admission
+  generation across fresh UML processes and checkpoint publication.
+  `branch` checks that reseeding with both the branch seed and the decode seed
+  zero keeps the handler identity and configuration unchanged, then installs
+  the handler, payloads, optional coverage schedule, and a fresh host-bridge
+  entropy stream from the branch seed. The guest kernel's `getrandom` stream
+  starts from the boot seed and remains part of checkpointed guest state; a
+  branch does not reseed it. A plain restore retains the captured host-bridge
+  entropy position. A decode-seed probe that changes the original handler is
+  rejected. A rejected branch leaves independent live services untouched; if
+  a shallow handler clone changes the live service state, the service channel
+  is poisoned so it cannot export a misleading checkpoint.
   `run_until` runs to a
   virtual-time deadline, and `run_to_snapshot_point` runs to the guest's
   snapshot request. A request already paused at or beyond a deadline stays
@@ -94,8 +129,28 @@
   process exit or signal, and a host-enforced console or wall limit all report
   `Stop::Closed` regardless of which host poll wins. Callers use `Session::run`
   or `settle_terminal_console` to classify the final process reason;
-  settlement probes the current process state and refuses host limits; callers
-  cannot supply an earlier exit reason. A guest whose virtual time
+  settlement probes the current process state and refuses host limits and
+  signaled host exits after process cleanup; callers cannot supply an earlier
+  exit reason. Host SIGINT/SIGTERM handlers and unexpected stub death use the same reserved
+  infrastructure status as failed host address-space setup and stub transport.
+  The primitive exits directly without invoking guest panic notifiers or guest
+  cleanup; the launcher then reaps the process group. Host mmap, socketpair,
+  clone, futex, ptrace and register-transport failures in that substrate abandon
+  execution. Checkpoint dirty-bitmap allocation, direct-map protection and
+  unprotection, address-space reconstruction, interrupt async/epoll
+  re-registration and removal, signal-mask restoration and child-signal draining,
+  descriptor cleanup, stub termination/reaping, host TLS/heap reconstruction,
+  and destructive host-memory restore failures use that same infrastructure
+  status. Each IRQ entry records whether epoll registration actually succeeded;
+  restore only reconstructs those registrations, preserving unpollable null
+  console descriptors without exempting errors on previously registered fds.
+  Missing epoll registrations remain valid during removal. Linux
+  interrupted closes release their descriptor and are not retried; interrupted
+  waits are retried. Dirty-page fault
+  diagnostics use only signal-safe writes before the direct exit.
+  Guest-generated invalid traps retain their guest signal path.
+  The client abandons host failures without publishing a guest shutdown or crash. A
+  guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The
   limit is supplied when the session starts, so a fresh process restoring a
   checkpoint is bounded while it waits for the restore request and replies.
@@ -106,12 +161,16 @@
   restores one in place, or starts a fresh process that restores one at boot.
   At restore, the console collector drains output already written by the
   paused guest and clears its diagnostic tail before the new branch runs. This
-  keeps text from a discarded branch out of later crash classification and
-  diagnostics. Its cumulative byte count still enforces the host output limit.
+  keeps text from a discarded branch out of later diagnostics. Its cumulative
+  byte count still enforces the host output limit.
   After a terminal guest stop, the client waits for the host process to exit,
-  finishes process cleanup, and joins the console collector before using the
-  tail to classify a kernel panic. A closed bridge whose process does not exit
-  within the progress limit fails instead of guessing from partial output.
+  finishes process cleanup, and joins the console collector before recording
+  the diagnostic tail. The kernel-owned exit status classifies a panic. A closed
+  bridge whose process does not exit within the progress limit fails instead
+  of guessing from partial output. Capture, restore and response sends also
+  resolve bridge hangups against the owned child's actual exit status, under
+  the same progress and launch limits. An empty packet from a live SEQPACKET
+  peer is a malformed frame, not evidence of an infrastructure exit.
   The host owns the guest's physical memory file and an image file, both
   memfds, and maps them side by side. A `Checkpoint` is a snapshot in the
   session's `Checkpoints` page store plus the services state at the capture.
@@ -142,45 +201,87 @@
   `Checkpoints::import` reproduces the published checkpoint only onto a base
   with the publisher's digest, because a base also holds per-process host
   values: the C library's stack canary and pointer guard, host process IDs
-  and the work directory name. `Session::state_hash` refuses a full-state
-  digest because a stable cross-process identity for guest memory is not yet
-  available. `bridge_state_digest` covers only services and the pending request;
+  and native runtime bookkeeping. The stable directory role removes pathname
+  entropy but does not canonicalize these remaining fields. The raw image also
+  includes signal stacks and suspended guest kernel call frames: those cannot
+  be omitted as host scratch space. A canonical identity needs typed ownership
+  and liveness for these bytes and for aliases of host resource values. Guarded
+  runtime pointers must preserve their decoded targets when their per-process
+  keys differ. No such canonical checkpoint ABI is currently defined.
+  `Session::state_hash` refuses a full-state digest because a stable
+  cross-process identity for guest memory is not yet available. `bridge_state_digest` covers only services and the pending request;
   the client combines it with the full setup checkpoint digest for its
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
-- `Recording` schema 5 names the loaded Harmony executable, profile, full
+  Public UML sessions require a sealed static Linux host in every build.
+  Admission hashes the full sealed main executable. Before and after session
+  operations and each service exchange, the guard reuses that immutable file
+  digest while comparing live executable bytes and the complete executable-map
+  census. An ordinary GNU executable cannot start a UML session.
+- `Recording` schema 6 names the admitted Harmony executable, profile, full
   host identity, seed, memory, boot arguments, event count and event hash of a
-  run. Earlier schemas are refused. The executable identity is the SHA-256 of
-  the running Linux `/proc/self/exe` inode, so a replacement at the original
-  path cannot make a different host build claim the recording.
-  It derives the seed from the live launch's
-  bridge and refuses an unbridged run or a replaced initramfs, which it cannot
-  replay. Recording creation derives identity from the admitted `Launch`;
-  replay checks read the recorded processor's current identity. A caller cannot
-  supply a stale identity in either path. `Recording::check` refuses a
-  different executable, profile or host. `Recording::launch` refuses a
-  different executable and binds the recorded processor and identity through
-  the cut even if the caller skips `check`.
+  run. Earlier schemas are refused. On Linux, the executable identity requires
+  the same sealed static host as a session. `Recording::new`, `check`, and
+  `launch` all refuse an unsealed or dynamically linked host before they can
+  certify or replay a recording. A replacement at the original path cannot
+  make a different host build claim the recording. The seed comes from the
+  live launch's bridge; an unbridged run or replaced initramfs is refused.
+  Replay checks read the recorded processor's current identity and refuse a
+  different executable, profile, or host. `Recording::launch` binds the
+  recorded processor and identity even if the caller skips `check`.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
   tail. It stops the guest at a wall-clock limit or a console byte limit. After
   an automatic stop, cleanup joins the console reader and bridge before
-  classifying the exit. Output already written beyond the byte limit is a
-  console-limit stop, including when an event cut or another automatic stop
-  was observed before the reader caught up. Without an overflow, a completed
-  event cut or bridge failure takes precedence over the process status, even
-  if the exit poll won the race. An explicit kill remains a kill. A UML
+  classifying the exit. Apart from reserved host-failure status 87, output
+  already written beyond the byte limit is a console-limit stop, including
+  when an event cut or another automatic stop was observed before the reader
+  caught up. Without an overflow or host failure, a completed event cut or
+  bridge failure takes precedence over the process status, even if the exit
+  poll won the race. An explicit kill remains a kill. A UML
   session refuses a console-limit host stop instead of treating it as a guest
-  crash.
+  crash. The owned UML kernels reserve process status 87 for an internal host
+  clone failure. `Guest` reports `ExitReason::HostFailure` even if the bridge
+  or console collector also observes the exit, and `Session` refuses to settle
+  it as a guest shutdown or make it an accepted search stop. The signal is
+  the host process status; the diagnostic console line is only for diagnosis.
   Cleanup kills the process group, reaps it, kills any process still in the
   group or session, and removes the work directory. `Exit` reports any
   process that survived the sweep.
 
+  A kernel panic exits with reserved status 86 and is reported as
+  `ExitReason::GuestPanic`. The client classifies that kernel-owned status as
+  a panic crash; console text cannot claim one. The kernel rejects guest
+  `/proc/exitcode` writes selecting 86 or 87, including low-byte aliases.
+  Host signals and fatal UML traps remain control failures.
+
 The parent-death signal follows the thread that spawned the guest, so a guest
 must be started from a thread that outlives it.
 
+For canonical-state investigation, set `UML_STATE_DIAGNOSTICS_DIR` to an existing
+empty directory when running the checkpoint qualification suite. Its import
+checks retain full raw page journals, sidecars and capture/export costs at the
+source setup and target cuts, repeated captures of each paused setup,
+in-place/fresh target restores, and an independent setup. Each fixture and cut
+owns a new directory; existing witnesses are never replaced. A page journal
+record is the little-endian GFN, 32-byte page-store hash and 4096 page bytes;
+the metadata declares its format and reserved image region. This opt-in path
+checks that diagnostic captures preserve bridge events and virtual time. These
+are raw investigation bytes and a raw checkpoint digest, with no canonical
+whole-state claim. `Session::state_hash` remains explicitly unavailable.
+
 `harmony-uml-qualify` is the qualification binary described in
-`consonance/harmony-linux/uml/README.md`.
+`consonance/harmony-linux/uml/README.md`. Qualification CI builds it as a
+static-musl executable. Its suites reexec from a fully sealed memfd before
+using public Recording and Session admission, both natively and inside the
+Docker qualification container.
+
+The checkpoint suite restores into a separate directory with spaces and a
+different pathname length, then exercises capture/restore detours and complete
+continuations. The source remains paused while the restored process exits;
+its kernel-owned `harmony/pid` must remain unchanged. Both actual directories
+must be cleaned after their owners exit. This catches restoration of a source
+pathname that would make destination cleanup delete the source's files.
 
 The crate's `unsafe` blocks are host system calls: sequenced-packet sockets,
 descriptor passing, `memfd_create`, fixed mappings and process-group signals.
@@ -195,3 +296,44 @@ explicit setup checkpoint. This distinction makes durable investigation roots
 portable across launches without treating volatile host-private boot memory as
 an interchangeable baseline. Profile and launch identity checks belong to the
 client that persists the root.
+
+The x86 startup FPU patch clears all extended XSAVE components and their raw
+bytes instead of preserving sampled PKRU policy. The absent PKRU component
+restores its architectural initial value, zero. Host identity is still a
+native-execution compatibility boundary; this normalization does not supply
+canonical whole-state UML identity. The reviewed-kernel host-failure regression
+sends SIGTERM/SIGINT to the ready kernel and SIGKILL to a live `uml-userspace`
+stub. Compiled boundary probes separately plant mmap/socketpair/clone failures;
+they exercise the production patch statements but do not substitute for a live
+post-boot resource-injection qualification.
+
+Session::shutdown invokes the existing owned Guest teardown and returns an
+idempotent shutdown receipt. It confirms the Child wait and existing process-group
+sweep before reporting success. Failed or incomplete teardown remains an error;
+repeated shutdown does not retry waits or send another signal to the old group.
+This does not strengthen the launcher's existing group-identity or descendant
+cleanup guarantees.
+
+Closed or ambiguously terminated Guest instances reject later polling entrypoints.
+A real child-poll error latches the same unconfirmed state, preventing subsequent
+PID waits and signals. The related numeric process-group identity limitation is
+tracked in [#766](https://github.com/pH14/harmony/issues/766); ambiguity remains
+an error rather than permission to signal a possibly reused number. Native
+failure tests inject before the OS wait, so their private fixture cleanup still
+owns the unreaped Child; that cleanup does not license retry after a real
+ambiguous wait in production. A successful owned-child receipt does not resolve
+the numeric process-group identity limitation after leader reaping.
+
+The client refuses shutdown confirmation after an abandoned UML session, even
+when abandonment has already removed the live Guest. Normal confirmed shutdown
+remains idempotent.
+
+The HUMLSVC2 service checkpoint embeds the canonical local-service declaration
+from its recorded handler and rejects the previous service format. Branch,
+factory reconstruction and reseed validate this declaration along with identity
+and configuration. The declaration permits stateless local auto-answering; a
+backend may still surface an external Decision. UML deliberately retains that
+external route: it never invokes the installed custom handler for an unrecorded
+question. Explicit resolution records the supplied answer without changing SDK
+handler state, and recorded replay uses that answer. No UML auto-answer or RPC
+savings are claimed.

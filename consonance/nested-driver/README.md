@@ -135,6 +135,9 @@ x87/SSE presence bits can change during nested KVM execution; their raw values
 remain in the original snapshots used for restore. RAM, active CPU state,
 nested virtualization state, SDK events, policy, control state, observations, outcomes and
 operation inputs remain checked by replay.
+Archive entries bind saved snapshots through that same logical projection of
+the nested VM state, while retaining each snapshot's position, observation, and
+actions in the digest. The checkpoint file digest still covers its exact bytes.
 
 A failure during campaign preparation uses the searcher's failed disposition.
 It retains its observation, layer and input seeds when no suffix action runs.
@@ -158,7 +161,10 @@ cross-vendor outer snapshot import.
 
 `harmony search DRIVER.oci --package nested --config CONFIG.toml` uses the shared
 recipe, budgets and saved-search storage. Set `runner.options.kernel` to the
-nested-host kernel and `base_initramfs` to the OCI base. The adapter captures the
+nested-host kernel and `runner.options.base_initramfs` to its matching OCI base.
+Supply both explicit paths together: this noncanonical profile pair is
+caller-qualified, whereas a one-sided override requires the current-source
+canonical runtime manifest. The adapter captures the
 prepared initramfs and kernel; developer verification uses `harmony debug replay
 SEARCH`. Host search accepts wall budgets in seconds. Historical qualification
 continues to invoke the historical binary's own CLI.

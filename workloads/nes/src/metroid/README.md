@@ -18,7 +18,7 @@ the room scroll starts. The decoder applies this rule and the absent boss
 reading rule below to every frame, a rooted target's prefix included, so a root
 decodes the same as an action that ends at that frame. All
 source addresses and meanings are documented beside their constants in
-`target.rs`. Zero health is death; the ending flag is victory. The terminal
+[`nes-games/src/metroid/target.rs`](../../../nes-games/src/metroid/target.rs). Zero health is death; the ending flag is victory. The legacy terminal
 identifier is `death_or_ending_v2`.
 
 The default terminal policy is `death_or_bcd_underflow_or_ending_v3`, which also
@@ -40,7 +40,8 @@ through the evaluator's `metroid_terminal` request field and
 and reject a mismatched replay context. Tapes recorded under that predicate
 replay under it: `nes-progress` names it, and `metroid-film` defaults to it.
 
-`archive.rs` records the experimental adapter policy explicitly. The place is
+[`nes-games/src/metroid/archive.rs`](../../../nes-games/src/metroid/archive.rs)
+records the experimental adapter policy explicitly. The place is
 the area, the map cell, boss damage and the Zebetite hits still needed. The
 holder identity within a place is the 16-pixel position bucket, posture and
 door-transition state. Health and missile stock are same-slot preferences: the
@@ -274,8 +275,7 @@ Brain's state, latched Tourian events and the destroyed Zebetite column, and
 binds Mother Brain's room to her status byte. Route timestamps exclude genesis
 setup. The replay probe reports action execution work and setup separately, and
 probes and backend snapshot replay are outside the execution-work counter. The
-campaign stream format is v5, the snapshot checkpoint format is v12, and the
-full-result digest format is v9. The combined capacity score is a separate named score.
+campaign stream format is v4 and the snapshot checkpoint format is v12. The combined capacity score is a separate named score.
 
 Retrospective replay, without submitting an existing solution to search:
 
@@ -285,7 +285,9 @@ workloads/nes/target/release/nes-progress metroid CORE ROM searched-input.json >
 ```
 
 The tool starts from ordinary new-game genesis, records named discoveries,
-repeats the replay, and includes ROM/core/input hashes. In its replay report,
+repeats the replay, and includes ROM/core/input hashes and the prepared native
+execution digest in its v3 report. Earlier reports lack the dependency identity
+and cannot be compared as the same replay. In its replay report,
 `first_seen.execution` counts tape actions, not historical search executions.
 For Mega Man 2, `nes-progress mm2 CORE ROM searched-power-on-prefix.json wily4`
 checks that the retained tape still reaches that stage through the current

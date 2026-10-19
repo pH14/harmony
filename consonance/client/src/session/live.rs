@@ -9,10 +9,12 @@ use environment::{
     channel::Effect,
     input_spec::{InputSpec, ServiceConfig, ServiceFactory},
 };
+use sha2::{Digest, Sha256};
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
+use vmm_core::portable_snapshot::sparse_delta_target_commitment;
 
-use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
+use crate::cache::extent::{ExtentWrites, extent_len, read_extent, resolve, write_extent_measured};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace, WritableExtent};
 use crate::watchdog::Watchdog;
 
@@ -31,13 +33,76 @@ use crate::Client;
 type Server = Client<ControlServer<Box<dyn Backend<A = HostArch>>>>;
 const CACHE_SIDECAR_MAGIC: [u8; 8] = *b"HMSESS01";
 
+pub(super) fn vmm_target_commitment(
+    extent: &mut WritableExtent,
+) -> Result<[u8; 32], Box<dyn Error>> {
+    let delta = read_extent(extent.bytes_mut())?;
+    let envelope = super::attachment::decode(delta.sidecar)?;
+    let actual = raw_target_commitment(envelope.raw)?;
+    if actual != envelope.machine_commitment {
+        return Err("cached machine commitment differs".into());
+    }
+    Ok(super::attachment::commitment(actual, &envelope.attachment))
+}
+
+pub(super) fn raw_target_commitment(sidecar: &[u8]) -> Result<[u8; 32], Box<dyn Error>> {
+    let prefix_len = CACHE_SIDECAR_MAGIC.len() + 32;
+    if sidecar.len() < prefix_len || sidecar[..CACHE_SIDECAR_MAGIC.len()] != CACHE_SIDECAR_MAGIC {
+        return Err(SessionError::Portable("cached snapshot sidecar differs".into()).into());
+    }
+    let raw_commitment = sparse_delta_target_commitment(&sidecar[prefix_len..])?;
+    let mut digest = Sha256::new();
+    digest.update(b"consonance-cache-vmm-target-v2\0");
+    digest.update(&sidecar[..prefix_len]);
+    digest.update(raw_commitment);
+    Ok(digest.finalize().into())
+}
+
+type CheckedAttachment = ([u8; 32], SnapshotAttachment, [u8; 32]);
+
+pub(super) fn checked_cached_attachment(
+    extents: &[&[u8]],
+    expected: [u8; 32],
+) -> Result<CheckedAttachment, Box<dyn Error>> {
+    let target = read_extent(extents.last().ok_or("empty snapshot chain")?)?;
+    let envelope = super::attachment::decode(target.sidecar)?;
+    let machine = raw_target_commitment(envelope.raw)?;
+    if machine != envelope.machine_commitment {
+        return Err("cached machine commitment differs".into());
+    }
+    let actual = super::attachment::commitment(machine, &envelope.attachment);
+    if actual != expected {
+        return Err("cached object commitment differs".into());
+    }
+    Ok((machine, envelope.attachment, actual))
+}
+
+fn collect_sdk_events(
+    mut offset: u32,
+    mut fetch: impl FnMut(u32) -> Result<Vec<SdkEvent>, Box<dyn Error>>,
+) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+    let mut events = Vec::new();
+    loop {
+        let page = fetch(offset)?;
+        if page.is_empty() {
+            return Ok(events);
+        }
+        offset = offset
+            .checked_add(u32::try_from(page.len()).map_err(|_| "SDK event page overflow")?)
+            .ok_or("SDK event offset overflow")?;
+        events.extend(page);
+    }
+}
+
 pub struct Session {
     client: Server,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
     setup: SnapId,
     setup_at: u64,
     image_identity: [u8; 32],
     config: SessionConfig,
     snapshot_times: BTreeMap<SnapId, u64>,
+    extent_writes: std::cell::Cell<ExtentWrites>,
     abandoned: bool,
 }
 
@@ -96,18 +161,22 @@ impl Session {
         setup_payloads: Vec<Vec<u8>>,
     ) -> Result<Self, Box<dyn Error>> {
         config.validate()?;
-        let image_identity = super::image_identity_with_config_and_payloads(
+        let loaded_image_guard = crate::image_identity::LoadedImageGuard::capture()?;
+        let image_identity = super::image_identity_with_guard(
             kernel,
             initramfs,
             &config,
             &setup_payloads,
+            Some(&loaded_image_guard),
         )?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         Self::new_with_config_and_payloads_inner(
             kernel,
             initramfs,
             config,
             setup_payloads,
             image_identity,
+            loaded_image_guard,
         )
     }
 
@@ -117,7 +186,9 @@ impl Session {
         config: SessionConfig,
         setup_payloads: Vec<Vec<u8>>,
         image_identity: [u8; 32],
+        loaded_image_guard: crate::image_identity::LoadedImageGuard,
     ) -> Result<Self, Box<dyn Error>> {
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         let ram = config.ram_bytes;
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
@@ -157,6 +228,7 @@ impl Session {
         };
 
         let live = boot(kernel, initramfs).map_err(SessionError::Control)?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         let factory_kernel = kernel.to_vec();
         let factory_initramfs = initramfs.to_vec();
         let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> = Box::new(move || {
@@ -164,6 +236,18 @@ impl Session {
                 .map_err(vmm_core::vmm::VmmError::ContractViolation)
         });
         let mut server = ControlServer::new(live, factory);
+        let core_guard = loaded_image_guard.clone();
+        server.set_host_operation_guard(Arc::new(move |site| {
+            use crate::image_identity::GuardSite;
+            use vmm_core::vmm::HostOperationSite;
+            let site = match site {
+                HostOperationSite::ControlBefore => GuardSite::ControlBefore,
+                HostOperationSite::ControlAfter => GuardSite::ControlAfter,
+                HostOperationSite::SdkRequest => GuardSite::SdkRequest,
+                HostOperationSite::SdkResponse => GuardSite::SdkResponse,
+            };
+            core_guard.check_at(site).map_err(|error| error.to_string())
+        }));
         server.set_restore_mode(RestoreMode::InPlace);
         let mut client = Client::connect(server, server_caps())
             .map_err(|error| SessionError::Control(error.to_string()))?;
@@ -185,12 +269,15 @@ impl Session {
             )
             .into());
         }
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         Ok(Self {
             client,
+            loaded_image_guard,
             setup: setup.id,
             setup_at: setup.at,
             image_identity,
             config,
+            extent_writes: std::cell::Cell::default(),
             snapshot_times: BTreeMap::from([(genesis.id, genesis.at), (setup.id, setup.at)]),
             abandoned,
         })
@@ -229,6 +316,7 @@ impl Session {
         snapshot: SnapId,
         export_base: Option<&SparseSnapshot>,
     ) -> Result<SparseSnapshot, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         self.snapshot_times
             .get(&snapshot)
             .ok_or_else(|| SessionError::Portable("snapshot handle is not held".into()))?;
@@ -237,7 +325,7 @@ impl Session {
             .transport()
             .export_sparse_snapshot(self.setup, snapshot)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
-        SparseSnapshot::from_parts(
+        let result = SparseSnapshot::from_parts(
             self.setup.0,
             self.image_identity,
             sparse.pages,
@@ -245,13 +333,16 @@ impl Session {
             export_base,
         )
         .map_err(SessionError::Portable)
-        .map_err(Into::into)
+        .map_err(Into::into);
+        self.loaded_image_guard.check()?;
+        result
     }
 
     pub fn import_sparse_snapshot(
         &mut self,
         snapshot: &SparseSnapshot,
     ) -> Result<SnapId, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         if snapshot.base != self.setup.0 || snapshot.image_identity != self.image_identity {
             return Err(SessionError::Portable("snapshot identity differs".into()).into());
         }
@@ -265,6 +356,7 @@ impl Session {
             )
             .map_err(|error| SessionError::Portable(error.to_string()))?;
         self.snapshot_times.insert(receipt.id, receipt.at.0);
+        self.loaded_image_guard.check()?;
         Ok(receipt.id)
     }
 
@@ -277,23 +369,64 @@ impl Session {
         target: SnapId,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
+        self.publish_snapshot_attached(
+            index,
+            namespace,
+            key,
+            parent,
+            target,
+            &SnapshotAttachment::default(),
+            cost,
+        )
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    pub fn publish_snapshot_attached(
+        &self,
+        index: &dyn CacheIndex,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<(SnapId, &Lease)>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+        cost: u64,
+    ) -> Result<Lease, Box<dyn Error>> {
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
-        let extent = self.write_delta(
+        let mut extent = self.write_delta_attached(
             parent.map(|(snap, _)| snap),
             target,
+            attachment,
             |len| Ok(index.extent(len)?),
             WritableExtent::bytes_mut,
         )?;
-        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent, cost)?)
+        let target_commitment = vmm_target_commitment(&mut extent)?;
+        self.loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::PublicationBefore)?;
+        let lease = index.publish(
+            namespace,
+            key,
+            parent.map(|(_, lease)| lease),
+            extent,
+            target_commitment,
+            cost,
+        )?;
+        let lease = self.loaded_image_guard.check_published(index, lease)?;
+        if let Err(error) = index.verify_lease(&lease) {
+            index.release(lease);
+            return Err(error.into());
+        }
+        Ok(lease)
     }
 
-    pub(super) fn write_delta<T>(
+    pub(super) fn write_delta_attached<T>(
         &self,
         parent: Option<SnapId>,
         target: SnapId,
+        attachment: &SnapshotAttachment,
         allocate: impl FnOnce(usize) -> Result<T, Box<dyn Error>>,
         bytes: impl FnOnce(&mut T) -> &mut [u8],
     ) -> Result<T, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let delta = self
             .client
             .transport()
@@ -308,10 +441,24 @@ impl Session {
         sidecar.extend_from_slice(&CACHE_SIDECAR_MAGIC);
         sidecar.extend_from_slice(&self.image_identity);
         sidecar.extend_from_slice(&delta.sidecar);
+        let machine = raw_target_commitment(&sidecar)?;
+        let sidecar = super::attachment::encode(&sidecar, machine, attachment)?;
         let len = extent_len(delta.pages.len(), delta.reverted.len(), sidecar.len())
             .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
         let mut out = allocate(len)?;
-        write_extent(bytes(&mut out), &delta.pages, &delta.reverted, &sidecar)?;
+        let mut work = ExtentWrites::default();
+        let result = write_extent_measured(
+            bytes(&mut out),
+            &delta.pages,
+            &delta.reverted,
+            &sidecar,
+            &mut work,
+        );
+        let mut total = self.extent_writes.get();
+        total.merge(work);
+        self.extent_writes.set(total);
+        result?;
+        self.loaded_image_guard.check()?;
         Ok(out)
     }
 
@@ -335,9 +482,32 @@ impl Session {
         lease: &Lease,
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        let receipt = self.import_cached_receipt(index, lease, near)?;
+        Ok((receipt.snapshot, receipt.moment))
+    }
+
+    pub fn import_cached_receipt(
+        &mut self,
+        index: &dyn CacheIndex,
+        lease: &Lease,
+        near: SnapId,
+    ) -> Result<CachedSnapshotReceipt, Box<dyn Error>> {
         let chain = index.chain(lease)?;
         let extents: Vec<&[u8]> = chain.iter().map(CommittedExtent::bytes).collect();
-        self.import_extents(&extents, near)
+        let (machine_commitment, attachment, object_commitment) =
+            checked_cached_attachment(&extents, index.target_commitment(lease)?)?;
+        let imported = self.import_extents(&extents, near)?;
+        if let Err(error) = index.verify_lease(lease) {
+            let _ = self.drop_snapshot(imported.0);
+            return Err(error.into());
+        }
+        Ok(CachedSnapshotReceipt {
+            snapshot: imported.0,
+            moment: imported.1,
+            machine_commitment,
+            attachment,
+            object_commitment,
+        })
     }
 
     pub(super) fn import_extents(
@@ -345,12 +515,17 @@ impl Session {
         extents: &[&[u8]],
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let mut deltas = extents
             .iter()
             .map(|extent| read_extent(extent))
             .collect::<Result<Vec<_>, _>>()?;
         for delta in &mut deltas {
-            delta.sidecar = self.checked_cache_sidecar(delta.sidecar)?;
+            let envelope = super::attachment::decode(delta.sidecar)?;
+            if raw_target_commitment(envelope.raw)? != envelope.machine_commitment {
+                return Err("cached machine commitment differs".into());
+            }
+            delta.sidecar = self.checked_cache_sidecar(envelope.raw)?;
         }
         let resolved = resolve(&deltas)?;
         let receipt = self
@@ -358,6 +533,10 @@ impl Session {
             .transport_mut()
             .import_sparse_delta(self.setup, near, &resolved.pages, resolved.sidecar)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
+        if let Err(error) = self.loaded_image_guard.check() {
+            let _ = self.drop_handle(receipt.id);
+            return Err(error.into());
+        }
         self.snapshot_times.insert(receipt.id, receipt.at.0);
         Ok((receipt.id, receipt.at.0))
     }
@@ -396,8 +575,15 @@ impl Session {
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        let spec = service_branch_spec(self.config.seed, config, payloads, effects)?;
+        let spec = service_branch_spec(
+            self.config.seed,
+            config,
+            payloads,
+            effects,
+            coverage_schedule,
+        )?;
         self.branch_input(snapshot, &spec)
     }
 
@@ -529,7 +715,10 @@ impl Session {
 
     #[must_use]
     pub fn telemetry_counters(&self) -> Vec<(String, u64)> {
-        self.client.transport().host_telemetry().counters()
+        let mut counters = self.client.transport().host_telemetry().counters();
+        counters.extend(self.loaded_image_guard.counters("guard.session"));
+        counters.extend(self.extent_writes.get().counters());
+        counters
     }
 
     pub fn doorbell_exits(&self) -> u64 {
@@ -576,29 +765,24 @@ impl Session {
     }
 
     pub fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
-        let mut offset = 0_u32;
-        let mut events = Vec::new();
-        loop {
+        self.sdk_events_since(0)
+    }
+
+    pub fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        collect_sdk_events(offset, |offset| {
             let reply = self
                 .client
                 .request(&Request::SdkEvents { offset })
                 .map_err(|error| SessionError::Control(error.to_string()))?;
-            let Reply::SdkEvents(page) = reply else {
-                return Err(SessionError::Reply {
+            match reply {
+                Reply::SdkEvents(page) => Ok(page),
+                reply => Err(SessionError::Reply {
                     operation: "SDK events",
                     reply,
                 }
-                .into());
-            };
-            if page.is_empty() {
-                break;
+                .into()),
             }
-            offset = offset
-                .checked_add(u32::try_from(page.len()).map_err(|_| "SDK event page overflow")?)
-                .ok_or("SDK event offset overflow")?;
-            events.extend(page);
-        }
-        Ok(events)
+        })
     }
 
     pub fn read_observation(
@@ -637,6 +821,21 @@ impl Session {
         }
     }
 
+    pub fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+        match self
+            .client
+            .request(&Request::EventHistory)
+            .map_err(|error| SessionError::Control(error.to_string()))?
+        {
+            Reply::EventHistory(history) => Ok(history),
+            reply => Err(SessionError::Reply {
+                operation: "ordered event history",
+                reply,
+            }
+            .into()),
+        }
+    }
+
     #[must_use]
     pub fn image_identity(&self) -> [u8; 32] {
         self.image_identity
@@ -658,6 +857,7 @@ impl Session {
     }
 
     fn export_snapshot(&self, target: SnapId, at: u64) -> Result<PortableSnapshot, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let sparse = self
             .client
             .transport()
@@ -668,6 +868,7 @@ impl Session {
             .into_iter()
             .map(|(gfn, page)| (gfn, page.as_ref().to_vec()))
             .collect();
+        self.loaded_image_guard.check()?;
         Ok(PortableSnapshot {
             setup: self.setup.0,
             image_identity: self.image_identity,
@@ -678,6 +879,7 @@ impl Session {
     }
 
     fn import_snapshot(&mut self, snapshot: &PortableSnapshot) -> Result<SnapId, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let pages = snapshot
             .validated_pages(self.setup.0, self.image_identity, self.setup_at)
             .map_err(SessionError::Portable)?;
@@ -686,6 +888,7 @@ impl Session {
             .transport_mut()
             .import_sparse_snapshot_parts(self.setup, &pages, &snapshot.sidecar)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
+        self.loaded_image_guard.check()?;
         if receipt.at.0 != snapshot.at {
             let error = Err(SessionError::Portable("portable V-time differs".into()).into());
             return self.cleanup_handles([receipt.id], error);
@@ -898,13 +1101,13 @@ mod tests {
         use vmm_core::vendor::arm64::{board, bringup};
         use vmm_core::vmm::{Vmm, VmmError, VtimeWiring};
 
-        let image_identity = image_identity_with_config_and_payloads(
+        let image_identity = image_identity_with_loaded_executable(
             image,
             b"",
             &config,
             setup_payloads.as_deref().unwrap_or(&[]),
-        )
-        .unwrap();
+            "test-sealed-host-v1",
+        );
         let boot_config = config.clone();
         let boot_image = image.to_vec();
         let boot = move || -> Result<Vmm<Box<dyn Backend<A = HostArch>>>, VmmError> {
@@ -938,12 +1141,199 @@ mod tests {
         let setup = snapshot_handle(&mut client, "setup snapshot").unwrap();
         Session {
             client,
+            loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             setup: setup.id,
             setup_at: setup.at,
             image_identity,
             config,
+            extent_writes: std::cell::Cell::default(),
             snapshot_times: BTreeMap::from([(setup.id, setup.at)]),
             abandoned: false,
+        }
+    }
+
+    #[test]
+    fn sdk_suffix_pagination_advances_from_the_requested_event_offset() {
+        let mut offsets = Vec::new();
+        let first = (10, 1, vec![1]);
+        let second = (10, 2, vec![2]);
+        let third = (20, 3, vec![3]);
+        let expected = vec![first.clone(), second.clone(), third.clone()];
+        let mut pages = vec![vec![first, second], vec![third], Vec::new()].into_iter();
+        let events = collect_sdk_events(7, |offset| {
+            offsets.push(offset);
+            Ok(pages.next().unwrap())
+        })
+        .unwrap();
+        assert_eq!(events, expected);
+        assert_eq!(offsets, vec![7, 9, 10]);
+        let mut calls = 0;
+        assert!(
+            collect_sdk_events(u32::MAX, |offset| {
+                assert_eq!(offset, u32::MAX);
+                calls += 1;
+                Ok(Vec::new())
+            })
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn sdk_suffix_pagination_refuses_overflow_and_discards_partial_fetches() {
+        let event = (10, 1, vec![1]);
+        let mut offsets = Vec::new();
+        let error = collect_sdk_events(u32::MAX, |offset| {
+            offsets.push(offset);
+            Ok(vec![event.clone()])
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("SDK event offset overflow"));
+        assert_eq!(offsets, vec![u32::MAX]);
+        let mut offsets = Vec::new();
+        let error = collect_sdk_events(8, |offset| {
+            offsets.push(offset);
+            if offset == 8 {
+                Ok(vec![event.clone()])
+            } else {
+                Err(std::io::Error::other("suffix fetch failed").into())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "suffix fetch failed");
+        assert_eq!(offsets, vec![8, 9]);
+        let events = collect_sdk_events(u32::MAX - 1, |offset| {
+            if offset == u32::MAX - 1 {
+                Ok(vec![event.clone()])
+            } else {
+                assert_eq!(offset, u32::MAX);
+                Ok(Vec::new())
+            }
+        })
+        .unwrap();
+        assert_eq!(events, vec![event]);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn served_export_writes_once_into_the_allocated_destination() {
+        use crate::cache::{
+            LocalIndex,
+            extent::{read_extent, trace_writes},
+        };
+        use vmm_core::vendor::arm64::image_loader;
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0");
+        let mut source = mock_arm_session(config.clone(), &image);
+        let index = LocalIndex::new(16 << 20);
+        let attachment = SnapshotAttachment {
+            domain: b"copy-proof".to_vec(),
+            bytes: vec![9; 40],
+        };
+        let mut destination = mock_arm_session(config.clone(), &image);
+        let mut chain = Vec::new();
+        let mut parent = None;
+        for (fill, count) in [(0, 8), (7, 8), (9, 1), (0, 8), (11, 8)] {
+            let rows = (100..100 + count)
+                .map(|gfn| (gfn, [fill; 4096]))
+                .collect::<Vec<_>>();
+            source
+                .client
+                .transport_mut()
+                .vmm_mut()
+                .unwrap()
+                .write_guest_pages(&rows)
+                .unwrap();
+            let (target, _) = source.snapshot().unwrap();
+            let before = source.client.transport().host_telemetry().exports.count;
+            let before_writes = source.extent_writes.get();
+            let ((mut extent, allocations), writes) = trace_writes(|| {
+                super::super::worker::export_destination_for_test(
+                    &source,
+                    &index,
+                    parent,
+                    target,
+                    &attachment,
+                )
+            });
+            assert_eq!(
+                source.client.transport().host_telemetry().exports.count,
+                before + 1
+            );
+            assert_eq!(allocations.len(), 1);
+            let actual = read_extent(extent.bytes_mut()).unwrap();
+            let after_writes = source.extent_writes.get();
+            let reported = source
+                .telemetry_counters()
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(
+                reported["copy.session.extent.encoded_bytes"],
+                after_writes.encoded_bytes
+            );
+            assert_eq!(
+                reported["copy.session.extent.metadata_copy_bytes"],
+                after_writes.metadata_copy_bytes
+            );
+            assert_eq!(
+                reported["copy.session.extent.page_copy_bytes"],
+                after_writes.page_copy_bytes
+            );
+            assert_eq!(
+                after_writes.page_copy_bytes - before_writes.page_copy_bytes,
+                (actual.pages.len() * 4096) as u64
+            );
+            assert_eq!(
+                after_writes.metadata_copy_bytes - before_writes.metadata_copy_bytes,
+                (64 + actual.pages.len() * 40 + actual.reverted.len() * 8 + actual.sidecar.len())
+                    as u64
+            );
+            assert_eq!(
+                after_writes.encoded_bytes - before_writes.encoded_bytes,
+                allocations[0].1 as u64
+            );
+            assert_eq!(
+                writes,
+                vec![(
+                    allocations[0].0,
+                    allocations[0].1,
+                    actual.pages.len() * 4096
+                )]
+            );
+            let direct = source
+                .write_delta_attached(
+                    parent,
+                    target,
+                    &attachment,
+                    |len| Ok(vec![0; len]),
+                    Vec::as_mut_slice,
+                )
+                .unwrap();
+            let expected = read_extent(&direct).unwrap();
+            assert_eq!(actual.pages, expected.pages);
+            assert_eq!(actual.reverted, expected.reverted);
+            assert_eq!(actual.sidecar, expected.sidecar);
+            assert_eq!(vmm_target_commitment(&mut extent).unwrap(), {
+                let mut direct_extent = index.extent(direct.len()).unwrap();
+                direct_extent.bytes_mut().copy_from_slice(&direct);
+                vmm_target_commitment(&mut direct_extent).unwrap()
+            });
+            chain.push(extent.bytes_mut().to_vec());
+            let refs = chain.iter().map(Vec::as_slice).collect::<Vec<_>>();
+            let (restored, _) = destination
+                .import_extents(&refs, destination.setup)
+                .unwrap();
+            destination.replay_snapshot(restored).unwrap();
+            assert_eq!(
+                destination.state_hash().unwrap(),
+                source.state_hash().unwrap()
+            );
+            assert_eq!(
+                destination.event_history().unwrap(),
+                source.event_history().unwrap()
+            );
+            parent = Some(target);
         }
     }
 
@@ -1126,8 +1516,12 @@ mod tests {
         let (target, _) = source.snapshot().unwrap();
         let index = LocalIndex::new(1 << 20);
         let namespace = Namespace::new(&[b"source"]);
+        let attachment = SnapshotAttachment {
+            domain: b"test-v1".to_vec(),
+            bytes: b"actual captured evidence".to_vec(),
+        };
         let lease = source
-            .publish_snapshot(&index, namespace, b"key", None, target, 1)
+            .publish_snapshot_attached(&index, namespace, b"key", None, target, &attachment, 1)
             .unwrap();
         let before_store = destination.store_bytes();
         let before_handles = destination.snapshot_times.len();
@@ -1173,9 +1567,15 @@ mod tests {
         index.release(child_lease);
 
         let mut matched = mock_arm_session(source.config.clone(), &image);
-        let (imported, _) = matched
-            .import_cached(&index, &lease, matched.setup)
+        let receipt = matched
+            .import_cached_receipt(&index, &lease, matched.setup)
             .unwrap();
+        assert_eq!(receipt.attachment, attachment);
+        assert_eq!(
+            receipt.object_commitment,
+            index.target_commitment(&lease).unwrap()
+        );
+        let imported = receipt.snapshot;
         matched.replay_snapshot(imported).unwrap();
         assert_eq!(matched.state_hash().unwrap(), source_hash);
         assert_eq!(matched.client.transport().recorded_env().seed(), 7);
@@ -1320,5 +1720,78 @@ mod tests {
         });
 
         assert_eq!(result.unwrap_err().to_string(), "cleanup failed");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn cached_import_retains_history_and_equal_endpoint_different_history_quarantines() {
+        use crate::cache::{CacheError, LocalIndex};
+        use vmm_core::vendor::arm64::image_loader;
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0");
+        let mut source = mock_arm_session(config.clone(), &image);
+        let original = source.setup_sparse_snapshot().unwrap();
+        let endpoint = source.state_hash().unwrap();
+        let original_history = source.event_history().unwrap();
+        let changed = |byte| {
+            let mut sidecar = original.sidecar.materialize();
+            let start = sidecar.len() - 41;
+            assert_eq!(sidecar[start], 1);
+            sidecar[start + 1..start + 9].copy_from_slice(&2u64.to_le_bytes());
+            sidecar[start + 9..].fill(byte);
+            SparseSnapshot::from_parts(
+                original.base,
+                original.image_identity,
+                original.pages.clone(),
+                &sidecar,
+                None,
+            )
+            .unwrap()
+        };
+        let first = source.import_sparse_snapshot(&changed(11)).unwrap();
+        source.replay_snapshot(first).unwrap();
+        assert_eq!(source.state_hash().unwrap(), endpoint);
+        let expected = source.event_history().unwrap();
+        assert_eq!(
+            expected,
+            control_proto::EventHistory {
+                count: 2,
+                digest: [11; 32]
+            }
+        );
+        let index = LocalIndex::new(1 << 20);
+        let namespace = Namespace::new(&[b"event-history"]);
+        let lease = source
+            .publish_snapshot(&index, namespace, b"same-actions", None, first, 1)
+            .unwrap();
+        let mut destination = mock_arm_session(config.clone(), &image);
+        let (imported, _) = destination
+            .import_cached(&index, &lease, destination.setup)
+            .unwrap();
+        destination.replay_snapshot(imported).unwrap();
+        assert_eq!(destination.state_hash().unwrap(), endpoint);
+        assert_eq!(destination.event_history().unwrap(), expected);
+        destination.replay_snapshot(destination.setup).unwrap();
+        assert_eq!(destination.event_history().unwrap(), original_history);
+        let second = source.import_sparse_snapshot(&changed(12)).unwrap();
+        source.replay_snapshot(second).unwrap();
+        assert_eq!(source.state_hash().unwrap(), endpoint);
+        assert_eq!(source.event_history().unwrap().count, expected.count);
+        let error = source
+            .publish_snapshot(&index, namespace, b"same-actions", None, second, 1)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<CacheError>(),
+                Some(CacheError::DivergentDuplicate { .. })
+            ),
+            "{error}"
+        );
+        assert!(index.verify_lease(&lease).is_err());
+        assert!(
+            destination
+                .import_cached(&index, &lease, destination.setup)
+                .is_err()
+        );
     }
 }

@@ -4,6 +4,7 @@ pub mod arch;
 mod backend;
 mod error;
 mod exit;
+mod physical_telemetry;
 mod types;
 
 #[cfg(feature = "contract-tests")]
@@ -35,6 +36,8 @@ mod hvf;
 mod kvm;
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
 mod kvm_affinity;
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+mod kvm_cpuid;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm_sys;
 
@@ -54,6 +57,9 @@ pub use backend::{Backend, HostCoreClass};
 pub use error::{BackendError, Result};
 pub use exit::{
     Capabilities, CommonExit, Exit, ExitCounts, ExitReason, HypercallFrame, StoreCompletions,
+};
+pub use physical_telemetry::{
+    PhysicalRunCost, PhysicalTelemetry, RunPlatform, RunPurpose, RunReturn,
 };
 pub use types::{Gpa, MpState};
 

@@ -5,10 +5,10 @@ use std::sync::Arc;
 use consonance_client::cache::{CacheIndex, Lease, Namespace};
 use control_proto::SnapId;
 
-use crate::target::{ACTION_KEY_WIDTH, FaultAction, actions_key};
+use crate::history::HistoryReceipt;
+use crate::target::ObservationCheckpoint;
 
 pub const CHAIN_LIMIT: usize = 32;
-const KEY_WIDTH: usize = ACTION_KEY_WIDTH;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Point {
@@ -43,15 +43,23 @@ pub struct Shared {
 }
 
 #[derive(Debug)]
+struct RetainedObservationCheckpoint {
+    checkpoint: ObservationCheckpoint,
+    allocation: (usize, usize),
+    verified: bool,
+}
+
+#[derive(Debug)]
 struct Link {
     len: usize,
     point: Point,
     lease: Option<Lease>,
+    provenance: Option<HistoryReceipt>,
+    observations: Option<Box<RetainedObservationCheckpoint>>,
 }
 
 #[derive(Debug)]
 pub struct Chain {
-    key: Vec<FaultAction>,
     links: Vec<Link>,
     shared: Option<Shared>,
 }
@@ -60,14 +68,156 @@ impl Chain {
     #[must_use]
     pub fn new(setup: Point, shared: Option<Shared>) -> Self {
         Self {
-            key: Vec::new(),
             links: vec![Link {
                 len: 0,
                 point: setup,
                 lease: None,
+                provenance: None,
+                observations: None,
             }],
             shared,
         }
+    }
+
+    pub fn by_path(&self, path: [u8; 32]) -> Option<usize> {
+        self.links.iter().position(|link| {
+            link.provenance
+                .as_ref()
+                .is_some_and(|receipt| receipt.path() == path)
+        })
+    }
+
+    pub fn push_history(
+        &mut self,
+        point: Point,
+        lease: Option<Lease>,
+        receipt: HistoryReceipt,
+    ) -> Result<Vec<SnapId>, String> {
+        receipt.validate()?;
+        self.links.push(Link {
+            len: receipt.depth(),
+            point,
+            lease,
+            provenance: Some(receipt),
+            observations: None,
+        });
+        let mut dropped = Vec::new();
+        if self.links.len() > CHAIN_LIMIT + 1 {
+            let link = self.links.remove(1);
+            dropped.extend(self.retire(link));
+        }
+        Ok(dropped)
+    }
+
+    pub fn certified(&self, receipt: &HistoryReceipt) -> Option<usize> {
+        self.links
+            .iter()
+            .position(|link| link.provenance.as_ref() == Some(receipt))
+    }
+
+    pub fn at_snapshot(&self, snap: SnapId) -> Option<usize> {
+        self.links.iter().position(|link| link.point.snap == snap)
+    }
+
+    pub fn provenance(&self, at: usize) -> Result<&HistoryReceipt, String> {
+        self.links[at]
+            .provenance
+            .as_ref()
+            .ok_or_else(|| "fault snapshot lacks captured history provenance".to_owned())
+    }
+
+    pub fn certify(&mut self, at: usize, provenance: HistoryReceipt) -> Result<(), String> {
+        provenance.validate()?;
+        if provenance.depth() != self.links[at].len {
+            return Err("captured history depth differs from snapshot".to_owned());
+        }
+        if self.links[at]
+            .provenance
+            .as_ref()
+            .is_some_and(|existing| existing != &provenance)
+        {
+            return Err("captured fault history cannot be replaced".to_owned());
+        }
+        self.links[at].provenance = Some(provenance);
+        Ok(())
+    }
+
+    pub(crate) fn observation_checkpoint(&self, at: usize) -> Option<&ObservationCheckpoint> {
+        self.links[at]
+            .observations
+            .as_deref()
+            .filter(|retained| retained.verified)
+            .map(|retained| &retained.checkpoint)
+    }
+
+    pub(crate) fn pending_observation_checkpoint(
+        &self,
+        at: usize,
+    ) -> Option<&ObservationCheckpoint> {
+        self.links[at]
+            .observations
+            .as_deref()
+            .filter(|retained| !retained.verified)
+            .map(|retained| &retained.checkpoint)
+    }
+
+    pub(crate) fn set_pending_observation_checkpoint(
+        &mut self,
+        at: usize,
+        checkpoint: ObservationCheckpoint,
+    ) -> Result<(), String> {
+        self.store_observation_checkpoint(at, checkpoint, false)
+    }
+
+    pub(crate) fn set_observation_checkpoint(
+        &mut self,
+        at: usize,
+        checkpoint: ObservationCheckpoint,
+    ) -> Result<(), String> {
+        self.store_observation_checkpoint(at, checkpoint, true)
+    }
+
+    fn store_observation_checkpoint(
+        &mut self,
+        at: usize,
+        checkpoint: ObservationCheckpoint,
+        verified: bool,
+    ) -> Result<(), String> {
+        checkpoint.validate_binding(self.provenance(at)?)?;
+        let allocation = checkpoint.decoder().retained_allocation();
+        self.links[at].observations = Some(Box::new(RetainedObservationCheckpoint {
+            checkpoint,
+            allocation,
+            verified,
+        }));
+        Ok(())
+    }
+
+    pub(crate) fn observation_checkpoint_bytes(&self) -> usize {
+        let mut seen = std::collections::BTreeSet::new();
+        self.links
+            .iter()
+            .filter_map(|link| link.observations.as_deref())
+            .map(|checkpoint| {
+                let (identity, bytes) = checkpoint.allocation;
+                std::mem::size_of::<RetainedObservationCheckpoint>()
+                    + if seen.insert(identity) { bytes } else { 0 }
+            })
+            .sum::<usize>()
+            + self.links.capacity() * std::mem::size_of::<Option<Box<ObservationCheckpoint>>>()
+    }
+
+    pub(crate) fn discard_observation_checkpoints(&mut self, limit: usize) -> usize {
+        let mut discarded = 0;
+        for at in 0..self.links.len() {
+            if self.observation_checkpoint_bytes() <= limit {
+                break;
+            }
+            if self.links[at].observations.take().is_some() {
+                discarded += 1;
+            }
+        }
+        discarded
     }
 
     #[must_use]
@@ -85,19 +235,6 @@ impl Chain {
     }
 
     #[must_use]
-    pub fn local(&self, actions: &[FaultAction]) -> usize {
-        let common = actions
-            .iter()
-            .zip(&self.key)
-            .take_while(|(left, right)| left == right)
-            .count();
-        self.links
-            .iter()
-            .rposition(|link| link.len <= common)
-            .unwrap_or(0)
-    }
-
-    #[must_use]
     pub fn depth(&self, at: usize) -> usize {
         self.links[at].len
     }
@@ -105,25 +242,6 @@ impl Chain {
     #[must_use]
     pub fn point(&self, at: usize) -> Point {
         self.links[at].point
-    }
-
-    #[must_use]
-    pub fn deeper_shared(&self, actions: &[FaultAction], local: usize) -> Option<Lease> {
-        let shared = self.shared.as_ref()?;
-        let lease = shared
-            .index
-            .lookup(shared.namespace, &actions_key(actions))?;
-        if lease.key_len() % KEY_WIDTH == 0 && lease.key_len() / KEY_WIDTH > local {
-            Some(lease)
-        } else {
-            shared.index.release(lease);
-            None
-        }
-    }
-
-    #[must_use]
-    pub fn actions_in(lease: &Lease) -> usize {
-        lease.key_len() / KEY_WIDTH
     }
 
     pub fn release(&self, lease: Lease) {
@@ -148,9 +266,16 @@ impl Chain {
                 dropped.push(snap);
             }
         }
-        let len = self.links.last().map_or(0, |link| link.len);
-        self.key.truncate(len);
         dropped
+    }
+
+    pub(crate) fn remove_snapshot(&mut self, snapshot: SnapId) -> Option<SnapId> {
+        let at = self.at_snapshot(snapshot)?;
+        if at == 0 {
+            return None;
+        }
+        let link = self.links.remove(at);
+        self.retire(link)
     }
 
     pub fn evict_oldest(&mut self) -> Option<SnapId> {
@@ -168,32 +293,10 @@ impl Chain {
         }
     }
 
-    pub fn push(
-        &mut self,
-        actions: &[FaultAction],
-        point: Point,
-        lease: Option<Lease>,
-    ) -> Option<SnapId> {
-        self.key.clear();
-        self.key.extend_from_slice(actions);
-        self.links.push(Link {
-            len: actions.len(),
-            point,
-            lease,
-        });
-        if self.links.len() > CHAIN_LIMIT.saturating_add(1) {
-            let link = self.links.remove(1);
-            return self.retire(link);
-        }
-        None
-    }
-
     #[must_use]
-    pub fn parent_for(&self, len: usize) -> Option<(SnapId, &Lease)> {
-        let link = self.links.last()?;
-        (link.len.saturating_add(1) == len)
-            .then_some(link)
-            .and_then(|link| link.lease.as_ref().map(|lease| (link.point.snap, lease)))
+    pub fn parent_for(&self, parent: Point) -> Option<(SnapId, &Lease)> {
+        let link = self.links.iter().find(|link| link.point == parent)?;
+        link.lease.as_ref().map(|lease| (link.point.snap, lease))
     }
 }
 
@@ -209,20 +312,12 @@ impl Drop for Chain {
 
 #[cfg(test)]
 mod tests {
-    use crate::target::FaultOperation;
-    use std::num::NonZeroU16;
-
+    use super::*;
+    use crate::target::{FaultEndpointCertificate, FaultObservations, FaultOperation};
     use consonance_client::cache::{
         LocalIndex,
         extent::{extent_len, write_extent},
     };
-    use fault_policy::ParkTarget;
-
-    use super::*;
-
-    fn wait(ticks: u16) -> FaultAction {
-        FaultOperation::Wait(NonZeroU16::new(ticks).unwrap()).into()
-    }
 
     fn point(snap: u64) -> Point {
         Point {
@@ -230,182 +325,171 @@ mod tests {
             moment: snap * 10,
         }
     }
-
-    fn shared(index: &Arc<LocalIndex>) -> Shared {
-        Shared {
-            index: Arc::clone(index) as Arc<dyn CacheIndex>,
-            namespace: Namespace::new(&[b"test"]),
-        }
+    fn root() -> HistoryReceipt {
+        HistoryReceipt::genesis(
+            [3; 32],
+            FaultEndpointCertificate::KvmWholeState([17; 32]),
+            crate::history::fixture_event_history(FaultEndpointCertificate::KvmWholeState(
+                [17; 32],
+            )),
+            &FaultObservations::default(),
+        )
+        .unwrap()
     }
-
-    fn publish(index: &LocalIndex, actions: &[FaultAction], parent: Option<&Lease>) -> Lease {
-        let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
-        write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
-        index
-            .publish(
-                Namespace::new(&[b"test"]),
-                &actions_key(actions),
-                parent,
-                extent,
-                1,
+    fn child(parent: &HistoryReceipt, ticks: u16) -> HistoryReceipt {
+        let observation = FaultObservations {
+            moment: parent.moment() + 10,
+            ..FaultObservations::default()
+        };
+        parent
+            .extend(
+                FaultOperation::Wait(std::num::NonZeroU16::new(ticks).unwrap()).into(),
+                parent.endpoint(),
+                crate::history::fixture_event_history(parent.endpoint()),
+                &observation,
             )
             .unwrap()
     }
+    fn chain(shared: Option<Shared>) -> Chain {
+        let mut chain = Chain::new(point(0), shared);
+        chain.certify(0, root()).unwrap();
+        chain
+    }
 
     #[test]
-    fn action_keys_are_fixed_width_and_distinct() {
-        let tick = NonZeroU16::new(9).unwrap();
-        let park = FaultOperation::EventPark {
-            node: 3,
-            edges: 1,
-            hold_us: 9,
-            ticks: tick,
-            target: None,
+    fn exact_paths_preserve_independently_captured_history_identity() {
+        let mut chain = chain(None);
+        let first = child(&root(), 1);
+        let branch = child(&root(), 2);
+        chain.push_history(point(1), None, first.clone()).unwrap();
+        chain.push_history(point(2), None, branch.clone()).unwrap();
+        assert_eq!(chain.by_path(first.path()), Some(1));
+        assert_eq!(chain.by_path(branch.path()), Some(2));
+        assert_eq!(chain.certified(&first), Some(1));
+        let observation = FaultObservations {
+            moment: 10,
+            alive: 7,
+            ..FaultObservations::default()
         };
-        let actions = [
-            wait(3),
-            FaultOperation::Kill(3, tick).into(),
-            FaultOperation::EventKill {
-                node: 3,
-                rarity: 1,
-                ticks: tick,
-            }
-            .into(),
-            park.into(),
-            FaultOperation::EventPark {
-                node: 3,
-                edges: 1,
-                hold_us: 9,
-                ticks: tick,
-                target: ParkTarget::new(u64::MAX - 1, u64::MAX),
-            }
-            .into(),
-            FaultOperation::Pause(3, tick).into(),
-            FaultOperation::Restart(3, tick).into(),
-            FaultOperation::Hook(3, tick).into(),
-        ];
-        let keys: std::collections::BTreeSet<_> =
-            actions.iter().map(FaultAction::key_bytes).collect();
-        assert_eq!(keys.len(), actions.len());
-        assert_eq!(actions_key(&actions).len(), actions.len() * KEY_WIDTH);
-        assert!(actions_key(&actions).starts_with(&actions_key(&actions[..3])));
+        let divergent = root()
+            .extend(
+                first.action().unwrap(),
+                first.endpoint(),
+                crate::history::fixture_event_history(first.endpoint()),
+                &observation,
+            )
+            .unwrap();
+        assert_eq!(divergent.path(), first.path());
+        assert_eq!(chain.certified(&divergent), None);
+        assert_eq!(chain.provenance(1).unwrap(), &first);
     }
 
     #[test]
-    fn local_matches_classify_as_exact_ancestor_or_miss() {
-        let mut chain = Chain::new(point(0), None);
-        let path = [wait(1), wait(2), wait(3)];
-        for len in 1..=3 {
-            assert_eq!(chain.push(&path[..len], point(len as u64), None), None);
+    fn eviction_preserves_setup_and_the_latest_certified_endpoint() {
+        let mut chain = chain(None);
+        let mut receipt = root();
+        let mut dropped = Vec::new();
+        for depth in 1..=40 {
+            receipt = child(&receipt, 1);
+            dropped.extend(
+                chain
+                    .push_history(point(depth), None, receipt.clone())
+                    .unwrap(),
+            );
         }
-        let at = chain.local(&path[..2]);
-        assert_eq!(Hit::of(chain.depth(at), 2), Hit::Exact);
-        assert_eq!(chain.point(at), point(2));
-        let branch = [wait(1), wait(2), wait(9), wait(4)];
-        let at = chain.local(&branch);
-        assert_eq!(
-            (Hit::of(chain.depth(at), 4), chain.depth(at)),
-            (Hit::Ancestor, 2)
-        );
-        let at = chain.local(&[wait(7)]);
-        assert_eq!(Hit::of(chain.depth(at), 1), Hit::Miss);
-        assert_eq!(chain.point(at), point(0));
-        assert_eq!(chain.truncate(3), vec![SnapId(3)]);
-        assert_eq!(chain.local(&path), 2, "the key follows the last link");
-        assert_eq!(chain.truncate(0), vec![SnapId(2), SnapId(1)]);
-        assert_eq!(chain.links(), 1, "setup stays");
-    }
-
-    #[test]
-    fn eviction_drops_the_oldest_link_and_keeps_setup_and_the_newest() {
-        let mut chain = Chain::new(point(0), None);
-        let path = [wait(1), wait(2), wait(3)];
-        for len in 1..=3 {
-            chain.push(&path[..len], point(len as u64), None);
-        }
-        assert_eq!(chain.evict_oldest(), Some(SnapId(1)));
-        assert_eq!(chain.evict_oldest(), Some(SnapId(2)));
-        assert_eq!(chain.evict_oldest(), None);
+        assert_eq!(chain.links(), CHAIN_LIMIT + 1);
+        assert_eq!(dropped, (1..=8).map(SnapId).collect::<Vec<_>>());
+        assert_eq!(chain.provenance(0).unwrap(), &root());
+        assert_eq!(chain.certified(&receipt), Some(CHAIN_LIMIT));
+        while chain.evict_oldest().is_some() {}
         assert_eq!(chain.links(), 2);
-        let at = chain.local(&path);
-        assert_eq!((chain.depth(at), chain.point(at)), (3, point(3)));
-        assert_eq!(
-            chain.local(&path[..2]),
-            0,
-            "an evicted prefix falls back to setup"
-        );
-    }
-
-    #[test]
-    fn shedding_keeps_the_newest_link_when_asked() {
-        let mut chain = Chain::new(point(0), None);
-        let path = [wait(1), wait(2)];
-        for len in 1..=2 {
-            chain.push(&path[..len], point(len as u64), None);
-        }
-        assert_eq!(chain.shed(2), vec![SnapId(1)]);
-        assert_eq!(chain.shed(2), Vec::new());
-        let at = chain.local(&path);
-        assert_eq!((chain.depth(at), chain.point(at)), (2, point(2)));
-        assert_eq!(chain.shed(1), vec![SnapId(2)]);
+        assert_eq!(chain.certified(&receipt), Some(1));
+        assert!(chain.shed(2).is_empty());
+        assert_eq!(chain.truncate(1), vec![SnapId(40)]);
         assert_eq!(chain.links(), 1);
     }
 
     #[test]
-    fn a_deeper_shared_entry_is_leased_and_a_shallower_one_released() {
+    fn parent_lease_uses_the_selected_point_instead_of_a_later_sibling() {
         let index = Arc::new(LocalIndex::new(1 << 20));
-        let path = [wait(1), wait(2), wait(3)];
-        let root = publish(&index, &path[..1], None);
-        let deep = publish(&index, &path[..3], Some(&root));
-        index.release(root);
-        index.release(deep);
-        let mut chain = Chain::new(point(0), Some(shared(&index)));
-        let lease = chain.deeper_shared(&path, 0).unwrap();
-        assert_eq!(Chain::actions_in(&lease), 3);
-        chain.push(&path, point(3), Some(lease));
-        assert!(chain.deeper_shared(&path, 3).is_none());
-        assert!(chain.deeper_shared(&[wait(9)], 0).is_none());
-        assert_eq!(index.stats().leased, 1);
-        assert!(chain.parent_for(4).is_some());
-        assert!(chain.parent_for(3).is_none());
+        let namespace = Namespace::exact(&[b"sibling-parent"]);
+        let mut chain = chain(Some(Shared {
+            index: index.clone(),
+            namespace,
+        }));
+        let mut leases = Vec::new();
+        for (snap, ticks) in [(1, 1), (2, 2)] {
+            let receipt = child(&root(), ticks);
+            let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+            write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+            let lease = index
+                .publish(
+                    namespace,
+                    &receipt.path(),
+                    None,
+                    extent,
+                    [ticks as u8; 32],
+                    1,
+                )
+                .unwrap();
+            leases.push(index.lookup(namespace, &receipt.path()).unwrap());
+            chain
+                .push_history(point(snap), Some(lease), receipt)
+                .unwrap();
+        }
+        let (snapshot, parent) = chain.parent_for(point(1)).unwrap();
+        assert_eq!(snapshot, SnapId(1));
+        assert_eq!(parent, &leases[0]);
+        assert_ne!(parent, &leases[1]);
+        for lease in leases {
+            index.release(lease);
+        }
+        assert!(
+            chain
+                .parent_for(Point {
+                    snap: SnapId(1),
+                    moment: 999
+                })
+                .is_none()
+        );
     }
 
     #[test]
-    fn the_chain_keeps_its_limit_and_releases_what_it_drops() {
+    fn exact_cache_leases_follow_certified_depth_and_release_on_drop() {
         let index = Arc::new(LocalIndex::new(1 << 20));
-        let mut chain = Chain::new(point(0), Some(shared(&index)));
-        let actions: Vec<_> = (1..=40).map(wait).collect();
-        let mut dropped = Vec::new();
-        for len in 1..=actions.len() {
-            let parent = chain.parent_for(len).map(|(_, lease)| lease);
-            let lease = publish(&index, &actions[..len], parent);
-            dropped.extend(chain.push(&actions[..len], point(len as u64), Some(lease)));
+        let namespace = Namespace::exact(&[b"certified-chain"]);
+        let shared = Shared {
+            index: index.clone(),
+            namespace,
+        };
+        let mut chain = chain(Some(shared));
+        let mut receipt = root();
+        for depth in 1..=40 {
+            receipt = child(&receipt, 1);
+            let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+            write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+            let lease = index
+                .publish(
+                    namespace,
+                    &receipt.path(),
+                    chain
+                        .parent_for(point(depth as u64 - 1))
+                        .map(|(_, lease)| lease),
+                    extent,
+                    [17; 32],
+                    1,
+                )
+                .unwrap();
+            chain
+                .push_history(point(depth as u64), Some(lease), receipt.clone())
+                .unwrap();
         }
-        assert_eq!(chain.links(), CHAIN_LIMIT + 1);
-        assert_eq!(dropped, (1..=8).map(SnapId).collect::<Vec<_>>());
         assert_eq!(index.stats().leased, CHAIN_LIMIT);
-        assert_eq!(chain.point(1), point(9));
-    }
-
-    #[test]
-    fn a_dropped_session_releases_its_leases_and_a_new_one_finds_the_entries() {
-        let index = Arc::new(LocalIndex::new(1 << 20));
-        let path = [wait(1), wait(2)];
-        {
-            let mut chain = Chain::new(point(0), Some(shared(&index)));
-            let first = publish(&index, &path[..1], None);
-            chain.push(&path[..1], point(1), Some(first));
-            let parent = chain.parent_for(2).map(|(_, lease)| lease);
-            let second = publish(&index, &path, parent);
-            chain.push(&path, point(2), Some(second));
-            assert_eq!(index.stats().leased, 2);
-        }
+        assert!(chain.parent_for(point(40)).is_some());
+        assert!(chain.parent_for(point(41)).is_none());
+        drop(chain);
         assert_eq!(index.stats().leased, 0);
-        let chain = Chain::new(point(100), Some(shared(&index)));
-        let at = chain.local(&path);
-        assert_eq!(Hit::of(chain.depth(at), path.len()), Hit::Miss);
-        let lease = chain.deeper_shared(&path, chain.depth(at)).unwrap();
-        assert_eq!(Chain::actions_in(&lease), 2);
-        chain.release(lease);
+        let lease = index.lookup(namespace, &receipt.path()).unwrap();
+        index.release(lease);
     }
 }

@@ -2,12 +2,47 @@
 
 use crate::arch::arm64::{
     Arm64, Arm64AsidBits, Arm64GicIdleState, Arm64GicState, Arm64VcpuState, GicIntId,
-    canonicalize_core_regs, has_noncanonical_core_regs,
+    canonicalize_core_regs, has_noncanonical_core_regs, has_unsupported_execution_mode,
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts, StoreCompletions};
 use crate::types::{Gpa, MpState};
+
+#[path = "arm64_kvm_inventory.rs"]
+mod inventory;
+
+#[cfg(any(all(target_os = "linux", target_arch = "aarch64"), test))]
+pub(crate) const KVM_MEMORY_FAULT_ERRNOS: [i32; 2] = [14, 133];
+#[cfg(any(all(target_os = "linux", target_arch = "aarch64"), test))]
+pub(crate) const KVM_EXIT_MEMORY_FAULT: u32 = 39;
+
+#[cfg(any(all(target_os = "linux", target_arch = "aarch64"), test))]
+pub(crate) fn measured_raw_kvm_entry(
+    telemetry: &mut crate::PhysicalTelemetry,
+    purpose: crate::RunPurpose,
+    enter: impl FnOnce() -> (i32, i32),
+    reason: impl FnOnce() -> u32,
+) -> std::io::Result<()> {
+    telemetry.measure(crate::RunPlatform::KvmArm64, purpose, || {
+        let (code, errno) = enter();
+        if code == 0 {
+            return (Ok(()), crate::RunReturn::Returned(reason()));
+        }
+        let result = Err(std::io::Error::from_raw_os_error(errno));
+        let outcome = crate::RunReturn::from_io(&result, || {
+            unreachable!("OS errors have no normal raw exit")
+        });
+        if code == -1
+            && KVM_MEMORY_FAULT_ERRNOS.contains(&errno)
+            && reason() == KVM_EXIT_MEMORY_FAULT
+        {
+            (Ok(()), outcome)
+        } else {
+            (result, outcome)
+        }
+    })
+}
 
 pub(crate) const KVM_EXIT_MMIO: u32 = 6;
 pub(crate) const KVM_EXIT_SYSTEM_EVENT: u32 = 24;
@@ -36,6 +71,22 @@ pub(crate) const KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS: u32 = 6;
 pub(crate) const KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO: u32 = 7;
 const GICR_SGI_BASE: u64 = 0x1_0000;
 const GICD_CTLR: u64 = 0x0000;
+pub(crate) const GICD_IIDR: u64 = 0x0008;
+const GICD_TYPER2: u64 = 0x000c;
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
+const GICD_IIDR_REVISION_MASK: u32 = 0xf << 12;
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
+const GICD_IIDR_PINNED_REVISION: u32 = 2;
+const GICD_CTLR_REPRESENTED: u64 = 1 << 1;
+const GICD_CTLR_FIXED: u64 = (1 << 4) | (1 << 6);
 const GIC_IGROUPR: u64 = 0x0080;
 const GIC_ISENABLER: u64 = 0x0100;
 const GIC_ICENABLER: u64 = 0x0180;
@@ -45,6 +96,17 @@ const GIC_ICACTIVER: u64 = 0x0380;
 const GIC_IPRIORITYR: u64 = 0x0400;
 const GIC_ICFGR: u64 = 0x0c00;
 const GIC_IROUTER: u64 = 0x6000;
+const GICR_PROPBASER: u64 = 0x0070;
+const GICR_PENDBASER: u64 = 0x0078;
+const GICR_PROPBASER_RESERVED: u64 = (0b1_1111 << 59) | (0b1111 << 52) | (0b11 << 5);
+const GICR_PENDBASER_RESERVED: u64 =
+    (0b1_1111 << 59) | (0b1111 << 52) | (0b1111 << 12) | 0b111_1111;
+
+fn kvm_canonical_gicr_base(value: u64) -> bool {
+    (value >> 10) & 0b11 != 0b10
+        && matches!((value >> 7) & 0b111, 2..=7)
+        && matches!((value >> 56) & 0b111, 0..=1)
+}
 const GICR_ISACTIVER0: u64 = GICR_SGI_BASE + 0x0300;
 const VGIC_LEVEL_INFO_LINE_LEVEL: u64 = 0;
 const HARMONY_GIC_IMPL_SPIS: u32 = 64;
@@ -53,7 +115,7 @@ const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
 pub(crate) const KVM_VTIMER_PPI: u32 = 20;
 const KVM_PTIMER_PPI: u32 = 30;
-const GIC_STATE_VERSION: u32 = 7;
+const GIC_STATE_VERSION: u32 = 9;
 
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 const KVM_PAGE_SIZE: u64 = 4096;
@@ -73,6 +135,15 @@ const ICC_IGRPEN0_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 6);
 const ICC_IGRPEN1_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 7);
 const ICC_CTLR_GUEST_WRITABLE: u64 = 0b11;
 const ICC_CTLR_PRIBITS_SHIFT: u32 = 8;
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
+pub(crate) fn pinned_vgic_iidr(native: u32) -> u32 {
+    (native & !GICD_IIDR_REVISION_MASK) | (GICD_IIDR_PINNED_REVISION << 12)
+}
 
 fn vgic_apr_count(ctlr: u64) -> Result<usize> {
     match ((ctlr >> ICC_CTLR_PRIBITS_SHIFT) & 0b111) + 1 {
@@ -462,7 +533,12 @@ const CNTVCT_EL0: u64 = sysreg_id(3, 3, 14, 3, 2);
 const CNTP_CTL_EL0: u64 = sysreg_id(3, 3, 14, 2, 1);
 const CNTP_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 2, 2);
 const DISR_EL1: u64 = sysreg_id(3, 0, 12, 1, 1);
+const ACTLR_EL1: u64 = sysreg_id(3, 0, 1, 0, 1);
+const OSLSR_EL1: u64 = sysreg_id(2, 0, 1, 1, 4);
+const OSLSR_OSLK: u64 = 1 << 1;
+const MDCCINT_EL1: u64 = sysreg_id(2, 0, 0, 2, 0);
 const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
+const MDCCINT_WRITABLE_BITS: u64 = (1 << 29) | (1 << 30);
 
 const CNTV_CTL_WRITABLE_BITS: u64 = 0b11;
 
@@ -615,6 +691,39 @@ fn vgic_router_attr(spi: usize, half: usize) -> u64 {
     GIC_IROUTER + ((32 + spi) as u64) * 8 + (half as u64) * 4
 }
 
+fn read_vgic_redist_u64<K: Arm64Kvm + ?Sized>(k: &K, offset: u64) -> Result<u64> {
+    let low = u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, offset, false)?)
+        .map_err(|_| BackendError::InvalidState)?;
+    let high =
+        u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, offset + 4, false)?)
+            .map_err(|_| BackendError::InvalidState)?;
+    Ok(u64::from(low) | (u64::from(high) << 32))
+}
+
+fn write_vgic_redist_u64<K: Arm64Kvm + ?Sized>(k: &mut K, offset: u64, value: u64) -> Result<()> {
+    k.set_vgic_attr(
+        KVM_DEV_ARM_VGIC_GRP_REDIST_REGS,
+        offset,
+        false,
+        u64::from(value as u32),
+    )?;
+    k.set_vgic_attr(
+        KVM_DEV_ARM_VGIC_GRP_REDIST_REGS,
+        offset + 4,
+        false,
+        u64::from((value >> 32) as u32),
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub(crate) fn canonicalize_vgic_redist_bases<K: Arm64Kvm + ?Sized>(k: &mut K) -> Result<()> {
+    for offset in [GICR_PROPBASER, GICR_PENDBASER] {
+        let value = read_vgic_redist_u64(k, offset)?;
+        write_vgic_redist_u64(k, offset, value)?;
+    }
+    Ok(())
+}
+
 fn require_zero_vgic_routes<K: Arm64Kvm + ?Sized>(k: &K) -> Result<()> {
     for spi in 0..HARMONY_GIC_IMPL_SPIS as usize {
         for half in 0..2 {
@@ -729,9 +838,16 @@ fn read_vgic_state<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
         timer_intid: HARMONY_TIMER_INTID,
         ..Arm64GicState::default()
     };
-    s.gicd_ctlr =
-        u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)? & 0b10)
-            .map_err(|_| BackendError::InvalidState)?;
+    let distributor_control = k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)?;
+    if distributor_control & !(GICD_CTLR_REPRESENTED | GICD_CTLR_FIXED) != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save vGIC with untracked GICD_CTLR bits",
+        });
+    }
+    s.gicd_ctlr = u32::try_from(distributor_control & GICD_CTLR_REPRESENTED)
+        .map_err(|_| BackendError::InvalidState)?;
+    s.gicr_propbaser = read_vgic_redist_u64(k, GICR_PROPBASER)?;
+    s.gicr_pendbaser = read_vgic_redist_u64(k, GICR_PENDBASER)?;
     s.ctlr = vgic_cpu_sysreg(k, ICC_CTLR_EL1)?;
     if s.ctlr & 1 != 0 {
         return Err(BackendError::Unsupported {
@@ -821,7 +937,11 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         || s.impl_spis != HARMONY_GIC_IMPL_SPIS
         || s.timer_hz != HARMONY_TIMER_HZ
         || s.timer_intid != HARMONY_TIMER_INTID
-        || s.gicd_ctlr & !0b10 != 0
+        || u64::from(s.gicd_ctlr) & !GICD_CTLR_REPRESENTED != 0
+        || s.gicr_propbaser & GICR_PROPBASER_RESERVED != 0
+        || s.gicr_pendbaser & GICR_PENDBASER_RESERVED != 0
+        || !kvm_canonical_gicr_base(s.gicr_propbaser)
+        || !kvm_canonical_gicr_base(s.gicr_pendbaser)
         || s.cntv_ctl != 0
         || s.cntv_cval != 0
         || s.timer_fired
@@ -880,8 +1000,10 @@ fn validate_vgic_host<K: Arm64Kvm + ?Sized>(k: &K, s: &Arm64GicState) -> Result<
 
 pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
     if has_noncanonical_core_regs(&s.core)
+        || has_unsupported_execution_mode(&s.core)
         || s.debug.trap_debug_exceptions
         || s.debug.trap_debug_reg_accesses
+        || s.debug.mdccint_el1 & !MDCCINT_WRITABLE_BITS != 0
         || !s.vtimer.masked
         || s.vtimer.cntv_ctl_el0 & !CNTV_CTL_WRITABLE_BITS != 0
         || s.vtimer.cntv_ctl_el0 & 1 != 0
@@ -897,6 +1019,15 @@ pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
 
 fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()> {
     validate_vgic_host(k, s)?;
+    for (offset, value) in [
+        (GICR_PROPBASER, s.gicr_propbaser),
+        (GICR_PENDBASER, s.gicr_pendbaser),
+    ] {
+        write_vgic_redist_u64(k, offset, value)?;
+        if read_vgic_redist_u64(k, offset)? != value {
+            return Err(BackendError::InvalidState);
+        }
+    }
     clear_vgic_routes(k)?;
     for word in 2..(HARMONY_GIC_NR_IRQS as usize / 16) {
         let (group, attr) = vgic_config_attr(word);
@@ -980,7 +1111,18 @@ fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()
     Ok(())
 }
 
+fn unlock_os_lock<K: Arm64Kvm + ?Sized>(k: &mut K) -> Result<()> {
+    let oslsr = k.get_one_reg(OSLSR_EL1)?;
+    k.set_one_reg(OSLSR_EL1, oslsr & !OSLSR_OSLK)
+}
+
 pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
+    inventory::validate(k.register_list()?)?;
+    if k.get_one_reg(ACTLR_EL1)? != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save ARM KVM with noncanonical ACTLR_EL1",
+        });
+    }
     let mut s = Arm64VcpuState::default();
     for i in 0..31u64 {
         s.core.x[i as usize] = k.get_one_reg(core_reg(i * 2))?;
@@ -991,6 +1133,11 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     s.core.sp_el1 = k.get_one_reg(core_reg(CORE_SP_EL1))?;
     s.core.elr_el1 = k.get_one_reg(core_reg(CORE_ELR_EL1))?;
     s.core.spsr_el1 = k.get_one_reg(core_reg(CORE_SPSR_EL1))?;
+    if has_unsupported_execution_mode(&s.core) {
+        return Err(BackendError::Unsupported {
+            what: "ARM KVM supports only EL0/EL1 AArch64 execution state",
+        });
+    }
     canonicalize_core_regs(&mut s.core);
     for &(id, sel) in SYSREGS {
         *sys_field(&mut s.sysregs, sel) = k.get_one_reg(id)?;
@@ -1009,6 +1156,12 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
         s.debug.watchpoint_value[index as usize] = k.get_one_reg(dbgwvr(index))?;
         s.debug.watchpoint_control[index as usize] = k.get_one_reg(dbgwcr(index))?;
     }
+    if k.get_one_reg(OSLSR_EL1)? & OSLSR_OSLK != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save ARM KVM with debug OS lock set",
+        });
+    }
+    s.debug.mdccint_el1 = k.get_one_reg(MDCCINT_EL1)?;
     s.debug.mdscr_el1 = k.get_one_reg(MDSCR_EL1)?;
     s.vtimer.cntv_ctl_el0 = k.get_one_reg(CNTV_CTL_EL0)? & CNTV_CTL_WRITABLE_BITS;
     if s.vtimer.cntv_ctl_el0 & 1 != 0 {
@@ -1034,6 +1187,7 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
 
 pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) -> Result<()> {
     validate_restore_vcpu_state(s)?;
+    inventory::validate(k.register_list()?)?;
     validate_vgic_host(k, s.gic.as_ref().ok_or(BackendError::InvalidState)?)?;
     for i in 0..31u64 {
         k.set_one_reg(core_reg(i * 2), s.core.x[i as usize])?;
@@ -1067,6 +1221,9 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
         k.set_one_reg(dbgwvr(index), s.debug.watchpoint_value[index as usize])?;
         k.set_one_reg(dbgwcr(index), s.debug.watchpoint_control[index as usize])?;
     }
+    unlock_os_lock(k)?;
+    k.set_one_reg(ACTLR_EL1, 0)?;
+    k.set_one_reg(MDCCINT_EL1, s.debug.mdccint_el1)?;
     k.set_one_reg(MDSCR_EL1, s.debug.mdscr_el1)?;
     k.set_one_reg(DISR_EL1, 0)?;
     k.set_one_reg(CNTP_CTL_EL0, 0)?;
@@ -1081,7 +1238,11 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
 }
 
 pub trait Arm64Kvm {
+    fn validate_restore_boundary(&self) -> Result<()>;
+
     fn vcpu_init(&mut self) -> Result<()>;
+
+    fn register_list(&self) -> Result<Vec<u64>>;
 
     fn asid_bits(&self) -> Arm64AsidBits;
 
@@ -1148,6 +1309,10 @@ pub trait Arm64Kvm {
 
     fn run(&mut self) -> Result<KvmRunView>;
 
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        crate::PhysicalTelemetry::default()
+    }
+
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         None
     }
@@ -1173,6 +1338,9 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     mmio_owed: bool,
     smccc_workaround_levels: [u64; 3],
     gic_ctlr_fixed_bits: u64,
+    gicd_iidr: u32,
+    gicd_typer2: u32,
+    register_identity: [u8; 32],
 }
 
 impl<K: Arm64Kvm> Arm64KvmBackend<K> {
@@ -1197,6 +1365,9 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             mmio_owed: false,
             smccc_workaround_levels: [u64::MAX; 3],
             gic_ctlr_fixed_bits: 0,
+            gicd_iidr: 0,
+            gicd_typer2: 0,
+            register_identity: [0; 32],
         }
     }
 
@@ -1374,6 +1545,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn set_policy(&mut self, policy: &crate::arch::arm64::Arm64Policy) -> Result<()> {
         self.ensure_healthy()?;
+        let registers = inventory::validate(self.kvm.register_list()?)?;
+        inventory::validate_policy(policy, &registers)?;
         self.state_poisoned = true;
         self.kvm
             .set_one_reg(KVM_REG_ARM_PSCI_VERSION, KVM_ARM_PSCI_1_0)?;
@@ -1390,8 +1563,22 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         self.gic_ctlr_fixed_bits =
             vgic_cpu_sysreg(&self.kvm, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
         vgic_apr_count(self.gic_ctlr_fixed_bits)?;
+        self.gicd_iidr = u32::try_from(self.kvm.get_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GICD_IIDR,
+            false,
+        )?)
+        .map_err(|_| BackendError::InvalidState)?;
+        self.gicd_typer2 = u32::try_from(self.kvm.get_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GICD_TYPER2,
+            false,
+        )?)
+        .map_err(|_| BackendError::InvalidState)?;
         self.kvm.set_one_reg(CNTV_CTL_EL0, 0)?;
+        self.kvm.set_one_reg(ACTLR_EL1, 0)?;
         self.kvm.set_one_reg(DISR_EL1, 0)?;
+        unlock_os_lock(&mut self.kvm)?;
         self.kvm.set_one_reg(CNTP_CTL_EL0, 0)?;
         self.kvm.set_one_reg(CNTP_CVAL_EL0, 0)?;
         if !self.configured {
@@ -1406,6 +1593,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             }
         }
         let _ = &policy.sysreg_traps;
+        self.register_identity = inventory::identity(&self.kvm, &registers, true)?;
         self.configured = true;
         self.state_poisoned = false;
         Ok(())
@@ -1612,12 +1800,38 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             return Err(BackendError::PendingCompletion);
         }
         self.settle_mmio()?;
-        save_vcpu(&self.kvm)
+        let state = save_vcpu(&self.kvm)?;
+        if self.configured
+            && inventory::identity(
+                &self.kvm,
+                &inventory::validate(self.kvm.register_list()?)?,
+                true,
+            )? != self.register_identity
+        {
+            return Err(BackendError::Unsupported {
+                what: "ARM KVM immutable register identity changed",
+            });
+        }
+        Ok(state)
     }
 
     fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
         self.ensure_healthy()?;
+        self.validate_import_state(state)?;
+        self.kvm.validate_restore_boundary()
+    }
+
+    fn validate_import_state(&self, state: &Arm64VcpuState) -> Result<()> {
+        self.ensure_healthy()?;
         validate_restore_vcpu_state(state)?;
+        let registers = inventory::validate(self.kvm.register_list()?)?;
+        if self.configured
+            && inventory::identity(&self.kvm, &registers, false)? != self.register_identity
+        {
+            return Err(BackendError::Unsupported {
+                what: "ARM KVM immutable register identity changed",
+            });
+        }
         validate_vgic_host(
             &self.kvm,
             state.gic.as_ref().ok_or(BackendError::InvalidState)?,
@@ -1644,6 +1858,10 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         Ok(())
     }
 
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        self.kvm.physical_telemetry()
+    }
+
     fn exit_counts(&self) -> ExitCounts {
         self.counts
     }
@@ -1665,6 +1883,9 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
                 smccc_workaround_levels: self.smccc_workaround_levels,
                 psci_profile: crate::arch::arm64::Arm64PsciProfile::KvmPsci10,
                 gic_ctlr_fixed_bits: self.gic_ctlr_fixed_bits,
+                gicd_iidr: self.gicd_iidr,
+                gicd_typer2: self.gicd_typer2,
+                register_identity: self.register_identity,
             },
         }
     }
@@ -1673,6 +1894,10 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 #[cfg(any(test, feature = "mock"))]
 #[derive(Debug, Default)]
 pub struct FakeKvm {
+    pub register_inventory: Option<Vec<u64>>,
+    pub register_inventory_failure: bool,
+
+    physical: crate::PhysicalTelemetry,
     #[cfg(test)]
     state_reads: std::sync::atomic::AtomicUsize,
     cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -1681,6 +1906,10 @@ pub struct FakeKvm {
     reg_writes: usize,
     #[cfg(test)]
     fail_reg_write_on: Option<usize>,
+    #[cfg(test)]
+    fail_reg_read: Option<u64>,
+    #[cfg(test)]
+    fail_reg_write: Option<u64>,
     #[cfg(test)]
     fail_mmio_completion: bool,
     #[cfg(test)]
@@ -1710,12 +1939,14 @@ pub struct FakeKvm {
     #[cfg_attr(not(test), allow(dead_code))]
     init_features: [u32; 7],
     initialized: bool,
+    pub reject_restore_boundary: bool,
 }
 
 #[cfg(any(test, feature = "mock"))]
 impl FakeKvm {
     pub fn new() -> Self {
         let mut fake = Self::default();
+        fake.regs.insert(OSLSR_EL1, 8);
         for (id, level) in SMCCC_WORKAROUND_REGISTERS
             .into_iter()
             .zip(crate::arch::arm64::Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS)
@@ -1726,6 +1957,14 @@ impl FakeKvm {
             (KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true),
             0x8400,
         );
+        fake.vgic_attrs.insert(
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_IIDR, false),
+            pinned_vgic_iidr(0x4b00_343b) as u64,
+        );
+        for offset in [GICR_PROPBASER, GICR_PENDBASER] {
+            fake.vgic_attrs
+                .insert((KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, offset, false), 0x180);
+        }
         fake
     }
 
@@ -1766,6 +2005,23 @@ impl FakeKvm {
 
 #[cfg(any(test, feature = "mock"))]
 impl Arm64Kvm for FakeKvm {
+    fn validate_restore_boundary(&self) -> Result<()> {
+        if self.reject_restore_boundary {
+            return Err(BackendError::Arm64ReusedVcpuRestoreUnsafe);
+        }
+        Ok(())
+    }
+
+    fn register_list(&self) -> Result<Vec<u64>> {
+        if self.register_inventory_failure {
+            return Err(BackendError::Internal("fake KVM register inventory failed"));
+        }
+        Ok(self
+            .register_inventory
+            .clone()
+            .unwrap_or_else(inventory::fake_registers))
+    }
+
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         self.cancellation.clone()
     }
@@ -1872,6 +2128,10 @@ impl Arm64Kvm for FakeKvm {
         #[cfg(test)]
         self.state_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        if self.fail_reg_read == Some(id) {
+            return Err(BackendError::Internal("fake KVM register read failed"));
+        }
         Ok(self.regs.get(&id).copied().unwrap_or(0))
     }
 
@@ -1885,7 +2145,7 @@ impl Arm64Kvm for FakeKvm {
         #[cfg(test)]
         {
             self.reg_writes += 1;
-            if self.fail_reg_write_on == Some(self.reg_writes) {
+            if self.fail_reg_write_on == Some(self.reg_writes) || self.fail_reg_write == Some(id) {
                 return Err(BackendError::Internal("fake KVM register write failed"));
             }
         }
@@ -1996,9 +2256,26 @@ impl Arm64Kvm for FakeKvm {
         #[cfg(test)]
         if self.fail_mmio_completion {
             self.regs.insert(core_reg(CORE_PC), 0xdead_beef);
-            return Err(BackendError::Internal("injected MMIO completion failure"));
+            return self.physical.measure(
+                crate::RunPlatform::KvmArm64,
+                crate::RunPurpose::Completion,
+                || {
+                    (
+                        Err(BackendError::Internal("injected MMIO completion failure")),
+                        crate::RunReturn::Error,
+                    )
+                },
+            );
         }
-        Ok(())
+        self.physical.measure(
+            crate::RunPlatform::KvmArm64,
+            crate::RunPurpose::Completion,
+            || (Ok(()), crate::RunReturn::Interrupted),
+        )
+    }
+
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        self.physical
     }
 
     fn run(&mut self) -> Result<KvmRunView> {
@@ -2038,13 +2315,33 @@ impl Arm64Kvm for FakeKvm {
         if self.fail_run_after_entry {
             self.run_queue.pop_front();
             self.regs.insert(core_reg(CORE_PC), 0xdead_beef);
-            return Err(BackendError::Internal(
-                "fake KVM run failed after guest entry",
-            ));
+            return self.physical.measure(
+                crate::RunPlatform::KvmArm64,
+                crate::RunPurpose::Guest,
+                || {
+                    (
+                        Err(BackendError::Internal(
+                            "fake KVM run failed after guest entry",
+                        )),
+                        crate::RunReturn::Error,
+                    )
+                },
+            );
         }
-        self.run_queue
-            .pop_front()
-            .ok_or(BackendError::Internal("fake KVM run-queue empty"))
+        let queue = &mut self.run_queue;
+        self.physical.measure(
+            crate::RunPlatform::KvmArm64,
+            crate::RunPurpose::Guest,
+            || {
+                let result = queue
+                    .pop_front()
+                    .ok_or(BackendError::Internal("fake KVM run-queue empty"));
+                let outcome = result.as_ref().map_or(crate::RunReturn::Error, |view| {
+                    crate::RunReturn::Returned(view.exit_reason)
+                });
+                (result, outcome)
+            },
+        )
     }
 }
 
@@ -2052,6 +2349,130 @@ impl Arm64Kvm for FakeKvm {
 mod tests {
     use super::*;
     use crate::arch::arm64::{Arm64CoreRegs, Arm64Policy, Arm64SimdFpState, IdRegModel};
+
+    #[test]
+    fn raw_kvm_syscall_boundary_preserves_memory_fault_interpretation_without_inventing_returns() {
+        use crate::{RunPlatform, RunPurpose};
+        for errno in KVM_MEMORY_FAULT_ERRNOS {
+            let mut telemetry = crate::PhysicalTelemetry::default();
+            let entered = std::cell::Cell::new(false);
+            measured_raw_kvm_entry(
+                &mut telemetry,
+                RunPurpose::Guest,
+                || {
+                    entered.set(true);
+                    (-1, errno)
+                },
+                || {
+                    assert!(entered.get());
+                    KVM_EXIT_MEMORY_FAULT
+                },
+            )
+            .unwrap();
+            let cost = telemetry.cost(RunPlatform::KvmArm64, RunPurpose::Guest);
+            assert_eq!(
+                (cost.entries, cost.returns, cost.errors, cost.interruptions),
+                (1, 0, 1, 0)
+            );
+            assert_eq!(cost.raw_exit_count(KVM_EXIT_MEMORY_FAULT), 0);
+            let error = measured_raw_kvm_entry(
+                &mut telemetry,
+                RunPurpose::Completion,
+                || (-1, errno),
+                || KVM_EXIT_MMIO,
+            )
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(errno));
+        }
+        for (code, errno) in [(-1, 4), (-1, 13), (1, 14), (-2, 133)] {
+            let mut telemetry = crate::PhysicalTelemetry::default();
+            let error = measured_raw_kvm_entry(
+                &mut telemetry,
+                RunPurpose::Maintenance,
+                || (code, errno),
+                || panic!("stale exit reason read"),
+            )
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(errno));
+            let cost = telemetry.cost(RunPlatform::KvmArm64, RunPurpose::Maintenance);
+            assert_eq!(cost.returns, 0);
+            assert_eq!(cost.interruptions, u64::from(errno == 4));
+            assert_eq!(cost.errors, u64::from(errno != 4));
+        }
+        let mut telemetry = crate::PhysicalTelemetry::default();
+        measured_raw_kvm_entry(
+            &mut telemetry,
+            RunPurpose::Guest,
+            || (0, 14),
+            || KVM_EXIT_MMIO,
+        )
+        .unwrap();
+        let cost = telemetry.cost(RunPlatform::KvmArm64, RunPurpose::Guest);
+        assert_eq!((cost.entries, cost.returns, cost.errors), (1, 1, 0));
+        assert_eq!(cost.raw_exit_count(KVM_EXIT_MMIO), 1);
+    }
+
+    #[test]
+    fn raw_entry_counts_include_consumed_returns_completion_and_failed_decode() {
+        use crate::{RunPlatform, RunPurpose};
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_INTR,
+            ..Default::default()
+        });
+        fake.push_run(mmio_store(0x0900_0018, 1, 4));
+        fake.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_FAIL_ENTRY,
+            ..Default::default()
+        });
+        let mut backend = Arm64KvmBackend::new(fake);
+        assert!(matches!(backend.run(), Err(BackendError::NotConfigured)));
+        assert_eq!(
+            backend.physical_telemetry(),
+            crate::PhysicalTelemetry::default()
+        );
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert!(matches!(
+            backend.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { .. })
+        ));
+        let physical = backend.physical_telemetry();
+        let guest = physical.cost(RunPlatform::KvmArm64, RunPurpose::Guest);
+        assert_eq!(
+            (
+                guest.entries,
+                guest.returns,
+                guest.errors,
+                guest.interruptions
+            ),
+            (2, 2, 0, 0)
+        );
+        assert_eq!(guest.raw_exit_count(KVM_EXIT_INTR), 1);
+        assert_eq!(guest.raw_exit_count(KVM_EXIT_MMIO), 1);
+        assert_eq!(backend.exit_counts().total(), 1);
+        backend.read_irq_mask().unwrap();
+        let physical = backend.physical_telemetry();
+        let completion = physical.cost(RunPlatform::KvmArm64, RunPurpose::Completion);
+        assert_eq!(
+            (
+                completion.entries,
+                completion.returns,
+                completion.interruptions,
+                completion.errors
+            ),
+            (1, 0, 1, 0)
+        );
+        assert!(backend.run().is_err());
+        let physical = backend.physical_telemetry();
+        let guest = physical.cost(RunPlatform::KvmArm64, RunPurpose::Guest);
+        assert_eq!((guest.entries, guest.returns, guest.errors), (3, 3, 0));
+        assert_eq!(guest.raw_exit_count(KVM_EXIT_FAIL_ENTRY), 1);
+        assert_eq!(backend.exit_counts().total(), 1);
+        backend.reset_exit_counts();
+        assert_eq!(backend.exit_counts().total(), 0);
+        assert_eq!(backend.physical_telemetry(), physical);
+    }
 
     #[test]
     fn backend_exposes_the_kvm_cancellation_latch() {
@@ -2385,6 +2806,168 @@ mod tests {
             validate_vgic_state(&invalid_apr),
             Err(BackendError::InvalidState)
         ));
+    }
+
+    #[test]
+    fn redistributor_bases_round_trip_both_words_and_reject_reserved_bits() {
+        let mut source = FakeKvm::new();
+        let propbaser = 0x0001_0000_1234_5180;
+        let pendbaser = 0x0002_0000_1234_0580;
+        write_vgic_redist_u64(&mut source, GICR_PROPBASER, propbaser).unwrap();
+        write_vgic_redist_u64(&mut source, GICR_PENDBASER, pendbaser).unwrap();
+        let saved = save_vgic(&source).unwrap();
+        assert_eq!(saved.gicr_propbaser, propbaser);
+        assert_eq!(saved.gicr_pendbaser, pendbaser);
+
+        let mut target = FakeKvm::new();
+        write_vgic_redist_u64(&mut target, GICR_PROPBASER, 0x9999_0180).unwrap();
+        write_vgic_redist_u64(&mut target, GICR_PENDBASER, 0x8888_0580).unwrap();
+        restore_vgic(&mut target, &saved).unwrap();
+        assert_eq!(
+            read_vgic_redist_u64(&target, GICR_PROPBASER).unwrap(),
+            propbaser
+        );
+        assert_eq!(
+            read_vgic_redist_u64(&target, GICR_PENDBASER).unwrap(),
+            pendbaser
+        );
+        assert_eq!(save_vgic(&target).unwrap(), saved);
+
+        for invalid in [
+            Arm64GicState {
+                gicr_propbaser: propbaser | (1 << 6),
+                ..saved
+            },
+            Arm64GicState {
+                gicr_pendbaser: pendbaser | (1 << 12),
+                ..saved
+            },
+            Arm64GicState {
+                gicr_pendbaser: pendbaser | (1 << 62),
+                ..saved
+            },
+        ] {
+            assert!(matches!(
+                validate_vgic_state(&invalid),
+                Err(BackendError::InvalidState)
+            ));
+        }
+    }
+
+    #[test]
+    fn redistributor_bases_reject_kvm_rewritten_fields_before_vcpu_mutation() {
+        let mut source = FakeKvm::new();
+        source.vcpu_init().unwrap();
+        let valid = save_vcpu(&source).unwrap();
+        for (name, propbaser, pendbaser) in [
+            ("zero property base", 0, 0x580),
+            ("property shareability", 0x180 | (2 << 10), 0x580),
+            ("property inner cacheability", 0x80, 0x580),
+            ("property outer cacheability", 0x180 | (2 << 56), 0x580),
+            ("zero pending base", 0x180, 0),
+            ("pending shareability", 0x180, 0x980),
+            ("pending inner cacheability", 0x180, 0x480),
+            ("pending outer cacheability", 0x180, 0x580 | (2 << 56)),
+        ] {
+            let mut invalid = valid;
+            let gic = invalid.gic.as_mut().unwrap();
+            gic.gicr_propbaser = propbaser;
+            gic.gicr_pendbaser = pendbaser;
+            let mut target = FakeKvm::new();
+            target.vcpu_init().unwrap();
+            let before = save_vcpu(&target).unwrap();
+            let before_attrs = target.vgic_attrs.clone();
+            target.calls.clear();
+            assert!(
+                matches!(
+                    restore_vcpu(&mut target, &invalid),
+                    Err(BackendError::InvalidState)
+                ),
+                "restore accepted {name}"
+            );
+            assert_eq!(
+                save_vcpu(&target).unwrap(),
+                before,
+                "restore mutated {name}"
+            );
+            assert!(target.calls.is_empty(), "restore wrote {name}");
+            assert_eq!(target.vgic_attrs, before_attrs, "restore wrote {name}");
+        }
+    }
+
+    #[test]
+    fn vgic_iidr_revision_pin_preserves_other_identity_bits() {
+        assert_eq!(pinned_vgic_iidr(0x4b00_343b), 0x4b00_243b);
+        assert_eq!(pinned_vgic_iidr(0xabcd_f123), 0xabcd_2123);
+    }
+
+    #[test]
+    fn capabilities_record_full_vgic_distributor_identity() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GICD_IIDR,
+            false,
+            0x4b00_243b,
+        )
+        .unwrap();
+        fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_TYPER2, false, 1 << 8)
+            .unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let caps = backend.capabilities().arch;
+        assert_eq!(caps.gicd_iidr, 0x4b00_243b);
+        assert_eq!(caps.gicd_typer2, 1 << 8);
+    }
+
+    #[test]
+    fn vgic_distributor_control_rejects_untracked_bits_before_snapshot_or_restore() {
+        let mut source = FakeKvm::new();
+        for untracked in [1u64 << 8, 1, 1 << 31] {
+            source
+                .set_vgic_attr(
+                    KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                    GICD_CTLR,
+                    false,
+                    GICD_CTLR_REPRESENTED | GICD_CTLR_FIXED | untracked,
+                )
+                .unwrap();
+            assert!(matches!(
+                save_vgic(&source),
+                Err(BackendError::Unsupported {
+                    what: "save vGIC with untracked GICD_CTLR bits"
+                })
+            ));
+        }
+
+        source
+            .set_vgic_attr(
+                KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                GICD_CTLR,
+                false,
+                GICD_CTLR_REPRESENTED | GICD_CTLR_FIXED,
+            )
+            .unwrap();
+        let saved = save_vgic(&source).unwrap();
+        for untracked in [1 << 8, 1] {
+            let invalid = Arm64GicState {
+                gicd_ctlr: saved.gicd_ctlr | untracked,
+                ..saved
+            };
+            assert!(matches!(
+                validate_vgic_state(&invalid),
+                Err(BackendError::InvalidState)
+            ));
+            let mut target = FakeKvm::new();
+            let before_attrs = target.vgic_attrs.clone();
+            assert!(matches!(
+                restore_vgic(&mut target, &invalid),
+                Err(BackendError::InvalidState)
+            ));
+            assert!(target.calls.is_empty());
+            assert_eq!(target.vgic_attrs, before_attrs);
+        }
     }
 
     #[test]
@@ -2958,9 +3541,9 @@ mod tests {
     fn vcpu_init_advertises_psci_0_2() {
         let f = vcpu_init_features();
         assert_eq!(
-            f[0] & (1 << KVM_ARM_VCPU_PSCI_0_2),
+            f[0],
             1 << KVM_ARM_VCPU_PSCI_0_2,
-            "PSCI 0.2 feature bit must be set"
+            "only PSCI 0.2 is enabled; EL1_32BIT must remain disabled"
         );
         assert_eq!(
             f[1..],
@@ -3110,6 +3693,7 @@ mod tests {
         s.debug.breakpoint_control[0] = 1;
         s.debug.watchpoint_value[15] = 0x5678;
         s.debug.watchpoint_control[15] = 1;
+        s.debug.mdccint_el1 = 1 << 30;
         s.debug.mdscr_el1 = 0x8000;
         s.vtimer.cntv_ctl_el0 = 2;
         s.vtimer.cntv_cval_el0 = 0x1234_5678;
@@ -3440,6 +4024,8 @@ mod tests {
         trap_debug_exceptions.debug.trap_debug_exceptions = true;
         let mut trap_debug_reg_accesses = valid;
         trap_debug_reg_accesses.debug.trap_debug_reg_accesses = true;
+        let mut mdccint_reserved = valid;
+        mdccint_reserved.debug.mdccint_el1 = 1;
         let mut timer_unmasked = valid;
         timer_unmasked.vtimer.masked = false;
         let mut timer_ctl_reserved = valid;
@@ -3454,6 +4040,7 @@ mod tests {
         for (name, invalid) in [
             ("trap-debug-exceptions", trap_debug_exceptions),
             ("trap-debug-register-accesses", trap_debug_reg_accesses),
+            ("mdccint-reserved", mdccint_reserved),
             ("host-timer-unmasked", timer_unmasked),
             ("host-timer-control-reserved", timer_ctl_reserved),
             ("host-timer-control-enabled", timer_ctl_enabled),
@@ -3522,6 +4109,35 @@ mod tests {
             "after partial restore: save={:?}, run={run:?}, irq_mask={irq_mask:?}, prepare={prepare:?}",
             saved.map(|state| state.core.x[0])
         );
+    }
+
+    #[test]
+    fn restore_boundary_refusal_precedes_writes_and_allows_import_validation() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let before = backend.save().unwrap();
+        let mut target = before;
+        target.core.x[0] = 0x1234;
+        backend.kvm.reject_restore_boundary = true;
+        backend.kvm.calls.clear();
+        let writes = backend.kvm.reg_writes;
+        backend.validate_import_state(&target).unwrap();
+        assert!(matches!(
+            backend.validate_restore_state(&target),
+            Err(BackendError::Arm64ReusedVcpuRestoreUnsafe)
+        ));
+        assert!(matches!(
+            backend.restore(&target),
+            Err(BackendError::Arm64ReusedVcpuRestoreUnsafe)
+        ));
+        assert_eq!(backend.kvm.reg_writes, writes);
+        assert!(backend.kvm.calls.is_empty());
+        assert_eq!(backend.save().unwrap(), before);
+        backend.kvm.reject_restore_boundary = false;
+        backend.restore(&target).unwrap();
+        assert_eq!(backend.save().unwrap().core.x[0], 0x1234);
     }
 
     #[test]
@@ -4169,6 +4785,73 @@ mod tests {
         let mut backend = Arm64KvmBackend::new(policy_fake);
         backend.set_policy(&Arm64Policy::default()).unwrap();
         assert_eq!(backend.kvm.get_one_reg(DISR_EL1).unwrap(), 0);
+    }
+
+    #[test]
+    fn os_lock_refuses_capture_and_clean_restore_unlocks_fresh_and_reused_targets() {
+        let mut source = FakeKvm::new();
+        source.vcpu_init().unwrap();
+        source.set_one_reg(OSLSR_EL1, 8).unwrap();
+        let clean = save_vcpu(&source).unwrap();
+        source.set_one_reg(OSLSR_EL1, 8 | OSLSR_OSLK).unwrap();
+        assert!(matches!(
+            save_vcpu(&source),
+            Err(BackendError::Unsupported {
+                what: "save ARM KVM with debug OS lock set"
+            })
+        ));
+        restore_vcpu(&mut source, &clean).unwrap();
+        assert_eq!(source.get_one_reg(OSLSR_EL1).unwrap() & OSLSR_OSLK, 0);
+        let mut fresh = FakeKvm::new();
+        fresh.vcpu_init().unwrap();
+        restore_vcpu(&mut fresh, &clean).unwrap();
+        assert_eq!(fresh.reg(OSLSR_EL1), Some(8));
+        let mut legacy = clean;
+        legacy.gic.as_mut().unwrap().version = 8;
+        fresh.calls.clear();
+        assert!(matches!(
+            restore_vcpu(&mut fresh, &legacy),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(fresh.calls.is_empty());
+
+        source.set_one_reg(OSLSR_EL1, 8 | OSLSR_OSLK).unwrap();
+        let mut backend = Arm64KvmBackend::new(source);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert_eq!(backend.kvm.reg(OSLSR_EL1), Some(8));
+    }
+
+    #[test]
+    fn os_lock_register_access_failures_refuse_capture_policy_and_restore() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let clean = save_vcpu(&fake).unwrap();
+        fake.fail_reg_read = Some(OSLSR_EL1);
+        assert!(matches!(
+            save_vcpu(&fake),
+            Err(BackendError::Internal("fake KVM register read failed"))
+        ));
+        fake.fail_reg_read = None;
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.kvm.fail_reg_write = Some(OSLSR_EL1);
+        assert!(matches!(
+            backend.restore(&clean),
+            Err(BackendError::Internal("fake KVM register write failed"))
+        ));
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.fail_reg_write = Some(OSLSR_EL1);
+        let mut backend = Arm64KvmBackend::new(fake);
+        assert!(matches!(
+            backend.set_policy(&Arm64Policy::default()),
+            Err(BackendError::Internal("fake KVM register write failed"))
+        ));
     }
 
     #[test]

@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 . ./lib-build.sh
 
 require_linux_amd64
-require_tools cc make flex bison bc xz gzip
+require_tools cc make flex bison bc xz gzip python3 objcopy
 
 # Each profile variable names one published artifact and one reviewed
 # counter-opcode baseline, so a build that claimed both would publish a kernel
@@ -125,14 +125,10 @@ fi
 echo "== kernel: building bzImage"
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"${HARMONY_BUILD_JOBS:-$(nproc)}" bzImage
 
-# The scan rejects any rdtsc, rdtscp, rdrand or rdseed in the image. It runs
-# before the image is published to `$ART_DIR`, so with `set -e` a rejected
-# kernel never reaches the path the guest runner reads. `test-publish-check.sh`
-# proves that ordering with a planted rejection.
-echo "== kernel: counter-opcode scan (rdtsc/rdtscp + rdrand/rdseed)"
-bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux"
-
-# Publish ONLY after the scan passed.
+# The publisher snapshots all three ELF artifacts and the packed image, scans
+# immutable ELF bytes, verifies the pinned Kbuild packing chain, and copies the
+# exact verified image bytes to the paths consumed by the guest runner.
+echo "== kernel: counter-opcode scan and packed-image verification"
 kernel_output=bzImage
 if [ -n "${N6_TRAPS_OFF:-}" ]; then
     kernel_output=bzImage-n6-traps-off
@@ -142,7 +138,8 @@ elif [ -n "${NESTED_HOST_PROFILE:-}" ]; then
     kernel_output=bzImage-nested-host
 fi
 mkdir -p "$ART_DIR/x86_64"
-install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/$kernel_output"
-install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/x86_64/$kernel_output"
-install -m 0644 "$KOBJ/vmlinux" "$ART_DIR/x86_64/$kernel_output.vmlinux"
+python3 "$LINUX_DIR/verify-x86-kernel-image.py" "$KOBJ" \
+    "$ART_DIR/$kernel_output" "$ART_DIR/x86_64/$kernel_output" \
+    "$ART_DIR/x86_64/$kernel_output.vmlinux" \
+    "$LINUX_DIR/scan-counter-opcodes.sh"
 echo "ok: $ART_DIR/$kernel_output"

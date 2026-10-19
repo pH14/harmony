@@ -8,6 +8,51 @@ read/write operations, injects events, and saves/restores vCPU state. It is
 generic over an architecture type, so the upper VMM does not name KVM, HVF, or
 an ISA-specific exit enum.
 
+`Backend::physical_telemetry` exposes runtime physical-entry accounting separately
+from normalized `ExitCounts`. `PhysicalTelemetry` uses fixed platform and purpose
+slots, with raw reason buckets 0 through 63 and one `other` bucket. Its measured
+boundary records attempts, successful OS returns, interrupted calls, other OS
+errors and host elapsed time; it does not append normalized events or enter vCPU
+state. Sites with no attempts are omitted from exported counters. The generic
+mock backend has no OS entries; its explicit test setter supplies only fixture
+data for aggregation tests.
+
+Counters use `backend.<platform>.<purpose>.<leaf>`, where platform is `kvm_x86`,
+`kvm_arm64` or `hvf_arm64`, purpose is `guest`, `completion` or `maintenance`,
+and leaves are `entries`, `returns`, `interruptions`, `errors` and `run_ns`.
+`raw_exit.<reason>.count` counts successful OS returns before backend decoding or
+internal handling, including consumed interrupts, PSCI calls and tracked writes.
+Reason numbers retain their platform ABI meanings. These are OS entry API
+attempts and returns, not proof of hardware guest entry or guest instruction
+counts. Normalized exit totals and EventHistory counts need not equal them.
+
+KVM `EINTR` attempts have interruption counts and no successful-return/reason
+charge. Other failed syscalls have error counts. The arm64 raw syscall boundary
+preserves the locked kvm-ioctls 0.25.0 interpretation of `-1` with `EFAULT` or
+`EHWPOISON` and `KVM_EXIT_MEMORY_FAULT`: normal backend handling still receives
+that condition, while telemetry counts an OS error, never a successful return.
+The syscall records errno before any clock read or decoder work. The safe
+`VcpuFd::get_kvm_run` accessor supplies the reason after a completed call;
+ordinary errors never read stale exit data. The memory-fault errno pair is the
+explicit exception permitted by the KVM ABI and pinned against Linux constants.
+
+Staged KVM completion calls are distinct from guest calls. Snapshot preparation
+with immediate exit is maintenance unless it consumes a staged completion, in
+which case it is completion. HVF translation-flush guest stubs are maintenance.
+HVF canceled exits are successful raw returns with reason zero, even when the
+backend rejects them; nonzero HVF API status is an OS error. HVF does not invent
+an errno-style interruption count. Checks that reject before an OS call do not
+count as entry attempts. Semantic exit counter reset does not reset physical
+work. FakeKvm scripts the same boundary counts for portable tests; its counts
+and timing are fixture evidence, not measurements of a hypervisor.
+
+Hot entry accounting uses fixed arrays without strings or allocations. Each
+entry reads the host clock at entry and completion; `run_ns` includes the OS call
+and immediate classification/readback. Timers have platform-dependent overhead
+and resolution, and overlap VMM guest/service timing rather than adding another
+independent elapsed interval. Counters and their 5040-byte runtime storage never
+enter snapshots, identity commitments, virtual clocks or retention policy.
+
 ## Implementations
 
 - `MockBackend` and `MockArm64Backend` provide scripted, deterministic
@@ -19,6 +64,57 @@ an ISA-specific exit enum.
 An x86 KVM entry failure retains the hardware failure reason and CPU reported by
 `KVM_EXIT_FAIL_ENTRY`. The structured error reaches the caller and workload
 failure trace, distinguishing invalid guest state from other entry failures.
+KVM retains both `KVM_GET_SUPPORTED_CPUID` and `KVM_GET_EMULATED_CPUID`
+inventories at construction. Either ioctl failure rejects construction. Before
+ordinary policy installation or nested initialization begins mutation, every
+requested capability bit must be supplied by one of those inventories or by an
+explicit caller declaration in `CpuidModel.emulated_features`. This declaration
+is admission metadata; it does not change the CPUID bytes installed in KVM.
+An absent leaf/subleaf supplies zero capability. A failed preflight preserves
+the previous CPUID, MSR filter, architectural state, and backend usability.
+Unsupported features produce `CpuidUnavailable` with leaf, subleaf, register,
+requested bits, and available bits; the requested model is never intersected
+with the host inventory.
+
+The backend classifies capability words rather than embedding a guest profile:
+
+| CPUID words | Admission rule |
+| --- | --- |
+| `1:ECX/EDX` | Require KVM capability bits; OSXSAVE (`ECX[27]`) is KVM runtime state derived from CR4 |
+| `6:EAX/ECX/EDX` | Require KVM capability bits or explicit userspace declarations |
+| `7.0:EBX/ECX/EDX`, `7.N:EAX/EBX/ECX/EDX` for N > 0 | Require KVM capability bits or explicit userspace declarations; `7.0:EBX[6,13]` are inverse x87 absence flags |
+| `80000001:ECX/EDX`, `80000007:EDX`, `80000008:EBX`, `8000000a:EDX` | Require KVM capability bits or explicit userspace declarations; includes VMX/SVM requests |
+| `D.0:EAX/EDX`, `D.1:EAX/ECX/EDX` | Require supported XSAVE state/features; software declarations cannot supply them |
+| Nonzero `D.N` components, N >= 2 | Require exact supported size, standard offset, and component flags |
+| Vendor/signature, brand, cache descriptors, topology, frequency and address-width fields | Descriptive model values, not host feature masks |
+| Unclassified nonzero leaves | Refused until their fields receive a disposition |
+
+Indexed feature leaves 7 and D must carry KVM's significant-index flag;
+non-indexed feature leaves must use index zero. This prevents one entry from
+aliasing unchecked subleaves. Nonzero PMU and hypervisor capability leaves are
+unsupported rather than treated as CPU identity.
+
+KVM's [x87 errata](https://docs.kernel.org/virt/kvm/x86/errata.html) recommend
+always setting `FDP_EXCPTN_ONLY` and `ZERO_FCS_FDS` in guest CPUID. These are
+inverse absence flags, not required native instruction capabilities; they do
+not require the host's matching bit. This classification does not bypass XSAVE
+state or component-layout admission.
+
+Userspace declarations must be subsets of advertised bits in known feature
+words, cannot repeat a leaf/subleaf, and cannot exempt XSAVE or its state/layout
+requirements. The caller owns the declared emulation implementation. KVM's
+emulated inventory handles instruction fallbacks such as MOVBE without
+requiring native MOVBE; efficiently virtualized features are already present
+in its supported inventory. No raw-host subset test replaces those APIs.
+
+The live `missing_cpuid_features_reject_before_policy_mutation` test removes
+each required bit from synthetic inventories on a real configured vCPU and
+requires unchanged CPUID, snapshot state, filter, and a healthy backend.
+`missing_nested_cpuid_feature_rejects_before_mutation` exercises the nested
+entry path. `production_cpuid_is_preserved_by_native_capability_admission`
+runs the actual VMM contract and compares ten guest CPUID queries against its
+fixed values and documented runtime fields. These run in the CPU State CI job.
+
 KVM policy installation changes the live CPUID before installing the VM-wide
 MSR filter. If either write fails, the vCPU is retired: a failed filter can
 leave new CPUID with the previous filter, which must not be captured or run as
@@ -410,11 +506,167 @@ guest-written key read back as `0x1234` without restore and zero after cold
 restore. HVF now refuses capture if any key half is nonzero, and policy
 installation and restore clear all ten keys to the fresh-vCPU zero baseline.
 Backend creation probes read/write access to each key and refuses a host that
-cannot establish this boundary. Arm portable records use wire version 10 to
-reject older snapshots that lacked proof of the ACTLR and key capture checks.
+cannot establish this boundary. Arm portable records first used wire version 10
+to reject older snapshots that lacked proof of the ACTLR and key capture checks.
 The live `guest_pauth_keys_refuse_capture_and_clean_restore_resets_them` test
 covers all ten keys, capture refusal, and clean reused, fresh, and policy
 restores.
+
+## ARM register inventory admission
+
+`Arm64Kvm::register_list` enumerates the initialized vCPU with
+[`KVM_GET_REG_LIST`](https://docs.kernel.org/virt/kvm/api.html#kvm-get-reg-list).
+Enumeration failure, duplicate IDs, an unclassified ID, or a missing captured
+slot refuses policy installation before any write. Capture and restore repeat
+admission. This is a bounded inventory of the registers KVM actually lists for
+Harmony's PSCI-only, AArch64, non-SVE/non-PAuth vCPU initialization; it is not an
+assertion about every architectural register or arbitrary future KVM features.
+The measured Linux 6.18 ARM KVM inventory has 257 entries:
+
+| Disposition | Entries | State and enforcement |
+| --- | ---: | --- |
+| Captured | 159 | 37 AArch64 core slots, 34 SIMD/FP slots, the 19 `SYSREGS` fields, 66 debug slots, and three virtual-timer slots |
+| Fixed zero | 22 | ACTLR, DISR, physical timer control/compare; 14 reserved ID slots; four optional firmware bitmaps |
+| OS lock | 1 | OSLK must be clear at capture; restore clears it; read-only feature bits enter identity |
+| Immutable identity | 62 | Other listed CPU ID/cache registers and 14 demultiplexed CCSIDR selectors |
+| Firmware configuration | 4 | PSCI version and three SMCCC workaround values enter identity |
+| Excluded AArch32 | 8 | Four banked SPSRs, DBGVCR32, DACR32, IFSR32 and FPEXC32; capture and restore admit only AArch64 EL0/EL1 modes in both PSTATE and SPSR_EL1 |
+| Excluded physical counter | 1 | Native CNTPCT is external host time, outside the cooperative virtual-time interface; it is not replayed |
+
+The AArch32 exclusion also depends on the actual vCPU initialization, not just
+cut-time PSTATE checks. `vcpu_init_features` enables exactly PSCI, leaving
+`KVM_ARM_VCPU_EL1_32BIT` and nested EL2 disabled. KVM fixes EL1 to AArch64 via
+[HCR_EL2.RW](https://github.com/torvalds/linux/blob/v6.18/arch/arm64/include/asm/kvm_emulate.h).
+Guest EL1 cannot change that hypervisor control. A transient AArch32 EL0
+execution cannot read or write privileged AArch32 banked SPSRs or those four
+EL2 views of EL1-only registers. Its shared GPR/SIMD state is captured normally;
+an AArch32 cut itself remains unsupported. In particular, KVM
+[skips FPEXC32 save/restore for AArch64 EL1](https://github.com/torvalds/linux/blob/v6.18/arch/arm64/kvm/hyp/include/hyp/switch.h),
+and Arm specifies that its enable bit applies only when EL1 is not AArch64.
+These controls prevent later AArch32 EL0 execution from observing omitted
+privileged banked state; masking the advertised ID alone would not suffice.
+
+The native physical counter exclusion is an explicit limit, not a claim that
+all EL1 timing instructions trap or that arbitrary counter-reading guests are
+deterministic. Standard libraries remain supported through the owned Linux
+clock interface. KVM register IDs must be interpreted as ABI identifiers:
+legacy virtual timer CVAL and counter IDs use encodings `0xdf02` and `0xdf1a`,
+respectively, rather than their architectural system-register names. The
+[Linux v6.18 register implementation](https://github.com/torvalds/linux/blob/v6.18/arch/arm64/kvm/sys_regs.c)
+provides the mapping, reserved-ID behavior, ACTLR access behavior, and immutable
+cache configuration used by this table.
+
+`sha2` hashes sorted IDs, dispositions, immutable values, firmware values and
+read-only OS-lock bits into `Arm64Caps::register_identity`; captured values are
+already owned by the snapshot. A changed schema or native value changes the
+runtime contract. Capture refuses unexpected identity drift; restore verifies
+the target identity before mutation. Restore resets the four transient fixed
+registers and OSLK, so a dirty detour does not itself prevent a clean restore.
+A failed register read or write propagates. This digest owns small admission
+metadata; the backend still does not hash guest RAM or the full machine.
+The core includes it in snapshot, imported-artifact and cache identity.
+
+HVF has no equivalent register-enumeration API. Its boundary is the public SDK
+configuration and state APIs, with an explicitly created and released vCPU
+configuration passed to the actual vCPU creation. Its fingerprint includes all
+14 documented configuration feature fields, both eight-entry CCSIDR arrays,
+and maximum guest streaming vector length when SME is present. This conservatively
+binds native configuration even where the guest policy masks a feature. HVF
+captures the modeled core, SIMD/FP, system/debug, virtual-timer and interrupt
+state; its userspace GIC and PSCI are modeled by the core. Native configuration
+with non-streaming SVE is unsupported because the record has no non-streaming
+predicate or extended vector storage. Physical timer APIs
+require `hv_gic_create`, and EL2 APIs require an EL2-enabled VM configuration;
+this backend enables neither. Those SDK fields are not silently read as zero.
+Direct REVIDR, CLIDR, AIDR, OSLSR and DISR reads are unavailable on the measured
+HVF host; cache geometry comes from the actual configuration API instead.
+
+HVF fixes ACTLR, SCXTNUM_EL0/EL1, TPIDR2_EL0, SMPRI_EL1 and SMCR_EL1 at zero,
+in addition to the ten pointer-authentication key halves. Creation verifies
+read/write/reset; capture refuses nonzero state; policy and restore reset it.
+SME capture requires PSTATE.SM=0 and PSTATE.ZA=0, independently of masked ID
+registers. Restore clears both before restoring Q registers and FPSR. Apple's
+[XNU SME documentation](https://github.com/apple-oss-distributions/xnu/blob/main/doc/arm/sme.md)
+states that enabling ZA clears ZA/ZT0; the HVF state setter clears streaming
+Z/P state on mode transitions. Inactive extended storage therefore cannot
+carry a prior detour into the next activation. This does not admit active
+streaming vectors, predicates, ZA or ZT0 into the portable record.
+
+SME APIs are resolved at runtime, avoiding a loader failure on older macOS.
+Only explicit `HV_UNSUPPORTED` means absent SME when the APIs exist. If all
+three SME symbols are absent, admission additionally requires a successful,
+exact integer-zero native `hw.optional.arm.FEAT_SME` read and zero SME in the
+unmodified configuration's PFR1. Arm's
+[hardware feature detection guide](https://learn.arm.com/learning-paths/laptops-and-desktops/kleidicv-on-mac/build-1/)
+defines this native zero as SME unavailable. Missing, malformed or failed reads,
+partial symbols, and nonzero native features refuse admission. This older
+preflight hashes 12 feature fields rather than 14; schemas do not compare
+equal. That preflight does not establish older-runtime admission: actual
+fixed-register access remains mandatory, including fields introduced in macOS
+15.2, and a framework rejecting those accesses refuses creation. The existing
+core baseline also requires ZFR0/SMFR0 register APIs introduced in macOS 15.2.
+Neither older-runtime admission nor active-SME hardware has been qualified by
+the current macOS 26.6 non-SME host receipt.
+
+The registered native inventory tests print each KVM disposition and exercise
+native identity drift, ACTLR reset, all six HVF fixed-register detours and the
+SME state boundary. An explicit `SME_ACTIVE_TEST=UNSUPPORTED` receipt is absence
+evidence only, not an active-SME pass. Portable controls cover unknown/missing/
+duplicate/failed enumeration before mutation, identity/schema differences,
+fixed-state detours, unsupported execution modes and imported hash rejection.
+
+ARM KVM handles `OSLAR_EL1` writes and `OSLSR_EL1` reads internally, bypassing
+userspace's unlock-only dispatcher rule. The portable debug record admits only
+an unlocked OS lock: capture reads `OSLSR_EL1` and refuses `OSLK` (bit 1), while
+policy installation and restore clear OSLK through KVM's writable `OSLSR_EL1`
+register API, preserving its required read-only feature bits. Failed reads or writes propagate as backend errors. Read-only
+OSLSR feature bits are excluded from the lock check. ARM GIC state version 9
+rejects older KVM snapshots that lacked this admission proof. The live
+`guest_os_lock_refuses_capture_and_clean_restore_unlocks` fixture sets the lock
+from guest EL1, checks readback at a completed MMIO boundary, verifies that
+capture refusal preserves the locked continuation, and checks unlocked
+capture-and-continue, fresh restore, reused restore after a locked detour, and
+policy reset. Removing the capture check or restore reset must fail this test.
+This synthetic guest qualifies the boundary; it does not establish a failure in
+an ordinary shipped application.
+
+The debug-register inventory for this boundary is:
+
+| Register or field | Disposition | ARM KVM enforcement |
+| --- | --- | --- |
+| `DBGBVRn_EL1`, `DBGBCRn_EL1`, `DBGWVRn_EL1`, `DBGWCRn_EL1` | Captured | All 16 slots read and restored through one-register ioctls |
+| `MDCCINT_EL1.RX/TX`, `MDSCR_EL1` | Captured | Read and restored; reserved MDCCINT bits rejected |
+| `OSLSR_EL1.OSLK` | Fixed unlocked | Capture refuses a lock; restore and policy clear it |
+| `OSLAR_EL1` | Emulated write alias | KVM changes OSLSR; checked at capture rather than relying on an exit |
+| Other `OSLSR_EL1` fields | Excluded feature description | Read-only KVM feature bits do not represent the OS lock |
+| Debug exception/register-access trap requests | Unsupported | Restore preflight rejects either enabled request |
+
+Both ARM KVM and HVF capture and restore guest-writable `MDCCINT_EL1.RX` and
+`MDCCINT_EL1.TX` as part of the debug state. A guest write to RX survives normal
+execution on HVF but was lost after a cold snapshot restore, so Arm portable
+records now use wire version 11 and reject older records that omitted this
+register. Both backends and the codec reject nonzero reserved bits. The ignored
+`arm64_hvf_mdccint` hardware test compares guest readback without restore and
+after a fresh VMM restore.
+
+ARM KVM refuses restore after the first attempted guest entry. Updating
+translation registers through `KVM_SET_ONE_REG` does not establish a guest TLB
+or instruction-cache maintenance boundary. A fixed-CPU, fixed-ASID witness with
+an empty dirty bitmap reproduced a stale translation after an abandoned branch;
+dirty-log clearing can incidentally hide that failure. The refusal occurs in
+restore preflight before register writes or the control server's RAM changes.
+The control server falls back to a fresh VM. Portable import checks the saved
+state independently of whether the current VM has already run, so importing a
+snapshot for fresh replay remains supported. Reconfiguring policy never clears
+the used-vCPU latch. This costs fresh-VM creation on ARM KVM replay until an
+explicit in-place maintenance mechanism is qualified.
+
+The live `arm64_restore_translation` regression warms the abandoned mapping,
+drains its page-table writes, confirms a subsequent empty dirty bitmap, checks
+that refusal preserves registers and RAM and permits continuation, and compares
+fresh restore with guest-issued invalidation. The shared register suite reports
+when ARM KVM requires this fresh fallback; HVF continues to exercise in-place
+restore with its explicit maintenance path.
 
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before
@@ -511,6 +763,31 @@ ARM KVM host and in the userspace model.
 The ignored `guest_gic_spi_trigger_survives_fresh_restore` ARM KVM test compares
 guest readback of that baseline and of a programmed edge after uninterrupted
 execution and cold restore.
+KVM also retains guest writes to the redistributor `GICR_PROPBASER` and
+`GICR_PENDBASER` even when no ITS is present. ARM GIC state version 8 records
+both 64-bit values, and ARM device blobs include them in replay identity. KVM
+canonicalizes an initially zero `GICR_PROPBASER` to `0x180` when userspace
+writes it, so backend creation writes both fresh redistributor bases before
+first guest entry. Restore checks reserved bits and KVM's canonical
+shareability and cacheability fields before changing vCPU state, then writes
+both halves and requires exact readback. KVM rewrites outer-shareable,
+noncacheable inner, and noncanonical outer-cacheable values on write; imported
+records containing those values are rejected before mutation. The ignored
+`guest_gicr_bases_survive_restore_with_fresh_fallback` test compares guest MMIO
+readback after uninterrupted execution, restore with fresh fallback, and a cold restore.
+ARM KVM selects VGIC `GICD_IIDR` implementation revision 2 before configuring
+the device and requires exact readback. KVM revisions 2 and 3 return different
+guest-visible `GICR_CTLR` values on the same host, so accepting the host's
+default revision would make guest behavior depend on its kernel version. The
+full configured `GICD_IIDR` and `GICD_TYPER2` values enter backend capabilities
+and the runtime contract; the latter includes any host-dependent
+`nASSGIcap` bit. A bounded msr1 guest probe read `GICR_CTLR=0` under revision
+2 and `0x6` under revision 3 while `ICC_CTLR_EL1` remained `0x8400`.
+On GICv4.1 hosts with direct SGIs, `GICD_CTLR.nASSGIreq` can hold guest-writable
+state. The record represents only distributor Group-1 enable, so capture refuses
+bit 8 and any other distributor-control bits outside the fixed and represented
+set. Imported records with unrepresented bits are rejected before device
+mutation. A fake-KVM regression exercises the fail-closed boundary.
 The single-vCPU machine supports SPI routing only to affinity zero. The
 userspace GIC rejects a nonzero `GICD_IROUTER` write. KVM can execute that
 write inside its in-kernel VGIC, so capture reads both 32-bit KVM device-attribute

@@ -59,6 +59,8 @@ pub struct KvmBackend {
     nested_physical_bits: u32,
     sysenter_virtual_bits: u32,
     supported_xsave_bv: u64,
+    supported_cpuid: CpuidModel,
+    emulated_cpuid: CpuidModel,
     event_valid_flags: u32,
     host_amd_compatible: bool,
     guest_run_attempted: bool,
@@ -80,6 +82,7 @@ pub struct KvmBackend {
     readiness_current: bool,
     accepted_irq: VecDeque<u8>,
     counts: ExitCounts,
+    physical: crate::PhysicalTelemetry,
     #[cfg(feature = "xsave-diagnostics")]
     diagnostic_rip: Option<u64>,
     #[cfg(feature = "xsave-diagnostics")]
@@ -107,6 +110,9 @@ impl KvmBackend {
         let event_valid_flags = vcpu.get_vcpu_events().map_err(kvm_err)?.flags;
         let supported = kvm
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .map_err(kvm_err)?;
+        let emulated = kvm
+            .get_emulated_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
             .map_err(kvm_err)?;
         let host_vendor = supported
             .as_slice()
@@ -142,6 +148,8 @@ impl KvmBackend {
             nested_physical_bits: 0,
             sysenter_virtual_bits,
             supported_xsave_bv,
+            supported_cpuid: cpuid_model(supported.as_slice()),
+            emulated_cpuid: cpuid_model(emulated.as_slice()),
             event_valid_flags,
             host_amd_compatible,
             guest_run_attempted: false,
@@ -163,6 +171,7 @@ impl KvmBackend {
             readiness_current: true,
             accepted_irq: VecDeque::new(),
             counts: ExitCounts::default(),
+            physical: crate::PhysicalTelemetry::default(),
             #[cfg(feature = "xsave-diagnostics")]
             diagnostic_rip: None,
             #[cfg(feature = "xsave-diagnostics")]
@@ -231,6 +240,8 @@ impl KvmBackend {
                 "nested initialization requires a fresh vCPU",
             ));
         }
+        self.state_mutation_guard.ensure_healthy()?;
+        self.validate_cpuid(cpuid)?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         let nested_size = kvm.check_extension_int(Cap::NestedState);
         if nested_size < 128 || nested_size as usize > format.maximum_len() {
@@ -330,20 +341,28 @@ impl KvmBackend {
         self.state_mutation_guard.ensure_healthy()?;
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
+        let physical = &mut self.physical;
         let next = finish_staged_completion_guarded(
             page,
             &mut self.pending,
             &mut self.completion,
             &self.state_mutation_guard,
             || {
-                // SAFETY: the owned vCPU fd references the mapped run page and
-                // this entry is restricted to consuming its staged completion.
-                let rc = unsafe { raw_kvm_run(fd) };
-                if rc < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
+                physical.measure(
+                    crate::RunPlatform::KvmX86,
+                    crate::RunPurpose::Completion,
+                    || {
+                        // SAFETY: the owning backend keeps this vCPU fd and its run page live; staged completion is the only allowed entry here.
+                        let rc = unsafe { raw_kvm_run(fd) };
+                        let result = if rc < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        };
+                        let outcome = crate::RunReturn::from_io(&result, || page.exit_reason());
+                        (result, outcome)
+                    },
+                )
             },
         )?;
         if let Some(exit) = &next {
@@ -392,9 +411,22 @@ impl KvmBackend {
                 IrqEntry::Run => {}
             }
             self.guest_run_attempted = true;
-            let rc = unsafe { raw_kvm_run(self.vcpu.as_raw_fd()) };
-            if rc < 0 {
-                let err = std::io::Error::last_os_error();
+            let fd = self.vcpu.as_raw_fd();
+            let page = self.run_page();
+            let result =
+                self.physical
+                    .measure(crate::RunPlatform::KvmX86, crate::RunPurpose::Guest, || {
+                        // SAFETY: this stopped vCPU and its mapped run page are exclusively owned by this backend on its pinned thread.
+                        let rc = unsafe { raw_kvm_run(fd) };
+                        let result = if rc < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        };
+                        let outcome = crate::RunReturn::from_io(&result, || page.exit_reason());
+                        (result, outcome)
+                    });
+            if let Err(err) = result {
                 if err.raw_os_error() == Some(libc::EINTR) {
                     continue;
                 }
@@ -741,7 +773,12 @@ impl KvmBackend {
         }
     }
 
+    fn validate_cpuid(&self, model: &CpuidModel) -> Result<()> {
+        crate::kvm_cpuid::validate(model, &self.supported_cpuid, &self.emulated_cpuid)
+    }
+
     fn install_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
+        self.validate_cpuid(model)?;
         let entries = cpuid_entries(model);
         let cpuid = CpuId::from_entries(&entries)
             .map_err(|_| BackendError::Internal("CPUID table too large for KVM"))?;
@@ -823,21 +860,31 @@ impl KvmBackend {
         self.check_completion_clear()?;
         let sregs = self.read_sregs2_guarded()?;
         let fd = self.vcpu.as_raw_fd();
+        let page = self.run_page();
+        let purpose = if self.completion.staged {
+            crate::RunPurpose::Completion
+        } else {
+            crate::RunPurpose::Maintenance
+        };
+        let physical = &mut self.physical;
         let continuation = prepare_snapshot_run_guarded(
-            self.run_page(),
+            page,
             sregs.cr8,
             &mut self.pending,
             &mut self.completion,
             &self.state_mutation_guard,
             || {
-                // SAFETY: the owned vCPU has a run page requesting immediate exit and,
-                // when a completion was staged, no pending value left to supply.
-                let rc = unsafe { raw_kvm_run(fd) };
-                if rc < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
+                physical.measure(crate::RunPlatform::KvmX86, purpose, || {
+                    // SAFETY: the owned vCPU and its mapped run page are live; the guard has staged immediate exit before calling this closure.
+                    let rc = unsafe { raw_kvm_run(fd) };
+                    let result = if rc < 0 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    };
+                    let outcome = crate::RunReturn::from_io(&result, || page.exit_reason());
+                    (result, outcome)
+                })
             },
         )?;
         if let Some(exit) = continuation {
@@ -861,6 +908,8 @@ impl Backend for KvmBackend {
 
     fn set_policy(&mut self, policy: &X86Policy) -> Result<()> {
         self.ensure_host_affinity()?;
+        self.state_mutation_guard.ensure_healthy()?;
+        self.validate_cpuid(&policy.cpuid)?;
         self.state_mutation_guard.begin()?;
         self.install_cpuid(&policy.cpuid)?;
         self.install_msr_filter(&policy.msr_filter)?;
@@ -1273,6 +1322,10 @@ impl Backend for KvmBackend {
         Ok(())
     }
 
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        self.physical
+    }
+
     fn exit_counts(&self) -> ExitCounts {
         self.counts
     }
@@ -1300,6 +1353,151 @@ mod policy_diagnostic {
     use crate::arch::x86::MsrRange;
 
     #[test]
+    #[ignore = "live KVM CPUID admission boundary; requires /dev/kvm"]
+    fn missing_cpuid_features_reject_before_policy_mutation() {
+        let first = X86Policy {
+            cpuid: CpuidModel {
+                entries: vec![CpuidEntry {
+                    leaf: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
+        };
+        let mut backend = KvmBackend::new().unwrap();
+        backend.set_policy(&first).unwrap();
+        let before = backend.save().unwrap();
+        let before_cpuid = backend.vcpu.get_cpuid2(256).unwrap();
+        let supported = backend.supported_cpuid.clone();
+        let emulated = backend.emulated_cpuid.clone();
+        println!(
+            "KVM_CPUID_INVENTORY supported={:?} emulated={:?}",
+            supported.entries, emulated.entries
+        );
+        let mut cases = 0;
+        for (leaf, register, bits) in [
+            (1, "ecx", 0x36da_3203_u32),
+            (1, "edx", 0x078b_bb7f),
+            (7, "ebx", 0x0098_07a9),
+            (0x8000_0001, "ecx", 0x121),
+            (0x8000_0001, "edx", 0x2c10_0800),
+            (0xd, "eax", 7),
+        ] {
+            for bit in 0..32 {
+                if bits & (1 << bit) == 0 {
+                    continue;
+                }
+                let mut e = CpuidEntry {
+                    leaf,
+                    subleaf_significant: matches!(leaf, 7 | 0xd),
+                    ..Default::default()
+                };
+                match register {
+                    "eax" => e.eax = 1 << bit,
+                    "ecx" => e.ecx = 1 << bit,
+                    "edx" => e.edx = 1 << bit,
+                    _ => e.ebx = 1 << bit,
+                }
+                let mut rejected = first.clone();
+                rejected.cpuid.entries = vec![e];
+                for inventory in [&mut backend.supported_cpuid, &mut backend.emulated_cpuid] {
+                    for row in &mut inventory.entries {
+                        if row.leaf == leaf && row.subleaf == 0 {
+                            match register {
+                                "eax" => row.eax &= !(1 << bit),
+                                "ecx" => row.ecx &= !(1 << bit),
+                                "edx" => row.edx &= !(1 << bit),
+                                _ => row.ebx &= !(1 << bit),
+                            }
+                        }
+                    }
+                }
+                assert!(
+                    matches!(
+                        backend.set_policy(&rejected),
+                        Err(BackendError::CpuidUnavailable { .. })
+                    ),
+                    "{leaf:#x} {register}[{bit}]"
+                );
+                assert_eq!(
+                    backend.vcpu.get_cpuid2(256).unwrap().as_slice(),
+                    before_cpuid.as_slice()
+                );
+                assert_eq!(backend.save().unwrap(), before);
+                assert_eq!(backend.msr_filter.as_ref(), Some(&first.msr_filter));
+                backend.state_mutation_guard.ensure_healthy().unwrap();
+                backend.supported_cpuid = supported.clone();
+                backend.emulated_cpuid = emulated.clone();
+                cases += 1;
+            }
+        }
+        backend.set_policy(&first).unwrap();
+        assert_eq!(backend.save().unwrap(), before);
+        println!(
+            "KVM_CPUID_PREFLIGHT missing_feature_cases={cases} cpuid=unchanged state=unchanged policy=reusable"
+        );
+    }
+
+    #[test]
+    #[ignore = "live KVM nested CPUID admission; requires /dev/kvm"]
+    fn missing_nested_cpuid_feature_rejects_before_mutation() {
+        let mut backend = KvmBackend::new().unwrap();
+        let format = NestedFormat::Vmx;
+        let before = backend.vcpu.get_cpuid2(256).unwrap();
+        for inventory in [&mut backend.supported_cpuid, &mut backend.emulated_cpuid] {
+            for e in &mut inventory.entries {
+                if e.leaf == 1 {
+                    e.ecx &= !(1 << 12);
+                }
+            }
+        }
+        let cpuid = CpuidModel {
+            entries: vec![CpuidEntry {
+                leaf: 1,
+                ecx: 1 << 12,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            backend.initialize_nested(format, &cpuid, &[], 5),
+            Err(BackendError::CpuidUnavailable { .. })
+        ));
+        assert_eq!(
+            backend.vcpu.get_cpuid2(256).unwrap().as_slice(),
+            before.as_slice()
+        );
+        assert!(!backend.cpuid_installed);
+        assert!(backend.nested_state_config.is_none());
+        backend.state_mutation_guard.ensure_healthy().unwrap();
+        backend
+            .set_policy(&X86Policy {
+                cpuid: CpuidModel {
+                    entries: vec![CpuidEntry {
+                        leaf: 1,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                msr_filter: MsrFilter {
+                    allow_inkernel: vec![MsrRange {
+                        base: 0x174,
+                        count: 3,
+                    }],
+                },
+            })
+            .unwrap();
+        backend.save().unwrap();
+        println!("KVM_CPUID_PREFLIGHT nested={format:?} rejected_before_mutation=pass");
+    }
+
+    #[test]
     #[ignore = "live KVM policy boundary; requires /dev/kvm"]
     fn rejected_msr_filter_retires_partly_reconfigured_vcpu() {
         let mut backend = KvmBackend::new().unwrap();
@@ -1310,6 +1508,7 @@ mod policy_diagnostic {
                     eax: 0,
                     ..Default::default()
                 }],
+                ..Default::default()
             },
             msr_filter: MsrFilter {
                 allow_inkernel: vec![MsrRange {
@@ -1379,6 +1578,7 @@ mod policy_diagnostic {
                 eax: 1,
                 ..Default::default()
             }],
+            ..Default::default()
         };
         assert!(
             backend
@@ -1550,7 +1750,22 @@ mod xsave_diagnostic {
             let readiness = backend.readiness_current;
             let mut after = before.clone();
             for preparation in 1..=2 {
+                let physical_before = backend.physical_telemetry();
                 backend.prepare_snapshot().unwrap();
+                let physical_after = backend.physical_telemetry();
+                assert_eq!(
+                    physical_after
+                        .cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Maintenance)
+                        .entries,
+                    physical_before
+                        .cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Maintenance)
+                        .entries
+                        + 1
+                );
+                assert_eq!(
+                    physical_after.cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Guest),
+                    physical_before.cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Guest)
+                );
                 let observed = backend.save().unwrap();
                 println!(
                     "SNAPSHOT_PREPARATION seed_bv={restore_bv} preparation={preparation} raw_before={:?} raw_after={:?}",
@@ -1594,7 +1809,22 @@ mod xsave_diagnostic {
             assert_eq!(backend.save().unwrap(), after);
             assert_eq!(backend.completion, Stage::AWAITING_FINISH);
             backend.completion = ACKNOWLEDGED_WRITE;
+            let physical_before = backend.physical_telemetry();
             backend.prepare_snapshot().unwrap();
+            let physical_after = backend.physical_telemetry();
+            assert_eq!(
+                physical_after
+                    .cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Completion)
+                    .entries,
+                physical_before
+                    .cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Completion)
+                    .entries
+                    + 1
+            );
+            assert_eq!(
+                physical_after.cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Maintenance),
+                physical_before.cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Maintenance)
+            );
             assert_eq!(backend.completion, Stage::CLEAR);
             after = backend.save().unwrap();
             backend.pending_irq = None;
@@ -2725,7 +2955,7 @@ mod xsave_diagnostic {
                         eax: 0x0009_06EC,
                         ebx: 0x0001_0800,
                         ecx: 0x36DA_3203,
-                        edx: 0x0F8B_BB7F,
+                        edx: 0x078B_BB7F,
                         ..Default::default()
                     },
                     CpuidEntry {
@@ -2751,6 +2981,7 @@ mod xsave_diagnostic {
                         ..Default::default()
                     },
                 ],
+                ..Default::default()
             },
             msr_filter: MsrFilter {
                 allow_inkernel: vec![MsrRange {

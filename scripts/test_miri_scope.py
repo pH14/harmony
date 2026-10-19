@@ -17,6 +17,9 @@ class MiriScopeTests(unittest.TestCase):
         return {target["name"] for target in selected_targets(paths)}
 
     def test_each_unsafe_crate_selects_its_own_target(self) -> None:
+        loaded_identity = selected_targets(["consonance/host-code-identity/src/lib.rs"])
+        self.assertEqual({target["name"] for target in loaded_identity}, {"host-code-identity"})
+        self.assertIn("copied_loader_headers_and_generation_are_owned", loaded_identity[0]["command"])
         vmm_core = selected_targets(["consonance/vmm-core/src/bringup.rs"])
         self.assertEqual({target["name"] for target in vmm_core}, {"vmm-core"})
         self.assertIn(

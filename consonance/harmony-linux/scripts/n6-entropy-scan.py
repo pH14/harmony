@@ -5,9 +5,7 @@
 from __future__ import annotations
 
 import struct
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -24,7 +22,7 @@ RNDRRS = 0xD53B2420
 
 
 def executable_ranges(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
-    """Return executable segments and mapped sections as decoder starts."""
+    """Return the full executable file-page mappings and section labels."""
     data = path.read_bytes()
     header_size = struct.calcsize(ELF_HEADER)
     program_size = struct.calcsize(PROGRAM_HEADER)
@@ -98,7 +96,17 @@ def executable_ranges(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
             raise ValueError(f"unaligned AArch64 executable segment {index}")
         if offset > len(data) or size > len(data) - offset:
             raise ValueError(f"executable segment {index} outside file")
-        segment = data[offset : offset + size]
+        page_head = address % 4096
+        if offset % 4096 != page_head:
+            raise ValueError(f"executable segment {index} page offset mismatch")
+        mapped_start = address - page_head
+        mapped_end = (address + size + 4095) // 4096 * 4096
+        if mapped_end >= 1 << 64:
+            raise ValueError(f"executable segment {index} mapped address overflow")
+        mapped_size = mapped_end - mapped_start
+        file_start = offset - page_head
+        available = min(mapped_size, len(data) - file_start)
+        segment = data[file_start : file_start + available] + bytes(mapped_size - available)
         segment_end = address + size
         mapped_sections = 0
         mapped_ranges: list[tuple[int, int, str]] = []
@@ -115,7 +123,7 @@ def executable_ranges(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
                 continue
             if section_address < address or section_end > segment_end:
                 raise ValueError(f"partially mapped executable section {section_index}")
-            relative = section_address - address
+            relative = section_address - mapped_start
             mapped_sections += 1
             if machine == EM_X86_64:
                 mapped_ranges.append(
@@ -124,20 +132,20 @@ def executable_ranges(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
         if mapped_sections == 0:
             raise ValueError(f"executable segment {index} without a mapped section")
         if machine == EM_AARCH64:
-            found.append((f"<exec-segment {index}>", address, segment))
+            found.append((f"<exec-segment {index}>", mapped_start, segment))
         else:
             mapped_ranges.sort()
             cursor = 0
             for begin, end, label in mapped_ranges:
                 if begin > cursor:
                     found.append(
-                        (f"<exec-segment {index}>", address + cursor, segment[cursor:begin])
+                        (f"<exec-segment {index}>", mapped_start + cursor, segment[cursor:begin])
                     )
-                found.append((label, address + begin, segment[begin:end]))
+                found.append((label, mapped_start + begin, segment[begin:end]))
                 cursor = max(cursor, end)
-            if cursor < size:
+            if cursor < mapped_size:
                 found.append(
-                    (f"<exec-segment {index}>", address + cursor, segment[cursor:])
+                    (f"<exec-segment {index}>", mapped_start + cursor, segment[cursor:])
                 )
     if not found:
         raise ValueError("no executable load segments")
@@ -157,67 +165,48 @@ def arm64_hits(data: bytes) -> list[tuple[int, str]]:
 
 
 def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str]]:
-    """Decode executable ranges at their natural boundaries."""
+    """Reject every register-form RDRAND/RDSEED encoding in executable bytes."""
     hits: list[tuple[str, int, str]] = []
-    seen: set[tuple[int, str]] = set()
-    parsed = 0
-    with tempfile.TemporaryDirectory() as temporary:
-        segment_path = Path(temporary) / "segment"
-        for label, base, data in segments:
-            segment_path.write_bytes(data)
-            try:
-                output = subprocess.run(
-                    [
-                        "objdump", "-D", "-b", "binary", "-m", "i386:x86-64",
-                        f"--adjust-vma=0x{base:x}", str(segment_path),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                ).stdout
-            except (OSError, subprocess.CalledProcessError) as error:
-                raise ValueError(f"objdump failed: {error}") from error
-            for line in output.splitlines():
-                if ":" not in line:
-                    continue
-                address_text, remainder = line.split(":", 1)
-                try:
-                    address = int(address_text.strip(), 16)
-                except ValueError:
-                    continue
-                if not base <= address < base + len(data):
-                    raise ValueError(f"objdump address outside {label}")
-                fields = remainder.split("\t")
-                if len(fields) < 2:
-                    continue
-                mnemonic_fields = " ".join(fields[1:]).strip().split()
-                if not mnemonic_fields:
-                    continue
-                parsed += 1
-                mnemonic = next(
-                    (
-                        instruction
-                        for field in mnemonic_fields
-                        for instruction in ("rdrand", "rdseed")
-                        if field.lower() == instruction
-                        or field.lower() in (
-                            f"{instruction}w", f"{instruction}l", f"{instruction}q"
-                        )
-                    ),
-                    None,
-                )
-                if mnemonic is not None:
-                    key = (address, mnemonic.upper())
-                    if key not in seen:
-                        hits.append((label, address - base, mnemonic.upper()))
-                        seen.add(key)
-    if parsed == 0:
-        raise ValueError("objdump parsed zero executable instructions")
+    ordered = sorted(segments, key=lambda segment: segment[1])
+    group = bytearray()
+    spans: list[tuple[int, int, str, int]] = []
+    group_base = 0
+
+    def scan_group() -> None:
+        cursor = 0
+        while True:
+            offset = group.find(b"\x0f\xc7", cursor)
+            if offset < 0:
+                return
+            cursor = offset + 1
+            if offset + 2 >= len(group) or group[offset + 2] < 0xF0:
+                continue
+            address = group_base + offset
+            for begin, end, label, base in spans:
+                if begin <= address < end:
+                    mnemonic = "RDRAND" if group[offset + 2] < 0xF8 else "RDSEED"
+                    hits.append((label, address - base, mnemonic))
+                    break
+            else:
+                raise ValueError("unlabeled executable opcode")
+
+    for label, base, data in ordered:
+        if spans and base < spans[-1][1]:
+            raise ValueError("overlapping executable mappings")
+        if spans and base != spans[-1][1]:
+            scan_group()
+            group = bytearray()
+            spans = []
+        if not spans:
+            group_base = base
+        group.extend(data)
+        spans.append((base, base + len(data), label, base))
+    scan_group()
     return hits
 
 
 def scan(path: Path) -> list[tuple[str, int, str]]:
-    """Return entropy-opcode hits with segment-relative offsets."""
+    """Return entropy-opcode hits with labeled-range-relative offsets."""
     machine, segments = executable_ranges(path)
     if machine == EM_X86_64:
         return x86_hits(segments)
@@ -234,6 +223,12 @@ def scan(path: Path) -> list[tuple[str, int, str]]:
 
 def self_test() -> None:
     """Pin both positive detections and neighboring non-entropy encodings."""
+    x86 = b"\x0f\xc7\xf0\x0f\xc7\xf8\x0f\xc7\x30"
+    if x86_hits([("x86", 0, x86)]) != [
+        ("x86", 0, "RDRAND"),
+        ("x86", 3, "RDSEED"),
+    ]:
+        raise ValueError("x86 entropy scanner self-test failed")
     arm = RNDR.to_bytes(4, "little") + RNDRRS.to_bytes(4, "little") + b"\xc0\x03\x5f\xd6"
     if arm64_hits(arm) != [(0, "RNDR"), (4, "RNDRRS")]:
         raise ValueError("AArch64 entropy decoder self-test failed")

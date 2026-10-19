@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Static scan of the built x86 guest kernel for raw counter and hardware-RNG
+# Static scan of the built x86 guest kernel for counter and hardware-RNG
 # instructions: rdtsc `0f 31`, rdtscp `0f 01 f9`, rdrand `0f c7 /6` and rdseed
 # `0f c7 /7`.
 #
@@ -8,33 +8,40 @@
 # executed by the guest kernel reads host state that replay cannot reproduce.
 # The Harmony kernel routes rdtsc() and rdtsc_ordered() through
 # RDMSR(IA32_TSC), which Consonance answers from virtual time, and reports
-# RDRAND and RDSEED as unavailable. The image therefore carries none of these
-# instructions, and any occurrence fails the build. User-mode reads are trapped
-# separately through CR4.TSD.
+# RDRAND and RDSEED as unavailable. The scan rejects decoded instructions in
+# kernel-proper code and raw encodings in setup and decompressor executable
+# sections. Kernel operand bytes may contain the same encodings; computed entry
+# into them remains tracked in #657. User-mode reads are trapped separately
+# through CR4.TSD.
 #
 # bzImage contains three executable artifacts, and all three run: the real-mode
 # setup code, the decompressor, and the kernel proper. The kernel proper is a
-# 64-bit ELF and is scanned by disassembly. Setup and the decompressor's
-# mode-mixed head run 16-bit code, where one disassembly mode can consume a real
-# opcode as another instruction's operand, so their executable sections are
-# searched for the raw opcode bytes. The decompressor's 64-bit `.text` is
-# disassembled.
+# 64-bit ELF and is scanned by disassembly. Setup and the decompressor execute
+# in multiple decoder modes, including 32-bit helpers in the decompressor's
+# `.text`. Their executable sections are searched for raw opcode bytes; the
+# decompressor's `.text` is also disassembled in both 64-bit modes. Computed
+# entry into the compressed payload while mapped executable remains in #657.
 #
 # CONFIG_MODULES is off, so the built image is all the kernel code that can run.
 #
-# Usage: scan-counter-opcodes.sh <vmlinux>
-#   <vmlinux> is the uncompressed kernel ELF. The boot artifacts are found in its
-#   build tree (arch/x86/boot/{setup.elf,compressed/vmlinux}).
+# Usage: scan-counter-opcodes.sh <vmlinux> [<setup.elf> <compressed/vmlinux>]
+#   One argument finds boot artifacts in vmlinux's build tree. Three arguments
+#   allow the publisher to scan immutable snapshots of all three artifacts.
 set -euo pipefail
 
-VMLINUX=${1:?usage: scan-counter-opcodes.sh <vmlinux>}
+VMLINUX=${1:-}
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # KOBJ is vmlinux's build tree.
-KOBJ=$(dirname "$VMLINUX")
-RAW_ARTIFACTS=(
-    "setup=$KOBJ/arch/x86/boot/setup.elf"
-    "decompressor=$KOBJ/arch/x86/boot/compressed/vmlinux"
-)
+KOBJ=$(dirname "${VMLINUX:-.}")
+if [ "$#" -eq 3 ]; then
+    RAW_ARTIFACTS=("setup=$2" "decompressor=$3")
+else
+    RAW_ARTIFACTS=(
+        "setup=$KOBJ/arch/x86/boot/setup.elf"
+        "decompressor=$KOBJ/arch/x86/boot/compressed/vmlinux"
+    )
+fi
 
 # sites <disasm-file> [artifact-tag] [mnemonic-regex]: emit
 # "[tag:]symbol+0xOFFSET" for each matching instruction, so a failure names
@@ -71,36 +78,85 @@ sites() {
     done | sort
 }
 
-# all_sites [mnemonic-regex]: disassemble the kernel proper and emit its
-# artifact-qualified site list for that mnemonic class (boot artifacts use the
-# section-aware scan below). FAILS if vmlinux is missing — a check that silently
-# skips its target passes vacuously.
+# all_sites [mnemonic-regex] [path]: disassemble the kernel's executable
+# sections in both AMD64 and Intel64 modes. The two decoder modes differ on
+# some operand-size prefixes.
 all_sites() {
-    if [ ! -f "$VMLINUX" ]; then
-        echo "FAIL: kernel ELF '$VMLINUX' not found — scan the uncompressed vmlinux." >&2
+    local path=${2:-$VMLINUX}
+    if [ ! -f "$path" ]; then
+        echo "FAIL: kernel ELF '$path' not found — scan the uncompressed vmlinux." >&2
         return 1
     fi
-    local dis
+    local mode dis found
     dis=$(mktemp)
-    objdump -d "$VMLINUX" > "$dis"
-    sites "$dis" vmlinux "${1:-}"
+    for mode in amd64 intel64; do
+        if ! objdump -d -z -w -M "$mode" "$path" > "$dis" 2>/dev/null \
+            || ! grep -Eq '^[[:space:]]*[[:xdigit:]]+:[[:space:]]+[[:xdigit:]]{2}' "$dis"; then
+            echo "FAIL: could not disassemble kernel ELF '$path' in $mode mode" >&2
+            rm -f "$dis"
+            return 1
+        fi
+        if ! found=$(sites "$dis" "vmlinux:$mode" "${1:-}"); then
+            echo "FAIL: could not inspect disassembled kernel sites in $mode mode" >&2
+            rm -f "$dis"
+            return 1
+        fi
+        if [ -n "$found" ]; then
+            printf '%s\n' "$found"
+        fi
+    done
     rm -f "$dis"
 }
 
+require_code_sections() {
+    local path=$1 tag=$2 layout section info kind flags
+    local expected='.text'
+    case "$tag" in
+        vmlinux) expected="$expected .init.text .altinstr_aux .altinstr_replacement .exit.text" ;;
+        setup) expected="$expected .bstext .entrytext .inittext .text32" ;;
+        decompressor) expected="$expected .head.text" ;;
+    esac
+    if ! layout=$(readelf -W -S "$path" 2>&1); then
+        echo "FAIL: cannot read $tag ELF section table at $path" >&2
+        return 1
+    fi
+    for section in $expected; do
+        info=$(awk -v wanted="$section" '
+            { for (i = 1; i <= NF; i++)
+                  if ($i == wanted) { print $(i + 1) ":" $(i + 6); break } }
+        ' <<<"$layout")
+        if [ -z "$info" ]; then
+            if [ "$section" = .text ]; then
+                echo "FAIL: $tag ($path) has no .text section to scan" >&2
+                return 1
+            fi
+            continue
+        fi
+        if [[ "$info" == *$'\n'* ]]; then
+            echo "FAIL: $tag ($path) has duplicate $section sections" >&2
+            return 1
+        fi
+        kind=${info%%:*}
+        flags=${info#*:}
+        if [ "$kind" != PROGBITS ] || [[ "$flags" != *X* ]]; then
+            echo "FAIL: $tag ($path) code section $section is not executable PROGBITS" >&2
+            return 1
+        fi
+    done
+}
+
 # raw_byte_scan: fail-closed opcode scan of the boot artifacts. Setup and the
-# decompressor's `.head.text` really are 16-bit / mode-mixed, so their scan is
-# raw and decode-independent: `0f 31`, `0f 01 f9`, or a hardware-RNG encoding
-# anywhere in an executable section fails. The decompressor's ordinary `.text`
-# is compiler-generated 64-bit code, however, and is disassembled in that
-# architectural mode. Treating a `0f31` pair inside a 64-bit instruction's
-# displacement as RDTSC makes the check depend on unrelated link layout while
-# proving nothing about an executable instruction. Both paths still require
-# ZERO counter and hardware-RNG instructions. Runs on every build (r7 P2), not
-# once. Returns 1 on any hit, decode failure, or missing artifact.
+# decompressor run in multiple decoder modes, including 32-bit helpers in
+# decompressor `.text`. A `0f 31`, `0f 01 f9`, or hardware-RNG encoding
+# anywhere in their executable sections fails even when 64-bit disassembly
+# treats it as an operand. A future benign displacement with those bytes also
+# fails closed until the mixed-mode execution boundary can be proved. Runs on
+# every build (r7 P2), not once. Returns 1 on any hit, decode failure, or
+# missing artifact.
 # raw_byte_scan_one <path> <tag>: scan one artifact's executable sections. 0 =
 # clean, 1 = a hit or a structural problem (missing/no-sections).
 raw_byte_scan_one() {
-    local path=$1 tag=$2 names s hex n31 n01f9 nrng m reg rc=0
+    local path=$1 tag=$2 names s hex n31 n01f9 nrng rc=0
     local dis counter_found rng_found bin
     if [ ! -f "$path" ]; then
         echo "FAIL: boot artifact '$tag' not found at $path — every executable component of" >&2
@@ -136,28 +192,33 @@ raw_byte_scan_one() {
             echo "  refusing to green a scan that did not read the section (fail-closed)." >&2
             return 1
         fi
-        rm -f "$bin"
         if [ "$tag" = decompressor ] && [ "$s" = .text ]; then
-            dis=$(mktemp)
-            if ! objdump -d -j "$s" "$path" >"$dis" 2>/dev/null; then
-                echo "FAIL: could not disassemble 64-bit $tag section $s" >&2
+            for mode in amd64 intel64; do
+                dis=$(mktemp)
+                if ! objdump -d -z -w -M "$mode" -j "$s" "$path" >"$dis" 2>/dev/null \
+                    || ! grep -Eq '^[[:space:]]*[[:xdigit:]]+:[[:space:]]+[[:xdigit:]]{2}' "$dis"; then
+                    echo "FAIL: could not disassemble 64-bit $tag section $s in $mode mode" >&2
+                    rm -f "$dis" "$bin"
+                    return 1
+                fi
+                if ! counter_found=$(sites "$dis" "$tag:$s:$mode") \
+                    || ! rng_found=$(sites "$dis" "$tag:$s:$mode" '^(rdrand|rdseed)$'); then
+                    echo "FAIL: could not inspect disassembled $tag section $s in $mode mode" >&2
+                    rm -f "$dis" "$bin"
+                    return 1
+                fi
                 rm -f "$dis"
-                return 1
-            fi
-            counter_found=$(sites "$dis" "$tag")
-            rng_found=$(sites "$dis" "$tag" '^(rdrand|rdseed)$')
-            rm -f "$dis"
-            if [ -n "$counter_found" ]; then
-                echo "FAIL: decoded counter instruction(s) in 64-bit $tag section $s:" >&2
-                printf '%s\n' "$counter_found" | sed 's/^/  /' >&2
-                rc=1
-            fi
-            if [ -n "$rng_found" ]; then
-                echo "FAIL: decoded hardware-RNG instruction(s) in 64-bit $tag section $s:" >&2
-                printf '%s\n' "$rng_found" | sed 's/^/  /' >&2
-                rc=1
-            fi
-            continue
+                if [ -n "$counter_found" ]; then
+                    echo "FAIL: decoded counter instruction(s) in 64-bit $tag section $s ($mode):" >&2
+                    printf '%s\n' "$counter_found" | sed 's/^/  /' >&2
+                    rc=1
+                fi
+                if [ -n "$rng_found" ]; then
+                    echo "FAIL: decoded hardware-RNG instruction(s) in 64-bit $tag section $s ($mode):" >&2
+                    printf '%s\n' "$rng_found" | sed 's/^/  /' >&2
+                    rc=1
+                fi
+            done
         fi
         n31=$(grep -oE '0f31' <<<"$hex" | wc -l | tr -d ' ')
         n01f9=$(grep -oE '0f01f9' <<<"$hex" | wc -l | tr -d ' ')
@@ -182,15 +243,25 @@ raw_byte_scan_one() {
                 | grep -Ei -C 2 '\<(rdtsc|rdtscp)\>' >&2 || true
             rc=1
         fi
-        # rdrand/rdseed are `0f c7` with modrm reg field 6/7 (`/1` is cmpxchg8b,
-        # a legitimate instruction), so decode the modrm byte of each candidate.
-        nrng=0
-        for m in $(grep -oE '0fc7[0-9a-f]{2}' <<<"$hex"); do
-            reg=$(( (0x${m:4:2} >> 3) & 7 ))
-            if [ "$reg" = 6 ] || [ "$reg" = 7 ]; then
-                nrng=$((nrng + 1))
-            fi
-        done
+        # Scan every byte start: a benign 0f c7 /1 can overlap an executable
+        # 0f c7 /6 or /7 two bytes later, which non-overlapping grep misses.
+        if ! nrng=$(od -An -v -tx1 "$bin" | awk '
+            {
+                for (i = 1; i <= NF; i++) {
+                    byte = $i
+                    if (older == "0f" && previous == "c7" \
+                            && byte ~ /^[37bf][0-9a-f]$/) hits++
+                    older = previous
+                    previous = byte
+                }
+            }
+            END { print hits + 0 }
+        '); then
+            rm -f "$bin"
+            echo "FAIL: could not scan raw hardware-RNG bytes in $tag section $s" >&2
+            return 1
+        fi
+        rm -f "$bin"
         if [ "$nrng" != 0 ]; then
             echo "FAIL: raw hardware-RNG opcode bytes in $tag section $s —" >&2
             echo "  rdrand/rdseed(0fc7 /6|/7)=$nrng. These artifacts must carry NONE: the" >&2
@@ -237,6 +308,12 @@ EOF
         exit 1
     fi
 
+    printf 'not an ELF\n' > "$d/malformed.elf"
+    if all_sites '' "$d/malformed.elf" >/dev/null 2>&1; then
+        echo "FAIL: self-test — an unreadable kernel ELF passed the disassembly check" >&2
+        exit 1
+    fi
+
     cat > "$d/planted.dis" << 'EOF'
 ffffffff81000030 <sneaky_new_timer>:
 ffffffff81000030:	0f 01 f9             	rdtscp
@@ -275,6 +352,13 @@ EOF
             | as -o "$d/dirty.elf" - 2>/dev/null && dirty_ok=1
         printf '.section .text,"ax"\n.byte 0x90,0x90\n.byte 0xc3\n' \
             | as -o "$d/clean.elf" - 2>/dev/null && clean_ok=1
+        if [ "${clean_ok:-0}" = 1 ]; then
+            objcopy --set-section-flags .text=alloc "$d/clean.elf" "$d/empty-dis.elf"
+            if all_sites '' "$d/empty-dis.elf" >/dev/null 2>&1; then
+                echo "FAIL: self-test — empty disassembly passed the kernel scan" >&2
+                exit 1
+            fi
+        fi
         # A WRITABLE-executable section (flags "awx" → readelf "WAX"): the X-flag
         # selection must still scan it (an exact-`AX`-token match would miss it,
         # and a forbidden opcode there would pass — cross-model r9 P2).
@@ -289,10 +373,8 @@ EOF
                 echo "FAIL: self-test — raw-byte scan MISSED a planted 0f 31 in a .text section" >&2
                 exit 1
             fi
-            # The decompressor's compiler-generated `.text` is known 64-bit.
-            # A real decoded RDTSC must still fail there, while the same bytes
-            # inside a LEA displacement must pass. The mixed-mode tags retain
-            # the stricter raw rule and therefore reject that LEA fixture.
+            # Decompressor `.text` includes 32-bit helpers as well as 64-bit
+            # code, so both decoded and raw counter bytes must fail there.
             if raw_byte_scan_one "$d/dirty.elf" decompressor >/dev/null 2>&1; then
                 echo "FAIL: self-test — 64-bit decompressor scan MISSED a planted RDTSC" >&2
                 exit 1
@@ -300,8 +382,8 @@ EOF
             printf '.section .text,"ax"\n.global fixture\nfixture:\n.byte 0x48,0x8d,0x3d,0x0f,0x31,0,0\n.byte 0xc3\n' \
                 | as -o "$d/lea.elf" - 2>/dev/null && lea_ok=1
             if [ "${lea_ok:-0}" = 1 ]; then
-                if ! raw_byte_scan_one "$d/lea.elf" decompressor >/dev/null 2>&1; then
-                    echo "FAIL: self-test — 64-bit LEA displacement was misread as RDTSC" >&2
+                if raw_byte_scan_one "$d/lea.elf" decompressor >/dev/null 2>&1; then
+                    echo "FAIL: self-test — decompressor accepted a mode-hidden 0f 31 pair" >&2
                     exit 1
                 fi
                 if raw_byte_scan_one "$d/lea.elf" setup >/dev/null 2>&1; then
@@ -319,11 +401,18 @@ EOF
             # (`0f c7 0f`, modrm reg 1) shares the opcode bytes and must pass.
             printf '.section .text,"ax"\n.byte 0x0f,0xc7,0xf0\n.byte 0xc3\n' \
                 | as -o "$d/rng.elf" - 2>/dev/null && rng_ok=1
+            printf '.section .text,"ax"\n.byte 0x0f,0xc7,0x0f,0xc7,0xf8\n.byte 0xc3\n' \
+                | as -o "$d/overlap.elf" - 2>/dev/null && overlap_ok=1
             printf '.section .text,"ax"\n.byte 0x0f,0xc7,0x0f\n.byte 0xc3\n' \
                 | as -o "$d/cmpxchg.elf" - 2>/dev/null && cx_ok=1
-            if [ "${rng_ok:-0}" = 1 ] && [ "${cx_ok:-0}" = 1 ]; then
+            if [ "${rng_ok:-0}" = 1 ] && [ "${overlap_ok:-0}" = 1 ] \
+                && [ "${cx_ok:-0}" = 1 ]; then
                 if raw_byte_scan_one "$d/rng.elf" rng >/dev/null 2>&1; then
                     echo "FAIL: self-test — raw-byte scan MISSED a planted 0f c7 /6 (rdrand)" >&2
+                    exit 1
+                fi
+                if raw_byte_scan_one "$d/overlap.elf" overlap >/dev/null 2>&1; then
+                    echo "FAIL: self-test — a benign 0f c7 /1 hid an overlapping rdseed" >&2
                     exit 1
                 fi
                 if ! raw_byte_scan_one "$d/cmpxchg.elf" cmpxchg >/dev/null 2>&1; then
@@ -340,16 +429,31 @@ EOF
 
 self_test
 
+if [ "$#" -ne 1 ] && [ "$#" -ne 3 ]; then
+    echo "usage: scan-counter-opcodes.sh <vmlinux> [<setup.elf> <compressed/vmlinux>]" >&2
+    exit 2
+fi
+
 command -v objdump >/dev/null 2>&1 || {
     echo "FAIL: objdump not found (binutils required)" >&2
     exit 1
 }
+command -v python3 >/dev/null 2>&1 || {
+    echo "FAIL: python3 not found (ELF coverage check required)" >&2
+    exit 1
+}
+
+require_code_sections "$VMLINUX" vmlinux
+for artifact in "${RAW_ARTIFACTS[@]}"; do
+    require_code_sections "${artifact#*=}" "${artifact%%=*}"
+done
+python3 "$SCRIPT_DIR/scan-unclaimed-opcodes.py" "vmlinux=$VMLINUX" "${RAW_ARTIFACTS[@]}"
 
 FOUND=$(all_sites)
 RNG_FOUND=$(all_sites '^(rdrand|rdseed)$')
 failed=0
 if [ -n "$FOUND" ]; then
-    echo "FAIL: raw counter instruction(s) (rdtsc/rdtscp) in the kernel:" >&2
+    echo "FAIL: decoded counter instruction(s) (rdtsc/rdtscp) in the kernel:" >&2
     printf '%s\n' "$FOUND" | sed 's/^/  /' >&2
     echo "  Read the counter through rdtsc() or rdtsc_ordered(), which use RDMSR(IA32_TSC)" >&2
     echo "  in the Harmony kernel, or through the Harmony clock page." >&2
@@ -369,4 +473,4 @@ if [ "$failed" -ne 0 ]; then
     exit 1
 fi
 
-echo "ok: counter-opcode scan — no rdtsc, rdtscp, rdrand or rdseed in the kernel proper, setup or decompressor"
+echo "ok: counter-opcode scan — kernel canonical/physical-entry/direct-target checks and raw setup/decompressor executable-section scans passed; computed-entry limits remain (#657)"

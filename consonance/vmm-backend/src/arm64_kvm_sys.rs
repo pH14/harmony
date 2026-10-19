@@ -2,6 +2,7 @@
 
 use std::os::fd::AsRawFd;
 
+use kvm_bindings::RegList;
 use kvm_bindings::{
     kvm_clear_dirty_log, kvm_clear_dirty_log__bindgen_ty_1, kvm_create_device, kvm_device_attr,
     kvm_enable_cap, kvm_run, kvm_userspace_memory_region, kvm_vcpu_init,
@@ -24,6 +25,9 @@ const RUN_OFFSETS: RunOffsets = RunOffsets {
 
 const _UAPI_PIN: () = {
     assert!(crate::arm64_kvm::KVM_EXIT_MMIO == kvm_bindings::KVM_EXIT_MMIO);
+    assert!(crate::arm64_kvm::KVM_EXIT_MEMORY_FAULT == kvm_bindings::KVM_EXIT_MEMORY_FAULT);
+    assert!(crate::arm64_kvm::KVM_MEMORY_FAULT_ERRNOS[0] == libc::EFAULT);
+    assert!(crate::arm64_kvm::KVM_MEMORY_FAULT_ERRNOS[1] == libc::EHWPOISON);
     assert!(crate::arm64_kvm::KVM_EXIT_SYSTEM_EVENT == kvm_bindings::KVM_EXIT_SYSTEM_EVENT);
     assert!(crate::arm64_kvm::KVM_EXIT_INTR == kvm_bindings::KVM_EXIT_INTR);
     assert!(crate::arm64_kvm::KVM_EXIT_FAIL_ENTRY == kvm_bindings::KVM_EXIT_FAIL_ENTRY);
@@ -61,6 +65,8 @@ const fn ioc(dir: u64, typ: u64, nr: u64, size: u64) -> u64 {
     (dir << 30) | (size << 16) | (typ << 8) | nr
 }
 
+const KVM_RUN_IOCTL: libc::c_ulong = ioc(0, 0xAE, 0x80, 0) as libc::c_ulong;
+
 const KVM_ENABLE_CAP_IOCTL: libc::c_ulong = 0x4068_aea3;
 
 const KVM_CLEAR_DIRTY_LOG_IOCTL: libc::c_ulong =
@@ -85,7 +91,9 @@ pub struct LiveKvm {
     _kvm: Kvm,
     run: *mut kvm_run,
     mmap_size: usize,
+    guest_run_attempted: bool,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    physical: crate::PhysicalTelemetry,
 }
 
 impl LiveKvm {
@@ -135,6 +143,8 @@ impl LiveKvm {
             run,
             mmap_size,
             cancel_run: std::sync::Arc::default(),
+            physical: crate::PhysicalTelemetry::default(),
+            guest_run_attempted: false,
         };
         this.vcpu_init()?;
         let mmfr0 = this.get_one_reg(
@@ -172,7 +182,7 @@ impl LiveKvm {
         // SAFETY: `vm` is a live KVM VM fd and `cap` is the pinned 104-byte
         // input structure required by KVM_ENABLE_CAP. The kernel only reads it
         // for this ioctl; the reference remains live for the entire call.
-        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL, &cap) };
+        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL as _, &cap) };
         if result == 0 {
             Ok(())
         } else {
@@ -196,7 +206,7 @@ impl LiveKvm {
         // SAFETY: `vm` is a live KVM VM fd and `cap` is the pinned 104-byte
         // input structure required by KVM_ENABLE_CAP. The kernel only reads it
         // for this ioctl; the reference remains live for the entire call.
-        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL, &cap) };
+        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL as _, &cap) };
         if result == 0 {
             Ok(())
         } else {
@@ -223,6 +233,30 @@ impl LiveKvm {
             flags: 0,
         };
         let vgic = self._vm.create_device(&mut device).map_err(kvm_err)?;
+
+        let mut iidr = 0u32;
+        let mut iidr_attr = kvm_device_attr {
+            flags: 0,
+            group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            attr: crate::arm64_kvm::GICD_IIDR,
+            addr: std::ptr::from_mut(&mut iidr) as u64,
+        };
+        // SAFETY: `addr` points to a live writable `u32` for the duration of
+        // this 32-bit distributor-register ioctl.
+        unsafe { vgic.get_device_attr(&mut iidr_attr) }.map_err(kvm_err)?;
+        iidr = crate::arm64_kvm::pinned_vgic_iidr(iidr);
+        iidr_attr.addr = std::ptr::from_ref(&iidr) as u64;
+        vgic.set_device_attr(&iidr_attr).map_err(kvm_err)?;
+        let mut readback = 0u32;
+        iidr_attr.addr = std::ptr::from_mut(&mut readback) as u64;
+        // SAFETY: `addr` points to a live writable `u32` for the duration of
+        // this 32-bit distributor-register ioctl.
+        unsafe { vgic.get_device_attr(&mut iidr_attr) }.map_err(kvm_err)?;
+        if readback != iidr {
+            return Err(BackendError::Unsupported {
+                what: "KVM VGIC GICD_IIDR revision 2 baseline",
+            });
+        }
 
         fn set_addr(vgic: &DeviceFd, attr: u64, value: &u64) -> Result<()> {
             vgic.set_device_attr(&kvm_device_attr {
@@ -252,21 +286,6 @@ impl LiveKvm {
             addr: std::ptr::from_ref(&nr_irqs) as u64,
         })
         .map_err(kvm_err)?;
-        let mut iidr = 0u32;
-        let mut iidr_attr = kvm_device_attr {
-            flags: 0,
-            group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
-            attr: 0x0008,
-            addr: std::ptr::from_mut(&mut iidr) as u64,
-        };
-        // SAFETY: `addr` points to a live writable `u32` for the duration of
-        // this 32-bit distributor-register ioctl.
-        unsafe { vgic.get_device_attr(&mut iidr_attr) }.map_err(kvm_err)?;
-        vgic.set_device_attr(&kvm_device_attr {
-            addr: std::ptr::from_ref(&iidr) as u64,
-            ..iidr_attr
-        })
-        .map_err(kvm_err)?;
         self.quarantine_host_vtimer()?;
         vgic.set_device_attr(&kvm_device_attr {
             flags: 0,
@@ -276,6 +295,7 @@ impl LiveKvm {
         })
         .map_err(kvm_err)?;
         self.vgic = Some(vgic);
+        crate::arm64_kvm::canonicalize_vgic_redist_bases(self)?;
         Ok(())
     }
 
@@ -283,6 +303,28 @@ impl LiveKvm {
         self.vgic
             .as_ref()
             .ok_or(BackendError::Internal("vGICv3 is not initialised"))
+    }
+
+    fn run_entry(&mut self, purpose: crate::RunPurpose) -> std::io::Result<()> {
+        let fd = self.vcpu.as_raw_fd();
+        let vcpu = &mut self.vcpu;
+        crate::arm64_kvm::measured_raw_kvm_entry(
+            &mut self.physical,
+            purpose,
+            || {
+                // SAFETY: this backend exclusively owns the stopped vCPU fd and its live kvm_run mapping; KVM_RUN takes no argument and completes before either mapping is read or another entry begins.
+                let code = unsafe { libc::ioctl(fd, KVM_RUN_IOCTL as _, 0) };
+                let errno = if code == 0 {
+                    0
+                } else {
+                    std::io::Error::last_os_error()
+                        .raw_os_error()
+                        .unwrap_or(libc::EIO)
+                };
+                (code, errno)
+            },
+            || vcpu.get_kvm_run().exit_reason,
+        )
     }
 
     fn read_run_view(&self) -> Result<KvmRunView> {
@@ -294,6 +336,41 @@ impl LiveKvm {
 }
 
 impl Arm64Kvm for LiveKvm {
+    fn validate_restore_boundary(&self) -> Result<()> {
+        if self.guest_run_attempted {
+            return Err(BackendError::Arm64ReusedVcpuRestoreUnsafe);
+        }
+        Ok(())
+    }
+
+    fn register_list(&self) -> Result<Vec<u64>> {
+        let mut probe = RegList::new(0).map_err(|_| BackendError::InvalidState)?;
+        match self.vcpu.get_reg_list(&mut probe) {
+            Err(error) if error.errno() == libc::E2BIG => {}
+            Err(error) => return Err(kvm_err(error)),
+            Ok(()) => {
+                return Err(BackendError::Internal(
+                    "KVM returned an empty register inventory",
+                ));
+            }
+        }
+        let count =
+            usize::try_from(probe.as_fam_struct_ref().n).map_err(|_| BackendError::InvalidState)?;
+        if count == 0 || count > 4096 {
+            return Err(BackendError::Unsupported {
+                what: "ARM KVM register inventory size",
+            });
+        }
+        let mut registers = RegList::new(count).map_err(|_| BackendError::InvalidState)?;
+        self.vcpu.get_reg_list(&mut registers).map_err(kvm_err)?;
+        if registers.as_fam_struct_ref().n != count as u64 {
+            return Err(BackendError::Internal(
+                "ARM KVM register inventory changed during enumeration",
+            ));
+        }
+        Ok(registers.as_slice().to_vec())
+    }
+
     fn vcpu_init(&mut self) -> Result<()> {
         let mut kvi = kvm_vcpu_init::default();
         self._vm.get_preferred_target(&mut kvi).map_err(kvm_err)?;
@@ -387,7 +464,7 @@ impl Arm64Kvm for LiveKvm {
         let result = unsafe {
             libc::ioctl(
                 self._vm.as_raw_fd(),
-                KVM_CLEAR_DIRTY_LOG_IOCTL,
+                KVM_CLEAR_DIRTY_LOG_IOCTL as _,
                 std::ptr::from_ref(&clear),
             )
         };
@@ -534,13 +611,14 @@ impl Arm64Kvm for LiveKvm {
         // SAFETY: `self.run` is this vCPU's live shared `kvm_run` mapping and
         // the vCPU is not concurrently running.
         unsafe { (*self.run).immediate_exit = 1 };
-        let result = self.vcpu.run();
+        self.guest_run_attempted = true;
+        let result = self.run_entry(crate::RunPurpose::Completion);
         // SAFETY: same exclusive mapping access as above; always clear the
         // one-shot flag before interpreting the ioctl result.
         unsafe { (*self.run).immediate_exit = 0 };
         match result {
-            Err(error) if error.errno() == libc::EINTR => Ok(()),
-            Err(error) => Err(kvm_err(error)),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(()),
+            Err(error) => Err(BackendError::Io(error)),
             Ok(_) => Err(BackendError::Internal(
                 "KVM immediate-exit MMIO completion executed guest code",
             )),
@@ -551,8 +629,14 @@ impl Arm64Kvm for LiveKvm {
         if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
             return Err(BackendError::Internal("KVM run canceled by host"));
         }
-        self.vcpu.run().map_err(kvm_err)?;
+        self.guest_run_attempted = true;
+        self.run_entry(crate::RunPurpose::Guest)
+            .map_err(BackendError::Io)?;
         self.read_run_view()
+    }
+
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        self.physical
     }
 
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {

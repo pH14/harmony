@@ -6,6 +6,14 @@
 
 schema = 1
 
+# Native-admission policy metadata is distinct from the finite N6 probe rows.
+# These native arithmetic families are admitted; no N6 row claims that their
+# result bits are portable across CPU implementations.
+native-x86-implementation-dependent = ["RCPPS", "RCPSS", "RSQRTPS", "RSQRTSS", "VRCPPS", "VRCPSS", "VRSQRTPS", "VRSQRTSS", "VRCP14*", "VRCP28*", "VRSQRT14*", "VRSQRT28*", "VRCPPH", "VRCPSH", "VRSQRTPH", "VRSQRTSH", "F2XM1", "FSIN", "FCOS", "FSINCOS", "FPTAN", "FPATAN", "FYL2X", "FYL2XP1"]
+native-x86-disposition = "Admitted with native CPU semantics, including standard math libraries. Numerical latitude can produce different result bits on another CPU; cross-CPU replay needs a portability warning and does not establish universal arithmetic equivalence. The rootfs checker inventories these families without refusing them."
+native-uml-initial-pkru = "Fixed to architectural init zero: the owned x86 UML startup clears the XSAVE header and all extended component bytes, instead of preserving sampled host PKRU policy."
+native-qualification-scope = "Exact admitted artifact and implementation classes with retained evidence. Arbitrary VMM guests, unreviewed indirect entries and native arithmetic are not universally qualified by this ledger."
+
 [[instruction]]
 id = "arm64-counter-frequency"
 arch = "arm64"
@@ -177,8 +185,8 @@ arch = "x86_64"
 channel = "implementation-identity"
 operations = ["FXSAVE", "FXSAVE64", "XSAVE", "XSAVEOPT", "XSAVEC", "XSAVES"]
 claim = "execute"
-layers = ["guest-kernel-pin", "hypervisor-save-canonicalization"]
-disposition = "MXCSR_MASK, init-state component encodings, and ignored legacy-tail bytes are canonicalized at their guest and VMM save boundaries."
+layers = ["guest-kernel-pin", "hypervisor-save-canonicalization", "image-audit"]
+disposition = "MXCSR_MASK, init-state component encodings, and ignored legacy-tail bytes are canonicalized at owned guest and VMM save boundaries. Rust production preparation and the Python rootfs checker reject userspace saves outside complete reviewed loader shapes and require proven selector-zero XGETBV. This static cooperative-code policy does not preserve the future instruction domain under generated code or memory perturbations."
 
 [[instruction]]
 id = "x86-exit-rflags-rf"
@@ -196,4 +204,4 @@ channel = "undefined-flags"
 operations = ["shift followed by interrupt-frame capture", "multiply followed by interrupt-frame capture", "PUSHF capture", "PUSHFQ capture", "SYSCALL R11 capture"]
 claim = "execute"
 layers = ["guest-kernel-pin"]
-disposition = "The Harmony guest clears AF at the three 64-bit kernel capture funnels before architecturally undefined vendor residue reaches retained memory."
+disposition = "The Harmony guest clears AF at the three 64-bit kernel capture funnels before architecturally undefined vendor residue reaches retained memory. SYSCALL ingress normalizes both saved flags and R11 before the first tick; interrupt ingress preserves arbitrary R11 data. The syscall probe explicitly plants AF=1."

@@ -31,7 +31,16 @@ fn boxed_backend_forwards_every_method() {
             write: None,
         }),
     ];
-    let mut backend: Box<dyn Backend<A = X86>> = Box::new(MockBackend::with_exits(script));
+    let mut mock = MockBackend::with_exits(script);
+    let mut physical = vmm_backend::PhysicalTelemetry::default();
+    physical.measure(
+        vmm_backend::RunPlatform::KvmX86,
+        vmm_backend::RunPurpose::Guest,
+        || ((), vmm_backend::RunReturn::Returned(6)),
+    );
+    mock.set_physical_telemetry_for_test(physical);
+    let mut backend: Box<dyn Backend<A = X86>> = Box::new(mock);
+    assert_eq!(backend.physical_telemetry(), physical);
 
     backend
         .set_policy(&X86Policy {

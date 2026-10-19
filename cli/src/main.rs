@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod adapters;
 mod config;
+mod cpu_replay;
 mod host;
+mod host_boundary;
 mod oci;
 mod runners;
 mod runs;
@@ -343,7 +345,21 @@ fn execute_debug(command: DebugCommand) -> Result<u8> {
     adapters::dispatch(request)
 }
 fn main() -> ExitCode {
-    match execute(Cli::parse().command) {
+    let result = (|| {
+        if host_boundary::strict_host() {
+            host_boundary::require_strict_host()?;
+        }
+        let command = Cli::parse().command;
+        if host_boundary::strict_host() {
+            if host_boundary::route(&command)? == host_boundary::Route::Native {
+                return Err("the Consonance host cannot execute the native QuickNES runner".into());
+            }
+        } else if host_boundary::route(&command)? == host_boundary::Route::Strict {
+            return host_boundary::enter_strict_host();
+        }
+        execute(command)
+    })();
+    match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("error: {error}");

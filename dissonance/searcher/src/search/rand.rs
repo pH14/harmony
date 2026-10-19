@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 pub(crate) fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
@@ -34,9 +34,12 @@ impl RomuDuoJrRand {
     }
 
     pub fn below(&mut self, upper_bound_excl: NonZeroUsize) -> usize {
-        let mul =
-            u128::from(self.next_u64()).wrapping_mul(u128::from(upper_bound_excl.get() as u64));
-        (mul >> 64) as usize
+        self.below_u64(NonZeroU64::new(upper_bound_excl.get() as u64).unwrap()) as usize
+    }
+
+    pub fn below_u64(&mut self, upper_bound_excl: NonZeroU64) -> u64 {
+        let mul = u128::from(self.next_u64()) * u128::from(upper_bound_excl.get());
+        (mul >> 64) as u64
     }
 }
 
@@ -55,6 +58,24 @@ mod tests {
         let bounded: Vec<usize> = (0..4).map(|_| again.below(bound)).collect();
         assert_eq!(first, REFERENCE_NEXT);
         assert_eq!(bounded, REFERENCE_BELOW_97);
+    }
+
+    #[test]
+    fn wide_bounds_preserve_the_native_sequence() {
+        let bounds = [1, 97, 1_u64 << 48, u64::MAX];
+        for bound in bounds {
+            let mut rand = RomuDuoJrRand::with_seed(1);
+            let mut reference = rand;
+            for _ in 0..1000 {
+                let expected =
+                    ((u128::from(reference.next_u64()) * u128::from(bound)) >> 64) as u64;
+                assert_eq!(
+                    rand.below_u64(std::num::NonZeroU64::new(bound).unwrap()),
+                    expected
+                );
+                assert!(expected < bound);
+            }
+        }
     }
 
     const REFERENCE_NEXT: [u64; 4] = [

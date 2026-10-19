@@ -8,6 +8,8 @@ mod checkpoint;
 mod filter;
 #[cfg(target_os = "linux")]
 mod replay;
+#[cfg(target_os = "linux")]
+mod state_diagnostics;
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
@@ -23,11 +25,15 @@ fn main() -> std::process::ExitCode {
 #[cfg(target_os = "linux")]
 mod linux {
     use std::ffi::OsString;
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     use std::path::PathBuf;
     use std::process::{Command, ExitCode};
     use std::time::Duration;
 
+    use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, fcntl_get_seals, memfd_create};
     use serde_json::{Value, json};
     use uml::{Exit, HostIdentity, Launch, Profile};
 
@@ -198,6 +204,58 @@ mod linux {
         })
     }
 
+    fn enter_sealed_qualifier() -> Result<(), String> {
+        let loaded = std::fs::read_link("/proc/self/exe").map_err(|error| error.to_string())?;
+        let loaded = loaded
+            .to_str()
+            .ok_or_else(|| "the loaded qualification executable path is not UTF-8".to_owned())?;
+        if loaded.starts_with("/memfd:") {
+            return host_code_identity::sealed_static_executable_identity()
+                .map(|_| ())
+                .map_err(|error| format!("cannot admit the sealed qualification host: {error}"));
+        }
+
+        let mut source = File::open("/proc/self/exe").map_err(|error| error.to_string())?;
+        let length = source.metadata().map_err(|error| error.to_string())?.len();
+        if length == 0 {
+            return Err("the qualification executable is empty".to_owned());
+        }
+        let flags = MemfdFlags::ALLOW_SEALING | MemfdFlags::CLOEXEC | MemfdFlags::EXEC;
+        let descriptor = memfd_create("harmony-uml-qualify", flags)
+            .or_else(|error| {
+                if error == rustix::io::Errno::INVAL {
+                    memfd_create(
+                        "harmony-uml-qualify",
+                        MemfdFlags::ALLOW_SEALING | MemfdFlags::CLOEXEC,
+                    )
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(|error| format!("cannot allocate an executable memfd: {error}"))?;
+        let mut image = File::from(descriptor);
+        let copied = io::copy(&mut source, &mut image).map_err(|error| error.to_string())?;
+        if copied != length || source.metadata().map_err(|error| error.to_string())?.len() != length
+        {
+            return Err("the qualification executable changed while being copied".to_owned());
+        }
+        let required = SealFlags::WRITE | SealFlags::GROW | SealFlags::SHRINK | SealFlags::SEAL;
+        fcntl_add_seals(&image, required).map_err(|error| error.to_string())?;
+        if !fcntl_get_seals(&image)
+            .map_err(|error| error.to_string())?
+            .contains(required)
+        {
+            return Err("the qualification executable was not fully sealed".to_owned());
+        }
+
+        let mut command = Command::new(format!("/proc/self/fd/{}", image.as_raw_fd()));
+        command.args(std::env::args_os().skip(1));
+        Err(format!(
+            "cannot enter the sealed qualification host: {}",
+            command.exec()
+        ))
+    }
+
     fn run(options: &Options) -> Result<Value, String> {
         let credentials = credentials()?;
         let denial = filter::deny_host_virtualization()?;
@@ -271,6 +329,10 @@ mod linux {
         if arguments.peek().is_some_and(|first| first == "exec") {
             arguments.next();
             let Err(message) = exec(arguments);
+            eprintln!("FAIL: {message}");
+            return ExitCode::FAILURE;
+        }
+        if let Err(message) = enter_sealed_qualifier() {
             eprintln!("FAIL: {message}");
             return ExitCode::FAILURE;
         }

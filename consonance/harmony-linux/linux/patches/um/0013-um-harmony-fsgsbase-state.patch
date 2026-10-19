@@ -1,0 +1,72 @@
+Capture native FS and GS bases at UML seccomp stops
+
+An x86 guest can execute WRFSBASE or WRGSBASE without a syscall when the host
+permits FSGSBASE. The seccomp stub records the guest's general registers in a
+signal context, but its x86 FS_BASE and GS_BASE values were taken only from the
+last UML arch_prctl call. A checkpoint can therefore save stale bases and a
+restore rebuilds the stub with different guest-visible state.
+
+Read both actual bases in the stub signal handler, before it parks for the UML
+kernel, and copy them into the guest register state. The existing resume path
+then uses those values when it rebuilds or switches a stub. Fail closed if the
+host arch_prctl read fails. The stub seccomp filter already permits
+arch_prctl from the stub code page.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/x86/um/shared/sysdep/stub_64.h
++++ b/arch/x86/um/shared/sysdep/stub_64.h
+@@ -136,6 +136,20 @@
+ 		:: "i" (STUB_SIZE),					\
+ 		   "i" (&fn))
+ 
++static __always_inline long
++stub_seccomp_capture_state(struct stub_data_arch *arch)
++{
++	long ret;
++
++	ret = stub_syscall2(__NR_arch_prctl, ARCH_GET_FS,
++			    (unsigned long)&arch->fs_base);
++	if (ret)
++		return ret;
++
++	return stub_syscall2(__NR_arch_prctl, ARCH_GET_GS,
++			     (unsigned long)&arch->gs_base);
++}
++
+ static __always_inline void
+ stub_seccomp_restore_state(struct stub_data_arch *arch)
+ {
+--- a/arch/um/kernel/skas/stub.c
++++ b/arch/um/kernel/skas/stub.c
+@@ -117,6 +117,10 @@
+ 	d->signal = sig;
+ 	d->si_offset = (unsigned long)info - (unsigned long)&d->sigstack[0];
+ 	d->mctx_offset = (unsigned long)&uc->uc_mcontext - (unsigned long)&d->sigstack[0];
++#ifdef __x86_64__
++	if (stub_seccomp_capture_state(&d->arch_data))
++		stub_syscall1(__NR_exit_group, 1);
++#endif
+ 
+ restart_wait:
+ 	d->futex = FUTEX_IN_KERN;
+--- a/arch/x86/um/os-Linux/mcontext.c
++++ b/arch/x86/um/os-Linux/mcontext.c
+@@ -175,9 +175,11 @@
+ 
+ 	memcpy(&regs->fp, xstate_stub, xstate_size);
+ 
+-	/* We do not need to read the x86_64 FS_BASE/GS_BASE registers as
+-	 * we do not permit userspace to set them directly.
+-	 */
++	/* The stub captured the actual bases before handling the guest stop. */
++#ifndef CONFIG_X86_32
++	regs->gp[FS_BASE / sizeof(unsigned long)] = data->arch_data.fs_base;
++	regs->gp[GS_BASE / sizeof(unsigned long)] = data->arch_data.gs_base;
++#endif
+ 
+ #ifdef CONFIG_X86_32
+ 	/* Read the i387 legacy FP registers */

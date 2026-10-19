@@ -2,6 +2,7 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use vmm_backend::Gpa;
 use vmm_backend::{
     Backend, CpuidModel, Exit, Injection, KvmBackend, MsrFilter, MsrRange, X86, X86Exit, X86Policy,
@@ -134,17 +135,74 @@ fn deliver(
     Ok(())
 }
 
-fn checkpoint_hash(backend: &mut KvmBackend, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
+fn diagnostic_run_directory(root: &Path, run_index: usize) -> std::io::Result<PathBuf> {
+    let directory = root.join(format!("run-{run_index:03}"));
+    std::fs::create_dir(&directory)?;
+    Ok(directory)
+}
+
+fn configure_initial_state(state: &mut vmm_backend::VcpuState) {
+    state.sregs.cs.base = 0;
+    state.sregs.cs.selector = 0;
+    state.sregs.cs.type_ = 11;
+    state.sregs.ss.type_ = 3;
+    state.sregs.tr.type_ = 11;
+    state.regs.rip = CODE_GPA;
+    state.regs.rsp = STACK_TOP;
+    state.regs.rflags = 0x2;
+}
+
+fn checkpoint_hash(
+    backend: &mut KvmBackend,
+    checkpoint: VirtualTimeCheckpoint,
+    diagnostics: Option<&Path>,
+) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"x1-live-state-v2\0");
+    hasher.update(b"x1-live-state-v3\0");
+    let mut ram = vec![0; RAM_LEN];
+    backend
+        .read_guest(Gpa(0), &mut ram)
+        .expect("checkpoint RAM");
+    hasher.update(&ram);
     hasher.update(checkpoint.vns.to_le_bytes());
     hasher.update(checkpoint.pending_interrupts.to_le_bytes());
     hasher.update(checkpoint.event_index.to_le_bytes());
     let mut state = backend.save().unwrap();
+    if let Some(directory) = diagnostics {
+        let directory = directory.join(format!("checkpoint-{:03}", checkpoint.event_index));
+        std::fs::create_dir(&directory).expect("own checkpoint diagnostic directory");
+        std::fs::write(directory.join("saved-state.txt"), format!("{state:#?}"))
+            .expect("retain saved checkpoint state");
+        std::fs::write(directory.join("ram.bin"), &ram).expect("retain checkpoint RAM");
+    }
     state.xsave_restore_bv =
         vmm_backend::logical_xsave_restore_bv(&state.xsave, state.xsave_restore_bv).unwrap();
     hasher.update(format!("{state:?}").as_bytes());
-    hasher.finalize().into()
+    let hash: [u8; 32] = hasher.finalize().into();
+    if let Some(directory) = diagnostics {
+        let directory = directory.join(format!("checkpoint-{:03}", checkpoint.event_index));
+        let checkpoint_hex = hash
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        std::fs::write(directory.join("hashed-state.txt"), format!("{state:?}"))
+            .expect("retain exact hashed checkpoint state");
+        std::fs::write(directory.join("logical-state.txt"), format!("{state:#?}"))
+            .expect("retain logical checkpoint state");
+        std::fs::write(
+            directory.join("checkpoint.txt"),
+            format!(
+                "vns={}\npending_interrupts={}\nevent_index={}\nram_sha256={:x}\ncheckpoint_sha256={checkpoint_hex}\nxsave_len={}\n",
+                checkpoint.vns,
+                checkpoint.pending_interrupts,
+                checkpoint.event_index,
+                Sha256::digest(&ram),
+                state.xsave.len(),
+            ),
+        )
+        .expect("retain checkpoint metadata");
+    }
+    hash
 }
 
 fn log_digest(log: &NormalizedLog) -> [u8; 32] {
@@ -177,7 +235,10 @@ struct RunResult {
     schedule: Vec<ScheduledInterrupt>,
 }
 
-fn one_run() -> RunResult {
+fn one_run(run_index: usize) -> RunResult {
+    let diagnostics = std::env::var_os("X1_DIAGNOSTICS_DIR").map(|root| {
+        diagnostic_run_directory(Path::new(&root), run_index).expect("own run diagnostic directory")
+    });
     let mut mem = GuestMem::new(RAM_LEN);
     let mut backend = new_backend_or_explain();
     // SAFETY: `mem` is declared before the loop that owns `backend`, so it
@@ -210,11 +271,15 @@ fn one_run() -> RunResult {
         .expect("load handler");
 
     let mut st = backend.save().expect("save for setup");
-    st.sregs.cs.base = 0;
-    st.sregs.cs.selector = 0;
-    st.regs.rip = CODE_GPA;
-    st.regs.rsp = STACK_TOP;
-    st.regs.rflags = 0x2;
+    if let Some(directory) = &diagnostics {
+        std::fs::write(directory.join("fresh-state.txt"), format!("{st:#?}"))
+            .expect("retain fresh backend state");
+    }
+    configure_initial_state(&mut st);
+    if let Some(directory) = &diagnostics {
+        std::fs::write(directory.join("setup-state.txt"), format!("{st:#?}"))
+            .expect("retain setup backend state");
+    }
     backend.restore(&st).expect("restore setup state");
 
     let mut run_loop =
@@ -226,7 +291,9 @@ fn one_run() -> RunResult {
     }
     loop {
         let event = run_loop
-            .run_backend_once(classify, deliver, checkpoint_hash)
+            .run_backend_once(classify, deliver, |backend, checkpoint| {
+                checkpoint_hash(backend, checkpoint, diagnostics.as_deref())
+            })
             .expect("run_backend_once");
         if event.class == vmm_core::virtual_time::NormalizedEventClass::Terminal {
             break;
@@ -235,6 +302,12 @@ fn one_run() -> RunResult {
     let digest = log_digest(run_loop.normalized_log());
     let log = run_loop.normalized_log().clone();
     let schedule = run_loop.schedule().to_vec();
+    if let Some(directory) = &diagnostics {
+        std::fs::write(directory.join("normalized-log.txt"), format!("{log:#?}"))
+            .expect("retain normalized log");
+        std::fs::write(directory.join("schedule.txt"), format!("{schedule:#?}"))
+            .expect("retain interrupt schedule");
+    }
     drop(run_loop);
     let guest_deliveries = mem.as_mut_slice()[COUNTER_GPA];
     RunResult {
@@ -248,7 +321,7 @@ fn one_run() -> RunResult {
 #[test]
 #[ignore = "live KVM; run with --ignored on a /dev/kvm host"]
 fn x1_ten_same_seed_runs_produce_one_normalized_log() {
-    let first = one_run();
+    let first = one_run(0);
     check_delivery_placement(&first.schedule, &first.log).expect("placement");
     assert_eq!(
         first.guest_deliveries,
@@ -258,8 +331,8 @@ fn x1_ten_same_seed_runs_produce_one_normalized_log() {
     assert_eq!(first.log.events[1].interrupts.len(), 1);
     assert_eq!(first.log.events[3].interrupts.len(), 1);
 
-    for _ in 1..10 {
-        let run = one_run();
+    for run_index in 1..10 {
+        let run = one_run(run_index);
         compare_normalized_logs(&first.log, &run.log).expect("same-seed logs must be identical");
         assert_eq!(run.digest, first.digest);
         assert_eq!(run.guest_deliveries, first.guest_deliveries);
@@ -272,12 +345,20 @@ fn x1_ten_same_seed_runs_produce_one_normalized_log() {
     println!("X1_DIGEST={hex}");
     println!("X1_GUEST_DELIVERIES={}", first.guest_deliveries);
     println!("X1_EVENTS={}", first.log.events.len());
+    let checkpoints = first
+        .log
+        .events
+        .iter()
+        .filter(|event| event.state_hash.is_some())
+        .count();
+    assert_eq!(checkpoints, 3);
+    println!("X1_CHECKPOINTS={checkpoints}");
 }
 
 #[test]
 #[ignore = "live KVM; run with --ignored on a /dev/kvm host"]
 fn x1_comparator_catches_one_exit_late_delivery_on_this_workload() {
-    let run = one_run();
+    let run = one_run(0);
     let mut late = run.log.clone();
     let delivery = late.events[1].interrupts.remove(0);
     late.events[2].interrupts.push(delivery);
@@ -290,7 +371,7 @@ fn x1_comparator_catches_one_exit_late_delivery_on_this_workload() {
 #[test]
 #[ignore = "live KVM; run with --ignored on a /dev/kvm host"]
 fn x1_placement_checker_catches_consistently_late_twins() {
-    let run = one_run();
+    let run = one_run(0);
     let mut late = run.log.clone();
     let first = late.events[1].interrupts.remove(0);
     let second = late.events[3].interrupts.remove(0);
@@ -304,4 +385,40 @@ fn x1_placement_checker_catches_consistently_late_twins() {
         error,
         PlacementViolation::WrongDelivery { event_index: 1, .. }
     ));
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "writes diagnostic witness directories to a temporary directory"
+)]
+fn diagnostic_runs_cannot_replace_existing_witnesses() {
+    let root = tempfile::tempdir().unwrap();
+    let first = diagnostic_run_directory(root.path(), 0).unwrap();
+    std::fs::write(first.join("witness"), b"original").unwrap();
+    assert!(diagnostic_run_directory(root.path(), 0).is_err());
+    assert_eq!(std::fs::read(first.join("witness")).unwrap(), b"original");
+    assert_ne!(diagnostic_run_directory(root.path(), 1).unwrap(), first);
+}
+
+#[test]
+fn initial_setup_overrides_host_segment_reset_attributes() {
+    let mut amd = vmm_backend::VcpuState::default();
+    amd.sregs.cs.type_ = 10;
+    amd.sregs.ss.type_ = 2;
+    amd.sregs.tr.type_ = 3;
+    amd.regs.rax = 123;
+    let mut intel = amd.clone();
+    intel.sregs.cs.type_ = 11;
+    intel.sregs.ss.type_ = 3;
+    intel.sregs.tr.type_ = 11;
+    configure_initial_state(&mut amd);
+    configure_initial_state(&mut intel);
+    assert_eq!(amd, intel);
+    assert_eq!(amd.sregs.cs.type_, 11);
+    assert_eq!(amd.sregs.ss.type_, 3);
+    assert_eq!(amd.sregs.tr.type_, 11);
+    assert_eq!(amd.regs.rax, 123);
+    assert_eq!(amd.regs.rip, CODE_GPA);
+    assert_eq!(amd.regs.rsp, STACK_TOP);
 }
