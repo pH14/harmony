@@ -545,9 +545,7 @@ impl SearchSession for UmlSession {
     }
 
     fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.abandoned {
-            return Err(SessionError::Abandoned.into());
-        }
+        self.ensure_endpoint_mutation()?;
         if let Some(session) = self.session.as_mut() {
             session.shutdown()?;
         }
@@ -622,6 +620,7 @@ impl SearchSession for UmlSession {
         index: &dyn CacheIndex,
         lease: &Lease,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         let chain = index.chain(lease)?;
         if chain.len() != 1 {
@@ -1018,6 +1017,85 @@ mod tests {
             abandoned: false,
             endpoint_state: crate::endpoint::EndpointState::default(),
             counters: Counters::default(),
+        }
+    }
+
+    #[test]
+    fn pending_endpoint_refuses_shutdown_and_root_import_before_any_mutation() {
+        use crate::endpoint::*;
+        let mut session = unbooted_session();
+        let (pending, token) = crate::endpoint::tests::pending_state();
+        session.endpoint_state = pending;
+        let index = LocalIndex::new(1 << 20);
+        let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+        write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+        let lease = index
+            .publish(
+                Namespace::new(&[b"pending-root"]),
+                b"root",
+                None,
+                extent,
+                [7; 32],
+                1,
+            )
+            .unwrap();
+        let locks = index.lock_counters();
+        let next = session.next;
+        for result in [
+            session.shutdown(),
+            session.import_root(&index, &lease).map(|_| ()),
+        ] {
+            assert!(matches!(
+                result.unwrap_err().downcast_ref::<EndpointProtocolError>(),
+                Some(EndpointProtocolError::Pending)
+            ));
+        }
+        assert_eq!(index.lock_counters(), locks);
+        assert_eq!(session.next, next);
+        assert!(session.snapshots.is_empty());
+        assert!(session.endpoint_state.pending());
+        assert!(!session.abandoned);
+        assert_eq!(
+            session
+                .execution_endpoint(EndpointRequest::Abort { token })
+                .unwrap(),
+            EndpointReply::Aborted
+        );
+        session.shutdown().unwrap();
+        index.release(lease);
+    }
+
+    #[test]
+    fn unsupported_endpoint_stop_masks_refuse_before_guest_or_handle_access() {
+        use crate::endpoint::*;
+        for on in [
+            control_proto::StopMask::NONE,
+            control_proto::StopMask::NONE.arm(control_proto::class_bit::ENTROPY),
+            control_proto::StopMask(u32::MAX),
+        ] {
+            let mut session = unbooted_session();
+            let request = ExecutionRequest {
+                branch: None,
+                until: control_proto::StopConditions {
+                    deadline: Some(Moment(100)),
+                    on,
+                },
+                resolve: None,
+                sdk_cursor: 0,
+                snapshot_on: EndpointStops::DEADLINE,
+                proof: EndpointProofRequest::Omit,
+            };
+            assert!(matches!(
+                session
+                    .execution_endpoint(EndpointRequest::Execute(request))
+                    .unwrap_err()
+                    .downcast_ref::<EndpointProtocolError>(),
+                Some(EndpointProtocolError::Invalid(_))
+            ));
+            assert!(!session.abandoned);
+            assert!(!session.endpoint_state.pending());
+            assert!(session.snapshots.is_empty());
+            assert_eq!(session.next, 1);
         }
     }
 

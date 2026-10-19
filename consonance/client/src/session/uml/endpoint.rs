@@ -63,9 +63,8 @@ impl EndpointDriver for UmlSession {
         branch: Option<&InputSpec>,
     ) -> Result<(), EndpointError> {
         if request.until.deadline.is_none()
-            || (request.until.on != control_proto::StopMask::NONE
-                && request.until.on
-                    != control_proto::StopMask::NONE.arm(control_proto::class_bit::ASSERTION))
+            || request.until.on
+                != control_proto::StopMask::NONE.arm(control_proto::class_bit::ASSERTION)
         {
             return Err(EndpointProtocolError::Invalid(
                 "UML endpoint requires deadline and assertion stop conditions",

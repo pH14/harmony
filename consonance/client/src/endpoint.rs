@@ -664,7 +664,8 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionEndpoint<'a, T> {
                     transport.endpoint_abandon();
                     return Err(error);
                 }
-                if page.binding.request_digest != digest
+                if matches!(page.binding.stop, StopReason::Decision { .. })
+                    || page.binding.request_digest != digest
                     || page.binding.start_cursor != start_cursor
                     || page.cursor != start_cursor
                 {
@@ -891,7 +892,7 @@ impl<T: EndpointTransport + ?Sized> Drop for ExecutionEndpoint<'_, T> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use control_proto::{Answer, DecisionId, Moment, StopMask};
     use std::collections::BTreeMap;
@@ -918,6 +919,7 @@ mod tests {
         proof_available: bool,
         parent_count_available: bool,
         corrupt_page: bool,
+        decision_page: bool,
         lose_commit: bool,
     }
 
@@ -947,6 +949,7 @@ mod tests {
                 proof_available: true,
                 parent_count_available: true,
                 corrupt_page: false,
+                decision_page: false,
                 lose_commit: false,
             }
         }
@@ -1090,6 +1093,15 @@ mod tests {
             {
                 page.binding.request_digest[0] ^= 1;
             }
+            if self.decision_page
+                && let Ok(EndpointReply::Page(page)) = &mut result
+            {
+                page.binding.stop = StopReason::Decision {
+                    vtime: Moment(100),
+                    id: DecisionId(31),
+                    ctx: vec![7, 0, 5],
+                };
+            }
             if commit && self.lose_commit {
                 return Err(Injected("lost commit reply").into());
             }
@@ -1124,6 +1136,31 @@ mod tests {
             ExecutionStart::Endpoint(endpoint) => endpoint,
             ExecutionStart::Decision(_) => panic!("expected captured endpoint"),
         }
+    }
+
+    pub(crate) fn pending_state() -> (EndpointState, EndpointToken) {
+        let mut fixture = Fixture::default();
+        let mut request = request();
+        request.snapshot_on = EndpointStops::NONE;
+        request.proof = EndpointProofRequest::Omit;
+        let EndpointReply::Page(page) = fixture
+            .endpoint_exchange(EndpointRequest::Execute(request))
+            .unwrap()
+        else {
+            panic!("expected pending endpoint");
+        };
+        (fixture.endpoint, page.binding.token)
+    }
+
+    #[test]
+    fn an_initial_page_cannot_silently_replace_external_decision_handoff() {
+        let mut fixture = Fixture {
+            decision_page: true,
+            ..Default::default()
+        };
+        assert!(ExecutionEndpoint::execute(&mut fixture, request()).is_err());
+        assert!(fixture.abandoned);
+        assert!(fixture.snapshots.is_empty());
     }
 
     #[test]
