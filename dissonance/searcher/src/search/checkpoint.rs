@@ -584,17 +584,20 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir(&directory).unwrap();
-        let mut old = header(10, "interval");
-        old.format = "dissonance-search-checkpoint-v4".into();
-        let path = directory.join("old.ckpt");
-        fs::write(&path, postcard::to_allocvec(&old).unwrap()).unwrap();
-        assert!(
-            CheckpointReader::open(&path)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("format is not recognized")
-        );
+        for format in [
+            "dissonance-search-checkpoint-v4",
+            "dissonance-search-checkpoint-v8",
+            "dissonance-search-checkpoint-v9",
+        ] {
+            let mut old = header(10, "interval");
+            old.format = format.into();
+            let path = directory.join("old.ckpt");
+            fs::write(&path, postcard::to_allocvec(&old).unwrap()).unwrap();
+            assert_eq!(
+                CheckpointReader::open(&path).err().unwrap().to_string(),
+                "search checkpoint format is not recognized"
+            );
+        }
         fs::remove_dir_all(&directory).unwrap();
     }
 
@@ -774,7 +777,7 @@ mod tests {
         let mut writer =
             CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).expect("create");
         let header = CheckpointHeader {
-            format: "dissonance-search-checkpoint-v8".to_owned(),
+            format: "dissonance-search-checkpoint-v9".to_owned(),
             checkpoint_owner: None,
             reason: "interval".to_owned(),
             workload_identity_sha256: String::new(),

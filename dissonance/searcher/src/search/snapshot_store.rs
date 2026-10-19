@@ -661,6 +661,36 @@ mod tests {
         index
     }
     #[test]
+    fn a_previous_codec_is_refused_before_snapshot_references_are_followed() {
+        let (path, mut store) = store("previous-codec");
+        let snapshot = Graph {
+            domain: 1,
+            path: vec![1, 2],
+        };
+        let index = append_snapshot(&mut store, 7, &snapshot);
+        assert_eq!(
+            read::<Graph>(&mut File::open(&path).unwrap(), &index).unwrap(),
+            [(7, snapshot)]
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.seek(SeekFrom::Start(8)).unwrap();
+        let old = "test-semantic-graph-v0";
+        assert_eq!(
+            old.len(),
+            <GraphCodec as SnapshotCodec<Graph>>::FORMAT.len()
+        );
+        write_frame(&mut file, &old).unwrap();
+        file.flush().unwrap();
+        let error = read::<Graph>(&mut file, &index).unwrap_err();
+        assert_eq!(error.to_string(), "snapshot store codec differs");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn shared_store_counts_edges_once_preserves_ancestors_and_reemits_reclaimed_roots() {
         let (path, mut store) = store("ownership");
         let a = Graph {

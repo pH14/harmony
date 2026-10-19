@@ -1070,3 +1070,10 @@ checkpoints preserve the reachable graph. Failed encoding stops that writer;
 failed checkpoint publication cannot change earlier live listing/edge ownership.
 Appended unreferenced tails may remain after a fatal failure. Persistence remains
 synchronous; no background writer or retained-image lease protocol is introduced.
+
+Whole-search checkpoint v10 combines the current coordinator/archive body with
+shared snapshot frames. Both earlier v9 layouts are refused before decoding a
+body: upstream's flat snapshot store and the earlier shared-frame layout used
+by the integration branch. There is no legacy format fallback. The shared
+codec remains workload-owned; assurance metadata is interpreted and validated
+by that workload's codec, never by generic storage or routing.

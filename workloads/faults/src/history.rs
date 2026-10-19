@@ -907,16 +907,117 @@ mod tests {
             retention.retain(&entry.snapshot, &mut memory);
         }
         assert_eq!(retention.nodes.len(), 132);
-        assert_eq!(
-            memory.bytes(),
-            132 * SharedSnapshotMemory::entry_charge(Node::allocation_bytes())
-        );
+        let mut expected_memory = SharedSnapshotMemory::default();
+        for identity in 0..132 {
+            assert!(expected_memory.retain(identity, Node::allocation_bytes()));
+        }
+        assert_eq!(memory.bytes(), expected_memory.bytes());
         for entry in &decoded.entries {
             retention.release(&entry.snapshot, &mut memory);
         }
         assert_eq!(memory.bytes(), 0);
         assert!(retention.nodes.is_empty());
     }
+    #[test]
+    fn dag_codec_preserves_assurance_and_refuses_relabelled_receipts_and_old_codec() {
+        #[derive(Serialize)]
+        enum Frame {
+            Shared(SharedRecord),
+            Snapshot(u64, EncodedSnapshot),
+        }
+        fn frame(out: &mut Vec<u8>, value: &impl Serialize) {
+            let bytes = postcard::to_allocvec(value).unwrap();
+            out.extend_from_slice(&u64::try_from(bytes.len()).unwrap().to_le_bytes());
+            out.extend_from_slice(&bytes);
+            out.extend_from_slice(&Sha256::digest(&bytes));
+        }
+        let snapshot = dag_ladder(0, 9).pop().unwrap();
+        let checkpoint = SnapshotCheckpoint {
+            format: "assurance-dag-test".into(),
+            entries: vec![SnapshotCheckpointEntry {
+                id: 7,
+                snapshot: snapshot.clone(),
+            }],
+        };
+        let bytes = checkpoint.to_bytes().unwrap();
+        let restored = SnapshotCheckpoint::<crate::target::FaultSnapshot>::from_bytes(
+            &bytes,
+            &checkpoint.format,
+        )
+        .unwrap();
+        assert_eq!(restored, checkpoint);
+        assert_eq!(
+            restored.entries[0]
+                .snapshot
+                .history
+                .receipt()
+                .assurance_identity(),
+            execution_contract::Assurance::ordinary().identity()
+        );
+        let mut records = Records::default();
+        let endpoint = FaultSnapshotCodec::encode(&snapshot, &mut records).unwrap();
+        let mut receipt = snapshot.history.receipt().clone();
+        receipt.assurance_identity = [31; 32];
+        receipt.root = receipt.root_digest().unwrap();
+        let row = SharedRecord {
+            key: receipt.root,
+            dependencies: Vec::new(),
+            payload: postcard::to_allocvec(&receipt).unwrap(),
+        };
+        let mut state = BTreeMap::new();
+        assert!(FaultSnapshotCodec::decode_record(&mut state, row.clone()).is_err());
+        assert!(state.is_empty());
+        let forged = crate::target::FaultSnapshot {
+            history: FaultHistory(Arc::new(Node {
+                parent: None,
+                receipt: receipt.clone(),
+            })),
+            ..snapshot
+        };
+        assert!(FaultSnapshotCodec::encode(&forged, &mut Records::default()).is_err());
+        let mut changed = b"HMSNAP02".to_vec();
+        frame(
+            &mut changed,
+            &("assurance-dag-test", FaultSnapshotCodec::FORMAT, 1_u64),
+        );
+        frame(&mut changed, &Frame::Shared(row));
+        frame(
+            &mut changed,
+            &Frame::Snapshot(
+                7,
+                EncodedSnapshot {
+                    roots: vec![receipt.root],
+                    payload: endpoint.payload,
+                },
+            ),
+        );
+        frame(&mut changed, &"snapshot-checkpoint-end-v2");
+        let error = SnapshotCheckpoint::<crate::target::FaultSnapshot>::from_bytes(
+            &changed,
+            &checkpoint.format,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("malformed fault history receipt")
+        );
+        let mut old = b"HMSNAP02".to_vec();
+        frame(
+            &mut old,
+            &("assurance-dag-test", "fault-history-dag-v1", 1_u64),
+        );
+        let error = SnapshotCheckpoint::<crate::target::FaultSnapshot>::from_bytes(
+            &old,
+            &checkpoint.format,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "snapshot checkpoint format is not recognized"
+        );
+    }
+
     #[test]
     fn dag_codec_rejects_valid_receipts_that_do_not_continue_their_known_parent() {
         let snapshots = dag_ladder(1, 5);
