@@ -709,11 +709,15 @@ fn decode_pending_stop(
             let payload = input.bytes()?;
             let question = channel::Question::with_request_id(request, service, payload)
                 .map_err(|_| PortableSnapshotError::Malformed("SDK pending question"))?;
-            Some(SdkStop::Decision {
+            let stop = SdkStop::Decision {
                 moment,
                 seq,
                 question,
-            })
+            };
+            if crate::service_transcript::pending_request(&stop).is_none() {
+                return Err(PortableSnapshotError::Malformed("SDK pending question"));
+            }
+            Some(stop)
         }
         4 => {
             let moment = input.u64()?;
@@ -1484,7 +1488,7 @@ mod tests {
                 + 201
         );
 
-        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, 8, VERSION + 1] {
+        for old_version in (1..VERSION).chain([VERSION + 1]) {
             let mut old = encoded();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             refresh_digest(&mut old);
@@ -1842,7 +1846,7 @@ mod tests {
             decode_sparse_sidecar(&bad_version),
             Err(PortableSnapshotError::BadVersion(u16::MAX))
         ));
-        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, SPARSE_VERSION + 1] {
+        for old_version in (1..SPARSE_VERSION).chain([SPARSE_VERSION + 1]) {
             let mut old = original.clone();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             assert!(matches!(
@@ -2575,6 +2579,77 @@ mod tests {
             Err(PortableSnapshotError::Malformed("SDK coverage threshold"))
         ));
     }
+    #[test]
+    fn pending_decision_must_fit_the_service_frame_in_full_and_sparse_imports() {
+        let limit = hypercall_proto::MAX_PAYLOAD - 10;
+        for payload_len in [limit, limit + 1] {
+            let (memory, vm_state, mut sdk, policy) = fixture();
+            sdk.pending_stop = Some(SdkStop::Decision {
+                moment: 31,
+                seq: 42,
+                question: channel::Question::with_request_id(77, 19, vec![0x5a; payload_len])
+                    .unwrap(),
+            });
+            let mut full = Vec::new();
+            PortableSnapshotRef {
+                memory: &memory,
+                vm_state: &vm_state,
+                sdk: Some(&sdk),
+                policy: &policy,
+                at: 31,
+                sdk_events: 2,
+                trace_events: 0,
+                trace_schedules: 0,
+                event_history: None,
+                tainted: false,
+                state_hash: [0; 32],
+                control_state: &[],
+            }
+            .write_to(&mut full)
+            .unwrap();
+            let imported = PortableSnapshot::read_from(full.as_slice(), memory.len());
+            let sparse = encode_sparse_sidecar(&SparsePortableSidecarRef {
+                vm_state: &vm_state,
+                sdk: Some(&sdk),
+                policy: &policy,
+                at: 31,
+                sdk_events: 2,
+                trace_events: 0,
+                trace_schedules: 0,
+                event_history: None,
+                tainted: false,
+                base_ram_digest: [0xa5; 32],
+                state_blob_suffix: b"suffix",
+                control_state: &[],
+            })
+            .unwrap();
+            let sparse = decode_sparse_sidecar(&sparse);
+            if payload_len == limit {
+                let full_stop = imported.unwrap().sdk.unwrap().pending_stop.unwrap();
+                let sparse_stop = sparse.unwrap().sdk.unwrap().pending_stop.unwrap();
+                assert_eq!(full_stop, sparse_stop);
+                let request = crate::service_transcript::pending_request(&full_stop).unwrap();
+                assert_eq!(
+                    request.len(),
+                    hypercall_proto::HEADER_LEN + hypercall_proto::MAX_PAYLOAD
+                );
+                assert_eq!(
+                    hypercall_proto::decode(&request).unwrap().1.len(),
+                    hypercall_proto::MAX_PAYLOAD
+                );
+            } else {
+                assert!(matches!(
+                    imported,
+                    Err(PortableSnapshotError::Malformed("SDK pending question"))
+                ));
+                assert!(matches!(
+                    sparse,
+                    Err(PortableSnapshotError::Malformed("SDK pending question"))
+                ));
+            }
+        }
+    }
+
     #[test]
     fn pending_stops_round_trip_and_reject_truncated_or_unknown_variants() {
         let stops = [

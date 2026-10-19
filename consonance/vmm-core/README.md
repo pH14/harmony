@@ -433,10 +433,12 @@ request deferred at a control deadline or awaiting an external answer contribute
 no completed exchange until its response is written. Snapshots retain the raw
 deferred frame or decoded SDK question, sequence and coverage-ready count;
 completion reconstructs canonical request fields from this captured state,
-regardless of later writes to the guest request page. Replay, branch and imports
-restore that pending state and the history prefix. Count capacity is checked
-before publishing a response, rejected responses contribute no completion, and
-a consumed pending decision cannot complete twice. Service records charge no
+regardless of later writes to the guest request page. Imports reject pending
+SDK questions that cannot fit the service frame before admitting a handle.
+Replay, branch and imports restore that pending state and the history prefix.
+Count capacity is checked before publishing a response, responses refused before
+publication contribute no completion, and a consumed pending decision cannot
+complete twice. Service records charge no
 virtual time and do not inject timing events or change checkpoint placement.
 This is a constant-size history commitment, separate from logical VM state;
 the existing diagnostic log remains available independently.
