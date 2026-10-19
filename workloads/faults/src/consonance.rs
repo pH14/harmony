@@ -957,6 +957,13 @@ impl FaultTarget {
         Ok(progress)
     }
 
+    pub fn probe<T>(&mut self, inspect: impl FnOnce(&mut Self) -> T) -> T {
+        let observation = self.observation.clone();
+        let result = inspect(self);
+        self.observation = observation;
+        result
+    }
+
     pub fn export_root(&self) -> Result<Vec<u8>, String> {
         with_live(&self.config, |live| {
             let (snapshot, moment) = live.session.snapshot().map_err(|e| e.to_string())?;

@@ -606,13 +606,14 @@ mod live {
         report.execution_ticks = campaign_report.campaign.execution_work;
         for bug in &written {
             let violations: Vec<String> = bug.observations.violations().into_iter().collect();
-            let witness = match replay_once(artifacts, &config, &bug.actions, true) {
-                Ok(summary) => Some(summary),
-                Err(error) => {
-                    eprintln!("bug {} did not replay: {error}", bug.bug);
-                    None
-                }
-            };
+            let witness =
+                match replay_once(artifacts, &config, &bug.actions, true, &mut |_, _| Ok(())) {
+                    Ok(summary) => Some(summary),
+                    Err(error) => {
+                        eprintln!("bug {} did not replay: {error}", bug.bug);
+                        None
+                    }
+                };
             let confirmed = witness.as_ref().is_some_and(|witness| {
                 replay_confirms_bug(bug.observations.stop, &violations, witness)
             });
@@ -686,7 +687,7 @@ mod live {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
-            let mut summary = replay_once(artifacts, &config, actions, settle)?;
+            let mut summary = replay_once(artifacts, &config, actions, settle, &mut |_, _| Ok(()))?;
             summary.run = run;
             report.execution_ticks = report.execution_ticks.saturating_add(
                 actions
@@ -704,13 +705,29 @@ mod live {
         Ok(report)
     }
 
+    pub type Visit<'a> = dyn FnMut(u64, &mut FaultTarget) -> Result<(), Box<dyn Error>> + 'a;
+
+    pub fn execute_visiting(
+        artifacts: &Artifacts,
+        actions: &[FaultAction],
+        options: &Options,
+        settle: bool,
+        visit: &mut Visit<'_>,
+    ) -> Result<ReplaySummary, Box<dyn Error>> {
+        let mut summary = replay_once(artifacts, &config(options)?, actions, settle, visit)?;
+        summary.run = 1;
+        Ok(summary)
+    }
+
     fn replay_once(
         artifacts: &Artifacts,
         config: &FaultConfig,
         actions: &[FaultAction],
         settle: bool,
+        visit: &mut Visit<'_>,
     ) -> Result<ReplaySummary, Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
+        visit(0, &mut target)?;
         let mut timeline = vec![super::ReplayStep {
             step: 0,
             action: None,
@@ -730,6 +747,7 @@ mod live {
             if target.actions().len() != index + 1 {
                 break;
             }
+            visit(index as u64 + 1, &mut target)?;
         }
         let actions_applied = target.actions().len() as u64;
         let mut settle_actions = 0_u64;
@@ -756,6 +774,7 @@ mod live {
             if target.actions().len() == before {
                 break;
             }
+            visit(target.actions().len() as u64, &mut target)?;
             settle_actions = settle_actions.saturating_add(1);
             settle_ticks = settle_ticks.saturating_add(u64::from(ticks));
         }
@@ -1055,7 +1074,9 @@ mod live {
     ),
     not(miri)
 ))]
-pub use live::{Resources, execute_actions, prepare_debug, replay, resources, search};
+pub use live::{
+    Resources, Visit, execute_actions, execute_visiting, prepare_debug, replay, resources, search,
+};
 
 #[cfg(test)]
 mod tests {
