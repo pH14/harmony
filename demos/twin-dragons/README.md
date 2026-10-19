@@ -166,7 +166,10 @@ movement and mini-map pixels, downloads and decodes the video, checks changing
 frames, failure recovery and mobile layout, and saves video/PNG evidence under
 `test-results/recording/`. Run it against the built preview server with
 `DEMO_URL=http://127.0.0.1:4173`; set `CHROME_CHANNEL=chrome` to use installed
-Chrome instead of Playwright's bundled Chromium. Set `LIVE_RECORDING=1` and
+Chrome instead of Playwright's bundled Chromium. `tests/point-finish.mjs` checks
+that completion observations still advance the camera when transport sampling
+omits their finishing trails, including several exits in one batch.
+Set `LIVE_RECORDING=1` and
 point `DEMO_URL` at a running native Famidash live server to exercise the same
 record/download checks against its actual event stream.
 

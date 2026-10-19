@@ -29,7 +29,7 @@ try {
   assert.equal(await page.locator("#record-view").isEnabled(), true);
   const before = await page.locator(".area-map").first().getAttribute("data-center-x");
   await page.locator("#record-view").click();
-  await page.waitForFunction(before => Math.abs(Number(document.querySelector(".area-map").dataset.centerX) - Number(before)) > 50, before, { timeout: 15000 });
+  await page.waitForFunction(before => Math.abs(Number(document.querySelector(".area-map").dataset.centerX) - Number(before)) > 50, before, { timeout: process.env.LIVE_RECORDING ? 45000 : 15000 });
   await page.waitForTimeout(2500);
   assert.equal(await page.locator("#record-view").getAttribute("aria-pressed"), "true");
   // Verify the captured source contains the actual camera and mini map, not an independent renderer.

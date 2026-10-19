@@ -691,6 +691,14 @@ function showPathLevel(level) {
   if (branchPreview) branchPreview.room = room;
   else setRoom(room);
 }
+function followPathExit(from, to, now) {
+  const shown = roomLevel(branchPreview?.room ?? mapLevel);
+  const following = shown === path.level || path.show?.from === shown;
+  if (!followExit(path, from, to, catalog.levels)) return;
+  path.since = now;
+  path.idle = 0;
+  if (following) path.show = { level: path.level, from: shown };
+}
 function followStalledPath(now) {
   if (!ready || path.level == null) return;
   if (path.show) {
@@ -1704,6 +1712,7 @@ function startSearch(level = bootLevel) {
             finished = finishedLevel(levelProgress(o), roomLevel(o.level));
           if (finished != null) {
             cleared.add(finished);
+            if (!game.levelsCleared) followPathExit(finished, levelProgress(o).cleared, now);
             if (!wins.has(finished) && point.retained !== null) wins.set(finished, point.retained);
           }
           if (!map && !o.loading && o.health) discoverArea(o.level);
@@ -1724,11 +1733,7 @@ function startSearch(level = bootLevel) {
           const from = roomLevel(trailRoom(motion[index]));
           if (from == null || game.levelsCleared) return;
           cleared.add(from);
-          const onPath = roomLevel(branchPreview?.room ?? mapLevel) === path.level;
-          if (!followExit(path, from, exits?.[i], catalog.levels)) return;
-          path.since = now;
-          path.idle = 0;
-          if (onPath) path.show = { level: path.level, from: roomLevel(branchPreview?.room ?? mapLevel) };
+          followPathExit(from, exits?.[i], now);
         });
         if (
           latestBest !== null &&
