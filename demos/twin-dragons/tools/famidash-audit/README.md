@@ -112,6 +112,12 @@ release target length/progress model; only adapter observations and the normal
 level-select setup translate that alias. Recorded gameplay uses the actual level.
 `trace-collision.py` uses export-only FCEUmm CPU hooks to observe the original
 ROM's collision samples without modifying the game.
+`review-centre-entries.py INDEX CASE CPU OUTPUT` binds a schema-2 bank-aware
+trace to its exact case, ROM and source index. It groups actual raw centre reads
+by source region, separates live entries from contacts on a committed death
+frame, and retains source mismatches, outside-source samples and nearby
+objectives. Both players are included. Its output leaves source review pending:
+raw reads still need mode-specific geometry and route-intent assessment.
 
 `verify-geometry.py INDEX ROM_DIRECTORY BUILD_DIRECTORY OUTPUT` decodes the
 ROM's actual level-pointer tables, LZ streams, RLE runs and continuation IDs
