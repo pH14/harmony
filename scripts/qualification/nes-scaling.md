@@ -24,6 +24,11 @@ workers. `coordinator_host` samples coordinator CPU and scheduler wait once at
 the end of search, before final persistence, even with verbose profiling off.
 It is absent when the operating system cannot supply these counters. This CPU
 measurement includes work outside the individual coordinator span timers.
+It includes live-observer construction, encoder startup, worker readiness and
+final checkpoint writing. Native `dispatch_phase` instead starts after all
+workers are ready, before reservation, and stops before final checkpoint/report
+persistence. Use its optional host CPU counters for the coordination capacity
+bound, and retain encoder CPU and persistence costs separately.
 Do not add nested or concurrent timers to infer elapsed time.
 
 ## Prepare the host

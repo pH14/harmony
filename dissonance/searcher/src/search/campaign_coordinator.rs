@@ -36,8 +36,8 @@ use crate::search::duration::DurationPolicies;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
-    CampaignTelemetry, HostTimes, IdleClock, IdleReason, Moment, WorkerTelemetry, nanos_since, now,
-    thread_schedstat,
+    CampaignTelemetry, CoordinatorPhaseTelemetry, HostTimes, IdleClock, IdleReason, Moment,
+    WorkerTelemetry, nanos_since, now, thread_schedstat,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -99,6 +99,12 @@ pub fn run_job<G: Workload>(
 
 type JobDispatch<'a, G> = dyn FnMut(JobSpec<G>) -> Result<(), Box<dyn Error>> + 'a;
 
+struct DispatchPhaseStart {
+    started: Moment,
+    schedstat: Option<(u64, u64)>,
+    idle: (u64, u64),
+}
+
 pub struct CampaignCoordinator<'a, G: Workload> {
     workload: &'a G,
     config: &'a CampaignConfig<G>,
@@ -128,6 +134,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     profile_printed: bool,
     idle_clock: IdleClock,
     coordinator_schedstat: Option<(u64, u64)>,
+    dispatch_phase_started: Option<DispatchPhaseStart>,
     telemetry_started: Moment,
     wall_started: Option<Moment>,
     admissions: Option<Vec<CampaignAdmission>>,
@@ -321,6 +328,7 @@ where
             profile_printed: std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some(),
             idle_clock: IdleClock::new(config.workers as usize),
             coordinator_schedstat: thread_schedstat(),
+            dispatch_phase_started: None,
             telemetry_started,
             wall_started: config.wall_budget.map(|_| telemetry_started),
             admissions: None,
@@ -384,6 +392,31 @@ where
 
     pub(crate) fn drain_background_stream(&mut self) -> Result<(), Box<dyn Error>> {
         self.writer.drain_ready()
+    }
+
+    pub(crate) fn begin_dispatch_phase(&mut self) {
+        self.dispatch_phase_started = Some(DispatchPhaseStart {
+            started: now(),
+            schedstat: thread_schedstat(),
+            idle: self.idle_clock.totals(),
+        });
+    }
+
+    pub(crate) fn end_dispatch_phase(&mut self) {
+        let idle = self.idle_clock.totals();
+        self.telemetry.dispatch_phase =
+            self.dispatch_phase_started
+                .take()
+                .map(|phase| CoordinatorPhaseTelemetry {
+                    wall_ns: nanos_since(phase.started),
+                    host: HostTimes::try_measure(
+                        phase.schedstat,
+                        (
+                            idle.0.saturating_sub(phase.idle.0),
+                            idle.1.saturating_sub(phase.idle.1),
+                        ),
+                    ),
+                });
     }
 
     pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {

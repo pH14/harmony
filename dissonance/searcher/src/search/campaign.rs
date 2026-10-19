@@ -3496,6 +3496,7 @@ where
             bootstrapped.send(())?;
             drop(bootstrapped);
             pool.wait_ready(config.workers)?;
+            campaign.begin_dispatch_phase();
             while campaign.reserve_next()? {
                 campaign.dispatch_queued(&mut |job| {
                     pool.dispatch((job.planned_finish, job.reservation), job)
@@ -3611,6 +3612,7 @@ where
                     };
                 }
             }
+            campaign.end_dispatch_phase();
             pool.close();
             Ok(())
         },
@@ -9886,6 +9888,24 @@ mod tests {
             Ok(())
         });
         let placed_run = run_placed(placement).expect("placed campaign");
+        let phase = placed_run
+            .0
+            .telemetry
+            .dispatch_phase
+            .as_ref()
+            .expect("native dispatch phase");
+        assert!(phase.wall_ns <= placed_run.0.telemetry.search_ns);
+        if let Some(host) = phase.host {
+            let total = placed_run
+                .0
+                .telemetry
+                .coordinator_host
+                .expect("coordinator host counters");
+            assert!(host.coordinator_cpu_ns <= total.coordinator_cpu_ns);
+            assert!(host.coordinator_run_wait_ns <= total.coordinator_run_wait_ns);
+            assert!(host.idle_admission_order_ns <= total.idle_admission_order_ns);
+            assert!(host.idle_no_job_ns <= total.idle_no_job_ns);
+        }
         let unplaced = run_campaign_checkpointed(
             &TestWorkload {
                 bootstrap_objective: false,

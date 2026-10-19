@@ -64,6 +64,8 @@ pub struct CampaignTelemetry {
     pub stream: Option<StreamTelemetry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordinator_host: Option<HostTimes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_phase: Option<CoordinatorPhaseTelemetry>,
     pub bootstrap_ns: u64,
     pub search_ns: u64,
     pub persistence_ns: u64,
@@ -72,6 +74,12 @@ pub struct CampaignTelemetry {
     pub completed_buffer: CompletedBufferTelemetry,
     pub workers: Vec<WorkerTelemetry>,
     pub target: TargetCounters,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CoordinatorPhaseTelemetry {
+    pub wall_ns: u64,
+    pub host: Option<HostTimes>,
 }
 
 impl PartialEq for CampaignTelemetry {

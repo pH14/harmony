@@ -158,8 +158,8 @@ queued commands and one queued encoded line bound the pipeline; reusable byte
 buffers return with later commands. Queue bounds count records, including owned
 record payloads, rather than claiming a fixed byte charge for arbitrary workload
 serialization. A full queue makes the producer drain encoded output before
-retrying. While waiting for worker results, the coordinator pumps output at most
-five milliseconds apart. Normal completion drains, joins and flushes before
+retrying. While waiting for worker results, the coordinator uses five-millisecond
+receive timeouts to pump output. Normal completion drains, joins and flushes before
 returning the digest. A later worker or coordinator failure drains earlier
 accepted records without appending an end record; sink and encoding failures
 stop certification and close both channel directions before joining. Browser and
@@ -812,7 +812,15 @@ search decisions or the deterministic campaign stream.
 
 The campaign report carries `telemetry`, the host measurements that explain
 where a run's time went. It records bootstrap, search, and persistence wall
-time; the coordinator phase durations; and the coordinator's receive time,
+time. Native `dispatch_phase` measures wall time and optional coordinator host
+counters from the worker-readiness barrier, before the first reservation, through
+final admission. It excludes live-observer construction, encoder startup and
+worker readiness, which remain included in `coordinator_host`. Dispatch-phase
+counters stop before final checkpoint and report persistence; `coordinator_host`
+also includes final checkpoint writing. Stream draining during report persistence
+is reported separately. Dispatch-phase idle counters use the same readiness boundary.
+Stepped coordinators omit this phase. The report also records
+the coordinator phase durations and the coordinator's receive time,
 split into time when every worker was running and time when finished results
 waited for an earlier result's admission. It also records how many results
 were held for admission order and for how long. Each worker record holds boot,
