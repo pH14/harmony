@@ -67,6 +67,18 @@ pub trait Backend {
         Ok(None)
     }
 
+    fn read_x86_regs(&mut self) -> Result<crate::VcpuRegs> {
+        Err(crate::error::BackendError::Unsupported {
+            what: "read_x86_regs",
+        })
+    }
+
+    fn read_x86_cpuid_state(&mut self) -> Result<crate::X86CpuidState> {
+        Err(crate::error::BackendError::Unsupported {
+            what: "read_x86_cpuid_state",
+        })
+    }
+
     fn read_arm64_gic_idle_state(
         &mut self,
         _intid: u32,
@@ -186,6 +198,14 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn read_irq_mask(&mut self) -> Result<Option<bool>> {
         (**self).read_irq_mask()
+    }
+
+    fn read_x86_regs(&mut self) -> Result<crate::VcpuRegs> {
+        (**self).read_x86_regs()
+    }
+
+    fn read_x86_cpuid_state(&mut self) -> Result<crate::X86CpuidState> {
+        (**self).read_x86_cpuid_state()
     }
 
     fn read_arm64_gic_idle_state(
@@ -426,6 +446,56 @@ mod tests {
                 arch: X86Caps,
             }
         }
+    }
+
+    #[test]
+    fn narrow_x86_observations_default_to_unsupported_without_capture() {
+        let mut backend = DefaultRetireBackend::default();
+        assert!(matches!(
+            backend.read_x86_regs(),
+            Err(BackendError::Unsupported {
+                what: "read_x86_regs"
+            })
+        ));
+        assert!(matches!(
+            backend.read_x86_cpuid_state(),
+            Err(BackendError::Unsupported {
+                what: "read_x86_cpuid_state"
+            })
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "mock")]
+    fn boxed_narrow_x86_observations_preserve_values_and_pending_completion() {
+        let mut state = VcpuState::default();
+        state.regs.rip = 0x1234;
+        state.regs.rflags = 0x202;
+        state.sregs.cr4 = 1 << 18;
+        state.xcr0 = 7;
+        let mut backend = Box::new(crate::MockBackend::with_exits([Exit::Arch(
+            crate::X86Exit::Rdmsr { index: 0x17 },
+        )]));
+        backend.set_policy(&X86Policy::default()).unwrap();
+        backend.set_state(state.clone());
+        backend.run().unwrap();
+        assert_eq!(backend.read_x86_regs().unwrap(), state.regs);
+        assert_eq!(
+            backend.read_x86_cpuid_state().unwrap(),
+            crate::X86CpuidState {
+                cr4: 1 << 18,
+                xcr0: 7
+            }
+        );
+        assert!(backend.has_pending());
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::PendingCompletion)
+        ));
+        assert_eq!(backend.exit_counts().rdmsr, 1);
+        backend.complete_read(3).unwrap();
+        assert_eq!(backend.completions(), [crate::Completion::Read(3)]);
+        assert_eq!(backend.save().unwrap(), state);
     }
 
     #[test]

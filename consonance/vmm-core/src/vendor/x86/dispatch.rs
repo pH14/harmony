@@ -19,6 +19,8 @@ pub struct X86Devices {
     pub(crate) uart: Uart8250,
     pub(crate) lapic: Option<lapic::Lapic>,
     pub(crate) legacy: Option<LegacyPlatform>,
+    #[cfg(feature = "msr-diagnostics")]
+    msr_diagnostics_remaining: u8,
 }
 
 impl X86Devices {
@@ -28,6 +30,8 @@ impl X86Devices {
             uart: Uart8250::new(),
             lapic: None,
             legacy: None,
+            #[cfg(feature = "msr-diagnostics")]
+            msr_diagnostics_remaining: 64,
         }
     }
 }
@@ -429,14 +433,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
             .and_then(|contract| contract.rdmsr_disposition(index))
             .unwrap_or_else(|| contract::rdmsr_disposition(index));
         self.advance_virtual_time_for_msr(&disp)?;
-        loud_msr(
-            MsrDir::Read,
-            index,
-            None,
-            self.guest_rip(),
-            self.current_vns(),
-            &disp,
-        );
+        #[cfg(feature = "msr-diagnostics")]
+        self.diagnose_msr(MsrDir::Read, index, None, &disp);
         match disp {
             MsrDisposition::AllowFixed(v) => {
                 self.complete_guest_read(v)?;
@@ -458,14 +456,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
     pub(crate) fn dispatch_wrmsr(&mut self, index: u32, value: u64) -> Result<Step, VmmError> {
         let disp = contract::wrmsr_disposition(index, value);
         self.advance_virtual_time_for_msr(&disp)?;
-        loud_msr(
-            MsrDir::Write,
-            index,
-            Some(value),
-            self.guest_rip(),
-            self.current_vns(),
-            &disp,
-        );
+        #[cfg(feature = "msr-diagnostics")]
+        self.diagnose_msr(MsrDir::Write, index, Some(value), &disp);
         match disp {
             MsrDisposition::DenyIgnoreWrite => {
                 self.backend.complete_ok()?;
@@ -488,12 +480,12 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 contract::virtual_time_timing().architectural_control_vns,
             )?;
         }
-        let state = self.backend.save()?;
+        let state = self.backend.read_x86_cpuid_state()?;
         let mut base = lookup_cpuid(leaf, subleaf);
         if let Some(contract) = &self.devices.nested_host {
             base = lookup_cpuid_in_model(&contract.cpuid_model(), leaf, subleaf);
         }
-        let resolved = contract::resolve_cpuid(base, state.sregs.cr4, state.xcr0);
+        let resolved = contract::resolve_cpuid(base, state.cr4, state.xcr0);
         self.backend.complete_arch(X86Completion::Cpuid {
             eax: resolved.eax,
             ebx: resolved.ebx,
@@ -558,8 +550,14 @@ impl<B: Backend<A = X86>> Vmm<B> {
         Ok(Step::Continued)
     }
 
-    pub(crate) fn guest_rip(&mut self) -> u64 {
-        self.backend.save().map(|s| s.regs.rip).unwrap_or_default()
+    #[cfg(feature = "msr-diagnostics")]
+    fn diagnose_msr(&mut self, dir: MsrDir, index: u32, data: Option<u64>, disp: &MsrDisposition) {
+        if self.devices.msr_diagnostics_remaining == 0 {
+            return;
+        }
+        self.devices.msr_diagnostics_remaining -= 1;
+        let rip = self.backend.read_x86_regs().map(|regs| regs.rip);
+        loud_msr(dir, index, data, rip, self.current_vns(), disp);
     }
 
     pub fn wire_lapic(&mut self, lapic: lapic::Lapic) -> &mut Self {
@@ -764,25 +762,18 @@ fn require_dword_io(dir: &str, port: u16, size: u8) -> Result<(), VmmError> {
     Ok(())
 }
 
+#[cfg(feature = "msr-diagnostics")]
 fn loud_msr(
     dir: MsrDir,
     index: u32,
     data: Option<u64>,
-    rip: u64,
+    rip: vmm_backend::Result<u64>,
     vns: Option<u64>,
     disp: &MsrDisposition,
 ) {
-    let data = match data {
-        Some(v) => format!("{v:#x}"),
-        None => "n/a".to_string(),
-    };
-    let vns = match vns {
-        Some(n) => n.to_string(),
-        None => "unwired".to_string(),
-    };
     eprintln!(
-        "[vmm-core] msr-exit dir={} exit-reason={} index={index:#x} data={data} rip={rip:#x} \
-         vns={vns} disposition={disp:?}",
+        "[vmm-core] msr-exit dir={} exit-reason={} index={index:#x} data={data:x?} \
+         rip={rip:x?} vns={vns:?} disposition={disp:?}",
         dir.dir(),
         dir.exit_reason(),
     );
@@ -976,12 +967,14 @@ pub fn contract_vclock_config() -> VClockConfig {
     }
 }
 
+#[cfg(feature = "msr-diagnostics")]
 #[derive(Clone, Copy)]
 pub(crate) enum MsrDir {
     Read,
     Write,
 }
 
+#[cfg(feature = "msr-diagnostics")]
 impl MsrDir {
     pub(crate) fn dir(self) -> &'static str {
         match self {
@@ -1114,6 +1107,315 @@ pub(crate) fn vcpu_components(s: &VcpuState, out: &mut Vec<(&'static str, [u8; 3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ObservationBackend {
+        inner: vmm_backend::MockBackend,
+        saves: usize,
+        regs_reads: usize,
+        cpuid_reads: usize,
+        read_error: bool,
+    }
+
+    impl Backend for ObservationBackend {
+        type A = X86;
+
+        fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
+            self.inner.set_policy(policy)
+        }
+
+        unsafe fn map_memory(&mut self, _gpa: Gpa, _host: &mut [u8]) -> vmm_backend::Result<()> {
+            Err(vmm_backend::BackendError::Unsupported {
+                what: "observation fixture memory mapping",
+            })
+        }
+
+        fn run(&mut self) -> vmm_backend::Result<Exit<X86>> {
+            self.inner.run()
+        }
+
+        fn inject(&mut self, event: vmm_backend::Injection) -> vmm_backend::Result<()> {
+            self.inner.inject(event)
+        }
+
+        fn set_pending_irq(&mut self, id: Option<u8>) -> vmm_backend::Result<()> {
+            self.inner.set_pending_irq(id)
+        }
+
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.inner.take_accepted_interrupt()
+        }
+
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.regs_reads += 1;
+            if self.read_error {
+                return Err(vmm_backend::BackendError::InvalidState);
+            }
+            self.inner.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.cpuid_reads += 1;
+            if self.read_error {
+                return Err(vmm_backend::BackendError::InvalidState);
+            }
+            self.inner.read_x86_cpuid_state()
+        }
+
+        fn complete_read(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_read(value)
+        }
+
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_fault()
+        }
+
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_ok()
+        }
+
+        fn complete_hypercall(&mut self, ret: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_hypercall(ret)
+        }
+
+        fn complete_arch(&mut self, completion: X86Completion) -> vmm_backend::Result<()> {
+            self.inner.complete_arch(completion)
+        }
+
+        fn save(&mut self) -> vmm_backend::Result<VcpuState> {
+            self.saves += 1;
+            Err(vmm_backend::BackendError::Internal(
+                "unexpected full CPU capture",
+            ))
+        }
+
+        fn restore(&mut self, state: &VcpuState) -> vmm_backend::Result<()> {
+            self.inner.restore(state)
+        }
+
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.inner.exit_counts()
+        }
+
+        fn reset_exit_counts(&mut self) {
+            self.inner.reset_exit_counts();
+        }
+
+        fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
+            self.inner.capabilities()
+        }
+    }
+
+    fn observed_vmm(exits: Vec<Exit<X86>>, state: VcpuState) -> Vmm<ObservationBackend> {
+        let mut inner = vmm_backend::MockBackend::with_exits(exits);
+        inner
+            .set_policy(&vmm_backend::X86Policy::default())
+            .unwrap();
+        inner.set_state(state);
+        let mut machine = Vmm::new(
+            ObservationBackend {
+                inner,
+                saves: 0,
+                regs_reads: 0,
+                cpuid_reads: 0,
+                read_error: false,
+            },
+            crate::vmm::GuestRam::new(0x1000).unwrap(),
+        );
+        machine.wire_vtime(
+            crate::vmm::VtimeWiring::new_virtual_time(contract_vclock_config(), 37).unwrap(),
+        );
+        machine.defer_virtual_time_checkpoint_hashes().unwrap();
+        machine
+    }
+
+    #[test]
+    fn msr_dispatch_preserves_results_and_history_without_full_cpu_capture() {
+        let exits = vec![
+            Exit::Arch(X86Exit::Rdmsr { index: 0x17 }),
+            Exit::Arch(X86Exit::Rdmsr { index: 0xdead_beef }),
+            Exit::Arch(X86Exit::Wrmsr {
+                index: 0x1b,
+                value: 0,
+            }),
+            Exit::Arch(X86Exit::Wrmsr {
+                index: 0x17,
+                value: 0,
+            }),
+            Exit::Arch(X86Exit::Rdmsr { index: IA32_TSC }),
+            Exit::Arch(X86Exit::Wrmsr {
+                index: IA32_TSC_ADJUST,
+                value: 123,
+            }),
+            Exit::Arch(X86Exit::Rdmsr {
+                index: IA32_TSC_ADJUST,
+            }),
+        ];
+        let mut baseline_backend = vmm_backend::MockBackend::with_exits(exits.clone());
+        baseline_backend
+            .set_policy(&vmm_backend::X86Policy::default())
+            .unwrap();
+        let mut baseline = Vmm::new(baseline_backend, crate::vmm::GuestRam::new(0x1000).unwrap());
+        baseline.wire_vtime(
+            crate::vmm::VtimeWiring::new_virtual_time(contract_vclock_config(), 37).unwrap(),
+        );
+        baseline.defer_virtual_time_checkpoint_hashes().unwrap();
+        let mut machine = observed_vmm(exits.clone(), VcpuState::default());
+        for _ in &exits {
+            assert_eq!(machine.step().unwrap(), Step::Continued);
+            assert_eq!(baseline.step().unwrap(), Step::Continued);
+        }
+        let completions = machine.backend.inner.completions();
+        assert_eq!(completions, baseline.backend.completions());
+        assert_eq!(completions[0], vmm_backend::Completion::Read(0));
+        assert_eq!(completions[1], vmm_backend::Completion::Fault);
+        assert_eq!(completions[2], vmm_backend::Completion::Ok);
+        assert_eq!(completions[3], vmm_backend::Completion::Fault);
+        assert_eq!(completions[6], vmm_backend::Completion::Read(123));
+        assert_eq!(
+            machine.save_vtime().unwrap(),
+            baseline.save_vtime().unwrap()
+        );
+        assert_eq!(machine.event_history(), baseline.event_history());
+        assert_eq!(machine.event_history().unwrap().count, exits.len() as u64);
+        assert_eq!(machine.exit_counts().rdmsr, 4);
+        assert_eq!(machine.exit_counts().wrmsr, 3);
+        assert_eq!(machine.backend.saves, 0);
+        assert_eq!(machine.backend.cpuid_reads, 0);
+        assert_eq!(
+            machine.backend.regs_reads,
+            if cfg!(feature = "msr-diagnostics") {
+                7
+            } else {
+                0
+            }
+        );
+    }
+
+    #[test]
+    fn cpuid_dispatch_reads_only_live_control_state_and_propagates_errors() {
+        for (cr4, xcr0) in [(0, 3), (1 << 18, 7)] {
+            let state = VcpuState {
+                sregs: vmm_backend::VcpuSregs {
+                    cr4,
+                    ..Default::default()
+                },
+                xcr0,
+                ..Default::default()
+            };
+            let exits = vec![
+                Exit::Arch(X86Exit::Cpuid {
+                    leaf: 1,
+                    subleaf: 0,
+                }),
+                Exit::Arch(X86Exit::Cpuid {
+                    leaf: 0xd,
+                    subleaf: 0,
+                }),
+            ];
+            let mut machine = observed_vmm(exits, state);
+            machine.step().unwrap();
+            machine.step().unwrap();
+            let vmm_backend::Completion::Cpuid { ecx, .. } = machine.backend.inner.completions()[0]
+            else {
+                panic!("CPUID completion")
+            };
+            let vmm_backend::Completion::Cpuid { ebx, .. } = machine.backend.inner.completions()[1]
+            else {
+                panic!("CPUID completion")
+            };
+            assert_eq!((ecx >> 27) & 1, u32::from(cr4 != 0));
+            assert_eq!(ebx, if xcr0 == 7 { 0x340 } else { 0x240 });
+            assert_eq!(machine.backend.cpuid_reads, 2);
+            assert_eq!(machine.backend.regs_reads, 0);
+            assert_eq!(machine.backend.saves, 0);
+        }
+        let mut machine = observed_vmm(
+            vec![Exit::Arch(X86Exit::Cpuid {
+                leaf: 1,
+                subleaf: 0,
+            })],
+            VcpuState::default(),
+        );
+        machine.backend.read_error = true;
+        assert!(matches!(
+            machine.step(),
+            Err(VmmError::Backend(vmm_backend::BackendError::InvalidState))
+        ));
+        assert!(machine.backend.inner.completions().is_empty());
+        assert!(machine.backend.inner.has_pending());
+        assert_eq!(machine.backend.saves, 0);
+    }
+
+    #[test]
+    fn idle_interruptibility_reads_only_flags_and_propagates_errors() {
+        for enabled in [false, true] {
+            let state = VcpuState {
+                regs: vmm_backend::VcpuRegs {
+                    rflags: if enabled { RFLAGS_IF | 2 } else { 2 },
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut machine = observed_vmm(vec![Exit::Common(CommonExit::Idle)], state);
+            machine.set_idle_wake_vns(Some(1000));
+            let step = machine.step().unwrap();
+            assert_eq!(step == Step::Continued, enabled);
+            assert_eq!(
+                machine.effective_vns(),
+                Some(if enabled { 1000 } else { 0 })
+            );
+            assert_eq!(machine.backend.regs_reads, 1);
+            assert_eq!(machine.backend.saves, 0);
+        }
+        let mut machine = observed_vmm(vec![Exit::Common(CommonExit::Idle)], VcpuState::default());
+        machine.backend.read_error = true;
+        assert!(matches!(
+            machine.step(),
+            Err(VmmError::Backend(vmm_backend::BackendError::InvalidState))
+        ));
+        assert_eq!(machine.backend.saves, 0);
+    }
+
+    #[test]
+    #[cfg(feature = "msr-diagnostics")]
+    fn detailed_msr_diagnostics_are_bounded_and_do_not_change_completion_on_read_error() {
+        let mut machine = observed_vmm(
+            vec![Exit::Arch(X86Exit::Rdmsr { index: 0x17 }); 130],
+            VcpuState::default(),
+        );
+        machine.backend.read_error = true;
+        for _ in 0..130 {
+            assert_eq!(machine.step().unwrap(), Step::Continued);
+        }
+        assert_eq!(machine.backend.regs_reads, 64);
+        assert_eq!(machine.backend.saves, 0);
+        assert_eq!(
+            machine.backend.inner.completions(),
+            vec![vmm_backend::Completion::Read(0); 130]
+        );
+        assert_eq!(machine.devices.msr_diagnostics_remaining, 0);
+        assert_eq!(machine.exit_counts().rdmsr, 130);
+        assert_eq!(machine.event_history().unwrap().count, 130);
+    }
+
+    #[test]
+    #[cfg(feature = "msr-diagnostics")]
+    fn detailed_msr_budget_is_not_snapshotted_or_hashed() {
+        let mut backend = vmm_backend::MockBackend::new();
+        backend
+            .set_policy(&vmm_backend::X86Policy::default())
+            .unwrap();
+        backend.set_state(xsave_state(None));
+        let mut machine = Vmm::new(backend, crate::vmm::GuestRam::new(0x1000).unwrap());
+        let snapshot = machine.save_vm_state().unwrap();
+        let hash = machine.state_hash().unwrap();
+        machine.devices.msr_diagnostics_remaining = 0;
+        assert_eq!(machine.save_vm_state().unwrap(), snapshot);
+        assert_eq!(machine.state_hash().unwrap(), hash);
+        machine.restore_vm_state(&snapshot).unwrap();
+        assert_eq!(machine.devices.msr_diagnostics_remaining, 0);
+        assert_eq!(machine.state_hash().unwrap(), hash);
+    }
 
     fn canonical_xsave_image() -> Vec<u8> {
         let mut image = vec![0; 576];

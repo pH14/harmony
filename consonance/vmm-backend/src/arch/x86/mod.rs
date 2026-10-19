@@ -16,7 +16,7 @@ pub(crate) use nested::{
     guest_physical_bits, nested_probe, reload_nested_memory_slots, validate_nested_addresses,
 };
 
-pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
+pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange, X86CpuidState};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use state::validate_kvm_xsave_mxcsr_presence;
 pub use state::{

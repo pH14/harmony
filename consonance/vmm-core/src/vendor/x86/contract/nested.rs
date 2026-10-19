@@ -376,6 +376,14 @@ mod tests {
     impl vmm_backend::Backend for InterruptBeforeNestedEntry {
         type A = vmm_backend::X86;
 
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.inner.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.inner.read_x86_cpuid_state()
+        }
+
         fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
             self.inner.set_policy(policy)
         }

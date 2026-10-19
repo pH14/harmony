@@ -727,6 +727,35 @@ fn run_to_msr(backend: &mut KvmBackend, operation: MsrOperation) -> (VcpuState, 
     assert_eq!(before.regs.rcx, MSR_INDEX as u64);
     assert_eq!(before.regs.rbx, 0, "MSR exit must precede INC BX");
     assert_eq!(before.regs.rsi, 0, "MSR exit must precede #GP handler");
+    let physical_before = backend.physical_telemetry();
+    assert_eq!(
+        backend
+            .read_x86_regs()
+            .expect("narrow pending MSR registers"),
+        before.regs
+    );
+    assert_eq!(
+        backend
+            .read_x86_cpuid_state()
+            .expect("narrow pending MSR CPUID state"),
+        vmm_backend::X86CpuidState {
+            cr4: before.sregs.cr4,
+            xcr0: before.xcr0
+        },
+    );
+    assert_eq!(
+        backend.physical_telemetry(),
+        physical_before,
+        "narrow observations must not enter the guest"
+    );
+    assert!(
+        matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::PendingCompletion)
+        ),
+        "narrow observations must not retire an unanswered MSR"
+    );
+    assert_eq!(backend.physical_telemetry(), physical_before);
     let counts = backend.exit_counts();
     assert_eq!(counts.total(), 1, "the MSR exit is the first guest exit");
     match operation {
@@ -755,6 +784,16 @@ fn assert_msr_completion_boundary(
     counts: ExitCounts,
 ) -> VcpuState {
     let state = backend.save().expect("save completed MSR boundary");
+    let physical_before = backend.physical_telemetry();
+    assert_eq!(backend.read_x86_regs().unwrap(), state.regs);
+    assert_eq!(
+        backend.read_x86_cpuid_state().unwrap(),
+        vmm_backend::X86CpuidState {
+            cr4: state.sregs.cr4,
+            xcr0: state.xcr0
+        }
+    );
+    assert_eq!(backend.physical_telemetry(), physical_before);
     match response {
         MsrResponse::Success => {
             assert_eq!(state.regs.rip, msr_rip(operation) + 2);

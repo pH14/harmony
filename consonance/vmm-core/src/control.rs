@@ -9620,6 +9620,14 @@ mod tests {
     impl Backend for UsedRestoreRejectBackend {
         type A = X86;
 
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.inner.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.inner.read_x86_cpuid_state()
+        }
+
         fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
             self.inner.set_policy(policy)
         }
@@ -10030,6 +10038,14 @@ mod tests {
     struct RestoreFailBackend(MockBackend, bool);
     impl Backend for RestoreFailBackend {
         type A = vmm_backend::X86;
+
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.inner.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.inner.read_x86_cpuid_state()
+        }
 
         fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
             self.0.set_policy(policy)
@@ -10703,6 +10719,14 @@ mod tests {
 
     impl Backend for CompletionChainBackend {
         type A = vmm_backend::X86;
+
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.inner.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.inner.read_x86_cpuid_state()
+        }
 
         fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
             self.0.set_policy(policy)
@@ -14028,6 +14052,14 @@ mod tests {
     impl Backend for ExitBoundaryBackend {
         type A = vmm_backend::X86;
 
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.inner.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.inner.read_x86_cpuid_state()
+        }
+
         fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
             self.inner.set_policy(policy)
         }
@@ -14956,6 +14988,14 @@ mod tests {
     struct IdleBackend(MockBackend, bool, bool);
     impl Backend for IdleBackend {
         type A = vmm_backend::X86;
+
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.0.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.0.read_x86_cpuid_state()
+        }
 
         fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
             self.0.set_policy(policy)

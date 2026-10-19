@@ -16,6 +16,33 @@ guest CPU policy, and snapshot formats are independent of this host choice.
 The dependency feature also applies to other SHA-256 consumers in the same
 Cargo dependency graph.
 
+## MSR diagnostics and routine CPU observations
+
+Normal x86 MSR dispatch keeps the existing exit counters and typed contract
+errors without reading RIP or formatting/writing a diagnostic line. The
+non-default `msr-diagnostics` build feature enables detailed stderr records,
+limited to the first 64 MSR exits per VMM. The limit is checked before register
+collection and formatting; in-place restore does not replenish it. Records
+show failed RIP reads explicitly, rather than substituting address zero.
+Diagnostics neither complete an MSR nor replace its normal error path. The
+budget is host diagnostic state and is excluded from snapshots, state hashes,
+virtual time and ordered event history.
+
+Detailed MSR records use `Backend::read_x86_regs`, which also supplies RFLAGS
+for idle interruptibility. CPUID dispatch uses `read_x86_cpuid_state` for live
+CR4/XCR0. Routine reads therefore avoid capturing unrelated CPU state, while
+complete captures remain mandatory for snapshot and identity publication.
+Narrow-query errors propagate from CPUID/idle checks before completion or idle
+advancement. Optional MSR diagnostics report a read failure and leave the
+ordinary MSR response responsible for progress.
+
+The dispatch regression tests exercise real guest steps against a counted
+backend whose full save fails, comparing MSR results, virtual time and ordered
+history with the ordinary mock. Feature-enabled tests enforce the diagnostic
+cap even on RIP-read errors; CPUID and idle tests check dynamic register effects
+and typed failures. These portable dispatch tests belong to the existing
+Execution Protocol partition and are suitable for explicit filtered Miri runs.
+
 ## Run loop
 
 The live X1 real-mode fixture initializes CS, SS and TR segment types explicitly
