@@ -51,3 +51,11 @@ The combined candidate additionally needs separate integration checks. Its
 other engine repairs can change earlier contacts or introduce repeated frames,
 so its replays do not replace these isolated unchanged-approach proofs. Broader
 source review remains incomplete and no clean round is credited.
+
+A third original input independently enters an outlined steep-slope block in
+Aftercatabath. It samples `RD66_TOP` at local (13,1) on frame 482, then
+`LU66_BOT` at (0,8) on frame 483. Here the original mini-wave LU66 exception
+also contributes. The same isolated release patch kills at 483 with every
+preceding gameplay observation unchanged in QuickNES and FCEUmm, then resets
+normally. The actual original rendered view, full independent replay and
+bank-aware CPU window are retained. No additional source edit was needed.
