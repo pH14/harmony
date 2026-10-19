@@ -245,7 +245,7 @@ where
         executions: campaign.executions(),
         states: campaign.archive().active_count(),
         snapshot_bytes: campaign.archive().resident_snapshot_bytes(),
-        stopped: won || campaign.finished(),
+        stopped: campaign.finished(),
         won,
     }
 }
