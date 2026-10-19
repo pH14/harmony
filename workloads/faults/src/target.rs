@@ -271,11 +271,32 @@ pub struct ActionWindows {
     pub root_seal: u64,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TIMELINE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl ActionWindows {
     fn end(self, start: u64, action: &FaultAction) -> Result<u64, String> {
+        #[cfg(test)]
+        TIMELINE_STEPS.with(|steps| steps.set(steps.get() + 1));
         start
             .checked_add(action.ticks() * SUPERVISOR_TICK_NANOS)
             .ok_or_else(|| "action timeline overflows guest time".to_owned())
+    }
+
+    pub fn iter<'a>(
+        self,
+        actions: impl IntoIterator<Item = &'a FaultAction>,
+    ) -> impl Iterator<Item = Result<(u64, u64), String>> {
+        actions
+            .into_iter()
+            .scan(Some(self.root_seal), move |start, action| {
+                let from = (*start)?;
+                let end = self.end(from, action);
+                *start = end.as_ref().ok().copied();
+                Some(end.map(|end| (from, end)))
+            })
     }
 
     pub fn window(self, actions: &[FaultAction], index: usize) -> Result<(u64, u64), String> {
@@ -370,15 +391,10 @@ pub fn action_deltas(
     windows: ActionWindows,
     actions: &[FaultAction],
 ) -> Result<Vec<ActionDelta>, String> {
-    let mut start = windows.root_seal;
     actions
         .iter()
-        .map(|action| {
-            let end = windows.end(start, action)?;
-            let delta = action_delta(*action, (start, end));
-            start = end;
-            Ok(delta)
-        })
+        .zip(windows.iter(actions))
+        .map(|(action, window)| window.map(|window| action_delta(*action, window)))
         .collect()
 }
 
@@ -1188,6 +1204,65 @@ mod tests {
                 ticks: ticks(12),
                 target: ParkTarget::new(8, 16),
             }
+        );
+    }
+
+    #[test]
+    fn cumulative_windows_visit_each_duration_once_and_match_indexed_windows() {
+        let actions: Vec<_> = (1..=4096)
+            .map(|index| FaultAction::from(FaultOperation::Wait(ticks(index))))
+            .collect();
+        let visits = std::cell::Cell::new(0);
+        TIMELINE_STEPS.with(|steps| steps.set(0));
+        let rows = WINDOWS
+            .iter(actions.iter().inspect(|_| visits.set(visits.get() + 1)))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(visits.get(), actions.len());
+        assert_eq!(TIMELINE_STEPS.with(std::cell::Cell::get), actions.len());
+        assert_eq!(rows.len(), actions.len());
+        for (index, row) in rows.into_iter().enumerate() {
+            let before = index as u64 * (index as u64 + 1) / 2;
+            assert_eq!(
+                row,
+                (
+                    ROOT + before * TICK,
+                    ROOT + (before + index as u64 + 1) * TICK
+                )
+            );
+            assert_eq!(row, WINDOWS.window(&actions, index).unwrap());
+        }
+    }
+
+    #[test]
+    fn cumulative_windows_check_each_end_and_allow_an_empty_maximum_root() {
+        let action = FaultAction::from(FaultOperation::Wait(NonZeroU16::MIN));
+        let windows = ActionWindows {
+            root_seal: u64::MAX - TICK,
+        };
+        let mut rows = windows.iter([&action, &action, &action]);
+        assert_eq!(rows.next().unwrap().unwrap(), (u64::MAX - TICK, u64::MAX));
+        assert_eq!(
+            rows.next().unwrap().unwrap_err(),
+            "action timeline overflows guest time"
+        );
+        assert!(rows.next().is_none());
+        assert!(
+            ActionWindows {
+                root_seal: u64::MAX
+            }
+            .iter(&[])
+            .next()
+            .is_none()
+        );
+        assert!(
+            ActionWindows {
+                root_seal: u64::MAX
+            }
+            .iter([&action])
+            .next()
+            .unwrap()
+            .is_err()
         );
     }
 
