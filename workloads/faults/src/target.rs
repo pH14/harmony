@@ -5,6 +5,7 @@ use std::num::NonZeroU16;
 
 use control_proto::StopReason;
 use fault_policy::{DecisionClass, Fault, ParkTarget, Span, StandingWindow, process_target};
+use process_proto::EVERY_NODE;
 use process_proto::registers as reg;
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,7 @@ const STATE_PAYLOAD_LEN: usize = 9;
 pub enum FaultOperation {
     Wait(NonZeroU16),
     Kill(u16, NonZeroU16),
+    KillAll(NonZeroU16),
     EventKill {
         node: u16,
         rarity: u8,
@@ -54,6 +56,7 @@ impl FaultOperation {
         match *self {
             Self::Wait(ticks)
             | Self::Kill(_, ticks)
+            | Self::KillAll(ticks)
             | Self::EventKill { ticks, .. }
             | Self::EventPark { ticks, .. }
             | Self::Pause(_, ticks)
@@ -67,6 +70,7 @@ impl FaultOperation {
         match self {
             Self::Wait(_) => Self::Wait(ticks),
             Self::Kill(node, _) => Self::Kill(node, ticks),
+            Self::KillAll(_) => Self::KillAll(ticks),
             Self::EventKill { node, rarity, .. } => Self::EventKill {
                 node,
                 rarity,
@@ -157,6 +161,10 @@ impl FaultOperation {
             Self::Hook(id, ticks) => {
                 put(&[6]);
                 put(&id.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::KillAll(ticks) => {
+                put(&[7]);
                 put(&ticks.get().to_le_bytes());
             }
         }
@@ -358,6 +366,12 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         FaultOperation::Kill(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcKill),
+                (start, end),
+            )),
+        },
+        FaultOperation::KillAll(_) => ActionDelta {
+            standing: Some(standing(
+                process_target(EVERY_NODE, &Fault::ProcKill),
                 (start, end),
             )),
         },
@@ -1400,6 +1414,24 @@ mod tests {
             Some((2, Fault::ProcKill))
         );
         assert_eq!((fault.start, fault.end), window);
+    }
+
+    #[test]
+    fn a_whole_cluster_kill_holds_every_node_for_its_window() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        let delta = action_delta(FaultOperation::KillAll(ticks(50)).into(), window);
+        let fault = delta
+            .standing
+            .expect("a cluster kill installs a standing fault");
+        assert_eq!(
+            decode_process_target(&fault.target),
+            Some((EVERY_NODE, Fault::ProcKill))
+        );
+        assert_eq!((fault.start, fault.end), window);
+        assert_ne!(
+            FaultOperation::KillAll(ticks(50)).key_bytes(),
+            FaultOperation::Kill(0, ticks(50)).key_bytes()
+        );
     }
 
     #[test]
