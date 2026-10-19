@@ -209,6 +209,15 @@ class StructureTests(unittest.TestCase):
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, commands)
+        lint = next(step for step in job["steps"]
+                    if step.get("name") == "Lint the isolated Arm64 guarded role")
+        self.assertEqual(lint["run"].replace("\\\n", " ").split(), [
+            "cargo", "clippy", "--locked", "-p", "harmony-cli",
+            "--target", "aarch64-unknown-linux-musl",
+            "--no-default-features", "--features", "consonance-host", "--lib",
+            "--bin", "harmony-consonance-host", "--", "-D", "warnings",
+        ])
+        self.assertIn('--profile minimal --component clippy', commands)
         self.assertIn("Check the paired CLI on Arm64",
                       [step.get("name") for step in job["steps"]])
         fixture = (ROOT / "scripts/test-consonance-host-package.py").read_text()

@@ -1,14 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
+use super::Operation;
 #[cfg(feature = "frontend")]
 use super::Package;
-use super::{Operation, Request};
+use super::Request;
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
 use crate::config::Config;
-use crate::{config::Result, runs::Manifest};
+use crate::config::Result;
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
+use crate::runs::Manifest;
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
 use std::{fs, path::Path};
 #[cfg(feature = "frontend")]
 pub struct Nested;
 
-#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(test, feature = "frontend"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn verified_replay_stream(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     let expected = source.payload["stream_sha256"]
         .as_str()
@@ -20,7 +29,10 @@ fn verified_replay_stream(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(test, feature = "frontend"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn verified_replay_source(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     if source.status != "complete" {
         return Err("nested replay requires a completed saved campaign".into());
@@ -35,7 +47,10 @@ fn verified_replay_source(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     verified_replay_stream(path, source)
 }
 
-#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(test, feature = "frontend"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn saved_replay_inputs(path: &Path, source: &Manifest) -> Result<(Vec<u8>, Vec<u8>)> {
     let read = |name: &str| -> Result<Vec<u8>> {
         let bytes = fs::read(path.join("artifacts").join(name))?;
@@ -51,7 +66,10 @@ fn saved_replay_inputs(path: &Path, source: &Manifest) -> Result<(Vec<u8>, Vec<u
     Ok((read("kernel")?, read("initramfs")?))
 }
 
-#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(test, feature = "frontend"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn inherit_replay_stream(
     source_path: &Path,
     source: &Manifest,
@@ -80,6 +98,7 @@ fn verified_report(
     Ok(serde_json::from_slice(&run.report)?)
 }
 
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
 fn stable_report(payload: &serde_json::Value) -> serde_json::Value {
     let mut outcome = payload.clone();
     if let Some(archive) = outcome
@@ -91,7 +110,10 @@ fn stable_report(payload: &serde_json::Value) -> serde_json::Value {
     outcome
 }
 
-#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(test, feature = "frontend"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn replay_report_matches(
     source_mode: &str,
     saved: &serde_json::Value,
@@ -217,6 +239,7 @@ fn execute(mut request: Request) -> Result<u8> {
     execute_ready(request, fresh)
 }
 
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
 fn validate_runner(c: &mut Config) -> Result<()> {
     if c.runner.kind.is_empty() {
         c.runner.kind = "consonance".into();
