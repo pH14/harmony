@@ -467,6 +467,9 @@ must separately establish dispatch, banking, timing and legitimate routes.
 The [isolated mini-wave45 experiment](findings/shared-engine/mini-wave45/README.md)
 retains the original Fingerdash reproduction, unchanged-input repairs in
 three emulators, pristine-source patches and mode-specific clearing checks.
+The [shared-read integration](findings/shared-engine/mini-wave45-shared-tile-reads/README.md)
+retains combined regression checks, fresh clearing routes, bank/asset layout
+checks and the current negative cases that remain unqualified.
 
 `review-mini-wave45-motion.py INDEX CASE CPU OUTPUT` checks consecutive actual
 centre probes against exact source triangles, including diagonal intermediate

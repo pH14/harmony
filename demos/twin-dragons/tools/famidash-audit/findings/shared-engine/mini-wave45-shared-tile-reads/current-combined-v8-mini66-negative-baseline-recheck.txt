@@ -1,0 +1,65 @@
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: mechanical state at frame 961
++ actual - expected
+... Skipped lines
+
+  {
+    camera: 661,
+    coins: 0,
+    dead: false,
+    debug: 0,
+...
+    wrap: 0,
++   x: 2881,
++   y: 795
+-   x: 2885,
+-   y: 791
+  }
+
+    at file:///workspace/harmony-fofii/demos/twin-dragons/tools/famidash-audit/dissonance-replay.mjs:41:19 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: {
+    level: 8,
+    state: 2,
+    x: 2881,
+    y: 795,
+    camera: 661,
+    vy: -1065,
+    mode: 6,
+    gravity: 0,
+    mini: 0,
+    dual: 0,
+    dead: false,
+    debug: 0,
+    invincible: 0,
+    paused: 0,
+    wrap: 0,
+    coins: 0
+  },
+  expected: {
+    level: 8,
+    state: 2,
+    x: 2885,
+    y: 791,
+    camera: 661,
+    vy: -1065,
+    mode: 6,
+    gravity: 0,
+    mini: 0,
+    dual: 0,
+    dead: false,
+    debug: 0,
+    invincible: 0,
+    paused: 0,
+    wrap: 0,
+    coins: 0
+  },
+  operator: 'deepStrictEqual',
+  diff: 'simple'
+}
+
+Node.js v24.19.0

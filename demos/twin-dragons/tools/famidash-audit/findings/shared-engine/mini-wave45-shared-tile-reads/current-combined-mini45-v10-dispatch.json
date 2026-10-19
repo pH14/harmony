@@ -1,0 +1,41 @@
+{
+  "status": "verified",
+  "cases": 131072,
+  "maximum_instructions_to_decision": 57,
+  "mini45_classes": [
+    11,
+    12,
+    21,
+    22
+  ],
+  "direct_call_banks": [
+    {
+      "caller": "_check_spike_motion",
+      "callee": "_ss_test_tile",
+      "caller_prg_bank": 52,
+      "callee_prg_bank": 52,
+      "direct_call_rom_offsets": [
+        433144,
+        433242,
+        433343,
+        433414
+      ]
+    },
+    {
+      "caller": "_ss_test_tile",
+      "callee": "_ss_test_spike_tile",
+      "caller_prg_bank": 52,
+      "callee_prg_bank": 63,
+      "direct_call_rom_offsets": [
+        432886
+      ]
+    }
+  ],
+  "rom_sha256": "f047943c1d98d6becfe0d5e3c36cb3f70f4dbdbf56cde680012140ca0e63da2f",
+  "debug_sha256": "f498382551678431300faf0932f59c151a7a30bc720aac04508218fdf8d384ca",
+  "source_sha256": {
+    "pit_crossing.h": "42d14732515d56f8ec55a936c521b299fdbdc3922f3574e8e202677c6708ea8e",
+    "spike_sweep.h": "9d7f11b4ecd40d877c992f0b0bad452afb108faa43c4ca96485cae382566dc35"
+  },
+  "limitation": "Executes the assembled query gate, not the dispatched motion kernel, mapper or frame budget."
+}

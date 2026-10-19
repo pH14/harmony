@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/workspace/famidash-soak/check-current-mini45-v10-negative.py", line 15, in <module>
+    corepath=Path('/workspace/famidash-mesen/Libretro/mesen_libretro.so'if huge else'/workspace/fofii-fceumm/fceumm_libretro.so');core=(SymbolMesen if huge else SymbolFceumm)(corepath,rom,layout);result=verify_campaign(core,w,True,40);result.update({'case_sha256':hashlib.sha256(raw).hexdigest(),'debug_sha256':hashlib.sha256(dbg.read_bytes()).hexdigest(),'core_sha256':hashlib.sha256(corepath.read_bytes()).hexdigest(),'physical_level_remapping':{'source':original['boot_level'],'target':131}if huge else None,'comparison_invariant':'Unchanged controller tape and every gameplay observation before death, except physical level identity in HUGE.'});out=r/('current-combined-mini45-v10-mini66-negative-'+('huge-mesen'if huge else'fceumm')+'.json');out.write_text(json.dumps(result,indent=2)+'\n');print(out.name,result['frames'],flush=True)
+                                                                                                                                                                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/harmony-fofii/demos/twin-dragons/tools/famidash-audit/fceumm.py", line 232, in verify_campaign
+    assert frame <= intro_frames, f"independent campaign replay differs at frame {frame}"
+           ^^^^^^^^^^^^^^^^^^^^^
+AssertionError: independent campaign replay differs at frame 2058

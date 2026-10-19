@@ -1,0 +1,173 @@
+--- /dev/null
++++ b/SAUCE/functions/mini_wave45.h
+@@ -0,0 +1,63 @@
++CODE_BANK_PUSH("MINI_WAVE45_BANK")
++static signed char m45_dx, m45_dy, m45_ox, m45_oy;
++static unsigned char m45_type;
++
++int m45_signed_product(signed char x, signed char y) {
++    static unsigned char ax, ay;
++    static unsigned int product;
++    ax = x; ay = y;
++    product = (unsigned int)ax * ay;
++    if (x < 0) product -= (unsigned int)ay << 8;
++    if (y < 0) product -= (unsigned int)ax << 8;
++    return (signed short)product;
++}
++
++unsigned char mini45_triangle_hit(void) {
++    static signed char x0, y0, x1, y1, x2, y2;
++    static int limit, endpoint, a, b, c;
++    if (m45_ox > (m45_dx > 0 ? m45_dx : 0) || m45_ox + 32 < (m45_dx < 0 ? m45_dx : 0) ||
++        m45_oy > (m45_dy > 0 ? m45_dy : 0) || m45_oy + 32 < (m45_dy < 0 ? m45_dy : 0)) return 0;
++    x0 = m45_ox; y0 = m45_oy;
++    x1 = m45_ox + 32; y1 = m45_oy + 32;
++    switch (m45_type) {
++        case COL_SLOPE_RD45:
++            limit = m45_ox + m45_oy + 32; endpoint = m45_dx + m45_dy;
++            if (limit > 0 && endpoint < limit) return 0;
++            x0 += 32; x2 = m45_ox; y2 = m45_oy + 32;
++            break;
++        case COL_SLOPE_LD45:
++            limit = m45_oy - m45_ox; endpoint = m45_dy - m45_dx;
++            if (limit > 0 && endpoint < limit) return 0;
++            x2 = m45_ox; y2 = m45_oy + 32;
++            break;
++        case COL_SLOPE_RU45:
++            limit = m45_oy - m45_ox; endpoint = m45_dy - m45_dx;
++            if (limit < 0 && endpoint > limit) return 0;
++            x2 = m45_ox + 32; y2 = m45_oy;
++            break;
++        case COL_SLOPE_LU45:
++            limit = m45_ox + m45_oy + 32; endpoint = m45_dx + m45_dy;
++            if (limit < 0 && endpoint > limit) return 0;
++            y1 = m45_oy; x2 = m45_ox; y2 = m45_oy + 32;
++            break;
++        default: return 0;
++    }
++    a = m45_signed_product(x0, m45_dy);
++    a -= m45_signed_product(y0, m45_dx);
++    if (!a) return 1;
++    b = m45_signed_product(x1, m45_dy);
++    b -= m45_signed_product(y1, m45_dx);
++    if (!b || (a < 0 && b > 0) || (a > 0 && b < 0)) return 1;
++    c = m45_signed_product(x2, m45_dy);
++    c -= m45_signed_product(y2, m45_dx);
++    return !c || (a < 0 && c > 0) || (a > 0 && c < 0);
++}
++
++void check_mini_wave45_tile(void) {
++    if (wrap_mode) return;
++    if ((ss_x & 240) == (ss_old_x & 240) && (ss_y & 240) == (ss_old_y & 240)) return;
++    m45_dx = ss_dx * 2; m45_dy = ss_dy * 2;
++    m45_type = ss_type; m45_ox = ss_origin_x * 2 - 1; m45_oy = ss_origin_y * 2 - 1;
++    if (mini45_triangle_hit()) cube_data[ss_player] |= 1;
++}
++CODE_BANK_POP()
+--- a/SAUCE/functions/spike_sweep.h
++++ b/SAUCE/functions/spike_sweep.h
+@@ -17,7 +17,7 @@
+ CODE_BANK_PUSH(SPIKE_SHAPE_BANK)
+ 
+ static const unsigned char ss_wave66[32] = {
+-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0
++    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 0, 0, 0, 0, 1, 1, 1, 1, 0
+ };
+ static const unsigned char ss_shapes[64] = {
+     0, 1, 2, 3, 4, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0,
+@@ -64,10 +64,12 @@
+     if (ss_base_remaining) ss_test_base();
+ }
+ void check_wave66_tile(void);
++void check_mini_wave45_tile(void);
+ CODE_BANK_PUSH("COLLISION_BANK")
+ void ss_test_tile(void) {
+     if (gamemode == GAMEMODE_WAVE && ss_type < sizeof(ss_wave66) && ss_wave66[ss_type]) {
+-        crossPRGBankJump0(check_wave66_tile);
++        if (ss_wave66[ss_type] == 1) crossPRGBankJump0(check_wave66_tile);
++        else if (currplayer_mini) crossPRGBankJump0(check_mini_wave45_tile);
+         return;
+     }
+     ss_test_spike_tile();
+@@ -188,6 +190,7 @@
+ #pragma rodata-name (pop)
+ CODE_BANK_POP()
+ #include "mini_wave66.h"
++#include "mini_wave45.h"
+ CODE_BANK_PUSH("COLLISION_BANK")
+ void check_spike_motion(void) {
+     ss_player = currplayer;
+--- a/SAUCE/functions/pit_crossing.h
++++ b/SAUCE/functions/pit_crossing.h
+@@ -19,9 +19,9 @@
+     __asm__("ldx %v\n lda %v\n ora %v,x\n beq %g", currplayer, collision, pit_previous_collision, wave66_query_done);
+     __asm__("ldy %v\n lda %v,y\n bne %g\n ldy %v,x\n lda %v,y\n bne %g", collision, ss_shapes, query, pit_previous_collision, ss_shapes, query);
+     __asm__("lda %v\n cmp #%b\n bne %g", gamemode, GAMEMODE_WAVE, wave66_query_done);
+-    __asm__("ldy %v\n cpy #32\n bcs %g\n lda %v,y\n bne %g", collision, wave66_previous, ss_wave66, wave66_boundary);
++    __asm__("ldy %v\n cpy #32\n bcs %g\n lda %v,y\n lsr a\n bcs %g\n beq %g\n lda %v\n bne %g", collision, wave66_previous, ss_wave66, wave66_boundary, wave66_previous, currplayer_mini, wave66_boundary);
+ wave66_previous:
+-    __asm__("ldy %v,x\n cpy #32\n bcs %g\n lda %v,y\n beq %g", pit_previous_collision, wave66_query_done, ss_wave66, wave66_query_done);
++    __asm__("ldy %v,x\n cpy #32\n bcs %g\n lda %v,y\n lsr a\n bcs %g\n beq %g\n lda %v\n beq %g", pit_previous_collision, wave66_query_done, ss_wave66, wave66_boundary, wave66_query_done, currplayer_mini, wave66_query_done);
+ wave66_boundary:
+     __asm__("lda %v\n eor %v,x\n and #$f0\n bne %g", temp_x, pit_previous_x, query);
+     __asm__("lda %v\n eor %v,x\n and #$f0\n bne %g", temp_y, pit_previous_y, query);
+--- a/CONFIG/mmc3-album.cfg
++++ b/CONFIG/mmc3-album.cfg
+@@ -105,6 +105,7 @@
+     # You can only put banks from section A into the first memory bank, and banks from section B into the second.
+ 	#unused
+ 	SFX_BANK:      load = ROM_M_00, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_00, type = ro, optional = yes;
+     MINI_WAVE66_BANK: load = ROM_M_00, type = ro, optional = yes;
+     SPIDER_BANK: load = ROM_M_00, type = ro, optional = yes;
+ 	COLLISION_BANK: load = ROM_M_00, type = ro, optional = yes;
+--- a/CONFIG/mmc3-huge-vs.cfg
++++ b/CONFIG/mmc3-huge-vs.cfg
+@@ -545,6 +545,7 @@
+ 
+     PCM_BANK_B:    load = ROM_M_F1, type = ro, optional = yes;
+     PCM_BANK:      load = ROM_M_F2, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_F2, type = ro, optional = yes;
+ 
+     XCD_BANK_10:   load = ROM_M_F3, type = ro, optional = yes;
+     XCD_BANK_09:   load = ROM_M_F4, type = ro, optional = yes;
+--- a/CONFIG/mmc3-huge.cfg
++++ b/CONFIG/mmc3-huge.cfg
+@@ -545,6 +545,7 @@
+ 
+     PCM_BANK_B:    load = ROM_M_F1, type = ro, optional = yes;
+     PCM_BANK:      load = ROM_M_F2, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_F2, type = ro, optional = yes;
+ 
+     XCD_BANK_10:   load = ROM_M_F3, type = ro, optional = yes;
+     XCD_BANK_09:   load = ROM_M_F4, type = ro, optional = yes;
+--- a/CONFIG/mmc3.cfg
++++ b/CONFIG/mmc3.cfg
+@@ -166,6 +166,7 @@
+ 
+     PCM_BANK_B:    load = ROM_M_35, type = ro, optional = yes;
+     PCM_BANK:      load = ROM_M_36, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_36, type = ro, optional = yes;
+ 
+     XCD_BANK_06:   load = ROM_M_37, type = ro, optional = yes;
+     XCD_BANK_05:   load = ROM_M_38, type = ro, optional = yes;
+--- a/CONFIG/nsf.cfg
++++ b/CONFIG/nsf.cfg
+@@ -170,6 +170,7 @@
+ #   LVL_BANK_24:   load = ROM_M_24, type = ro, optional = yes;
+ #   LVL_BANK_25:   load = ROM_M_25, type = ro, optional = yes;
+     PCM_BANK:      load = ROM_M_PCM, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_PCM, type = ro, optional = yes;
+ #   LVL_BANK_26:   load = ROM_M_26, type = ro, optional = yes;
+ #    LVL_BANK_27:   load = ROM_M_27, type = ro, optional = yes;
+ #    LVL_BANK_28:   load = ROM_M_28, type = ro, optional = yes;
+--- a/CONFIG/vs-sys.cfg
++++ b/CONFIG/vs-sys.cfg
+@@ -165,6 +165,7 @@
+ 
+     PCM_BANK_B:    load = ROM_M_35, type = ro, optional = yes;
+     PCM_BANK:      load = ROM_M_36, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_36, type = ro, optional = yes;
+ 
+     XCD_BANK_06:   load = ROM_M_37, type = ro, optional = yes;
+     XCD_BANK_05:   load = ROM_M_38, type = ro, optional = yes;

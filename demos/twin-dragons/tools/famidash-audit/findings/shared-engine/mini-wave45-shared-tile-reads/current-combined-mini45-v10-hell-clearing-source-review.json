@@ -1,0 +1,3308 @@
+{
+  "schema": 1,
+  "status": "raw-probe-triage",
+  "source_review_complete": false,
+  "side": "d",
+  "level": 8,
+  "name": "hell",
+  "components": {
+    "101": {
+      "geometry": {
+        "number": 101,
+        "tile": 47,
+        "names": {
+          "CHECKERBOARD_15": 7
+        },
+        "area": 7,
+        "bbox": [
+          116,
+          25,
+          118,
+          27
+        ],
+        "boundary": {
+          "COL_NONE": 16
+        },
+        "non_none_boundary_fraction": 0.0,
+        "open_faces": [
+          {
+            "column": 116,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 116,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 116,
+            "row": 25,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 116,
+            "row": 26,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 117,
+            "row": 26,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 117,
+            "row": 26,
+            "face": "down",
+            "neighbor": 0
+          },
+          {
+            "column": 116,
+            "row": 27,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 116,
+            "row": 27,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 116,
+            "row": 27,
+            "face": "down",
+            "neighbor": 0
+          },
+          {
+            "column": 118,
+            "row": 26,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 118,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 118,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 118,
+            "row": 25,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 118,
+            "row": 27,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 118,
+            "row": 27,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 118,
+            "row": 27,
+            "face": "down",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [
+          {
+            "column": 116,
+            "row": 26,
+            "id": 176,
+            "name": "UNKNOWN"
+          },
+          {
+            "column": 117,
+            "row": 26,
+            "id": 182,
+            "name": "UNKNOWN"
+          },
+          {
+            "column": 118,
+            "row": 26,
+            "id": 176,
+            "name": "UNKNOWN"
+          }
+        ],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 692,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1870,
+          "sample_world_y": 782,
+          "column": 116,
+          "row": 27
+        },
+        {
+          "frame": 696,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1881,
+          "sample_world_y": 767,
+          "column": 117,
+          "row": 26
+        },
+        {
+          "frame": 697,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1883,
+          "sample_world_y": 765,
+          "column": 117,
+          "row": 26
+        },
+        {
+          "frame": 698,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1886,
+          "sample_world_y": 762,
+          "column": 117,
+          "row": 26
+        },
+        {
+          "frame": 699,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1889,
+          "sample_world_y": 761,
+          "column": 118,
+          "row": 26
+        },
+        {
+          "frame": 700,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1892,
+          "sample_world_y": 759,
+          "column": 118,
+          "row": 26
+        },
+        {
+          "frame": 701,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1894,
+          "sample_world_y": 759,
+          "column": 118,
+          "row": 26
+        },
+        {
+          "frame": 702,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1897,
+          "sample_world_y": 758,
+          "column": 118,
+          "row": 26
+        },
+        {
+          "frame": 703,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1900,
+          "sample_world_y": 757,
+          "column": 118,
+          "row": 26
+        },
+        {
+          "frame": 704,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1903,
+          "sample_world_y": 758,
+          "column": 118,
+          "row": 26
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "105": {
+      "geometry": {
+        "number": 105,
+        "tile": 47,
+        "names": {
+          "CHECKERBOARD_15": 3
+        },
+        "area": 3,
+        "bbox": [
+          120,
+          26,
+          121,
+          27
+        ],
+        "boundary": {
+          "COL_NONE": 8
+        },
+        "non_none_boundary_fraction": 0.0,
+        "open_faces": [
+          {
+            "column": 120,
+            "row": 26,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 120,
+            "row": 26,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 120,
+            "row": 26,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 120,
+            "row": 27,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 120,
+            "row": 27,
+            "face": "down",
+            "neighbor": 0
+          },
+          {
+            "column": 121,
+            "row": 27,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 121,
+            "row": 27,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 121,
+            "row": 27,
+            "face": "down",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [
+          {
+            "column": 120,
+            "row": 26,
+            "id": 176,
+            "name": "UNKNOWN"
+          }
+        ],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 711,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1922,
+          "sample_world_y": 772,
+          "column": 120,
+          "row": 27
+        },
+        {
+          "frame": 712,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1925,
+          "sample_world_y": 775,
+          "column": 120,
+          "row": 27
+        },
+        {
+          "frame": 713,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 1928,
+          "sample_world_y": 779,
+          "column": 120,
+          "row": 27
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "95": {
+      "geometry": {
+        "number": 95,
+        "tile": 47,
+        "names": {
+          "CHECKERBOARD_15": 5
+        },
+        "area": 5,
+        "bbox": [
+          127,
+          24,
+          128,
+          27
+        ],
+        "boundary": {
+          "COL_NONE": 12
+        },
+        "non_none_boundary_fraction": 0.0,
+        "open_faces": [
+          {
+            "column": 127,
+            "row": 24,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 127,
+            "row": 24,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 127,
+            "row": 24,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 127,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 127,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 127,
+            "row": 26,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 127,
+            "row": 26,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 127,
+            "row": 27,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 127,
+            "row": 27,
+            "face": "down",
+            "neighbor": 0
+          },
+          {
+            "column": 128,
+            "row": 27,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 128,
+            "row": 27,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 128,
+            "row": 27,
+            "face": "down",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 751,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 2033,
+          "sample_world_y": 758,
+          "column": 127,
+          "row": 26
+        },
+        {
+          "frame": 752,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 2035,
+          "sample_world_y": 757,
+          "column": 127,
+          "row": 26
+        },
+        {
+          "frame": 753,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 2038,
+          "sample_world_y": 757,
+          "column": 127,
+          "row": 26
+        },
+        {
+          "frame": 754,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 2041,
+          "sample_world_y": 758,
+          "column": 127,
+          "row": 26
+        },
+        {
+          "frame": 755,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 2044,
+          "sample_world_y": 758,
+          "column": 127,
+          "row": 26
+        },
+        {
+          "frame": 756,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 2047,
+          "sample_world_y": 760,
+          "column": 127,
+          "row": 26
+        },
+        {
+          "frame": 760,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 2058,
+          "sample_world_y": 768,
+          "column": 128,
+          "row": 27
+        },
+        {
+          "frame": 761,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 2060,
+          "sample_world_y": 772,
+          "column": 128,
+          "row": 27
+        },
+        {
+          "frame": 762,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 47,
+          "sample_world_x": 2063,
+          "sample_world_y": 775,
+          "column": 128,
+          "row": 27
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "135": {
+      "geometry": {
+        "number": 135,
+        "tile": 111,
+        "names": {
+          "BLACK_NONE": 4
+        },
+        "area": 4,
+        "bbox": [
+          321,
+          29,
+          323,
+          30
+        ],
+        "boundary": {
+          "COL_NONE": 6,
+          "COL_DOWN_LEFT_SPIKE": 1,
+          "COL_FLOOR_CEIL": 3
+        },
+        "non_none_boundary_fraction": 0.4,
+        "open_faces": [
+          {
+            "column": 321,
+            "row": 29,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 321,
+            "row": 29,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 321,
+            "row": 29,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 322,
+            "row": 30,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 323,
+            "row": 30,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 323,
+            "row": 30,
+            "face": "up",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 1502,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5137,
+          "sample_world_y": 824,
+          "column": 321,
+          "row": 30
+        },
+        {
+          "frame": 1503,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5142,
+          "sample_world_y": 824,
+          "column": 321,
+          "row": 30
+        },
+        {
+          "frame": 1504,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5146,
+          "sample_world_y": 824,
+          "column": 321,
+          "row": 30
+        },
+        {
+          "frame": 1505,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5150,
+          "sample_world_y": 824,
+          "column": 321,
+          "row": 30
+        },
+        {
+          "frame": 1506,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5154,
+          "sample_world_y": 824,
+          "column": 322,
+          "row": 30
+        },
+        {
+          "frame": 1507,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5158,
+          "sample_world_y": 823,
+          "column": 322,
+          "row": 30
+        },
+        {
+          "frame": 1508,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5162,
+          "sample_world_y": 823,
+          "column": 322,
+          "row": 30
+        },
+        {
+          "frame": 1509,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5167,
+          "sample_world_y": 822,
+          "column": 322,
+          "row": 30
+        },
+        {
+          "frame": 1510,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5171,
+          "sample_world_y": 821,
+          "column": 323,
+          "row": 30
+        },
+        {
+          "frame": 1511,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5175,
+          "sample_world_y": 820,
+          "column": 323,
+          "row": 30
+        },
+        {
+          "frame": 1512,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5179,
+          "sample_world_y": 818,
+          "column": 323,
+          "row": 30
+        },
+        {
+          "frame": 1513,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 5183,
+          "sample_world_y": 817,
+          "column": 323,
+          "row": 30
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "96": {
+      "geometry": {
+        "number": 96,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 2
+        },
+        "area": 2,
+        "bbox": [
+          347,
+          24,
+          347,
+          25
+        ],
+        "boundary": {
+          "COL_NONE": 6
+        },
+        "non_none_boundary_fraction": 0.0,
+        "open_faces": [
+          {
+            "column": 347,
+            "row": 24,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 347,
+            "row": 24,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 347,
+            "row": 24,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 347,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 347,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 347,
+            "row": 25,
+            "face": "down",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 1602,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 5553,
+          "sample_world_y": 735,
+          "column": 347,
+          "row": 24
+        },
+        {
+          "frame": 1603,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 5558,
+          "sample_world_y": 731,
+          "column": 347,
+          "row": 24
+        },
+        {
+          "frame": 1604,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 5562,
+          "sample_world_y": 728,
+          "column": 347,
+          "row": 24
+        },
+        {
+          "frame": 1605,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 5566,
+          "sample_world_y": 725,
+          "column": 347,
+          "row": 24
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "82": {
+      "geometry": {
+        "number": 82,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 2
+        },
+        "area": 2,
+        "bbox": [
+          348,
+          22,
+          348,
+          23
+        ],
+        "boundary": {
+          "COL_NONE": 5,
+          "COL_DEATH_TOP": 1
+        },
+        "non_none_boundary_fraction": 0.16666666666666666,
+        "open_faces": [
+          {
+            "column": 348,
+            "row": 22,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 348,
+            "row": 22,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 348,
+            "row": 23,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 348,
+            "row": 23,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 348,
+            "row": 23,
+            "face": "down",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 1607,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 5574,
+          "sample_world_y": 719,
+          "column": 348,
+          "row": 23
+        },
+        {
+          "frame": 1608,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 5578,
+          "sample_world_y": 717,
+          "column": 348,
+          "row": 23
+        },
+        {
+          "frame": 1609,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 5583,
+          "sample_world_y": 715,
+          "column": 348,
+          "row": 23
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "90": {
+      "geometry": {
+        "number": 90,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 1
+        },
+        "area": 1,
+        "bbox": [
+          354,
+          23,
+          354,
+          23
+        ],
+        "boundary": {
+          "COL_NONE": 4
+        },
+        "non_none_boundary_fraction": 0.0,
+        "open_faces": [
+          {
+            "column": 354,
+            "row": 23,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 354,
+            "row": 23,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 354,
+            "row": 23,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 354,
+            "row": 23,
+            "face": "down",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 1630,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5667,
+          "sample_world_y": 713,
+          "column": 354,
+          "row": 23
+        },
+        {
+          "frame": 1631,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5671,
+          "sample_world_y": 715,
+          "column": 354,
+          "row": 23
+        },
+        {
+          "frame": 1632,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5675,
+          "sample_world_y": 717,
+          "column": 354,
+          "row": 23
+        },
+        {
+          "frame": 1633,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5679,
+          "sample_world_y": 719,
+          "column": 354,
+          "row": 23
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "99": {
+      "geometry": {
+        "number": 99,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 2
+        },
+        "area": 2,
+        "bbox": [
+          355,
+          24,
+          355,
+          25
+        ],
+        "boundary": {
+          "COL_NONE": 6
+        },
+        "non_none_boundary_fraction": 0.0,
+        "open_faces": [
+          {
+            "column": 355,
+            "row": 24,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 355,
+            "row": 24,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 355,
+            "row": 24,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 355,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 355,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 355,
+            "row": 25,
+            "face": "down",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 1634,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5684,
+          "sample_world_y": 721,
+          "column": 355,
+          "row": 24
+        },
+        {
+          "frame": 1635,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5688,
+          "sample_world_y": 724,
+          "column": 355,
+          "row": 24
+        },
+        {
+          "frame": 1636,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5692,
+          "sample_world_y": 726,
+          "column": 355,
+          "row": 24
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "102": {
+      "geometry": {
+        "number": 102,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 5
+        },
+        "area": 5,
+        "bbox": [
+          357,
+          25,
+          361,
+          25
+        ],
+        "boundary": {
+          "COL_NONE": 2,
+          "COL_UP_LEFT_SPIKE": 3,
+          "COL_DEATH": 5,
+          "COL_DOWN_LEFT_SPIKE": 2
+        },
+        "non_none_boundary_fraction": 0.8333333333333334,
+        "open_faces": [
+          {
+            "column": 357,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 361,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 1647,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5738,
+          "sample_world_y": 736,
+          "column": 358,
+          "row": 25
+        },
+        {
+          "frame": 1648,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5742,
+          "sample_world_y": 737,
+          "column": 358,
+          "row": 25
+        },
+        {
+          "frame": 1649,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5746,
+          "sample_world_y": 738,
+          "column": 359,
+          "row": 25
+        },
+        {
+          "frame": 1650,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5750,
+          "sample_world_y": 739,
+          "column": 359,
+          "row": 25
+        },
+        {
+          "frame": 1651,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5754,
+          "sample_world_y": 740,
+          "column": 359,
+          "row": 25
+        },
+        {
+          "frame": 1652,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5758,
+          "sample_world_y": 740,
+          "column": 359,
+          "row": 25
+        },
+        {
+          "frame": 1653,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5763,
+          "sample_world_y": 741,
+          "column": 360,
+          "row": 25
+        },
+        {
+          "frame": 1654,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5767,
+          "sample_world_y": 741,
+          "column": 360,
+          "row": 25
+        },
+        {
+          "frame": 1655,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5771,
+          "sample_world_y": 741,
+          "column": 360,
+          "row": 25
+        },
+        {
+          "frame": 1656,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5775,
+          "sample_world_y": 741,
+          "column": 360,
+          "row": 25
+        },
+        {
+          "frame": 1657,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5779,
+          "sample_world_y": 740,
+          "column": 361,
+          "row": 25
+        },
+        {
+          "frame": 1658,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5783,
+          "sample_world_y": 740,
+          "column": 361,
+          "row": 25
+        },
+        {
+          "frame": 1659,
+          "player": 0,
+          "mode": 1,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 5788,
+          "sample_world_y": 739,
+          "column": 361,
+          "row": 25
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "35": {
+      "geometry": {
+        "number": 35,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 6
+        },
+        "area": 6,
+        "bbox": [
+          556,
+          13,
+          558,
+          16
+        ],
+        "boundary": {
+          "COL_NONE": 9,
+          "COL_DEATH_BOTTOM": 4,
+          "COL_FLOOR_CEIL": 1
+        },
+        "non_none_boundary_fraction": 0.35714285714285715,
+        "open_faces": [
+          {
+            "column": 557,
+            "row": 13,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 557,
+            "row": 13,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 557,
+            "row": 13,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 557,
+            "row": 14,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 557,
+            "row": 14,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 556,
+            "row": 15,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 556,
+            "row": 15,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 558,
+            "row": 15,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 558,
+            "row": 15,
+            "face": "up",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 2413,
+          "player": 0,
+          "mode": 2,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 8920,
+          "sample_world_y": 544,
+          "column": 557,
+          "row": 13
+        },
+        {
+          "frame": 2414,
+          "player": 0,
+          "mode": 2,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 8924,
+          "sample_world_y": 546,
+          "column": 557,
+          "row": 13
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "42": {
+      "geometry": {
+        "number": 42,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 6
+        },
+        "area": 6,
+        "bbox": [
+          599,
+          13,
+          601,
+          16
+        ],
+        "boundary": {
+          "COL_NONE": 9,
+          "COL_DEATH_BOTTOM": 4,
+          "COL_FLOOR_CEIL": 1
+        },
+        "non_none_boundary_fraction": 0.35714285714285715,
+        "open_faces": [
+          {
+            "column": 600,
+            "row": 13,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 600,
+            "row": 13,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 600,
+            "row": 13,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 600,
+            "row": 14,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 600,
+            "row": 14,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 599,
+            "row": 15,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 599,
+            "row": 15,
+            "face": "up",
+            "neighbor": 0
+          },
+          {
+            "column": 601,
+            "row": 15,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 601,
+            "row": 15,
+            "face": "up",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 2576,
+          "player": 0,
+          "mode": 2,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 9601,
+          "sample_world_y": 545,
+          "column": 600,
+          "row": 13
+        },
+        {
+          "frame": 2577,
+          "player": 0,
+          "mode": 2,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 9605,
+          "sample_world_y": 544,
+          "column": 600,
+          "row": 13
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "77": {
+      "geometry": {
+        "number": 77,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 30
+        },
+        "area": 30,
+        "bbox": [
+          893,
+          21,
+          895,
+          30
+        ],
+        "boundary": {
+          "COL_NONE": 20,
+          "COL_FLOOR_CEIL": 6
+        },
+        "non_none_boundary_fraction": 0.23076923076923078,
+        "open_faces": [
+          {
+            "column": 893,
+            "row": 21,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 893,
+            "row": 22,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 895,
+            "row": 21,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 893,
+            "row": 23,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 895,
+            "row": 22,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 893,
+            "row": 24,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 895,
+            "row": 23,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 893,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 895,
+            "row": 24,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 893,
+            "row": 26,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 895,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 893,
+            "row": 27,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 895,
+            "row": 26,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 893,
+            "row": 28,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 895,
+            "row": 27,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 893,
+            "row": 29,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 895,
+            "row": 28,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 893,
+            "row": 30,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 895,
+            "row": 29,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 895,
+            "row": 30,
+            "face": "right",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 3815,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14290,
+          "sample_world_y": 742,
+          "column": 893,
+          "row": 25
+        },
+        {
+          "frame": 3816,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14293,
+          "sample_world_y": 740,
+          "column": 893,
+          "row": 25
+        },
+        {
+          "frame": 3817,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14295,
+          "sample_world_y": 738,
+          "column": 893,
+          "row": 25
+        },
+        {
+          "frame": 3818,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14298,
+          "sample_world_y": 737,
+          "column": 893,
+          "row": 25
+        },
+        {
+          "frame": 3819,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14301,
+          "sample_world_y": 735,
+          "column": 893,
+          "row": 24
+        },
+        {
+          "frame": 3820,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14304,
+          "sample_world_y": 734,
+          "column": 894,
+          "row": 24
+        },
+        {
+          "frame": 3821,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14307,
+          "sample_world_y": 732,
+          "column": 894,
+          "row": 24
+        },
+        {
+          "frame": 3822,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14309,
+          "sample_world_y": 731,
+          "column": 894,
+          "row": 24
+        },
+        {
+          "frame": 3823,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14312,
+          "sample_world_y": 731,
+          "column": 894,
+          "row": 24
+        },
+        {
+          "frame": 3824,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14315,
+          "sample_world_y": 730,
+          "column": 894,
+          "row": 24
+        },
+        {
+          "frame": 3825,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14318,
+          "sample_world_y": 730,
+          "column": 894,
+          "row": 24
+        },
+        {
+          "frame": 3826,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14320,
+          "sample_world_y": 729,
+          "column": 895,
+          "row": 24
+        },
+        {
+          "frame": 3827,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14323,
+          "sample_world_y": 729,
+          "column": 895,
+          "row": 24
+        },
+        {
+          "frame": 3828,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14326,
+          "sample_world_y": 729,
+          "column": 895,
+          "row": 24
+        },
+        {
+          "frame": 3829,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14329,
+          "sample_world_y": 730,
+          "column": 895,
+          "row": 24
+        },
+        {
+          "frame": 3830,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14331,
+          "sample_world_y": 730,
+          "column": 895,
+          "row": 24
+        },
+        {
+          "frame": 3831,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14334,
+          "sample_world_y": 731,
+          "column": 895,
+          "row": 24
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "78": {
+      "geometry": {
+        "number": 78,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 30
+        },
+        "area": 30,
+        "bbox": [
+          906,
+          21,
+          908,
+          30
+        ],
+        "boundary": {
+          "COL_NONE": 14,
+          "COL_FLOOR_CEIL": 6,
+          "COL_DOWN_RIGHT_SPIKE": 1,
+          "COL_DEATH_RIGHT": 1,
+          "COL_UP_RIGHT_SPIKE": 1,
+          "COL_DOWN_LEFT_SPIKE": 1,
+          "COL_DEATH_LEFT": 1,
+          "COL_UP_LEFT_SPIKE": 1
+        },
+        "non_none_boundary_fraction": 0.46153846153846156,
+        "open_faces": [
+          {
+            "column": 906,
+            "row": 21,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 906,
+            "row": 22,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 906,
+            "row": 23,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 906,
+            "row": 24,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 906,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 908,
+            "row": 24,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 906,
+            "row": 26,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 908,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 906,
+            "row": 27,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 908,
+            "row": 26,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 908,
+            "row": 27,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 908,
+            "row": 28,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 908,
+            "row": 29,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 908,
+            "row": 30,
+            "face": "right",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 3890,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14497,
+          "sample_world_y": 713,
+          "column": 906,
+          "row": 23
+        },
+        {
+          "frame": 3891,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14500,
+          "sample_world_y": 714,
+          "column": 906,
+          "row": 23
+        },
+        {
+          "frame": 3892,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14503,
+          "sample_world_y": 716,
+          "column": 906,
+          "row": 23
+        },
+        {
+          "frame": 3893,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14506,
+          "sample_world_y": 717,
+          "column": 906,
+          "row": 23
+        },
+        {
+          "frame": 3894,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14508,
+          "sample_world_y": 718,
+          "column": 906,
+          "row": 23
+        },
+        {
+          "frame": 3895,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14511,
+          "sample_world_y": 720,
+          "column": 906,
+          "row": 24
+        },
+        {
+          "frame": 3896,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14514,
+          "sample_world_y": 722,
+          "column": 907,
+          "row": 24
+        },
+        {
+          "frame": 3897,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14517,
+          "sample_world_y": 724,
+          "column": 907,
+          "row": 24
+        },
+        {
+          "frame": 3898,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14520,
+          "sample_world_y": 726,
+          "column": 907,
+          "row": 24
+        },
+        {
+          "frame": 3899,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14522,
+          "sample_world_y": 728,
+          "column": 907,
+          "row": 24
+        },
+        {
+          "frame": 3900,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14525,
+          "sample_world_y": 731,
+          "column": 907,
+          "row": 24
+        },
+        {
+          "frame": 3901,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14528,
+          "sample_world_y": 733,
+          "column": 908,
+          "row": 24
+        },
+        {
+          "frame": 3902,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14531,
+          "sample_world_y": 736,
+          "column": 908,
+          "row": 25
+        },
+        {
+          "frame": 3903,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14533,
+          "sample_world_y": 739,
+          "column": 908,
+          "row": 25
+        },
+        {
+          "frame": 3904,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14536,
+          "sample_world_y": 742,
+          "column": 908,
+          "row": 25
+        },
+        {
+          "frame": 3905,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14539,
+          "sample_world_y": 746,
+          "column": 908,
+          "row": 25
+        },
+        {
+          "frame": 3906,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14542,
+          "sample_world_y": 749,
+          "column": 908,
+          "row": 25
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "79": {
+      "geometry": {
+        "number": 79,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 21
+        },
+        "area": 21,
+        "bbox": [
+          918,
+          21,
+          920,
+          27
+        ],
+        "boundary": {
+          "COL_NONE": 12,
+          "COL_FLOOR_CEIL": 3,
+          "COL_DEATH_BOTTOM": 2,
+          "COL_DEATH_TOP": 1,
+          "COL_DOWN_RIGHT_SPIKE": 1,
+          "COL_DOWN_LEFT_SPIKE": 1
+        },
+        "non_none_boundary_fraction": 0.4,
+        "open_faces": [
+          {
+            "column": 918,
+            "row": 21,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 918,
+            "row": 22,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 920,
+            "row": 21,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 918,
+            "row": 23,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 920,
+            "row": 22,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 918,
+            "row": 24,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 920,
+            "row": 23,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 918,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 918,
+            "row": 26,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 918,
+            "row": 27,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 920,
+            "row": 26,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 920,
+            "row": 27,
+            "face": "right",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": [
+          {
+            "column": 922,
+            "row": 22,
+            "id": 26,
+            "name": "COIN2",
+            "distance_tiles": 2
+          }
+        ]
+      },
+      "live_entries": [
+        {
+          "frame": 3959,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14688,
+          "sample_world_y": 724,
+          "column": 918,
+          "row": 24
+        },
+        {
+          "frame": 3960,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14691,
+          "sample_world_y": 720,
+          "column": 918,
+          "row": 24
+        },
+        {
+          "frame": 3961,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14694,
+          "sample_world_y": 717,
+          "column": 918,
+          "row": 23
+        },
+        {
+          "frame": 3962,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14697,
+          "sample_world_y": 713,
+          "column": 918,
+          "row": 23
+        },
+        {
+          "frame": 3963,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14699,
+          "sample_world_y": 710,
+          "column": 918,
+          "row": 23
+        },
+        {
+          "frame": 3964,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14702,
+          "sample_world_y": 706,
+          "column": 918,
+          "row": 23
+        },
+        {
+          "frame": 3965,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14705,
+          "sample_world_y": 703,
+          "column": 919,
+          "row": 22
+        },
+        {
+          "frame": 3966,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14708,
+          "sample_world_y": 701,
+          "column": 919,
+          "row": 22
+        },
+        {
+          "frame": 3967,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14710,
+          "sample_world_y": 698,
+          "column": 919,
+          "row": 22
+        },
+        {
+          "frame": 3968,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14713,
+          "sample_world_y": 696,
+          "column": 919,
+          "row": 22
+        },
+        {
+          "frame": 3969,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14716,
+          "sample_world_y": 693,
+          "column": 919,
+          "row": 22
+        },
+        {
+          "frame": 3970,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14719,
+          "sample_world_y": 691,
+          "column": 919,
+          "row": 22
+        },
+        {
+          "frame": 3971,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14721,
+          "sample_world_y": 690,
+          "column": 920,
+          "row": 22
+        },
+        {
+          "frame": 3972,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14724,
+          "sample_world_y": 688,
+          "column": 920,
+          "row": 22
+        },
+        {
+          "frame": 3973,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14727,
+          "sample_world_y": 687,
+          "column": 920,
+          "row": 21
+        },
+        {
+          "frame": 3974,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14730,
+          "sample_world_y": 685,
+          "column": 920,
+          "row": 21
+        },
+        {
+          "frame": 3975,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14732,
+          "sample_world_y": 684,
+          "column": 920,
+          "row": 21
+        },
+        {
+          "frame": 3976,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14735,
+          "sample_world_y": 684,
+          "column": 920,
+          "row": 21
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "80": {
+      "geometry": {
+        "number": 80,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 23
+        },
+        "area": 23,
+        "bbox": [
+          926,
+          21,
+          928,
+          30
+        ],
+        "boundary": {
+          "COL_NONE": 11,
+          "COL_FLOOR_CEIL": 4,
+          "COL_ALL": 5,
+          "COL_DEATH": 4,
+          "COL_DOWN_LEFT_SPIKE": 1,
+          "COL_DEATH_LEFT": 1
+        },
+        "non_none_boundary_fraction": 0.5769230769230769,
+        "open_faces": [
+          {
+            "column": 926,
+            "row": 21,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 926,
+            "row": 22,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 926,
+            "row": 23,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 926,
+            "row": 24,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 926,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 928,
+            "row": 24,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 926,
+            "row": 26,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 928,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 926,
+            "row": 27,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 928,
+            "row": 26,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 926,
+            "row": 28,
+            "face": "left",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": [
+          {
+            "column": 922,
+            "row": 22,
+            "id": 26,
+            "name": "COIN2",
+            "distance_tiles": 4
+          }
+        ]
+      },
+      "live_entries": [
+        {
+          "frame": 4006,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14818,
+          "sample_world_y": 726,
+          "column": 926,
+          "row": 24
+        },
+        {
+          "frame": 4007,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14821,
+          "sample_world_y": 727,
+          "column": 926,
+          "row": 24
+        },
+        {
+          "frame": 4008,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14824,
+          "sample_world_y": 729,
+          "column": 926,
+          "row": 24
+        },
+        {
+          "frame": 4009,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14826,
+          "sample_world_y": 729,
+          "column": 926,
+          "row": 24
+        },
+        {
+          "frame": 4010,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14829,
+          "sample_world_y": 730,
+          "column": 926,
+          "row": 24
+        },
+        {
+          "frame": 4011,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14832,
+          "sample_world_y": 730,
+          "column": 927,
+          "row": 24
+        },
+        {
+          "frame": 4012,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14835,
+          "sample_world_y": 731,
+          "column": 927,
+          "row": 24
+        },
+        {
+          "frame": 4013,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14838,
+          "sample_world_y": 731,
+          "column": 927,
+          "row": 24
+        },
+        {
+          "frame": 4014,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14840,
+          "sample_world_y": 731,
+          "column": 927,
+          "row": 24
+        },
+        {
+          "frame": 4015,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14843,
+          "sample_world_y": 730,
+          "column": 927,
+          "row": 24
+        },
+        {
+          "frame": 4016,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14846,
+          "sample_world_y": 730,
+          "column": 927,
+          "row": 24
+        },
+        {
+          "frame": 4017,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14849,
+          "sample_world_y": 729,
+          "column": 928,
+          "row": 24
+        },
+        {
+          "frame": 4018,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14851,
+          "sample_world_y": 729,
+          "column": 928,
+          "row": 24
+        },
+        {
+          "frame": 4019,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14854,
+          "sample_world_y": 728,
+          "column": 928,
+          "row": 24
+        },
+        {
+          "frame": 4020,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14857,
+          "sample_world_y": 728,
+          "column": 928,
+          "row": 24
+        },
+        {
+          "frame": 4021,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14860,
+          "sample_world_y": 728,
+          "column": 928,
+          "row": 24
+        },
+        {
+          "frame": 4022,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 14862,
+          "sample_world_y": 728,
+          "column": 928,
+          "row": 24
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "81": {
+      "geometry": {
+        "number": 81,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 20
+        },
+        "area": 20,
+        "bbox": [
+          945,
+          21,
+          946,
+          30
+        ],
+        "boundary": {
+          "COL_ALL": 12,
+          "COL_FLOOR_CEIL": 4,
+          "COL_DEATH": 4,
+          "COL_NONE": 4
+        },
+        "non_none_boundary_fraction": 0.8333333333333334,
+        "open_faces": [
+          {
+            "column": 946,
+            "row": 24,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 945,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 946,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 945,
+            "row": 26,
+            "face": "left",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [
+        {
+          "frame": 4115,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15120,
+          "sample_world_y": 751,
+          "column": 945,
+          "row": 25
+        },
+        {
+          "frame": 4116,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15122,
+          "sample_world_y": 749,
+          "column": 945,
+          "row": 25
+        },
+        {
+          "frame": 4117,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15125,
+          "sample_world_y": 747,
+          "column": 945,
+          "row": 25
+        },
+        {
+          "frame": 4118,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15128,
+          "sample_world_y": 745,
+          "column": 945,
+          "row": 25
+        },
+        {
+          "frame": 4119,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15131,
+          "sample_world_y": 742,
+          "column": 945,
+          "row": 25
+        },
+        {
+          "frame": 4120,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15133,
+          "sample_world_y": 740,
+          "column": 945,
+          "row": 25
+        },
+        {
+          "frame": 4121,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15136,
+          "sample_world_y": 737,
+          "column": 946,
+          "row": 25
+        },
+        {
+          "frame": 4122,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15139,
+          "sample_world_y": 735,
+          "column": 946,
+          "row": 24
+        },
+        {
+          "frame": 4123,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15142,
+          "sample_world_y": 733,
+          "column": 946,
+          "row": 24
+        },
+        {
+          "frame": 4124,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15145,
+          "sample_world_y": 731,
+          "column": 946,
+          "row": 24
+        },
+        {
+          "frame": 4125,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15147,
+          "sample_world_y": 730,
+          "column": 946,
+          "row": 24
+        },
+        {
+          "frame": 4126,
+          "player": 0,
+          "mode": 1,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15150,
+          "sample_world_y": 728,
+          "column": 946,
+          "row": 24
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "84": {
+      "geometry": {
+        "number": 84,
+        "tile": 79,
+        "names": {
+          "X_NO_OUTLINE": 15
+        },
+        "area": 15,
+        "bbox": [
+          974,
+          22,
+          976,
+          26
+        ],
+        "boundary": {
+          "COL_DEATH": 3,
+          "COL_ALL": 6,
+          "COL_NONE": 7
+        },
+        "non_none_boundary_fraction": 0.5625,
+        "open_faces": [
+          {
+            "column": 974,
+            "row": 23,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 974,
+            "row": 24,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 976,
+            "row": 23,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 974,
+            "row": 25,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 976,
+            "row": 24,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 974,
+            "row": 26,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 976,
+            "row": 25,
+            "face": "right",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": [
+          {
+            "column": 966,
+            "row": 28,
+            "id": 27,
+            "name": "COIN3",
+            "distance_tiles": 8
+          }
+        ]
+      },
+      "live_entries": [
+        {
+          "frame": 4283,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15584,
+          "sample_world_y": 729,
+          "column": 974,
+          "row": 24
+        },
+        {
+          "frame": 4284,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15587,
+          "sample_world_y": 731,
+          "column": 974,
+          "row": 24
+        },
+        {
+          "frame": 4285,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15590,
+          "sample_world_y": 733,
+          "column": 974,
+          "row": 24
+        },
+        {
+          "frame": 4286,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15593,
+          "sample_world_y": 736,
+          "column": 974,
+          "row": 25
+        },
+        {
+          "frame": 4287,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15595,
+          "sample_world_y": 739,
+          "column": 974,
+          "row": 25
+        },
+        {
+          "frame": 4288,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15598,
+          "sample_world_y": 743,
+          "column": 974,
+          "row": 25
+        },
+        {
+          "frame": 4289,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15601,
+          "sample_world_y": 747,
+          "column": 975,
+          "row": 25
+        },
+        {
+          "frame": 4290,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15604,
+          "sample_world_y": 751,
+          "column": 975,
+          "row": 25
+        },
+        {
+          "frame": 4291,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15606,
+          "sample_world_y": 756,
+          "column": 975,
+          "row": 26
+        },
+        {
+          "frame": 4292,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15609,
+          "sample_world_y": 760,
+          "column": 975,
+          "row": 26
+        },
+        {
+          "frame": 4293,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15612,
+          "sample_world_y": 754,
+          "column": 975,
+          "row": 26
+        },
+        {
+          "frame": 4294,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15615,
+          "sample_world_y": 750,
+          "column": 975,
+          "row": 25
+        },
+        {
+          "frame": 4295,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15617,
+          "sample_world_y": 745,
+          "column": 976,
+          "row": 25
+        },
+        {
+          "frame": 4296,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15620,
+          "sample_world_y": 741,
+          "column": 976,
+          "row": 25
+        },
+        {
+          "frame": 4297,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15623,
+          "sample_world_y": 738,
+          "column": 976,
+          "row": 25
+        },
+        {
+          "frame": 4298,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15626,
+          "sample_world_y": 735,
+          "column": 976,
+          "row": 24
+        },
+        {
+          "frame": 4299,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15629,
+          "sample_world_y": 732,
+          "column": 976,
+          "row": 24
+        },
+        {
+          "frame": 4300,
+          "player": 0,
+          "mode": 0,
+          "mini": 0,
+          "metatile": 79,
+          "sample_world_x": 15631,
+          "sample_world_y": 730,
+          "column": 976,
+          "row": 24
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    }
+  },
+  "source_mismatches": [],
+  "outside_source": [],
+  "centre_probes": 4363,
+  "limitation": "Raw collision reads and end-of-frame survival only. Mode-specific geometry, source intent, objectives and original-ROM reproduction remain required.",
+  "inputs": {
+    "index_sha256": "4f4d6b455f32729ebd723f033df4a74067344009cd8989358f5e6e5b48e3c0c3",
+    "case_sha256": "f29a632dacf8628e4f6a2cfde6bd2d47c1342e71196c28f1a4a0e15652ded285",
+    "cpu_sha256": "97d6c60b8011dbd89f67bd4c42cbed1d7efac289cf33f6534e1cf228436ccdd8",
+    "rom_sha256": "f047943c1d98d6becfe0d5e3c36cb3f70f4dbdbf56cde680012140ca0e63da2f",
+    "core_sha256": "f551d35489077c5e30e14b665c324ed693ae68db0d093e16e84869df003a7a8d",
+    "debug_sha256": "f498382551678431300faf0932f59c151a7a30bc720aac04508218fdf8d384ca"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "status": "motion-triage",
+  "motions": 111,
+  "intersections": [],
+  "source_mismatches": [],
+  "coordinate_convention": "Raw probe pixels represented by their centres (+1/2 on both axes).",
+  "limitation": "Geometric leads, not intent verdicts. Mode/size changes and motions over 16 pixels are excluded; teleport, reset and history validity require separate review.",
+  "inputs": {
+    "index_sha256": "4f4d6b455f32729ebd723f033df4a74067344009cd8989358f5e6e5b48e3c0c3",
+    "case_sha256": "f29a632dacf8628e4f6a2cfde6bd2d47c1342e71196c28f1a4a0e15652ded285",
+    "cpu_sha256": "97d6c60b8011dbd89f67bd4c42cbed1d7efac289cf33f6534e1cf228436ccdd8",
+    "rom_sha256": "f047943c1d98d6becfe0d5e3c36cb3f70f4dbdbf56cde680012140ca0e63da2f",
+    "core_sha256": "f551d35489077c5e30e14b665c324ed693ae68db0d093e16e84869df003a7a8d",
+    "debug_sha256": "f498382551678431300faf0932f59c151a7a30bc720aac04508218fdf8d384ca"
+  }
+}

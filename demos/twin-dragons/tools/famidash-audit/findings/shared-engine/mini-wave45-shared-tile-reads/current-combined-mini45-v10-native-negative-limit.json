@@ -1,0 +1,18 @@
+{
+  "status": "not-qualified; original approach not preserved",
+  "original_case_sha256": "4d4b90b58e30214b2e3f40d63cee69bebef411447407ce7c220ee17884dfff8e",
+  "original_first_suspect_frame": 3064,
+  "comparisons": {
+    "previous_v8": {
+      "first_mechanical_difference": 961,
+      "log_sha256": "b8f173cd97d0280fc63506f82961e1eb76994c754fb9b5decab512d82398d7f5"
+    },
+    "current_v10": {
+      "first_mechanical_difference": 2058,
+      "log_sha256": "2c53687e58446a73023ecbfd7f56d617e1ba1ffa26873b57e48b425c615f71b9"
+    }
+  },
+  "fceumm_first_difference": 2058,
+  "negative_retiming": false,
+  "limitation": "Standalone current Mini66 proof exists; these combined builds cannot use this old tape as a strict current negative. HUGE negative was not attempted after standard failure."
+}

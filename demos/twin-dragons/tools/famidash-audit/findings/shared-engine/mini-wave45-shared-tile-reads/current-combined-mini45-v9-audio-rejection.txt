@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/workspace/harmony-fofii/demos/twin-dragons/tools/famidash-audit/check-bank-assets.py", line 60, in <module>
+    main()
+  File "/workspace/harmony-fofii/demos/twin-dragons/tools/famidash-audit/check-bank-assets.py", line 48, in main
+    checked = compare(old, (baseline / "famidash.dbg").read_text(),
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/harmony-fofii/demos/twin-dragons/tools/famidash-audit/check-bank-assets.py", line 28, in compare
+    assert before == after, ("asset placement changed", name, before, after)
+           ^^^^^^^^^^^^^^^
+AssertionError: ('asset placement changed', 'PCM_BANK', {'start': 40960, 'size': 6337, 'ooffs': 442384}, {'start': 42182, 'size': 6337, 'ooffs': 443606})
