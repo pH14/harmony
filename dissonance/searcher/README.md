@@ -909,6 +909,13 @@ An admission-gap refusal also joins the last image before returning. Errors from
 these state-mutating operations or the native pool wrapper join the writer and
 retain any primary execution error alongside a typed persistence failure.
 Unwinding also joins without detaching.
+A failed publication permanently retires its writer and latches the persistence
+error, including failures after checkpoint rename or journal writing. Once an
+error is handed back, the direct coordinator refuses further reservation,
+admission and completion; `plan` yields no additional jobs. Workload integrity
+is checked before persistence polling, so an already latched typed contradiction
+remains primary whether the writer is ready or still pending. Finalization keeps
+its typed persistence secondary and never emits `End` after either failure.
 
 `CheckpointPlan::max_image_bytes` bounds one immutable image and its private
 allocation ledger. Package entry points use 64 MiB. This is a staging resource
@@ -939,6 +946,10 @@ the coordinator performs that boundary synchronously through the same codec
 and publication engine before freezing an oversized image. Evidence, draw,
 JSON-backed fields and in-flight records stream from borrowed boundary data on
 this path, so pressure does not first allocate an oversized intermediate Vec.
+Rejected header and policy buffers are also borrowed on the pressure path. The
+synchronous writer serializes a private borrowed view with the publication owner
+override, preserving the owned header's field order and bytes. An owned image
+header is cloned only after its complete allocation charge has been accepted.
 
 Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
