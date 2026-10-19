@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "/workspace/harmony-fofii/demos/twin-dragons/tools/famidash-audit/check-wave66-dispatch.py", line 163, in <module>
+    result = check(args.source, args.rom, args.debug)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/harmony-fofii/demos/twin-dragons/tools/famidash-audit/check-wave66-dispatch.py", line 49, in check
+    direct_calls = [check_direct_call_bank(rom, symbols, segments, caller, callee)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/harmony-fofii/demos/twin-dragons/tools/famidash-audit/check-wave66-dispatch.py", line 29, in check_direct_call_bank
+    assert caller // 8192 == callee // 8192 and caller_bank == callee_bank, (
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: bank mismatch: _check_spike_motion in PRG bank 240 directly calls _ss_test_tile in PRG bank 248 at CPU $B18D
