@@ -222,7 +222,7 @@ LIB_PARTITIONS = {
             "vendor::x86::logical_identity_live_tests",
         ),
         "Execution Protocol": (
-            "control", "control_state", "session_trace", "host_telemetry", "sdk_telemetry",
+            "control", "control_state", "service_transcript", "session_trace", "host_telemetry", "sdk_telemetry",
             "vendor::x86::dispatch", "vendor::arm64::dispatch",
         ),
     },
