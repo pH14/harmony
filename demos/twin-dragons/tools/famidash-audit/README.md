@@ -97,7 +97,7 @@ bug and is not automatically an intended-playability requirement.
 
 For newer upstream builds, `symbol-runtime.mjs` reads the build's DBG symbols
 instead of assuming the release RAM map. Set `FAMIDASH_SYMBOLS` when searching
-or replaying that build. Its Dissonance adapter translates read-only target
+or replaying that build, including `render-entry.mjs` when capturing a frame. Its Dissonance adapter translates read-only target
 observations; gameplay snapshots and controller execution remain native to
 the ROM. The only RAM write is the normal level-select setup. Witnesses
 record their symbol layout and are independently replayed with FCEUmm's

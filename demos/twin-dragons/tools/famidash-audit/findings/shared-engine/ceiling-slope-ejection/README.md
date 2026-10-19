@@ -34,10 +34,26 @@ entries by either player. Each control has 84 ball probes in the repaired
 section. These are section-qualified controls; other routes and objectives
 remain under source assessment.
 
+Current upstream independently reproduces the same ceiling entry at frame
+2128 in a fresh Dissonance round 74 input. The original and repaired traces
+agree through frame 2127. FCEUmm verifies both complete 2136-frame traces;
+bank-aware reads show nine original target entries and zero repaired entries
+by either player. Both inputs eventually die at frame 2136, at different
+positions. The repair keeps the ball outside the ceiling during this window.
+
+Fresh Dissonance round 75 finds a current clearing control of 6310 frames,
+including Coin3. FCEUmm matches every gameplay frame; full CPU review records
+6942 centre probes, 84 ball probes in the affected section, zero entries into
+the target component and zero source mismatches. This is a section control,
+not qualification of every other contact along the route. Mesen replays the
+ordinary contact tape and clearing input on HUGE without retiming: every
+observation after frame 40 matches the standard repaired trace, excluding
+physical level identity.
+
 The patch applies cleanly to the pinned release and current upstream. Both
-original functions are byte-identical between those source revisions. Only
-release A/B/C builds and the release runtime evidence above are verified.
-Current runtime, other slope orientations, probe-depth selection, broader
-landing behavior, frame budget and remaining configurations still require
-validation. The patch is an experiment, not an upstream-ready repair or a
-clean-round qualification.
+original functions are byte-identical between those source revisions.
+Release A/B/C and all current A/B/C/D/E/HUGE builds compile. Decoded current
+geometry matches all 170 standard and 173 HUGE levels. Other slope
+orientations, probe-depth selection, broader landing behavior, frame budget
+and remaining release configurations still require validation. The patch is
+an experiment, not an upstream-ready repair or a clean-round qualification.

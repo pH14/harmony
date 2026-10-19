@@ -3,11 +3,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { gunzipSync } from "node:zlib";
 import { png } from "../png.mjs";
 import { machine } from "./runtime.mjs";
+import { symbolMachine } from "./symbol-runtime.mjs";
 
 const [casePath, romPath, runtime, frameText, output] = process.argv.slice(2);
 if (!output) throw new Error("render-entry.mjs CASE ROM RUNTIME FRAME OUTPUT.png");
 const bytes = await readFile(casePath), record = JSON.parse(casePath.endsWith(".gz") ? gunzipSync(bytes) : bytes);
-const m = await machine(romPath, runtime), frame = Number(frameText);
+const m = process.env.FAMIDASH_SYMBOLS
+  ? await symbolMachine(romPath, runtime, process.env.FAMIDASH_SYMBOLS) : await machine(romPath, runtime);
+const frame = Number(frameText);
 if (!Number.isSafeInteger(frame) || frame < 1) throw new Error("frame must be a positive integer");
 m.boot(record.side ?? record.options?.side ?? record.layout?.side,
   record.level ?? record.boot_level ?? record.layout?.level, record.setup?.menu_delay ?? record.options?.menu_delay ?? 0,

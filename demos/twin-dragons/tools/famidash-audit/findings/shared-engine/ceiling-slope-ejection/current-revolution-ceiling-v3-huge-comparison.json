@@ -1,0 +1,14 @@
+{
+  "contact_trace_frames": 2136,
+  "contact_standard_vs_huge_difference_frames": [
+    3,
+    4
+  ],
+  "clearing_frames": 6310,
+  "clearing_standard_vs_huge_difference_frames": [
+    3,
+    4
+  ],
+  "excluded_field": "physical level identity",
+  "invariant": "Every gameplay observation after frame40 agrees without input retiming."
+}

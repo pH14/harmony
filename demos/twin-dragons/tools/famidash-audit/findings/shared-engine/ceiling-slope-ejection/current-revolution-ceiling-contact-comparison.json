@@ -1,0 +1,87 @@
+{
+  "original-canonical": {
+    "centre_probes": 74,
+    "target45_entries": [
+      {
+        "frame": 2128,
+        "player": 0,
+        "mode": 2,
+        "metatile": 111,
+        "sample_world_x": 6241,
+        "sample_world_y": 795
+      },
+      {
+        "frame": 2129,
+        "player": 0,
+        "mode": 2,
+        "metatile": 111,
+        "sample_world_x": 6244,
+        "sample_world_y": 793
+      },
+      {
+        "frame": 2130,
+        "player": 0,
+        "mode": 2,
+        "metatile": 111,
+        "sample_world_x": 6247,
+        "sample_world_y": 794
+      },
+      {
+        "frame": 2131,
+        "player": 0,
+        "mode": 2,
+        "metatile": 111,
+        "sample_world_x": 6251,
+        "sample_world_y": 791
+      },
+      {
+        "frame": 2132,
+        "player": 0,
+        "mode": 2,
+        "metatile": 111,
+        "sample_world_x": 6254,
+        "sample_world_y": 793
+      },
+      {
+        "frame": 2133,
+        "player": 0,
+        "mode": 2,
+        "metatile": 111,
+        "sample_world_x": 6258,
+        "sample_world_y": 794
+      },
+      {
+        "frame": 2134,
+        "player": 0,
+        "mode": 2,
+        "metatile": 111,
+        "sample_world_x": 6261,
+        "sample_world_y": 780
+      },
+      {
+        "frame": 2135,
+        "player": 0,
+        "mode": 2,
+        "metatile": 111,
+        "sample_world_x": 6265,
+        "sample_world_y": 777
+      },
+      {
+        "frame": 2136,
+        "player": 0,
+        "mode": 2,
+        "metatile": 111,
+        "sample_world_x": 6268,
+        "sample_world_y": 776
+      }
+    ],
+    "source_mismatches": [],
+    "section_probes": 65
+  },
+  "v3": {
+    "centre_probes": 74,
+    "target45_entries": [],
+    "source_mismatches": [],
+    "section_probes": 65
+  }
+}

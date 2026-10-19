@@ -1,0 +1,652 @@
+{
+  "2100": {
+    "frames": 6310,
+    "all_player_centre_probes": 6942,
+    "target45_hits": [],
+    "section_ball_probes": [
+      {
+        "frame": 2104,
+        "player": 1,
+        "x": 6161,
+        "y": 878,
+        "metatile": 0
+      },
+      {
+        "frame": 2105,
+        "player": 0,
+        "x": 6161,
+        "y": 903,
+        "metatile": 0
+      },
+      {
+        "frame": 2105,
+        "player": 1,
+        "x": 6165,
+        "y": 874,
+        "metatile": 0
+      },
+      {
+        "frame": 2106,
+        "player": 0,
+        "x": 6165,
+        "y": 903,
+        "metatile": 0
+      },
+      {
+        "frame": 2106,
+        "player": 1,
+        "x": 6168,
+        "y": 870,
+        "metatile": 0
+      },
+      {
+        "frame": 2107,
+        "player": 0,
+        "x": 6168,
+        "y": 903,
+        "metatile": 0
+      },
+      {
+        "frame": 2107,
+        "player": 1,
+        "x": 6172,
+        "y": 866,
+        "metatile": 0
+      },
+      {
+        "frame": 2108,
+        "player": 0,
+        "x": 6172,
+        "y": 902,
+        "metatile": 0
+      },
+      {
+        "frame": 2108,
+        "player": 1,
+        "x": 6175,
+        "y": 861,
+        "metatile": 0
+      },
+      {
+        "frame": 2109,
+        "player": 0,
+        "x": 6175,
+        "y": 900,
+        "metatile": 0
+      },
+      {
+        "frame": 2109,
+        "player": 1,
+        "x": 6179,
+        "y": 856,
+        "metatile": 0
+      },
+      {
+        "frame": 2110,
+        "player": 0,
+        "x": 6179,
+        "y": 898,
+        "metatile": 148
+      },
+      {
+        "frame": 2110,
+        "player": 1,
+        "x": 6182,
+        "y": 851,
+        "metatile": 0
+      },
+      {
+        "frame": 2111,
+        "player": 0,
+        "x": 6182,
+        "y": 897,
+        "metatile": 148
+      },
+      {
+        "frame": 2111,
+        "player": 1,
+        "x": 6185,
+        "y": 845,
+        "metatile": 0
+      },
+      {
+        "frame": 2112,
+        "player": 0,
+        "x": 6185,
+        "y": 895,
+        "metatile": 0
+      },
+      {
+        "frame": 2112,
+        "player": 1,
+        "x": 6189,
+        "y": 839,
+        "metatile": 0
+      },
+      {
+        "frame": 2113,
+        "player": 0,
+        "x": 6189,
+        "y": 893,
+        "metatile": 0
+      },
+      {
+        "frame": 2113,
+        "player": 1,
+        "x": 6192,
+        "y": 833,
+        "metatile": 0
+      },
+      {
+        "frame": 2114,
+        "player": 0,
+        "x": 6192,
+        "y": 892,
+        "metatile": 0
+      },
+      {
+        "frame": 2114,
+        "player": 1,
+        "x": 6196,
+        "y": 828,
+        "metatile": 0
+      },
+      {
+        "frame": 2115,
+        "player": 0,
+        "x": 6196,
+        "y": 890,
+        "metatile": 0
+      },
+      {
+        "frame": 2115,
+        "player": 1,
+        "x": 6199,
+        "y": 821,
+        "metatile": 0
+      },
+      {
+        "frame": 2116,
+        "player": 0,
+        "x": 6199,
+        "y": 889,
+        "metatile": 0
+      },
+      {
+        "frame": 2116,
+        "player": 1,
+        "x": 6203,
+        "y": 816,
+        "metatile": 0
+      },
+      {
+        "frame": 2117,
+        "player": 0,
+        "x": 6203,
+        "y": 886,
+        "metatile": 0
+      },
+      {
+        "frame": 2117,
+        "player": 1,
+        "x": 6206,
+        "y": 809,
+        "metatile": 0
+      },
+      {
+        "frame": 2118,
+        "player": 0,
+        "x": 6206,
+        "y": 884,
+        "metatile": 0
+      },
+      {
+        "frame": 2118,
+        "player": 1,
+        "x": 6210,
+        "y": 804,
+        "metatile": 0
+      },
+      {
+        "frame": 2119,
+        "player": 0,
+        "x": 6210,
+        "y": 883,
+        "metatile": 148
+      },
+      {
+        "frame": 2119,
+        "player": 1,
+        "x": 6213,
+        "y": 798,
+        "metatile": 152
+      },
+      {
+        "frame": 2120,
+        "player": 0,
+        "x": 6213,
+        "y": 881,
+        "metatile": 148
+      },
+      {
+        "frame": 2120,
+        "player": 1,
+        "x": 6216,
+        "y": 797,
+        "metatile": 152
+      },
+      {
+        "frame": 2121,
+        "player": 0,
+        "x": 6216,
+        "y": 880,
+        "metatile": 148
+      },
+      {
+        "frame": 2121,
+        "player": 1,
+        "x": 6220,
+        "y": 798,
+        "metatile": 152
+      },
+      {
+        "frame": 2122,
+        "player": 0,
+        "x": 6220,
+        "y": 878,
+        "metatile": 0
+      },
+      {
+        "frame": 2122,
+        "player": 1,
+        "x": 6223,
+        "y": 800,
+        "metatile": 0
+      },
+      {
+        "frame": 2123,
+        "player": 0,
+        "x": 6223,
+        "y": 876,
+        "metatile": 0
+      },
+      {
+        "frame": 2123,
+        "player": 1,
+        "x": 6227,
+        "y": 802,
+        "metatile": 0
+      },
+      {
+        "frame": 2124,
+        "player": 0,
+        "x": 6227,
+        "y": 874,
+        "metatile": 0
+      },
+      {
+        "frame": 2124,
+        "player": 1,
+        "x": 6230,
+        "y": 804,
+        "metatile": 0
+      },
+      {
+        "frame": 2125,
+        "player": 0,
+        "x": 6230,
+        "y": 872,
+        "metatile": 0
+      },
+      {
+        "frame": 2125,
+        "player": 1,
+        "x": 6234,
+        "y": 806,
+        "metatile": 0
+      },
+      {
+        "frame": 2126,
+        "player": 0,
+        "x": 6234,
+        "y": 867,
+        "metatile": 0
+      },
+      {
+        "frame": 2126,
+        "player": 1,
+        "x": 6237,
+        "y": 811,
+        "metatile": 0
+      },
+      {
+        "frame": 2127,
+        "player": 0,
+        "x": 6237,
+        "y": 865,
+        "metatile": 0
+      },
+      {
+        "frame": 2127,
+        "player": 1,
+        "x": 6241,
+        "y": 813,
+        "metatile": 152
+      },
+      {
+        "frame": 2128,
+        "player": 0,
+        "x": 6241,
+        "y": 863,
+        "metatile": 0
+      },
+      {
+        "frame": 2128,
+        "player": 1,
+        "x": 6244,
+        "y": 815,
+        "metatile": 152
+      },
+      {
+        "frame": 2129,
+        "player": 0,
+        "x": 6244,
+        "y": 860,
+        "metatile": 0
+      },
+      {
+        "frame": 2129,
+        "player": 1,
+        "x": 6247,
+        "y": 818,
+        "metatile": 0
+      },
+      {
+        "frame": 2130,
+        "player": 0,
+        "x": 6247,
+        "y": 857,
+        "metatile": 0
+      },
+      {
+        "frame": 2130,
+        "player": 1,
+        "x": 6251,
+        "y": 821,
+        "metatile": 0
+      },
+      {
+        "frame": 2131,
+        "player": 0,
+        "x": 6251,
+        "y": 853,
+        "metatile": 0
+      },
+      {
+        "frame": 2131,
+        "player": 1,
+        "x": 6254,
+        "y": 825,
+        "metatile": 0
+      },
+      {
+        "frame": 2132,
+        "player": 0,
+        "x": 6254,
+        "y": 850,
+        "metatile": 0
+      },
+      {
+        "frame": 2132,
+        "player": 1,
+        "x": 6258,
+        "y": 828,
+        "metatile": 0
+      },
+      {
+        "frame": 2133,
+        "player": 0,
+        "x": 6258,
+        "y": 846,
+        "metatile": 0
+      },
+      {
+        "frame": 2133,
+        "player": 1,
+        "x": 6261,
+        "y": 832,
+        "metatile": 0
+      },
+      {
+        "frame": 2134,
+        "player": 0,
+        "x": 6261,
+        "y": 841,
+        "metatile": 0
+      },
+      {
+        "frame": 2134,
+        "player": 1,
+        "x": 6265,
+        "y": 837,
+        "metatile": 0
+      },
+      {
+        "frame": 2135,
+        "player": 0,
+        "x": 6265,
+        "y": 837,
+        "metatile": 0
+      },
+      {
+        "frame": 2135,
+        "player": 1,
+        "x": 6268,
+        "y": 841,
+        "metatile": 0
+      },
+      {
+        "frame": 2136,
+        "player": 0,
+        "x": 6268,
+        "y": 832,
+        "metatile": 0
+      },
+      {
+        "frame": 2136,
+        "player": 1,
+        "x": 6272,
+        "y": 846,
+        "metatile": 0
+      },
+      {
+        "frame": 2137,
+        "player": 0,
+        "x": 6272,
+        "y": 827,
+        "metatile": 0
+      },
+      {
+        "frame": 2137,
+        "player": 1,
+        "x": 6275,
+        "y": 851,
+        "metatile": 0
+      },
+      {
+        "frame": 2138,
+        "player": 0,
+        "x": 6275,
+        "y": 822,
+        "metatile": 0
+      },
+      {
+        "frame": 2138,
+        "player": 1,
+        "x": 6278,
+        "y": 856,
+        "metatile": 0
+      },
+      {
+        "frame": 2139,
+        "player": 0,
+        "x": 6278,
+        "y": 820,
+        "metatile": 0
+      },
+      {
+        "frame": 2139,
+        "player": 1,
+        "x": 6282,
+        "y": 858,
+        "metatile": 0
+      },
+      {
+        "frame": 2140,
+        "player": 0,
+        "x": 6282,
+        "y": 817,
+        "metatile": 0
+      },
+      {
+        "frame": 2140,
+        "player": 1,
+        "x": 6285,
+        "y": 861,
+        "metatile": 0
+      },
+      {
+        "frame": 2141,
+        "player": 0,
+        "x": 6285,
+        "y": 814,
+        "metatile": 147
+      },
+      {
+        "frame": 2141,
+        "player": 1,
+        "x": 6289,
+        "y": 864,
+        "metatile": 0
+      },
+      {
+        "frame": 2142,
+        "player": 0,
+        "x": 6289,
+        "y": 811,
+        "metatile": 0
+      },
+      {
+        "frame": 2142,
+        "player": 1,
+        "x": 6292,
+        "y": 867,
+        "metatile": 0
+      },
+      {
+        "frame": 2143,
+        "player": 0,
+        "x": 6292,
+        "y": 809,
+        "metatile": 0
+      },
+      {
+        "frame": 2143,
+        "player": 1,
+        "x": 6296,
+        "y": 869,
+        "metatile": 0
+      },
+      {
+        "frame": 2144,
+        "player": 0,
+        "x": 6296,
+        "y": 807,
+        "metatile": 0
+      },
+      {
+        "frame": 2144,
+        "player": 1,
+        "x": 6299,
+        "y": 871,
+        "metatile": 0
+      },
+      {
+        "frame": 2145,
+        "player": 0,
+        "x": 6299,
+        "y": 805,
+        "metatile": 0
+      },
+      {
+        "frame": 2145,
+        "player": 1,
+        "x": 6302,
+        "y": 873,
+        "metatile": 0
+      },
+      {
+        "frame": 2146,
+        "player": 0,
+        "x": 6302,
+        "y": 804,
+        "metatile": 0
+      }
+    ],
+    "source_mismatches": [],
+    "other_fill_component_counts": {
+      "91": 23,
+      "127": 6,
+      "93": 6,
+      "82": 6,
+      "63": 6,
+      "83": 6,
+      "54": 6,
+      "84": 6,
+      "2": 14,
+      "42": 6,
+      "43": 52,
+      "44": 39,
+      "65": 6,
+      "6": 7,
+      "7": 11,
+      "8": 14,
+      "9": 15,
+      "10": 7,
+      "11": 7,
+      "12": 7,
+      "13": 15,
+      "14": 15,
+      "15": 321,
+      "67": 10,
+      "68": 8,
+      "131": 5,
+      "48": 5,
+      "69": 10,
+      "70": 8,
+      "96": 6,
+      "87": 6,
+      "73": 6,
+      "58": 3,
+      "74": 3,
+      "59": 6,
+      "60": 6,
+      "18": 700,
+      "61": 17,
+      "76": 18,
+      "50": 17,
+      "77": 15,
+      "51": 17,
+      "78": 8,
+      "52": 11,
+      "53": 19,
+      "79": 3,
+      "90": 4,
+      "80": 8,
+      "62": 8,
+      "81": 12,
+      "40": 692
+    },
+    "limitation": "Mode/section control only. Other fill entries need source intent review."
+  }
+}
