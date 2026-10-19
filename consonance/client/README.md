@@ -211,6 +211,16 @@ checksum over everything except the page data. Every 32 entries along a chain
 the next entry stores its full page list over setup and becomes an anchor, so
 an import reads at most 32 extents.
 
+`PageSegments::free` consumes a writable extent; callers cannot reclaim raw
+coordinates while retaining a slice of that range. Abandonment transfers a
+private, non-cloneable reclamation capability when the writer relinquishes ownership.
+Committed copies share one allocation identity and retirement marker. Every
+retirement verifies the actual backing segment identity, and an allocation's
+accounting retires at most once even if several committed copies are freed.
+Only unique ownership permits hole punching; surviving committed readers keep
+their bytes unchanged. A foreign extent cannot reclaim a numerically matching
+range in another allocator.
+
 The target commitment identifies the resolved state, not the chosen delta
 layout. For VMM snapshots, it binds the cache image prefix to the sparse
 sidecar with only the established logical CPU-state projections: init-valued

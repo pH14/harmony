@@ -442,11 +442,11 @@ impl LocalIndex {
     }
 
     fn abandon(state: Weak<Mutex<State>>, work: Arc<lock_work::LockWork>) -> segments::Abandon {
-        Box::new(move |segment_id, offset, len| {
+        Box::new(move |reclamation| {
             if let Some(state) = state.upgrade() {
                 work.lock(&state, lock_work::Site::Abandon)
                     .segments
-                    .free(segment_id, offset, len);
+                    .reclaim(reclamation);
             }
         })
     }
