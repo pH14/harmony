@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pub mod config;
 mod investigate;
-mod prepare;
+pub(crate) mod prepare;
 mod runs;
 mod terminal;
-mod workflow;
+pub(crate) mod workflow;
 use super::{Operation, Package, Request};
 use crate::config::{Config, Result};
 use std::path::Path;
@@ -115,6 +115,47 @@ impl Package for Faults {
         }
     }
 }
+pub fn execute_prepared(request: Request, prepared: crate::handoff::Prepared) -> Result<u8> {
+    let config = config::Config::from_shared(&request.config)?;
+    match request.operation {
+        Operation::Search if request.selection.is_none() => {
+            let execution = prepared
+                .execution
+                .as_ref()
+                .ok_or("missing prepared supervisor")?;
+            let bundle = prepared
+                .bundle
+                .as_ref()
+                .ok_or("search requires a supervisor bundle")?;
+            let vocabulary = prepared
+                .vocabulary
+                .as_ref()
+                .ok_or("search requires admitted vocabulary")?
+                .clone();
+            let artifacts = faults_workload::Artifacts {
+                kernel: prepared.kernel.clone(),
+                initramfs: execution.initramfs(&prepared.base),
+            };
+            workflow::search_prepared(
+                config,
+                request.destination,
+                artifacts,
+                bundle.clone(),
+                vocabulary,
+            )
+        }
+        Operation::Search | Operation::Resume => workflow::continue_search(request),
+        Operation::Run => workflow::run_prepared(config, request, prepared),
+        Operation::Replay => investigate::replay(
+            request.selection.ok_or("select a search or branch")?,
+            request.destination,
+            request.repeat,
+        ),
+        Operation::Branch => investigate::branch(request),
+        _ => Err("unsupported guarded fault operation".into()),
+    }
+}
+
 pub fn worker() -> Result<u8> {
     use faults_workload::consonance::{SESSION_SERVICE, service_factory};
     consonance_client::session::serve_inherited(|service| {

@@ -421,8 +421,19 @@ host. A Consonance command refuses an absent or unqualified companion.
 ## Storage and boundaries
 
 The Linux and macOS CLI installations pair `harmony` with
-`harmony-consonance-host` in the same `bin` directory. `harmony` keeps the native
-QuickNES runner and dispatches Consonance commands to the paired host. On Linux,
+`harmony-consonance-host` in the same `bin` directory. `harmony` owns workload
+builds, language and runtime downloads, OCI staging, native QuickNES and saved-run
+browsing. Search still prepares its input automatically. Consonance execution
+receives a captured prepared request after this work completes. The guarded host
+contains the coordinator and its same-image session worker, including fault,
+NES Consonance, nested KVM and reviewed UML execution. Its dedicated entrypoint
+accepts prepared execution, readiness probes and the internal session-worker
+role; it does not parse the frontend command tree or construct its package
+method table. The shared application library exposes separate frontend and guarded entrypoints;
+NES saved execution selects its native or guarded backend through static generic
+dispatch, so the guarded entrypoint has no native QuickNES callback. Role
+selection uses independent bin entrypoints, so building both bins with
+`--all-features` preserves native frontend behavior. On Linux,
 it copies the static-musl host into a fresh executable memfd, seals its complete
 contents against writes and resizing, then executes it. The host checks those
 seals, the full loaded ELF bytes (including writable initializers), and its
@@ -430,9 +441,28 @@ executable mappings before it parses a command. On macOS, the paired host is a
 hardened signed executable with the OS-only library constraint and Hypervisor
 entitlement. It checks the kernel-loaded code hash, exact signing policy and
 loaded system images before command dispatch. A missing or invalid host stops
-Consonance commands. The paired host reparses the original command and its
-configuration; the frontend's runner choice cannot authorize a later changed
-recipe. Saved Consonance recordings retain this strict host identity. Native
+Consonance execution and readiness checks. `harmony prepare` performs its build
+outside the guarded host. The frontend checks companion admission before implicit
+preparation, then unlinks the captured request file and execs the host with its
+held read-only descriptor. The execution keeps the command's original PID,
+process group and terminal, including for guest shells. The captured backing
+remains held for the host's lifetime; no request pathname survives the handoff.
+
+The `harmony-prepared-execution-v1` handoff is a self-contained postcard file
+with JSON request metadata and a trailing SHA-256. Its total size is at most
+1 GiB, metadata at most 1 MiB, and a captured UML profile at most 4,096 ordinary
+files. Actions and host scripts are captured in that file as well. The host checks
+the checksum before decoding, rejects another release/platform-source/protocol,
+validates the operation, pinned backend, options and runtime qualification, and
+reconstructs canonical OCI control bytes from the prepared record. It independently
+admits the actual archived application image and supervisor vocabulary. Prepared
+rootfs inflation is bounded to 1 GiB. Source recipe/image changes after capture
+cannot replace those bytes. Captured UML files are independently loaded through
+the reviewed-profile validator. The temporary profile and captured inputs remain
+owned until execution finishes. Saved execution reloads and verifies its original
+manifest and artifact identities in the host; a prepared request cannot supply
+replacement artifacts for replay, branching or resume. Saved Consonance recordings
+retain this strict host identity. Native
 QuickNES recordings retain their native loaded-image identity.
 Linux hosts must permit executable memfds; `vm.memfd_noexec=2` prevents
 Consonance execution and produces an explicit error.

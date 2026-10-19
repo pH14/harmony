@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::config::Result;
-#[derive(Clone, Debug, clap::Args)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, clap::Args)]
 pub struct Selection {
     #[arg(value_name = "NAME")]
     pub run: String,
     #[arg(long, help = "Select a numbered finding from the search")]
     pub finding: Option<usize>,
 }
-#[derive(Clone, Debug, Default, clap::Args)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize, clap::Args)]
 pub struct Point {
     #[arg(long, help="Select the boundary after this many recorded actions", conflicts_with_all=["rewind", "rewind_time"])]
     pub step: Option<usize>,

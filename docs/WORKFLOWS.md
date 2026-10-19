@@ -86,6 +86,12 @@ unified features enable the client mock backend. An exact-name PASS assertion
 in the ANSI-stripped `host-tests.log` prevents a skipped or omitted case from satisfying coverage,
 without a second build. This covers real Session extent-copy telemetry without
 requiring a guest hardware run.
+The paired CLI package fixture also verifies that the guarded executable refuses
+frontend commands, mismatched readiness protocols and truncated prepared requests.
+The CLI's shared application tests run through its library target; the reviewed
+UML profile consumer selects that same library test explicitly. Both shipped
+binary entrypoints remain separate, including under all-feature builds.
+
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed

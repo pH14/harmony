@@ -202,6 +202,46 @@ fn require_explicit_nested_pair(runtime: &crate::runtime::Consonance) -> Result<
 }
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn execute(mut request: Request) -> Result<u8> {
+    let fresh = if request.selection.is_none() {
+        let runtime = crate::runners::consonance(&request.config.runner)?;
+        require_explicit_nested_pair(&runtime)?;
+        crate::runners::resolve(&mut request.config.runner, request.offline)?;
+        let runtime = crate::runners::consonance(&request.config.runner)?;
+        let (kernel, base) = crate::runtime::read_pair(&runtime)?;
+        let initramfs = nested_driver::host::prepare(
+            request
+                .config
+                .workload
+                .input
+                .as_deref()
+                .ok_or("provide the nested driver image")?,
+            &base,
+        )?;
+        Some((kernel, initramfs))
+    } else {
+        None
+    };
+    execute_ready(request, fresh)
+}
+
+pub fn execute_prepared(request: Request, prepared: crate::handoff::Prepared) -> Result<u8> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        let fresh = prepared
+            .execution
+            .as_ref()
+            .map(|execution| (prepared.kernel.clone(), execution.initramfs(&prepared.base)));
+        execute_ready(request, fresh)
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        let _ = (request, prepared);
+        Err("nested execution requires Linux x86-64 KVM".into())
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn execute_ready(mut request: Request, fresh: Option<(Vec<u8>, Vec<u8>)>) -> Result<u8> {
     Nested.validate_runner(&mut request.config)?;
     if request.selection.is_some() && request.operation != Operation::Replay {
         return Err("nested does not yet support starting a search from saved state".into());
@@ -225,21 +265,7 @@ fn execute(mut request: Request) -> Result<u8> {
     let (kernel, initramfs) = if let Some((path, source, _)) = &original {
         saved_replay_inputs(path, source)?
     } else {
-        let runtime = crate::runners::consonance(&request.config.runner)?;
-        require_explicit_nested_pair(&runtime)?;
-        crate::runners::resolve(&mut request.config.runner, request.offline)?;
-        let runtime = crate::runners::consonance(&request.config.runner)?;
-        let (kernel, base) = crate::runtime::read_pair(&runtime)?;
-        let initramfs = nested_driver::host::prepare(
-            request
-                .config
-                .workload
-                .input
-                .as_deref()
-                .ok_or("provide the nested driver image")?,
-            &base,
-        )?;
-        (kernel, initramfs)
+        fresh.ok_or("missing prepared nested execution")?
     };
     if matches!(request.operation, Operation::Check | Operation::Prepare) {
         println!(

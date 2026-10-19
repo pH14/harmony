@@ -10,10 +10,26 @@ from pathlib import Path
 import sys
 
 INPUTS = (
-    "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
-    "consonance/harmony-linux", "consonance/hypercall-proto",
-    "consonance/hypercall-doorbell", "consonance/execution-proto",
-    "consonance/process-proto", "cli/src/oci/mod.rs", "cli/src/oci/runner.rs",
+    "Cargo.toml",
+    "Cargo.lock",
+    "flake.nix",
+    "flake.lock",
+    "consonance/harmony-linux",
+    "consonance/hypercall-proto",
+    "consonance/hypercall-doorbell",
+    "consonance/execution-proto",
+    "consonance/process-proto",
+    "consonance/oci",
+    "cli/src/oci",
+    "cli/src/handoff.rs",
+    "cli/src/preparation.rs",
+    "cli/src/package.rs",
+    "cli/src/host_identity.rs",
+    "cli/src/host_boundary.rs",
+    "cli/src/lib.rs",
+    "cli/src/guarded.rs",
+    "cli/src/native.rs",
+    "cli/src/bin/harmony-consonance-host.rs",
 )
 EXCLUDED = {".git", "target", "build", "dl", "__pycache__"}
 MANIFEST = "runtime-manifest.json"

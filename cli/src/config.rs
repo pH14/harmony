@@ -91,7 +91,7 @@ pub struct Execution {
     #[arg(long)]
     pub backend: Option<String>,
 }
-#[derive(Clone, Debug, Default, clap::Args)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize, clap::Args)]
 pub struct Budget {
     #[arg(long)]
     pub seed: Option<u64>,
