@@ -55,6 +55,34 @@ impl<B: Backend<A = Arm64>> Guest<B> {
     fn restore(&mut self, state: &Arm64VcpuState) {
         self.backend.restore(state).unwrap();
     }
+
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(target_os = "linux", target_os = "macos"),
+        not(miri)
+    ))]
+    fn restore_with_fresh_fallback(
+        &mut self,
+        state: &Arm64VcpuState,
+        _factory: impl FnOnce() -> B,
+    ) {
+        match self.backend.restore(state) {
+            Ok(()) => {}
+            #[cfg(target_os = "linux")]
+            Err(vmm_backend::BackendError::Arm64ReusedVcpuRestoreUnsafe) => {
+                let mut fresh = Self::new(_factory(), &[]);
+                fresh._memory.0.copy_from_slice(&self._memory.0);
+                fresh.backend.invalidate_instruction_cache(
+                    fresh._memory.0.as_ptr() as usize,
+                    fresh._memory.0.len(),
+                );
+                fresh.restore(state);
+                *self = fresh;
+                eprintln!("ARM KVM reused restore refused; fresh fallback restored state");
+            }
+            Err(error) => panic!("unexpected restore refusal: {error}"),
+        }
+    }
 }
 
 #[test]
@@ -90,7 +118,7 @@ fn live_backend() -> impl Backend<A = Arm64> {
     not(miri)
 ))]
 #[ignore = "live ARM hypervisor; registered in HOST_TESTS"]
-fn guest_system_registers_survive_reused_and_fresh_restore() {
+fn guest_system_registers_survive_restore_with_fresh_fallback() {
     let mut failures = Vec::new();
     for (name, msr, mrs) in [
         ("CONTEXTIDR_EL1", 0xd518_d020, 0xd538_d021),
@@ -135,11 +163,11 @@ fn guest_system_registers_survive_reused_and_fresh_restore() {
                 "{name} detour must change the guest's next read"
             );
         }
-        guest.restore(&cut);
+        guest.restore_with_fresh_fallback(&cut, live_backend);
         let reused = guest.next_store();
         drop(guest);
         let mut fresh = Guest::new(live_backend(), &program);
-        fresh.restore(&cut);
+        fresh.restore_with_fresh_fallback(&cut, live_backend);
         let cold = fresh.next_store();
         let sensitivity = if observable {
             "observable"
@@ -147,7 +175,7 @@ fn guest_system_registers_survive_reused_and_fresh_restore() {
             "not observable on this host"
         };
         eprintln!(
-            "{name}: {sensitivity}; uninterrupted={uninterrupted:#x} captured={original:#x} immediate-detour={immediate_detour:#x} detour-after-exit={detour:#x} reused={reused:#x} fresh={cold:#x}"
+            "{name}: {sensitivity}; uninterrupted={uninterrupted:#x} captured={original:#x} immediate-detour={immediate_detour:#x} detour-after-exit={detour:#x} restore-or-fallback={reused:#x} fresh={cold:#x}"
         );
         if uninterrupted != original || original != reused || original != cold {
             failures.push((name, uninterrupted, original, reused, cold));
@@ -181,7 +209,7 @@ fn guest_mdccint_survives_fresh_restore() {
     drop(source);
 
     let mut restored = Guest::new(live_backend(), &program);
-    restored.restore(&saved);
+    restored.restore_with_fresh_fallback(&saved, live_backend);
     assert_eq!(restored.next_store(), 1 << 30);
 }
 
@@ -214,7 +242,7 @@ fn guest_gic_cpu_interface_survives_fresh_restore() {
         let uninterrupted = source.next_store();
         drop(source);
         let mut target = Guest::new(live_backend(), &program);
-        target.restore(&cut);
+        target.restore_with_fresh_fallback(&cut, live_backend);
         let resumed = target.next_store();
         assert_eq!(first, uninterrupted, "{name} uninterrupted");
         assert_eq!(first, resumed, "{name} fresh restore");
@@ -268,7 +296,7 @@ fn guest_gic_spi_trigger_survives_fresh_restore() {
     let mut target = Guest::new(live_backend(), &program);
     let fresh = target.save().gic.unwrap().config[2];
     assert_eq!(fresh, 0);
-    target.restore(&cut);
+    target.restore_with_fresh_fallback(&cut, live_backend);
     assert_eq!(target.save().gic.as_ref().unwrap().config[2] as u64, first);
     let resumed = target.next_store();
     eprintln!(
@@ -282,7 +310,7 @@ fn guest_gic_spi_trigger_survives_fresh_restore() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
-fn guest_gicr_bases_survive_reused_and_fresh_restore() {
+fn guest_gicr_bases_survive_restore_with_fresh_fallback() {
     let movz = |r: u32, imm: u32, shift: u32| 0xd280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
     let movk = |r: u32, imm: u32, shift: u32| 0xf280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
     for (name, offset) in [("PROPBASER", 0x70), ("PENDBASER", 0x78)] {
@@ -316,20 +344,20 @@ fn guest_gicr_bases_survive_reused_and_fresh_restore() {
         let uninterrupted = source.next_store();
         let detour = source.next_store();
         assert_ne!(detour, first);
-        source.restore(&cut);
+        source.restore_with_fresh_fallback(&cut, live_backend);
         let mut reused_state = source.save();
         reused_state.vtimer.counter = cut.vtimer.counter;
         assert_eq!(reused_state, cut);
         let reused = source.next_store();
 
         let mut fresh = Guest::new(live_backend(), &program);
-        fresh.restore(&cut);
+        fresh.restore_with_fresh_fallback(&cut, live_backend);
         let mut fresh_state = fresh.save();
         fresh_state.vtimer.counter = cut.vtimer.counter;
         assert_eq!(fresh_state, cut);
         let cold = fresh.next_store();
         eprintln!(
-            "GICR_{name} saved={saved_base:#x} uninterrupted={uninterrupted:#x} detour={detour:#x} reused={reused:#x} fresh={cold:#x}"
+            "GICR_{name} saved={saved_base:#x} uninterrupted={uninterrupted:#x} detour={detour:#x} restore-or-fallback={reused:#x} fresh={cold:#x}"
         );
         assert_eq!(uninterrupted, first);
         assert_eq!(reused, first);
@@ -370,12 +398,12 @@ fn guest_nonzero_spi_route_rejects_capture_and_zero_route_restores() {
         reused.backend.save(),
         Err(vmm_backend::BackendError::Unsupported { .. })
     ));
-    reused.restore(&cut);
+    reused.restore_with_fresh_fallback(&cut, live_backend);
     let restored = reused.next_store();
     assert_eq!(restored, 0);
 
     let mut fresh = Guest::new(live_backend(), &program(1));
-    fresh.restore(&cut);
+    fresh.restore_with_fresh_fallback(&cut, live_backend);
     let cold = fresh.next_store();
     assert_eq!(cold, 0);
     eprintln!(
@@ -446,7 +474,7 @@ fn guest_physical_timer_state_refuses_capture_and_legacy_restore() {
         assert_eq!(target.save().gic, valid.gic);
     }
 
-    source.restore(&pristine_cut);
+    source.restore_with_fresh_fallback(&pristine_cut, live_backend);
     for (slot, word) in source._memory.0.chunks_exact_mut(4).zip(pristine) {
         slot.copy_from_slice(&word.to_le_bytes());
     }
@@ -546,10 +574,10 @@ fn guest_disr_state_refuses_capture_and_legacy_restore() {
     ));
     assert_eq!(source.next_store(), 0x1234);
 
-    source.restore(&clean);
+    source.restore_with_fresh_fallback(&clean, live_backend);
     assert_eq!(source.next_store(), 0);
     let mut cold = Guest::new(live_backend(), &program);
-    cold.restore(&clean);
+    cold.restore_with_fresh_fallback(&clean, live_backend);
     assert_eq!(cold.next_store(), 0);
 }
 
@@ -592,17 +620,21 @@ fn guest_os_lock_refuses_capture_and_clean_restore_unlocks() {
         locked,
         "old restore refusal is neutral"
     );
-    source.restore(&clean);
+    source.restore_with_fresh_fallback(&clean, live_backend);
     let unlocked = source.next_store();
-    assert_eq!(unlocked & 2, 0, "reused restore must clear OSLSR.OSLK");
+    assert_eq!(
+        unlocked & 2,
+        0,
+        "restore with fresh fallback must clear OSLSR.OSLK"
+    );
     let continued = source.save();
     assert_eq!(source.next_store(), unlocked, "unlocked capture is neutral");
-    source.restore(&continued);
+    source.restore_with_fresh_fallback(&continued, live_backend);
     assert_eq!(source.next_store(), unlocked);
     drop(source);
 
     let mut fresh = Guest::new(live_backend(), &program);
-    fresh.restore(&clean);
+    fresh.restore_with_fresh_fallback(&clean, live_backend);
     assert_eq!(fresh.next_store(), unlocked, "fresh restore");
     drop(fresh);
 
@@ -615,7 +647,7 @@ fn guest_os_lock_refuses_capture_and_clean_restore_unlocks() {
         "policy must clear OSLSR.OSLK"
     );
     println!(
-        "ARM_OS_LOCK locked={locked:#x} capture=refused capture_continuation=pass unlocked={unlocked:#x} unlocked_capture=pass reused=pass fresh=pass policy=pass legacy=refused"
+        "ARM_OS_LOCK locked={locked:#x} capture=refused capture_continuation=pass unlocked={unlocked:#x} unlocked_capture=pass reused=refused-fresh-fallback fresh=pass policy=pass legacy=refused"
     );
 }
 
@@ -645,18 +677,18 @@ fn guest_actlr_state_refuses_capture_and_clean_restore_resets_it() {
             if what == "save HVF with noncanonical ACTLR_EL1"
     ));
     assert_eq!(source.next_store(), 2);
-    source.restore(&clean);
+    source.restore_with_fresh_fallback(&clean, live_backend);
     assert_eq!(source.next_store(), 0);
     drop(source);
 
     let mut cold = Guest::new(live_backend(), &program);
-    cold.restore(&clean);
+    cold.restore_with_fresh_fallback(&clean, live_backend);
     assert_eq!(cold.next_store(), 0);
     drop(cold);
 
     let mut independent = Guest::new(live_backend(), &program);
     assert_eq!(independent.next_store(), 2);
-    independent.restore(&clean);
+    independent.restore_with_fresh_fallback(&clean, live_backend);
     assert_eq!(independent.next_store(), 0);
     drop(independent);
 
@@ -707,12 +739,12 @@ fn guest_pauth_keys_refuse_capture_and_clean_restore_resets_them() {
             "{name} capture"
         );
         assert_eq!(source.next_store(), 0x1234, "{name} uninterrupted read");
-        source.restore(&clean);
+        source.restore_with_fresh_fallback(&clean, live_backend);
         assert_eq!(source.next_store(), 0, "{name} reused restore");
         drop(source);
 
         let mut cold = Guest::new(live_backend(), &program);
-        cold.restore(&clean);
+        cold.restore_with_fresh_fallback(&clean, live_backend);
         assert_eq!(cold.next_store(), 0, "{name} fresh restore");
         drop(cold);
 
@@ -732,7 +764,7 @@ fn kvm_irq_mask_read_matches_full_capture() {
     assert!(state.core.pstate & (1 << 7) != 0);
     assert_eq!(guest.backend.read_irq_mask().unwrap(), Some(true));
     state.core.pstate &= !(1 << 7);
-    guest.restore(&state);
+    guest.restore_with_fresh_fallback(&state, live_backend);
     assert_eq!(guest.backend.read_irq_mask().unwrap(), Some(false));
     assert_eq!(guest.save().core.pstate & (1 << 7), 0);
 }
@@ -756,7 +788,7 @@ fn smccc_workaround_features_match_backend_levels() {
         state.core.x[0] = 0x8000_0001;
         state.core.x[1] = feature;
         state.core.x[4] = OUTPUT;
-        guest.restore(&state);
+        guest.restore_with_fresh_fallback(&state, live_backend);
         let observed = guest.next_store();
         let expected = match (index, levels[index]) {
             (0 | 2, 0) => u64::MAX,
@@ -832,7 +864,7 @@ fn psci_profile_matches_guest_hvc() {
         state.core.x[2] = 0;
         state.core.x[3] = 0;
         state.core.x[4] = OUTPUT;
-        guest.restore(&state);
+        guest.restore_with_fresh_fallback(&state, live_backend);
         let expected = match profile {
             Arm64PsciProfile::HvfSingleVcpu => hvf,
             Arm64PsciProfile::KvmPsci10 => kvm,

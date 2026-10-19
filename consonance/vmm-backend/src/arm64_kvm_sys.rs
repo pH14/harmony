@@ -91,6 +91,7 @@ pub struct LiveKvm {
     _kvm: Kvm,
     run: *mut kvm_run,
     mmap_size: usize,
+    guest_run_attempted: bool,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     physical: crate::PhysicalTelemetry,
 }
@@ -143,6 +144,7 @@ impl LiveKvm {
             mmap_size,
             cancel_run: std::sync::Arc::default(),
             physical: crate::PhysicalTelemetry::default(),
+            guest_run_attempted: false,
         };
         this.vcpu_init()?;
         let mmfr0 = this.get_one_reg(
@@ -334,6 +336,13 @@ impl LiveKvm {
 }
 
 impl Arm64Kvm for LiveKvm {
+    fn validate_restore_boundary(&self) -> Result<()> {
+        if self.guest_run_attempted {
+            return Err(BackendError::Arm64ReusedVcpuRestoreUnsafe);
+        }
+        Ok(())
+    }
+
     fn register_list(&self) -> Result<Vec<u64>> {
         let mut probe = RegList::new(0).map_err(|_| BackendError::InvalidState)?;
         match self.vcpu.get_reg_list(&mut probe) {
@@ -602,6 +611,7 @@ impl Arm64Kvm for LiveKvm {
         // SAFETY: `self.run` is this vCPU's live shared `kvm_run` mapping and
         // the vCPU is not concurrently running.
         unsafe { (*self.run).immediate_exit = 1 };
+        self.guest_run_attempted = true;
         let result = self.run_entry(crate::RunPurpose::Completion);
         // SAFETY: same exclusive mapping access as above; always clear the
         // one-shot flag before interpreting the ioctl result.
@@ -619,6 +629,7 @@ impl Arm64Kvm for LiveKvm {
         if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
             return Err(BackendError::Internal("KVM run canceled by host"));
         }
+        self.guest_run_attempted = true;
         self.run_entry(crate::RunPurpose::Guest)
             .map_err(BackendError::Io)?;
         self.read_run_view()

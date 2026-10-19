@@ -39,6 +39,11 @@ pub enum BackendError {
     #[error("AMD KVM cannot safely restore a previously run vCPU; use a fresh VM")]
     AmdReusedVcpuRestoreUnsafe,
 
+    #[error(
+        "ARM KVM cannot safely restore translations or executable bytes in a previously run vCPU; use a fresh VM"
+    )]
+    Arm64ReusedVcpuRestoreUnsafe,
+
     #[error("snapshot host core class {saved:?} differs from this backend's {current:?}")]
     HostCoreClassMismatch {
         saved: Option<crate::HostCoreClass>,
