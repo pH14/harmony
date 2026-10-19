@@ -999,7 +999,9 @@ mod runtime {
             for ready in ready_hooks {
                 launch_ready_hook(ready, spec, bundle, &mut runtime.hooks, supervisor, tick)?;
             }
-            let disturbed = !active.is_empty() || supervisor.pending_faults() != 0;
+            let disturbed = !active.is_empty()
+                || supervisor.pending_faults() != 0
+                || supervisor.any_node_held_down();
             if let Some(quiet) = runtime
                 .recovery_watch
                 .observe(tick, disturbed, &runtime.recovery)
