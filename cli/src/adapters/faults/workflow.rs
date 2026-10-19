@@ -5,16 +5,17 @@ use super::{
     runs::Manifest,
 };
 use crate::runs::Destination;
+#[cfg(feature = "frontend")]
+use faults_workload::admission::ExecutionMode;
 use faults_workload::{
     Artifacts, FaultVocabulary,
-    admission::ExecutionMode,
     package::{self, SearchStart},
 };
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+#[cfg(feature = "frontend")]
+use std::path::PathBuf;
+use std::{fs, path::Path};
 
+#[cfg(feature = "frontend")]
 pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
     let requested_mode = super::requested_execution_mode(&c);
     let runtime_error = super::config::resolve(&mut c, offline)
@@ -71,6 +72,7 @@ pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
     Ok(if ready { 0 } else { 2 })
 }
 
+#[cfg(feature = "frontend")]
 fn configure(mut c: Config, offline: bool) -> Result<Config> {
     if c.image.is_none() {
         return Err("provide a workload input or configure its build".into());
@@ -106,6 +108,7 @@ fn store_runtime_artifacts(
     Ok(())
 }
 
+#[cfg(feature = "frontend")]
 fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
     let (kernel, base) = crate::runtime::read_pair(&c.runtime())?;
     let generated = c.bundle()?;
@@ -125,6 +128,7 @@ fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
     ))
 }
 
+#[cfg(feature = "frontend")]
 pub(crate) fn prepare_plain_staged(
     staged: &oci_support::image::StagedImage,
     request: &oci_support::bundle::LaunchRequest,
@@ -133,6 +137,7 @@ pub(crate) fn prepare_plain_staged(
     prepare_plain_staged_with(staged, request, mode, || {})
 }
 
+#[cfg(feature = "frontend")]
 fn prepare_plain_staged_with(
     staged: &oci_support::image::StagedImage,
     request: &oci_support::bundle::LaunchRequest,
@@ -175,6 +180,7 @@ pub fn report_code(report: &faults_workload::Report) -> u8 {
     }
 }
 
+#[cfg(feature = "frontend")]
 pub fn search(c: Config, destination: Destination, offline: bool) -> Result<u8> {
     let c = configure(c, offline)?;
     let (artifacts, bundle, vocabulary) = prepare_faults(&c)?;
@@ -298,6 +304,7 @@ fn search_faults(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "frontend")]
 pub fn run(
     config: Config,
     destination: Destination,
@@ -397,7 +404,7 @@ pub fn run_prepared(
     finish(&out, &mut manifest, result)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
 

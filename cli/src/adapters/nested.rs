@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use super::{Operation, Package, Request};
-use crate::{
-    config::{Config, Result},
-    runs::Manifest,
-};
+#[cfg(feature = "frontend")]
+use super::Package;
+use super::{Operation, Request};
+use crate::config::Config;
+use crate::{config::Result, runs::Manifest};
 use std::{fs, path::Path};
+#[cfg(feature = "frontend")]
 pub struct Nested;
 
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
@@ -108,6 +109,7 @@ fn replay_report_matches(
     }
 }
 
+#[cfg(feature = "frontend")]
 impl Package for Nested {
     fn name(&self) -> &'static str {
         "nested"
@@ -126,19 +128,7 @@ impl Package for Nested {
         Ok(())
     }
     fn validate_runner(&self, c: &mut Config) -> Result<()> {
-        if c.runner.kind.is_empty() {
-            c.runner.kind = "consonance".into();
-        }
-        if c.runner.kind != "consonance"
-            || c.runner
-                .backend
-                .as_deref()
-                .is_some_and(|b| b != "auto" && b != "kvm")
-        {
-            return Err("nested requires the consonance runner with KVM".into());
-        }
-        c.runner.backend = Some("kvm".into());
-        Ok(())
+        validate_runner(c)
     }
     fn supports(&self, op: Operation) -> bool {
         matches!(
@@ -190,10 +180,12 @@ impl Package for Nested {
     }
 }
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(feature = "frontend")]
 fn execute(_: Request) -> Result<u8> {
     Err("nested requires a Linux x86-64 host with nested KVM enabled".into())
 }
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(feature = "frontend")]
 fn require_explicit_nested_pair(runtime: &crate::runtime::Consonance) -> Result<()> {
     if runtime.kernel.is_none() || runtime.base_initramfs.is_none() {
         return Err("nested requires both runner.options.kernel built with nested KVM support and runner.options.base_initramfs for its matching OCI base".into());
@@ -201,6 +193,7 @@ fn require_explicit_nested_pair(runtime: &crate::runtime::Consonance) -> Result<
     Ok(())
 }
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(feature = "frontend")]
 fn execute(mut request: Request) -> Result<u8> {
     let fresh = if request.selection.is_none() {
         let runtime = crate::runners::consonance(&request.config.runner)?;
@@ -224,6 +217,22 @@ fn execute(mut request: Request) -> Result<u8> {
     execute_ready(request, fresh)
 }
 
+fn validate_runner(c: &mut Config) -> Result<()> {
+    if c.runner.kind.is_empty() {
+        c.runner.kind = "consonance".into();
+    }
+    if c.runner.kind != "consonance"
+        || c.runner
+            .backend
+            .as_deref()
+            .is_some_and(|b| b != "auto" && b != "kvm")
+    {
+        return Err("nested requires the consonance runner with KVM".into());
+    }
+    c.runner.backend = Some("kvm".into());
+    Ok(())
+}
+
 pub fn execute_prepared(request: Request, prepared: crate::handoff::Prepared) -> Result<u8> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
@@ -242,7 +251,7 @@ pub fn execute_prepared(request: Request, prepared: crate::handoff::Prepared) ->
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn execute_ready(mut request: Request, fresh: Option<(Vec<u8>, Vec<u8>)>) -> Result<u8> {
-    Nested.validate_runner(&mut request.config)?;
+    validate_runner(&mut request.config)?;
     if request.selection.is_some() && request.operation != Operation::Replay {
         return Err("nested does not yet support starting a search from saved state".into());
     }
@@ -320,7 +329,7 @@ fn execute_ready(mut request: Request, fresh: Option<(Vec<u8>, Vec<u8>)>) -> Res
     Ok(if result? { 1 } else { 0 })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
 

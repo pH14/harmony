@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#[cfg(feature = "frontend")]
+use crate::config::Result;
 use crate::{
-    config::{Budget, Config, Result},
+    config::{Budget, Config},
     runs::Destination,
     selection::{Point, Selection},
 };
-use std::path::{Path, PathBuf};
+#[cfg(feature = "frontend")]
+use std::path::Path;
+use std::path::PathBuf;
 #[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq, serde::Serialize)]
 pub enum Operation {
     Prepare,
@@ -62,6 +66,7 @@ impl Default for Request {
         }
     }
 }
+#[cfg(feature = "frontend")]
 pub trait Package: Sync {
     fn name(&self) -> &'static str;
     fn accepts(&self, input: &str) -> bool;

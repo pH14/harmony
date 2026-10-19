@@ -323,6 +323,7 @@ pub fn prefix(
     Ok(actions[..cut].to_vec())
 }
 
+#[cfg(feature = "frontend")]
 pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
     let manifest = Manifest::read(&path)?;
@@ -420,6 +421,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     Ok(0)
 }
 
+#[cfg(feature = "frontend")]
 pub fn timeline(selection: Selection, point: Point, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
     let manifest = Manifest::read(&path)?;
@@ -461,6 +463,7 @@ pub fn timeline(selection: Selection, point: Point, json: bool) -> Result<u8> {
     Ok(0)
 }
 
+#[cfg(feature = "frontend")]
 pub fn logs(
     selection: Selection,
     point: Point,
@@ -540,7 +543,7 @@ pub fn logs(
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
     use faults_workload::FaultOperation;

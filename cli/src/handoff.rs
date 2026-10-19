@@ -9,9 +9,12 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
-    io::{BufWriter, Read, Write},
+    io::Read,
     path::{Path, PathBuf},
 };
+
+#[cfg(any(feature = "frontend", test))]
+use std::io::{BufWriter, Write};
 
 const FORMAT: &str = "harmony-prepared-execution-v1";
 const LIMIT: u64 = 1 << 30;
@@ -49,12 +52,14 @@ pub struct Prepared {
     _files: tempfile::TempDir,
 }
 
+#[cfg(any(feature = "frontend", test))]
 struct RecordWriter {
     inner: BufWriter<fs::File>,
     digest: Sha256,
     bytes: u64,
 }
 
+#[cfg(any(feature = "frontend", test))]
 impl Write for RecordWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if (bytes.len() as u64) > (LIMIT - 32).saturating_sub(self.bytes) {
@@ -75,6 +80,7 @@ impl Write for RecordWriter {
 }
 
 impl Record {
+    #[cfg(any(feature = "frontend", test))]
     pub fn new(request: &Request) -> Result<Self> {
         let request = serde_json::to_vec(request)?;
         if request.len() > REQUEST_LIMIT {
@@ -95,6 +101,7 @@ impl Record {
         })
     }
 
+    #[cfg(any(feature = "frontend", test))]
     pub fn write(&self, path: &Path) -> Result<()> {
         let mut writer = RecordWriter {
             inner: BufWriter::new(fs::File::create(path)?),

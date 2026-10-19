@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pub mod config;
 mod investigate;
+#[cfg(feature = "frontend")]
 pub(crate) mod prepare;
 mod runs;
 mod terminal;
 pub(crate) mod workflow;
-use super::{Operation, Package, Request};
-use crate::config::{Config, Result};
+#[cfg(feature = "frontend")]
+use super::Package;
+use super::{Operation, Request};
+#[cfg(feature = "frontend")]
+use crate::config::Config;
+use crate::config::Result;
+#[cfg(feature = "frontend")]
 use std::path::Path;
 
+#[cfg(feature = "frontend")]
 fn execution_mode(backend: crate::config::Backend) -> faults_workload::admission::ExecutionMode {
     if backend == crate::config::Backend::Uml {
         faults_workload::admission::ExecutionMode::Uml
@@ -17,6 +24,7 @@ fn execution_mode(backend: crate::config::Backend) -> faults_workload::admission
     }
 }
 
+#[cfg(feature = "frontend")]
 fn requested_execution_mode(
     config: &config::Config,
 ) -> config::Result<faults_workload::admission::ExecutionMode> {
@@ -28,7 +36,9 @@ fn requested_execution_mode(
     Ok(execution_mode(backend))
 }
 
+#[cfg(feature = "frontend")]
 pub struct Faults;
+#[cfg(feature = "frontend")]
 impl Package for Faults {
     fn name(&self) -> &'static str {
         "faults"
@@ -164,7 +174,7 @@ pub fn worker() -> Result<u8> {
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
     use crate::config::Backend;

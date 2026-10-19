@@ -9,6 +9,7 @@ default-run = "harmony"
 [[bin]]
 name = "harmony"
 path = "src/main.rs"
+required-features = ["frontend"]
 
 [[bin]]
 name = "harmony-consonance-host"
@@ -17,13 +18,14 @@ required-features = ["consonance-host"]
 test = false
 
 [features]
+default = ["frontend"]
+frontend = ["dep:clap", "dep:tar", "dep:flate2"]
 consonance-host = []
 
 [dependencies]
 postcard = { version = "=1.1.3", default-features = false, features = ["alloc", "use-std"] }
 nes-workload = { version = "=0.1.0", path = "../workloads/nes", features = ["consonance"] }
-# CLI dispatch (whitelist: clap is bins-only; this crate is a binary).
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -33,8 +35,8 @@ tempfile = "3"
 rustix = { version = "1.1.4", features = ["termios", "fs"] }
 process-proto = { path = "../consonance/process-proto", version = "=0.1.0" }
 toml = "0.8"
-tar = "0.4"
-flate2 = "1"
+tar = { version = "0.4", optional = true }
+flate2 = { version = "1", optional = true }
 uml = { path = "../consonance/uml", version = "=0.1.0" }
 oci-support = { path = "../consonance/oci", version = "=0.1.0" }
 faults-workload = { version = "=0.1.0", path = "../workloads/faults", features = ["consonance"] }
@@ -48,5 +50,3 @@ nested-driver = { path = "../consonance/nested-driver", version = "=0.1.0", feat
 
 [lints]
 workspace = true
-
-

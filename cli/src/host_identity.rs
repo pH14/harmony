@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::config::Result;
+#[cfg(feature = "frontend")]
 use std::path::PathBuf;
 
 pub fn strict_identity() -> Result<String> {
@@ -21,6 +22,7 @@ pub fn require_strict_host() -> Result<()> {
     strict_identity().map(|_| ())
 }
 
+#[cfg(feature = "frontend")]
 pub fn admit_execution(kind: &str) -> Result<()> {
     if kind == "consonance" {
         return Err("Consonance execution requires the packaged strict host".into());
@@ -28,6 +30,7 @@ pub fn admit_execution(kind: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "frontend")]
 pub fn installed_binary_hint() -> Option<PathBuf> {
     std::env::current_exe().ok()
 }

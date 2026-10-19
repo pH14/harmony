@@ -398,11 +398,27 @@ class StructureTests(unittest.TestCase):
         self.assertFalse(any(path.startswith("workloads/") for path in self.runtime_inputs()))
 
     def test_guarded_preparation_inputs_are_in_the_platform_key(self):
-        required = {"consonance/oci", "cli/src/oci", "cli/src/handoff.rs", "cli/src/preparation.rs",
+        required = {"cli/Cargo.toml", "consonance/oci", "cli/src/oci", "cli/src/handoff.rs", "cli/src/preparation.rs",
                     "cli/src/package.rs", "cli/src/host_identity.rs", "cli/src/lib.rs", "cli/src/guarded.rs", "cli/src/native.rs",
                     "cli/src/bin/harmony-consonance-host.rs"}
         self.assertTrue(required.issubset(self.runtime_inputs()))
         self.assertNotIn("cli/src", self.runtime_inputs())
+
+    def test_frontend_capability_is_positive_and_isolated_host_is_linted(self):
+        manifest = tomllib.loads((ROOT / "cli/Cargo.toml").read_text())
+        self.assertEqual(manifest["features"]["default"], ["frontend"])
+        frontend = next(binary for binary in manifest["bin"] if binary["name"] == "harmony")
+        self.assertEqual(frontend["required-features"], ["frontend"])
+        for dependency in ("clap", "tar", "flate2"):
+            self.assertTrue(manifest["dependencies"][dependency]["optional"])
+            self.assertIn(f"dep:{dependency}", manifest["features"]["frontend"])
+        import yaml
+        jobs = yaml.safe_load((ROOT / ci_contract.HARMONY_CHECKS.path).read_text())["jobs"]
+        commands = "\n".join(step.get("run", "") for step in jobs["cli"]["steps"])
+        self.assertIn("--no-default-features --features consonance-host --bin harmony-consonance-host -- -D warnings", commands)
+        self.assertIn("cargo clippy -p harmony-cli --all-features --all-targets", commands)
+        self.assertIn("--edges normal --prefix none --format", commands)
+        self.assertIn("^(clap|tar) ", commands)
 
     def workspace_root(self, crate):
         for directory in (crate, *crate.parents):

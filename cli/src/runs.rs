@@ -11,11 +11,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, clap::Args)]
+#[cfg_attr(feature = "frontend", derive(clap::Args))]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Destination {
-    #[arg(long, conflicts_with = "out")]
+    #[cfg_attr(feature = "frontend", arg(long, conflicts_with = "out"))]
     pub name: Option<String>,
-    #[arg(long, conflicts_with = "name")]
+    #[cfg_attr(feature = "frontend", arg(long, conflicts_with = "name"))]
     pub out: Option<PathBuf>,
 }
 
@@ -91,7 +92,7 @@ pub fn locate(name: &str) -> Result<PathBuf> {
 impl Manifest {
     pub fn new(config: Config, mode: &str) -> Result<Self> {
         let binary_identity = if config.runner.kind == "consonance" {
-            crate::host_boundary::strict_identity()?
+            crate::host_identity::strict_identity()?
         } else {
             consonance_client::image_identity::native_loaded_executable_diagnostic_identity_self()?
         };
@@ -157,7 +158,7 @@ impl Manifest {
 
     pub fn verify(&self, path: &Path) -> Result<()> {
         let binary_identity = if self.config.runner.kind == "consonance" {
-            crate::host_boundary::strict_identity()?
+            crate::host_identity::strict_identity()?
         } else {
             consonance_client::image_identity::native_loaded_executable_diagnostic_identity_self()?
         };

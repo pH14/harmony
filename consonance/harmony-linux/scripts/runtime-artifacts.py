@@ -11,6 +11,7 @@ import sys
 
 INPUTS = (
     "Cargo.toml",
+    "cli/Cargo.toml",
     "Cargo.lock",
     "flake.nix",
     "flake.lock",

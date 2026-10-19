@@ -771,3 +771,8 @@ screenshots. The bounded browser check asserts
 liveness, authentic starts in all 3 levels, exact replay and rooted
 branching, and desktop/phone interactions rather than a specific seed’s game
 progress.
+
+The CLI job lints both the additive all-features graph and the isolated guarded
+host graph (`--no-default-features --features consonance-host`). Ordinary paired
+frontend builds retain the default `frontend` capability. Packaged host producers
+already select the isolated graph on Linux and macOS.
