@@ -313,10 +313,10 @@ class StructureTests(unittest.TestCase):
         workflow = ci_contract.CONSONANCE_ANALYSIS
         job = yaml.safe_load((ROOT / workflow.path).read_text())["jobs"]["miri"]
         registered = next(job for job in workflow.jobs if job.name == "Miri — <Crate>")
-        self.assertEqual(registered.timeout_minutes, 30)
+        self.assertEqual(registered.timeout_minutes, 45)
         self.assertTrue(registered.exception)
-        self.assertEqual(ci_contract.pull_request_budget(workflow.path, registered.name), 30)
-        expression = "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store' || matrix.name == 'consonance-client') && 30 || 15 }}"
+        self.assertEqual(ci_contract.pull_request_budget(workflow.path, registered.name), 45)
+        expression = "${{ matrix.name == 'snapshot-store' && 45 || (matrix.name == 'vmm-backend' || matrix.name == 'consonance-client') && 30 || 15 }}"
         self.assertEqual(job["timeout-minutes"], expression)
         self.assertEqual(ci_contract.PR_TIMEOUT_EXPRESSIONS,
                          {(workflow.path, registered.name): expression})

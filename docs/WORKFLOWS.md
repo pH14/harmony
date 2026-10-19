@@ -224,15 +224,15 @@ Every job declares a trigger class.
   consumers keep the 15-minute budget. The separate `C Investigation` job has
   a 35-minute exception for its bounded branch and search continuation under
   sealed-host identity checks.
-  The selected `vmm-backend`, `snapshot-store`, and `consonance-client` Miri
-  checks have a 30-minute exception for interpreted snapshot/register-inventory
-  coverage, the Store's full resident-verification suite, and interpreted client
-  cache tests, respectively. The Store retains its whole
-  library selector, including promotion, fresh corruption checks and retained
-  high-slot/recycled-storage fixtures; that coverage exceeded the 15-minute job
-  budget. Every other Miri matrix target keeps 15 minutes. The registry binds
-  the exact timeout expression, so the extended budget cannot silently cover
-  every variant.
+  The selected `snapshot-store` Miri check has a 45-minute exception for the
+  Store's full resident-verification suite. The selected `vmm-backend` and
+  `consonance-client` Miri checks retain 30-minute exceptions for interpreted
+  snapshot/register-inventory coverage and client cache tests, respectively.
+  The Store retains its whole library selector, including promotion, fresh
+  corruption checks and retained high-slot/recycled-storage fixtures; that
+  coverage exceeded the 30-minute job budget. Every other Miri matrix target
+  keeps 15 minutes. The registry binds the exact timeout expression, so the
+  extended budget cannot silently cover every variant.
   `PR_ARTIFACT_BUILD_BUDGETS` and `PR_EXTENDED_CHECK_BUDGETS` register these
   named exceptions; neither permits a full capability search on pull requests.
 - **`full`** jobs run on a schedule, a manual dispatch, or a path-filtered push
