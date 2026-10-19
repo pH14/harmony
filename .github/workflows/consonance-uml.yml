@@ -1,331 +1,162 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Checks / Consonance / UML
+name: Diagnostics / Exact UML785 AMD Core
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
+    inputs:
+      checkpoint_attempts:
+        description: Maximum checkpoint suites; stop at the first failure
+        type: choice
+        options: ['1', '2', '3']
+        default: '2'
 
 permissions:
   contents: read
-
-concurrency:
-  group: consonance-uml-${{ github.event_name == 'push' && github.sha || github.ref }}
-  cancel-in-progress: true
-
-defaults:
-  run:
-    shell: bash
-
-env:
-  CARGO_TERM_COLOR: always
-  HARMONY_RUST_TOOLCHAIN: 1.97.0
+  actions: read
 
 jobs:
-  scope:
-    name: Change Selection
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      rust_checks: ${{ steps.rust_checks.outputs.enabled }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          filter: blob:none
-      - id: rust_checks
-        uses: ./.github/actions/ci-scope
-        with:
-          kind: rust_checks
-          target: consonance-uml.yml
-
-  launcher:
-    name: UML Launcher
-    needs: scope
-    if: needs.scope.outputs.rust_checks == 'true'
+  amd-core:
+    name: Exact retained UML artifact on AMD
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-      - name: Install stable toolchain
-        run: |
-          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
-          rustup default "${HARMONY_RUST_TOOLCHAIN}"
-      - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          shared-key: consonance-uml-launcher
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
-      - name: Lint the launcher
-        run: cargo clippy -p host-code-identity -p uml --all-features --all-targets -- -D warnings
-      - name: Profile, console and process-group tests
-        run: cargo nextest run --all-features -p host-code-identity -p uml
-      - name: Loaded executable code admission regression
-        run: python3 scripts/test-loaded-code-identity.py
-
-  artifacts:
-    name: UML Artifacts — ${{ matrix.architecture }}
-    needs: scope
-    if: needs.scope.outputs.rust_checks == 'true'
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - architecture: x86_64
-            runner: ubuntu-24.04
-          - architecture: aarch64
-            runner: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - name: Build twice and match the reviewed profile
-        run: |
-          set -euo pipefail
-          nix run .#uml-images -- --output "$RUNNER_TEMP/uml-first"
-          nix run .#uml-images -- --output "$RUNNER_TEMP/uml-second"
-          sha256sum "$RUNNER_TEMP"/uml-{first,second}/{config,linux,initramfs.cpio.gz,profile.json}
-          grep -E '^CONFIG_(PAHOLE_VERSION|RUSTC_VERSION|RUSTC_LLVM_VERSION)=' "$RUNNER_TEMP/uml-first/config"
-          for name in linux config initramfs.cpio.gz profile.json; do
-            cmp "$RUNNER_TEMP/uml-first/$name" "$RUNNER_TEMP/uml-second/$name"
-          done
-          for output in uml-first uml-second; do
-            cmp "$RUNNER_TEMP/$output/profile.json" \
-              "consonance/uml/reviewed-profiles/${{ matrix.architecture }}.json"
-          done
-          sha256sum "$RUNNER_TEMP"/uml-first/*
-      - name: Preserve profile mismatch evidence
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: uml-profile-mismatch-${{ github.sha }}-${{ matrix.architecture }}
-          path: |
-            ${{ runner.temp }}/uml-first/config
-            ${{ runner.temp }}/uml-first/profile.json
-            ${{ runner.temp }}/uml-second/config
-            ${{ runner.temp }}/uml-second/profile.json
-          if-no-files-found: ignore
-          retention-days: 7
-      - name: Install stable toolchain
-        run: |
-          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
-          rustup default "${HARMONY_RUST_TOOLCHAIN}"
-          rustup target add "${{ matrix.architecture }}-unknown-linux-musl"
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          shared-key: consonance-uml-qualify-${{ matrix.architecture }}
-      - name: Build the qualification binary
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-        run: |
-          set -euo pipefail
-          cargo build --release --locked --target ${{ matrix.architecture }}-unknown-linux-musl -p uml --bin harmony-uml-qualify
-          install -m 0755 target/${{ matrix.architecture }}-unknown-linux-musl/release/harmony-uml-qualify "$RUNNER_TEMP/uml-first/"
-      - name: Admit the approved bundle and refuse self-consistent mutations
-        env:
-          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-        run: cargo test --locked -p uml --lib profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes -- --ignored
-      - name: Bind the recorded UML kernel to the approved profile
-        env:
-          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-        run: cargo test --locked -p harmony-cli --bin harmony loaded_reviewed_uml_profile_binds_the_recorded_kernel -- --ignored --nocapture
-      - name: Report guest panics and distinguish setup host failures
-        env:
-          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-        run: |
-          set -euo pipefail
-          output=$(cargo test --locked --target ${{ matrix.architecture }}-unknown-linux-musl -p consonance-client --features uml --lib session::uml::tests::reviewed_kernel_panic_is_a_public_client_crash -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
-          printf '%s\n' "$output"
-          grep -Fxq 'running 1 test' <<<"$output"
-          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
-          output=$(cargo test --locked --target ${{ matrix.architecture }}-unknown-linux-musl -p consonance-client --features uml --lib session::uml::tests::setup_terminal_status_preserves_host_provenance_and_guest_controls -- --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
-          printf '%s\n' "$output"
-          grep -Fxq 'running 1 test' <<<"$output"
-          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
-          grep -Fq 'setup terminal provenance: signals/87 infrastructure; 86/0 guest; cleanup empty' <<<"$output"
-          output=$(cargo test --locked --target ${{ matrix.architecture }}-unknown-linux-musl -p consonance-client --features uml --lib session::worker::tests::sealed_worker_sigkill_is_infrastructure_and_guest_stops_are_framed -- --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
-          printf '%s\n' "$output"
-          grep -Fxq 'running 1 test' <<<"$output"
-          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
-          grep -Fq 'worker transport provenance: SIGKILL infrastructure; framed guest panic/shutdown preserved' <<<"$output"
-      - name: Reject guest writes to host-reserved UML exit statuses
-        env:
-          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-        run: cargo test --locked -p uml --test guest_exitcode guest_cannot_choose_host_reserved_exit_statuses -- --ignored --nocapture
-      - name: Abandon host signals and lost address-space stubs
-        env:
-          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-        run: |
-          set -euo pipefail
-          cargo test --locked -p uml --test host_failure_provenance stub_selection_binds_executable_identity_and_ownership_without_argv -- --exact --nocapture
-          output=$(cargo test --locked -p uml --test host_failure_provenance -- --ignored --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
-          printf '%s\n' "$output"
-          grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' <<<"$output"
-      - name: Fail closed on exhausted host clone quota
-        env:
-          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-        run: cargo test --locked -p uml --test host_clone_exhaustion host_clone_quota_exhaustion_is_not_a_guest_fork_result -- --ignored --nocapture
-      - name: Abandon a dirty-page host failure after checkpoint publication
-        env:
-          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-        run: |
-          set -euo pipefail
-          output=$(cargo test --locked --target ${{ matrix.architecture }}-unknown-linux-musl -p uml --test checkpoint_host_failure dirty_page_failure_after_a_published_checkpoint_is_infrastructure -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
-          printf '%s\n' "$output"
-          grep -Fxq 'running 1 test' <<<"$output"
-          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
-      - name: Refuse a post-checkpoint host failure before fault campaign admission
-        env:
-          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-        run: |
-          set -euo pipefail
-          output=$(cargo test --manifest-path workloads/faults/Cargo.toml -p faults-workload --locked --target ${{ matrix.architecture }}-unknown-linux-musl --features consonance --lib consonance::infrastructure_tests::published_uml_host_failure_cannot_enter_a_campaign -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
-          printf '%s\n' "$output"
-          grep -Fxq 'running 1 test' <<<"$output"
-          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
-      - name: Refuse native transactions before ordinary UML application launch
-        if: matrix.architecture == 'x86_64'
-        env:
-          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-          HARMONY_UML_TRANSACTION_REPORT_DIR: ${{ runner.temp }}/uml-transaction-admission
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-        run: |
-          set -euo pipefail
-          output=$(cargo test --locked -p harmony-cli --bin harmony adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
-          printf '%s\n' "$output"
-          grep -Fxq 'running 1 test' <<<"$output"
-          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
-          grep -Fq 'UML_TRANSACTION_REFUSED=XBEGIN' <<<"$output"
-          grep -Fq 'UML_TRANSACTION_REFUSED=XACQUIRE' <<<"$output"
-          grep -Fq 'UML_TRANSACTION_CONTROL=completed' <<<"$output"
-      - uses: actions/upload-artifact@v4
-        if: always() && matrix.architecture == 'x86_64'
-        with:
-          name: uml-transaction-admission-${{ github.sha }}
-          path: ${{ runner.temp }}/uml-transaction-admission
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Check native FS and GS bases across reused and fresh restores
-        if: matrix.architecture == 'x86_64'
-        env:
-          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
-        run: |
-          set -euo pipefail
-          output=$(cargo test --locked --target x86_64-unknown-linux-musl -p uml --test fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
-          printf '%s\n' "$output"
-          grep -Fxq 'running 1 test' <<<"$output"
-          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: uml-artifacts-${{ github.sha }}-${{ matrix.architecture }}
-          path: ${{ runner.temp }}/uml-first
-          if-no-files-found: error
-          retention-days: 14
-
-  qualification:
-    name: UML Qualification — ${{ matrix.target }}
-    needs: [scope, artifacts]
-    if: needs.scope.outputs.rust_checks == 'true'
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64 Linux
-            architecture: x86_64
-            runner: ubuntu-24.04
-            docker: false
-          - target: x86_64 Docker
-            architecture: x86_64
-            runner: ubuntu-24.04
-            docker: true
-          - target: Arm64 Linux
-            architecture: aarch64
-            runner: ubuntu-24.04-arm
-            docker: false
-          - target: Arm64 Docker
-            architecture: aarch64
-            runner: ubuntu-24.04-arm
-            docker: true
-    steps:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: uml-artifacts-${{ github.sha }}-${{ matrix.architecture }}
-          path: ${{ runner.temp }}/uml
-      - name: Record the host
+          github-token: ${{ github.token }}
+          run-id: 39259407907
+          name: uml-artifacts-7e18c3820d644d44aa3e55e4655391895cfcd784-x86_64
+          path: ${{ runner.temp }}/uml785-exact
+      - name: Check collector controls
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/uml-report"
-          chmod +x "$RUNNER_TEMP/uml/linux" "$RUNNER_TEMP/uml/harmony-uml-qualify"
-          {
-            id
-            uname -a
-            lscpu
-            grep -E '^(Uid|CapEff|NoNewPrivs|Seccomp):' /proc/self/status
-          } >"$RUNNER_TEMP/uml-report/host.txt"
-          if [ "${{ matrix.docker }}" = true ]; then
-            docker version >"$RUNNER_TEMP/uml-report/docker.txt"
-          fi
-      - name: Launch, replay and checkpoint suites with ptrace and KVM denied
-        if: ${{ !matrix.docker }}
+          python3 -m unittest discover -s scripts/diagnostics -p 'test_uml785_*.py'
+      - name: Install executable-filtered bounded core collector
         run: |
-          set -uo pipefail
-          status=0
-          for suite in launch replay checkpoint; do
-            mkdir -p "$RUNNER_TEMP/uml-report/$suite" "$RUNNER_TEMP/uml-work/$suite"
-            echo "::group::$suite"
-            "$RUNNER_TEMP/uml/harmony-uml-qualify" --suite "$suite" --profile "$RUNNER_TEMP/uml" \
-              --work "$RUNNER_TEMP/uml-work/$suite" \
-              --report "$RUNNER_TEMP/uml-report/$suite/report.json" || status=1
-            echo "::endgroup::"
-          done
-          exit "$status"
-      - name: Launch, replay and checkpoint suites under the default Docker seccomp profile with no capabilities
-        if: ${{ matrix.docker }}
+          set -euo pipefail
+          core_root="/var/tmp/uml785-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "CORE_ROOT=$core_root" >> "$GITHUB_ENV"
+          export UML785_UID="$(id -u)" UML785_CORE_ROOT="$core_root"
+          python3 - "$RUNNER_TEMP/uml785-exact" "$RUNNER_TEMP/core-config.json" <<'PY'
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          spec = importlib.util.spec_from_file_location('runner', 'scripts/diagnostics/run-uml785-core.py')
+          runner = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(runner)
+          bundle = Path(sys.argv[1])
+          runner.hashes(bundle)
+          config = {
+              'uid': int(os.environ['UML785_UID']),
+              'output': os.environ['UML785_CORE_ROOT'] + '/cores',
+              'executables': {runner.EXPECTED[name]: name for name in ('linux', 'harmony-uml-qualify')},
+              'count_limit': 2,
+              'per_core_limit': 2 * 1024**3,
+              'total_limit': 4 * 1024**3,
+          }
+          Path(sys.argv[2]).write_text(json.dumps(config))
+          PY
+          sudo install -d -m 0755 "$core_root" "$core_root/cores"
+          sudo install -m 0755 scripts/diagnostics/uml785-core-collector.py "$core_root/collect"
+          sudo install -m 0644 "$RUNNER_TEMP/core-config.json" "$core_root/config.json"
+          sudo python3 - "$core_root" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          root = Path(sys.argv[1])
+          settings = {name: Path('/proc/sys/kernel', name).read_text()
+                      for name in ('core_pattern', 'core_pipe_limit')}
+          (root / 'original-settings.json').write_text(json.dumps(settings))
+          pattern = f'|{root}/collect %P %u %t'
+          assert len(pattern) < 127
+          Path('/proc/sys/kernel/core_pipe_limit').write_text('4\n')
+          Path('/proc/sys/kernel/core_pattern').write_text(pattern + '\n')
+          PY
+          sudo chown root:root "$RUNNER_TEMP/uml785-exact" "$RUNNER_TEMP/uml785-exact/"*
+          sudo chmod 0755 "$RUNNER_TEMP/uml785-exact" "$RUNNER_TEMP/uml785-exact/linux" "$RUNNER_TEMP/uml785-exact/harmony-uml-qualify"
+          sudo chmod 0644 "$RUNNER_TEMP/uml785-exact/config" "$RUNNER_TEMP/uml785-exact/profile.json" "$RUNNER_TEMP/uml785-exact/initramfs.cpio.gz"
+      - name: Run ordinary-UID checkpoint diagnostics without tracing
+        env:
+          MAX_CHECKPOINT_ATTEMPTS: ${{ inputs.checkpoint_attempts }}
         run: |
-          set -uo pipefail
-          status=0
-          for suite in launch replay checkpoint; do
-            mkdir -p "$RUNNER_TEMP/uml-report/$suite" "$RUNNER_TEMP/uml-work/$suite"
-            echo "::group::$suite"
-            docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL \
-              --security-opt no-new-privileges --network none \
-              -v "$RUNNER_TEMP/uml:/uml:ro" -v "$RUNNER_TEMP/uml-work/$suite:/work" \
-              -v "$RUNNER_TEMP/uml-report/$suite:/report" ubuntu:24.04 \
-              /uml/harmony-uml-qualify --suite "$suite" --profile /uml --work /work \
-              --report /report/report.json || status=1
-            echo "::endgroup::"
-          done
-          exit "$status"
-      - uses: actions/upload-artifact@v4
+          set -euo pipefail
+          python3 scripts/diagnostics/run-uml785-core.py "$RUNNER_TEMP/uml785-exact" \
+            "$RUNNER_TEMP/uml785-evidence" "$MAX_CHECKPOINT_ATTEMPTS"
+      - name: Restore host core settings
         if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${CORE_ROOT:-}" ] && sudo test -f "$CORE_ROOT/original-settings.json"; then
+            sudo python3 - "$CORE_ROOT/original-settings.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          for name, value in json.loads(Path(sys.argv[1]).read_text()).items():
+              Path('/proc/sys/kernel', name).write_text(value)
+          PY
+            mkdir -p "$RUNNER_TEMP/uml785-evidence"
+            sudo cat "$CORE_ROOT/original-settings.json" > "$RUNNER_TEMP/uml785-evidence/original-core-settings.json"
+            sysctl kernel.core_pattern kernel.core_pipe_limit > "$RUNNER_TEMP/uml785-evidence/restored-core-settings.txt"
+          fi
+      - name: Read matching core notes with automatic script loading disabled
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -z "${CORE_ROOT:-}" ] || [ ! -d "$CORE_ROOT/cores" ]; then exit 0; fi
+          if ! compgen -G "$CORE_ROOT/cores/*.core" >/dev/null; then exit 0; fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdb
+          export DEBUGINFOD_URLS=''
+          python3 - "$CORE_ROOT/cores" "$RUNNER_TEMP/uml785-exact" "$RUNNER_TEMP/uml785-evidence/core-analysis" <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import subprocess
+          import sys
+          cores, bundle, analysis = map(Path, sys.argv[1:])
+          analysis.mkdir(parents=True, exist_ok=True)
+          for metadata_path in cores.glob('*.json'):
+              metadata = json.loads(metadata_path.read_text())
+              core = metadata_path.with_suffix('.core')
+              executable = bundle / metadata['role']
+              with executable.open('rb') as source:
+                  assert hashlib.file_digest(source, 'sha256').hexdigest() == metadata['executable_sha256']
+              with core.open('rb') as source:
+                  assert hashlib.file_digest(source, 'sha256').hexdigest() == metadata['sha256']
+              with (analysis / metadata_path.with_suffix('.gdb.txt').name).open('wb') as output:
+                  output.write(f"core truncated={metadata['truncated']}; retained bytes={metadata['bytes']}\n".encode())
+                  output.flush()
+                  result = subprocess.run([
+                      'timeout', '--kill-after=5', '45', 'gdb', '-nx', '-nh', '--batch',
+                      '-iex', 'set auto-load off', '-iex', 'set debuginfod enabled off',
+                      str(executable), str(core), '-ex', 'info registers',
+                      '-ex', 'thread apply all bt 24', '-ex', 'info proc mappings',
+                  ], stdout=output, stderr=subprocess.STDOUT)
+                  output.write(f'\ngdb exit={result.returncode}\n'.encode())
+          PY
+      - name: Preserve only exact owned-fixture diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: uml-report-${{ github.sha }}-${{ matrix.architecture }}-${{ matrix.docker && 'docker' || 'linux' }}
-          path: ${{ runner.temp }}/uml-report
-          if-no-files-found: error
-          retention-days: 14
+          name: uml785-core-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/uml785-evidence/host-*.txt
+            ${{ runner.temp }}/uml785-evidence/outcome.json
+            ${{ runner.temp }}/uml785-evidence/original-core-settings.json
+            ${{ runner.temp }}/uml785-evidence/restored-core-settings.txt
+            ${{ runner.temp }}/uml785-evidence/**/report.json
+            ${{ runner.temp }}/uml785-evidence/**/execution.log
+            ${{ runner.temp }}/uml785-evidence/**/command.json
+            ${{ env.CORE_ROOT }}/cores/*.core
+            ${{ env.CORE_ROOT }}/cores/*.json
+            ${{ runner.temp }}/uml785-evidence/core-analysis/*.gdb.txt
+          compression-level: 1
+          if-no-files-found: warn
+          retention-days: 7
