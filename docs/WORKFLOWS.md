@@ -74,9 +74,18 @@ Session, worker reexec and failure recovery, UML shutdown, timeout, branch,
 handler, and root-import commitment tests, executable-map rejection and cache
 revocation, Recording, and terminal console limits through
 `scripts/linux-sealed-test-runner.py`, which copies each test binary into a
-fully sealed executable memfd before execution. All 16 exact tests require
+fully sealed executable memfd before execution. All 18 exact tests require
 one test to start and pass. The musl positive tests fail if strict host
 admission is unavailable, so a missing runner cannot produce a green skip.
+The list includes shared-launcher telemetry-owner isolation, exact executable
+read/hash/comparison bytes and their partial-failure accounting, and mapping
+refusal with publication revocation.
+`Checks / Harmony Host Compatibility` also runs the Arm64-only direct leased-extent
+export regression in its existing macOS Arm64 workspace nextest suite, whose
+unified features enable the client mock backend. An exact-name PASS assertion
+in the ANSI-stripped `host-tests.log` prevents a skipped or omitted case from satisfying coverage,
+without a second build. This covers real Session extent-copy telemetry without
+requiring a guest hardware run.
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed
@@ -215,10 +224,14 @@ Every job declares a trigger class.
   consumers keep the 15-minute budget. The separate `C Investigation` job has
   a 35-minute exception for its bounded branch and search continuation under
   sealed-host identity checks.
-  The selected `vmm-backend` Miri checks have a 30-minute exception for
-  interpreted snapshot and register-inventory coverage; every other Miri
-  matrix target keeps 15 minutes. The registry binds the exact timeout
-  expression, so the extended budget cannot silently cover every variant.
+  The selected `vmm-backend` and `snapshot-store` Miri checks have a 30-minute
+  exception for interpreted snapshot/register-inventory coverage and the Store's
+  full resident-verification suite, respectively. The Store retains its whole
+  library selector, including promotion, fresh corruption checks and retained
+  high-slot/recycled-storage fixtures; that coverage exceeded the 15-minute job
+  budget. Every other Miri matrix target keeps 15 minutes. The registry binds
+  the exact timeout expression, so the extended budget cannot silently cover
+  every variant.
   `PR_ARTIFACT_BUILD_BUDGETS` and `PR_EXTENDED_CHECK_BUDGETS` register these
   named exceptions; neither permits a full capability search on pull requests.
 - **`full`** jobs run on a schedule, a manual dispatch, or a path-filtered push

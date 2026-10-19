@@ -15,7 +15,25 @@ pub mod cache;
 pub mod catalog;
 #[cfg(any(target_os = "linux", test))]
 mod cgroup;
+#[cfg(feature = "in-process")]
+#[cfg(all(
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ),
+    not(miri)
+))]
+mod copy_work;
+#[cfg(feature = "in-process")]
+mod guard_telemetry;
 pub mod image_identity;
+#[cfg(any(all(feature = "in-process", not(miri)), test))]
+mod import_layout;
+#[cfg(any(all(feature = "in-process", not(miri)), test))]
+mod import_reuse;
 pub mod placement;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -23,6 +41,9 @@ pub mod watchdog;
 
 #[cfg(all(feature = "in-process", not(miri)))]
 pub mod session;
+
+#[cfg(any(feature = "in-process", test))]
+mod writer_lifetime;
 
 use control_proto::{Caps, ControlError, Reply, Request};
 

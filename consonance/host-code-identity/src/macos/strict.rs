@@ -7,6 +7,7 @@ use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::ptr;
 
+use crate::GuardMeasurement;
 use sha2::{Digest, Sha256};
 
 use super::{Generation, copy_mapped, dyld_metadata, generation, generation_is_stable, refused};
@@ -340,15 +341,28 @@ fn strict_shared_cache_uuid() -> io::Result<([u8; 16], Generation)> {
 
 impl StrictMacosExecutableGuard {
     pub fn capture() -> io::Result<(String, Self)> {
+        Self::capture_measured(&mut GuardMeasurement::default())
+    }
+
+    pub fn capture_measured(work: &mut GuardMeasurement) -> io::Result<(String, Self)> {
+        crate::guard_work::measured(work, Self::capture_inner)
+    }
+
+    fn capture_inner(work: &mut GuardMeasurement) -> io::Result<(String, Self)> {
+        work.bytes = None;
+        work.kernel_state_checks = work.kernel_state_checks.saturating_add(1);
         let (start_status, loaded_cdhash) = kernel_code_state()?;
         let file = File::open(std::env::current_exe()?)?;
+        work.static_signing_checks = work.static_signing_checks.saturating_add(1);
         let static_cdhash = strict_static_cdhash(&file)?;
         if loaded_cdhash != static_cdhash {
             return Err(refused(
                 "macOS validated file differs from the loaded executable",
             ));
         }
+        work.image_censuses = work.image_censuses.saturating_add(1);
         let (cache_uuid, generation) = strict_shared_cache_uuid()?;
+        work.kernel_state_checks = work.kernel_state_checks.saturating_add(1);
         let (finish_status, finish_cdhash) = kernel_code_state()?;
         if start_status != finish_status || loaded_cdhash != finish_cdhash {
             return Err(refused(
@@ -372,8 +386,20 @@ impl StrictMacosExecutableGuard {
     }
 
     pub fn check(self) -> io::Result<()> {
+        self.check_measured(&mut GuardMeasurement::default())
+    }
+
+    pub fn check_measured(self, work: &mut GuardMeasurement) -> io::Result<()> {
+        crate::guard_work::measured(work, |work| self.check_inner(work))
+    }
+
+    fn check_inner(self, work: &mut GuardMeasurement) -> io::Result<()> {
+        work.bytes = None;
+        work.kernel_state_checks = work.kernel_state_checks.saturating_add(1);
         let (start_status, start_cdhash) = kernel_code_state()?;
+        work.image_censuses = work.image_censuses.saturating_add(1);
         let (cache_uuid, generation) = strict_shared_cache_uuid()?;
+        work.kernel_state_checks = work.kernel_state_checks.saturating_add(1);
         let (finish_status, finish_cdhash) = kernel_code_state()?;
         if start_status != finish_status
             || start_cdhash != finish_cdhash
@@ -504,8 +530,34 @@ mod tests {
             if let Some(runtime_guard) = runtime_guard {
                 println!("loaded_guard={}", runtime_guard.check().is_ok());
             }
-            match strict_macos_executable_identity() {
-                Ok(identity) => {
+            let mut measured = GuardMeasurement::default();
+            let admitted = StrictMacosExecutableGuard::capture_measured(&mut measured);
+            assert_eq!(measured.attempts, 1);
+            assert_eq!(measured.bytes, None);
+            assert_eq!(measured.errors, u64::from(admitted.is_err()));
+            match admitted {
+                Ok((identity, guard)) => {
+                    assert_eq!(
+                        (
+                            measured.kernel_state_checks,
+                            measured.static_signing_checks,
+                            measured.image_censuses
+                        ),
+                        (2, 1, 1)
+                    );
+                    let mut checked = GuardMeasurement::default();
+                    guard.check_measured(&mut checked).unwrap();
+                    assert_eq!(
+                        (
+                            checked.attempts,
+                            checked.errors,
+                            checked.kernel_state_checks,
+                            checked.static_signing_checks,
+                            checked.image_censuses
+                        ),
+                        (1, 0, 2, 0, 1)
+                    );
+                    assert_eq!(checked.bytes, None);
                     // SAFETY: null selects default VM options; a successful create owns one
                     // process-local VM that this test destroys before returning.
                     let vm_status = unsafe { hv_vm_create(ptr::null()) };

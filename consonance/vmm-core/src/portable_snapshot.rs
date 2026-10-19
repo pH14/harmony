@@ -14,7 +14,7 @@ use crate::vmm::{SdkSnapshot, SdkStop};
 use snapshot_store::PAGE_SIZE;
 
 const MAGIC: [u8; 8] = *b"HMSNAP01";
-const VERSION: u16 = 8;
+const VERSION: u16 = 9;
 const FLAG_SDK: u16 = 1;
 const FLAG_TAINTED: u16 = 1 << 1;
 const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_TAINTED;
@@ -28,7 +28,7 @@ const MAX_CONTROL_LEN: usize = MAX_SDK_LEN;
 #[cfg(test)]
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
-const SPARSE_VERSION: u16 = 10;
+const SPARSE_VERSION: u16 = 11;
 const SPARSE_FLAG_SDK: u16 = 1;
 const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
 const SPARSE_FLAG_TARGET_PAGES: u16 = 1 << 2;
@@ -1038,6 +1038,7 @@ mod tests {
                 vm_state: &state.encode().unwrap(),
                 sdk: None,
                 policy: &ServiceConfig {
+                    local_services: Vec::new(),
                     identity: b"identity".to_vec(),
                     configuration: b"configuration".to_vec(),
                 },
@@ -1209,6 +1210,7 @@ mod tests {
     fn version_six_round_trips_large_sections_with_optional_control() {
         let (memory, vm, sdk, _) = fixture();
         let policy = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"large".to_vec(),
             configuration: vec![0x45; MAX_POLICY_LEN],
         };
@@ -1454,14 +1456,14 @@ mod tests {
     #[test]
     fn wire_constants_are_exact_contract_values() {
         assert_eq!(MAGIC, *b"HMSNAP01");
-        assert_eq!(VERSION, 8);
+        assert_eq!(VERSION, 9);
         assert_eq!((FLAG_SDK, FLAG_TAINTED, KNOWN_FLAGS), (1, 2, 3));
         assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
         assert_eq!(MAX_SDK_LEN, 64 * 1024 * 1024);
         assert_eq!(MAX_CONTROL_LEN, MAX_SDK_LEN);
         assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
         assert_eq!(SPARSE_MAGIC, *b"HMSSNAP1");
-        assert_eq!(SPARSE_VERSION, 10);
+        assert_eq!(SPARSE_VERSION, 11);
         assert_eq!(
             (
                 SPARSE_FLAG_SDK,
@@ -1482,7 +1484,7 @@ mod tests {
                 + 201
         );
 
-        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, VERSION + 1] {
+        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, 8, VERSION + 1] {
             let mut old = encoded();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             refresh_digest(&mut old);
@@ -1840,7 +1842,7 @@ mod tests {
             decode_sparse_sidecar(&bad_version),
             Err(PortableSnapshotError::BadVersion(u16::MAX))
         ));
-        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, 8, 9, SPARSE_VERSION + 1] {
+        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, SPARSE_VERSION + 1] {
             let mut old = original.clone();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             assert!(matches!(

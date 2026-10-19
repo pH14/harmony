@@ -14,7 +14,7 @@ use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
 use vmm_core::portable_snapshot::sparse_delta_target_commitment;
 
-use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
+use crate::cache::extent::{ExtentWrites, extent_len, read_extent, resolve, write_extent_measured};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace, WritableExtent};
 use crate::watchdog::Watchdog;
 
@@ -102,6 +102,7 @@ pub struct Session {
     image_identity: [u8; 32],
     config: SessionConfig,
     snapshot_times: BTreeMap<SnapId, u64>,
+    extent_writes: std::cell::Cell<ExtentWrites>,
     abandoned: bool,
 }
 
@@ -161,13 +162,14 @@ impl Session {
     ) -> Result<Self, Box<dyn Error>> {
         config.validate()?;
         let loaded_image_guard = crate::image_identity::LoadedImageGuard::capture()?;
-        let image_identity = super::image_identity_with_config_and_payloads(
+        let image_identity = super::image_identity_with_guard(
             kernel,
             initramfs,
             &config,
             &setup_payloads,
+            Some(&loaded_image_guard),
         )?;
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         Self::new_with_config_and_payloads_inner(
             kernel,
             initramfs,
@@ -186,7 +188,7 @@ impl Session {
         image_identity: [u8; 32],
         loaded_image_guard: crate::image_identity::LoadedImageGuard,
     ) -> Result<Self, Box<dyn Error>> {
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         let ram = config.ram_bytes;
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
@@ -226,7 +228,7 @@ impl Session {
         };
 
         let live = boot(kernel, initramfs).map_err(SessionError::Control)?;
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         let factory_kernel = kernel.to_vec();
         let factory_initramfs = initramfs.to_vec();
         let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> = Box::new(move || {
@@ -234,10 +236,17 @@ impl Session {
                 .map_err(vmm_core::vmm::VmmError::ContractViolation)
         });
         let mut server = ControlServer::new(live, factory);
-        server.set_host_operation_guard(Arc::new(move || {
-            loaded_image_guard
-                .check()
-                .map_err(|error| error.to_string())
+        let core_guard = loaded_image_guard.clone();
+        server.set_host_operation_guard(Arc::new(move |site| {
+            use crate::image_identity::GuardSite;
+            use vmm_core::vmm::HostOperationSite;
+            let site = match site {
+                HostOperationSite::ControlBefore => GuardSite::ControlBefore,
+                HostOperationSite::ControlAfter => GuardSite::ControlAfter,
+                HostOperationSite::SdkRequest => GuardSite::SdkRequest,
+                HostOperationSite::SdkResponse => GuardSite::SdkResponse,
+            };
+            core_guard.check_at(site).map_err(|error| error.to_string())
         }));
         server.set_restore_mode(RestoreMode::InPlace);
         let mut client = Client::connect(server, server_caps())
@@ -260,7 +269,7 @@ impl Session {
             )
             .into());
         }
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         Ok(Self {
             client,
             loaded_image_guard,
@@ -268,6 +277,7 @@ impl Session {
             setup_at: setup.at,
             image_identity,
             config,
+            extent_writes: std::cell::Cell::default(),
             snapshot_times: BTreeMap::from([(genesis.id, genesis.at), (setup.id, setup.at)]),
             abandoned,
         })
@@ -390,7 +400,8 @@ impl Session {
             WritableExtent::bytes_mut,
         )?;
         let target_commitment = vmm_target_commitment(&mut extent)?;
-        self.loaded_image_guard.check()?;
+        self.loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::PublicationBefore)?;
         let lease = index.publish(
             namespace,
             key,
@@ -435,7 +446,18 @@ impl Session {
         let len = extent_len(delta.pages.len(), delta.reverted.len(), sidecar.len())
             .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
         let mut out = allocate(len)?;
-        write_extent(bytes(&mut out), &delta.pages, &delta.reverted, &sidecar)?;
+        let mut work = ExtentWrites::default();
+        let result = write_extent_measured(
+            bytes(&mut out),
+            &delta.pages,
+            &delta.reverted,
+            &sidecar,
+            &mut work,
+        );
+        let mut total = self.extent_writes.get();
+        total.merge(work);
+        self.extent_writes.set(total);
+        result?;
         self.loaded_image_guard.check()?;
         Ok(out)
     }
@@ -693,7 +715,10 @@ impl Session {
 
     #[must_use]
     pub fn telemetry_counters(&self) -> Vec<(String, u64)> {
-        self.client.transport().host_telemetry().counters()
+        let mut counters = self.client.transport().host_telemetry().counters();
+        counters.extend(self.loaded_image_guard.counters("guard.session"));
+        counters.extend(self.extent_writes.get().counters());
+        counters
     }
 
     pub fn doorbell_exits(&self) -> u64 {
@@ -1121,6 +1146,7 @@ mod tests {
             setup_at: setup.at,
             image_identity,
             config,
+            extent_writes: std::cell::Cell::default(),
             snapshot_times: BTreeMap::from([(setup.id, setup.at)]),
             abandoned: false,
         }
@@ -1221,6 +1247,7 @@ mod tests {
                 .unwrap();
             let (target, _) = source.snapshot().unwrap();
             let before = source.client.transport().host_telemetry().exports.count;
+            let before_writes = source.extent_writes.get();
             let ((mut extent, allocations), writes) = trace_writes(|| {
                 super::super::worker::export_destination_for_test(
                     &source,
@@ -1236,6 +1263,36 @@ mod tests {
             );
             assert_eq!(allocations.len(), 1);
             let actual = read_extent(extent.bytes_mut()).unwrap();
+            let after_writes = source.extent_writes.get();
+            let reported = source
+                .telemetry_counters()
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(
+                reported["copy.session.extent.encoded_bytes"],
+                after_writes.encoded_bytes
+            );
+            assert_eq!(
+                reported["copy.session.extent.metadata_copy_bytes"],
+                after_writes.metadata_copy_bytes
+            );
+            assert_eq!(
+                reported["copy.session.extent.page_copy_bytes"],
+                after_writes.page_copy_bytes
+            );
+            assert_eq!(
+                after_writes.page_copy_bytes - before_writes.page_copy_bytes,
+                (actual.pages.len() * 4096) as u64
+            );
+            assert_eq!(
+                after_writes.metadata_copy_bytes - before_writes.metadata_copy_bytes,
+                (64 + actual.pages.len() * 40 + actual.reverted.len() * 8 + actual.sidecar.len())
+                    as u64
+            );
+            assert_eq!(
+                after_writes.encoded_bytes - before_writes.encoded_bytes,
+                allocations[0].1 as u64
+            );
             assert_eq!(
                 writes,
                 vec![(

@@ -122,6 +122,7 @@ class StructureTests(unittest.TestCase):
             "grep -Eq 'test result: ok\\. 1 passed;'",
             "client_test session::tests::sealed_host_admits_public_session_identity",
             "client_test session::worker::tests::sealed_host_reexecs_a_public_worker",
+            "client_test session::worker::tests::shared_launcher_forks_session_telemetry_owners",
             "client_test session::uml::tests::clean_guest_exit_remains_a_terminal_shutdown",
             "client_test session::uml::tests::host_signal_abandons_instead_of_reporting_guest_shutdown",
             "client_test session::uml::tests::host_clone_status_abandons_instead_of_reporting_guest_shutdown",
@@ -134,6 +135,7 @@ class StructureTests(unittest.TestCase):
             "client_test session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent",
             "client_test image_identity::sealed_guard_tests::unexpected_executable_mapping_revokes_a_published_lease",
             "sealed_static::tests::cached_guard_rejects_unexpected_executable_mapping -- --exact",
+            "sealed_static::tests::measured_read_hash_and_comparison_bytes_survive_refusal -- --exact",
             "recording::tests::sealed_host_admits_public_recording_round_trip -- --exact",
             "-p uml --test terminal_console_limit console_limit_is_settled_after_a_provisional_terminal_stop -- --exact",
         ):
@@ -305,7 +307,7 @@ class StructureTests(unittest.TestCase):
         self.assertIn("timeout -k 10 1800 bash cli/tests/investigation.sh", commands)
         self.assertNotIn("scripts/historical-search.sh", commands)
 
-    def test_only_the_backend_miri_variant_has_the_extended_budget(self):
+    def test_only_backend_and_store_miri_variants_have_extended_budgets(self):
         import yaml
 
         workflow = ci_contract.CONSONANCE_ANALYSIS
@@ -314,7 +316,7 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(registered.timeout_minutes, 30)
         self.assertTrue(registered.exception)
         self.assertEqual(ci_contract.pull_request_budget(workflow.path, registered.name), 30)
-        expression = "${{ matrix.name == 'vmm-backend' && 30 || 15 }}"
+        expression = "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store') && 30 || 15 }}"
         self.assertEqual(job["timeout-minutes"], expression)
         self.assertEqual(ci_contract.PR_TIMEOUT_EXPRESSIONS,
                          {(workflow.path, registered.name): expression})
@@ -739,6 +741,40 @@ class HostCompatibilityTests(unittest.TestCase):
                     self.assertEqual(actual["needs"], "scope")
                     self.assertEqual(actual["if"], "needs.scope.outputs.rust_checks == 'true'")
                     self.assertEqual(actual["timeout-minutes"], job.timeout_minutes)
+
+    def test_arm64_host_runs_the_real_direct_export_copy_accounting_case(self):
+        host = self.hosts["macos-arm64"]
+        self.assertEqual(host["runs-on"], "macos-14")
+        step = next(step for step in host["steps"]
+                    if step.get("name") == "Verify direct extent export copy accounting on Arm64")
+        command = step["run"]
+        self.assertIn('test "$(uname -m)" = arm64', command)
+        self.assertIn("cargo nextest run --workspace --no-fail-fast 2>&1 | tee host-tests.log",
+                      "\n".join(step.get("run", "") for step in host["steps"]))
+        self.assertIn("grep -Eq '^[[:space:]]*PASS[[:space:]]+\\[[^]]+\\][[:space:]]+"
+                      "(\\([[:space:]]*[0-9]+/[0-9]+\\)[[:space:]]+)?consonance-client[[:space:]]+session::live::tests::"
+                      "served_export_writes_once_into_the_allocated_destination$' copy-work-tests.log",
+                      command)
+        self.assertNotIn("cargo test", command)
+
+    def test_direct_export_pass_check_accepts_colored_nextest_and_rejects_missing_or_skipped(self):
+        step = next(step for step in self.hosts["macos-arm64"]["steps"]
+                    if step.get("name") == "Verify direct extent export copy accounting on Arm64")
+        name = "session::live::tests::served_export_writes_once_into_the_allocated_destination"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            uname = root / "uname"
+            uname.write_text("#!/bin/sh\nprintf 'arm64\\n'\n")
+            uname.chmod(0o755)
+            env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}"}
+            for prefix, suffix, expected in [("PASS", "", True), ("SKIP", "", False),
+                                              ("FAIL", "", False), ("PASS", "_other", False)]:
+                line = (f"\033[32;1m        {prefix}\033[0m [ 0.021s] ( 1/1998) "
+                        f"\033[35;1mconsonance-client\033[0m \033[36m{name}{suffix}\033[0m\n")
+                (root / "host-tests.log").write_text(line)
+                result = subprocess.run(["bash", "-c", step["run"]], cwd=root, env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
 
     def test_each_job_names_an_explicit_runner(self):
         runners = {job["name"]: job["runs-on"] for job in self.hosts.values()}

@@ -322,6 +322,7 @@ fn action_champion_key(observations: &[StbObservations]) -> Option<StbChampionKe
 }
 
 impl CampaignTypes for StbGame {
+    type JobObservation = ();
     type Target = StbTarget;
     type Action = ButtonChord;
     type Key = StbArchiveKey;

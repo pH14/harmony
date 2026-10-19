@@ -215,7 +215,11 @@ budget. When eviction cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
 its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
-and `shrinks`, under `snapshot_cache`.
+and `shrinks`, under `snapshot_cache`. It samples the shared index once under
+`snapshot_cache_locks` for per-operation acquisition attempts, acquired/completed
+counts and wait/hold nanoseconds; worker/session totals never sum this shared
+owner. `stats` reads have their own site. These host-time diagnostics do not affect
+budget policy or certificates.
 A fault search keeps sixteen reservations per worker in its admission window.
 Each action draws its own
 duration, so one execution can run a hundred times longer than the median, and
@@ -223,10 +227,69 @@ the other workers keep running the jobs behind it until it is admitted.
 Each worker reports its time through the campaign `telemetry`: boot, new
 action runs, prefix rebuilds, and replayed actions, each in host and virtual
 time. It also reports session restore, branch, seal, observation, and drop
-time; the chain's exact hits, ancestor hits, misses, evictions, entries, and
-resident bytes; shared cache imports and publications with their time, and
-refused publications; and the VMM's exit, guest-run, and snapshot counters under
-`vmm.`. `campaign-summary.json` includes the whole telemetry record.
+time; the chain's exact hits, ancestor hits, misses and evictions; shared cache
+imports and publications with their time, and refused publications; and the VMM's exit, guest-run, and snapshot counters under
+`vmm.`. `campaign-summary.json` includes the work telemetry record. The campaign uses
+`thread_work_telemetry`, which collects cumulative work without querying snapshot
+ownership or store size. `thread_residency_diagnostics` explicitly samples the
+live chain's entries, page bytes and observation-checkpoint charge. These typed
+gauges are absent after the live session retires and are never accumulated into
+work counters; unavailable ownership or arithmetic overflow makes page and total
+charge unavailable. Each live point is queried once, so worker mode performs
+real guarded ownership RPCs. Collect these diagnostics separately from phase
+counter snapshots. Actual store-budget enforcement continues to query store
+bytes and report them to the shared index independently of either telemetry API.
+
+Work-counter reads in worker mode still perform one guarded TELEMETRY RPC. Its
+framing and guard work remain observable, and parent/child snapshots occur at
+different points around response publication. These reads are not atomic or free.
+Counter getters do not estimate or subtract their own cost. Host timing, gauges
+and physical request counts do not affect logical selection or certificates.
+
+Optional job locality observations are fixed-size workload-owned values, separate
+from logical fault observations and endpoint certificates. The origin restore
+records its actual selected source: local exact/ancestor or shared import
+exact/ancestor, selected/requested depths, session generation and final outcome.
+A link imported during a previous job is local when subsequently reused.
+Reconstruction is orthogonal to starting source; attempted/completed rebuilt
+steps and archived parent-tail replay are separate counts. Lookup/import counters
+separate origin, action-parent and cached-child work. Source selection preserves
+the existing depth-first search: a shared exact match can precede a local ancestor.
+
+An origin restore succeeds only after the existing backend-specific endpoint,
+event-history and observation checks complete. UML retains its explicit
+whole-state-unavailable contract. Failed/cutoff restores retain their failure stage
+and attempted source when known, without treating a watchdog-converted Ok as
+success. Session generations are checked, per-thread runtime identities paired
+with the actual worker; they are unavailable after exhaustion and are not
+persistent cache identities. Bookkeeping survives Live retirement in a job-local
+TLS value and drains before panic recovery. It retains no snapshot or lease,
+issues no telemetry or ownership RPC, and supplies no restore authority. These
+measurements do not describe host NUMA page placement or change dispatch policy.
+
+`origin.generation` identifies the selected starting session. `end_generation`
+comes from an in-memory TLS-presence census at drain, so retirement through
+current-state or event-history accessors is visible even when it bypasses the
+normal Live-operation wrapper. A retired session does not erase its attempted
+source generation. Generation values are observational, paired with the actual
+worker, and grant no handle or restore authority.
+
+Candidate-path lookup counts exclude the certified-local fast path. Parent and
+cached-child source counts describe validated selections independently of the
+origin summary; cached-child searches are exact. Parent sources count
+action-parent selections for newly executed prefixes, not reserved archive
+parents or parent-tail replay
+actions. They are selection diagnostics, not separate whole-state certificates.
+Import completion means the existing import/binding/install path succeeded; a later restore failure is still
+reported separately. `NotAttempted` on a failed job means execution rejected the
+job before origin restore; it is not a zero-cost restore measurement. The generic
+256-byte bound is checked on campaign entry. Consumers must retain unavailable/
+overflow and sink-discard coverage when aggregating results.
+
+Consumers namespace worker/generation pairs by the observed invocation; thread
+pools, resumed invocations and processes can restart those values. The sink's
+caller-owned run identity supplies that namespace, outside logical campaign data.
+
 The shared session watchdog follows deterministic virtual-time progress, so a
 slowly advancing instrumented guest can finish a long action while one stuck
 at a virtual moment still times out. Replay can apply explicit, bounded Wait
@@ -504,9 +567,10 @@ rejected; failed decode/infrastructure attempts do not contribute completed timi
 samples. Checkpoint rebuild timing counts completed fetch/decode/infrastructure
 checks even when a subsequent decoder comparison or receipt-binding check rejects
 the reconstructed checkpoint. `observe.checkpoint_hits`,
-`observe.checkpoint_evictions` and `observe.full_rebuilds` distinguish reuse and fallback. `cache.resident_bytes`
-retains its VM-page meaning; `cache.observation_checkpoint_bytes` is the optional
-pool charge and `cache.charged_bytes` combines both reported gauges.
+`observe.checkpoint_evictions` and `observe.full_rebuilds` distinguish reuse and
+fallback. Explicit residency diagnostics retain the VM-page meaning of
+`resident_bytes`; `observation_checkpoint_bytes` is the optional pool charge and
+`charged_bytes` combines both live gauges.
 
 Fault caches use exact fixed-width action-path roots. The cache object commitment
 binds both the admitted machine target and opaque captured-history attachment;
@@ -678,3 +742,55 @@ an instruction to execute those commands again during restoration.
 
 The CLI exposes this through `branch --exec`, `branch --exec-file` and
 `branch --shell`. `search --from BRANCH` restores the saved guest state.
+
+Campaign coordinator bootstrap and checkpoint resume explicitly finish their
+thread-local session before releasing execution-worker readiness. This boundary
+also runs after bootstrap construction or replay errors and on unwinding. It
+removes LIVE before teardown, so a process exit need not run main-thread TLS
+cleanup. Unconfirmed owned-session exit fails an otherwise successful bootstrap;
+a prior typed execution error remains primary, with a secondary cleanup diagnostic.
+Linux targets continue reusing their thread-local session between worker jobs.
+Target Drop is not a universal session-finalization boundary.
+
+Final cumulative telemetry is captured once before explicit session shutdown and
+merged into retired counters without a post-close RPC. It excludes teardown work;
+telemetry failure does not prevent the owned shutdown attempt. Bootstrap scope
+acquisition refuses nesting atomically, preserving the outer scope's ownership.
+
+The generic searcher's standalone full and prefix replay mechanism owns the
+coordinator thread's session for the whole operation and finalizes it on every
+result. macOS target Drop defers to that active scope, preserving session reuse
+inside it. The faults CLI's own replay commands use FaultTarget directly and do
+not enter this generic replay scope.
+
+The standing service declares inactive debug questions local to the installed
+deterministic handler. The attached debug handler declares them external even
+when no message is supplied. The supervisor still makes each actual debug SDK
+request: attachment after a standing reply is delivered at the same next debug
+request, without a dormant flag or an extra tick. Local answering removes only
+an external Decision/resolution exchange; guest doorbells and mandatory guards
+remain. Both handlers decode debug Status before answering. Rejecting malformed
+inactive Status is an intentional tightening: the prior standing handler returned
+empty bytes without decoding it. Standing and debug identities are respectively
+faults-standing-coverage-v3 and faults-debug-terminal-v2.
+
+The generic local-answer capability requires unchanged captured handler state;
+the inactive standing debug response satisfies it. Stateful local responses are
+rejected before publication. Active debug remains on the external path.
+
+Coordinator measurement can read `coordinator_retired_work_telemetry` only when
+the calling thread has no LIVE session. The accessor rejects before any session
+query and returns an owned copy of retired counters. This supports bootstrap
+attribution after explicit coordinator finalization without creating a session,
+querying a closed child, or measuring shared cache counters twice. It does not
+finalize a session or imply teardown success; the lifecycle receipt remains
+independent. Ordinary thread work and residency diagnostics are unchanged.
+
+Thread work reports add final controller counters across retired LIVE sessions.
+For SDK attribution, `vmm.sdk_dispatch.event_shape_slots` therefore sums
+per-session filled-slot memberships and can exceed 32. Equal shape keys from
+different sessions have their values added, so this number need not equal the
+number of distinct named rows in the thread report. The 32-row witness cap
+applies per producer table; the accumulated thread report can retain keys from
+multiple sessions and has no global 32-row bound. Neither this field nor the
+shape rows report current residency or enter archive memory policy.

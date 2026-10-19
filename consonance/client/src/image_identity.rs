@@ -3,8 +3,20 @@
 use std::io;
 
 #[cfg(feature = "in-process")]
+pub(crate) use crate::guard_telemetry::GuardSite;
+#[cfg(feature = "in-process")]
+use crate::guard_telemetry::{GuardDispatch, GuardTelemetry};
+
+#[cfg(feature = "in-process")]
+#[derive(Clone, Debug)]
+pub(crate) struct LoadedImageGuard {
+    admitted: AdmittedImage,
+    telemetry: std::sync::Arc<GuardTelemetry>,
+}
+
+#[cfg(feature = "in-process")]
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum LoadedImageGuard {
+enum AdmittedImage {
     Strict(host_code_identity::StrictExecutableGuard),
     #[cfg(test)]
     TestFixture,
@@ -62,13 +74,63 @@ fn strict_host_identity() -> io::Result<String> {
 #[cfg(feature = "in-process")]
 impl LoadedImageGuard {
     pub(crate) fn capture() -> io::Result<Self> {
-        reject_loader_overrides()?;
-        Ok(Self::Strict(
-            host_code_identity::StrictExecutableGuard::capture()?.1,
-        ))
+        Self::capture_with_telemetry(std::sync::Arc::new(GuardTelemetry::default()))
     }
 
-    pub(crate) fn check(self) -> io::Result<()> {
+    fn capture_with_telemetry(telemetry: std::sync::Arc<GuardTelemetry>) -> io::Result<Self> {
+        let mut work = host_code_identity::GuardMeasurement::default();
+        let started = guard_started();
+        let captured = reject_loader_overrides()
+            .and_then(|()| host_code_identity::StrictExecutableGuard::capture_measured(&mut work));
+        telemetry.record(
+            GuardSite::Admission,
+            GuardDispatch::Capture,
+            work,
+            captured.is_err(),
+            false,
+            guard_elapsed(started),
+        );
+        Ok(Self {
+            admitted: AdmittedImage::Strict(captured?.1),
+            telemetry,
+        })
+    }
+
+    pub(crate) fn fork(&self) -> Self {
+        Self {
+            admitted: self.admitted,
+            telemetry: std::sync::Arc::new(GuardTelemetry::default()),
+        }
+    }
+
+    pub(crate) fn counters(&self, prefix: &str) -> Vec<(String, u64)> {
+        self.telemetry.counters(prefix)
+    }
+
+    pub(crate) fn check(&self) -> io::Result<()> {
+        self.check_at(GuardSite::SessionBoundary)
+    }
+
+    pub(crate) fn check_at(&self, site: GuardSite) -> io::Result<()> {
+        let started = guard_started();
+        let mut work = host_code_identity::GuardMeasurement::default();
+        #[cfg(test)]
+        let fixture = matches!(self.admitted, AdmittedImage::TestFixture);
+        #[cfg(not(test))]
+        let fixture = false;
+        let result = self.check_inner(&mut work);
+        self.telemetry.record(
+            site,
+            GuardDispatch::Check,
+            work,
+            result.is_err(),
+            fixture,
+            guard_elapsed(started),
+        );
+        result
+    }
+
+    fn check_inner(&self, work: &mut host_code_identity::GuardMeasurement) -> io::Result<()> {
         #[cfg(test)]
         CHECK_TRACE.with(|trace| {
             let (entries, strict, fail_at) = trace.get();
@@ -79,10 +141,13 @@ impl LoadedImageGuard {
                 Ok(())
             }
         })?;
-        let admitted = match self {
-            Self::Strict(admitted) => admitted,
+        #[cfg(not(test))]
+        let AdmittedImage::Strict(admitted) = self.admitted;
+        #[cfg(test)]
+        let admitted = match self.admitted {
+            AdmittedImage::Strict(admitted) => admitted,
             #[cfg(test)]
-            Self::TestFixture => return Ok(()),
+            AdmittedImage::TestFixture => return Ok(()),
         };
         reject_loader_overrides()?;
         #[cfg(test)]
@@ -90,32 +155,74 @@ impl LoadedImageGuard {
             let (entries, strict, fail_at) = trace.get();
             trace.set((entries, strict + 1, fail_at));
         });
-        admitted.check()
+        admitted.check_measured(work)
+    }
+
+    pub(crate) fn current_identity(&self) -> io::Result<String> {
+        let started = guard_started();
+        let mut work = host_code_identity::GuardMeasurement::default();
+        let identity = reject_loader_overrides().and_then(|()| {
+            host_code_identity::StrictExecutableGuard::capture_measured(&mut work)
+                .map(|captured| captured.0)
+        });
+        self.telemetry.record(
+            GuardSite::Admission,
+            GuardDispatch::Capture,
+            work,
+            identity.is_err(),
+            false,
+            guard_elapsed(started),
+        );
+        identity
     }
 
     #[cfg(test)]
     pub(crate) fn fixture() -> Self {
-        Self::TestFixture
+        Self {
+            admitted: AdmittedImage::TestFixture,
+            telemetry: std::sync::Arc::new(GuardTelemetry::default()),
+        }
     }
 
     pub(crate) fn identity() -> io::Result<(String, Self)> {
-        let guard = Self::capture()?;
-        let identity = loaded_executable_identity_self()?;
-        guard.check()?;
+        Self::identity_with_telemetry(std::sync::Arc::new(GuardTelemetry::default()))
+    }
+
+    pub(crate) fn identity_shared(&self) -> io::Result<(String, Self)> {
+        Self::identity_with_telemetry(std::sync::Arc::clone(&self.telemetry))
+    }
+
+    fn identity_with_telemetry(
+        telemetry: std::sync::Arc<GuardTelemetry>,
+    ) -> io::Result<(String, Self)> {
+        let guard = Self::capture_with_telemetry(telemetry)?;
+        let identity = guard.current_identity()?;
+        guard.check_at(GuardSite::Admission)?;
         Ok((identity, guard))
     }
 
     pub(crate) fn check_published(
-        self,
+        &self,
         index: &dyn crate::cache::CacheIndex,
         lease: crate::cache::Lease,
     ) -> io::Result<crate::cache::Lease> {
-        if let Err(error) = self.check() {
+        if let Err(error) = self.check_at(GuardSite::PublicationAfter) {
             index.revoke(lease);
             return Err(error);
         }
         Ok(lease)
     }
+}
+
+#[cfg(feature = "in-process")]
+#[allow(clippy::disallowed_methods)]
+fn guard_started() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+#[cfg(feature = "in-process")]
+fn guard_elapsed(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 #[cfg(all(test, feature = "in-process"))]
@@ -636,6 +743,65 @@ mod sealed_guard_tests {
         let (result, entries, strict) = trace_checks(None, || guard.check());
         result.unwrap();
         assert_eq!((entries, strict), (1, 1));
+        let metrics = guard
+            .counters("guard.session")
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let file_len = std::fs::metadata("/proc/self/exe").unwrap().len();
+        assert_eq!(metrics["guard.session.admission.strict_attempts"], 1);
+        assert_eq!(
+            metrics["guard.session.admission.strict_capture_attempts"],
+            1
+        );
+        assert_eq!(
+            metrics["guard.session.admission.sealed_file_hashed_bytes"],
+            file_len
+        );
+        assert_eq!(
+            metrics["guard.session.admission.sealed_file_read_bytes"],
+            file_len
+        );
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        let mut expected_live = 0;
+        let mut expected_sealed = 0;
+        for line in maps.lines() {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if !fields[1].contains('x') || fields.last() == Some(&"[vsyscall]") {
+                continue;
+            }
+            let (start, end) = fields[0].split_once('-').unwrap();
+            let len =
+                u64::from_str_radix(end, 16).unwrap() - u64::from_str_radix(start, 16).unwrap();
+            expected_live += len;
+            if fields.last() != Some(&"[vdso]") {
+                expected_sealed += len;
+            }
+        }
+        assert_eq!(metrics["guard.session.session_boundary.strict_attempts"], 1);
+        assert_eq!(
+            metrics["guard.session.session_boundary.strict_check_attempts"],
+            1
+        );
+        assert_eq!(
+            metrics["guard.session.session_boundary.live_exec_read_bytes"],
+            expected_live
+        );
+        assert_eq!(
+            metrics["guard.session.session_boundary.live_exec_hashed_bytes"],
+            expected_live
+        );
+        assert_eq!(
+            metrics["guard.session.session_boundary.sealed_exec_read_bytes"],
+            expected_sealed
+        );
+        assert_eq!(
+            metrics["guard.session.session_boundary.comparison_input_bytes"],
+            expected_sealed
+        );
+        assert_eq!(
+            metrics["guard.session.session_boundary.sealed_file_hashed_bytes"],
+            0
+        );
         let index = LocalIndex::new(1 << 20);
         let namespace = Namespace::new(&[b"live-code"]);
         let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
@@ -652,6 +818,19 @@ mod sealed_guard_tests {
         let (result, entries, strict) = trace_checks(None, || guard.check_published(&index, lease));
         assert!(result.is_err());
         assert_eq!((entries, strict), (1, 1));
+        let metrics = guard
+            .counters("guard.session")
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            metrics["guard.session.publication_after.strict_attempts"],
+            1
+        );
+        assert_eq!(metrics["guard.session.publication_after.strict_errors"], 1);
+        assert_eq!(
+            metrics["guard.session.publication_after.live_exec_read_bytes"],
+            0
+        );
         assert!(index.lookup(namespace, b"snapshot").is_none());
         assert_eq!((index.stats().entries, index.stats().leased), (0, 0));
         drop(mapping);
@@ -835,5 +1014,44 @@ mod linux_tests {
         ));
         assert!(!procfs_matches_pid_namespace("Name:\tworker\n", 41));
         assert!(!procfs_matches_pid_namespace("NStgid:\t42\n", 41));
+    }
+}
+
+#[cfg(all(test, feature = "in-process"))]
+mod guard_metric_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn guard_metrics_share_an_owner_only_when_cloned_and_count_refused_dispatches() {
+        let guard = LoadedImageGuard::fixture();
+        let shared = guard.clone();
+        let separate = guard.fork();
+        shared.check_at(GuardSite::SdkRequest).unwrap();
+        let before = guard
+            .counters("test")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(before["test.sdk_request.dispatches"], 1);
+        assert_eq!(before["test.sdk_request.strict_attempts"], 0);
+        assert_eq!(before["test.sdk_request.fixture_dispatches"], 1);
+        assert!(separate.counters("test").is_empty());
+        let (result, entries, strict) =
+            trace_checks(Some(1), || shared.check_at(GuardSite::SdkResponse));
+        assert!(result.is_err());
+        assert_eq!((entries, strict), (1, 0));
+        let after = guard
+            .counters("test")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(after["test.sdk_response.dispatches"], 1);
+        assert_eq!(after["test.sdk_response.errors"], 1);
+        assert_eq!(after["test.sdk_response.strict_attempts"], 0);
+        assert_eq!(guard.counters("test"), shared.counters("test"));
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(after["test.sdk_response.byte_unavailable_attempts"], 0);
+            assert!(!after.contains_key("test.sdk_response.live_exec_read_bytes"));
+        }
     }
 }

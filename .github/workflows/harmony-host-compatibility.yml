@@ -95,6 +95,12 @@ jobs:
             darwin_frame_remainders_own_and_refuse_unexpected_rights; do
             grep -Eq "^[[:space:]]*PASS[[:space:]]+\[[^]]+\][[:space:]]+(\([[:space:]]*[0-9]+/[0-9]+\)[[:space:]]+)?consonance-client[[:space:]]+session::worker::tests::${test_name}$" darwin-rights-tests.log
           done
+      - name: Verify direct extent export copy accounting on Arm64
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          sed $'s/\033\[[0-9;]*m//g' host-tests.log > copy-work-tests.log
+          grep -Eq '^[[:space:]]*PASS[[:space:]]+\[[^]]+\][[:space:]]+(\([[:space:]]*[0-9]+/[0-9]+\)[[:space:]]+)?consonance-client[[:space:]]+session::live::tests::served_export_writes_once_into_the_allocated_destination$' copy-work-tests.log
       - name: Compare ARM and software SHA-256 in one executable
         run: |
           cargo fetch --locked

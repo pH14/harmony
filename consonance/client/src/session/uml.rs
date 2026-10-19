@@ -301,7 +301,8 @@ impl UmlSession {
             .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
         cache_domain.update(setup_checkpoint.digest()?);
         this.cache_domain = cache_domain.finalize().into();
-        this.loaded_image_guard.check()?;
+        this.loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::Admission)?;
         Ok(this)
     }
 
@@ -508,8 +509,12 @@ fn handler(
     factory: &ServiceFactory,
     config: &ServiceConfig,
 ) -> Result<Box<dyn environment::channel::ServiceHandler>, Box<dyn Error>> {
+    environment::channel::validate_local_services(&config.local_services)?;
     let handler = factory(config)?;
-    if handler.identity() != config.identity || handler.configuration() != config.configuration {
+    if handler.identity() != config.identity
+        || handler.configuration() != config.configuration
+        || handler.local_services() != config.local_services
+    {
         return Err(SessionError::Control(
             "the service factory built a handler for another configuration".into(),
         )
@@ -519,6 +524,16 @@ fn handler(
 }
 
 impl SearchSession for UmlSession {
+    fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.abandoned {
+            return Err(SessionError::Abandoned.into());
+        }
+        if let Some(session) = self.session.as_mut() {
+            session.shutdown()?;
+        }
+        self.session.take();
+        Ok(())
+    }
     fn setup_handle(&self) -> (SnapId, u64) {
         self.setup
     }
@@ -555,7 +570,8 @@ impl SearchSession for UmlSession {
         namespace: Namespace,
         target: SnapId,
     ) -> Result<Lease, Box<dyn Error>> {
-        self.loaded_image_guard.check()?;
+        self.loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::PublicationBefore)?;
         let target = self
             .snapshots
             .get(&target)
@@ -643,6 +659,7 @@ impl SearchSession for UmlSession {
             out.push((format!("{name}.count"), spent.count));
             out.push((format!("{name}.ns"), spent.nanos));
         }
+        out.extend(self.loaded_image_guard.counters("guard.session"));
         out
     }
 
@@ -684,7 +701,8 @@ impl SearchSession for UmlSession {
         attachment: &SnapshotAttachment,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
-        self.loaded_image_guard.check()?;
+        self.loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::PublicationBefore)?;
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let checkpoint = |id: SnapId| -> Result<&Checkpoint, Box<dyn Error>> {
             self.snapshots
@@ -975,6 +993,30 @@ mod tests {
             abandoned: false,
             counters: Counters::default(),
         }
+    }
+
+    #[test]
+    fn abandoned_shutdown_never_claims_confirmed_exit_and_normal_shutdown_is_idempotent() {
+        let mut session = unbooted_session();
+        let _ = session.abandon(uml::SessionError::Stopped(uml::ExitReason::HostFailure));
+        for _ in 0..2 {
+            let result = session.shutdown();
+            assert!(
+                result.is_err(),
+                "abandoned shutdown cannot confirm owned exit"
+            );
+            let error = result.unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<SessionError>(),
+                Some(SessionError::Abandoned)
+            ));
+            assert!(session.session.is_none());
+        }
+        let mut session = unbooted_session();
+        session.shutdown().unwrap();
+        session.shutdown().unwrap();
+        assert!(!session.abandoned());
+        assert!(session.session.is_none());
     }
 
     #[cfg(target_os = "linux")]
@@ -1547,6 +1589,7 @@ mod tests {
                 session.branch_with_service(
                     SnapId(1),
                     ServiceConfig {
+                        local_services: Vec::new(),
                         identity: b"aliased-uml-handler".to_vec(),
                         configuration: Vec::new(),
                     },

@@ -297,6 +297,7 @@ fn action_champion_key(observations: &[TwinDragonsObservations]) -> Option<TwinD
 }
 
 impl<M: NesBackend<Vec<u8>>> CampaignTypes for TwinDragonsGame<M> {
+    type JobObservation = ();
     type Target = TwinDragonsTarget<M>;
     type Action = ButtonChord;
     type Key = TwinDragonsArchiveKey;

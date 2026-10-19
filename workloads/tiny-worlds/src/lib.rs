@@ -365,6 +365,7 @@ impl<const CAPACITY_TWO: bool> Workload<CAPACITY_TWO> {
     }
 }
 impl<const CAPACITY_TWO: bool> CampaignTypes for Workload<CAPACITY_TWO> {
+    type JobObservation = ();
     type Target = Target;
     type Action = u8;
     type Key = Key<CAPACITY_TWO>;

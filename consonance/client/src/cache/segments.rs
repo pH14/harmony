@@ -6,7 +6,7 @@ use std::{
     ptr::NonNull,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -140,10 +140,11 @@ impl Segment {
         else {
             return false;
         };
-        // SAFETY: fallocate only changes the file behind a descriptor this segment owns, and
-        // only within a retired extent range with no parent Rust references. KEEP_SIZE preserves
-        // mapped addresses and length. An uncertain child writer can still access this range;
-        // the allocator never reuses it, although late writes can refill these uncharged pages.
+        // SAFETY: only Retirement::Unique reaches this call, after checking the
+        // actual segment identity. Its capability consumes the writer or unwraps
+        // the last committed owner, so no parent Rust reference reads the range.
+        // export writers retain their ownership until their mappings retire;
+        // the KEEP_SIZE flag preserves all other segment addresses and lengths.
         unsafe {
             libc::fallocate(
                 self.backing.as_raw_fd(),
@@ -269,7 +270,7 @@ fn shared_file(len: usize) -> io::Result<std::os::fd::OwnedFd> {
     Ok(fd)
 }
 
-pub type Abandon = Box<dyn FnOnce(u64, usize, usize) + Send>;
+pub(super) type Abandon = Box<dyn FnOnce(Reclamation) + Send>;
 
 #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
 #[derive(Clone, Copy, Debug)]
@@ -291,114 +292,165 @@ impl Segment {
     }
 }
 
-pub struct WritableExtent {
+struct Extent {
     segment: Arc<Segment>,
     segment_id: u64,
     offset: usize,
     len: usize,
+    retired: AtomicBool,
+}
+
+pub(super) struct Reclamation(Extent);
+
+enum Retirement {
+    Unique(Reclamation),
+    Shared(Arc<Extent>),
+}
+
+impl Retirement {
+    fn extent(&self) -> &Extent {
+        match self {
+            Self::Unique(reclamation) => &reclamation.0,
+            Self::Shared(extent) => extent,
+        }
+    }
+
+    fn release(&self) -> bool {
+        match self {
+            Self::Unique(Reclamation(extent)) => extent.segment.release(extent.offset, extent.len),
+            Self::Shared(_) => false,
+        }
+    }
+}
+
+pub struct WritableExtent {
+    extent: Option<Extent>,
     abandon: Option<Abandon>,
 }
 
 impl std::fmt::Debug for WritableExtent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let extent = self.extent();
         formatter
             .debug_struct("WritableExtent")
-            .field("segment_id", &self.segment_id)
-            .field("offset", &self.offset)
-            .field("len", &self.len)
+            .field("segment_id", &extent.segment_id)
+            .field("offset", &extent.offset)
+            .field("len", &extent.len)
             .finish_non_exhaustive()
     }
 }
 
 impl WritableExtent {
+    fn extent(&self) -> &Extent {
+        self.extent.as_ref().expect("live writable extent")
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
-        self.len
+        self.extent().len
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len() == 0
     }
 
     pub fn bytes_mut(&mut self) -> &mut [u8] {
-        let start = self.segment.range(self.offset, self.len);
-        // SAFETY: PageSegments hands this range to one WritableExtent only, the extent is
-        // not Clone, and a CommittedExtent for the range exists only after commit consumes it.
-        unsafe { std::slice::from_raw_parts_mut(start, self.len) }
+        let extent = self.extent();
+        let start = extent.segment.range(extent.offset, extent.len);
+        // SAFETY: this non-Clone extent uniquely owns the range. Committing or
+        // reclaiming consumes that ownership and cannot coexist with this borrow.
+        unsafe { std::slice::from_raw_parts_mut(start, extent.len) }
     }
 
-    pub(crate) fn commit(mut self) -> CommittedExtent {
+    fn into_reclamation(mut self) -> Reclamation {
         self.abandon = None;
+        Reclamation(self.extent.take().expect("live writable extent"))
+    }
+
+    pub(crate) fn commit(self) -> CommittedExtent {
+        let Reclamation(extent) = self.into_reclamation();
         CommittedExtent {
-            segment: Arc::clone(&self.segment),
-            copies: Arc::new(()),
-            segment_id: self.segment_id,
-            offset: self.offset,
-            len: self.len,
+            extent: Arc::new(extent),
         }
     }
 
-    pub(crate) fn set_abandon(&mut self, abandon: Abandon) {
+    pub(super) fn set_abandon(&mut self, abandon: Abandon) {
         self.abandon = Some(abandon);
     }
 
     #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
     pub(crate) fn shared_range(&self) -> SharedRange<'_> {
-        self.segment.shared(self.offset, self.len)
+        let extent = self.extent();
+        extent.segment.shared(extent.offset, extent.len)
     }
 }
 
 impl Drop for WritableExtent {
     fn drop(&mut self) {
         if let Some(abandon) = self.abandon.take() {
-            abandon(self.segment_id, self.offset, self.len);
+            abandon(Reclamation(
+                self.extent.take().expect("live writable extent"),
+            ));
         }
+    }
+}
+
+#[cfg(any(all(feature = "in-process", not(miri)), test))]
+#[derive(Debug)]
+pub(crate) struct BackingWitness(std::sync::Weak<Segment>);
+
+#[cfg(any(all(feature = "in-process", not(miri)), test))]
+impl BackingWitness {
+    pub(crate) fn same_backing(&self, other: &Self) -> bool {
+        std::sync::Weak::ptr_eq(&self.0, &other.0)
     }
 }
 
 #[derive(Clone)]
 pub struct CommittedExtent {
-    segment: Arc<Segment>,
-    copies: Arc<()>,
-    segment_id: u64,
-    offset: usize,
-    len: usize,
+    extent: Arc<Extent>,
 }
 
 impl std::fmt::Debug for CommittedExtent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CommittedExtent")
-            .field("segment_id", &self.segment_id)
-            .field("offset", &self.offset)
-            .field("len", &self.len)
+            .field("segment_id", &self.extent.segment_id)
+            .field("offset", &self.extent.offset)
+            .field("len", &self.extent.len)
             .finish_non_exhaustive()
     }
 }
 
 impl CommittedExtent {
+    #[cfg(any(all(feature = "in-process", not(miri)), test))]
+    pub(crate) fn backing_witness(&self) -> BackingWitness {
+        BackingWitness(Arc::downgrade(&self.extent.segment))
+    }
+
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
-        let start = self.segment.range(self.offset, self.len);
-        // SAFETY: a committed range was written by its one WritableExtent, which commit
-        // consumed; PageSegments releases the range only when no other copy of this extent
-        // exists, so nothing changes it while this borrow lives.
-        unsafe { std::slice::from_raw_parts(start, self.len) }
+        let extent = &self.extent;
+        let start = extent.segment.range(extent.offset, extent.len);
+        // SAFETY: commit consumed the unique writer. A reclamation capability
+        // requires unwrapping the last owning Arc, so no reader can coexist with it.
+        unsafe { std::slice::from_raw_parts(start, extent.len) }
     }
 
     pub(crate) fn span(&self) -> (u64, usize, usize) {
-        (self.segment_id, self.offset, self.len)
+        (self.extent.segment_id, self.extent.offset, self.extent.len)
     }
 
     #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
     pub(crate) fn shared_range(&self) -> SharedRange<'_> {
-        self.segment.shared(self.offset, self.len)
+        let extent = &self.extent;
+        extent.segment.shared(extent.offset, extent.len)
     }
 
     #[cfg(test)]
     pub(crate) fn offset(&self) -> usize {
-        self.offset
+        self.extent.offset
     }
 }
 
@@ -508,35 +560,62 @@ impl PageSegments {
         used.extents += 1;
         self.charged += len;
         Ok(WritableExtent {
-            segment: Arc::clone(&used.segment),
-            segment_id: id,
-            offset,
-            len,
+            extent: Some(Extent {
+                segment: Arc::clone(&used.segment),
+                segment_id: id,
+                offset,
+                len,
+                retired: AtomicBool::new(false),
+            }),
             abandon: None,
         })
     }
 
     pub(crate) fn owns(&self, extent: &WritableExtent) -> bool {
+        self.owns_extent(extent.extent())
+    }
+
+    fn owns_extent(&self, extent: &Extent) -> bool {
         self.segments
             .get(&extent.segment_id)
             .is_some_and(|used| Arc::ptr_eq(&used.segment, &extent.segment))
     }
 
-    pub fn free(&mut self, segment_id: u64, offset: usize, len: usize) {
-        self.remove(segment_id, offset, len, true);
+    pub fn free(&mut self, extent: WritableExtent) {
+        if self.owns(&extent) {
+            self.reclaim(extent.into_reclamation());
+        }
     }
 
-    pub fn free_committed(&mut self, mut extent: CommittedExtent) {
-        let last = Arc::get_mut(&mut extent.copies).is_some();
-        self.remove(extent.segment_id, extent.offset, extent.len, last);
+    pub fn free_committed(&mut self, extent: CommittedExtent) {
+        if !self.owns_extent(&extent.extent) {
+            return;
+        }
+        let retirement = match Arc::try_unwrap(extent.extent) {
+            Ok(extent) => Retirement::Unique(Reclamation(extent)),
+            Err(extent) => Retirement::Shared(extent),
+        };
+        self.remove(retirement);
     }
 
-    fn remove(&mut self, segment_id: u64, offset: usize, len: usize, release: bool) {
+    pub(super) fn reclaim(&mut self, reclamation: Reclamation) {
+        self.remove(Retirement::Unique(reclamation));
+    }
+
+    fn remove(&mut self, retirement: Retirement) {
+        let extent = retirement.extent();
+        let segment_id = extent.segment_id;
+        let len = extent.len;
         let Some(used) = self.segments.get_mut(&segment_id) else {
             return;
         };
-        used.extents = used.extents.saturating_sub(1);
-        if release && used.extents > 0 && used.segment.release(offset, len) {
+        if !Arc::ptr_eq(&used.segment, &extent.segment)
+            || extent.retired.swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        used.extents -= 1;
+        if used.extents > 0 && retirement.release() {
             used.released += len;
             self.charged -= len;
         }
@@ -643,13 +722,110 @@ mod tests {
         let a = a.commit();
         let _b = segments.allocate(PAGE).unwrap().commit();
         let reader = a.clone();
+        let live = reader.bytes();
         segments.free_committed(a);
         assert_eq!(
             segments.charged(),
             2 * PAGE,
             "a copied extent stays charged"
         );
-        assert!(reader.bytes().iter().all(|&byte| byte == 1));
+        assert!(live.iter().all(|&byte| byte == 1));
+    }
+
+    #[test]
+    fn owned_reclamation_preserves_neighboring_live_views() {
+        let mut segments = PageSegments::new(3 * PAGE, usize::MAX);
+        let mut first = segments.allocate(PAGE).unwrap();
+        let mut second = segments.allocate(PAGE).unwrap();
+        let mut third = segments.allocate(PAGE).unwrap();
+        first.bytes_mut().fill(0x5a);
+        second.bytes_mut().fill(0x6b);
+        third.bytes_mut().fill(0x7c);
+        let third = third.commit();
+        let first_view = first.bytes_mut();
+        let third_view = third.bytes();
+        segments.free(second);
+        assert!(first_view.iter().all(|&byte| byte == 0x5a));
+        assert!(third_view.iter().all(|&byte| byte == 0x7c));
+        assert_eq!(
+            segments.charged(),
+            if RELEASES_EXTENTS { 2 * PAGE } else { 3 * PAGE }
+        );
+        segments.free(first);
+        assert!(third_view.iter().all(|&byte| byte == 0x7c));
+        segments.free_committed(third);
+        assert_eq!((segments.charged(), segments.segments()), (0, 0));
+    }
+
+    #[test]
+    fn foreign_committed_extent_cannot_reclaim_a_live_writable_view() {
+        let mut owner = PageSegments::new(2 * PAGE, usize::MAX);
+        let foreign = owner.allocate(PAGE).unwrap().commit();
+        let mut victim = PageSegments::new(2 * PAGE, usize::MAX);
+        let mut first = victim.allocate(PAGE).unwrap();
+        let mut second = victim.allocate(PAGE).unwrap();
+        first.bytes_mut().fill(0x5a);
+        second.bytes_mut().fill(0x7c);
+        let first_view = first.bytes_mut();
+        let second_view = second.bytes_mut();
+        victim.free_committed(foreign);
+        assert!(first_view.iter().all(|&byte| byte == 0x5a));
+        assert!(second_view.iter().all(|&byte| byte == 0x7c));
+        assert_eq!(victim.charged(), 2 * PAGE);
+        victim.free(second);
+        assert!(first_view.iter().all(|&byte| byte == 0x5a));
+        assert_eq!(victim.segments(), 1);
+        assert_eq!(
+            victim.charged(),
+            if RELEASES_EXTENTS { PAGE } else { 2 * PAGE }
+        );
+        victim.free(first);
+        assert_eq!((victim.charged(), victim.segments()), (0, 0));
+        assert_eq!((owner.charged(), owner.segments()), (PAGE, 1));
+    }
+
+    #[test]
+    fn foreign_writable_extent_and_abandonment_capability_cannot_reclaim_local_bytes() {
+        let mut owner = PageSegments::new(2 * PAGE, usize::MAX);
+        let foreign = owner.allocate(PAGE).unwrap();
+        let foreign_capability = owner.allocate(PAGE).unwrap().into_reclamation();
+        let mut victim = PageSegments::new(2 * PAGE, usize::MAX);
+        let mut first = victim.allocate(PAGE).unwrap();
+        let second = victim.allocate(PAGE).unwrap();
+        first.bytes_mut().fill(0x5a);
+        let live = first.bytes_mut();
+        victim.free(foreign);
+        victim.reclaim(foreign_capability);
+        assert!(live.iter().all(|&byte| byte == 0x5a));
+        assert_eq!(victim.charged(), 2 * PAGE);
+        victim.free(second);
+        assert!(live.iter().all(|&byte| byte == 0x5a));
+        assert_eq!(victim.segments(), 1);
+        victim.free(first);
+        assert_eq!((victim.charged(), victim.segments()), (0, 0));
+    }
+
+    #[test]
+    fn freeing_multiple_committed_copies_retires_the_allocation_only_once() {
+        let mut segments = PageSegments::new(3 * PAGE, usize::MAX);
+        let first = segments.allocate(PAGE).unwrap().commit();
+        let second = segments.allocate(PAGE).unwrap().commit();
+        let mut third = segments.allocate(PAGE).unwrap();
+        third.bytes_mut().fill(0x5a);
+        let third = third.commit();
+        let live = third.bytes();
+        segments.free_committed(first.clone());
+        segments.free_committed(first);
+        assert_eq!(segments.charged(), 3 * PAGE);
+        segments.free_committed(second);
+        assert!(live.iter().all(|&byte| byte == 0x5a));
+        assert_eq!(segments.segments(), 1);
+        assert_eq!(
+            segments.charged(),
+            if RELEASES_EXTENTS { 2 * PAGE } else { 3 * PAGE }
+        );
+        segments.free_committed(third);
+        assert_eq!((segments.charged(), segments.segments()), (0, 0));
     }
 
     #[test]
@@ -682,10 +858,12 @@ mod tests {
         let mut segments = PageSegments::new(2 * PAGE, usize::MAX);
         let (sender, receiver) = std::sync::mpsc::channel();
         let mut extent = segments.allocate(PAGE).unwrap();
-        extent.set_abandon(Box::new(move |id, offset, len| {
-            sender.send((id, offset, len)).unwrap();
+        extent.set_abandon(Box::new(move |Reclamation(extent)| {
+            sender
+                .send((extent.segment_id, extent.offset, extent.len))
+                .unwrap();
         }));
-        let id = extent.segment_id;
+        let id = extent.extent().segment_id;
         drop(extent);
         assert_eq!(receiver.try_recv().unwrap(), (id, 0, PAGE));
     }

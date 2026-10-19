@@ -118,6 +118,10 @@ pub trait Backend {
 
     fn reset_exit_counts(&mut self);
 
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        crate::PhysicalTelemetry::default()
+    }
+
     fn store_completions(&self) -> StoreCompletions {
         StoreCompletions::default()
     }
@@ -249,6 +253,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn reset_exit_counts(&mut self) {
         (**self).reset_exit_counts()
+    }
+
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        (**self).physical_telemetry()
     }
 
     fn store_completions(&self) -> StoreCompletions {

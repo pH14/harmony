@@ -5,6 +5,8 @@ use std::io::{self, ErrorKind};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, MetadataExt};
 
+use crate::guard_work::read_exact_counted_at;
+use crate::{GuardBytes, GuardMeasurement};
 use sha2::{Digest, Sha256};
 
 const DOMAIN: &[u8] = b"linux-sealed-static-memfd-elf-sha256-v1\0";
@@ -335,15 +337,21 @@ fn update_field(digest: &mut Sha256, bytes: &[u8]) {
     digest.update(bytes);
 }
 
-fn hash_file(file: &File, file_len: u64) -> io::Result<[u8; 32]> {
+fn hash_file(file: &File, file_len: u64, work: &mut GuardBytes) -> io::Result<[u8; 32]> {
     let mut digest = Sha256::new();
     let mut bytes = [0u8; 65536];
     let mut position = 0;
     while position < file_len {
         let count = usize::try_from((file_len - position).min(bytes.len() as u64))
             .map_err(|_| denied("sealed executable length overflows"))?;
-        file.read_exact_at(&mut bytes[..count], position)?;
+        read_exact_counted_at(
+            |bytes, offset| file.read_at(bytes, offset),
+            &mut bytes[..count],
+            position,
+            &mut work.sealed_file_read_bytes,
+        )?;
         digest.update(&bytes[..count]);
+        work.sealed_file_hashed_bytes = work.sealed_file_hashed_bytes.saturating_add(count as u64);
         position += count as u64;
     }
     Ok(digest.finalize().into())
@@ -354,6 +362,7 @@ fn hash_main_mapping(
     file: &File,
     memory: &File,
     map: &ExecutableMap,
+    work: &mut GuardBytes,
 ) -> io::Result<()> {
     let mut live = [0u8; 65536];
     let mut sealed = [0u8; 65536];
@@ -361,26 +370,49 @@ fn hash_main_mapping(
     while position < map.end - map.start {
         let count = usize::try_from((map.end - map.start - position).min(live.len() as u64))
             .map_err(|_| denied("executable mapping length overflows"))?;
-        memory.read_exact_at(&mut live[..count], map.start + position)?;
-        file.read_exact_at(&mut sealed[..count], map.offset + position)?;
+        read_exact_counted_at(
+            |bytes, offset| memory.read_at(bytes, offset),
+            &mut live[..count],
+            map.start + position,
+            &mut work.live_exec_read_bytes,
+        )?;
+        read_exact_counted_at(
+            |bytes, offset| file.read_at(bytes, offset),
+            &mut sealed[..count],
+            map.offset + position,
+            &mut work.sealed_exec_read_bytes,
+        )?;
+        work.comparison_input_bytes = work.comparison_input_bytes.saturating_add(count as u64);
         if live[..count] != sealed[..count] {
             return Err(denied("live code differs from sealed executable"));
         }
         digest.update(&live[..count]);
+        work.live_exec_hashed_bytes = work.live_exec_hashed_bytes.saturating_add(count as u64);
         position += count as u64;
     }
     Ok(())
 }
 
-fn hash_vdso(digest: &mut Sha256, memory: &File, map: &ExecutableMap) -> io::Result<()> {
+fn hash_vdso(
+    digest: &mut Sha256,
+    memory: &File,
+    map: &ExecutableMap,
+    work: &mut GuardBytes,
+) -> io::Result<()> {
     digest.update((map.end - map.start).to_le_bytes());
     let mut bytes = [0u8; 65536];
     let mut position = map.start;
     while position < map.end {
         let count = usize::try_from((map.end - position).min(bytes.len() as u64))
             .map_err(|_| denied("vDSO mapping length overflows"))?;
-        memory.read_exact_at(&mut bytes[..count], position)?;
+        read_exact_counted_at(
+            |bytes, offset| memory.read_at(bytes, offset),
+            &mut bytes[..count],
+            position,
+            &mut work.live_exec_read_bytes,
+        )?;
         digest.update(&bytes[..count]);
+        work.live_exec_hashed_bytes = work.live_exec_hashed_bytes.saturating_add(count as u64);
         position += count as u64;
     }
     Ok(())
@@ -397,6 +429,7 @@ fn file_seals(file: &File) -> io::Result<i32> {
 
 fn measure(
     admitted: Option<&SealedStaticExecutableGuard>,
+    work: &mut GuardMeasurement,
 ) -> io::Result<SealedStaticExecutableGuard> {
     let path = fs::read_link("/proc/self/exe")?;
     let path = path
@@ -422,8 +455,9 @@ fn measure(
     let segment = executable_segment(&file, metadata.len(), page_size()?)?;
     let file_digest = match admitted {
         Some(admitted) => admitted.file_digest,
-        None => hash_file(&file, metadata.len())?,
+        None => hash_file(&file, metadata.len(), work.bytes.as_mut().unwrap())?,
     };
+    work.image_censuses = work.image_censuses.saturating_add(1);
     let maps_before = admit_maps(
         &fs::read_to_string("/proc/self/maps")?,
         path,
@@ -437,12 +471,24 @@ fn measure(
     update_field(&mut digest, &file_digest);
     digest.update(segment.offset.to_le_bytes());
     digest.update(segment.mapped_len.to_le_bytes());
-    hash_main_mapping(&mut digest, &file, &memory, &maps_before.main)?;
-    hash_vdso(&mut digest, &memory, &maps_before.vdso)?;
+    hash_main_mapping(
+        &mut digest,
+        &file,
+        &memory,
+        &maps_before.main,
+        work.bytes.as_mut().unwrap(),
+    )?;
+    hash_vdso(
+        &mut digest,
+        &memory,
+        &maps_before.vdso,
+        work.bytes.as_mut().unwrap(),
+    )?;
     digest.update([u8::from(maps_before.vsyscall)]);
     if maps_before.vsyscall {
         update_field(&mut digest, &fs::read("/proc/sys/kernel/osrelease")?);
     }
+    work.image_censuses = work.image_censuses.saturating_add(1);
     let maps_after = admit_maps(
         &fs::read_to_string("/proc/self/maps")?,
         path,
@@ -466,7 +512,16 @@ fn measure(
 
 impl SealedStaticExecutableGuard {
     pub fn capture() -> io::Result<(String, Self)> {
-        let admitted = measure(None)?;
+        Self::capture_measured(&mut GuardMeasurement::default())
+    }
+
+    pub fn capture_measured(work: &mut GuardMeasurement) -> io::Result<(String, Self)> {
+        crate::guard_work::measured(work, Self::capture_inner)
+    }
+
+    fn capture_inner(work: &mut GuardMeasurement) -> io::Result<(String, Self)> {
+        work.bytes.get_or_insert_default();
+        let admitted = measure(None, work)?;
         let mut text = String::from(IDENTITY_PREFIX);
         const HEX: &[u8; 16] = b"0123456789abcdef";
         for byte in admitted.identity {
@@ -477,7 +532,16 @@ impl SealedStaticExecutableGuard {
     }
 
     pub fn check(self) -> io::Result<()> {
-        if measure(Some(&self))?.identity != self.identity {
+        self.check_measured(&mut GuardMeasurement::default())
+    }
+
+    pub fn check_measured(self, work: &mut GuardMeasurement) -> io::Result<()> {
+        crate::guard_work::measured(work, |work| self.check_inner(work))
+    }
+
+    fn check_inner(self, work: &mut GuardMeasurement) -> io::Result<()> {
+        work.bytes.get_or_insert_default();
+        if measure(Some(&self), work)?.identity != self.identity {
             return Err(denied("sealed executable changed after admission"));
         }
         Ok(())
@@ -603,11 +667,82 @@ mod tests {
         first_file.write_all(&first).unwrap();
         second_file.write_all(&second).unwrap();
         assert_ne!(
-            hash_file(&first_file, first.len() as u64).unwrap(),
-            hash_file(&second_file, second.len() as u64).unwrap()
+            hash_file(&first_file, first.len() as u64, &mut GuardBytes::default()).unwrap(),
+            hash_file(
+                &second_file,
+                second.len() as u64,
+                &mut GuardBytes::default()
+            )
+            .unwrap()
         );
         first[0x2100] ^= 1;
         assert_eq!(first, second);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "uses temporary files and positioned OS reads unavailable under Miri isolation"
+    )]
+    fn measured_read_hash_and_comparison_bytes_survive_refusal() {
+        let mut file = tempfile::tempfile().unwrap();
+        let mut memory = tempfile::tempfile().unwrap();
+        file.write_all(&[1, 2, 3, 4]).unwrap();
+        memory.write_all(&[1, 2, 3, 4]).unwrap();
+        let map = ExecutableMap {
+            start: 0,
+            end: 4,
+            permissions: "r-xp".into(),
+            offset: 0,
+            device_major: 0,
+            device_minor: 0,
+            inode: 1,
+            path: "fixture".into(),
+        };
+        let mut work = GuardBytes::default();
+        hash_main_mapping(&mut Sha256::new(), &file, &memory, &map, &mut work).unwrap();
+        assert_eq!(
+            (
+                work.live_exec_read_bytes,
+                work.sealed_exec_read_bytes,
+                work.live_exec_hashed_bytes,
+                work.comparison_input_bytes
+            ),
+            (4, 4, 4, 4)
+        );
+        memory.write_at(&[9], 0).unwrap();
+        assert!(hash_main_mapping(&mut Sha256::new(), &file, &memory, &map, &mut work).is_err());
+        assert_eq!(
+            (
+                work.live_exec_read_bytes,
+                work.sealed_exec_read_bytes,
+                work.live_exec_hashed_bytes,
+                work.comparison_input_bytes
+            ),
+            (8, 8, 4, 8)
+        );
+        let mut truncated = GuardBytes::default();
+        assert!(hash_file(&file, 8, &mut truncated).is_err());
+        assert_eq!(
+            (
+                truncated.sealed_file_read_bytes,
+                truncated.sealed_file_hashed_bytes
+            ),
+            (4, 0)
+        );
+        hash_file(&file, 4, &mut truncated).unwrap();
+        assert_eq!(
+            (
+                truncated.sealed_file_read_bytes,
+                truncated.sealed_file_hashed_bytes
+            ),
+            (8, 4)
+        );
+        hash_vdso(&mut Sha256::new(), &memory, &map, &mut work).unwrap();
+        assert_eq!(
+            (work.live_exec_read_bytes, work.live_exec_hashed_bytes),
+            (12, 8)
+        );
     }
 
     #[cfg(target_env = "musl")]

@@ -131,3 +131,17 @@ kernel or code that can subvert its own in-process checks. A separately mapped
 executable page that dyld does not report remains outside this image census;
 the hardened runtime without executable-memory exceptions is required to
 prevent such code from entering this process.
+
+`StrictExecutableGuard::capture_measured` and `check_measured` accept caller-owned
+`GuardMeasurement` totals. Attempts, errors and elapsed host nanoseconds include
+refusals; partial work remains available after an error. Linux byte fields count
+successful bytes returned by the actual code/vDSO and sealed-file reads, including
+partial reads before EOF or another error. Hash bytes count only buffers actually
+fed to SHA-256. Comparison input bytes count each compared pair's length once
+(N for two N-byte buffers), including a mismatching pair; they do not estimate CPU
+comparison instructions. Admission-only whole-file reads/hashes are separate from
+recheck code reads. ELF headers, proc-map text, metadata and digest framing are
+excluded from executable-byte fields. The live vDSO is included. macOS byte fields
+are unavailable (`None`), while kernel signing-state checks, static-signing checks
+and image-census attempts count their actual stages. These observational totals
+have no global owner and enter no executable identity, policy or snapshot bytes.

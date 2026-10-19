@@ -306,3 +306,34 @@ sends SIGTERM/SIGINT to the ready kernel and SIGKILL to a live `uml-userspace`
 stub. Compiled boundary probes separately plant mmap/socketpair/clone failures;
 they exercise the production patch statements but do not substitute for a live
 post-boot resource-injection qualification.
+
+Session::shutdown invokes the existing owned Guest teardown and returns an
+idempotent shutdown receipt. It confirms the Child wait and existing process-group
+sweep before reporting success. Failed or incomplete teardown remains an error;
+repeated shutdown does not retry waits or send another signal to the old group.
+This does not strengthen the launcher's existing group-identity or descendant
+cleanup guarantees.
+
+Closed or ambiguously terminated Guest instances reject later polling entrypoints.
+A real child-poll error latches the same unconfirmed state, preventing subsequent
+PID waits and signals. The related numeric process-group identity limitation is
+tracked in [#766](https://github.com/pH14/harmony/issues/766); ambiguity remains
+an error rather than permission to signal a possibly reused number. Native
+failure tests inject before the OS wait, so their private fixture cleanup still
+owns the unreaped Child; that cleanup does not license retry after a real
+ambiguous wait in production. A successful owned-child receipt does not resolve
+the numeric process-group identity limitation after leader reaping.
+
+The client refuses shutdown confirmation after an abandoned UML session, even
+when abandonment has already removed the live Guest. Normal confirmed shutdown
+remains idempotent.
+
+The HUMLSVC2 service checkpoint embeds the canonical local-service declaration
+from its recorded handler and rejects the previous service format. Branch,
+factory reconstruction and reseed validate this declaration along with identity
+and configuration. The declaration permits stateless local auto-answering; a
+backend may still surface an external Decision. UML deliberately retains that
+external route: it never invokes the installed custom handler for an unrecorded
+question. Explicit resolution records the supplied answer without changing SDK
+handler state, and recorded replay uses that answer. No UML auto-answer or RPC
+savings are claimed.

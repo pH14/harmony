@@ -2,12 +2,13 @@
 
 mod budget;
 pub mod extent;
+mod lock_work;
 pub mod segments;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Bound,
-    sync::{Arc, Mutex, MutexGuard, Weak},
+    sync::{Arc, Mutex, Weak},
 };
 
 use sha2::{Digest, Sha256};
@@ -194,6 +195,9 @@ pub trait CacheIndex: Send + Sync + std::fmt::Debug {
     fn report_store(&self, holder: u64, bytes: u64) -> bool;
     fn forget_store(&self, holder: u64);
     fn stats(&self) -> CacheStats;
+    fn lock_counters(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
 }
 
 #[derive(Debug)]
@@ -395,6 +399,7 @@ impl State {
 #[derive(Clone, Debug)]
 pub struct LocalIndex {
     state: Arc<Mutex<State>>,
+    lock_work: Arc<lock_work::LockWork>,
 }
 
 impl LocalIndex {
@@ -414,6 +419,7 @@ impl LocalIndex {
     #[must_use]
     pub fn with_segments(budget: usize, segments: PageSegments) -> Self {
         Self {
+            lock_work: Arc::default(),
             state: Arc::new(Mutex::new(State {
                 owner: Arc::new(()),
                 budget,
@@ -431,20 +437,16 @@ impl LocalIndex {
         }
     }
 
-    fn state(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn state(&self, site: lock_work::Site) -> lock_work::Guard<'_, State> {
+        self.lock_work.lock(&self.state, site)
     }
 
-    fn abandon(state: Weak<Mutex<State>>) -> segments::Abandon {
-        Box::new(move |segment_id, offset, len| {
+    fn abandon(state: Weak<Mutex<State>>, work: Arc<lock_work::LockWork>) -> segments::Abandon {
+        Box::new(move |reclamation| {
             if let Some(state) = state.upgrade() {
-                state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                work.lock(&state, lock_work::Site::Abandon)
                     .segments
-                    .free(segment_id, offset, len);
+                    .reclaim(reclamation);
             }
         })
     }
@@ -452,15 +454,20 @@ impl LocalIndex {
 
 impl CacheIndex for LocalIndex {
     fn divergences(&self) -> Vec<Arc<CacheDivergence>> {
-        self.state().divergences.values().cloned().collect()
+        self.state(lock_work::Site::Divergences)
+            .divergences
+            .values()
+            .cloned()
+            .collect()
     }
 
     fn verify_namespace(&self, namespace: Namespace) -> Result<(), CacheError> {
-        self.state().verify_namespace(namespace)
+        self.state(lock_work::Site::VerifyNamespace)
+            .verify_namespace(namespace)
     }
 
     fn verify_integrity(&self) -> Result<(), CacheError> {
-        let state = self.state();
+        let state = self.state(lock_work::Site::VerifyIntegrity);
         match state.divergences.keys().next() {
             Some(&namespace) => state.verify_namespace(namespace),
             None => Ok(()),
@@ -468,7 +475,7 @@ impl CacheIndex for LocalIndex {
     }
 
     fn verify_lease(&self, lease: &Lease) -> Result<(), CacheError> {
-        let state = self.state();
+        let state = self.state(lock_work::Site::VerifyLease);
         if !Arc::ptr_eq(&lease.owner, &state.owner) {
             return Err(CacheError::ForeignLease);
         }
@@ -480,7 +487,7 @@ impl CacheIndex for LocalIndex {
     }
 
     fn lookup(&self, namespace: Namespace, key: &[u8]) -> Option<Lease> {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::Lookup);
         state.stats.lookups += 1;
         let id = state.lookup_key(namespace, key)?;
         state.stats.hits += 1;
@@ -488,7 +495,7 @@ impl CacheIndex for LocalIndex {
     }
 
     fn extent(&self, len: usize) -> Result<WritableExtent, CacheError> {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::Extent);
         let needed =
             segments::rounded(len.max(1)).ok_or(CacheError::Malformed("extent size overflow"))?;
         if let Err(error) = state.make_room(needed) {
@@ -496,7 +503,10 @@ impl CacheIndex for LocalIndex {
             return Err(error);
         }
         let mut extent = state.segments.allocate(needed)?;
-        extent.set_abandon(Self::abandon(Arc::downgrade(&self.state)));
+        extent.set_abandon(Self::abandon(
+            Arc::downgrade(&self.state),
+            Arc::clone(&self.lock_work),
+        ));
         Ok(extent)
     }
 
@@ -509,7 +519,7 @@ impl CacheIndex for LocalIndex {
         target_commitment: [u8; 32],
         cost: u64,
     ) -> Result<Lease, CacheError> {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::Publish);
         if !state.segments.owns(&extent) {
             return Err(CacheError::ForeignExtent);
         }
@@ -613,7 +623,7 @@ impl CacheIndex for LocalIndex {
     }
 
     fn target_commitment(&self, lease: &Lease) -> Result<[u8; 32], CacheError> {
-        let state = self.state();
+        let state = self.state(lock_work::Site::TargetCommitment);
         if !Arc::ptr_eq(&lease.owner, &state.owner) {
             return Err(CacheError::ForeignLease);
         }
@@ -626,7 +636,7 @@ impl CacheIndex for LocalIndex {
     }
 
     fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError> {
-        let state = self.state();
+        let state = self.state(lock_work::Site::Chain);
         if !Arc::ptr_eq(&lease.owner, &state.owner) {
             return Err(CacheError::ForeignLease);
         }
@@ -639,7 +649,7 @@ impl CacheIndex for LocalIndex {
     }
 
     fn release(&self, lease: Lease) {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::Release);
         if !Arc::ptr_eq(&lease.owner, &state.owner) {
             return;
         }
@@ -650,14 +660,14 @@ impl CacheIndex for LocalIndex {
     }
 
     fn revoke(&self, lease: Lease) {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::Revoke);
         if Arc::ptr_eq(&lease.owner, &state.owner) {
             state.revoke(lease.entry);
         }
     }
 
     fn report_store(&self, holder: u64, bytes: u64) -> bool {
-        let mut state = self.state();
+        let mut state = self.state(lock_work::Site::ReportStore);
         state.set_store(holder, Some(usize::try_from(bytes).unwrap_or(usize::MAX)));
         while state.over_budget() {
             let Some(&(_, id)) = state.evictable.first() else {
@@ -678,11 +688,12 @@ impl CacheIndex for LocalIndex {
     }
 
     fn forget_store(&self, holder: u64) {
-        self.state().set_store(holder, None);
+        self.state(lock_work::Site::ForgetStore)
+            .set_store(holder, None);
     }
 
     fn stats(&self) -> CacheStats {
-        let state = self.state();
+        let state = self.state(lock_work::Site::Stats);
         CacheStats {
             budget: state.budget,
             charged: state.segments.charged(),
@@ -702,6 +713,9 @@ impl CacheIndex for LocalIndex {
             ..state.stats
         }
     }
+    fn lock_counters(&self) -> Vec<(String, u64)> {
+        self.lock_work.counters()
+    }
 }
 
 #[cfg(test)]
@@ -709,6 +723,38 @@ mod tests {
     use super::extent::{HashedPage, extent_len, read_extent, resolve, write_extent};
     use super::segments::PAGE;
     use super::*;
+
+    #[test]
+    fn lock_work_is_shared_only_by_clones_and_abandon_does_not_keep_state_alive() {
+        let index = LocalIndex::with_segment_bytes(PAGE * 4, PAGE * 4);
+        let cloned = index.clone();
+        let separate = LocalIndex::with_segment_bytes(PAGE * 4, PAGE * 4);
+        assert!(index.lock_counters().is_empty());
+        assert!(index.lookup(ns("missing"), b"key").is_none());
+        assert_eq!(cloned.lock_counters(), index.lock_counters());
+        assert!(separate.lock_counters().is_empty());
+        let before = index.stats();
+        let counters = index.lock_counters();
+        assert_eq!(index.stats(), before);
+        assert!(!counters.is_empty());
+        let extent = cloned.extent(PAGE).unwrap();
+        drop(extent);
+        let values = index
+            .lock_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(values["abandon.attempts"], 1);
+        assert_eq!(values["abandon.completed"], 1);
+        let extent = index.extent(PAGE).unwrap();
+        let weak = Arc::downgrade(&index.state);
+        let work = Arc::clone(&index.lock_work);
+        drop(index);
+        drop(cloned);
+        assert!(weak.upgrade().is_none());
+        drop(extent);
+        let values = work.counters().into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(values["abandon.completed"], 1);
+    }
 
     fn ns(name: &str) -> Namespace {
         Namespace::new(&[name.as_bytes()])
@@ -751,7 +797,7 @@ mod tests {
 
     fn held(index: &LocalIndex, key: &[u8]) -> bool {
         index
-            .state()
+            .state(lock_work::Site::Stats)
             .keys
             .get(&ns("a"))
             .is_some_and(|keys| keys.contains_key(key))
@@ -1022,7 +1068,8 @@ mod tests {
         let index = LocalIndex::with_segment_bytes(1 << 20, 4 * PAGE);
         let space = ns("a");
         let first = put(&index, space, b"k", None, &[(0, 1)], &[]).unwrap();
-        let existing_commitment = index.state().entries[&first.entry].target_commitment;
+        let existing_commitment =
+            index.state(lock_work::Site::Stats).entries[&first.entry].target_commitment;
         let page = [2; PAGE];
         let mut extent = index.extent(extent_len(1, 0, 1).unwrap()).unwrap();
         write_extent(extent.bytes_mut(), &[(0, &[2; 32], &page)], &[], b"k").unwrap();

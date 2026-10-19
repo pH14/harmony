@@ -73,7 +73,10 @@ the request's reply is encoded, and attaches it to every fresh or recovery VM.
 The VMM checks the same guard before servicing a doorbell and immediately
 before writing any service answer to guest memory. Consonance uses this hook
 to reject host loader changes without making the execution core depend on a
-particular process-loader implementation.
+particular process-loader implementation. The callback receives a bounded
+`HostOperationSite` tag for control-before, control-after, SDK request or SDK
+response. Tags describe existing call boundaries and add no guard calls or
+executable policy; runtime measurement ownership belongs to the composition.
 
 When a `Run` deadline is the earlier idle wake and resumes the guest, control
 refuses `RecordedEnv`: the operator's deadline is absent from the input tape,
@@ -158,7 +161,9 @@ Whole-request and checkpoint time also includes vCPU state capture, readiness
 checks and suffix encoding; it is not pure digest CPU time.
 
 The leaves attribute each feed once; wrapper requests do not add another
-charge. Retiring or replaying a VMM never rewinds these host totals. Snapshot
+charge. Retiring or replaying a VMM never rewinds these host totals. Backend physical
+entry telemetry is merged on the same retirement and failed-restore boundaries,
+independently of normalized exit service counts. Snapshot
 store verification appears under `snapshot.verify.*`, with distinct BLAKE3
 resident-page and VM-state work. Timings are nested diagnostic envelopes across
 hashing and storage, not additive elapsed time. Standalone codec/comparison
@@ -173,8 +178,15 @@ and the first base-RAM commitment calculation. Each distinct resident page is
 integrity-hashed once within that export; subsequent exports start fresh
 verification even when the base-RAM digest is cached. BLAKE3 resident integrity
 checks and the flat SHA-256 base/target commitments retain their separate
-purposes and existing encodings. Import keeps its existing operation boundaries;
-no verified-slot state crosses a mutable derive or import.
+purposes and existing encodings. Sparse delta import shares one immutable read
+transaction across target comparison and setup/base verification, including a
+cached base digest. Metadata and RAM validation still precede service preflight.
+That transaction ends before any user service callback. Rebase analysis then
+starts fresh resident verification after preflight; the subsequent mutable derive
+also retains its own resident/incoming-page checks. No verified-slot set crosses
+those boundaries. Thus a retained page can still be checked again after the
+callback or during derive; import does not promise one check per page over the
+whole operation.
 
 Guest RAM is owned by `Vmm` for the lifetime of the backend. The canonical state
 fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
@@ -263,7 +275,7 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 7, and the sparse sidecar is version 9;
+The complete portable format is version 9, and the sparse sidecar is version 11;
 older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
 changed-page numbers and bytes to its sidecar; import verifies them before
 deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
@@ -397,7 +409,7 @@ the existing diagnostic log remains available independently.
 Fresh V-time wiring resets history. Capturing/hashing a snapshot and retiring
 its diagnostic trace do not advance or reset it. Replay and branch restore the
 captured commitment before continuation, regardless of local snapshot IDs or
-restore mode. Full portable snapshots (v8) and sparse sidecars (v10) retain its
+restore mode. Full portable snapshots (v9) and sparse sidecars (v11) retain its
 presence, count and digest independently of the logical state hash. Imports
 require a live validator and check availability against its V-time model before
 creating a handle. Restore also rejects a mismatch on the actual target.
@@ -967,3 +979,88 @@ allows them to exempt XSAVE state or component layouts. CPUID identity, caches,
 topology, and frequency descriptions remain fixed guest values. Standard math
 libraries remain supported; admission is about execution capability, not a
 claim of identical arithmetic results across all admitted CPUs.
+
+The controller resolves declared local generic service namespaces from the
+actual pending SDK question after schedule and deadline checks. Coverage and
+deferred doorbells retain their existing resolution rules. Local and external
+answers share the controller transaction: prepare the request-bound input tape
+and projected SDK recording, check both bounded encodings, publish through the
+response guard, then install the candidate SDK handler/answer and controller
+tape. Local handler errors retire the failed VM; a capacity refusal leaves the
+pending question uncommitted. A response-guard failure in either a local answer
+or an explicit Run resolution retires the failed VM while retaining its console
+and SDK events for diagnostics, without committing the candidate answer or tape.
+A handler returning External preserves that stop.
+The request, including the response guard on its initial pending boundary,
+remains present. No guest request suppression or unchecked reply path exists.
+
+Dispatch declarations survive branch, replay and portable import through
+ServiceConfig and the recorded handler snapshot. Control-state magic is
+HCSTATE3; channel and input records explicitly reject previous versions. Host
+RPC stop counts may change under this recorded policy; guest request order,
+virtual moments and mandatory doorbell guards do not disappear.
+
+Local-answer capability is deliberately stateless: an answered candidate must
+leave its complete captured handler fingerprint (identity, configuration,
+dispatch declaration and state) unchanged. A stateful answer is a typed host
+failure before response or tape publication, not an external fallback. This
+allows a fresh reproducer to use its recorded override without skipping a
+handler state transition. External handlers retain their existing stateful
+contract. Supporting stateful computed local answers would require separate
+computed-answer provenance and replay semantics and is outside this format.
+
+Branch preflight rejects an answer binding that conflicts with the selected
+snapshot's actual pending Decision or CoverageDecision payload, before calling
+the service factory or changing the live VM/tape. It does not inspect a different
+current live question in place of the selected snapshot. This applies to local
+and external policies alike. Ordinary nonpending request binding mismatches
+still produce the guarded guest BadRequest response. A local deadline-pending
+request with an initially supplied or replayed conflicting binding also produces
+BadRequest after independently checking its actual tuple and payload. The common
+guarded writer uses the captured sequence and opcode; only successful publication
+clears the pending stop. This rejection changes neither environment nor tape. A
+handler error cannot substitute for proof of a recorded binding mismatch.
+
+Local and explicit resolution share the control answer-frame bound before
+recording or publishing anything. Canonical Data encoding is one tag byte plus
+the data, so at most MAX_PAYLOAD - 1 data bytes fit. Oversized local responses
+return MalformedEnvironment with the question still pending, matching explicit
+resolution, rather than reaching a writer failure that retires the VM.
+
+SDK dispatch attribution partitions existing request and response guard callback
+calls, errors, and outer callback nanoseconds by bounded generic wire-operation
+bins. It does not add checks, RPCs, copied-byte estimates, or canonical state.
+The outer duration wraps `check_host_operation_guard`, including its optional
+callback invocation and error mapping, and overlaps session guard metrics.
+Constructing the callback record, classifying the request, and updating witness
+rows occur outside this timer. Inner strict-check time and executable-read bytes
+are unavailable by operation. Request counts include unreadable and predecode-refused attempts;
+callback counts/time do not count successful response writes or semantic
+outcomes. The first scope has no separate semantic-status/write-success or
+copy-byte counters. An absent guard contributes zero callback calls, not a measured
+successful check. Request refusals before reading guest memory remain explicitly
+unclassified. Invalid frames and unreadable/oversize requests have separate
+bins; a valid frame's
+operation bin does not imply a semantically valid payload.
+
+Up to 32 exact event shapes retain namespace byte, data length, and optional
+first data byte. These are opaque wire witnesses, not workload register meanings.
+Known shapes keep their slots; unseen shapes after capacity go to an explicit
+aggregate overflow. Shape rows plus overflow cover eligible Event.emit requests
+and response callbacks, and are subsets of operation totals, not additional work.
+No inference of zero is valid for missing shapes when overflow is nonzero.
+The cap applies to each VMM or merged controller table. `event_shape_slots`
+reports that table's filled slots and is monotone within its lifetime. Summing
+independent controller reports counts per-controller slot memberships; that sum
+is not a global unique-shape count, current table fill, or memory charge.
+
+Deferred doorbells charge the original request once; later completion derives
+response attribution from the retained request without another request check.
+Pending service and coverage responses use their actual response operation.
+Requests and responses need not balance within a query interval. Attribution is
+cumulative host work, includes setup, survives VMM retirement through the existing
+telemetry owner, and is never restored from a snapshot. Worker telemetry queries
+replace previous cumulative child values and preserve the last values on error.
+Neither worker sums nor these breakdowns are additive to shared cache totals or
+the existing guard timers. This measurement establishes no batching speedup or
+permission to remove publication, deadline, interrupt, or image-check boundaries.

@@ -7,6 +7,9 @@ pub mod bundle;
 #[cfg(feature = "consonance")]
 pub mod chain;
 pub mod history;
+#[cfg(any(feature = "consonance", test))]
+#[cfg_attr(not(feature = "consonance"), allow(dead_code))]
+pub mod job_observation;
 pub mod package;
 pub mod prepare;
 pub mod report;

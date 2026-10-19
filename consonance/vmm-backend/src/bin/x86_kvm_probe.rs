@@ -115,7 +115,8 @@ mod x86 {
         for (name, id) in CAPS {
             // SAFETY: `KVM_CHECK_EXTENSION` on a valid `/dev/kvm` fd takes the
             // capability id by value and dereferences no userspace pointer.
-            let value = unsafe { libc::ioctl(fd, KVM_CHECK_EXTENSION, libc::c_ulong::from(*id)) };
+            let value =
+                unsafe { libc::ioctl(fd, KVM_CHECK_EXTENSION as _, libc::c_ulong::from(*id)) };
             println!("CAP_{name}={value}");
         }
         drop(kvm);

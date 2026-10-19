@@ -95,6 +95,7 @@ thread_local! {
 
 struct TestWorkload;
 impl CampaignTypes for TestWorkload {
+    type JobObservation = ();
     type Target = TestTarget;
     type Action = TestAction;
     type Key = TestKey;

@@ -150,9 +150,31 @@ impl VerificationTelemetry {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CopyTelemetry {
+    pub intern_calls: u64,
+    pub intern_hits: u64,
+    pub intern_copy_bytes: u64,
+    pub read_copy_bytes: u64,
+}
+impl CopyTelemetry {
+    pub fn counters(self) -> Vec<(String, u64)> {
+        [
+            ("intern_calls", self.intern_calls),
+            ("intern_hits", self.intern_hits),
+            ("intern_copy_bytes", self.intern_copy_bytes),
+            ("read_copy_bytes", self.read_copy_bytes),
+        ]
+        .into_iter()
+        .map(|(name, value)| (format!("snapshot.copy.{name}"), value))
+        .collect()
+    }
+}
+
 pub struct Store {
     cfg: StoreConfig,
     verification: std::cell::Cell<VerificationTelemetry>,
+    copies: std::cell::Cell<CopyTelemetry>,
     verification_batch_depth: std::cell::Cell<usize>,
     store_id: u64,
     next_id: u64,
@@ -169,9 +191,53 @@ pub struct Store {
     page_verifications: std::cell::Cell<usize>,
 }
 
+enum VerifiedPages {
+    Dense(Vec<u64>),
+    Sparse {
+        ids: BTreeSet<NonZeroUsize>,
+        dense_words: Option<usize>,
+    },
+}
+impl VerifiedPages {
+    fn new(slots: usize, live: usize) -> Self {
+        let dense_words = (slots <= 8 * 1024 * 1024 && slots <= live.saturating_mul(8))
+            .then_some(slots.div_ceil(64));
+        Self::Sparse {
+            ids: BTreeSet::new(),
+            dense_words,
+        }
+    }
+
+    fn contains(&self, id: &NonZeroUsize) -> bool {
+        match self {
+            Self::Dense(words) => words[(id.get() - 1) / 64] & (1 << ((id.get() - 1) % 64)) != 0,
+            Self::Sparse { ids, .. } => ids.contains(id),
+        }
+    }
+
+    fn insert(&mut self, id: NonZeroUsize) {
+        match self {
+            Self::Dense(words) => words[(id.get() - 1) / 64] |= 1 << ((id.get() - 1) % 64),
+            Self::Sparse { ids, dense_words } => {
+                ids.insert(id);
+                if let Some(len) = *dense_words
+                    && ids.len() >= 64
+                    && ids.len() >= len
+                {
+                    let mut words = vec![0; len];
+                    for id in ids.iter() {
+                        words[(id.get() - 1) / 64] |= 1 << ((id.get() - 1) % 64);
+                    }
+                    *self = Self::Dense(words);
+                }
+            }
+        }
+    }
+}
+
 pub struct ReadTransaction<'store> {
     store: &'store Store,
-    verified_pages: BTreeSet<NonZeroUsize>,
+    verified_pages: VerifiedPages,
 }
 
 struct VerificationBatch<'a> {
@@ -211,6 +277,16 @@ impl Store {
         self.page_verifications.get()
     }
 
+    pub fn copy_telemetry(&self) -> CopyTelemetry {
+        self.copies.get()
+    }
+
+    fn note_copy(&self, update: impl FnOnce(&mut CopyTelemetry)) {
+        let mut value = self.copies.get();
+        update(&mut value);
+        self.copies.set(value);
+    }
+
     pub fn verification_telemetry(&self) -> VerificationTelemetry {
         self.verification.get()
     }
@@ -240,7 +316,7 @@ impl Store {
     pub fn read_transaction(&self) -> ReadTransaction<'_> {
         ReadTransaction {
             store: self,
-            verified_pages: BTreeSet::new(),
+            verified_pages: VerifiedPages::new(self.pages.len(), self.page_index.len()),
         }
     }
 
@@ -248,6 +324,7 @@ impl Store {
         Store {
             cfg,
             verification: std::cell::Cell::default(),
+            copies: std::cell::Cell::default(),
             verification_batch_depth: std::cell::Cell::new(0),
             store_id: NEXT_STORE_ID
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
@@ -336,7 +413,7 @@ impl Store {
         }
 
         let timing = self.verification_batch();
-        let mut verified_pages = BTreeSet::new();
+        let mut verified_pages = VerifiedPages::new(self.pages.len(), self.page_index.len());
         for (&gfn, &pref) in &inherited {
             self.page_entry(pref, gfn, &mut verified_pages)?;
         }
@@ -382,6 +459,7 @@ impl Store {
             return Err(StoreError::BadPageLength { len: out.len() });
         }
         out.copy_from_slice(self.read_transaction().read_page(snap, gfn)?);
+        self.note_copy(|t| t.read_copy_bytes = t.read_copy_bytes.saturating_add(out.len() as u64));
         Ok(())
     }
 
@@ -528,7 +606,7 @@ impl Store {
         &self,
         page: PageRef,
         gfn: u64,
-        verified_pages: &mut BTreeSet<NonZeroUsize>,
+        verified_pages: &mut VerifiedPages,
     ) -> Result<(&PageHash, &[u8; PAGE_SIZE]), StoreError> {
         self.note_verification(|t| t.page_requests = t.page_requests.saturating_add(1));
         let result = (|| match page {
@@ -575,11 +653,8 @@ impl Store {
         self.read_transaction().verify_snapshots(snaps)
     }
 
-    fn verified_snapshot_pages(
-        &self,
-        snap: SnapshotId,
-    ) -> Result<BTreeSet<NonZeroUsize>, StoreError> {
-        let mut verified_pages = BTreeSet::new();
+    fn verified_snapshot_pages(&self, snap: SnapshotId) -> Result<VerifiedPages, StoreError> {
+        let mut verified_pages = VerifiedPages::new(self.pages.len(), self.page_index.len());
         self.verify_snapshot_pages_into(snap, &mut verified_pages)?;
         Ok(verified_pages)
     }
@@ -587,7 +662,7 @@ impl Store {
     fn verify_snapshot_pages_into(
         &self,
         snap: SnapshotId,
-        verified_pages: &mut BTreeSet<NonZeroUsize>,
+        verified_pages: &mut VerifiedPages,
     ) -> Result<(), StoreError> {
         let _timing = self.verification_batch();
         let mut seen_gfns = BTreeSet::new();
@@ -888,6 +963,7 @@ impl Store {
         data: &[u8],
         gfn: u64,
     ) -> Result<NonZeroUsize, StoreError> {
+        self.note_copy(|t| t.intern_calls = t.intern_calls.saturating_add(1));
         if let Some(&id) = self.page_index.get(&hash) {
             let entry = self
                 .pages
@@ -898,6 +974,7 @@ impl Store {
                 return Err(StoreError::PageIntegrity { gfn });
             }
             entry.refs = entry.refs.saturating_add(1);
+            self.note_copy(|t| t.intern_hits = t.intern_hits.saturating_add(1));
             return Ok(id);
         }
         let entry = PageEntry {
@@ -905,6 +982,9 @@ impl Store {
             data: data.into(),
             refs: 1,
         };
+        self.note_copy(|t| {
+            t.intern_copy_bytes = t.intern_copy_bytes.saturating_add(data.len() as u64)
+        });
         let id = match self.free_pages.pop() {
             Some(id) => {
                 self.pages[id.get() - 1] = Some(entry);
@@ -1300,6 +1380,173 @@ impl DeltaBuilder<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verification_membership_promotes_at_threshold_without_losing_word_boundaries() {
+        let mut pages = VerifiedPages::new(128, 128);
+        for value in 1..64 {
+            let id = NonZeroUsize::new(value).unwrap();
+            assert!(!pages.contains(&id));
+            pages.insert(id);
+        }
+        assert!(matches!(pages, VerifiedPages::Sparse { .. }));
+        for value in 64..=128 {
+            let id = NonZeroUsize::new(value).unwrap();
+            assert!(!pages.contains(&id));
+            pages.insert(id);
+            assert!(pages.contains(&id));
+        }
+        assert!(matches!(pages, VerifiedPages::Dense(_)));
+        for value in 1..=128 {
+            assert!(pages.contains(&NonZeroUsize::new(value).unwrap()));
+        }
+        let fresh = VerifiedPages::new(128, 128);
+        assert!(!fresh.contains(&NonZeroUsize::new(128).unwrap()));
+        for (slots, live) in [(1024, 64), (usize::MAX, usize::MAX)] {
+            let mut sparse = VerifiedPages::new(slots, live);
+            for value in 1..=64 {
+                sparse.insert(NonZeroUsize::new(value).unwrap());
+            }
+            assert!(matches!(sparse, VerifiedPages::Sparse { .. }));
+        }
+    }
+
+    #[test]
+    fn verification_membership_waits_for_word_scaled_threshold() {
+        let mut pages = VerifiedPages::new(8192, 8192);
+        for value in 1..=127 {
+            let id = NonZeroUsize::new(value).unwrap();
+            assert!(!pages.contains(&id));
+            pages.insert(id);
+        }
+        assert!(matches!(pages, VerifiedPages::Sparse { .. }));
+        let last = NonZeroUsize::new(8192).unwrap();
+        assert!(!pages.contains(&last));
+        pages.insert(last);
+        assert!(matches!(&pages, VerifiedPages::Dense(words) if words.len() == 128));
+        for value in (1..=127).chain([8192]) {
+            assert!(pages.contains(&NonZeroUsize::new(value).unwrap()));
+        }
+        assert!(!pages.contains(&NonZeroUsize::new(128).unwrap()));
+        assert!(!pages.contains(&NonZeroUsize::new(8191).unwrap()));
+    }
+
+    #[test]
+    fn promoted_read_transactions_verify_aliases_once_and_recheck_after_corruption() {
+        let mut store = Store::new(cfg(512));
+        let mut builder = store.begin_base();
+        for gfn in 0..129 {
+            let data = [(gfn + 1) as u8; PAGE_SIZE];
+            builder.write_page(gfn, &data).unwrap();
+            builder.write_page(256 + gfn, &data).unwrap();
+        }
+        let snap = builder.seal(vec![]);
+        let before = store.verification_telemetry();
+        {
+            let mut read = store.read_transaction();
+            for gfn in 0..65 {
+                read.read_page(snap, gfn).unwrap();
+            }
+            read.verify_snapshots(&[snap, snap]).unwrap();
+            assert!(matches!(read.verified_pages, VerifiedPages::Dense(_)));
+        }
+        let first = store.verification_telemetry();
+        assert_eq!(first.resident_hashes - before.resident_hashes, 129);
+        store.read_transaction().verify_snapshots(&[snap]).unwrap();
+        assert_eq!(
+            store.verification_telemetry().resident_hashes - first.resident_hashes,
+            129
+        );
+        let PageRef::Data(id) = store.resolve(snap.0, 128) else {
+            panic!("resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[17] ^= 1;
+        assert!(matches!(
+            store.read_transaction().verify_snapshots(&[snap]),
+            Err(StoreError::PageIntegrity { gfn: 128 })
+        ));
+    }
+
+    #[test]
+    fn fresh_membership_handles_retained_high_slots_and_recycled_storage() {
+        let mut store = Store::new(cfg(129));
+        let mut builder = store.begin_base();
+        for gfn in 0..129 {
+            builder
+                .write_page(gfn, &[(gfn + 1) as u8; PAGE_SIZE])
+                .unwrap();
+        }
+        let original = builder.seal(vec![]);
+        store
+            .read_transaction()
+            .verify_snapshots(&[original])
+            .unwrap();
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[129; PAGE_SIZE]).unwrap();
+        let retained = builder.seal(vec![]);
+        store.release(original).unwrap();
+        store.gc();
+        assert_eq!(store.pages.len(), 129);
+        assert_eq!(store.page_index.len(), 1);
+        {
+            let mut read = store.read_transaction();
+            read.verify_snapshots(&[retained]).unwrap();
+            assert!(matches!(
+                read.verified_pages,
+                VerifiedPages::Sparse {
+                    dense_words: None,
+                    ..
+                }
+            ));
+        }
+        let mut builder = store.begin_base();
+        builder.write_page(1, &[233; PAGE_SIZE]).unwrap();
+        let recycled = builder.seal(vec![]);
+        assert_eq!(store.pages.len(), 129);
+        let before = store.verification_telemetry();
+        let mut read = store.read_transaction();
+        read.verify_snapshots(&[retained, recycled]).unwrap();
+        assert_eq!(read.read_page(recycled, 1).unwrap(), &[233; PAGE_SIZE]);
+        assert_eq!(
+            store.verification_telemetry().resident_hashes - before.resident_hashes,
+            2
+        );
+    }
+
+    #[test]
+    fn copy_telemetry_counts_only_executed_payload_copies() {
+        let mut store = Store::new(cfg(4));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[7; PAGE_SIZE]).unwrap();
+        builder.write_page(1, &[7; PAGE_SIZE]).unwrap();
+        builder.write_page(2, &[0; PAGE_SIZE]).unwrap();
+        let snap = builder.seal(vec![]);
+        assert_eq!(
+            store.copy_telemetry(),
+            CopyTelemetry {
+                intern_calls: 2,
+                intern_hits: 1,
+                intern_copy_bytes: PAGE_SIZE as u64,
+                read_copy_bytes: 0
+            }
+        );
+        store.read_transaction().read_page(snap, 0).unwrap();
+        assert_eq!(store.copy_telemetry().read_copy_bytes, 0);
+        let mut out = [0; PAGE_SIZE];
+        store.read_page(snap, 0, &mut out).unwrap();
+        assert_eq!(out, [7; PAGE_SIZE]);
+        assert_eq!(store.copy_telemetry().read_copy_bytes, PAGE_SIZE as u64);
+        assert!(store.read_page(snap, 0, &mut [0; 1]).is_err());
+        assert_eq!(store.copy_telemetry().read_copy_bytes, PAGE_SIZE as u64);
+        let mut builder = store.derive(snap).unwrap();
+        builder.write_page(3, &[9; PAGE_SIZE]).unwrap();
+        drop(builder);
+        assert_eq!(
+            store.copy_telemetry().intern_copy_bytes,
+            2 * PAGE_SIZE as u64
+        );
+        assert_eq!(store.copy_telemetry().intern_hits, 1);
+    }
 
     fn cfg(mem_pages: u64) -> StoreConfig {
         StoreConfig { mem_pages }

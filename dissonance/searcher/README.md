@@ -781,6 +781,31 @@ which the report also sums across workers. Report equality and the report's
 serialized form leave telemetry out, so a replayed report stays byte-identical;
 a caller that wants it writes it separately.
 
+Optional job observations use `run_campaign_checkpointed_observed`. Each workload
+owns its `CampaignTypes::JobObservation` schema; uninterested workloads use `()`.
+The payload is `Copy + Send + 'static` and compile-time limited to 256 bytes. It
+must contain self-contained values: `Copy` excludes owning containers, but cannot
+prove that a static reference or integer handle does not refer to external data.
+Searcher never decodes the workload payload and does not serialize it into the
+logical stream, report or checkpoint. Collection does not call cumulative target
+telemetry; final worker telemetry still runs once per worker.
+
+The optional sink receives validated completion receipts with the actual physical
+worker, reservation, planned finish and reserved parent identifiers. Completion
+order is physical; consumers join by reservation rather than assigning logical
+meaning to delivery order. The sink runs synchronously and can affect host timing.
+A sink error or panic disables subsequent sink calls, preserves the primary
+campaign result and records the coverage loss in caller-owned
+`ObservationDiagnostics`. Counters survive campaign errors and unwind. A reply
+owns a small delivery envelope; dropping an unsent, invalid, queued or undelivered
+payload counts one discard without allocating or locking during Drop. After the
+campaign and worker scope fully terminate, collected equals delivered plus
+discarded, unless the explicit overflow flag is set. Hook panic counters count
+events: one job can increment both begin and drain panic counts, so those counts
+are not a disjoint partition of eligible jobs. A snapshot while producers are
+active is observational and is not a final coverage receipt. Consumers must
+bound their own output rows; no internal per-job log is retained.
+
 `telemetry.completed_buffer` reports live and peak `results`, `actions` and
 `candidates` counts for the current coordinator invocation; checkpoint resume
 starts fresh gauges and peaks. A result enters when the coordinator receives it
@@ -921,6 +946,21 @@ The checkpoint journal records both completed (`executions`) and reserved
 from `reserved`, because restoring the checkpoint also restores already queued
 work. At a completed checkpoint those counts are equal.
 
+TargetExecution::finish_coordinator_session ends coordinator-owned bootstrap or
+checkpoint-resume resources before worker readiness is released. The default is
+empty for workloads without such resources. The scope is installed before target
+construction; normal success and errors invoke it once, while unwinding invokes
+best-effort cleanup. A cleanup error fails successful bootstrap. If execution
+already failed, its original typed error is retained and cleanup failure is
+reported separately. Worker targets and their in-campaign reuse are unaffected.
+
+The same coordinator-session scope surrounds the entire standalone full or prefix
+campaign replay, including validation, target construction, replay errors and
+unwinding. A replay reuses its session within that operation and finalizes it
+before returning. During a live campaign the coordinator signals bootstrap
+readiness only after finalization; other execution workers may initialize
+concurrently, and accepting whole-pool readiness still waits for that worker.
+
 ## Stepwise coordination
 
 `CampaignCoordinator` holds a live campaign: the `CoordinatorCore`, the seeded
@@ -929,7 +969,7 @@ window. A single-threaded caller drives it with these calls:
 
 | Call | Effect |
 | --- | --- |
-| `CampaignCoordinator::start` | Validates the config, writes the stream header and bootstraps or restores the archive. |
+| `CampaignCoordinator::start` | Validates the config, writes the stream header and bootstraps or restores the archive inside the coordinator session. |
 | `reserve_next()` | Reserves one job of the first window and returns false once the window is full or selection stops. The worker pool calls it after every worker reports its startup result and dispatches each job as it is reserved. |
 | `plan(limit)` | Hands out up to `limit` reserved jobs, lowest planned finish first. |
 | `admit(outcome)` | Takes one finished job, admits every job that admission order now allows and reserves one job after each admission. |
@@ -949,8 +989,9 @@ execution work and the `certified_result_sha256` digest. Both derive serde, so a
 them between threads or browser workers as postcard bytes. A workload's
 `Observations` must therefore deserialize.
 
-`run_campaign_checkpointed_with_options` drives the same coordinator from the
-worker pool. It plans every reserved job into the pool's queue and admits each
+`run_campaign_checkpointed_with_options` and
+`run_campaign_checkpointed_observed` drive the same coordinator from the
+worker pool. Each plans every reserved job into the pool's queue and admits each
 reply. A reservation follows an admission and never a caller's request, so a
 caller that plans any number of jobs and runs them in any order writes the same
 stream as the pool for the same seed and window.

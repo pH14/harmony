@@ -12,11 +12,11 @@ use crate::search::telemetry::{
     TargetCounters, WorkerTelemetry, nanos_since, now, thread_schedstat,
 };
 
-#[derive(Debug)]
-pub(crate) struct WorkerReply<Key, Output> {
+pub(crate) struct WorkerReply<Key, Output, O = ()> {
     pub(crate) worker: u32,
     pub(crate) key: Key,
     pub(crate) outcome: Result<Output, String>,
+    pub(crate) observation: crate::search::job_observation::ObservationDelivery<O>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,13 +103,13 @@ impl<Key, Job> Drop for WorkerExit<'_, Key, Job> {
     }
 }
 
-pub(crate) struct WorkerPool<Key: Ord, Job, Output> {
+pub(crate) struct WorkerPool<Key: Ord, Job, Output, O = ()> {
     jobs: Option<Arc<SharedJobs<Key, Job>>>,
-    reply_receiver: mpsc::Receiver<WorkerReply<Key, Output>>,
+    reply_receiver: mpsc::Receiver<WorkerReply<Key, Output, O>>,
     startup_receiver: mpsc::Receiver<(u32, Result<(), String>)>,
 }
 
-impl<Key: Ord, Job, Output> WorkerPool<Key, Job, Output> {
+impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
     pub(crate) fn send(&self, key: Key, job: Job) -> Result<(), WorkerPoolError> {
         let shared = self.jobs.as_ref().ok_or(WorkerPoolError::QueueClosed)?;
         let mut queue = shared
@@ -169,13 +169,15 @@ impl<Key: Ord, Job, Output> WorkerPool<Key, Job, Output> {
         Ok(())
     }
 
-    pub(crate) fn receive(&self) -> Result<WorkerReply<Key, Output>, WorkerPoolError> {
+    pub(crate) fn receive(&self) -> Result<WorkerReply<Key, Output, O>, WorkerPoolError> {
         self.reply_receiver
             .recv()
             .map_err(|_| WorkerPoolError::RepliesClosed)
     }
 
-    pub(crate) fn try_receive(&self) -> Result<Option<WorkerReply<Key, Output>>, WorkerPoolError> {
+    pub(crate) fn try_receive(
+        &self,
+    ) -> Result<Option<WorkerReply<Key, Output, O>>, WorkerPoolError> {
         match self.reply_receiver.try_recv() {
             Ok(reply) => Ok(Some(reply)),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
@@ -184,12 +186,13 @@ impl<Key: Ord, Job, Output> WorkerPool<Key, Job, Output> {
     }
 }
 
-impl<Key: Ord, Job, Output> Drop for WorkerPool<Key, Job, Output> {
+impl<Key: Ord, Job, Output, O> Drop for WorkerPool<Key, Job, Output, O> {
     fn drop(&mut self) {
         self.close();
     }
 }
 
+#[cfg(test)]
 pub(crate) fn with_worker_pool<State, Key, Job, Output, ResultValue, CoordinatorError>(
     workers: u32,
     initialize: impl Fn(u32) -> Result<State, String> + Sync,
@@ -204,8 +207,43 @@ where
     Output: Send,
     CoordinatorError: From<String>,
 {
+    with_worker_pool_observed(
+        workers,
+        initialize,
+        recover,
+        execute,
+        finish,
+        || {},
+        || None::<()>,
+        None,
+        coordinate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn with_worker_pool_observed<O, State, Key, Job, Output, ResultValue, CoordinatorError>(
+    workers: u32,
+    initialize: impl Fn(u32) -> Result<State, String> + Sync,
+    recover: impl Fn(u32) -> Result<State, String> + Sync,
+    execute: impl Fn(&mut State, Job) -> Result<Output, String> + Sync,
+    finish: impl Fn(&State) -> TargetCounters + Sync,
+    begin: impl Fn() + Sync,
+    drain: impl Fn() -> Option<O> + Sync,
+    diagnostics: Option<crate::search::job_observation::ObservationDiagnostics>,
+    coordinate: impl FnOnce(
+        &mut WorkerPool<Key, Job, Output, O>,
+    ) -> Result<ResultValue, CoordinatorError>,
+) -> Result<(ResultValue, Vec<WorkerTelemetry>), CoordinatorError>
+where
+    Key: Ord + Send,
+    Job: Send,
+    Output: Send,
+    O: Copy + Send + 'static,
+    CoordinatorError: From<String>,
+{
+    crate::search::job_observation::bounded::<O>();
     thread::scope(|scope| {
-        let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Key, Output>>();
+        let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Key, Output, O>>();
         let (startup_sender, startup_receiver) = mpsc::channel();
         let jobs = Arc::new(SharedJobs::<Key, Job>::new(workers as usize));
         let mut handles = Vec::with_capacity(workers as usize);
@@ -217,6 +255,9 @@ where
             let recover = &recover;
             let execute = &execute;
             let finish = &finish;
+            let begin = &begin;
+            let drain = &drain;
+            let diagnostics = diagnostics.clone();
             handles.push(scope.spawn(move || {
                 let _exit = WorkerExit(&jobs);
                 let schedstat_before = thread_schedstat();
@@ -249,6 +290,21 @@ where
                     };
                     telemetry.idle_ns = telemetry.idle_ns.saturating_add(nanos_since(waiting));
                     let started = now();
+                    use crate::search::job_observation::{
+                        CollectionStatus, ObservationDelivery, ObservationReceipt,
+                    };
+                    let mut status = CollectionStatus::Disabled;
+                    if let Some(counts) = &diagnostics {
+                        counts.add(crate::search::job_observation::Counter::Eligible);
+                        status = if std::panic::catch_unwind(std::panic::AssertUnwindSafe(begin))
+                            .is_err()
+                        {
+                            counts.add(crate::search::job_observation::Counter::BeginPanics);
+                            CollectionStatus::BeginPanicked
+                        } else {
+                            CollectionStatus::Unavailable
+                        };
+                    }
                     let (outcome, panicked) = match state.as_mut() {
                         Some(target) => {
                             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -271,10 +327,44 @@ where
                     if failed {
                         jobs.note_failed_job();
                     }
+                    let payload = if diagnostics.is_some() {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(drain)) {
+                            Ok(payload) if status != CollectionStatus::BeginPanicked => {
+                                if let Some(counts) = &diagnostics {
+                                    counts.add(if payload.is_some() {
+                                        crate::search::job_observation::Counter::Collected
+                                    } else {
+                                        crate::search::job_observation::Counter::Unavailable
+                                    });
+                                }
+                                status = if payload.is_some() {
+                                    CollectionStatus::Collected
+                                } else {
+                                    CollectionStatus::Unavailable
+                                };
+                                payload
+                            }
+                            Ok(_) => None,
+                            Err(_) => {
+                                if let Some(counts) = &diagnostics {
+                                    counts
+                                        .add(crate::search::job_observation::Counter::DrainPanics);
+                                }
+                                status = CollectionStatus::DrainPanicked;
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let sent = reply_sender.send(WorkerReply {
                         worker,
                         key,
                         outcome,
+                        observation: ObservationDelivery {
+                            receipt: ObservationReceipt { status, payload },
+                            diagnostics: diagnostics.clone(),
+                        },
                     });
                     if panicked {
                         worker_failure = Some("worker panicked during execution".to_owned());
@@ -453,6 +543,7 @@ mod tests {
                 worker: 7,
                 key: 0,
                 outcome: Ok(11),
+                observation: Default::default(),
             })
             .expect("queue reply");
         let reply = pool
@@ -900,5 +991,173 @@ mod tests {
             error.to_string(),
             "campaign worker 0 panicked outside the handled worker phases"
         );
+    }
+    #[test]
+    fn observed_queued_replies_are_accounted_after_coordinator_error_or_unwind() {
+        for unwind in [false, true] {
+            let diagnostics = crate::search::job_observation::ObservationDiagnostics::default();
+            let (sent, received) = mpsc::sync_channel(0);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                super::with_worker_pool_observed(
+                    1, |_| Ok::<_,String>(()), |_| Ok::<_,String>(()),
+                    |_, _: ()| { sent.send(()).unwrap();Ok::<_,String>(()) },
+                    |_| Default::default(), || {}, || Some([17u64;2]), Some(diagnostics.clone()),
+                    |pool: &mut WorkerPool<u8,(),(),[u64;2]>| -> Result<(),Box<dyn std::error::Error>> {
+                        pool.wait_ready(1)?;pool.dispatch(0,())?;
+                        received.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+                        if unwind { panic!("coordinator unwound"); }
+                        Err("primary coordinator error".into())
+                    },
+                )
+            }));
+            if unwind {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(
+                    result.unwrap().unwrap_err().to_string(),
+                    "primary coordinator error"
+                );
+            }
+            let counts = diagnostics.snapshot();
+            assert_eq!(counts.eligible, 1);
+            assert_eq!(counts.collected, 1);
+            assert_eq!(counts.delivered, 0);
+            assert_eq!(counts.discarded, 1);
+        }
+    }
+
+    #[test]
+    fn observed_execution_panic_drains_before_target_recovery() {
+        thread_local! { static VALUE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+        let diagnostics = crate::search::job_observation::ObservationDiagnostics::default();
+        let result = super::with_worker_pool_observed(
+            1,
+            |_| Ok::<_, String>(()),
+            |_| {
+                VALUE.with(|v| v.set(99));
+                Ok::<_, String>(())
+            },
+            |_, _: ()| -> Result<(), String> {
+                VALUE.with(|v| v.set(7));
+                panic!("execution");
+            },
+            |_| Default::default(),
+            || VALUE.with(|v| v.set(1)),
+            || Some(VALUE.with(|v| v.get())),
+            Some(diagnostics.clone()),
+            |pool: &mut WorkerPool<u8, (), (), u64>| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(1)?;
+                pool.dispatch(0, ())?;
+                let reply = pool.receive()?;
+                assert_eq!(reply.observation.receipt.payload, Some(7));
+                assert_eq!(
+                    reply.observation.receipt.status,
+                    crate::search::job_observation::CollectionStatus::Collected
+                );
+                assert!(reply.outcome.is_err());
+                pool.close();
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        let counts = diagnostics.snapshot();
+        assert_eq!(counts.collected, 1);
+        assert_eq!(counts.discarded, 1);
+    }
+    #[test]
+    fn observation_hook_panics_are_visible_and_do_not_replace_primary_errors() {
+        for (begin_panics, drain_panics) in [(true, false), (false, true), (true, true)] {
+            let diagnostics = crate::search::job_observation::ObservationDiagnostics::default();
+            let result = super::with_worker_pool_observed(
+                1,
+                |_| Ok::<_, String>(()),
+                |_| Ok::<_, String>(()),
+                |_, _: ()| Err::<(), _>("primary execution error".to_owned()),
+                |_| Default::default(),
+                || {
+                    if begin_panics {
+                        panic!("begin");
+                    }
+                },
+                || -> Option<u64> {
+                    if drain_panics {
+                        panic!("drain");
+                    }
+                    Some(9)
+                },
+                Some(diagnostics.clone()),
+                |pool: &mut WorkerPool<u8, (), (), u64>| -> Result<(), Box<dyn std::error::Error>> {
+                    pool.wait_ready(1)?;
+                    pool.dispatch(0, ())?;
+                    let reply = pool.receive()?;
+                    assert_eq!(reply.outcome, Err("primary execution error".to_owned()));
+                    assert!(reply.observation.receipt.payload.is_none());
+                    assert_eq!(
+                        reply.observation.receipt.status,
+                        if drain_panics {
+                            crate::search::job_observation::CollectionStatus::DrainPanicked
+                        } else {
+                            crate::search::job_observation::CollectionStatus::BeginPanicked
+                        }
+                    );
+                    Err("primary coordinator error".into())
+                },
+            );
+            assert_eq!(result.unwrap_err().to_string(), "primary coordinator error");
+            let counts = diagnostics.snapshot();
+            assert_eq!(counts.eligible, 1);
+            assert_eq!(counts.begin_panics, u64::from(begin_panics));
+            assert_eq!(counts.drain_panics, u64::from(drain_panics));
+            assert_eq!(counts.collected, 0);
+        }
+    }
+    #[test]
+    fn observed_receipts_keep_the_actual_executing_worker_identity() {
+        thread_local! { static MARK: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) }; }
+        let diagnostics = crate::search::job_observation::ObservationDiagnostics::default();
+        let (entered, entries) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let released = std::sync::Mutex::new(released);
+        super::with_worker_pool_observed(
+            2,
+            Ok::<_, String>,
+            Ok::<_, String>,
+            |worker, _: ()| {
+                MARK.with(|v| v.set(*worker));
+                entered.send(*worker).unwrap();
+                released.lock().unwrap().recv().unwrap();
+                Ok::<_, String>(*worker)
+            },
+            |_| Default::default(),
+            || {},
+            || Some(MARK.with(|v| v.get())),
+            Some(diagnostics.clone()),
+            |pool: &mut WorkerPool<u8, (), u32, u32>| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(2)?;
+                pool.dispatch(0, ())?;
+                pool.dispatch(1, ())?;
+                let first = entries.recv_timeout(std::time::Duration::from_secs(5));
+                let second = entries.recv_timeout(std::time::Duration::from_secs(5));
+                let _ = release.send(());
+                let _ = release.send(());
+                pool.close();
+                let first = first.unwrap();
+                let second = second.unwrap();
+                assert_ne!(first, second);
+                let mut seen = std::collections::BTreeSet::new();
+                for _ in 0..2 {
+                    let reply = pool.receive()?;
+                    let actual = reply.outcome.unwrap();
+                    assert_eq!(reply.worker, actual);
+                    assert_eq!(reply.observation.receipt.payload, Some(actual));
+                    seen.insert(actual);
+                }
+                assert_eq!(seen, std::collections::BTreeSet::from([0, 1]));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(diagnostics.snapshot().collected, 2);
+        assert_eq!(diagnostics.snapshot().discarded, 2);
     }
 }

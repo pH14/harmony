@@ -547,6 +547,7 @@ fn action_champion_key(observations: &[MetroidObservations]) -> Option<MetroidCh
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for MetroidGame<M> {
+    type JobObservation = ();
     type Target = MetroidTarget<M>;
     type Action = ButtonChord;
     type Key = MetroidArchiveKey;

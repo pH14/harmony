@@ -8,6 +8,51 @@ read/write operations, injects events, and saves/restores vCPU state. It is
 generic over an architecture type, so the upper VMM does not name KVM, HVF, or
 an ISA-specific exit enum.
 
+`Backend::physical_telemetry` exposes runtime physical-entry accounting separately
+from normalized `ExitCounts`. `PhysicalTelemetry` uses fixed platform and purpose
+slots, with raw reason buckets 0 through 63 and one `other` bucket. Its measured
+boundary records attempts, successful OS returns, interrupted calls, other OS
+errors and host elapsed time; it does not append normalized events or enter vCPU
+state. Sites with no attempts are omitted from exported counters. The generic
+mock backend has no OS entries; its explicit test setter supplies only fixture
+data for aggregation tests.
+
+Counters use `backend.<platform>.<purpose>.<leaf>`, where platform is `kvm_x86`,
+`kvm_arm64` or `hvf_arm64`, purpose is `guest`, `completion` or `maintenance`,
+and leaves are `entries`, `returns`, `interruptions`, `errors` and `run_ns`.
+`raw_exit.<reason>.count` counts successful OS returns before backend decoding or
+internal handling, including consumed interrupts, PSCI calls and tracked writes.
+Reason numbers retain their platform ABI meanings. These are OS entry API
+attempts and returns, not proof of hardware guest entry or guest instruction
+counts. Normalized exit totals and EventHistory counts need not equal them.
+
+KVM `EINTR` attempts have interruption counts and no successful-return/reason
+charge. Other failed syscalls have error counts. The arm64 raw syscall boundary
+preserves the locked kvm-ioctls 0.25.0 interpretation of `-1` with `EFAULT` or
+`EHWPOISON` and `KVM_EXIT_MEMORY_FAULT`: normal backend handling still receives
+that condition, while telemetry counts an OS error, never a successful return.
+The syscall records errno before any clock read or decoder work. The safe
+`VcpuFd::get_kvm_run` accessor supplies the reason after a completed call;
+ordinary errors never read stale exit data. The memory-fault errno pair is the
+explicit exception permitted by the KVM ABI and pinned against Linux constants.
+
+Staged KVM completion calls are distinct from guest calls. Snapshot preparation
+with immediate exit is maintenance unless it consumes a staged completion, in
+which case it is completion. HVF translation-flush guest stubs are maintenance.
+HVF canceled exits are successful raw returns with reason zero, even when the
+backend rejects them; nonzero HVF API status is an OS error. HVF does not invent
+an errno-style interruption count. Checks that reject before an OS call do not
+count as entry attempts. Semantic exit counter reset does not reset physical
+work. FakeKvm scripts the same boundary counts for portable tests; its counts
+and timing are fixture evidence, not measurements of a hypervisor.
+
+Hot entry accounting uses fixed arrays without strings or allocations. Each
+entry reads the host clock at entry and completion; `run_ns` includes the OS call
+and immediate classification/readback. Timers have platform-dependent overhead
+and resolution, and overlap VMM guest/service timing rather than adding another
+independent elapsed interval. Counters and their 5040-byte runtime storage never
+enter snapshots, identity commitments, virtual clocks or retention policy.
+
 ## Implementations
 
 - `MockBackend` and `MockArm64Backend` provide scripted, deterministic

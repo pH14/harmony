@@ -12,6 +12,38 @@ use crate::types::{Gpa, MpState};
 #[path = "arm64_kvm_inventory.rs"]
 mod inventory;
 
+#[cfg(any(all(target_os = "linux", target_arch = "aarch64"), test))]
+pub(crate) const KVM_MEMORY_FAULT_ERRNOS: [i32; 2] = [14, 133];
+#[cfg(any(all(target_os = "linux", target_arch = "aarch64"), test))]
+pub(crate) const KVM_EXIT_MEMORY_FAULT: u32 = 39;
+
+#[cfg(any(all(target_os = "linux", target_arch = "aarch64"), test))]
+pub(crate) fn measured_raw_kvm_entry(
+    telemetry: &mut crate::PhysicalTelemetry,
+    purpose: crate::RunPurpose,
+    enter: impl FnOnce() -> (i32, i32),
+    reason: impl FnOnce() -> u32,
+) -> std::io::Result<()> {
+    telemetry.measure(crate::RunPlatform::KvmArm64, purpose, || {
+        let (code, errno) = enter();
+        if code == 0 {
+            return (Ok(()), crate::RunReturn::Returned(reason()));
+        }
+        let result = Err(std::io::Error::from_raw_os_error(errno));
+        let outcome = crate::RunReturn::from_io(&result, || {
+            unreachable!("OS errors have no normal raw exit")
+        });
+        if code == -1
+            && KVM_MEMORY_FAULT_ERRNOS.contains(&errno)
+            && reason() == KVM_EXIT_MEMORY_FAULT
+        {
+            (Ok(()), outcome)
+        } else {
+            (result, outcome)
+        }
+    })
+}
+
 pub(crate) const KVM_EXIT_MMIO: u32 = 6;
 pub(crate) const KVM_EXIT_SYSTEM_EVENT: u32 = 24;
 pub(crate) const KVM_EXIT_INTR: u32 = 10;
@@ -1275,6 +1307,10 @@ pub trait Arm64Kvm {
 
     fn run(&mut self) -> Result<KvmRunView>;
 
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        crate::PhysicalTelemetry::default()
+    }
+
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         None
     }
@@ -1814,6 +1850,10 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         Ok(())
     }
 
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        self.kvm.physical_telemetry()
+    }
+
     fn exit_counts(&self) -> ExitCounts {
         self.counts
     }
@@ -1848,6 +1888,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 pub struct FakeKvm {
     pub register_inventory: Option<Vec<u64>>,
     pub register_inventory_failure: bool,
+
+    physical: crate::PhysicalTelemetry,
     #[cfg(test)]
     state_reads: std::sync::atomic::AtomicUsize,
     cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -2198,9 +2240,26 @@ impl Arm64Kvm for FakeKvm {
         #[cfg(test)]
         if self.fail_mmio_completion {
             self.regs.insert(core_reg(CORE_PC), 0xdead_beef);
-            return Err(BackendError::Internal("injected MMIO completion failure"));
+            return self.physical.measure(
+                crate::RunPlatform::KvmArm64,
+                crate::RunPurpose::Completion,
+                || {
+                    (
+                        Err(BackendError::Internal("injected MMIO completion failure")),
+                        crate::RunReturn::Error,
+                    )
+                },
+            );
         }
-        Ok(())
+        self.physical.measure(
+            crate::RunPlatform::KvmArm64,
+            crate::RunPurpose::Completion,
+            || (Ok(()), crate::RunReturn::Interrupted),
+        )
+    }
+
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        self.physical
     }
 
     fn run(&mut self) -> Result<KvmRunView> {
@@ -2240,13 +2299,33 @@ impl Arm64Kvm for FakeKvm {
         if self.fail_run_after_entry {
             self.run_queue.pop_front();
             self.regs.insert(core_reg(CORE_PC), 0xdead_beef);
-            return Err(BackendError::Internal(
-                "fake KVM run failed after guest entry",
-            ));
+            return self.physical.measure(
+                crate::RunPlatform::KvmArm64,
+                crate::RunPurpose::Guest,
+                || {
+                    (
+                        Err(BackendError::Internal(
+                            "fake KVM run failed after guest entry",
+                        )),
+                        crate::RunReturn::Error,
+                    )
+                },
+            );
         }
-        self.run_queue
-            .pop_front()
-            .ok_or(BackendError::Internal("fake KVM run-queue empty"))
+        let queue = &mut self.run_queue;
+        self.physical.measure(
+            crate::RunPlatform::KvmArm64,
+            crate::RunPurpose::Guest,
+            || {
+                let result = queue
+                    .pop_front()
+                    .ok_or(BackendError::Internal("fake KVM run-queue empty"));
+                let outcome = result.as_ref().map_or(crate::RunReturn::Error, |view| {
+                    crate::RunReturn::Returned(view.exit_reason)
+                });
+                (result, outcome)
+            },
+        )
     }
 }
 
@@ -2254,6 +2333,130 @@ impl Arm64Kvm for FakeKvm {
 mod tests {
     use super::*;
     use crate::arch::arm64::{Arm64CoreRegs, Arm64Policy, Arm64SimdFpState, IdRegModel};
+
+    #[test]
+    fn raw_kvm_syscall_boundary_preserves_memory_fault_interpretation_without_inventing_returns() {
+        use crate::{RunPlatform, RunPurpose};
+        for errno in KVM_MEMORY_FAULT_ERRNOS {
+            let mut telemetry = crate::PhysicalTelemetry::default();
+            let entered = std::cell::Cell::new(false);
+            measured_raw_kvm_entry(
+                &mut telemetry,
+                RunPurpose::Guest,
+                || {
+                    entered.set(true);
+                    (-1, errno)
+                },
+                || {
+                    assert!(entered.get());
+                    KVM_EXIT_MEMORY_FAULT
+                },
+            )
+            .unwrap();
+            let cost = telemetry.cost(RunPlatform::KvmArm64, RunPurpose::Guest);
+            assert_eq!(
+                (cost.entries, cost.returns, cost.errors, cost.interruptions),
+                (1, 0, 1, 0)
+            );
+            assert_eq!(cost.raw_exit_count(KVM_EXIT_MEMORY_FAULT), 0);
+            let error = measured_raw_kvm_entry(
+                &mut telemetry,
+                RunPurpose::Completion,
+                || (-1, errno),
+                || KVM_EXIT_MMIO,
+            )
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(errno));
+        }
+        for (code, errno) in [(-1, 4), (-1, 13), (1, 14), (-2, 133)] {
+            let mut telemetry = crate::PhysicalTelemetry::default();
+            let error = measured_raw_kvm_entry(
+                &mut telemetry,
+                RunPurpose::Maintenance,
+                || (code, errno),
+                || panic!("stale exit reason read"),
+            )
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(errno));
+            let cost = telemetry.cost(RunPlatform::KvmArm64, RunPurpose::Maintenance);
+            assert_eq!(cost.returns, 0);
+            assert_eq!(cost.interruptions, u64::from(errno == 4));
+            assert_eq!(cost.errors, u64::from(errno != 4));
+        }
+        let mut telemetry = crate::PhysicalTelemetry::default();
+        measured_raw_kvm_entry(
+            &mut telemetry,
+            RunPurpose::Guest,
+            || (0, 14),
+            || KVM_EXIT_MMIO,
+        )
+        .unwrap();
+        let cost = telemetry.cost(RunPlatform::KvmArm64, RunPurpose::Guest);
+        assert_eq!((cost.entries, cost.returns, cost.errors), (1, 1, 0));
+        assert_eq!(cost.raw_exit_count(KVM_EXIT_MMIO), 1);
+    }
+
+    #[test]
+    fn raw_entry_counts_include_consumed_returns_completion_and_failed_decode() {
+        use crate::{RunPlatform, RunPurpose};
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_INTR,
+            ..Default::default()
+        });
+        fake.push_run(mmio_store(0x0900_0018, 1, 4));
+        fake.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_FAIL_ENTRY,
+            ..Default::default()
+        });
+        let mut backend = Arm64KvmBackend::new(fake);
+        assert!(matches!(backend.run(), Err(BackendError::NotConfigured)));
+        assert_eq!(
+            backend.physical_telemetry(),
+            crate::PhysicalTelemetry::default()
+        );
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert!(matches!(
+            backend.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { .. })
+        ));
+        let physical = backend.physical_telemetry();
+        let guest = physical.cost(RunPlatform::KvmArm64, RunPurpose::Guest);
+        assert_eq!(
+            (
+                guest.entries,
+                guest.returns,
+                guest.errors,
+                guest.interruptions
+            ),
+            (2, 2, 0, 0)
+        );
+        assert_eq!(guest.raw_exit_count(KVM_EXIT_INTR), 1);
+        assert_eq!(guest.raw_exit_count(KVM_EXIT_MMIO), 1);
+        assert_eq!(backend.exit_counts().total(), 1);
+        backend.read_irq_mask().unwrap();
+        let physical = backend.physical_telemetry();
+        let completion = physical.cost(RunPlatform::KvmArm64, RunPurpose::Completion);
+        assert_eq!(
+            (
+                completion.entries,
+                completion.returns,
+                completion.interruptions,
+                completion.errors
+            ),
+            (1, 0, 1, 0)
+        );
+        assert!(backend.run().is_err());
+        let physical = backend.physical_telemetry();
+        let guest = physical.cost(RunPlatform::KvmArm64, RunPurpose::Guest);
+        assert_eq!((guest.entries, guest.returns, guest.errors), (3, 3, 0));
+        assert_eq!(guest.raw_exit_count(KVM_EXIT_FAIL_ENTRY), 1);
+        assert_eq!(backend.exit_counts().total(), 1);
+        backend.reset_exit_counts();
+        assert_eq!(backend.exit_counts().total(), 0);
+        assert_eq!(backend.physical_telemetry(), physical);
+    }
 
     #[test]
     fn backend_exposes_the_kvm_cancellation_latch() {

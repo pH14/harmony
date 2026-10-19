@@ -558,6 +558,7 @@ fn action_champion_key(observations: &[Mm2Observations]) -> Option<Mm2ChampionKe
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for Mm2Game<M> {
+    type JobObservation = ();
     type Target = Mm2Target<M>;
     type Action = ButtonChord;
     type Key = Mm2ArchiveKey;

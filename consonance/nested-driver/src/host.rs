@@ -337,6 +337,7 @@ impl NestedWorkload {
 }
 
 impl CampaignTypes for NestedWorkload {
+    type JobObservation = ();
     type Target = Target;
     type Action = u64;
     type Key = Key;

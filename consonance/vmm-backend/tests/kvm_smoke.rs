@@ -192,6 +192,16 @@ fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
                     }
                     other => panic!("expected PIO, got {other:?}"),
                 }
+                assert!(
+                    backend
+                        .physical_telemetry()
+                        .cost(
+                            vmm_backend::RunPlatform::KvmX86,
+                            vmm_backend::RunPurpose::Guest
+                        )
+                        .entries
+                        > 0
+                );
                 if read {
                     backend.complete_read(0x77).expect("stage input");
                 }
@@ -204,7 +214,42 @@ fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
                     );
                     assert_eq!(before.regs.rax & 0xff, if read { 0x77 } else { 0x42 });
                     let counts = backend.exit_counts();
+                    let physical_before = backend.physical_telemetry();
+                    assert_eq!(
+                        physical_before
+                            .cost(
+                                vmm_backend::RunPlatform::KvmX86,
+                                vmm_backend::RunPurpose::Completion
+                            )
+                            .entries,
+                        1
+                    );
                     backend.retire_pending_completion().expect("retire PIO");
+                    let physical_after = backend.physical_telemetry();
+                    assert_eq!(
+                        physical_after
+                            .cost(
+                                vmm_backend::RunPlatform::KvmX86,
+                                vmm_backend::RunPurpose::Completion
+                            )
+                            .entries,
+                        physical_before
+                            .cost(
+                                vmm_backend::RunPlatform::KvmX86,
+                                vmm_backend::RunPurpose::Completion
+                            )
+                            .entries
+                    );
+                    assert_eq!(
+                        physical_after.cost(
+                            vmm_backend::RunPlatform::KvmX86,
+                            vmm_backend::RunPurpose::Guest
+                        ),
+                        physical_before.cost(
+                            vmm_backend::RunPlatform::KvmX86,
+                            vmm_backend::RunPurpose::Guest
+                        )
+                    );
                     let sealed = backend.save().expect("capture completed PIO");
                     assert_eq!(sealed.regs.rip, 0x1006, "stopped before INC BX");
                     assert_eq!(

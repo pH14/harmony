@@ -39,7 +39,7 @@ use crate::search::duration::{
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const LONGEST_SPLICE_TAIL: usize = 128;
-use crate::search::parallel::{WorkerPoolError, with_worker_pool};
+use crate::search::parallel::{WorkerPoolError, with_worker_pool_observed};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
     CampaignTelemetry, CompletedBufferTelemetry, HostTimes, Moment, TargetCounters, now,
@@ -215,6 +215,7 @@ pub const SNAPSHOT_ROOT_RESUME_IDENTIFIER: &str = "snapshot_root";
 pub type WorkloadPolicies = BTreeMap<String, String>;
 
 pub trait CampaignTypes: Sync {
+    type JobObservation: Copy + Send + 'static;
     type Target;
     type Action: Copy + Ord + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Key: ArchiveKey + Debug + Eq + Send + Sync;
@@ -447,11 +448,21 @@ pub trait InputPolicy: CampaignTypes {
 }
 
 pub trait TargetExecution: CampaignTypes {
+    fn begin_job_observation(&self) {}
+    fn take_job_observation(&self) -> Option<Self::JobObservation> {
+        None
+    }
     fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 
     fn new_target(&self) -> Result<Self::Target, String>;
+    fn begin_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+    fn finish_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
     fn reset(&self, target: &mut Self::Target);
     fn restore(
         &self,
@@ -3399,7 +3410,31 @@ pub fn run_campaign_checkpointed_with_options<G: Workload>(
 where
     G::ArchiveReport: Serialize,
 {
-    run_campaign_watched(workload, config, origin, stream, progress, options, &())
+    run_campaign_checkpointed_observed(workload, config, origin, stream, progress, options, None)
+}
+
+pub fn run_campaign_checkpointed_observed<G: Workload>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+    observer: Option<crate::search::job_observation::JobObserver<'_, G::JobObservation>>,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    run_campaign(
+        workload,
+        config,
+        origin,
+        stream,
+        progress,
+        options,
+        &(),
+        observer,
+    )
 }
 
 pub fn run_campaign_watched<G: Workload, W: CampaignWatch<G>>(
@@ -3414,13 +3449,34 @@ pub fn run_campaign_watched<G: Workload, W: CampaignWatch<G>>(
 where
     G::ArchiveReport: Serialize,
 {
+    run_campaign(
+        workload, config, origin, stream, progress, options, watch, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn run_campaign<G: Workload, W: CampaignWatch<G>>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+    watch: &W,
+    mut observer: Option<crate::search::job_observation::JobObserver<'_, G::JobObservation>>,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    crate::search::job_observation::bounded::<G::JobObservation>();
+    let mut sink_disabled = false;
     workload.verify_integrity()?;
     let placement = options.placement.clone();
     let placement = placement.as_ref();
     let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
     let first_worker_start = Mutex::new(first_worker_start);
     let mut coordinator = None;
-    let ((), worker_telemetry) = with_worker_pool(
+    let ((), worker_telemetry) = with_worker_pool_observed(
         config.workers,
         |worker| {
             if worker == 0 {
@@ -3442,6 +3498,11 @@ where
             Ok((reservation, outcome))
         },
         |target| workload.telemetry(target),
+        || workload.begin_job_observation(),
+        || workload.take_job_observation(),
+        observer
+            .as_ref()
+            .map(|observer| observer.diagnostics.clone()),
         |pool| -> Result<(), Box<dyn Error>> {
             ThreadPlacement::place(placement, PlacedThread::Coordinator)?;
             let campaign = coordinator.insert(CampaignCoordinator::start(
@@ -3484,13 +3545,14 @@ where
                 };
                 campaign.note_receive_wait(profile_elapsed(receive_started));
                 let mut ready_reply = Some(reply);
-                while let Some(reply) = ready_reply {
-                    if reply.worker >= config.workers {
+                while let Some(mut reply) = ready_reply {
+                    let physical_worker = reply.worker;
+                    if physical_worker >= config.workers {
                         return Err(
                             "campaign worker replied with an unknown physical identifier".into(),
                         );
                     }
-                    let reservation = reply.key.1;
+                    let (planned_finish, reservation) = reply.key;
                     let outcome = match reply.outcome {
                         Ok((claimed, outcome)) if claimed == reservation => outcome,
                         Ok(_) => {
@@ -3498,6 +3560,49 @@ where
                         }
                         Err(error) => Err(error),
                     };
+                    if let Some(observer) = observer.as_mut()
+                        && !sink_disabled
+                        && let Some((parent_id, snapshot_id)) = campaign.pending_origin(reservation)
+                    {
+                        let receipt = reply.observation.take();
+                        let has_payload = receipt.payload.is_some();
+                        let completion = crate::search::job_observation::CompletionObservation {
+                            worker: physical_worker,
+                            reservation,
+                            planned_finish,
+                            parent_id,
+                            snapshot_id,
+                            job_failed: outcome.is_err(),
+                            receipt,
+                        };
+                        observer
+                            .diagnostics
+                            .add(crate::search::job_observation::Counter::SinkAttempts);
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            (observer.sink)(completion)
+                        })) {
+                            Ok(Ok(())) => {
+                                if has_payload {
+                                    observer
+                                        .diagnostics
+                                        .add(crate::search::job_observation::Counter::Delivered);
+                                }
+                            }
+                            failure => {
+                                observer.diagnostics.add(if failure.is_err() {
+                                    crate::search::job_observation::Counter::SinkPanics
+                                } else {
+                                    crate::search::job_observation::Counter::SinkErrors
+                                });
+                                if has_payload {
+                                    observer
+                                        .diagnostics
+                                        .add(crate::search::job_observation::Counter::Discarded);
+                                }
+                                sink_disabled = true;
+                            }
+                        }
+                    }
                     match outcome {
                         Ok((outcome, note)) => {
                             if outcome.reservation != reservation {
@@ -3524,6 +3629,61 @@ where
     coordinator
         .ok_or("campaign coordinator never started")?
         .finish(worker_telemetry)
+}
+
+struct CoordinatorSession<'a, G: TargetExecution> {
+    workload: &'a G,
+    finished: bool,
+    begun: bool,
+}
+impl<G: TargetExecution> CoordinatorSession<'_, G> {
+    fn finish(&mut self) -> Result<(), Box<dyn Error>> {
+        self.finished = true;
+        self.workload.finish_coordinator_session()
+    }
+}
+impl<G: TargetExecution> Drop for CoordinatorSession<'_, G> {
+    fn drop(&mut self) {
+        if self.begun && !self.finished {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = self.finish();
+            }));
+        }
+    }
+}
+fn with_coordinator_session<G: TargetExecution, T>(
+    workload: &G,
+    operation: impl FnOnce() -> Result<T, Box<dyn Error>>,
+) -> Result<T, Box<dyn Error>> {
+    let mut scope = CoordinatorSession {
+        workload,
+        finished: false,
+        begun: false,
+    };
+    workload.begin_coordinator_session()?;
+    scope.begun = true;
+    let result = operation();
+    let cleanup = scope.finish();
+    coordinator_session_result(result, cleanup, &mut std::io::stderr())
+}
+
+fn coordinator_session_result<T>(
+    result: Result<T, Box<dyn Error>>,
+    cleanup: Result<(), Box<dyn Error>>,
+    diagnostics: &mut dyn Write,
+) -> Result<T, Box<dyn Error>> {
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            let _ = writeln!(
+                diagnostics,
+                "coordinator session finalization also failed: {cleanup}"
+            );
+            Err(error)
+        }
+    }
 }
 
 fn bootstrap_campaign<G: Workload>(
@@ -4028,8 +4188,29 @@ where
     )
 }
 
-#[allow(clippy::too_many_lines)]
 fn replay_campaign_checkpointed_inner<G: Workload>(
+    workload: &G,
+    stream_bytes: &[u8],
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
+    origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
+    require_terminal: bool,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    with_coordinator_session(workload, || {
+        replay_campaign_checkpointed_in_session(
+            workload,
+            stream_bytes,
+            origin_source,
+            origin_checkpoint,
+            require_terminal,
+        )
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn replay_campaign_checkpointed_in_session<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
     origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
@@ -5171,14 +5352,15 @@ mod tests {
         MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting,
         RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution,
         ThreadPlacement, WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve,
-        default_window, draws_continuation, draws_highest_preference, execution_work_delta,
-        finish_record, full_selector_report_due, is_zero_usize, memory_is_within_reserve,
-        postcard_value_sha256, profile_elapsed, progress_checkpoint_due, progress_line_interval,
-        progress_policy_is_supported, record_compaction_elapsed, record_mixture_outcome,
-        replay_campaign_checkpointed, replay_campaign_prefix_checkpointed, replay_splice,
-        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
-        run_campaign_checkpointed_with_options, run_job, schedule_policy_identifier,
-        schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
+        coordinator_session_result, default_window, draws_continuation, draws_highest_preference,
+        execution_work_delta, finish_record, full_selector_report_due, is_zero_usize,
+        memory_is_within_reserve, postcard_value_sha256, profile_elapsed, progress_checkpoint_due,
+        progress_line_interval, progress_policy_is_supported, record_compaction_elapsed,
+        record_mixture_outcome, replay_campaign_checkpointed, replay_campaign_prefix_checkpointed,
+        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
+        run_campaign_checkpointed, run_campaign_checkpointed_with_options, run_job,
+        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
+        stop_reservations_after_objective, with_coordinator_session,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -5245,8 +5427,14 @@ mod tests {
 
     type TestActionHook = dyn Fn(TestAction) -> Result<(), String> + Send + Sync;
 
+    struct BootstrapReadiness {
+        coordinator: std::thread::ThreadId,
+        finalized: std::sync::atomic::AtomicBool,
+        worker_starts: std::sync::atomic::AtomicUsize,
+    }
     #[derive(Default)]
     struct LiveTargets {
+        bootstrap_readiness: Option<BootstrapReadiness>,
         refuse: bool,
         integrity_invalidated: std::sync::atomic::AtomicBool,
         fail_next_target: std::sync::atomic::AtomicBool,
@@ -5302,6 +5490,7 @@ mod tests {
         targets: Option<Arc<LiveTargets>>,
     }
     std::thread_local! {
+        static FINALIZATION: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, false)) };
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
@@ -5309,6 +5498,7 @@ mod tests {
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     impl CampaignTypes for TestWorkload {
+        type JobObservation = ();
         type Target = TestTarget;
         type Action = TestAction;
         type Key = TestKey;
@@ -5451,6 +5641,29 @@ mod tests {
     impl Error for TestIntegrityViolation {}
 
     impl TargetExecution for TestWorkload {
+        fn take_job_observation(&self) -> Option<Self::JobObservation> {
+            Some(())
+        }
+        fn finish_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
+            FINALIZATION.with(|state| {
+                let (calls, fail) = state.get();
+                state.set((calls + 1, fail));
+                if fail {
+                    Err("test shutdown unconfirmed".into())
+                } else {
+                    if let Some(readiness) = self
+                        .targets
+                        .as_ref()
+                        .and_then(|targets| targets.bootstrap_readiness.as_ref())
+                    {
+                        readiness
+                            .finalized
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Ok(())
+                }
+            })
+        }
         fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
             if self.targets.as_ref().is_some_and(|targets| {
                 targets
@@ -5466,6 +5679,20 @@ mod tests {
             let Some(targets) = &self.targets else {
                 return Ok(TestTarget::default());
             };
+            if let Some(readiness) = &targets.bootstrap_readiness
+                && std::thread::current().id() != readiness.coordinator
+            {
+                assert!(
+                    readiness
+                        .finalized
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    "worker started before bootstrap session finalized"
+                );
+                readiness
+                    .worker_starts
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+
             if targets.refuse {
                 return Err("the test target refused to start".to_owned());
             }
@@ -5762,6 +5989,121 @@ mod tests {
             self.target.value = *snapshot;
             Ok(true)
         }
+    }
+
+    #[test]
+    fn bootstrap_session_scope_finalizes_success_error_and_unwind_once() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        for fail in [false, true] {
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result = with_coordinator_session(&workload, || Ok(7));
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result: Result<(), Box<dyn Error>> =
+                with_coordinator_session(&workload, || Err(Box::new(TestIntegrityViolation)));
+            assert!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<TestIntegrityViolation>()
+                    .is_some()
+            );
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _: Result<(), Box<dyn Error>> =
+                    with_coordinator_session(&workload, || panic!("bootstrap unwind"));
+            }));
+            assert!(result.is_err());
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+        }
+        FINALIZATION.with(|state| state.set((0, false)));
+    }
+
+    #[test]
+    fn bootstrap_primary_error_survives_failed_secondary_diagnostic_write() {
+        struct Broken {
+            attempts: usize,
+        }
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                self.attempts += 1;
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut diagnostics = Broken { attempts: 0 };
+        let result: Result<(), Box<dyn Error>> = coordinator_session_result(
+            Err(Box::new(TestIntegrityViolation)),
+            Err("shutdown unconfirmed".into()),
+            &mut diagnostics,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<TestIntegrityViolation>()
+                .is_some()
+        );
+        assert_eq!(diagnostics.attempts, 1);
+    }
+
+    #[test]
+    fn campaign_finalizes_bootstrap_before_worker_readiness_and_refuses_unconfirmed_exit() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 0;
+        for fail in [false, true] {
+            let targets = Arc::new(LiveTargets {
+                bootstrap_readiness: Some(BootstrapReadiness {
+                    coordinator: std::thread::current().id(),
+                    finalized: std::sync::atomic::AtomicBool::new(false),
+                    worker_starts: std::sync::atomic::AtomicUsize::new(0),
+                }),
+                ..LiveTargets::default()
+            });
+            let workload = TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets.clone()),
+            };
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut Vec::new(),
+                None,
+            );
+            assert_eq!(result.is_err(), fail);
+            if fail {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("shutdown unconfirmed")
+                );
+            }
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            let readiness = targets.bootstrap_readiness.as_ref().unwrap();
+            assert_eq!(
+                readiness
+                    .worker_starts
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(!fail)
+            );
+            assert_eq!(
+                readiness
+                    .finalized
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                !fail
+            );
+        }
+        FINALIZATION.with(|state| state.set((0, false)));
     }
 
     fn test_core() -> (TestWorkload, (), CoordinatorCore<TestWorkload>, TestTarget) {
@@ -6307,6 +6649,73 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         (workload, lines)
+    }
+
+    #[test]
+    fn standalone_full_and_prefix_replay_finalize_coordinator_sessions_on_all_results() {
+        let (workload, lines) = five_job_campaign_stream();
+        for prefix in [false, true] {
+            let stream = if prefix {
+                lines[..lines.len() - 1].join("\n")
+            } else {
+                lines.join("\n")
+            };
+            for fail in [false, true] {
+                FINALIZATION.with(|state| state.set((0, fail)));
+                let result = if prefix {
+                    replay_campaign_prefix_checkpointed(&workload, stream.as_bytes(), None, None)
+                } else {
+                    replay_campaign_checkpointed(&workload, stream.as_bytes(), None, None)
+                };
+                assert_eq!(
+                    result.is_err(),
+                    fail,
+                    "prefix={prefix} fail={fail}: {:?}",
+                    result.as_ref().err().map(ToString::to_string)
+                );
+                if fail {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("shutdown unconfirmed")
+                    );
+                }
+                assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            }
+            FINALIZATION.with(|state| state.set((0, false)));
+            let refusing = TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::new(LiveTargets {
+                    refuse: true,
+                    ..LiveTargets::default()
+                })),
+            };
+            let error = if prefix {
+                replay_campaign_prefix_checkpointed(&refusing, stream.as_bytes(), None, None)
+            } else {
+                replay_campaign_checkpointed(&refusing, stream.as_bytes(), None, None)
+            }
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("failed to build the replay target")
+            );
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, false)));
+            let mut incomplete = lines.clone();
+            incomplete.pop();
+            let result = replay_campaign_checkpointed(
+                &workload,
+                incomplete.join("\n").as_bytes(),
+                None,
+                None,
+            );
+            assert!(result.is_err());
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+        }
+        FINALIZATION.with(|state| state.set((0, false)));
     }
 
     #[test]
@@ -8582,6 +8991,24 @@ mod tests {
             stable_checkpoint(&second_directory)
         );
         let resume = |directory: &std::path::Path| {
+            FINALIZATION.with(|state| state.set((0, true)));
+            let error = run_campaign_checkpointed(
+                &TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                },
+                &config,
+                &CampaignOrigin::SearchCheckpoint {
+                    path: checkpoint_path(directory),
+                    expected_sha256: None,
+                },
+                &mut Vec::new(),
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("shutdown unconfirmed"));
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, false)));
             let mut stream = Vec::new();
             let outcome = run_campaign_checkpointed(
                 &TestWorkload {
@@ -8597,6 +9024,7 @@ mod tests {
                 None,
             )
             .expect("checkpoint resumes without the injected failure");
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
             (outcome, stream)
         };
         let (first_resume, first_resume_stream) = resume(&first_directory);
@@ -9393,6 +9821,7 @@ mod tests {
 
     #[test]
     fn a_failed_bootstrap_returns_its_error_with_workers_waiting() {
+        FINALIZATION.with(|state| state.set((0, false)));
         let error = run_campaign_checkpointed(
             &TestWorkload {
                 bootstrap_objective: false,
@@ -9413,6 +9842,7 @@ mod tests {
                 .contains("failed to build the bootstrap target"),
             "{error}"
         );
+        assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
     }
 
     #[test]
@@ -9783,5 +10213,160 @@ mod tests {
                 .expect_err("replay accepted semantically equal but byte-distinct source archive")
                 .to_string();
         assert!(error.contains("source archive bytes"), "{error}");
+    }
+    #[test]
+    fn job_observer_delivery_failures_preserve_logical_bytes_and_complete_counts() {
+        use crate::search::job_observation::{
+            JobObserver, ObservationDiagnostics, ObservationSinkError,
+        };
+        let mut config = three_worker_config();
+        config.execution_budget = 8;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut baseline = Vec::new();
+        let expected = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut baseline,
+            None,
+        )
+        .unwrap();
+        let records = job_lines(&baseline);
+        let by_reservation = records
+            .iter()
+            .map(|(_, job)| (job.reservation as usize, job))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(expected.0.telemetry.coordinator["replay_actions"], 0);
+        assert!(by_reservation.values().any(|job| job.parent_id != 0));
+        let mut expected_finish = std::collections::BTreeMap::new();
+        for reservation in 0..config.window {
+            expected_finish.insert(reservation, by_reservation[&reservation].execution_work * 2);
+        }
+        let mut next = config.window;
+        for (_, job) in &records {
+            let finish = expected_finish[&(job.reservation as usize)];
+            if next < config.execution_budget as usize {
+                expected_finish.insert(next, finish + by_reservation[&next].execution_work * 2);
+                next += 1;
+            }
+        }
+        for fail in [0, 1, 2] {
+            let diagnostics = ObservationDiagnostics::default();
+            let mut seen = Vec::new();
+            let mut sink = |row: crate::search::job_observation::CompletionObservation<()>| {
+                seen.push(row);
+                if fail == 1 {
+                    return Err(ObservationSinkError);
+                }
+                if fail == 2 {
+                    panic!("sink panic");
+                }
+                Ok(())
+            };
+            let mut stream = Vec::new();
+            let actual = super::run_campaign_checkpointed_observed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default(),
+                Some(JobObserver {
+                    diagnostics: diagnostics.clone(),
+                    sink: &mut sink,
+                }),
+            )
+            .unwrap();
+            assert_eq!(stream, baseline);
+            assert_eq!(actual, expected);
+            let counts = diagnostics.snapshot();
+            assert_eq!(counts.eligible, 8);
+            assert_eq!(counts.collected, 8);
+            assert_eq!(counts.collected, counts.delivered + counts.discarded);
+            if fail == 0 {
+                assert_eq!(seen.len(), 8);
+                assert_eq!(counts.delivered, 8);
+                assert_eq!(counts.discarded, 0);
+            } else {
+                assert_eq!(seen.len(), 1);
+                assert_eq!(counts.discarded, 8);
+                assert_eq!(counts.sink_errors, u64::from(fail == 1));
+                assert_eq!(counts.sink_panics, u64::from(fail == 2));
+            }
+            for row in &seen {
+                let job = by_reservation[&row.reservation];
+                assert!(row.worker < config.workers);
+                assert_eq!(row.parent_id, job.parent_id);
+                assert_eq!(row.snapshot_id, job.parent_id);
+                assert_eq!(row.planned_finish, expected_finish[&row.reservation]);
+                assert!(!row.job_failed);
+                assert!(row.receipt.payload.is_some());
+            }
+            if fail == 0 {
+                let mut per_worker = vec![0u64; config.workers as usize];
+                for row in &seen {
+                    per_worker[row.worker as usize] += 1;
+                }
+                assert_eq!(
+                    per_worker,
+                    actual
+                        .0
+                        .telemetry
+                        .workers
+                        .iter()
+                        .map(|worker| worker.jobs)
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    seen.iter()
+                        .map(|row| row.reservation)
+                        .collect::<BTreeSet<_>>(),
+                    (0..config.execution_budget as usize).collect()
+                );
+            }
+        }
+    }
+    #[test]
+    fn job_observer_panic_does_not_mask_the_primary_execution_error() {
+        use crate::search::job_observation::{JobObserver, ObservationDiagnostics};
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        let targets = Arc::new(LiveTargets::default());
+        *targets.action_hook.lock().unwrap() =
+            Some(Arc::new(|_| Err("primary execution refused".to_owned())));
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let diagnostics = ObservationDiagnostics::default();
+        let mut sink = |row: crate::search::job_observation::CompletionObservation<()>| {
+            assert!(row.job_failed);
+            panic!("observer failure")
+        };
+        let error = super::run_campaign_checkpointed_observed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut Vec::new(),
+            None,
+            CampaignExecutionOptions::default(),
+            Some(JobObserver {
+                diagnostics: diagnostics.clone(),
+                sink: &mut sink,
+            }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("primary execution refused"));
+        let counts = diagnostics.snapshot();
+        assert_eq!(counts.eligible, 1);
+        assert_eq!(counts.collected, 1);
+        assert_eq!(counts.sink_panics, 1);
+        assert_eq!(counts.discarded, 1);
+        assert_eq!(counts.delivered, 0);
     }
 }

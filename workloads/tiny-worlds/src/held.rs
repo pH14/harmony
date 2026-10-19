@@ -296,6 +296,7 @@ pub fn change_one_control(rand: &mut RomuDuoJrRand, previous: u8) -> Result<u8, 
 }
 
 impl CampaignTypes for HeldWorkload {
+    type JobObservation = ();
     type Target = Target;
     type Action = Chord;
     type Key = HeldKey;

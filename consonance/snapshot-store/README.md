@@ -64,6 +64,16 @@ classifying the delta, the store rehashes each distinct resident page reachable
 from the base, parent, or target and rejects stale content. This includes pages
 that will be omitted as unchanged or represented only by a return to the base.
 Shared resident pages are checked once across those snapshots.
+Each immutable read phase starts with an empty resident-slot membership set.
+Small phases use a sparse tree. A dense slot bitmap replaces it after at least
+64 distinct resident slots and at least as many verified slots as allocated
+64-bit words. Promotion also requires the allocator's slot high-water mark to
+be at most eight times the live slot count and the bitmap to be at most 1 MiB.
+Sparse retained high-slot stores keep the tree. The bitmap never outlives the
+original read phase. Verification results are not reused across callbacks,
+writes, or another operation.
+Recycled slots are checked afresh in the next phase. Hash counts and corruption
+detection remain unchanged.
 On the same Apple-silicon host, a local release benchmark of ten empty deltas
 over 8,192 distinct 4 KiB pages (32 MiB) averaged 22.76 ms per delta; 8,192
 references to one interned page averaged 1.32 ms per delta. This verifies the
@@ -193,3 +203,12 @@ slot again, and corrupted pages still reject before use. Diagnostic queries
 never certify pages, extend memoization across operations, alter serialized
 state or affect retention. The VMM exposes these totals through its existing
 host telemetry map without adding them to snapshot payloads or StoreStats.
+
+`copy_telemetry()` is runtime-only, cumulative per Store and separate from
+StoreStats. It counts actual new owned page payload copies at interning and
+public read-into-buffer copies. Intern calls and successful equal-content hits
+are distinct: a hit increments references without copying payload; zero and
+unchanged writes may bypass interning. Copies remain counted after a discarded
+builder or later failure. Borrowed transaction reads copy no payload. These are
+explicit copy-site bytes, not allocator traffic, resident memory, hash input,
+or import-row counts, and never influence retention or snapshot commitments.

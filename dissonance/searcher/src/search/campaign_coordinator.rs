@@ -23,8 +23,8 @@ use super::{
     profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
     record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
     retained_archive_indexes, stop_reservations_after_objective,
-    stop_reservations_after_work_budget, stream_header, write_live_progress,
-    write_search_checkpoint,
+    stop_reservations_after_work_budget, stream_header, with_coordinator_session,
+    write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
@@ -234,30 +234,32 @@ where
         let mut rand = RomuDuoJrRand::with_seed(derive_selection_seed(config.campaign_seed));
 
         let bootstrap_started = now();
-        let resume = match search_checkpoint {
-            Some(reader) => Some(restore_search_checkpoint(
-                workload,
-                config,
-                &executable_identity,
-                reader,
-                &mut core,
-                &mut draw_state,
-                &mut duration_policies,
-                &mut counters,
-            )?),
-            None => {
-                bootstrap_campaign(
+        let resume = with_coordinator_session(workload, || {
+            Ok(match search_checkpoint {
+                Some(reader) => Some(restore_search_checkpoint(
                     workload,
                     config,
-                    origin,
+                    &executable_identity,
+                    reader,
                     &mut core,
-                    &draw_state,
-                    &duration_policies,
+                    &mut draw_state,
+                    &mut duration_policies,
                     &mut counters,
-                )?;
-                None
-            }
-        };
+                )?),
+                None => {
+                    bootstrap_campaign(
+                        workload,
+                        config,
+                        origin,
+                        &mut core,
+                        &draw_state,
+                        &duration_policies,
+                        &mut counters,
+                    )?;
+                    None
+                }
+            })
+        })?;
         telemetry.bootstrap_ns = nanos_since(bootstrap_started);
         if let (Some(path), Some(input)) = (&config.objective_witness_path, &core.objective_witness)
         {
@@ -414,6 +416,12 @@ where
     #[must_use]
     pub fn next_admission(&self) -> Option<usize> {
         self.schedule.first().map(|(_, reservation)| *reservation)
+    }
+
+    pub(crate) fn pending_origin(&self, reservation: usize) -> Option<(u64, u64)> {
+        self.pending
+            .get(&reservation)
+            .map(|job| (job.parent_id, job.snapshot_id))
     }
 
     fn receive(

@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const STAMP_LEN: usize = 8;
 #[cfg(target_os = "linux")]
-const SERVICES_MAGIC: &[u8; 8] = b"HUMLSVC1";
+const SERVICES_MAGIC: &[u8; 8] = b"HUMLSVC2";
 
 #[cfg(target_os = "linux")]
 const SOCKET_TYPE: libc::c_int = libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC;
@@ -212,6 +212,7 @@ impl Services {
     ) -> Result<(), String> {
         let identity = handler.identity().to_vec();
         let configuration = handler.configuration().to_vec();
+        let local_services = handler.local_services().to_vec();
         let current_before = HandlerSnapshot::capture(self.env.handler().as_ref())
             .map_err(|error| format!("current service handler: {error}"))?;
         let candidate_before = HandlerSnapshot::capture(handler.as_ref())
@@ -225,6 +226,7 @@ impl Services {
         }
         if decode_env.handler().identity() != identity
             || decode_env.handler().configuration() != configuration
+            || decode_env.handler().local_services() != local_services
         {
             return Err("service handler identity or configuration changed on reseed".to_owned());
         }
@@ -232,7 +234,10 @@ impl Services {
         self.env
             .verify_handler_unchanged(&current_before)
             .map_err(|error| format!("current service handler: {error}"))?;
-        if env.handler().identity() != identity || env.handler().configuration() != configuration {
+        if env.handler().identity() != identity
+            || env.handler().configuration() != configuration
+            || env.handler().local_services() != local_services
+        {
             return Err("service handler identity or configuration changed on reseed".to_owned());
         }
         env.set_payloads(Some(payloads))
@@ -496,6 +501,7 @@ impl Services {
         let recorded = RecordedState::decode(reader.bytes()?)
             .map_err(|error| format!("service state: {error}"))?;
         let config = ServiceConfig {
+            local_services: recorded.handler().local_services().to_vec(),
             identity: recorded.handler().identity().to_vec(),
             configuration: recorded.handler().configuration().to_vec(),
         };
@@ -642,6 +648,83 @@ mod branch_isolation_tests {
         Answer, ChannelError, MAX_CHANNEL_BYTES, Question, ServiceResponse,
     };
     use hypercall_proto::encode_request;
+
+    #[derive(Clone)]
+    struct DeclaredStateful(u8);
+    impl ServiceHandler for DeclaredStateful {
+        fn identity(&self) -> &[u8] {
+            b"declared-stateful"
+        }
+        fn configuration(&self) -> &[u8] {
+            &[]
+        }
+        fn local_services(&self) -> &[u16] {
+            &[19]
+        }
+        fn respond(&mut self, _: u64, _: &Question) -> Result<ServiceResponse, ChannelError> {
+            self.0 += 1;
+            Ok(ServiceResponse::Answered(Answer::Nominal))
+        }
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(vec![self.0])
+        }
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [value] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            self.0 = *value;
+            Ok(())
+        }
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn declared_local_permission_stays_external_without_invoking_stateful_handler_and_replays() {
+        let mut services = Services::new(1);
+        services.env =
+            RecordedEnv::new(1, Box::new(DeclaredStateful(0)) as Box<dyn ServiceHandler>);
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(7_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut request = [0; STAMP_LEN + MAX_FRAME];
+        request[..STAMP_LEN].copy_from_slice(&4_u64.to_le_bytes());
+        let len =
+            encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request[STAMP_LEN..]).unwrap();
+        let request = &request[..STAMP_LEN + len];
+        let mut response = [0; MAX_FRAME];
+        let reply = services.exchange(request, &mut response).unwrap();
+        assert!(matches!(reply.signal, Some(Signal::Decision(_))));
+        assert_eq!(reply.length, 0);
+        assert_eq!(services.env.handler().snapshot_state().unwrap(), vec![0]);
+        let (resolved, response) = services
+            .prepare_resolution(request, 4, 19, 7, &Answer::Data(vec![42]).encode())
+            .unwrap();
+        assert_eq!(resolved.env.handler().snapshot_state().unwrap(), vec![0]);
+        let recorded = resolved.env.snapshot_state().unwrap();
+        let mut replay = Services::new(1);
+        replay.env = RecordedEnv::new(1, Box::new(DeclaredStateful(0)) as Box<dyn ServiceHandler>);
+        recorded.restore_into(&mut replay.env).unwrap();
+        let mut replay_response = [0; MAX_FRAME];
+        let reply = replay.exchange(request, &mut replay_response).unwrap();
+        assert!(reply.signal.is_none());
+        assert_eq!(&replay_response[..reply.length], response);
+        assert_eq!(replay.env.snapshot_state().unwrap(), recorded);
+        assert_eq!(replay.env.handler().snapshot_state().unwrap(), vec![0]);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn service_checkpoint_refuses_previous_dispatch_contract_format() {
+        let services = Services::new(7);
+        let bytes = services.encode().unwrap();
+        let factory = environment::input_spec::nominal_factory();
+        assert!(Services::decode(&bytes, &factory).is_ok());
+        let mut old = bytes;
+        old[..8].copy_from_slice(b"HUMLSVC1");
+        assert!(Services::decode(&old, &factory).is_err());
+    }
 
     #[test]
     fn branch_restarts_host_bridge_entropy_only_after_preflight() {

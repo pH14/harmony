@@ -414,10 +414,12 @@ pub(crate) fn execute_job(
         if outcome(target).disposition.is_terminal() {
             return Err("fault replay stopped before its archived parent endpoint".into());
         }
+        crate::job_observation::tail(false);
         let checked = target.apply_replayed_certified(*action, *certificate);
         target.verify_integrity()?;
         require_completed_attempt(target, "parent replay")?;
         checked?;
+        crate::job_observation::tail(true);
     }
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -468,6 +470,7 @@ pub(crate) fn execute_job(
 }
 
 impl CampaignTypes for FaultWorkload {
+    type JobObservation = crate::job_observation::FaultJobObservation;
     type Target = FaultTarget;
     type Action = FaultAction;
     type Key = FaultArchiveKey;
@@ -793,6 +796,18 @@ fn held_suffix(
 }
 
 impl TargetExecution for FaultWorkload {
+    fn begin_job_observation(&self) {
+        crate::job_observation::begin();
+    }
+    fn take_job_observation(&self) -> Option<Self::JobObservation> {
+        crate::consonance::take_job_observation()
+    }
+    fn begin_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
+        crate::consonance::begin_coordinator_session()
+    }
+    fn finish_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
+        crate::consonance::finish_coordinator_session()
+    }
     fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
         if let Some(cache) = &self.snapshot_cache {
             cache.verify_integrity()?;
@@ -836,7 +851,7 @@ impl TargetExecution for FaultWorkload {
     }
 
     fn telemetry(&self, _target: &FaultTarget) -> TargetCounters {
-        crate::consonance::thread_telemetry()
+        crate::consonance::thread_work_telemetry()
     }
 
     fn action_cost_fn(&self) -> fn(&FaultAction) -> u64 {

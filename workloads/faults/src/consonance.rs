@@ -41,7 +41,7 @@ use crate::target::{
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
-pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v2";
+pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v3";
 pub const SESSION_SERVICE: &str = "faults";
 const SEED: u64 = 0x4661_756c_744c_6162;
 const SETUP_BUDGET: u64 = 120_000_000_000;
@@ -280,6 +280,9 @@ impl StandingHandler {
 }
 
 impl ServiceHandler for StandingHandler {
+    fn local_services(&self) -> &[u16] {
+        &[process_proto::debug::NAMESPACE]
+    }
     fn identity(&self) -> &[u8] {
         SERVICE_IDENTITY
     }
@@ -311,6 +314,7 @@ impl ServiceHandler for StandingHandler {
             )?));
         }
         if question.service() == process_proto::debug::NAMESPACE {
+            validate_debug_status(question)?;
             return Ok(ServiceResponse::Answered(ChannelAnswer::data(Vec::new())?));
         }
         if question.service() != STANDING_NAMESPACE {
@@ -353,12 +357,18 @@ pub fn service_factory() -> ServiceFactory {
     let nominal = nominal_factory();
     Arc::new(move |config: &ServiceConfig| {
         if config.identity == DEBUG_IDENTITY {
+            if !config.local_services.is_empty() {
+                return Err(ChannelError::Malformed);
+            }
             return Ok(
                 Box::new(DebugHandler::decode(&config.configuration)?) as Box<dyn ServiceHandler>
             );
         }
         if config.identity != SERVICE_IDENTITY {
             return nominal(config);
+        }
+        if config.local_services != [process_proto::debug::NAMESPACE] {
+            return Err(ChannelError::Malformed);
         }
         Ok(
             Box::new(StandingHandler::from_configuration(&config.configuration)?)
@@ -375,6 +385,7 @@ fn branch_config(
     let mut standing = inherited.to_vec();
     standing.extend(standing_windows(windows, actions)?);
     Ok(ServiceConfig {
+        local_services: vec![process_proto::debug::NAMESPACE],
         identity: SERVICE_IDENTITY.to_vec(),
         configuration: encode_configuration(
             &encode_windows(&standing)?,
@@ -553,6 +564,7 @@ struct Live {
     key: [u8; 32],
     holder: u64,
     session: Box<dyn SearchSession>,
+    final_counters: Option<Vec<(String, u64)>>,
     base_identity: [u8; 32],
     setup: SnapId,
     windows: ActionWindows,
@@ -567,6 +579,7 @@ struct Live {
 static HOLDERS: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
+    static COORDINATOR_SESSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static LIVE: RefCell<Option<Live>> = const { RefCell::new(None) };
     static RETIRED: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -588,20 +601,94 @@ impl Drop for Live {
         if let Some(shared) = self.chain.shared() {
             shared.index.forget_store(self.holder);
         }
-        let counters = self.counters(false);
+        let counters = self
+            .final_counters
+            .take()
+            .unwrap_or_else(|| self.work_counters());
         let _ = RETIRED.try_with(|retired| add_counters(&mut retired.borrow_mut(), counters));
     }
 }
 
 #[must_use]
-pub fn thread_telemetry() -> BTreeMap<String, u64> {
+pub fn thread_work_telemetry() -> BTreeMap<String, u64> {
     let mut counters = RETIRED.with(|retired| retired.borrow().clone());
     LIVE.with(|slot| {
         if let Some(live) = slot.borrow().as_ref() {
-            add_counters(&mut counters, live.counters(true));
+            add_counters(&mut counters, live.work_counters());
         }
     });
     counters
+}
+
+pub fn coordinator_retired_work_telemetry() -> Result<BTreeMap<String, u64>, String> {
+    LIVE.with(|slot| {
+        if slot.borrow().is_some() {
+            return Err("coordinator telemetry requires no live session".to_owned());
+        }
+        Ok(RETIRED.with(|retired| retired.borrow().clone()))
+    })
+}
+
+pub fn begin_coordinator_session() -> Result<(), Box<dyn Error>> {
+    COORDINATOR_SESSION.with(|active| {
+        if active.replace(true) {
+            Err("a coordinator session scope is already active".into())
+        } else {
+            Ok(())
+        }
+    })
+}
+#[cfg(any(target_os = "macos", test))]
+fn drop_target_session() {
+    if !COORDINATOR_SESSION.with(|active| active.get()) {
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+}
+pub fn finish_coordinator_session() -> Result<(), Box<dyn Error>> {
+    COORDINATOR_SESSION.with(|active| active.set(false));
+    let live = LIVE.with(|slot| slot.borrow_mut().take());
+    if let Some(mut live) = live {
+        live.final_counters = Some(Vec::new());
+        let counters =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| live.work_counters()));
+        let telemetry_failed = match counters {
+            Ok(counters) => {
+                live.final_counters = Some(counters);
+                false
+            }
+            Err(_) => true,
+        };
+        live.session.shutdown()?;
+        if telemetry_failed {
+            return Err(
+                "coordinator retirement telemetry panicked after cleanup was attempted".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ThreadResidencyDiagnostics {
+    pub entries: usize,
+    pub resident_bytes: Option<u64>,
+    pub observation_checkpoint_bytes: usize,
+    pub charged_bytes: Option<u64>,
+}
+
+pub(crate) fn take_job_observation() -> Option<crate::job_observation::FaultJobObservation> {
+    let generation = LIVE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|_| crate::job_observation::generation())
+    });
+    crate::job_observation::update(|value| value.end_generation = generation);
+    crate::job_observation::take()
+}
+
+#[must_use]
+pub fn thread_residency_diagnostics() -> Option<ThreadResidencyDiagnostics> {
+    LIVE.with(|slot| slot.borrow().as_ref().map(Live::residency_diagnostics))
 }
 
 #[derive(Debug)]
@@ -622,7 +709,7 @@ pub struct FaultTarget {
 #[cfg(target_os = "macos")]
 impl Drop for FaultTarget {
     fn drop(&mut self) {
-        LIVE.with(|slot| slot.borrow_mut().take());
+        drop_target_session();
     }
 }
 
@@ -913,6 +1000,7 @@ impl FaultTarget {
     }
 
     pub fn restore(&mut self, snapshot: &FaultSnapshot) -> Result<(), Box<dyn Error>> {
+        crate::job_observation::origin_start(snapshot.history.len());
         self.verify_integrity()?;
         if snapshot.failed || !snapshot.observation.stop.is_continuable() {
             return Err("the fault snapshot is not a runnable endpoint".into());
@@ -923,13 +1011,15 @@ impl FaultTarget {
             _ => return Err("the fault snapshot lacks a certificate for its backend".into()),
         };
         validate_snapshot_prefix_certificates(snapshot, self.config.uml.is_some())?;
+        crate::job_observation::stage(crate::job_observation::RestoreStage::Session);
         let rebuilt = with_live(&self.config, |live| {
             live.fit_store(1)?;
             if snapshot.history.receipt().domain() != live.key {
                 return Err("fault history execution domain differs".to_owned());
             }
+            crate::job_observation::stage(crate::job_observation::RestoreStage::Lookup);
             let cached = live
-                .ensure_certified_prefix(&snapshot.history)?
+                .ensure_certified_prefix(&snapshot.history, true)?
                 .map_err(|_| "restored fault endpoint stopped before its snapshot certificate")?;
             let at = live
                 .chain
@@ -941,7 +1031,9 @@ impl FaultTarget {
                     "restored fault history differs from its snapshot certificate".to_owned(),
                 );
             }
+            crate::job_observation::stage(crate::job_observation::RestoreStage::Replay);
             live.replay(cached.snap)?;
+            crate::job_observation::stage(crate::job_observation::RestoreStage::Certificate);
             if let Some(expected) = expected
                 && (live.state_hash_current()? != expected
                     || Some(live.ordered_history()?) != snapshot.event_history)
@@ -950,6 +1042,7 @@ impl FaultTarget {
                     "restored fault endpoint differs from its snapshot certificate".to_owned(),
                 );
             }
+            crate::job_observation::stage(crate::job_observation::RestoreStage::Observation);
             let mut actual = live.observe(FaultStop::Deadline)?;
             if !snapshot.history.is_empty() {
                 actual
@@ -974,6 +1067,13 @@ impl FaultTarget {
         snapshot: &FaultSnapshot,
         rebuilt: Result<(), String>,
     ) -> Result<(), Box<dyn Error>> {
+        crate::job_observation::origin_finish(match &rebuilt {
+            Ok(()) => crate::job_observation::RestoreOutcome::Succeeded,
+            Err(error) if error.starts_with(WATCHDOG_CUTOFF) => {
+                crate::job_observation::RestoreOutcome::Cutoff
+            }
+            Err(_) => crate::job_observation::RestoreOutcome::Failed,
+        });
         self.action_observations.clear();
         self.watchdog_cutoffs = 0;
         self.infrastructure_failure = false;
@@ -1202,6 +1302,7 @@ fn with_live<T>(
         let mut slot = slot.borrow_mut();
         if slot.as_ref().is_none_or(|live| live.key != config.key) {
             *slot = Some(Live::boot(config)?);
+            crate::job_observation::new_generation();
         }
         let live = slot.as_mut().ok_or("the session was not initialized")?;
         let result = operation(live);
@@ -1376,6 +1477,7 @@ impl Live {
         let mut telemetry = LiveTelemetry::default();
         telemetry.boot.since(boot_started);
         let mut live = Self {
+            final_counters: None,
             key: config.key,
             holder: HOLDERS.fetch_add(1, Ordering::Relaxed),
             base_identity,
@@ -1414,7 +1516,7 @@ impl Live {
         Ok(live)
     }
 
-    fn counters(&self, resident: bool) -> Vec<(String, u64)> {
+    fn work_counters(&self) -> Vec<(String, u64)> {
         let t = &self.telemetry;
         let mut out = vec![
             ("boot.count".to_owned(), t.boot.count),
@@ -1478,25 +1580,6 @@ impl Live {
             ("shared.publish.ns".to_owned(), t.publishes.nanos),
             ("shared.refusals".to_owned(), t.refusals),
         ]);
-        if resident {
-            let bytes = self
-                .chain
-                .points()
-                .filter_map(|point| self.session.snapshot_owned_pages(point.snap))
-                .sum::<u64>()
-                .saturating_mul(4096);
-            out.push(("cache.entries".to_owned(), self.chain.links() as u64));
-            let checkpoint_bytes = self.chain.observation_checkpoint_bytes() as u64;
-            out.push((
-                "cache.observation_checkpoint_bytes".to_owned(),
-                checkpoint_bytes,
-            ));
-            out.push(("cache.resident_bytes".to_owned(), bytes));
-            out.push((
-                "cache.charged_bytes".to_owned(),
-                bytes.saturating_add(checkpoint_bytes),
-            ));
-        }
         out.extend(
             self.session
                 .telemetry_counters()
@@ -1504,6 +1587,24 @@ impl Live {
                 .map(|(name, value)| (format!("vmm.{name}"), value)),
         );
         out
+    }
+
+    fn residency_diagnostics(&self) -> ThreadResidencyDiagnostics {
+        let mut resident_bytes = Some(0u64);
+        for point in self.chain.points() {
+            let pages = self.session.snapshot_owned_pages(point.snap);
+            resident_bytes = resident_bytes
+                .zip(pages)
+                .and_then(|(bytes, pages)| bytes.checked_add(pages.checked_mul(4096)?));
+        }
+        let observation_checkpoint_bytes = self.chain.observation_checkpoint_bytes();
+        ThreadResidencyDiagnostics {
+            entries: self.chain.links(),
+            resident_bytes,
+            observation_checkpoint_bytes,
+            charged_bytes: resident_bytes
+                .and_then(|bytes| bytes.checked_add(observation_checkpoint_bytes as u64)),
+        }
     }
 
     fn ordered_history(&mut self) -> Result<(u64, [u8; 32]), String> {
@@ -1746,7 +1847,20 @@ impl Live {
         Ok(point)
     }
 
+    #[cfg(test)]
     fn find_path(&mut self, path: [u8; 32], depth: usize) -> Result<Option<usize>, String> {
+        Ok(self
+            .find_path_selected(path, depth, crate::job_observation::LookupStage::Child)?
+            .map(|(at, _)| at))
+    }
+
+    fn find_path_selected(
+        &mut self,
+        path: [u8; 32],
+        depth: usize,
+        stage: crate::job_observation::LookupStage,
+    ) -> Result<Option<(usize, bool)>, String> {
+        crate::job_observation::lookup(stage, crate::job_observation::LookupEvent::Attempt);
         if let Some(shared) = self.chain.shared() {
             shared
                 .index
@@ -1754,7 +1868,7 @@ impl Live {
                 .map_err(|error| error.to_string())?;
         }
         if let Some(at) = self.chain.by_path(path) {
-            return Ok(Some(at));
+            return Ok(Some((at, false)));
         }
         let Some(shared) = self.chain.shared() else {
             return Ok(None);
@@ -1765,6 +1879,7 @@ impl Live {
         let index = Arc::clone(&shared.index);
         let near = self.chain.point(self.chain.links() - 1).snap;
         let import_started = started();
+        crate::job_observation::lookup(stage, crate::job_observation::LookupEvent::ImportAttempt);
         let imported = self
             .session
             .import_cached_receipt(index.as_ref(), &lease, near);
@@ -1814,15 +1929,20 @@ impl Live {
             .set_pending_observation_checkpoint(at, checkpoint)?;
         self.drop_snapshots(dropped)?;
         self.fit_store(2)?;
-        Ok(self.chain.at_snapshot(point.snap))
+        crate::job_observation::lookup(stage, crate::job_observation::LookupEvent::ImportCompleted);
+        Ok(self.chain.at_snapshot(point.snap).map(|at| (at, true)))
     }
 
-    fn find_history(&mut self, history: &FaultHistory) -> Result<usize, String> {
-        if let Some(at) = self.find_path(history.receipt().path(), history.len())? {
+    fn find_history(
+        &mut self,
+        history: &FaultHistory,
+        stage: crate::job_observation::LookupStage,
+    ) -> Result<(usize, bool), String> {
+        if let Some(at) = self.find_path_selected(history.receipt().path(), history.len(), stage)? {
             return Ok(at);
         }
         for receipt in history.receipts().into_iter().rev().skip(1) {
-            if let Some(at) = self.find_path(receipt.path(), receipt.depth())? {
+            if let Some(at) = self.find_path_selected(receipt.path(), receipt.depth(), stage)? {
                 return Ok(at);
             }
         }
@@ -1881,13 +2001,31 @@ impl Live {
     fn ensure_certified_prefix(
         &mut self,
         history: &FaultHistory,
+        origin: bool,
     ) -> Result<Result<Point, FaultObservations>, String> {
         if let Some(at) = self.chain.certified(history.receipt()) {
+            if origin {
+                crate::job_observation::selected(false, self.chain.depth(at));
+            } else {
+                crate::job_observation::source(
+                    crate::job_observation::LookupStage::Parent,
+                    false,
+                    self.chain.depth(at),
+                    history.len(),
+                );
+            }
             self.telemetry.exact_hits = self.telemetry.exact_hits.saturating_add(1);
             return Ok(Ok(self.chain.point(at)));
         }
         let actions = history.actions();
-        let at = self.find_history(history)?;
+        let (at, imported) = self.find_history(
+            history,
+            if origin {
+                crate::job_observation::LookupStage::Origin
+            } else {
+                crate::job_observation::LookupStage::Parent
+            },
+        )?;
         let start = self.chain.depth(at);
         let expected_parent = history
             .ancestor(start)
@@ -1895,6 +2033,9 @@ impl Live {
         let mut receipt = self.chain.provenance(at)?.clone();
         if &receipt != expected_parent.receipt() {
             return Err("restored fault prefix differs from its snapshot certificate".to_owned());
+        }
+        if origin {
+            crate::job_observation::selected(imported, start);
         }
         let counter = match Hit::of(start, actions.len()) {
             Hit::Exact => &mut self.telemetry.exact_hits,
@@ -1905,6 +2046,9 @@ impl Live {
         let dropped = self.chain.truncate(at.saturating_add(1));
         self.drop_snapshots(dropped)?;
         let mut last = self.chain.point(at);
+        if origin && start < history.len() {
+            crate::job_observation::stage(crate::job_observation::RestoreStage::Rebuild);
+        }
         for (offset, expected) in history
             .receipts_after(start)
             .ok_or("fault history suffix missing")?
@@ -1912,6 +2056,14 @@ impl Live {
         {
             let index = start + offset;
             let prefix = &actions[..=index];
+            if origin {
+                crate::job_observation::update(|v| {
+                    crate::job_observation::increment(
+                        &mut v.origin.rebuild_attempted,
+                        &mut v.overflow,
+                    )
+                });
+            }
             self.branch(last, prefix)?;
             let (mut observation, sealed) =
                 self.run_action(prefix, index, last.moment, RunKind::Rebuild)?;
@@ -1928,6 +2080,22 @@ impl Live {
             }
             last = self.seal_captured_link(last, snap, moment, actual.clone())?;
             receipt = actual;
+            if origin {
+                crate::job_observation::update(|v| {
+                    crate::job_observation::increment(
+                        &mut v.origin.rebuild_completed,
+                        &mut v.overflow,
+                    )
+                });
+            }
+        }
+        if !origin {
+            crate::job_observation::source(
+                crate::job_observation::LookupStage::Parent,
+                imported,
+                start,
+                history.len(),
+            );
         }
         Ok(Ok(last))
     }
@@ -1938,7 +2106,11 @@ impl Live {
         action: FaultAction,
         kind: RunKind,
     ) -> Result<(FaultObservations, Option<HistoryReceipt>), String> {
-        if let Some(at) = self.find_path(history.receipt().next_path(action)?, history.len() + 1)? {
+        if let Some((at, imported)) = self.find_path_selected(
+            history.receipt().next_path(action)?,
+            history.len() + 1,
+            crate::job_observation::LookupStage::Child,
+        )? {
             let receipt = self.chain.provenance(at)?.clone();
             if !receipt.follows(history.receipt()) || receipt.action() != Some(action) {
                 return Err("cached fault prefix history differs from its parent".to_owned());
@@ -1949,9 +2121,15 @@ impl Live {
             if self.capture_receipt(history.receipt(), action, &mut observation)? != receipt {
                 return Err("cached fault endpoint differs from captured history".to_owned());
             }
+            crate::job_observation::source(
+                crate::job_observation::LookupStage::Child,
+                imported,
+                self.chain.depth(at),
+                history.len() + 1,
+            );
             return Ok((observation, Some(receipt)));
         }
-        let parent = match self.ensure_certified_prefix(history)? {
+        let parent = match self.ensure_certified_prefix(history, false)? {
             Ok(parent) => parent,
             Err(mut observation) => {
                 observation.stop = FaultStop::Unexpected;
@@ -2446,6 +2624,28 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct ResidencyQueries {
+        owned: Vec<SnapId>,
+        stores: usize,
+        missing: Option<SnapId>,
+        oversized: bool,
+    }
+
+    struct ResidencyFixture;
+
+    impl Drop for ResidencyFixture {
+        fn drop(&mut self) {
+            LIVE.with(|slot| slot.borrow_mut().take());
+            RESIDENCY_QUERIES.with(|slot| slot.borrow_mut().take());
+            RETIRED.with(|retired| retired.borrow_mut().clear());
+        }
+    }
+
+    thread_local! {
+        static RESIDENCY_QUERIES: RefCell<Option<ResidencyQueries>> = const { RefCell::new(None) };
+    }
+
     thread_local! {
         static AFTER_RUN_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
     }
@@ -2477,6 +2677,17 @@ mod tests {
     }
 
     impl SearchSession for TimedOutRestore {
+        fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+            if TRACK_SHUTDOWN_TELEMETRY.with(|track| track.get()) {
+                SHUTDOWN_CLOSED.with(|closed| closed.set(true));
+            }
+            BOOTSTRAP_SHUTDOWNS.with(|calls| calls.set(calls.get() + 1));
+            if BOOTSTRAP_SHUTDOWN_FAIL.with(|fail| fail.get()) {
+                Err("fixture shutdown unconfirmed".into())
+            } else {
+                Ok(())
+            }
+        }
         fn setup_handle(&self) -> (SnapId, u64) {
             (SnapId(1), 0)
         }
@@ -2511,7 +2722,17 @@ mod tests {
         }
 
         fn telemetry_counters(&self) -> Vec<(String, u64)> {
-            vec![
+            if TRACK_SHUTDOWN_TELEMETRY.with(|track| track.get()) {
+                if SHUTDOWN_TELEMETRY_PANIC.with(|value| value.get()) {
+                    panic!("injected retirement telemetry failure");
+                }
+                assert!(
+                    !SHUTDOWN_CLOSED.with(|closed| closed.get()),
+                    "telemetry queried after shutdown"
+                );
+                SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.set(calls.get() + 1));
+            }
+            let mut counters = vec![
                 ("test.hash_calls".to_owned(), self.hash_calls),
                 ("test.replay_calls".to_owned(), self.replay_calls),
                 ("test.branch_calls".to_owned(), self.branch_calls),
@@ -2522,15 +2743,33 @@ mod tests {
                 ),
                 ("test.sdk_events".to_owned(), self.sdk_event_count),
                 ("test.snapshots".to_owned(), self.snapshots.len() as u64),
-            ]
+            ];
+            if TRACK_SHUTDOWN_TELEMETRY.with(|track| track.get()) {
+                counters.push(("test.retirement_units".into(), 1));
+            }
+            counters
         }
 
-        fn snapshot_owned_pages(&self, _: SnapId) -> Option<u64> {
-            None
+        fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
+            RESIDENCY_QUERIES.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let queries = slot.as_mut()?;
+                queries.owned.push(snapshot);
+                (queries.missing != Some(snapshot)).then_some(if queries.oversized {
+                    u64::MAX
+                } else {
+                    1
+                })
+            })
         }
 
         fn store_bytes(&self) -> Option<u64> {
-            None
+            RESIDENCY_QUERIES.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let queries = slot.as_mut()?;
+                queries.stores += 1;
+                Some(8192)
+            })
         }
 
         fn publish_snapshot(
@@ -2788,8 +3027,81 @@ mod tests {
         }
     }
 
+    thread_local! {
+        static SHUTDOWN_TELEMETRY_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static TRACK_SHUTDOWN_TELEMETRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static SHUTDOWN_CLOSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static SHUTDOWN_TELEMETRY_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static BOOTSTRAP_SHUTDOWNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static BOOTSTRAP_SHUTDOWN_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    #[test]
+    fn bootstrap_finalization_takes_tls_once_and_reports_shutdown_failure() {
+        for fail in [false, true] {
+            BOOTSTRAP_SHUTDOWNS.with(|calls| calls.set(0));
+            BOOTSTRAP_SHUTDOWN_FAIL.with(|value| value.set(fail));
+            let live = timed_out_live();
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let result = finish_coordinator_session();
+            assert_eq!(result.is_err(), fail);
+            LIVE.with(|slot| assert!(slot.borrow().is_none()));
+            finish_coordinator_session().unwrap();
+            assert_eq!(BOOTSTRAP_SHUTDOWNS.with(|calls| calls.get()), 1);
+        }
+        BOOTSTRAP_SHUTDOWN_FAIL.with(|value| value.set(false));
+    }
+
+    #[test]
+    fn scoped_target_drop_defers_owned_shutdown_and_retires_telemetry_once() {
+        let previous = RETIRED.with(|retired| std::mem::take(&mut *retired.borrow_mut()));
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(true));
+        SHUTDOWN_CLOSED.with(|closed| closed.set(false));
+        SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.set(0));
+        BOOTSTRAP_SHUTDOWN_FAIL.with(|fail| fail.set(true));
+        begin_coordinator_session().unwrap();
+        assert!(begin_coordinator_session().is_err());
+        LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
+        drop_target_session();
+        LIVE.with(|slot| assert!(slot.borrow().is_some()));
+        assert!(finish_coordinator_session().is_err());
+        assert!(!COORDINATOR_SESSION.with(|active| active.get()));
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        finish_coordinator_session().unwrap();
+        assert_eq!(SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.get()), 1);
+        assert_eq!(
+            RETIRED.with(|retired| retired.borrow()["vmm.test.retirement_units"]),
+            1
+        );
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(false));
+        BOOTSTRAP_SHUTDOWN_FAIL.with(|fail| fail.set(false));
+        RETIRED.with(|retired| *retired.borrow_mut() = previous);
+    }
+
+    #[test]
+    fn retirement_telemetry_failure_does_not_prevent_owned_shutdown() {
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(true));
+        SHUTDOWN_TELEMETRY_PANIC.with(|value| value.set(true));
+        BOOTSTRAP_SHUTDOWNS.with(|calls| calls.set(0));
+        BOOTSTRAP_SHUTDOWN_FAIL.with(|value| value.set(false));
+        begin_coordinator_session().unwrap();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
+        let result = finish_coordinator_session();
+        SHUTDOWN_TELEMETRY_PANIC.with(|value| value.set(false));
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(false));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("retirement telemetry panicked")
+        );
+        assert_eq!(BOOTSTRAP_SHUTDOWNS.with(|calls| calls.get()), 1);
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        assert!(!COORDINATOR_SESSION.with(|active| active.get()));
+    }
+
     fn timed_out_live() -> Live {
         let mut live = Live {
+            final_counters: None,
             key: [0; 32],
             holder: 0,
             session: Box::new(TimedOutRestore {
@@ -3238,6 +3550,185 @@ mod tests {
         live
     }
 
+    #[test]
+    fn coordinator_retired_telemetry_refuses_live_before_session_query() {
+        let _fixture = ResidencyFixture;
+        let counters =
+            BTreeMap::from([("vmm.sdk_dispatch.event.request_guard_calls".to_owned(), 17)]);
+        RETIRED.with(|retired| *retired.borrow_mut() = counters.clone());
+        assert_eq!(coordinator_retired_work_telemetry().unwrap(), counters);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(true));
+        SHUTDOWN_TELEMETRY_PANIC.with(|value| value.set(true));
+        let result = std::panic::catch_unwind(coordinator_retired_work_telemetry);
+        SHUTDOWN_TELEMETRY_PANIC.with(|value| value.set(false));
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(false));
+        LIVE.with(|slot| {
+            let mut live = slot.borrow_mut().take().unwrap();
+            live.final_counters = Some(Vec::new());
+        });
+        assert!(result.unwrap().unwrap_err().contains("no live session"));
+        assert_eq!(coordinator_retired_work_telemetry().unwrap(), counters);
+        let mut owned = coordinator_retired_work_telemetry().unwrap();
+        owned.clear();
+        assert_eq!(coordinator_retired_work_telemetry().unwrap(), counters);
+    }
+
+    #[test]
+    fn work_telemetry_never_queries_residency_across_depths_and_pruning() {
+        let _fixture = ResidencyFixture;
+        for depth in [0, 1, 8, 32, 64] {
+            LIVE.with(|slot| slot.borrow_mut().take());
+            RETIRED.with(|retired| retired.borrow_mut().clear());
+            RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = Some(ResidencyQueries::default()));
+            let mut live = hashed_live([17; 32]);
+            let mut receipt = fixture_genesis();
+            for step in 1..=depth {
+                receipt = receipt
+                    .extend(
+                        FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
+                        receipt.endpoint(),
+                        crate::history::fixture_event_history(receipt.endpoint()),
+                        &FaultObservations::default(),
+                    )
+                    .unwrap();
+                live.chain
+                    .push_history(
+                        Point {
+                            snap: SnapId(step as u64 + 1),
+                            moment: step as u64,
+                        },
+                        None,
+                        receipt.clone(),
+                    )
+                    .unwrap();
+            }
+            let points: Vec<_> = live.chain.points().map(|point| point.snap).collect();
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let work = thread_work_telemetry();
+            assert!(work.contains_key("vmm.test.hash_calls"));
+            assert!(!work.contains_key("cache.entries"));
+            RESIDENCY_QUERIES.with(|slot| {
+                let queries = slot.borrow();
+                let queries = queries.as_ref().unwrap();
+                assert!(queries.owned.is_empty());
+                assert_eq!(queries.stores, 0);
+            });
+            let diagnostics = thread_residency_diagnostics().unwrap();
+            assert_eq!(diagnostics.entries, points.len());
+            assert_eq!(diagnostics.resident_bytes, Some(points.len() as u64 * 4096));
+            assert_eq!(
+                diagnostics.charged_bytes,
+                diagnostics
+                    .resident_bytes
+                    .map(|bytes| bytes + diagnostics.observation_checkpoint_bytes as u64)
+            );
+            RESIDENCY_QUERIES.with(|slot| {
+                let mut queries = slot.borrow_mut();
+                let queries = queries.as_mut().unwrap();
+                assert_eq!(queries.owned, points);
+                assert_eq!(queries.stores, 0);
+                queries.owned.clear();
+            });
+            LIVE.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let live = slot.as_mut().unwrap();
+                let dropped = live.chain.truncate(1);
+                live.drop_snapshots(dropped).unwrap();
+            });
+            let _ = thread_work_telemetry();
+            RESIDENCY_QUERIES
+                .with(|slot| assert!(slot.borrow().as_ref().unwrap().owned.is_empty()));
+            assert_eq!(thread_residency_diagnostics().unwrap().entries, 1);
+            RESIDENCY_QUERIES.with(|slot| {
+                let mut queries = slot.borrow_mut();
+                let queries = queries.as_mut().unwrap();
+                assert_eq!(queries.owned, [SnapId(1)]);
+                queries.owned.clear();
+                queries.missing = Some(SnapId(1));
+            });
+            let missing = thread_residency_diagnostics().unwrap();
+            assert_eq!(missing.resident_bytes, None);
+            assert_eq!(missing.charged_bytes, None);
+            RESIDENCY_QUERIES.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let queries = slot.as_mut().unwrap();
+                queries.owned.clear();
+                queries.missing = None;
+                queries.oversized = true;
+            });
+            let oversized = thread_residency_diagnostics().unwrap();
+            assert_eq!(oversized.resident_bytes, None);
+            assert_eq!(oversized.charged_bytes, None);
+            LIVE.with(|slot| slot.borrow_mut().take());
+            assert_eq!(thread_residency_diagnostics(), None);
+            let retired = thread_work_telemetry();
+            assert!(retired.contains_key("vmm.test.hash_calls"));
+            assert!(!retired.contains_key("cache.entries"));
+            RESIDENCY_QUERIES.with(|slot| {
+                let queries = slot.borrow();
+                assert_eq!(queries.as_ref().unwrap().owned, [SnapId(1)]);
+                assert_eq!(queries.as_ref().unwrap().stores, 0);
+            });
+            RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    #[test]
+    fn budget_reporting_remains_separate_from_work_and_residency() {
+        let _fixture = ResidencyFixture;
+        RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = Some(ResidencyQueries::default()));
+        let index = Arc::new(consonance_client::cache::LocalIndex::new(usize::MAX));
+        let mut live = hashed_live([17; 32]);
+        live.holder = 91;
+        live.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 0,
+            },
+            Some(Shared {
+                index: index.clone(),
+                namespace: Namespace::exact(&[b"telemetry-budget"]),
+            }),
+        );
+        let decoder = SdkDecoder::default();
+        let observation =
+            FaultObservations::new(decoder.moment(), decoder.capture(), FaultStop::Deadline);
+        let endpoint = FaultEndpointCertificate::KvmWholeState([17; 32]);
+        let receipt = HistoryReceipt::genesis(
+            [0; 32],
+            endpoint,
+            crate::history::fixture_event_history(endpoint),
+            &observation,
+        )
+        .unwrap();
+        live.chain.certify(0, receipt.clone()).unwrap();
+        live.chain
+            .set_observation_checkpoint(
+                0,
+                ObservationCheckpoint::capture(&receipt, decoder).unwrap(),
+            )
+            .unwrap();
+        let checkpoints = live.chain.observation_checkpoint_bytes();
+        assert!(checkpoints > 0);
+        let _ = live.work_counters();
+        RESIDENCY_QUERIES.with(|slot| assert_eq!(slot.borrow().as_ref().unwrap().stores, 0));
+        live.fit_store(1).unwrap();
+        assert_eq!(index.stats().stored, 8192 + checkpoints);
+        RESIDENCY_QUERIES.with(|slot| {
+            let slot = slot.borrow();
+            assert_eq!(slot.as_ref().unwrap().stores, 1);
+            assert!(slot.as_ref().unwrap().owned.is_empty());
+        });
+        let diagnostics = live.residency_diagnostics();
+        assert_eq!(diagnostics.resident_bytes, Some(4096));
+        assert_eq!(diagnostics.observation_checkpoint_bytes, checkpoints);
+        assert_eq!(diagnostics.charged_bytes, Some(4096 + checkpoints as u64));
+        drop(live);
+        assert_eq!(index.stats().stored, 0);
+        RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = None);
+    }
+
     fn scripted_capture_live(hashes: Vec<[u8; 32]>, abandon_on_hash: bool) -> Live {
         scripted_capture_live_event_history(
             hashes,
@@ -3308,7 +3799,7 @@ mod tests {
     }
 
     fn capture_hash_calls() -> u64 {
-        thread_telemetry()["vmm.test.hash_calls"]
+        thread_work_telemetry()["vmm.test.hash_calls"]
     }
 
     fn capture_fixture_workload(target: &FaultTarget) -> crate::campaign::FaultWorkload {
@@ -3534,8 +4025,8 @@ mod tests {
                 *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]; depth], false));
             });
             let before = capture_hash_calls();
-            let replay_before = thread_telemetry()["run.replay.count"];
-            let new_before = thread_telemetry()["run.new.count"];
+            let replay_before = thread_work_telemetry()["run.replay.count"];
+            let new_before = thread_work_telemetry()["run.new.count"];
             let snapshot =
                 crate::campaign::capture_replayed_prefix(&mut target, &vec![action; depth])
                     .unwrap();
@@ -3544,10 +4035,10 @@ mod tests {
             assert_eq!(snapshot.observation, *target.observation());
             if depth != 0 {
                 assert_eq!(
-                    thread_telemetry()["run.replay.count"] - replay_before,
+                    thread_work_telemetry()["run.replay.count"] - replay_before,
                     depth as u64
                 );
-                assert_eq!(thread_telemetry()["run.new.count"] - new_before, 0);
+                assert_eq!(thread_work_telemetry()["run.new.count"] - new_before, 0);
             }
             assert_eq!(target.snapshot().unwrap(), Some(snapshot));
             assert_eq!(capture_hash_calls() - before, depth.max(1) as u64 + 1);
@@ -4984,7 +5475,7 @@ mod tests {
                 live.chain.certify(0, fixture_genesis()).unwrap();
                 LIVE.with(|slot| *slot.borrow_mut() = Some(live));
             }
-            let before = thread_telemetry();
+            let before = thread_work_telemetry();
             assert!(
                 target
                     .restore(&forged)
@@ -4992,7 +5483,7 @@ mod tests {
                     .to_string()
                     .contains("prefix")
             );
-            let after = thread_telemetry();
+            let after = thread_work_telemetry();
             assert_eq!(
                 after["session.restore.count"],
                 before["session.restore.count"]
@@ -5323,6 +5814,193 @@ mod tests {
     }
 
     #[test]
+    fn locality_drain_observes_session_retirement_outside_with_live_without_rpc() {
+        for history in [false, true] {
+            let target = unbooted_target();
+            let mut live = hashed_live([17; 32]);
+            let mut session = fixture_session();
+            session.abandon_on_hash = !history;
+            session.history_failure = history.then_some(|| SessionError::Hung(WALL_LIMIT));
+            live.session = Box::new(session);
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            crate::job_observation::new_generation();
+            crate::job_observation::begin();
+            crate::job_observation::origin_start(0);
+            crate::job_observation::selected(false, 0);
+            let generation = crate::job_observation::generation().unwrap();
+            if history {
+                let _ = target.event_history_current();
+            } else {
+                let _ = target.state_hash_current();
+            }
+            LIVE.with(|slot| assert!(slot.borrow().is_none()));
+            let row = take_job_observation().unwrap();
+            assert_eq!(row.origin.generation, Some(generation));
+            assert_eq!(row.end_generation, None);
+            assert!(take_job_observation().is_none());
+        }
+    }
+
+    #[test]
+    fn locality_parent_and_cached_child_sources_are_separate_from_origin() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for imported in [false, true] {
+            let mut target = unbooted_target();
+            let index = Arc::new(LocalIndex::new(64 << 20));
+            let namespace = Namespace::exact(&[b"locality-child"]);
+            let mut live = scripted_capture_live(vec![[17; 32]; 3], false);
+            if imported {
+                live.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    Some(Shared {
+                        index: index.clone(),
+                        namespace,
+                    }),
+                );
+                live.chain.certify(0, fixture_genesis()).unwrap();
+            }
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            target.apply(action);
+            let parent = target.snapshot().unwrap().unwrap();
+            target.apply(action);
+            if imported {
+                let mut live = scripted_capture_live(vec![[17; 32]], false);
+                live.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    Some(Shared {
+                        index: index.clone(),
+                        namespace,
+                    }),
+                );
+                live.chain.certify(0, fixture_genesis()).unwrap();
+                LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            }
+            target.restore(&parent).unwrap();
+            crate::job_observation::begin();
+            target.apply(action);
+            assert!(!target.failed());
+            let child = take_job_observation().unwrap();
+            assert_eq!(
+                child.origin.outcome,
+                crate::job_observation::RestoreOutcome::NotAttempted
+            );
+            assert_eq!(child.child_sources.shared_exact, u64::from(imported));
+            assert_eq!(child.child_sources.local_exact, u64::from(!imported));
+            assert_eq!(child.parent_sources.local_exact, 0);
+            crate::job_observation::begin();
+            target.apply(action);
+            assert!(!target.failed());
+            let parent = take_job_observation().unwrap();
+            assert_eq!(parent.parent_sources.local_exact, 1);
+            assert_eq!(parent.child_sources.local_exact, 0);
+            assert_eq!(parent.child_sources.shared_exact, 0);
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    #[test]
+    fn locality_observation_distinguishes_ancestors_reconstruction_and_final_failure() {
+        use crate::job_observation::{RestoreOutcome, RestoreSource};
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let mut target = unbooted_target();
+        LIVE.with(|slot| {
+            *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]; 2], false))
+        });
+        target.apply(action);
+        target.apply(action);
+        let snapshot = target.snapshot().unwrap().unwrap();
+        LIVE.with(|slot| slot.borrow_mut().take());
+        for (shared, selected_depth) in [(false, 0), (false, 1), (true, 1)] {
+            let index = Arc::new(LocalIndex::new(64 << 20));
+            let namespace = Namespace::exact(&[b"locality-ancestor"]);
+            let mut live = scripted_capture_live(vec![[17; 32]; 2], false);
+            if shared {
+                live.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    Some(Shared {
+                        index: index.clone(),
+                        namespace,
+                    }),
+                );
+                live.chain.certify(0, fixture_genesis()).unwrap();
+            }
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let mut seed = unbooted_target();
+            if selected_depth > 0 {
+                seed.apply(action);
+            }
+            if shared {
+                let mut importer = scripted_capture_live(vec![[17; 32]], false);
+                importer.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    Some(Shared {
+                        index: index.clone(),
+                        namespace,
+                    }),
+                );
+                importer.chain.certify(0, fixture_genesis()).unwrap();
+                LIVE.with(|slot| *slot.borrow_mut() = Some(importer));
+            }
+            crate::job_observation::begin();
+            target.restore(&snapshot).unwrap();
+            let row = take_job_observation().unwrap();
+            assert_eq!(
+                row.origin.source,
+                if shared {
+                    RestoreSource::SharedImportAncestor
+                } else {
+                    RestoreSource::LocalAncestor
+                }
+            );
+            assert_eq!(row.origin.outcome, RestoreOutcome::Succeeded);
+            assert_eq!(row.origin.selected_depth, selected_depth);
+            assert_eq!(row.origin.rebuild_attempted, 2 - selected_depth);
+            assert_eq!(row.origin.rebuild_completed, 2 - selected_depth);
+            assert_eq!(row.origin_lookups.import_completed, u64::from(shared));
+            let mut wrong = snapshot.clone();
+            wrong.endpoint = Some(FaultEndpointCertificate::KvmWholeState([23; 32]));
+            crate::job_observation::begin();
+            assert!(target.restore(&wrong).is_err());
+            let refused = take_job_observation().unwrap();
+            assert_ne!(refused.origin.outcome, RestoreOutcome::Succeeded);
+            LIVE.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let live = slot.as_mut().unwrap();
+                let mut corrupt = fixture_session();
+                corrupt.hash = Some([23; 32]);
+                for at in 0..live.chain.links() {
+                    corrupt
+                        .snapshots
+                        .insert(live.chain.point(at).snap.0, [23; 32]);
+                }
+                live.session = Box::new(corrupt);
+            });
+            crate::job_observation::begin();
+            assert!(target.restore(&snapshot).is_err());
+            let failed = take_job_observation().unwrap();
+            assert_eq!(failed.origin.source, RestoreSource::LocalExact);
+            assert_eq!(
+                failed.origin.stage,
+                crate::job_observation::RestoreStage::Certificate
+            );
+            assert_eq!(failed.origin.outcome, RestoreOutcome::Failed);
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    #[test]
     fn certified_local_and_imported_restores_do_constant_endpoint_work() {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         for depth in [1, 8, 32, 128, 1024] {
@@ -5372,11 +6050,49 @@ mod tests {
                     importer.chain.certify(0, fixture_genesis()).unwrap();
                     LIVE.with(|slot| *slot.borrow_mut() = Some(importer));
                 }
-                let before = thread_telemetry();
+                let before = thread_work_telemetry();
+                crate::job_observation::new_generation();
+                SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.set(0));
+                TRACK_SHUTDOWN_TELEMETRY.with(|flag| flag.set(true));
+                SHUTDOWN_CLOSED.with(|flag| flag.set(false));
+                crate::job_observation::begin();
                 target.restore(&snapshot).unwrap();
+                assert_eq!(SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.get()), 0);
+                TRACK_SHUTDOWN_TELEMETRY.with(|flag| flag.set(false));
+                let captured = take_job_observation().unwrap();
+                assert_eq!(
+                    captured.origin.outcome,
+                    crate::job_observation::RestoreOutcome::Succeeded
+                );
+                assert_eq!(
+                    captured.origin.source,
+                    if imported {
+                        crate::job_observation::RestoreSource::SharedImportExact
+                    } else {
+                        crate::job_observation::RestoreSource::LocalExact
+                    }
+                );
+                assert_eq!(captured.origin.requested_depth, depth as u64);
+                assert_eq!(captured.origin.selected_depth, depth as u64);
+                assert!(captured.origin.generation.is_some());
+                assert_eq!(captured.origin_lookups.import_attempts, u64::from(imported));
+                assert_eq!(
+                    captured.origin_lookups.import_completed,
+                    u64::from(imported)
+                );
+                assert_eq!(captured.origin.rebuild_attempted, 0);
+                assert!(take_job_observation().is_none());
+                crate::job_observation::begin();
+                target.restore(&snapshot).unwrap();
+                let again = take_job_observation().unwrap();
+                assert_eq!(
+                    again.origin.source,
+                    crate::job_observation::RestoreSource::LocalExact
+                );
+                assert_eq!(again.origin_lookups.import_attempts, 0);
                 assert!(target.actions.get().is_none());
                 assert_eq!(target.observation(), &snapshot.observation);
-                let after = thread_telemetry();
+                let after = thread_work_telemetry();
                 for key in [
                     "session.restore.count",
                     "session.observe.count",
@@ -5385,7 +6101,7 @@ mod tests {
                 ] {
                     assert_eq!(
                         after[key] - before[key],
-                        1,
+                        2,
                         "{key}, depth={depth}, imported={imported}"
                     );
                 }
@@ -5526,7 +6242,13 @@ mod tests {
             ..FaultSnapshot::default()
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([17; 32])));
+        crate::job_observation::begin();
         let error = target.restore(&snapshot).unwrap_err().to_string();
+        let captured = take_job_observation().unwrap();
+        assert_eq!(
+            captured.origin.outcome,
+            crate::job_observation::RestoreOutcome::Failed
+        );
         assert!(
             error.contains("stopped before its snapshot certificate"),
             "{error}"
@@ -5652,6 +6374,8 @@ mod tests {
         };
         target.observation.stop = FaultStop::Crash;
         target.action_observations.push(target.observation.clone());
+        crate::job_observation::begin();
+        crate::job_observation::origin_start(1);
         target
             .finish_restore(&snapshot, Err(format!("{WATCHDOG_CUTOFF}run: expired")))
             .unwrap();
@@ -5660,6 +6384,10 @@ mod tests {
         assert!(target.snapshot().unwrap().is_none());
         assert!(target.actions().is_empty());
         assert_eq!(target.watchdog_cutoffs(), 1);
+        assert_eq!(
+            take_job_observation().unwrap().origin.outcome,
+            crate::job_observation::RestoreOutcome::Cutoff
+        );
         target.apply(FaultOperation::Kill(0, std::num::NonZeroU16::new(50).unwrap()).into());
         assert_eq!(target.execution_ticks(), 17);
         assert_eq!(target.last_action_observations().len(), 1);
@@ -5887,10 +6615,10 @@ mod tests {
                     live.session = Box::new(session);
                     LIVE.with(|slot| *slot.borrow_mut() = Some(live));
                     validate_snapshot_prefix_certificates(&snapshot, false).unwrap();
-                    let before = thread_telemetry();
+                    let before = thread_work_telemetry();
                     let mut target = unbooted_target();
                     let result = target.restore(&snapshot);
-                    let after = thread_telemetry();
+                    let after = thread_work_telemetry();
                     assert_eq!(
                         after["run.rebuild.count"] - before["run.rebuild.count"],
                         u64::from(!rooted)
@@ -6050,7 +6778,7 @@ mod tests {
                     live.observe(FaultStop::Deadline).map(|_| ())
                 };
                 assert_eq!(
-                    live.counters(true).into_iter().collect::<BTreeMap<_, _>>()["vmm.test.sdk_calls"],
+                    live.work_counters().into_iter().collect::<BTreeMap<_, _>>()["vmm.test.sdk_calls"],
                     1
                 );
                 let Some(failure) = failure else {
@@ -6326,11 +7054,62 @@ mod tests {
     }
 
     #[test]
+    fn inactive_debug_declares_local_but_active_empty_debug_remains_external_and_validates_status()
+    {
+        let config = branch_config(ActionWindows { root_seal: 0 }, &[], &[]).unwrap();
+        let factory = service_factory();
+        let mut standing = factory(&config).unwrap();
+        assert_eq!(
+            standing.local_services(),
+            &[process_proto::debug::NAMESPACE]
+        );
+        let active = debug_configuration(&config.configuration, None).unwrap();
+        let mut debug = factory(&active).unwrap();
+        assert!(debug.local_services().is_empty());
+        let mut forged_active = active.clone();
+        forged_active.local_services = vec![process_proto::debug::NAMESPACE];
+        assert!(factory(&forged_active).is_err());
+        let status = process_proto::debug::Status {
+            acknowledged: 3,
+            running: true,
+            exit_code: None,
+        }
+        .encode();
+        let question =
+            Question::with_request_id(7, process_proto::debug::NAMESPACE, status).unwrap();
+        for handler in [&mut standing, &mut debug] {
+            assert_eq!(
+                handler.respond(17, &question).unwrap(),
+                ServiceResponse::Answered(ChannelAnswer::Data(Vec::new()))
+            );
+            let malformed =
+                Question::with_request_id(8, process_proto::debug::NAMESPACE, Vec::new()).unwrap();
+            assert!(handler.respond(17, &malformed).is_err());
+        }
+        let message = process_proto::debug::Message {
+            id: 4,
+            operation: process_proto::debug::Operation::Execute,
+            data: b"echo same-request".to_vec(),
+        };
+        let attached = debug_configuration(&config.configuration, Some(&message)).unwrap();
+        let mut debug = factory(&attached).unwrap();
+        assert!(debug.local_services().is_empty());
+        assert_eq!(
+            debug.respond(17, &question).unwrap(),
+            ServiceResponse::Answered(ChannelAnswer::Data(message.encode().unwrap()))
+        );
+        let mut forged = config;
+        forged.local_services.clear();
+        assert!(factory(&forged).is_err());
+    }
+
+    #[test]
     fn the_factory_serves_the_nominal_service_the_setup_point_was_sealed_under() {
         let factory = service_factory();
         let handler = factory(&ServiceConfig::default()).expect("nominal service");
         assert_eq!(handler.identity(), ServiceConfig::default().identity);
         let own = factory(&ServiceConfig {
+            local_services: vec![process_proto::debug::NAMESPACE],
             identity: SERVICE_IDENTITY.to_vec(),
             configuration: encode_configuration(
                 &encode_windows(&[]).expect("an empty standing list encodes"),
@@ -6342,6 +7121,7 @@ mod tests {
         assert_eq!(own.identity(), SERVICE_IDENTITY);
         assert!(
             factory(&ServiceConfig {
+                local_services: Vec::new(),
                 identity: b"another-package".to_vec(),
                 configuration: Vec::new(),
             })
@@ -6648,7 +7428,12 @@ pub struct DebugProgress {
     pub status: Option<process_proto::debug::Status>,
     pub output: Vec<u8>,
 }
-const DEBUG_IDENTITY: &[u8] = b"faults-debug-terminal-v1";
+fn validate_debug_status(question: &Question) -> Result<(), ChannelError> {
+    process_proto::debug::Status::decode(question.payload())
+        .map(|_| ())
+        .map_err(|_| ChannelError::Malformed)
+}
+const DEBUG_IDENTITY: &[u8] = b"faults-debug-terminal-v2";
 #[derive(Clone, Debug)]
 struct DebugHandler {
     configuration: Vec<u8>,
@@ -6685,8 +7470,7 @@ impl ServiceHandler for DebugHandler {
         question: &Question,
     ) -> Result<ServiceResponse, ChannelError> {
         if question.service() == process_proto::debug::NAMESPACE {
-            process_proto::debug::Status::decode(question.payload())
-                .map_err(|_| ChannelError::Malformed)?;
+            validate_debug_status(question)?;
             return Ok(ServiceResponse::Answered(ChannelAnswer::data(
                 self.message.clone(),
             )?));
@@ -6717,6 +7501,7 @@ fn debug_configuration(
         configuration.extend(message.encode()?);
     }
     Ok(ServiceConfig {
+        local_services: Vec::new(),
         identity: DEBUG_IDENTITY.to_vec(),
         configuration,
     })

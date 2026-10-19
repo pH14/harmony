@@ -297,6 +297,7 @@ fn action_champion_key(observations: &[FamidashObservations]) -> Option<Famidash
 }
 
 impl<M: NesBackend<Vec<u8>>, const GROUP: usize> CampaignTypes for FamidashGame<M, GROUP> {
+    type JobObservation = ();
     type Target = FamidashTarget<M>;
     type Action = ButtonChord;
     type Key = FamidashArchiveKey;

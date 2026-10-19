@@ -540,6 +540,10 @@ impl Session {
         self.finish(reason)
     }
 
+    pub fn shutdown(&mut self) -> Result<(), SessionError> {
+        self.guest.shutdown().map_err(Into::into)
+    }
+
     pub fn kill(mut self) -> Result<Exit, SessionError> {
         self.finish(ExitReason::Killed)
     }

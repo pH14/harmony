@@ -190,9 +190,12 @@ impl HashWork {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HostTelemetry {
+    pub sdk_dispatch: crate::sdk_telemetry::SdkDispatchTelemetry,
     pub exits: ExitTelemetry,
     pub hashes: HashTelemetry,
     pub verification: snapshot_store::VerificationTelemetry,
+    pub copies: snapshot_store::CopyTelemetry,
+    pub physical: vmm_backend::PhysicalTelemetry,
     pub seals: Cost,
     pub seal_pages: u64,
     pub restores: Cost,
@@ -235,7 +238,10 @@ impl HostTelemetry {
             ("snapshot.import_pages".to_owned(), self.import_pages),
         ];
         self.hashes.counters(&mut out);
+        out.extend(self.sdk_dispatch.counters());
         out.extend(self.verification.counters());
+        out.extend(self.copies.counters());
+        out.extend(self.physical.counters());
         let mut total = Cost::default();
         for (site, cost) in &self.exits.exits {
             total.merge(*cost);
@@ -258,6 +264,25 @@ impl HostTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_inventory_is_exported_with_platform_and_purpose() {
+        let mut telemetry = HostTelemetry::default();
+        telemetry.physical.measure(
+            vmm_backend::RunPlatform::KvmX86,
+            vmm_backend::RunPurpose::Completion,
+            || ((), vmm_backend::RunReturn::Returned(6)),
+        );
+        let counters = telemetry.counters();
+        assert!(counters.contains(&("backend.kvm_x86.completion.entries".to_owned(), 1)));
+        assert!(counters.contains(&("backend.kvm_x86.completion.returns".to_owned(), 1)));
+        assert!(counters.contains(&("backend.kvm_x86.completion.raw_exit.6.count".to_owned(), 1)));
+        assert!(
+            !counters
+                .iter()
+                .any(|(key, _)| key.starts_with("backend.hvf_arm64"))
+        );
+    }
 
     #[test]
     fn hash_totals_saturate_and_export_disjoint_site_names() {
