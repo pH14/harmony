@@ -49,6 +49,7 @@ impl EndpointStops {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EndpointProofRequest {
     WholeStateAndHistory,
+    CapturedWholeStateAndHistory,
     Omit,
 }
 
@@ -134,7 +135,11 @@ impl ExecutionRequest {
         hash.update(self.sdk_cursor.to_le_bytes());
         hash.update([
             self.snapshot_on.bits(),
-            u8::from(self.proof == EndpointProofRequest::WholeStateAndHistory),
+            match self.proof {
+                EndpointProofRequest::Omit => 0,
+                EndpointProofRequest::WholeStateAndHistory => 1,
+                EndpointProofRequest::CapturedWholeStateAndHistory => 2,
+            },
         ]);
         Ok(hash.finalize().into())
     }
@@ -148,6 +153,19 @@ pub struct EndpointBinding {
     pub source_count: u32,
     pub start_cursor: u32,
     pub end_cursor: u32,
+}
+
+impl EndpointBinding {
+    pub fn moment(&self) -> u64 {
+        match self.stop {
+            StopReason::Deadline { vtime }
+            | StopReason::Quiescent { vtime }
+            | StopReason::Crash { vtime, .. }
+            | StopReason::Decision { vtime, .. }
+            | StopReason::SnapshotPoint { vtime }
+            | StopReason::Assertion { vtime, .. } => vtime.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -370,7 +388,13 @@ impl EndpointState {
                 let pending = self.pending.take().expect("pending endpoint checked");
                 let proof = match pending.proof {
                     EndpointProofRequest::Omit => Ok(EndpointProof::Unavailable),
-                    EndpointProofRequest::WholeStateAndHistory => driver.proof(),
+                    EndpointProofRequest::CapturedWholeStateAndHistory
+                        if pending.snapshot.is_none() =>
+                    {
+                        Ok(EndpointProof::Unavailable)
+                    }
+                    EndpointProofRequest::WholeStateAndHistory
+                    | EndpointProofRequest::CapturedWholeStateAndHistory => driver.proof(),
                 };
                 match proof {
                     Ok(proof) => Ok(EndpointReply::Committed(EndpointReceipt {
@@ -425,7 +449,7 @@ impl EndpointState {
             .map(|branch| InputSpec::decode_reproducer(&branch.input))
             .transpose()?;
         driver.validate_request(&request, branch.as_ref())?;
-        if request.proof == EndpointProofRequest::WholeStateAndHistory && !driver.supports_proof() {
+        if request.proof != EndpointProofRequest::Omit && !driver.supports_proof() {
             return Err(EndpointProtocolError::Unavailable.into());
         }
         let known_source =
@@ -506,6 +530,11 @@ impl EndpointState {
         } else {
             None
         };
+        if snapshot.is_some_and(|(_, at)| at != binding.moment()) {
+            return Err(
+                EndpointProtocolError::Invalid("snapshot moment differs from endpoint").into(),
+            );
+        }
         let page = Self::read_page(driver, binding.clone(), request.sdk_cursor)?;
         self.pending = Some(PendingEndpoint {
             binding,
@@ -702,10 +731,15 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionEndpoint<'a, T> {
             let EndpointReply::Committed(receipt) = result? else {
                 return Err(EndpointProtocolError::Invalid("unexpected commit reply").into());
             };
-            if receipt.binding != self.page.binding
+            if receipt
+                .snapshot
+                .is_some_and(|(_, at)| at != receipt.binding.moment())
+                || receipt.binding != self.page.binding
                 || receipt.snapshot.is_some() != self.capture
                 || matches!(receipt.proof, EndpointProof::WholeStateAndHistory { .. })
-                    != (self.proof == EndpointProofRequest::WholeStateAndHistory)
+                    != (self.proof == EndpointProofRequest::WholeStateAndHistory
+                        || (self.proof == EndpointProofRequest::CapturedWholeStateAndHistory
+                            && self.capture))
             {
                 return Err(EndpointProtocolError::Invalid("commit binding differs").into());
             }
@@ -715,6 +749,11 @@ impl<'a, T: EndpointTransport + ?Sized> ExecutionEndpoint<'a, T> {
             self.transport.endpoint_abandon();
         }
         checked
+    }
+
+    pub fn abandon(mut self) {
+        self.finished = true;
+        self.transport.endpoint_abandon();
     }
 
     pub fn abort(mut self) -> Result<(), EndpointError> {
@@ -1134,18 +1173,20 @@ mod tests {
             panic!("decision must not capture");
         };
         assert_eq!(pending.stop(), &decision);
-        let resumed = pending
-            .resume(Resolution {
-                vtime: Moment(9),
-                service: 7,
-                id: DecisionId(23),
-                answer: Answer(vec![3]),
-            })
-            .unwrap();
-        let ExecutionStart::Endpoint(endpoint) = resumed else {
-            panic!("resume must reach endpoint");
-        };
-        endpoint.commit().unwrap();
+        {
+            let resumed = pending
+                .resume(Resolution {
+                    vtime: Moment(9),
+                    service: 7,
+                    id: DecisionId(23),
+                    answer: Answer(vec![3]),
+                })
+                .unwrap();
+            let ExecutionStart::Endpoint(endpoint) = resumed else {
+                panic!("resume must reach endpoint");
+            };
+            endpoint.commit().unwrap();
+        }
         assert_eq!(fixture.calls[0..2], ["run", "resolve"]);
         assert_eq!(fixture.exchanges, 3);
         assert!(!fixture.endpoint.pending());
