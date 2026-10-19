@@ -1,0 +1,66 @@
+{
+  "status": "verified",
+  "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+  "cases": [
+    {
+      "case": "geodom-early-floor-data-only-actual.json.gz",
+      "case_sha256": "d52d8936ecfcc9fe907a41017eb8d2dd325bd4c54898a17ddcff4aecf9bb0c74",
+      "rom_sha256": "75b0657be93e3a9e462fde33e6525b4ad6d8e60d4559258b3a53808b65694baf",
+      "death_frame": 814,
+      "contact_frame": 811,
+      "intro_difference_frames": [
+        4
+      ],
+      "reset_confirmation": {
+        "released_frames_after_death": 40,
+        "endpoint": {
+          "level": 18,
+          "state": 2,
+          "x": -224,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0
+        }
+      }
+    },
+    {
+      "case": "current-geodom-early-floor-data-only-actual.json.gz",
+      "case_sha256": "de7650b66c84f2628cc5484f74509a12f49f66366496dd4679b08c0e21741217",
+      "rom_sha256": "aed9a16239892094dc8ef902511bf11bab32cc166d7566d765366ba404abea43",
+      "death_frame": 814,
+      "contact_frame": 811,
+      "intro_difference_frames": [
+        6
+      ],
+      "reset_confirmation": {
+        "released_frames_after_death": 40,
+        "endpoint": {
+          "level": 18,
+          "state": 2,
+          "x": -224,
+          "y": 895,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 8,
+          "paused": 0,
+          "wrap": 0,
+          "coins": 0
+        }
+      }
+    }
+  ]
+}

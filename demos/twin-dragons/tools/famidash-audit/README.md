@@ -392,3 +392,9 @@ are checked; results are an inventory, not bug verdicts. Different builds
 can introduce lag, so an unchanged input dying earlier does not establish
 that a region is safe or unreachable. Source intent and actual CPU probes
 remain separate checks. The tool targets the installed release RAM layout.
+
+`trace-collision.py` now records instantaneous scroll X, world probe X and the
+signed offset from the player origin. Use these probe-time coordinates when
+comparing CPU map reads with source geometry; post-frame scroll may differ.
+JavaScript callers unwrapping a low byte must normalize negative remainders
+explicitly. A source mismatch inferred using a negative `%` result is invalid.

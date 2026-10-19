@@ -403,6 +403,24 @@ current `geodom-saw` input, which actually entered through a neighboring pit
 base and could be repaired by the generic base guard. General coin-route
 coverage remains pending before upstream submission.
 
+A second Geometrical Dominator gap occurs much earlier, beneath the large saw
+at columns 137–139, row 19. The robot misses the saw kernel and falls through
+three `BLACK_NONE` cells into closed component 265, below the outlined brick
+platform. Original release and current upstream reproduce the same route;
+the latest combined prototype also reproduces it. CPU probes independently
+confirm the first interior centre at frame 813. This region contains no
+objective or teleport exit.
+
+`geodom-early-floor-{release,current}.patch` changes just those three cells to
+`BLACK_TOP`. Isolated builds first respond at frame 811 and kill at frame 814.
+FCEUmm matches both repaired gameplay traces and confirms their resets. The
+retained release clearing control finishes in 5,788 frames with its entire
+trace unchanged on the isolated repair; FCEUmm independently matches it.
+This is complementary to the later small-saw patch. Current legitimate-route
+and coin coverage, integration builds and full-round assessment remain pending.
+The release clearing input does not transfer unchanged to current upstream:
+that replay dies at frame 1,136, after passing this repaired area.
+
 The finish trigger has a generic viewport bug. In Hi, the end sprite is at
 world Y 544 while the lower route puts the camera at Y 719. The sprite enters
 the horizontal window at frame 6,837 but remains inactive because of vertical

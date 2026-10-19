@@ -37,7 +37,7 @@ def run(args):
     locations = {name: symbols[f"_{name}"][0] for name in
                  ["temp_x", "temp_y", "Generic", "currplayer", "currplayer_mini", "gamemode"]}
     locations.update({name: symbols[f"_{name}"][0] for name in
-                      ["wrap_mode", "dblocked", "scroll_y", "scroll_y_subpx"]})
+                      ["wrap_mode", "dblocked", "scroll_x", "scroll_y", "scroll_y_subpx"]})
     locations["relative_y"] = symbols["_currplayer_rely" if "target_layout" in witness else "_currplayer_y"][0]
     assert all(0 <= value < 2044 for value in locations.values())
     scratch = {}
@@ -71,9 +71,14 @@ def run(args):
             else:
                 y += ram[symbols["_temp_room"][0]] * 240
             generic = locations["Generic"]
+            scroll_x = int.from_bytes(bytes(ram[locations["scroll_x"]:locations["scroll_x"] + 4]), "little", signed=True)
+            base_x = scroll_x + ram[generic]
+            probe_offset = ((ram[locations["temp_x"]] - (base_x & 255) + 128) % 256) - 128
             samples.append({"frame": frame, "pc": cpu.PC, "return_address": returned,
                             "centre_probe": death <= returned < death + death_size,
                             "address": address, "metatile": value, "sample_x_low": ram[locations["temp_x"]],
+                            "sample_world_x": base_x + probe_offset, "scroll_x_at_probe": scroll_x,
+                            "relative_probe_offset": probe_offset,
                             "sample_world_y": y, "generic": list(ram[generic:generic + 4]),
                             "player": ram[locations["currplayer"]], "mini": ram[locations["currplayer_mini"]],
                             "mode": ram[locations["gamemode"]], "wrap_mode": ram[locations["wrap_mode"]],

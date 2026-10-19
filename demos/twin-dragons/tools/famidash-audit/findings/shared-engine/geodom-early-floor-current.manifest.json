@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "changes": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/geometricaldominator.tmx",
+      "before_sha256": "6009abbcd8d1843ec64537dbc055558f7c77e2e0c025aba4fecdb13e214ce376",
+      "after_sha256": "89e6bb0264a18d188806ce94a761a643f54f67e61c4cdbfb516200c7866086d1",
+      "edits": [
+        {
+          "column": 137,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 138,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 139,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 98
+        }
+      ]
+    }
+  ],
+  "status": "isolated-source-build-and-negative-replay-verified; broader-playability-review-pending",
+  "evidence": [
+    "Independent original-ROM CPU probes and NES replays confirm robot falls through three missing floor cells beneath the early large saw into closed component265, without an objective or exit.",
+    "Release and current source-only repairs first contact811 and kill814; independent FCEUmm verifies repaired traces and reset40.",
+    "Older release clearing control5788 is mechanically unchanged on the isolated three-cell repair; independent FCEUmm replay verified."
+  ]
+}
