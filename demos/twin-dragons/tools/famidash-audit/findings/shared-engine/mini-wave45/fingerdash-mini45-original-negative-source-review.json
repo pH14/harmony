@@ -1,0 +1,1014 @@
+{
+  "schema": 1,
+  "status": "raw-probe-triage",
+  "source_review_complete": false,
+  "side": "main",
+  "level": 20,
+  "name": "fingerdash",
+  "components": {
+    "362": {
+      "geometry": {
+        "number": 362,
+        "tile": 47,
+        "names": {
+          "CHECKERBOARD_15": 65,
+          "X_NO_OUTLINE": 29
+        },
+        "area": 94,
+        "bbox": [
+          673,
+          18,
+          701,
+          24
+        ],
+        "boundary": {
+          "COL_NONE": 8,
+          "COL_SLOPE_RU45": 29,
+          "COL_SLOPE_LD45": 26,
+          "COL_SLOPE_LU45": 20,
+          "COL_SLOPE_RD45": 22,
+          "COL_SLOPE_LD66_TOP": 1
+        },
+        "non_none_boundary_fraction": 0.9245283018867925,
+        "open_faces": [
+          {
+            "column": 673,
+            "row": 18,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 673,
+            "row": 19,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 673,
+            "row": 20,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 673,
+            "row": 21,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 673,
+            "row": 22,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 701,
+            "row": 22,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 701,
+            "row": 23,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 701,
+            "row": 24,
+            "face": "right",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [
+          {
+            "column": 684,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN"
+          },
+          {
+            "column": 691,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN"
+          },
+          {
+            "column": 699,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN"
+          },
+          {
+            "column": 680,
+            "row": 21,
+            "id": 150,
+            "name": "UNKNOWN"
+          },
+          {
+            "column": 683,
+            "row": 21,
+            "id": 134,
+            "name": "UNKNOWN"
+          },
+          {
+            "column": 694,
+            "row": 21,
+            "id": 150,
+            "name": "UNKNOWN"
+          },
+          {
+            "column": 697,
+            "row": 21,
+            "id": 134,
+            "name": "UNKNOWN"
+          },
+          {
+            "column": 678,
+            "row": 22,
+            "id": 110,
+            "name": "MINI_COIN"
+          },
+          {
+            "column": 701,
+            "row": 22,
+            "id": 24,
+            "name": "MINI_PORTAL"
+          },
+          {
+            "column": 701,
+            "row": 23,
+            "id": 21,
+            "name": "SPEED_10_PORTAL"
+          }
+        ],
+        "entries": [],
+        "nearby_objectives": [
+          {
+            "column": 667,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 6
+          },
+          {
+            "column": 684,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 0
+          },
+          {
+            "column": 691,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 0
+          },
+          {
+            "column": 699,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 0
+          },
+          {
+            "column": 705,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 4
+          },
+          {
+            "column": 678,
+            "row": 22,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 0
+          }
+        ]
+      },
+      "live_entries": [
+        {
+          "frame": 3875,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10770,
+          "sample_world_y": 785,
+          "column": 673,
+          "row": 19
+        },
+        {
+          "frame": 3876,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10773,
+          "sample_world_y": 792,
+          "column": 673,
+          "row": 19
+        },
+        {
+          "frame": 3877,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10776,
+          "sample_world_y": 799,
+          "column": 673,
+          "row": 19
+        },
+        {
+          "frame": 3878,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10780,
+          "sample_world_y": 805,
+          "column": 673,
+          "row": 20
+        },
+        {
+          "frame": 3879,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10783,
+          "sample_world_y": 812,
+          "column": 673,
+          "row": 20
+        },
+        {
+          "frame": 3880,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10787,
+          "sample_world_y": 819,
+          "column": 674,
+          "row": 21
+        },
+        {
+          "frame": 3881,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10790,
+          "sample_world_y": 826,
+          "column": 674,
+          "row": 21
+        },
+        {
+          "frame": 3882,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10794,
+          "sample_world_y": 833,
+          "column": 674,
+          "row": 22
+        },
+        {
+          "frame": 3883,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10797,
+          "sample_world_y": 840,
+          "column": 674,
+          "row": 22
+        },
+        {
+          "frame": 3884,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10801,
+          "sample_world_y": 847,
+          "column": 675,
+          "row": 22
+        },
+        {
+          "frame": 3885,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10804,
+          "sample_world_y": 854,
+          "column": 675,
+          "row": 23
+        },
+        {
+          "frame": 3886,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10807,
+          "sample_world_y": 860,
+          "column": 675,
+          "row": 23
+        },
+        {
+          "frame": 3887,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10811,
+          "sample_world_y": 854,
+          "column": 675,
+          "row": 23
+        },
+        {
+          "frame": 3888,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10814,
+          "sample_world_y": 847,
+          "column": 675,
+          "row": 22
+        },
+        {
+          "frame": 3889,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10818,
+          "sample_world_y": 854,
+          "column": 676,
+          "row": 23
+        },
+        {
+          "frame": 3890,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10821,
+          "sample_world_y": 860,
+          "column": 676,
+          "row": 23
+        },
+        {
+          "frame": 3891,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10825,
+          "sample_world_y": 867,
+          "column": 676,
+          "row": 24
+        },
+        {
+          "frame": 3892,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10828,
+          "sample_world_y": 874,
+          "column": 676,
+          "row": 24
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "480": {
+      "geometry": {
+        "number": 480,
+        "tile": 47,
+        "names": {
+          "CHECKERBOARD_15": 19,
+          "X_NO_OUTLINE": 25,
+          "BLACK_NONE": 37
+        },
+        "area": 81,
+        "bbox": [
+          672,
+          23,
+          700,
+          26
+        ],
+        "boundary": {
+          "COL_SLOPE_RD45": 22,
+          "COL_SLOPE_LD45": 25,
+          "source-edge": 29,
+          "COL_SLOPE_RD66_BOT": 3,
+          "COL_SLOPE_RD66_TOP": 1,
+          "COL_SLOPE_LD66_TOP": 1,
+          "COL_SLOPE_LD66_BOT": 1
+        },
+        "non_none_boundary_fraction": 1.0,
+        "open_faces": [],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": [
+          {
+            "column": 667,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 5
+          },
+          {
+            "column": 684,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 3
+          },
+          {
+            "column": 691,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 3
+          },
+          {
+            "column": 699,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 3
+          },
+          {
+            "column": 705,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 5
+          },
+          {
+            "column": 678,
+            "row": 22,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 1
+          }
+        ]
+      },
+      "live_entries": [
+        {
+          "frame": 3893,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10832,
+          "sample_world_y": 881,
+          "column": 677,
+          "row": 25
+        },
+        {
+          "frame": 3894,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10835,
+          "sample_world_y": 888,
+          "column": 677,
+          "row": 25
+        },
+        {
+          "frame": 3895,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10838,
+          "sample_world_y": 895,
+          "column": 677,
+          "row": 25
+        },
+        {
+          "frame": 3896,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10842,
+          "sample_world_y": 902,
+          "column": 677,
+          "row": 26
+        },
+        {
+          "frame": 3897,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10845,
+          "sample_world_y": 909,
+          "column": 677,
+          "row": 26
+        },
+        {
+          "frame": 3898,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10849,
+          "sample_world_y": 911,
+          "column": 678,
+          "row": 26
+        },
+        {
+          "frame": 3899,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10852,
+          "sample_world_y": 911,
+          "column": 678,
+          "row": 26
+        },
+        {
+          "frame": 3900,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10856,
+          "sample_world_y": 911,
+          "column": 678,
+          "row": 26
+        },
+        {
+          "frame": 3901,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10859,
+          "sample_world_y": 911,
+          "column": 678,
+          "row": 26
+        },
+        {
+          "frame": 3902,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10863,
+          "sample_world_y": 911,
+          "column": 678,
+          "row": 26
+        },
+        {
+          "frame": 3903,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10866,
+          "sample_world_y": 911,
+          "column": 679,
+          "row": 26
+        },
+        {
+          "frame": 3904,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10869,
+          "sample_world_y": 911,
+          "column": 679,
+          "row": 26
+        },
+        {
+          "frame": 3905,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10873,
+          "sample_world_y": 911,
+          "column": 679,
+          "row": 26
+        },
+        {
+          "frame": 3906,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10876,
+          "sample_world_y": 911,
+          "column": 679,
+          "row": 26
+        },
+        {
+          "frame": 3907,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10880,
+          "sample_world_y": 911,
+          "column": 680,
+          "row": 26
+        },
+        {
+          "frame": 3908,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10883,
+          "sample_world_y": 911,
+          "column": 680,
+          "row": 26
+        },
+        {
+          "frame": 3909,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10887,
+          "sample_world_y": 911,
+          "column": 680,
+          "row": 26
+        },
+        {
+          "frame": 3910,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10890,
+          "sample_world_y": 911,
+          "column": 680,
+          "row": 26
+        },
+        {
+          "frame": 3911,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10893,
+          "sample_world_y": 911,
+          "column": 680,
+          "row": 26
+        },
+        {
+          "frame": 3912,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10897,
+          "sample_world_y": 911,
+          "column": 681,
+          "row": 26
+        },
+        {
+          "frame": 3913,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10900,
+          "sample_world_y": 911,
+          "column": 681,
+          "row": 26
+        },
+        {
+          "frame": 3914,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10904,
+          "sample_world_y": 904,
+          "column": 681,
+          "row": 26
+        },
+        {
+          "frame": 3915,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10907,
+          "sample_world_y": 897,
+          "column": 681,
+          "row": 26
+        },
+        {
+          "frame": 3916,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10911,
+          "sample_world_y": 890,
+          "column": 681,
+          "row": 25
+        },
+        {
+          "frame": 3917,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10914,
+          "sample_world_y": 897,
+          "column": 682,
+          "row": 26
+        },
+        {
+          "frame": 3918,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10918,
+          "sample_world_y": 904,
+          "column": 682,
+          "row": 26
+        },
+        {
+          "frame": 3919,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10921,
+          "sample_world_y": 911,
+          "column": 682,
+          "row": 26
+        },
+        {
+          "frame": 3920,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10924,
+          "sample_world_y": 911,
+          "column": 682,
+          "row": 26
+        },
+        {
+          "frame": 3921,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10928,
+          "sample_world_y": 911,
+          "column": 683,
+          "row": 26
+        },
+        {
+          "frame": 3922,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10931,
+          "sample_world_y": 911,
+          "column": 683,
+          "row": 26
+        },
+        {
+          "frame": 3923,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10935,
+          "sample_world_y": 911,
+          "column": 683,
+          "row": 26
+        },
+        {
+          "frame": 3924,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10938,
+          "sample_world_y": 911,
+          "column": 683,
+          "row": 26
+        },
+        {
+          "frame": 3925,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10942,
+          "sample_world_y": 904,
+          "column": 683,
+          "row": 26
+        },
+        {
+          "frame": 3926,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10945,
+          "sample_world_y": 897,
+          "column": 684,
+          "row": 26
+        },
+        {
+          "frame": 3927,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10949,
+          "sample_world_y": 904,
+          "column": 684,
+          "row": 26
+        },
+        {
+          "frame": 3928,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10952,
+          "sample_world_y": 911,
+          "column": 684,
+          "row": 26
+        },
+        {
+          "frame": 3929,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10955,
+          "sample_world_y": 911,
+          "column": 684,
+          "row": 26
+        },
+        {
+          "frame": 3930,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10959,
+          "sample_world_y": 904,
+          "column": 684,
+          "row": 26
+        },
+        {
+          "frame": 3931,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10962,
+          "sample_world_y": 897,
+          "column": 685,
+          "row": 26
+        },
+        {
+          "frame": 3932,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10966,
+          "sample_world_y": 890,
+          "column": 685,
+          "row": 25
+        },
+        {
+          "frame": 3933,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10969,
+          "sample_world_y": 897,
+          "column": 685,
+          "row": 26
+        },
+        {
+          "frame": 3934,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10973,
+          "sample_world_y": 904,
+          "column": 685,
+          "row": 26
+        },
+        {
+          "frame": 3935,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10976,
+          "sample_world_y": 911,
+          "column": 686,
+          "row": 26
+        },
+        {
+          "frame": 3936,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10980,
+          "sample_world_y": 911,
+          "column": 686,
+          "row": 26
+        },
+        {
+          "frame": 3937,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10983,
+          "sample_world_y": 911,
+          "column": 686,
+          "row": 26
+        },
+        {
+          "frame": 3938,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10986,
+          "sample_world_y": 904,
+          "column": 686,
+          "row": 26
+        },
+        {
+          "frame": 3939,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 111,
+          "sample_world_x": 10990,
+          "sample_world_y": 897,
+          "column": 686,
+          "row": 26
+        },
+        {
+          "frame": 3940,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10993,
+          "sample_world_y": 890,
+          "column": 687,
+          "row": 25
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    }
+  },
+  "source_mismatches": [],
+  "outside_source": [],
+  "centre_probes": 91,
+  "limitation": "Raw collision reads and end-of-frame survival only. Mode-specific geometry, source intent, objectives and original-ROM reproduction remain required.",
+  "inputs": {
+    "index_sha256": "937aa27a29b7f4103800df1c47ac0a327da694bbda8c471382fb4e9a0d77cdf8",
+    "case_sha256": "5eb6dc6f142029c5ca52d654db7356e3e33f6a1e9a19b39f5049734ac16ec6cf",
+    "cpu_sha256": "a9e80a73f6a8e1c867fe8ab48535c514464bbf63ce4fb4275115b36c8532850b",
+    "rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+    "core_sha256": "f551d35489077c5e30e14b665c324ed693ae68db0d093e16e84869df003a7a8d",
+    "debug_sha256": "f032abee35cdb54b8e99352beb331dbd96ded40194b020dee2d43d8a630b2062"
+  }
+}

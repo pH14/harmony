@@ -1,0 +1,236 @@
+--- /dev/null
++++ b/SAUCE/functions/mini_wave45.h
+@@ -0,0 +1,112 @@
++CODE_BANK_PUSH("MINI_WAVE45_BANK")
++static signed char m45_dx, m45_dy, m45_ox, m45_oy;
++static unsigned char m45_type;
++
++int m45_signed_product(signed char x, signed char y) {
++    static unsigned char ax, ay;
++    static unsigned int product;
++    ax = x; ay = y;
++    product = (unsigned int)ax * ay;
++    if (x < 0) product -= (unsigned int)ay << 8;
++    if (y < 0) product -= (unsigned int)ax << 8;
++    return (signed short)product;
++}
++
++unsigned char mini45_triangle_hit(void) {
++    static signed char x0, y0, x1, y1, x2, y2;
++    static int limit, endpoint, a, b, c;
++    if (m45_ox > (m45_dx > 0 ? m45_dx : 0) || m45_ox + 32 < (m45_dx < 0 ? m45_dx : 0) ||
++        m45_oy > (m45_dy > 0 ? m45_dy : 0) || m45_oy + 32 < (m45_dy < 0 ? m45_dy : 0)) return 0;
++    x0 = m45_ox; y0 = m45_oy;
++    x1 = m45_ox + 32; y1 = m45_oy + 32;
++    switch (m45_type) {
++        case COL_SLOPE_RD45:
++            limit = m45_ox + m45_oy + 32; endpoint = m45_dx + m45_dy;
++            if (limit > 0 && endpoint < limit) return 0;
++            x0 += 32; x2 = m45_ox; y2 = m45_oy + 32;
++            break;
++        case COL_SLOPE_LD45:
++            limit = m45_oy - m45_ox; endpoint = m45_dy - m45_dx;
++            if (limit > 0 && endpoint < limit) return 0;
++            x2 = m45_ox; y2 = m45_oy + 32;
++            break;
++        case COL_SLOPE_RU45:
++            limit = m45_oy - m45_ox; endpoint = m45_dy - m45_dx;
++            if (limit < 0 && endpoint > limit) return 0;
++            x2 = m45_ox + 32; y2 = m45_oy;
++            break;
++        case COL_SLOPE_LU45:
++            limit = m45_ox + m45_oy + 32; endpoint = m45_dx + m45_dy;
++            if (limit < 0 && endpoint > limit) return 0;
++            y1 = m45_oy; x2 = m45_ox; y2 = m45_oy + 32;
++            break;
++        default: return 0;
++    }
++    a = m45_signed_product(x0, m45_dy);
++    a -= m45_signed_product(y0, m45_dx);
++    if (!a) return 1;
++    b = m45_signed_product(x1, m45_dy);
++    b -= m45_signed_product(y1, m45_dx);
++    if (!b || (a < 0 && b > 0) || (a > 0 && b < 0)) return 1;
++    c = m45_signed_product(x2, m45_dy);
++    c -= m45_signed_product(y2, m45_dx);
++    return !c || (a < 0 && c > 0) || (a > 0 && c < 0);
++}
++
++static signed char m45_motion_x, m45_motion_y, m45_tile_x, m45_tile_y;
++unsigned char m45_valid[2];
++static unsigned char m45_level[2], m45_prev_x[2], m45_prev_collision[2];
++static unsigned int m45_prev_y[2];
++static unsigned char m45_player, m45_x, m45_old_x, m45_saved_collision;
++static unsigned int m45_y, m45_old_y;
++static int m45_full_dy;
++
++void m45_test_tile(void) {
++    if (m45_type != COL_SLOPE_RD45 && m45_type != COL_SLOPE_LD45 &&
++        m45_type != COL_SLOPE_RU45 && m45_type != COL_SLOPE_LU45) return;
++    m45_dx = m45_motion_x * 2; m45_dy = m45_motion_y * 2;
++    m45_ox = m45_tile_x * 2 - 1; m45_oy = m45_tile_y * 2 - 1;
++    if (mini45_triangle_hit()) cube_data[m45_player] |= 1;
++}
++
++void check_mini_wave45(void) {
++    m45_player = currplayer;
++    m45_x = temp_x; m45_y = temp_y; m45_saved_collision = collision;
++    if ((cube_data[m45_player] & 1) || wrap_mode) {
++        m45_valid[m45_player] = 0;
++        return;
++    }
++    m45_old_x = m45_prev_x[m45_player]; m45_old_y = m45_prev_y[m45_player];
++    m45_motion_x = (signed char)(m45_x - m45_old_x);
++    m45_full_dy = m45_y - m45_old_y;
++    if (!m45_valid[m45_player] || m45_level[m45_player] != level ||
++        m45_motion_x < -16 || m45_motion_x > 16 || m45_full_dy < -16 || m45_full_dy > 16) {
++        m45_old_x = m45_x; m45_old_y = m45_y;
++        m45_motion_x = 0; m45_full_dy = 0;
++    }
++    m45_motion_y = m45_full_dy;
++    if (!m45_motion_x && !m45_motion_y) goto remember;
++    if ((m45_x & 240) == (m45_old_x & 240) && (m45_y & 240) == (m45_old_y & 240)) goto remember;
++    m45_type = m45_prev_collision[m45_player];
++    m45_tile_x = -(m45_old_x & 15); m45_tile_y = -(m45_old_y & 15);
++    m45_test_tile();
++    m45_type = m45_saved_collision;
++    m45_tile_x = m45_motion_x - (m45_x & 15); m45_tile_y = m45_motion_y - (m45_y & 15);
++    m45_test_tile();
++    if ((m45_x & 240) != (m45_old_x & 240) && (m45_y & 240) != (m45_old_y & 240)) {
++        temp_x = m45_old_x;
++        bg_collision_sub(); m45_type = collision;
++        m45_tile_x = -(m45_old_x & 15); m45_tile_y = m45_motion_y - (m45_y & 15);
++        m45_test_tile();
++        temp_x = m45_x; temp_y = m45_old_y;
++        bg_collision_sub(); m45_type = collision;
++        m45_tile_x = m45_motion_x - (m45_x & 15); m45_tile_y = -(m45_old_y & 15);
++        m45_test_tile();
++    }
++    temp_x = m45_x; temp_y = m45_y; collision = m45_saved_collision;
++remember:
++    m45_prev_collision[m45_player] = m45_saved_collision;
++    m45_prev_x[m45_player] = m45_x; m45_prev_y[m45_player] = m45_y;
++    m45_level[m45_player] = level; m45_valid[m45_player] = 1;
++}
++CODE_BANK_POP()
+--- a/SAUCE/functions/collision.h
++++ b/SAUCE/functions/collision.h
+@@ -35,6 +35,7 @@
+ 	Implemented in asm
+ */
+ char bg_collision_sub();
++#include "mini_wave45.h"
+ 
+ 
+ /*
+@@ -1066,6 +1067,9 @@
+ //	if(!DEBUG_MODE && cube_data[0] & 0x01) {
+ //		reset_level();
+ //	}
++    if (gamemode == GAMEMODE_WAVE && currplayer_mini) crossPRGBankJump0(check_mini_wave45);
++    else idx8_store(m45_valid, currplayer, 0);
++
+ }
+ 
+ CODE_BANK_POP()
+--- a/SAUCE/functions/sprite_loading.h
++++ b/SAUCE/functions/sprite_loading.h
+@@ -1,3 +1,4 @@
++extern unsigned char m45_valid[2];
+ #pragma data-name(push, "XCD_BANK_00")
+ #pragma rodata-name(push, "XCD_BANK_00")
+ #pragma code-name(push, "XCD_BANK_00")
+@@ -963,6 +964,7 @@
+ 	// - Doubling portals
+ 	spcl_dual_pt:
+ 		if (!activesprites_activated[index]) {
++            if (!dual || (!twoplayer && (player_relx[1] != player_relx[0] || player_rely[1] != currplayer_rely))) m45_valid[1] = 0;
+ 			dual = 1;
+ 			target_scroll_y = (lohi_arr16_load(activesprites_y, index) - PORTAL_TO_TOP_DIFF);
+ 			if (twoplayer) { player_gravity[1] = player_gravity[0] ^ 0xFF;  }
+@@ -978,6 +980,7 @@
+ 	
+ 	spcl_sngl_pt:
+ 		if (!activesprites_activated[index]) {
++            if (!twoplayer && player_rely[0] != currplayer_rely) m45_valid[0] = 0;
+ 			if (!twoplayer) { dual = 0; player_rely[0] = currplayer_rely; player_gravity[0] = currplayer_gravity; player_vel_y[0] = currplayer_vel_y; }
+ 			else { player_gravity[1] = player_gravity[0]; }
+ 			activesprites_activated[index] = 1;
+@@ -994,6 +997,7 @@
+ 			orbed[currplayer] = 1;
+ 			idx8_store(cube_data, currplayer, cube_data[currplayer] & 1);
+ 	spcl_tlpt_pt:
++            if (high_byte(currplayer_rely) != teleport_output) m45_valid[currplayer] = 0;
+ 			high_byte(currplayer_rely) = teleport_output;
+ 		}
+ 		return;
+--- a/SAUCE/functions/reset_level.h
++++ b/SAUCE/functions/reset_level.h
+@@ -58,6 +58,7 @@
+ #endif
+ 
+ void reset_level() {
++    m45_valid[0] = m45_valid[1] = 0;
+ 	nmi_fs_updates_on();
+ 
+ 	#if !__VS_SYSTEM
+--- a/CONFIG/mmc3-album.cfg
++++ b/CONFIG/mmc3-album.cfg
+@@ -105,6 +105,7 @@
+     # You can only put banks from section A into the first memory bank, and banks from section B into the second.
+ 	#unused
+ 	SFX_BANK:      load = ROM_M_00, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_00, type = ro, optional = yes;
+ 
+     LVL_BANK:      load = LVL_MEM,  type = ro, optional = yes, align = $2000;
+     DAT_BANK_00:   load = ROM_M_00, type = ro, optional = yes, align = $2000;
+--- a/CONFIG/mmc3-huge-vs.cfg
++++ b/CONFIG/mmc3-huge-vs.cfg
+@@ -538,6 +538,7 @@
+     DAT_BANK_EF:   load = ROM_M_EF, type = ro, optional = yes, align = $2000;
+ 	
+     SFX_BANK:      load = ROM_M_F0, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_F0, type = ro, optional = yes;
+ 
+     PCM_BANK_B:    load = ROM_M_F1, type = ro, optional = yes;
+     PCM_BANK:      load = ROM_M_F2, type = ro, optional = yes;
+--- a/CONFIG/mmc3-huge.cfg
++++ b/CONFIG/mmc3-huge.cfg
+@@ -538,6 +538,7 @@
+     DAT_BANK_EF:   load = ROM_M_EF, type = ro, optional = yes, align = $2000;
+ 	
+     SFX_BANK:      load = ROM_M_F0, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_F0, type = ro, optional = yes;
+ 
+     PCM_BANK_B:    load = ROM_M_F1, type = ro, optional = yes;
+     PCM_BANK:      load = ROM_M_F2, type = ro, optional = yes;
+--- a/CONFIG/mmc3.cfg
++++ b/CONFIG/mmc3.cfg
+@@ -159,6 +159,7 @@
+     DAT_BANK_33:   load = ROM_M_33, type = ro, optional = yes, align = $2000;
+ 
+     SFX_BANK:      load = ROM_M_34, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_34, type = ro, optional = yes;
+ 
+     PCM_BANK_B:    load = ROM_M_35, type = ro, optional = yes;
+     PCM_BANK:      load = ROM_M_36, type = ro, optional = yes;
+--- a/CONFIG/nsf.cfg
++++ b/CONFIG/nsf.cfg
+@@ -178,6 +178,7 @@
+     #LVL_BANK_2B:   load = ROM_M_2B, type = ro, optional = yes;
+     #LVL_BANK_2C:   load = ROM_M_2C, type = ro, optional = yes;
+     SFX_BANK:      load = ROM_M_2A, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_2A, type = ro, optional = yes;
+     XCD_BANK_04:   load = ROM_M_2B, type = ro, optional = yes;
+     XCD_BANK_03:   load = ROM_M_2C, type = ro, optional = yes;
+     XCD_BANK_02:   load = ROM_M_2D, type = ro, optional = yes;
+--- a/CONFIG/vs-sys.cfg
++++ b/CONFIG/vs-sys.cfg
+@@ -158,6 +158,7 @@
+     DAT_BANK_33:   load = ROM_M_33, type = ro, optional = yes, align = $2000;
+ 
+     SFX_BANK:      load = ROM_M_34, type = ro, optional = yes;
++    MINI_WAVE45_BANK: load = ROM_M_34, type = ro, optional = yes;
+ 
+     PCM_BANK_B:    load = ROM_M_35, type = ro, optional = yes;
+     PCM_BANK:      load = ROM_M_36, type = ro, optional = yes;

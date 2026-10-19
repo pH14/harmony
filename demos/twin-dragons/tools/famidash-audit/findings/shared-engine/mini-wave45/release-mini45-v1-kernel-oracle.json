@@ -1,0 +1,10 @@
+{
+  "status": "verified",
+  "geometry_cases": 47426,
+  "source_point_cases": 1024,
+  "signed_product_cases": 65536,
+  "source_sha256": "246c04be30c09af05f94218894089e3a42d0dc24ff30cb242da667722df9634c",
+  "point_source_sha256": "675aef961ef043e808477b4ab5fd250a9ef987db4906a8206dce46a3a38c6104",
+  "coordinate_convention": "Pixel centres, scaled by two; both origins subtract one half pixel.",
+  "limitation": "Host geometry and actual source-point predicates; NES dispatch, history, banking, timing and route intent require replay checks."
+}

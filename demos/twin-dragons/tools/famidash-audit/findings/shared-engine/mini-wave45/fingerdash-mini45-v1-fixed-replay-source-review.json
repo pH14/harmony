@@ -1,0 +1,497 @@
+{
+  "schema": 1,
+  "status": "raw-probe-triage",
+  "source_review_complete": false,
+  "side": "main",
+  "level": 20,
+  "name": "fingerdash",
+  "components": {
+    "362": {
+      "geometry": {
+        "number": 362,
+        "tile": 47,
+        "names": {
+          "CHECKERBOARD_15": 65,
+          "X_NO_OUTLINE": 29
+        },
+        "area": 94,
+        "bbox": [
+          673,
+          18,
+          701,
+          24
+        ],
+        "boundary": {
+          "COL_NONE": 8,
+          "COL_SLOPE_RU45": 29,
+          "COL_SLOPE_LD45": 26,
+          "COL_SLOPE_LU45": 20,
+          "COL_SLOPE_RD45": 22,
+          "COL_SLOPE_LD66_TOP": 1
+        },
+        "non_none_boundary_fraction": 0.9245283018867925,
+        "open_faces": [
+          {
+            "column": 673,
+            "row": 18,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 673,
+            "row": 19,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 673,
+            "row": 20,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 673,
+            "row": 21,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 673,
+            "row": 22,
+            "face": "left",
+            "neighbor": 0
+          },
+          {
+            "column": 701,
+            "row": 22,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 701,
+            "row": 23,
+            "face": "right",
+            "neighbor": 0
+          },
+          {
+            "column": 701,
+            "row": 24,
+            "face": "right",
+            "neighbor": 0
+          }
+        ],
+        "sprites": [
+          {
+            "column": 684,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN"
+          },
+          {
+            "column": 691,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN"
+          },
+          {
+            "column": 699,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN"
+          },
+          {
+            "column": 680,
+            "row": 21,
+            "id": 150,
+            "name": "UNKNOWN"
+          },
+          {
+            "column": 683,
+            "row": 21,
+            "id": 134,
+            "name": "UNKNOWN"
+          },
+          {
+            "column": 694,
+            "row": 21,
+            "id": 150,
+            "name": "UNKNOWN"
+          },
+          {
+            "column": 697,
+            "row": 21,
+            "id": 134,
+            "name": "UNKNOWN"
+          },
+          {
+            "column": 678,
+            "row": 22,
+            "id": 110,
+            "name": "MINI_COIN"
+          },
+          {
+            "column": 701,
+            "row": 22,
+            "id": 24,
+            "name": "MINI_PORTAL"
+          },
+          {
+            "column": 701,
+            "row": 23,
+            "id": 21,
+            "name": "SPEED_10_PORTAL"
+          }
+        ],
+        "entries": [],
+        "nearby_objectives": [
+          {
+            "column": 667,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 6
+          },
+          {
+            "column": 684,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 0
+          },
+          {
+            "column": 691,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 0
+          },
+          {
+            "column": 699,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 0
+          },
+          {
+            "column": 705,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 4
+          },
+          {
+            "column": 678,
+            "row": 22,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 0
+          }
+        ]
+      },
+      "live_entries": [
+        {
+          "frame": 3875,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10770,
+          "sample_world_y": 785,
+          "column": 673,
+          "row": 19
+        },
+        {
+          "frame": 3876,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10773,
+          "sample_world_y": 792,
+          "column": 673,
+          "row": 19
+        },
+        {
+          "frame": 3877,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10776,
+          "sample_world_y": 799,
+          "column": 673,
+          "row": 19
+        },
+        {
+          "frame": 3878,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10780,
+          "sample_world_y": 805,
+          "column": 673,
+          "row": 20
+        },
+        {
+          "frame": 3879,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10783,
+          "sample_world_y": 812,
+          "column": 673,
+          "row": 20
+        },
+        {
+          "frame": 3880,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10787,
+          "sample_world_y": 819,
+          "column": 674,
+          "row": 21
+        },
+        {
+          "frame": 3881,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10790,
+          "sample_world_y": 826,
+          "column": 674,
+          "row": 21
+        },
+        {
+          "frame": 3882,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10794,
+          "sample_world_y": 833,
+          "column": 674,
+          "row": 22
+        },
+        {
+          "frame": 3883,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10797,
+          "sample_world_y": 840,
+          "column": 674,
+          "row": 22
+        },
+        {
+          "frame": 3884,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10801,
+          "sample_world_y": 847,
+          "column": 675,
+          "row": 22
+        },
+        {
+          "frame": 3885,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10804,
+          "sample_world_y": 854,
+          "column": 675,
+          "row": 23
+        },
+        {
+          "frame": 3886,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10807,
+          "sample_world_y": 860,
+          "column": 675,
+          "row": 23
+        },
+        {
+          "frame": 3887,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10811,
+          "sample_world_y": 854,
+          "column": 675,
+          "row": 23
+        },
+        {
+          "frame": 3888,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 79,
+          "sample_world_x": 10814,
+          "sample_world_y": 847,
+          "column": 675,
+          "row": 22
+        },
+        {
+          "frame": 3889,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10818,
+          "sample_world_y": 854,
+          "column": 676,
+          "row": 23
+        },
+        {
+          "frame": 3890,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10821,
+          "sample_world_y": 860,
+          "column": 676,
+          "row": 23
+        },
+        {
+          "frame": 3891,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10825,
+          "sample_world_y": 867,
+          "column": 676,
+          "row": 24
+        },
+        {
+          "frame": 3892,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10828,
+          "sample_world_y": 874,
+          "column": 676,
+          "row": 24
+        }
+      ],
+      "death_frame_entries": [],
+      "unsupported_state_entries": []
+    },
+    "480": {
+      "geometry": {
+        "number": 480,
+        "tile": 47,
+        "names": {
+          "CHECKERBOARD_15": 19,
+          "X_NO_OUTLINE": 25,
+          "BLACK_NONE": 37
+        },
+        "area": 81,
+        "bbox": [
+          672,
+          23,
+          700,
+          26
+        ],
+        "boundary": {
+          "COL_SLOPE_RD45": 22,
+          "COL_SLOPE_LD45": 25,
+          "source-edge": 29,
+          "COL_SLOPE_RD66_BOT": 3,
+          "COL_SLOPE_RD66_TOP": 1,
+          "COL_SLOPE_LD66_TOP": 1,
+          "COL_SLOPE_LD66_BOT": 1
+        },
+        "non_none_boundary_fraction": 1.0,
+        "open_faces": [],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": [
+          {
+            "column": 667,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 5
+          },
+          {
+            "column": 684,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 3
+          },
+          {
+            "column": 691,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 3
+          },
+          {
+            "column": 699,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 3
+          },
+          {
+            "column": 705,
+            "row": 20,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 5
+          },
+          {
+            "column": 678,
+            "row": 22,
+            "id": 110,
+            "name": "MINI_COIN",
+            "distance_tiles": 1
+          }
+        ]
+      },
+      "live_entries": [],
+      "death_frame_entries": [
+        {
+          "frame": 3893,
+          "player": 0,
+          "mode": 6,
+          "mini": 1,
+          "metatile": 47,
+          "sample_world_x": 10832,
+          "sample_world_y": 881,
+          "column": 677,
+          "row": 25
+        }
+      ],
+      "unsupported_state_entries": []
+    }
+  },
+  "source_mismatches": [],
+  "outside_source": [],
+  "centre_probes": 44,
+  "limitation": "Raw collision reads and end-of-frame survival only. Mode-specific geometry, source intent, objectives and original-ROM reproduction remain required.",
+  "inputs": {
+    "index_sha256": "126546f4a194c38958df91550675c154a2ab905e5d036481142002012e161d00",
+    "case_sha256": "8194ddb7b0ef9ef06234f25720cb701a35c0e989d0ebdd20ddfb4a9e934f2145",
+    "cpu_sha256": "57ff95a0b303ca5f11e85ab320cd9d715b590d0e48ce140cf1955b3be517565d",
+    "rom_sha256": "52caf1b405b3eaad7a97392cbee4dbbb14cf7754c88236a08849f963f7c1f347",
+    "core_sha256": "f551d35489077c5e30e14b665c324ed693ae68db0d093e16e84869df003a7a8d",
+    "debug_sha256": "34ce9d5fcbad0e084d4f9021d3b0174a1fc97b575f1394e272c4e44eda47b40b"
+  }
+}

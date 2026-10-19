@@ -464,6 +464,9 @@ diagonal-intermediate crossing: both endpoint tiles are empty, but the motion
 crosses a solid slope in an intermediate tile. Pixel centres preserve the
 original point masks. These checks cover geometry; ordinary-input NES replays
 must separately establish dispatch, banking, timing and legitimate routes.
+The [isolated mini-wave45 experiment](findings/shared-engine/mini-wave45/README.md)
+retains the original Fingerdash reproduction, unchanged-input repairs in
+three emulators, pristine-source patches and mode-specific clearing checks.
 
 `review-mini-wave45-motion.py INDEX CASE CPU OUTPUT` checks consecutive actual
 centre probes against exact source triangles, including diagonal intermediate

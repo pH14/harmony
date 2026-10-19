@@ -1,0 +1,41 @@
+{
+  "status": "verified",
+  "cases": [
+    {
+      "build": "b-sides",
+      "rom_sha256": "3fdff05e1353647e57e0cd5055bd691465ae3fa5257120d9ae0992e348c89e6d",
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "build": "c-sides",
+      "rom_sha256": "50b4f3daef079667e0dc1be2c3b03553e38effc481e69b80f4e5805843e6f5e6",
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "build": "d-sides",
+      "rom_sha256": "269a0a51abd117c96b9faa75d04ef65d171eb14238a5117d4a86cf6a1390f480",
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "build": "e-sides",
+      "rom_sha256": "4dbadf08645e99d8e1755c113c0161691423071b5494b0ffd31ca81754375fba",
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "build": "huge",
+      "rom_sha256": "d7d9ccb4e27ef9f11d59f6695869b61610c15b1052566a47f8231f34f5e832cb",
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    },
+    {
+      "build": "main",
+      "rom_sha256": "20c197fbee176bdb7c0bac4016a8d599239d22a2f1770fe27480009afe5f593f",
+      "sfx_bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+    }
+  ]
+}

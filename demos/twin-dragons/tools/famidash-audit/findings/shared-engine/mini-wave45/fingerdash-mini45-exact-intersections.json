@@ -1,0 +1,25 @@
+{
+  "coordinate_convention": "Raw probe pixels represented by their centres (+1/2 on both axes).",
+  "intersections": [
+    {
+      "frame": 3893,
+      "column": 676,
+      "row": 25,
+      "kind": "COL_SLOPE_RD45",
+      "old_point": [
+        10828,
+        874
+      ],
+      "new_point": [
+        10832,
+        881
+      ],
+      "pixel_centre_parameter_interval": [
+        "9/11",
+        "7/8"
+      ],
+      "positive_interval": true
+    }
+  ],
+  "limitation": "Exact geometry review of an actual Dissonance tape; not a source-intent verdict."
+}

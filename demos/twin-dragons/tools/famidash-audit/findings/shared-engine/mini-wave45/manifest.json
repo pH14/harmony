@@ -1,0 +1,252 @@
+{
+  "status": "isolated-experiment; integration and full source qualification open",
+  "files": {
+    "current-fingerdash-mini45-v1-huge-mesen-clearing.json.gz": {
+      "sha256": "739de8172d80783fb290304cf320f5c2aa4cf731444cd932dafd57216407d65d",
+      "bytes": 34187
+    },
+    "current-fingerdash-mini45-v1-round99-clearing-cpu.json.gz": {
+      "sha256": "74cb992e90b9ae4c6297d3c175538f8897a14a7c2d6d903a103e7c5e45f84928",
+      "bytes": 750755
+    },
+    "current-fingerdash-mini45-v1-round99-clearing-fceumm.json": {
+      "sha256": "5db98ad97d8fada47b1a7a313119fb2092d2736f11196215663ce38837aca0bf",
+      "bytes": 788
+    },
+    "current-fingerdash-mini45-v1-round99-clearing-motion-review.json": {
+      "sha256": "f52454b30e1c14f194c63d460ae36ca21b9c0c743bdbbbca1bde6f9700460d1b",
+      "bytes": 930
+    },
+    "current-fingerdash-mini45-v1-round99-clearing-retiming.txt": {
+      "sha256": "35c178af3f507c2d7819c750d38652fb704b396449c09ec9e2e0928325ade050",
+      "bytes": 425
+    },
+    "current-fingerdash-mini45-v1-round99-clearing-source-review.json": {
+      "sha256": "cd9e5927c433c42465780e9c50259a48dcb6bd34b1d9de29b37b5b1cbd229bbe",
+      "bytes": 187913
+    },
+    "current-fingerdash-mini45-v1-round99-clearing.json.gz": {
+      "sha256": "5582f7a763f369cb713190c51ecbcfd9259714bb9dd5ee70b004906ebb755268",
+      "bytes": 36700
+    },
+    "current-mini-wave45.patch": {
+      "sha256": "ea3e299316962f1ced9f8c1fd31c10deab5d7bd617b6c8ab7a911cb629b8eed3",
+      "bytes": 9539
+    },
+    "current-mini45-only-v1-all-geometry.json": {
+      "sha256": "afa49cf50d69cd7a43f509f46c5bcceac6112c5535e792361f86fdac1606a326",
+      "bytes": 31806
+    },
+    "current-mini45-only-v1-all-index.json.gz": {
+      "sha256": "2ef9c8c7546dc21fe18f9a79e9459632f26fa6bdff0d2fa44539817e409244fa",
+      "bytes": 1243677
+    },
+    "current-mini45-only-v1-huge-geometry.json": {
+      "sha256": "665df5af37be3261ea287cf7a0d036be309550e1e398cb172249a26730c29d04",
+      "bytes": 32377
+    },
+    "current-mini45-only-v1-huge-index.json.gz": {
+      "sha256": "e9b58e85b414094fc98f4a0e1213c6e82f2f648e4edeb5498e687cb0ba6ffe0a",
+      "bytes": 1275135
+    },
+    "current-mini45-only-v1-index.json.gz": {
+      "sha256": "f0517446e6c4b597aaf8a8f8bf8f1388b85be372af7723d5d0ea2da20b3ddd7b",
+      "bytes": 265475
+    },
+    "current-mini45-only-v1-sfx-preservation.json": {
+      "sha256": "e7beb3578917c4bba361bad38747c1567e5ef91081c394db9e73c4df830f0c75",
+      "bytes": 1472
+    },
+    "current-mini45-v1-kernel-oracle.json": {
+      "sha256": "323421d912e4e35d36f972dee33a7d703ae60ba1fad42c52106202acda8a9afa",
+      "bytes": 543
+    },
+    "current-original-fingerdash-index.json": {
+      "sha256": "13291e2f4bf4d745fbd22dcbcef18520c7e3355a0b335501b9227f91ba4642c5",
+      "bytes": 122670
+    },
+    "current-original-fingerdash-round99-clearing-cpu.json.gz": {
+      "sha256": "4fd5b34822aa327d97842b32f28b14e719d3a28d34cc18bcecef97c7522fd710",
+      "bytes": 749766
+    },
+    "current-original-fingerdash-round99-clearing-fceumm.json": {
+      "sha256": "9257691f213b6b5febbcded35f657144bad2e2e160ab79c45f29373499504b8a",
+      "bytes": 788
+    },
+    "current-original-fingerdash-round99-clearing-motion-review.json": {
+      "sha256": "e3de0f30d330177a45f61567d623548802ce842b635ac1287615bde89b5690b4",
+      "bytes": 930
+    },
+    "current-original-fingerdash-round99-clearing-source-review.json": {
+      "sha256": "3a189d0ce3587282591f46538729c60b05b1faa2d43034f28a018da43ac8754b",
+      "bytes": 187913
+    },
+    "current-original-fingerdash-round99-clearing.json.gz": {
+      "sha256": "7e424b9d60de0eeec4429814868eb6a883439444058be41b4eb92057563a4d8a",
+      "bytes": 36307
+    },
+    "fingerdash-mini45-exact-intersections.json": {
+      "sha256": "ddc0691006ef0b45068382e196a7f5ebff92bca2fd185eae3673c55c4eeb8c4e",
+      "bytes": 557
+    },
+    "fingerdash-mini45-original-fceumm.json": {
+      "sha256": "ef9224145be8c9797b0328c0c9660a6e71740a7b1b510a163df21d92c7527b9a",
+      "bytes": 755
+    },
+    "fingerdash-mini45-original-mesen.json": {
+      "sha256": "17a15768bdd3c85dcd2a9d9843fec567f347202fe99042d4de2077e55a16fcc3",
+      "bytes": 755
+    },
+    "fingerdash-mini45-original-negative-cpu.json.gz": {
+      "sha256": "a9e80a73f6a8e1c867fe8ab48535c514464bbf63ce4fb4275115b36c8532850b",
+      "bytes": 15933
+    },
+    "fingerdash-mini45-original-negative-motion-review.json": {
+      "sha256": "5aecc8e609db5b4fd27d0cbafeacf8d3c1045451c1f85a05dc79d23b85ba5cc6",
+      "bytes": 1323
+    },
+    "fingerdash-mini45-original-negative-source-review.json": {
+      "sha256": "ae894a194f8c97b44069887af5469da62c0859cbfd6743585afe41cebab4dcab",
+      "bytes": 23418
+    },
+    "fingerdash-mini45-original-negative.json.gz": {
+      "sha256": "5eb6dc6f142029c5ca52d654db7356e3e33f6a1e9a19b39f5049734ac16ec6cf",
+      "bytes": 27118
+    },
+    "fingerdash-mini45-v1-fixed-cpu.json.gz": {
+      "sha256": "57ff95a0b303ca5f11e85ab320cd9d715b590d0e48ce140cf1955b3be517565d",
+      "bytes": 8939
+    },
+    "fingerdash-mini45-v1-fixed-fceumm.json": {
+      "sha256": "1892cea562681112163543889b2dbef8fcb0793db3ecb1a12de1d7d3b7a9c578",
+      "bytes": 1074
+    },
+    "fingerdash-mini45-v1-fixed-mesen.json": {
+      "sha256": "aec856ecbc4a94417c8a84c5eedceb532fbcc8f8803bcbc60fbb72c8e2aecdcb",
+      "bytes": 1074
+    },
+    "fingerdash-mini45-v1-fixed-quicknes.txt": {
+      "sha256": "e340482c2d15dfa0c09fda4efb342943670749c4dfb1b11258291ea6dba1a5f8",
+      "bytes": 677
+    },
+    "fingerdash-mini45-v1-fixed-replay-motion-review.json": {
+      "sha256": "205281c9800a6a2842df993e71cdd93053a4aba00de87415683905f230f1e3e3",
+      "bytes": 1330
+    },
+    "fingerdash-mini45-v1-fixed-replay-source-review.json": {
+      "sha256": "22614074199157f6db7837103f4971cf576a891f593c3977a93c75110a406d7c",
+      "bytes": 11625
+    },
+    "fingerdash-mini45-v1-fixed-replay.json.gz": {
+      "sha256": "8194ddb7b0ef9ef06234f25720cb701a35c0e989d0ebdd20ddfb4a9e934f2145",
+      "bytes": 28317
+    },
+    "original-release-fingerdash-toe-index.json": {
+      "sha256": "937aa27a29b7f4103800df1c47ac0a327da694bbda8c471382fb4e9a0d77cdf8",
+      "bytes": 328859
+    },
+    "release-fingerdash-mini45-v1-round98-clearing-cpu.json.gz": {
+      "sha256": "1ac2994afa9529bf37d16ea9f7f31be7e1037887c7a2e1bbe7aab7376a96a29e",
+      "bytes": 755945
+    },
+    "release-fingerdash-mini45-v1-round98-clearing-fceumm.json": {
+      "sha256": "f0bc88b29a5596663519694e1ea361fb5bc422a2144acdea4de817c370e3b037",
+      "bytes": 758
+    },
+    "release-fingerdash-mini45-v1-round98-clearing-motion-review.json": {
+      "sha256": "50c628bd3e299a02b72b2274dc434fc20311642394d402388a0e842c7ce64cb5",
+      "bytes": 930
+    },
+    "release-fingerdash-mini45-v1-round98-clearing-source-review.json": {
+      "sha256": "6a992757d88af3488318f4e4365af66683f5435b417be980788839041451700e",
+      "bytes": 202665
+    },
+    "release-fingerdash-mini45-v1-round98-clearing.json.gz": {
+      "sha256": "c108d83a09d2a1ad293727c77269ffce60ba80ae008dc7d65176bb49874ffe41",
+      "bytes": 35337
+    },
+    "release-mini-wave45.patch": {
+      "sha256": "1c034c6a219a3ae7c7345fe16f4d0eeed4c53e7c463669e65f9ad8521cab33e6",
+      "bytes": 10339
+    },
+    "release-mini45-only-v1-all-geometry.json": {
+      "sha256": "46a672ac8b92a18ffb62c6b9dd6b93b63bb33a42e89b36ba9ac9ae35d7bdd69b",
+      "bytes": 20585
+    },
+    "release-mini45-only-v1-all-index.json.gz": {
+      "sha256": "930d4a94ea6caa0447aeaac8dbc13fc7dfcf8bfd5a711c2d18adf6855887f4c6",
+      "bytes": 811451
+    },
+    "release-mini45-only-v1-index.json.gz": {
+      "sha256": "05f3577edf0f887d7d51f0d6216d4d7b8777c717191f1d696865a80224790376",
+      "bytes": 269463
+    },
+    "release-mini45-only-v1-sfx-preservation.json": {
+      "sha256": "c4b866e52cce7b227c7b02d811d48b0a9476c3c72cc848d98646efbfdaf14a1f",
+      "bytes": 997
+    },
+    "release-mini45-v1-kernel-oracle.json": {
+      "sha256": "b22e06fd19ea9676811a0cd027922782c197dbcef9a8b91b730bd53ecefba88a",
+      "bytes": 543
+    },
+    "retime-fingerdash-mini45-v1-huge-positive.py": {
+      "sha256": "0fdb068644bd8d7c5db3fe62094046feb380f277574c16200de6c057f6682c6b",
+      "bytes": 3213
+    }
+  },
+  "compressed_indexes": {
+    "release-mini45-only-v1-index.json.gz": {
+      "uncompressed_sha256": "126546f4a194c38958df91550675c154a2ab905e5d036481142002012e161d00",
+      "uncompressed_bytes": 5517047
+    },
+    "current-mini45-only-v1-index.json.gz": {
+      "uncompressed_sha256": "ae7a043d5af028b10c454079f8df339f573ccd6b71cc4daad87cdf0c7fd780eb",
+      "uncompressed_bytes": 5524938
+    },
+    "release-mini45-only-v1-all-index.json.gz": {
+      "uncompressed_sha256": "d41c339a40f9841c02822024e9ceeef15274da88f79b398dc1284d4dc23c74cd",
+      "uncompressed_bytes": 16544802
+    },
+    "current-mini45-only-v1-all-index.json.gz": {
+      "uncompressed_sha256": "85614a580c5e3862c780809f001b9ba598a8acb6c11f263b3ab52526c1440bdf",
+      "uncompressed_bytes": 25088692
+    },
+    "current-mini45-only-v1-huge-index.json.gz": {
+      "uncompressed_sha256": "a7b35f963204641474b4a687472faed662e2d8641eb5a04a5661f5ae2ebd4c95",
+      "uncompressed_bytes": 25377653
+    }
+  },
+  "release": {
+    "base_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+    "changed_files": [
+      "SAUCE/functions/mini_wave45.h",
+      "SAUCE/functions/collision.h",
+      "SAUCE/functions/sprite_loading.h",
+      "SAUCE/functions/reset_level.h",
+      "CONFIG/mmc3-album.cfg",
+      "CONFIG/mmc3-big.cfg",
+      "CONFIG/mmc3-huge-vs.cfg",
+      "CONFIG/mmc3-huge.cfg",
+      "CONFIG/mmc3.cfg",
+      "CONFIG/nsf.cfg",
+      "CONFIG/vs-sys.cfg"
+    ],
+    "level_data_changes": 0
+  },
+  "current": {
+    "base_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+    "changed_files": [
+      "SAUCE/functions/mini_wave45.h",
+      "SAUCE/functions/collision.h",
+      "SAUCE/functions/sprite_loading.h",
+      "SAUCE/functions/reset_level.h",
+      "CONFIG/mmc3-album.cfg",
+      "CONFIG/mmc3-huge-vs.cfg",
+      "CONFIG/mmc3-huge.cfg",
+      "CONFIG/mmc3.cfg",
+      "CONFIG/nsf.cfg",
+      "CONFIG/vs-sys.cfg"
+    ],
+    "level_data_changes": 0
+  }
+}

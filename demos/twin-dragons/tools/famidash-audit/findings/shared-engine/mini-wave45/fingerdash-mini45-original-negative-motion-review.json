@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "status": "motion-triage",
+  "motions": 90,
+  "intersections": [
+    {
+      "frame": 3893,
+      "player": 0,
+      "column": 676,
+      "row": 25,
+      "metatile": 144,
+      "collision": "COL_SLOPE_RD45",
+      "old_point": [
+        10828,
+        874
+      ],
+      "new_point": [
+        10832,
+        881
+      ],
+      "parameter_interval": [
+        "9/11",
+        "7/8"
+      ],
+      "positive_interval": true,
+      "category": "live"
+    }
+  ],
+  "source_mismatches": [],
+  "coordinate_convention": "Raw probe pixels represented by their centres (+1/2 on both axes).",
+  "limitation": "Geometric leads, not intent verdicts. Mode/size changes and motions over 16 pixels are excluded; teleport, reset and history validity require separate review.",
+  "inputs": {
+    "index_sha256": "937aa27a29b7f4103800df1c47ac0a327da694bbda8c471382fb4e9a0d77cdf8",
+    "case_sha256": "5eb6dc6f142029c5ca52d654db7356e3e33f6a1e9a19b39f5049734ac16ec6cf",
+    "cpu_sha256": "a9e80a73f6a8e1c867fe8ab48535c514464bbf63ce4fb4275115b36c8532850b",
+    "rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+    "core_sha256": "f551d35489077c5e30e14b665c324ed693ae68db0d093e16e84869df003a7a8d",
+    "debug_sha256": "f032abee35cdb54b8e99352beb331dbd96ded40194b020dee2d43d8a630b2062"
+  }
+}
