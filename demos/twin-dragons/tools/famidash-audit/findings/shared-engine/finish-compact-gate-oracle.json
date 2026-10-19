@@ -1,0 +1,6 @@
+{
+  "status": "assembled-gate-matches-finish-and-animated-coin-contract",
+  "cases": 12288,
+  "rom_sha256": "bc27318cc00f1cba2061f6e399422ad13bfd9b902251c56a1484f7b0191eb36a",
+  "debug_sha256": "c2785867cecedcd25f6e98835fe11ff5847324417f26e3a7949a0a7136bb1094"
+}

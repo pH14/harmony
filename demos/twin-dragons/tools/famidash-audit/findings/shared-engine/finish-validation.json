@@ -1,0 +1,37 @@
+{
+  "status": "experimental-validation-in-progress",
+  "clean_rounds": 0,
+  "release_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "current_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "mesen_revision": "0102910c39ad1a62bc3f784466f3f67ca9eae335",
+  "mesen_core_sha256": "e51067979fefce1310303ed39971a8b90e2db03fdb97728a5c8c41932623953f",
+  "controls": {
+    "retained_release_inputs": 193,
+    "unchanged": 191,
+    "timing_differences": {
+      "main:24": "still clears",
+      "d:3": "old input dies; fresh input clears in both cores with48 differing frames"
+    }
+  },
+  "finish": {
+    "original_hi": "8145frames exact independent failure proof; isolated repair completes6839 QuickNES unchanged approach; FCEUmm isolated-repair input diverges1248 and dies1323",
+    "combined_hi": "both cores and Mesen complete6843 with unchanged approach"
+  },
+  "huge": {
+    "levels_geometry_verified": 173,
+    "tiles": 5640443,
+    "fofii_level": 59,
+    "clearing_frames": 3764,
+    "coin_mask": 5,
+    "standard_mechanical_difference_frames_excluding_level": [
+      1
+    ],
+    "motion_oracle_cases": 1245640,
+    "checked_dispatch_arguments": 155002,
+    "limitations": [
+      "Arithmetic oracle checks dispatch arguments and kernels, not mapper implementation.",
+      "QuickNES and FCEUmm cannot correctly execute the upstream HUGE ROM; Mesen is required.",
+      "No full173-level Dissonance search; broad campaign scope remains109 installed levels."
+    ]
+  }
+}

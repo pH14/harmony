@@ -1,0 +1,8 @@
+{
+  "status": "assembled-vertical-motion-matches-unbounded-oracle",
+  "cases": 1245640,
+  "bank_dispatches_checked": 155002,
+  "mapper_dispatch": "address and bank arguments checked; mapper implementation not interpreted",
+  "rom_sha256": "b79b34dcfe01e0097fd809e9b7acde73d48c68aaa2aa34f90168750662a2d811",
+  "debug_sha256": "f51a71d441ee98e431ed64a4716e84d081dbcf60f3b09135a99bdb661677f375"
+}

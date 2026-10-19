@@ -19,17 +19,31 @@ def run(rom, debug):
     aliases = {"currplayer_y": "currplayer_rely", "currplayer_x": "currplayer_relx"}
     address = lambda name: int(symbols["_" + (name if "_" + name in symbols else aliases.get(name, name))]["val"], 0)
     memory = bytearray(65536)
+    banked = {}
     for name in ("add_velocity_y_checked", "subtract_velocity_y_checked", "correct_y_from_a",
-                 "checked_y_error", "enforce_checked_y_fault"):
+                 "checked_y_error", "enforce_checked_y_fault", "checked_y_error_banked", "enforce_checked_y_fault_banked"):
+        if "_" + name not in symbols:
+            continue
         symbol = symbols["_" + name]
         segment = segments[int(symbol["seg"])]
         start, size = address(name), int(symbol["size"])
         offset = int(segment["ooffs"], 0) + start - int(segment["start"], 0)
         memory[start:start + size] = data[offset:offset + size]
+        if name.endswith("_banked"):
+            banked[start] = int(segment["bank"], 0)
+
+    dispatches = 0
+    dispatcher = int(symbols["crossPRGBankJump"]["val"], 0) if banked else None
 
     def execute(name, a=0, carry=0):
+        nonlocal dispatches
         pc, x, y, zero, negative = address(name), 0, 0, False, False
         for _ in range(100):
+            if pc == dispatcher:
+                target = a | x << 8
+                assert banked.get(target) == y, "generated dispatcher must select the correct arithmetic kernel and bank"
+                pc = target
+                dispatches += 1
             op = memory[pc]
             pc += 1
             if op == 0x60:
@@ -135,6 +149,8 @@ def run(rom, debug):
                 assert (memory[fault], memory[cube], memory[cube + 1]) == (int(active), 0xa4 | int(active and player == 0), 0x52 | int(active and player == 1))
                 cases += 1
     return {"status": "assembled-vertical-motion-matches-unbounded-oracle", "cases": cases,
+            "bank_dispatches_checked": dispatches,
+            "mapper_dispatch": "address and bank arguments checked; mapper implementation not interpreted" if banked else "not used",
             "rom_sha256": hashlib.sha256(data).hexdigest(), "debug_sha256": hashlib.sha256(debug.read_bytes()).hexdigest()}
 
 

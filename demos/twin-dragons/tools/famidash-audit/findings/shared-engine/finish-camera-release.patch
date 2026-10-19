@@ -1,0 +1,24 @@
+--- a/LIB/asm/nesdash.s
++++ b/LIB/asm/nesdash.s
+@@ -2226,14 +2226,16 @@
+         lda #1
+         bne write_active ; unconditional
+ 	sprite_offscreen:
++		ldy _activesprites_type, x
++		cpy #$0f
++		beq finish
+ 		lda _animating
+ 		beq sprite_offscreen2
+-		lda _activesprites_type, x
+-		cmp #$07
++		cpy #$07
+ 		beq finish
+-		cmp #$1A
+-		beq finish
+-		cmp #$1B
++		tya
++		eor #$1A
++		lsr
+ 		beq finish
+ 	sprite_offscreen2:
+         lda #0

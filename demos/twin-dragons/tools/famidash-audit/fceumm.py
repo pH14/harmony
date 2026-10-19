@@ -34,9 +34,7 @@ class Fceumm:
             "input_state": input_type(lambda port, device, index, button:
                                       (self.buttons >> mapping.get(button, 16)) & 1 if port == 0 else 0),
         }
-        for name, callback in self.callbacks.items():
-            getattr(self.lib, "retro_set_" + name)(callback)
-        self.lib.retro_init()
+        self.initialize_core()
 
         class Game(C.Structure):
             _fields_ = [("path", C.c_char_p), ("data", C.c_void_p),
@@ -61,6 +59,11 @@ class Fceumm:
         self.lib.retro_unserialize.restype = C.c_bool
         self.power_on = C.create_string_buffer(self.state_size)
         assert self.lib.retro_serialize(self.power_on, self.state_size), "cannot retain cold power-on state"
+
+    def initialize_core(self):
+        for name, callback in self.callbacks.items():
+            getattr(self.lib, "retro_set_" + name)(callback)
+        self.lib.retro_init()
 
     @staticmethod
     def environment(command, data):
@@ -162,9 +165,11 @@ class SymbolFceumm(Fceumm):
                 "paused": r[a["pauseStatus"]], "wrap": r[a["wrap_mode"]], "coins": r[a["coins"]]}
 
 
-def verify(core, witness, fixed, intro_frames=0):
+def verify(core, witness, fixed, intro_frames=0, finish_fixed=False):
+    assert not (fixed and finish_fixed), "choose death or completion repair validation"
     if witness.get("engine") == "dissonance-campaign":
-        return verify_campaign(core, witness, fixed, intro_frames)
+        return verify_campaign(core, witness, fixed, intro_frames, finish_fixed)
+    assert not finish_fixed, "completion repairs require a campaign witness"
     layout = witness["layout"]
     trace = core.replay(layout["side"], layout["level"], witness["actions"])
     if fixed:
@@ -195,13 +200,14 @@ def verify(core, witness, fixed, intro_frames=0):
             "rom_sha256": hashlib.sha256(core.rom).hexdigest()}
 
 
-def verify_campaign(core, witness, fixed, intro_frames):
-    if fixed:
+def verify_campaign(core, witness, fixed, intro_frames, finish_fixed=False):
+    repaired = fixed or finish_fixed
+    if repaired:
         assert isinstance(witness.get("first_suspect_frame"), int), "--fixed requires a reviewed failing witness"
     if "fceumm_startup_released_frames" in witness["options"]:
         core.startup_frames = witness["options"]["fceumm_startup_released_frames"]
         assert isinstance(core.startup_frames, int) and 0 < core.startup_frames <= 3600
-    if not fixed:
+    if not repaired:
         assert hashlib.sha256(core.rom).hexdigest() == witness["rom_sha256"]
     core.boot(witness["options"]["side"], witness["boot_level"], witness["options"].get("menu_delay", 0))
     trace = []
@@ -213,16 +219,25 @@ def verify_campaign(core, witness, fixed, intro_frames):
             trace.append(state)
             if fixed and state["dead"]:
                 break
-        if fixed and trace[-1]["dead"]:
+            if finish_fixed and state["state"] == 3:
+                break
+        if (fixed and trace[-1]["dead"]) or (finish_fixed and trace[-1]["state"] == 3):
             break
     differences = []
     for frame, (actual, expected) in enumerate(zip(trace, witness["trace"]), 1):
-        if fixed and frame == len(trace):
+        if repaired and frame == len(trace):
             break
         if actual != expected:
             differences.append(frame)
             assert frame <= intro_frames, f"independent campaign replay differs at frame {frame}"
-    if fixed:
+    if finish_fixed:
+        assert trace[-1]["state"] == 3, "patched input must complete"
+        expected = witness["trace"][len(trace) - 1]
+        assert {**trace[-1], "state": expected["state"]} == expected, "completion must preserve mechanical state"
+        assert abs(len(trace) - witness["first_suspect_frame"]) <= 16, "completion must occur at the reviewed finish trigger"
+        assert len(witness["trace"]) >= len(trace) + 120, "original input must demonstrate sustained failure to finish"
+        assert not any(state["state"] == 3 for state in witness["trace"]), "original input already completes"
+    elif fixed:
         assert trace[-1]["dead"], "patched input must die"
         assert len(trace) > witness["first_suspect_frame"] - 64, "patched input died before the reported region"
         assert len(trace) <= witness["first_suspect_frame"] + 16, "patched input did not die at the reported region"
@@ -250,7 +265,8 @@ def verify_campaign(core, witness, fixed, intro_frames):
         expected_hash = witness["control_after_intro_sha256"] if intro_frames else witness["control_sha256"]
         assert trace_hash(control[intro_frames:]) == expected_hash, "clearing control changed"
         control_status = "verified"
-    return {"schema": 1, "status": "patched-campaign-replay-verified" if fixed else "independent-campaign-replay-verified",
+    status = "patched-campaign-completion-verified" if finish_fixed else "patched-campaign-replay-verified" if fixed else "independent-campaign-replay-verified"
+    return {"schema": 1, "status": status,
             "frames": len(trace), "endpoint": trace[-1], "reset_confirmation": reset_confirmation, "comparison_start_frame": intro_frames + 1,
             "intro_difference_frames": differences, "clearing_control": control_status,
             "rom_sha256": hashlib.sha256(core.rom).hexdigest()}
@@ -261,15 +277,22 @@ if __name__ == "__main__":
     parser.add_argument("case", type=Path)
     parser.add_argument("core", type=Path)
     parser.add_argument("rom", type=Path)
-    parser.add_argument("--fixed", action="store_true")
+    parser.add_argument("--driver", choices=("fceumm", "mesen"), default="fceumm")
+    repair = parser.add_mutually_exclusive_group()
+    repair.add_argument("--fixed", action="store_true")
+    repair.add_argument("--finish-fixed", action="store_true")
     parser.add_argument("--intro-frames", type=int, choices=(0, 40), default=0,
                         help="explicitly exclude the entry animation when emulator rounding differs")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     case_bytes = args.case.read_bytes()
     witness = json.loads(gzip.decompress(case_bytes) if args.case.suffix == ".gz" else case_bytes)
-    core = SymbolFceumm(args.core, args.rom, witness["target_layout"]) if "target_layout" in witness else Fceumm(args.core, args.rom)
-    result = verify(core, witness, args.fixed, args.intro_frames)
+    plain, symbolic = Fceumm, SymbolFceumm
+    if args.driver == "mesen":
+        from mesen import Mesen, SymbolMesen
+        plain, symbolic = Mesen, SymbolMesen
+    core = symbolic(args.core, args.rom, witness["target_layout"]) if "target_layout" in witness else plain(args.core, args.rom)
+    result = verify(core, witness, args.fixed, args.intro_frames, args.finish_fixed)
     result["core_sha256"] = hashlib.sha256(args.core.read_bytes()).hexdigest()
     result["case_sha256"] = hashlib.sha256(args.case.read_bytes()).hexdigest()
     if args.output:

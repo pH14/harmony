@@ -19,7 +19,8 @@ class RomGeometryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "main").mkdir()
-            rom = bytearray(16 + 8192)
+            rom = bytearray(16 + 16384)
+            rom[:5] = b"NES\x1a\x01"
             rom[16:22] = bytes([0, 0xa1, 0, 0, 0xa2, 0])
             rom[272 + 17] = 1
             first = bytes([1, 1, 0x82, 127, 127, 0])

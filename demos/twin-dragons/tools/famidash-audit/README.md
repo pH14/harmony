@@ -302,3 +302,33 @@ recorded evidence, not tests that run automatically without the game assets.
 The retained geometry and source patches derive from Famidash by TFDSoft,
 Copyright 2023–2024 TFDSoft, under the [MIT license](LICENSE-FAMIDASH.txt).
 The audit tooling itself is AGPL-3.0-or-later.
+
+`--finish-fixed` validates a completion repair instead of a death repair. It
+requires an ordinary-input campaign witness whose original trace survives
+past the reviewed missed trigger. The repaired replay must preserve the
+mechanical approach and change the final game state to completion near that
+trigger. It is mutually exclusive with `--fixed`.
+`check-finish-gate.py ROM DBG OUTPUT` executes the actual assembled offscreen
+sprite gate for all 256 types, 16 slots, and three animation states. It checks
+that the end trigger stays active vertically and preserves animated coins.
+
+The current HUGE ROM exceeds QuickNES's supported PRG size; FCEUmm also maps
+its fixed bank incorrectly, including on an unmodified upstream build.
+Use a Mesen libretro core with `fceumm.py --driver mesen` for independent
+verification. `mesen.py` installs callbacks in Mesen's required order and
+provides isolated temporary system/save directories. The pinned Mesen revision
+and core hash are recorded with the findings.
+
+`replay-control.py CASE CORE ROM OUTPUT --driver mesen --symbols DBG --level N
+--side main` replays an existing ordinary input on another build, retaining
+actual outcomes and every differing mechanical frame. Omit `--symbols` for
+release witnesses. This tool records a positive control only when it actually
+clears; it neither discovers inputs nor claims strict trace identity. Its
+comparison excludes the level ID to support moves between standard and HUGE
+sets. Failed attempts are retained as rejected controls.
+
+`verify-geometry.py` reads the PRG bank count from the iNES/NES 2.0 header,
+so the same compiled-geometry check supports standard and HUGE layouts.
+`check-vertical-motion.py` also checks generated bank-dispatch arguments and
+executes the selected arithmetic kernels. It does not emulate the mapper;
+independent NES execution remains necessary.

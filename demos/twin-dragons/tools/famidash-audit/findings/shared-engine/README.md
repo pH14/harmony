@@ -402,3 +402,45 @@ trace survives 4,914 frames. This data-only proof is distinct from the older
 current `geodom-saw` input, which actually entered through a neighboring pit
 base and could be repaired by the generic base guard. General coin-route
 coverage remains pending before upstream submission.
+
+The finish trigger has a generic viewport bug. In Hi, the end sprite is at
+world Y 544 while the lower route puts the camera at Y 719. The sprite enters
+the horizontal window at frame 6,837 but remains inactive because of vertical
+culling. An original-ROM input survives another 1,200 released frames beyond
+the course; QuickNES and FCEUmm match all 8,145 frames.
+
+`finish-camera-release.patch` and `finish-camera-current.patch` preserve the
+horizontal gate but activate end triggers regardless of camera height. The
+compact gate also preserves the three animated-coin types, verified against
+12,288 cases executed from the assembled ROM. On a combined repair prototype,
+all three cores (QuickNES, FCEUmm, Mesen) complete at frame 6,843 with the
+approach unchanged. On an isolated original-release repair, QuickNES completes
+at frame 6,839 with an unchanged approach; FCEUmm incurs an earlier lag at
+frame 1,248 and that input dies at 1,323. That isolated attempt is retained as
+a rejected independent control, not as a strict paired fix proof.
+
+Across 193 retained release inputs, 191 are mechanically unchanged by the
+compact finish gate. Main 24 still clears with timing differences. The old
+Windy Landscape clearing input dies; a fresh Dissonance input clears in both
+cores at frame 5,047, with 48 differing mechanical frames. Both that input and
+the actual independent trace are retained. This resolves the clearing-control
+gap without claiming an exact trace match.
+
+`experimental-current-huge-layout.patch` applies after the current history
+patch. It puts the new collision kernels in the existing collision/sound bank
+for HUGE and keeps rare arithmetic error handlers there behind checked bank
+dispatches. Standard builds retain their layout. All four standard sets and
+HUGE link. All 173 HUGE levels (5,640,443 tiles), collision classes and base
+metadata match source. The assembled arithmetic oracle passes 1,245,640 cases,
+including 155,002 checked dispatch arguments; it does not model the mapper.
+The repaired HUGE Fofii control clears in Mesen at frame 3,764 with coin mask
+5. Its mechanics match the standard control after entry frame 1, excluding
+the changed level ID (59 in HUGE). This is an ordinary-input control, not a
+173-level Dissonance search.
+
+The current experimental engine patch sequence is the current history patch,
+HUGE layout patch, then current finish patch. The Fofii, TOE stair and Geodom
+TMX changes are separate data proposals requiring exports for A/B/HUGE as
+applicable. This package remains under validation. The 109-level compact-finish
+sweep is in progress, source dispositions remain incomplete, and the required
+three-consecutive-clean-round count is zero. No production ROM is replaced.

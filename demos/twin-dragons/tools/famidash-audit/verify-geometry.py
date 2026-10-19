@@ -80,13 +80,20 @@ def compare(index, roms, builds):
                     assert actual_bases == expected_bases, "ROM spike-base metadata differs from source index"
                     result["collision_tables"][side]["base_metadata_sha256"] = hashlib.sha256(actual_bases).hexdigest()
         rom, symbols = machines[side]
+        assert rom[:4] == b"NES\x1a", "expected an iNES ROM"
+        prg_units = rom[4]
+        if rom[7] & 12 == 8:
+            assert rom[9] & 15 != 15, "exponent-encoded PRG sizes are unsupported"
+            prg_units |= (rom[9] & 15) << 8
+        prg_banks = prg_units * 2
+        assert 16 + prg_banks * 8192 <= len(rom), "truncated PRG ROM"
 
         def pointer(prefix, number):
             low = rom[symbols[prefix + "_lo"] + number]
             high = rom[symbols[prefix + "_hi"] + number]
             bank = rom[symbols[prefix + "_bank"] + number]
             address = low + high * 256
-            assert 0xa000 <= address < 0xc000 and bank < 64, "invalid level pointer"
+            assert 0xa000 <= address < 0xc000 and bank < prg_banks, "invalid level pointer"
             return 16 + bank * 8192 + address - 0xa000
 
         header = pointer("_level_list", layout["level"])
