@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "status": "integration-experiment; source intent and broad-round qualification incomplete",
+  "base_prototype": "famidash-current-combined-ceiling-kappa-v2-source",
+  "base_upstream_pin": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "scope": "Engine headers only. Requires matching combined prototype; not a pristine upstream patch. Data proposals are retained separately.",
+  "changes": [
+    {
+      "path": "SAUCE/functions/pit_crossing.h",
+      "before_sha256": "0b81e843c75f535765c3742c0f0627e85b421a284fddefd12fe742378742b4bd",
+      "after_sha256": "ade194e8b6cd486ca0d745b77347c65e80a1f42adeb62bb4a8f46b6b172c5c45"
+    },
+    {
+      "path": "SAUCE/functions/spike_sweep.h",
+      "before_sha256": "3735525ef01eab2fa6aa2143086c3fe4e9c7b0ed389f882fab480618a6a1e341",
+      "after_sha256": "f052ee4e402b7c471fe0157bc7c1af4fda5a89ab43084922ce96d7d3f8e2f614"
+    },
+    {
+      "path": "SAUCE/functions/mini_wave66.h",
+      "before_sha256": "2eeb96111fde1fc1f1636647d4fccaf787e463076fa49694744eeb1882567110",
+      "after_sha256": "200b0cf3048fc423faf4a1717f818a5f05ec19f2a0c0036df7e2d6a60f2e02b1"
+    }
+  ],
+  "patch_sha256": "08bc02856b9933cea9c64c8bf58d83f1e28fe9122aa12e11888f731f5275733a",
+  "normal_wave_negative_scope": "Release original and combined builds; a new current-native normal66 negative is not yet reproduced."
+}

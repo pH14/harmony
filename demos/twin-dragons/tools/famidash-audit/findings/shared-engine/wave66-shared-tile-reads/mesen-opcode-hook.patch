@@ -1,0 +1,28 @@
+--- a/Core/CPU.cpp
++++ b/Core/CPU.cpp
+@@ -8,6 +8,15 @@
+ #include "MemoryManager.h"
+ #include "ControlManager.h"
+ #include "Console.h"
++#include "BaseMapper.h"
++#ifndef DUMMYCPU
++using FamidashOpcodeCallback = void (*)(uint16_t, int32_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t);
++static FamidashOpcodeCallback famidashOpcodeCallback = nullptr;
++extern "C" __attribute__((visibility("default"))) void retro_famidash_set_opcode_callback(FamidashOpcodeCallback callback)
++{
++    famidashOpcodeCallback = callback;
++}
++#endif
+ 
+ CPU::CPU(shared_ptr<Console> console)
+ {
+@@ -241,6 +250,9 @@
+ 	StartCpuCycle(true);
+ 	uint8_t value = _memoryManager->Read(addr, operationType);
+ 	EndCpuCycle(true);
++    if(famidashOpcodeCallback && operationType == MemoryOperationType::ExecOpCode) {
++        famidashOpcodeCallback(addr, _console->GetMapper()->ToAbsoluteAddress(addr), value, _state.A, _state.X, _state.Y, _state.PS, _state.SP);
++    }
+ 	return value;
+ #endif
+ }

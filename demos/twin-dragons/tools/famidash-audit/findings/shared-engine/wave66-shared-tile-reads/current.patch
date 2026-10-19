@@ -1,0 +1,108 @@
+--- a/SAUCE/functions/pit_crossing.h
++++ b/SAUCE/functions/pit_crossing.h
+@@ -16,13 +16,16 @@
+ CODE_BANK_PUSH(COLLISION_HISTORY_BANK)
+ 
+ void check_pit_crossing(void) {
+-    __asm__("ldx %v\n lda %v\n ora %v,x\n beq %g", currplayer, collision, pit_previous_collision, empty);
++    __asm__("ldx %v\n lda %v\n ora %v,x\n beq %g", currplayer, collision, pit_previous_collision, wave66_query_done);
+     __asm__("ldy %v\n lda %v,y\n bne %g\n ldy %v,x\n lda %v,y\n bne %g", collision, ss_shapes, query, pit_previous_collision, ss_shapes, query);
+-empty:
+-    __asm__("lda %v\n beq %g\n lda %v\n cmp #%b\n bne %g", currplayer_mini, mini_query_done, gamemode, GAMEMODE_WAVE, mini_query_done);
++    __asm__("lda %v\n cmp #%b\n bne %g", gamemode, GAMEMODE_WAVE, wave66_query_done);
++    __asm__("ldy %v\n cpy #32\n bcs %g\n lda %v,y\n bne %g", collision, wave66_previous, ss_wave66, wave66_boundary);
++wave66_previous:
++    __asm__("ldy %v,x\n cpy #32\n bcs %g\n lda %v,y\n beq %g", pit_previous_collision, wave66_query_done, ss_wave66, wave66_query_done);
++wave66_boundary:
+     __asm__("lda %v\n eor %v,x\n and #$f0\n bne %g", temp_x, pit_previous_x, query);
+     __asm__("lda %v\n eor %v,x\n and #$f0\n bne %g", temp_y, pit_previous_y, query);
+-mini_query_done:
++wave66_query_done:
+     __asm__("lda %v\n eor %v,x\n and #$f0\n beq %g", temp_x, pit_previous_x, remember);
+     __asm__("lda %v\n eor %v,x\n and #$f0\n beq %g", temp_y, pit_previous_y, remember);
+ query:
+--- a/SAUCE/functions/spike_sweep.h
++++ b/SAUCE/functions/spike_sweep.h
+@@ -16,6 +16,9 @@
+ #include "base_crossing.h"
+ CODE_BANK_PUSH(SPIKE_SHAPE_BANK)
+ 
++static const unsigned char ss_wave66[32] = {
++    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0
++};
+ static const unsigned char ss_shapes[64] = {
+     0, 1, 2, 3, 4, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0,
+     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+@@ -46,7 +49,7 @@
+     return ss_rectangle_hit();
+ }
+ 
+-void ss_test_tile(void) {
++void ss_test_spike_tile(void) {
+     ss_descriptor = ss_shapes[ss_type];
+     if (!ss_descriptor) return;
+     ss_primitive = ss_descriptor & 15;
+@@ -60,6 +63,16 @@
+     else ss_base_remaining &= 15;
+     if (ss_base_remaining) ss_test_base();
+ }
++void check_wave66_tile(void);
++CODE_BANK_PUSH("COLLISION_BANK")
++void ss_test_tile(void) {
++    if (gamemode == GAMEMODE_WAVE && ss_type < sizeof(ss_wave66) && ss_wave66[ss_type]) {
++        crossPRGBankJump0(check_wave66_tile);
++        return;
++    }
++    ss_test_spike_tile();
++}
++CODE_BANK_POP()
+ 
+ CODE_BANK_POP()
+ CODE_BANK_PUSH("COLLISION_BANK")
+@@ -191,7 +204,6 @@
+     if (!ss_dx && !ss_dy) return;
+     ss_x = temp_x; ss_y = temp_y; ss_old_type = collision;
+     ss_saved_metatile = collision_metatile;
+-    if (currplayer_mini && gamemode == GAMEMODE_WAVE) crossPRGBankJump0(check_mini_wave66_motion);
+     ss_type = pit_previous_collision[ss_player];
+     ss_metatile = pit_previous_metatile[ss_player];
+     ss_origin_x = -(ss_old_x & 15); ss_origin_y = -(ss_old_y & 15);
+--- a/SAUCE/functions/mini_wave66.h
++++ b/SAUCE/functions/mini_wave66.h
+@@ -67,33 +67,11 @@
+ }
+ 
+ 
+-void mw_shared_test_tile(void) {
+-    if (!((mw_type >= COL_SLOPE_RD66_TOP && mw_type <= COL_SLOPE_LD66_BOT) ||
+-          (mw_type >= COL_SLOPE_RU66_TOP && mw_type <= COL_SLOPE_LU66_BOT))) return;
+-    if (mini66_polygon_hit()) cube_data[ss_player] |= 1;
+-}
+-
+-void check_mini_wave66_motion(void) {
++void check_wave66_tile(void) {
+     if (wrap_mode) return;
+     if ((ss_x & 240) == (ss_old_x & 240) && (ss_y & 240) == (ss_old_y & 240)) return;
+     mw_dx = ss_dx; mw_dy = ss_dy;
+-    mw_type = pit_previous_collision[ss_player];
+-    mw_ox = -(ss_old_x & 15); mw_oy = -(ss_old_y & 15);
+-    mw_shared_test_tile();
+-    mw_type = ss_old_type;
+-    mw_ox = mw_dx - (ss_x & 15); mw_oy = mw_dy - (ss_y & 15);
+-    mw_shared_test_tile();
+-    if ((ss_x & 240) != (ss_old_x & 240) && (ss_y & 240) != (ss_old_y & 240)) {
+-        temp_x = ss_old_x;
+-        bg_collision_sub(); mw_type = collision;
+-        mw_ox = -(ss_old_x & 15); mw_oy = mw_dy - (ss_y & 15);
+-        mw_shared_test_tile();
+-        temp_x = ss_x; temp_y = ((unsigned int)ss_old_room << 8) | ss_old_y;
+-        bg_collision_sub(); mw_type = collision;
+-        mw_ox = mw_dx - (ss_x & 15); mw_oy = -(ss_old_y & 15);
+-        mw_shared_test_tile();
+-    }
+-    temp_x = ss_x; temp_y = ss_y;
+-    collision = ss_old_type; collision_metatile = ss_saved_metatile;
++    mw_type = ss_type; mw_ox = ss_origin_x; mw_oy = ss_origin_y;
++    if (mini66_polygon_hit()) cube_data[ss_player] |= 1;
+ }
+ CODE_BANK_POP()

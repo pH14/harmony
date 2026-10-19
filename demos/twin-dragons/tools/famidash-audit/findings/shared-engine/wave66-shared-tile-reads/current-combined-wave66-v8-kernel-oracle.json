@@ -1,0 +1,8 @@
+{
+  "status": "verified",
+  "geometry_cases": 64850,
+  "signed_product_cases": 65536,
+  "source_sha256": "200b0cf3048fc423faf4a1717f818a5f05ec19f2a0c0036df7e2d6a60f2e02b1",
+  "reference": "Independent exact rational clipping against rectangle, half-tile and diagonal planes.",
+  "limitation": "Host arithmetic and geometry; history validity, NES mapping, pixel intent and frame budget require separate checks."
+}

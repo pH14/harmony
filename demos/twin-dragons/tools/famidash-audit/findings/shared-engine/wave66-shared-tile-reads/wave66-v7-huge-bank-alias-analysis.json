@@ -1,0 +1,30 @@
+{
+  "scope": "Introduced integration regression; not an upstream Famidash defect.",
+  "frame": 795,
+  "bank_alias_calls": [
+    {
+      "call_instruction_cpu": 47640,
+      "call_instruction_rom_offset": 1972776,
+      "target_cpu": 45453,
+      "expected_target_rom_offset": 2036125,
+      "actual_target_rom_offset": 1970589,
+      "actual_functions": [
+        "_check_wave_slope_motion"
+      ]
+    }
+  ],
+  "first_dead_write": {
+    "pc": 45081,
+    "prg_rom_offset": 1970217,
+    "opcode": 145,
+    "functions": [
+      "_wave_test_slope_tile"
+    ]
+  },
+  "first_dead_observed": [
+    3
+  ],
+  "mapped_opcode_mismatches": [],
+  "correction": "Keep the tile helper in COLLISION_BANK with its caller for current standard and HUGE builds.",
+  "new_guard": "check-wave66-dispatch.py verifies actual selected direct-call physical PRG banks."
+}

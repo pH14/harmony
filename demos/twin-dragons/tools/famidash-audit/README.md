@@ -482,6 +482,13 @@ physical 8 KiB PRG banks. Equal CPU addresses do not establish that a banked
 callee is mapped. Separate linker segments can share a physical bank; the
 standard and HUGE layouts must both pass this check.
 
+The [shared tile-read integration](findings/shared-engine/wave66-shared-tile-reads/README.md)
+uses each queried tile for both spike and steep-slope checks. It retains the
+timing regression that motivated the merge, ordinary-input regression checks,
+current/HUGE positive controls and the bank-placement failure caught during
+integration. Compilation and logical CPU addresses alone do not qualify a
+banked helper call.
+
 Source-component schema 4 lists coins within eight tiles of each bounding box
 as `nearby_objectives`. This is proximity, not a reachability or intent verdict.
 An empty `sprites` list only describes membership: a closed component can form

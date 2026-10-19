@@ -1,0 +1,16 @@
+{
+  "before_sha256": "2030f5a7d416f966c922651fd557eae096c11f732542e2c90dd5619b8474c6b8",
+  "after_sha256": "108598fe43cdb7e5c9448fa0c0647c050759b191262cf63de0e175751bfb701f",
+  "canonical_core_sha256": "e51067979fefce1310303ed39971a8b90e2db03fdb97728a5c8c41932623953f",
+  "purpose": "Read-only per-opcode callbacks with mapped PRG addresses; no emulated state or cycle changes.",
+  "base_commit": "0102910c39ad1a62bc3f784466f3f67ca9eae335",
+  "patch_sha256": "08a7a2ecc688cfda1adf5ba3cea93cbe422705b4fec1c7a93e5af152d2f30c53",
+  "instrumented_core_sha256": "ab25ccb35b5b7c3223ad5a0a0d3a952a873a6080a93a66a88e1e5b5014c3ca41",
+  "build": [
+    "make",
+    "-j2",
+    "TARGET=mesen_watch_libretro.so"
+  ],
+  "working_directory": "Libretro",
+  "canonical_source_and_object_restored": true
+}

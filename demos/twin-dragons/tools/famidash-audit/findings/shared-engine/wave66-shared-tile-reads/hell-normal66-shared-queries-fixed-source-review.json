@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "status": "raw-probe-triage",
+  "source_review_complete": false,
+  "side": "c",
+  "level": 8,
+  "name": "hell",
+  "components": {
+    "92": {
+      "geometry": {
+        "number": 92,
+        "tile": 111,
+        "names": {
+          "BLACK_NONE": 118
+        },
+        "area": 118,
+        "bbox": [
+          173,
+          23,
+          206,
+          28
+        ],
+        "boundary": {
+          "COL_SLOPE_RU66_BOT": 3,
+          "COL_FLOOR_CEIL": 34,
+          "COL_SLOPE_RU66_TOP": 2,
+          "COL_SLOPE_RU45": 22,
+          "COL_SLOPE_LU45": 29
+        },
+        "non_none_boundary_fraction": 1.0,
+        "open_faces": [],
+        "sprites": [],
+        "entries": [],
+        "nearby_objectives": []
+      },
+      "live_entries": [],
+      "death_frame_entries": [
+        {
+          "frame": 939,
+          "player": 0,
+          "mode": 6,
+          "mini": 0,
+          "metatile": 111,
+          "sample_world_x": 2784,
+          "sample_world_y": 759,
+          "column": 174,
+          "row": 26
+        }
+      ],
+      "unsupported_state_entries": []
+    }
+  },
+  "source_mismatches": [],
+  "outside_source": [],
+  "centre_probes": 20,
+  "limitation": "Raw collision reads and end-of-frame survival only. Mode-specific geometry, source intent, objectives and original-ROM reproduction remain required.",
+  "inputs": {
+    "index_sha256": "f3a55539c011405b9e044ed8fb970353bb579215168dce6b5b0c9c12b0da7e50",
+    "case_sha256": "c929bed792aa33ee215c0bc94abc979473af6fb39639f2a020bb5e4b14faf2fd",
+    "cpu_sha256": "ff8bc29fc505f1d6d12ffe5cba188146f9d535b1846f4e214fb6749cc1df26c8",
+    "rom_sha256": "20d61ae8ce7fa3a2191ee7b17fb786f145feea51069bf44533e2837433e0203e",
+    "core_sha256": "f551d35489077c5e30e14b665c324ed693ae68db0d093e16e84869df003a7a8d",
+    "debug_sha256": "fe8775936c4f4bd15ebae73159adbfe8f371424c2205c8d0835d9b4b89f262ce"
+  }
+}
