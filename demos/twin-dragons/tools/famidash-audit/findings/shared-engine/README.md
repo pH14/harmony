@@ -536,3 +536,43 @@ is retained as negative evidence. No slope variant is accepted for shipping.
 Exploratory round 43 searches all 109 installed levels using the aligned
 prototype and freshly validated ordinary prefixes from round 38. Its source
 dispositions and affected clearing controls remain pending. Clean rounds: 0.
+
+All three round-38 solid-block signals are intentional wave D-block contacts:
+Moonlight (582,12), Moonlight (672,12), and DoraBae Basic 10 (524,23). Each
+new representative now has an ordinary-input witness and independently
+matched FCEUmm CPU collision trace. All centre samples in these windows have
+D-block protection enabled. Their explicit dispositions do not suppress
+future solid-block signals elsewhere.
+
+Forest Temple has a separately reproduced quarter-block boundary gap
+(release D2, current E13). Original release input matches all 3,728 frames
+in FCEUmm. Its centre passes through the empty left and lower portions of
+SMALL_BLOCK_TOP_RIGHT at (468,25), then enters BLACK_NONE at (468,26),
+frame 2,605. Enclosed component 54 spans columns 450–630, rows 23–26 and
+has no sprites or empty-cell open faces. It rides beneath the course.
+
+Fresh current-upstream Dissonance discovery reproduces the same below-floor
+route. The current CPU centre reaches BLACK_NONE at frame 3,054. Its extended
+3,573-frame ordinary input remains below the floor and matches FCEUmm after
+entry frame 3. The current level geometry and collision classes match source.
+No current engine repair is needed to reproduce the issue.
+
+The `forest-quarter-cap` proposals are diagnostic one-cell repairs: BLACK_NONE
+to BLACK_TOP at (468,26). On isolated source-data builds, release contact
+changes the pose at 2,604 and death follows at 2,605; current contact starts
+at 3,052 and death follows at 3,058. Actual repaired traces match FCEUmm.
+These are contact-before-death comparisons, not unchanged-until-death claims.
+The release 5,399-frame and current 5,811-frame clearing inputs remain exactly
+unchanged, including current coin mask 2, and match FCEUmm after entry.
+
+A preliminary SPIKE_UP cap failed to block the release input because it
+avoided that tile's narrow spike kernel; it is not the retained proposal.
+The solid one-cell cap is not claimed to repair the entire underfloor
+perimeter. Six quarter-block/fill adjacencies belong to this same component,
+and additional entry signals still require first-ingress tracing.
+
+Schema-4 inventory adds 767 quarter-block/fill adjacencies in the round-38
+source, with component references. That source has 353 stair candidates and
+11,424 rounded hazard adjacencies after its earlier cap edits. All counts
+are review leads, not confirmed bugs or automatic tile edits. Exploratory
+round 43 lacks the new Forest Temple cap and cannot qualify as a clean round.

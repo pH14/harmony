@@ -1,0 +1,21 @@
+{
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "evidence": [
+    "Original release and fresh current-upstream Dissonance ordinary inputs enter enclosed component54 through the quarter-block corner at46825. No objectives or empty-cell open faces belong to this component.",
+    "Diagnostic one-cell BLACK_TOP cap at46826; this does not claim the entire 450..630 underfloor perimeter is repaired. A SPIKE_UP trial failed to block the release witness."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/foresttemple.tmx",
+      "source_sha256": "db097126a289bde3744a3fe6fd49903d0a2e705fd37df929d9806e23ccd8aa35",
+      "edits": [
+        {
+          "column": 468,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 98
+        }
+      ]
+    }
+  ]
+}

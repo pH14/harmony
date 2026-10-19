@@ -353,3 +353,10 @@ and exhaustively checks point geometry and probe-state restoration. It does
 not test NES banking or renderer alignment. `check-slope-context.py` belongs
 to the rejected earlier raw-center experiment and is retained for comparing
 that hypothesis; a passing oracle does not make that experiment acceptable.
+
+Schema-4 boundary inventories also list quarter-block/fill adjacencies. A
+quarter block cannot seal an entire tile edge; actual input and intent review
+are required to distinguish a floor gap from intentional open geometry.
+The single-level runner looks up reference inputs by the release-side/level
+alias, allowing current fifth-set levels to use their original workload
+identity. Physical selection, symbols and ROM identity remain current.

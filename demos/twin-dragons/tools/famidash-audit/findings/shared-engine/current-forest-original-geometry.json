@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "status": "verified",
+  "levels": [
+    {
+      "side": "e",
+      "level": 13,
+      "name": "foresttemple",
+      "tile_count": 24030,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    }
+  ],
+  "collision_tables": {
+    "e": {
+      "entries": 256,
+      "sha256": "5f4b9b72ac731c4f4ae7ceb3ba9d78f6f443221f2cdb61a7dabe061fd9033580"
+    }
+  },
+  "index_sha256": "816d4556e5a7df262c019729c152f575b97b81f19b99da798d2d57c7e4f7faa2"
+}

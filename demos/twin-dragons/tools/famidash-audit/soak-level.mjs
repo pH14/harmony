@@ -61,7 +61,7 @@ if (m.adapter) report.target_layout = { kind: "symbol-based linear coordinates n
   debug_sha256: m.debug_sha256, symbols: m.symbols, startup_released_frames: 180,
   actual_side: side, actual_level: level, release_target_side: targetSide, release_target_level: targetLevel };
 const seed = (round * 1000003 + ["main", "b", "c", "d"].indexOf(side) * 1009 + level * 101) >>> 0;
-const routes = JSON.parse(await readFile(new URL(`../famidash-routes/${side}.json`, import.meta.url)));
+const routes = JSON.parse(await readFile(new URL(`../famidash-routes/${targetSide}.json`, import.meta.url)));
 function positive(value, name) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error(`invalid positive integer: ${name}`);
@@ -71,10 +71,10 @@ const genesisBudget = positive(process.env.FAMIDASH_GENESIS_EXECUTIONS || 50000,
 const checkpointBudget = positive(process.env.FAMIDASH_CHECKPOINT_EXECUTIONS || 5000, "checkpoint budget");
 const step = positive(process.env.FAMIDASH_CHECKPOINT_STEP || 1024, "checkpoint step");
 let reference = [];
-try { reference = routeTape(routes.routes[level]); }
+try { reference = routeTape(routes.routes[targetLevel]); }
 catch (error) {
   report.reference_rejection = String(error);
-  const encoded = routes.routes[level], ordinary = typeof encoded === "string" ? encoded.match(/^[0-5]*/)[0] : "";
+  const encoded = routes.routes[targetLevel], ordinary = typeof encoded === "string" ? encoded.match(/^[0-5]*/)[0] : "";
   if (ordinary) reference = routeTape(ordinary);
 }
 const verifiedPrefix = [];
