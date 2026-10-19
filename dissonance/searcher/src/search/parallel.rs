@@ -205,6 +205,30 @@ impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
         }
     }
 
+    #[cfg(test)]
+    #[allow(clippy::disallowed_methods)]
+    pub(crate) fn wait_idle(&self, workers: &[u32]) -> Result<(), String> {
+        let shared = self.jobs.as_ref().ok_or("test pool is closed")?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut queue = shared.queue.lock().map_err(|_| "test queue poisoned")?;
+        while !workers.iter().all(|worker| queue.idle.contains_key(worker)) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "workers {workers:?} did not become idle; idle={:?}, assigned={:?}",
+                    queue.idle.keys().collect::<Vec<_>>(),
+                    queue.assigned.keys().collect::<Vec<_>>()
+                ));
+            }
+            queue = shared
+                .ready
+                .wait_timeout(queue, remaining)
+                .map_err(|_| "test queue poisoned while waiting")?
+                .0;
+        }
+        Ok(())
+    }
+
     pub(crate) fn wait_ready(&self, workers: u32) -> Result<(), String> {
         let mut statuses = std::iter::repeat_with(|| None)
             .take(workers as usize)

@@ -44,6 +44,14 @@ planned finishes, checkpoint state, retention and admission remain independent
 of these hints. Workloads without locality keys use the same queue with empty
 advertisements.
 
+A deterministic two-worker campaign fixture exercises initial and refill
+plan drains with an owned decoded-snapshot cache. It waits for actual queue idle
+membership, starts with the parent retained only by worker 1, and compares empty
+and populated advertisements. Cache misses decode and allocate the restored
+value; hits restore from the retained value. It checks avoided reconstruction,
+busy-owner fallback, and byte-identical complete logical streams and outcomes.
+Its scoped readiness hooks are test-only; the fixture makes no host timing claim.
+
 Replay checks the source fields allowed by each origin kind, requires
 an archive checkpoint exactly when the stream names one, and matches the supplied
 checkpoint path, format, serialized bytes, and digest before copying its provenance
