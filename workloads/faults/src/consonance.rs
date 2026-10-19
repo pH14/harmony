@@ -1387,6 +1387,12 @@ fn run_with_service_decisions(
     Ok(stop)
 }
 
+struct ExecutedAction {
+    observation: FaultObservations,
+    snapshot: Option<(SnapId, u64)>,
+    proof: EndpointProof,
+}
+
 struct ObservedEndpoint {
     receipt: EndpointReceipt,
     decoder: SdkDecoder,
@@ -2161,8 +2167,11 @@ impl Live {
             }
             let plan = ActionPlan::compile(self.windows, &self.inherited, prefix)
                 .map_err(|error| format!("branch configuration: {error}"))?;
-            let (mut observation, sealed, proof) =
-                self.run_action(&plan, last, RunKind::Rebuild)?;
+            let ExecutedAction {
+                mut observation,
+                snapshot: sealed,
+                proof,
+            } = self.run_action(&plan, last, RunKind::Rebuild)?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
@@ -2241,7 +2250,11 @@ impl Live {
         next.push(action);
         let plan = ActionPlan::compile(self.windows, &self.inherited, &next)
             .map_err(|error| format!("branch configuration: {error}"))?;
-        let (mut observation, sealed, proof) = self.run_action(&plan, parent, kind)?;
+        let ExecutedAction {
+            mut observation,
+            snapshot: sealed,
+            proof,
+        } = self.run_action(&plan, parent, kind)?;
         let receipt = if let Some((snap, moment)) = sealed {
             let receipt = self.capture_sealed_receipt(
                 snap,
@@ -2287,7 +2300,7 @@ impl Live {
         plan: &ActionPlan,
         parent: Point,
         kind: RunKind,
-    ) -> Result<(FaultObservations, Option<(SnapId, u64)>, EndpointProof), String> {
+    ) -> Result<ExecutedAction, String> {
         self.horizons_run = self.horizons_run.saturating_add(1);
         let at = self
             .chain
@@ -2390,7 +2403,11 @@ impl Live {
         let observation =
             FaultObservations::new(outcome.decoder.moment(), outcome.decoder.capture(), stop);
         self.cursor.decoder = Some(outcome.decoder);
-        Ok((observation, outcome.receipt.snapshot, outcome.receipt.proof))
+        Ok(ExecutedAction {
+            observation,
+            snapshot: outcome.receipt.snapshot,
+            proof: outcome.receipt.proof,
+        })
     }
 
     fn observe(&mut self, stop: FaultStop) -> Result<FaultObservations, String> {
