@@ -552,6 +552,29 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.retired_observations = observations;
     }
 
+    pub fn abandon_owned_session(&mut self) {
+        if self.vmm.is_some() {
+            self.retire_failed_vmm();
+        }
+        self.set_current_image(None);
+        self.derive_parent = None;
+        for (_, store_id) in std::mem::take(&mut self.snaps) {
+            let _ = self.engine.release(store_id);
+        }
+        self.sdk_snaps.clear();
+        self.snapshot_meta.clear();
+        self.tainted_snaps.clear();
+        self.schedule.clear();
+        self.reseed_schedule.clear();
+        self.engine.gc();
+    }
+
+    pub fn snapshot_sdk_event_count(&self, snapshot: SnapId) -> Option<u64> {
+        self.snapshot_meta
+            .get(&snapshot.0)
+            .map(|meta| meta.sdk_events)
+    }
+
     pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
         self.engine.set_max_chain_len(max_chain_len);
     }
@@ -2906,6 +2929,53 @@ mod tests {
             Ok(v)
         });
         with_test_service(ControlServer::new(live, factory))
+    }
+
+    #[test]
+    fn abandoned_owner_releases_a_snapshot_hidden_by_the_final_control_guard() {
+        let mut server = server(vec![]);
+        hello(&mut server);
+        let original = snap(&mut server);
+        assert!(server.snapshot_stats(original).is_some());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        server.set_host_operation_guard(Arc::new(move |site| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if site == HostOperationSite::ControlAfter {
+                Err("planted post-snapshot guard failure".into())
+            } else {
+                Ok(())
+            }
+        }));
+        assert!(matches!(
+            server.handle(&Request::Snapshot),
+            Err(ServeError::Vmm(VmmError::ContractViolation(message)))
+                if message == "planted post-snapshot guard failure"
+        ));
+        assert_eq!(server.snaps.len(), 2);
+        assert_eq!(server.snapshot_meta.len(), 2);
+        assert_eq!(server.sdk_snaps.len(), 2);
+        let counted_before = calls.load(std::sync::atomic::Ordering::SeqCst);
+        let physical = server.host_telemetry().physical;
+        server.abandon_owned_session();
+        assert!(server.vmm().is_none());
+        assert!(server.snaps.is_empty());
+        assert!(server.snapshot_meta.is_empty());
+        assert!(server.sdk_snaps.is_empty());
+        assert!(server.current_image.is_none());
+        assert!(server.derive_parent.is_none());
+        assert_eq!(server.snapshot_store_stats().snapshots, 0);
+        assert_eq!(server.snapshot_store_stats().stored_unique_pages, 0);
+        assert_eq!(server.snapshot_store_stats().bytes_resident, 0);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            counted_before
+        );
+        assert_eq!(server.host_telemetry().physical, physical);
+        assert!(server.retired_observations.is_some());
+        server.abandon_owned_session();
+        assert!(server.retired_observations.is_some());
+        assert_eq!(server.snapshot_store_stats().snapshots, 0);
     }
 
     #[test]

@@ -21,6 +21,78 @@ Sessions release completed host trace segments after successful branch/replay
 operations, keeping their evidence storage bounded by the active segment.
 Callers that archive normalized exit traces use the control server's trace API.
 
+## Transactional execution endpoints
+
+The endpoint transaction owns one stopped cut and at most one provisional
+snapshot per session. `Execute` carries an optional parent plus bounded opaque
+`InputSpec` reproducer bytes, ordinary `StopConditions`, an optional exact
+`Resolution`, an SDK cursor, a finite snapshot stop mask, and an explicit
+whole-state/history evidence requirement. Branch and resolution are mutually
+exclusive. The request digest binds all these fields. A known parent's retained
+SDK count validates its cursor, rather than the unrelated current live cut; a
+backend without that metadata validates against the actual selected parent
+before guest execution. Unknown masks, malformed input and unsupported evidence
+are refused before changing the machine.
+
+A `Decision` returns the original stop, moment, question and identity to the
+composition without answering or capturing an endpoint. The composition owns
+its service handler and resumes with a separate explicit resolution request.
+Other stops retain their actual stop kind. The caller's snapshot mask owns seal
+eligibility: a deadline-only workload supplies `EndpointStops::DEADLINE`; the
+execution mechanism assigns no workload meaning to a deadline or terminal stop.
+Required whole-state plus ordered-history evidence is either available or refused
+before mutation. Explicitly omitted evidence is `Unavailable`, including UML;
+an operational hash failure never becomes an absent or fabricated commitment.
+
+Successful execution performs the existing branch, run and optional snapshot
+operations, then yields bounded SDK pages under a nonreused token. Every page
+repeats its immutable request digest, stop, source count and start/end cursor
+binding. Each request must use the exact next cursor and cannot read beyond the
+captured end. Empty premature pages, count overflow, oversized pages and changed
+bindings fail closed. The legacy final empty SDK read remains. `Commit` requires
+all pages, calls the existing whole-hash and ordered-history methods, and only
+then transfers the optional snapshot handle in its receipt. A snapshot handle,
+whole-state hash and ordered execution history remain separate facts. This first
+implementation does not fuse CPU captures or remove a SHA pass.
+
+`ExecutionEndpoint` safely borrows its transport until commit or abort. Drop
+aborts an uncommitted provisional snapshot; no self-reference or unsafe borrow
+is involved. Low-level mutation methods also reject a pending endpoint. Tokens
+are session-scoped and never reset by replay, branch, import or abort. SDK cursors
+remain transport offsets: a workload must still validate its decoder's lineage
+and checkpoint binding. Normal abort releases the provisional snapshot and leaves
+a successfully stopped cut; it does not roll guest execution back.
+
+Failure after selecting a parent or starting execution abandons the executable
+continuation, preserving the original typed error. The direct Session marks
+itself abandoned before `ControlServer::abandon_owned_session` retires the VM and
+releases that server's exclusively owned snapshot references and sidecars. This
+includes a snapshot minted before a failing final control guard hid its ID from
+the client. Cleanup runs no control or guest command, preserves failed-VM console
+and SDK observations, and keeps the store's cumulative host counters. It neither
+revokes independently published cache extents nor releases another session's
+references. A commit reply loss or final transport guard failure abandons the
+whole worker/session, so ambiguous transferred ownership cannot remain in a
+reusable session.
+
+The worker extension preserves every existing inner control-before/after and
+SDK request/response guard; it initially amortizes only outer exchanges.
+Execute plus Commit is the common two-exchange path, with bounded page exchanges
+when needed. New frame bounds must be checked after an opcode prefix and before
+allocating an endpoint request body; INIT/import keep their existing independent
+contracts. Endpoint replies have a fixed receive bound, forbid descriptors and
+validate every tag, length and trailing byte before acting. Versioned peers must
+agree on the new worker protocol rather than using a compatibility fallback.
+
+Implementation milestones are one reviewable sequence: pure transaction engine,
+safe direct owner and failure-retirement witness; bounded worker protocol and
+explicit UML adapter with transport/guard/failure tests; then workload adoption
+that preserves external decisions, caller-owned capture eligibility and decoder
+provenance. Legacy-versus-batch comparisons cover exact stop/state/history/event
+facts, partial failures and physical transport counts on one fixed build. Pure
+engine/RAII tests are interpreter-reachable under Miri. Native snapshot/guard
+witnesses and the actual repository pre-push hook qualify the final source.
+
 The image identity always includes the loaded Harmony executable, kernel,
 initramfs, RAM size, seed, setup run budget, command line, and guest contract.
 Sessions booted with setup payloads also bind their ordered, length-delimited
