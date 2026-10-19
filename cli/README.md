@@ -439,9 +439,11 @@ native dispatch; the `harmony` bin requires it. The isolated host build uses
 the direct clap/tar/compression dependencies used for recipe/download handling.
 OCI archive parsing and compression remain required transitively for independent
 prepared-image admission. Both default and `--all-features` builds preserve
-native frontend behavior; enabling `consonance-host` does not change its role. On Linux,
-it copies the static-musl host into a fresh executable memfd, seals its complete
-contents against writes and resizing, then executes it. The host checks those
+native frontend behavior; enabling `consonance-host` does not change its role.
+The Linux x86-64 and Arm64 CI jobs lint the isolated guarded role with warnings
+as errors; nested KVM execution remains limited to Linux x86-64, while other
+hosts retain its explicit unsupported-execution refusal. On Linux, it copies
+the static-musl host into a fresh executable memfd, seals its complete contents against writes and resizing, then executes it. The host checks those
 seals, the full loaded ELF bytes (including writable initializers), and its
 executable mappings before it parses a command. On macOS, the paired host is a
 hardened signed executable with the OS-only library constraint and Hypervisor
