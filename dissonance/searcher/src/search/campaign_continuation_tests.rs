@@ -112,8 +112,11 @@ impl Reporting for TestWorkload {
     fn diagnostics(_: &()) -> Option<serde_json::Value> {
         Some(serde_json::json!({"observed": 42}))
     }
-    fn evidence_checkpoint(_evidence: &()) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(Vec::new())
+    fn write_evidence_checkpoint(
+        _evidence: &(),
+        _out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
     }
     fn evidence_from_checkpoint(_bytes: &[u8]) -> Result<(), Box<dyn Error>> {
         Ok(())

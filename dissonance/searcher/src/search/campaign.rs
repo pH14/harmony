@@ -253,8 +253,16 @@ pub trait Reporting: CampaignTypes {
         _sequence: u64,
     ) {
     }
-    fn evidence_checkpoint(_evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn write_evidence_checkpoint(
+        _evidence: &Self::Evidence,
+        _out: &mut dyn Write,
+    ) -> Result<(), Box<dyn Error>> {
         Err("this workload cannot write its evidence into a search checkpoint".into())
+    }
+    fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut bytes = Vec::new();
+        Self::write_evidence_checkpoint(evidence, &mut bytes)?;
+        Ok(bytes)
     }
     fn evidence_from_checkpoint(_bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
         Err("this workload cannot read its evidence from a search checkpoint".into())
@@ -5550,8 +5558,12 @@ mod tests {
     }
 
     impl Reporting for TestWorkload {
-        fn evidence_checkpoint(evidence: &u8) -> Result<Vec<u8>, Box<dyn Error>> {
-            Ok(vec![*evidence])
+        fn write_evidence_checkpoint(
+            evidence: &u8,
+            out: &mut dyn Write,
+        ) -> Result<(), Box<dyn Error>> {
+            out.write_all(&[*evidence])?;
+            Ok(())
         }
         fn evidence_from_checkpoint(bytes: &[u8]) -> Result<u8, Box<dyn Error>> {
             Ok(bytes.first().copied().unwrap_or_default())

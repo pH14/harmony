@@ -419,6 +419,39 @@ pub struct FaultSnapshotCodec;
 
 impl searcher::search::snapshot_codec::CheckpointSnapshot for crate::target::FaultSnapshot {
     type Codec = FaultSnapshotCodec;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        budget.reserve(std::mem::size_of::<Self>())?;
+        budget.array::<crate::target::ParkLanding>(self.observation.parks.capacity())?;
+        budget.array::<crate::target::ParkRead>(self.observation.park_reads.capacity())?;
+        if let Some(check) = &self.observation.check {
+            budget.array::<String>(check.points.capacity())?;
+            for point in &check.points {
+                budget.array::<u8>(point.capacity())?;
+            }
+        }
+        for (name, outcome) in &self.observation.assertions.0 {
+            budget.map_entry::<String, crate::assertion::AssertionOutcome>()?;
+            budget.array::<u8>(name.capacity())?;
+            budget.array::<u8>(outcome.message.capacity())?;
+            budget.array::<u8>(outcome.location.capacity())?;
+        }
+        for node in self.history.nodes() {
+            if !budget.shared(
+                "fault-history-node",
+                std::ptr::from_ref(node) as usize,
+                Node::allocation_bytes(),
+            )? {
+                break;
+            }
+        }
+        Ok(())
+    }
+    fn freeze_checkpoint(&self) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(self.clone())
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -797,6 +830,141 @@ mod tests {
         }
         out
     }
+    #[test]
+    fn checkpoint_image_charge_counts_shared_physical_histories_once_and_preserves_frozen_metadata()
+    {
+        use searcher::search::{
+            checkpoint::image::ImageBudget, snapshot_codec::CheckpointSnapshot,
+        };
+        let mut snapshots = dag_ladder(4, 3);
+        let mut budget = ImageBudget::new(usize::MAX);
+        snapshots[4].checkpoint_image_charge(&mut budget).unwrap();
+        let first = budget.bytes();
+        assert!(first >= 5 * Node::allocation_bytes() + size_of::<crate::target::FaultSnapshot>());
+        snapshots[3].checkpoint_image_charge(&mut budget).unwrap();
+        assert_eq!(
+            budget.bytes() - first,
+            size_of::<crate::target::FaultSnapshot>()
+        );
+        let independent = dag_ladder(4, 3);
+        let before = budget.bytes();
+        independent[4].checkpoint_image_charge(&mut budget).unwrap();
+        assert_eq!(budget.bytes() - before, first);
+        let mut richer = independent[4].clone();
+        richer.observation.parks = Vec::with_capacity(65);
+        richer.observation.parks.resize(65, Default::default());
+        let mut richer_budget = ImageBudget::new(usize::MAX);
+        richer.checkpoint_image_charge(&mut richer_budget).unwrap();
+        assert!(
+            richer_budget.bytes() - first
+                >= richer.observation.parks.capacity() * size_of::<crate::target::ParkLanding>()
+        );
+        snapshots[4].observation.check = Some(crate::target::CheckEvidence {
+            points: vec!["old checkpoint evidence".into()],
+            ..Default::default()
+        });
+        let frozen = snapshots[4].freeze_checkpoint().unwrap();
+        assert_eq!(
+            frozen.history.receipt().assurance_identity(),
+            snapshots[4].history.receipt().assurance_identity()
+        );
+        let expected = frozen.clone();
+        snapshots[4].observation.check.as_mut().unwrap().points[0] = "changed live evidence".into();
+        snapshots[4].observation.moment += 1;
+        assert_eq!(frozen, expected);
+        assert_ne!(frozen.observation, snapshots[4].observation);
+        let mut bounded = ImageBudget::new(first - 1);
+        assert!(
+            independent[4]
+                .checkpoint_image_charge(&mut bounded)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn checkpoint_image_charge_covers_every_owned_observation_capacity_and_exact_limit() {
+        use searcher::search::{
+            checkpoint::image::{ImageBudget, ImageLimit},
+            snapshot_codec::CheckpointSnapshot,
+        };
+        let mut snapshot = dag_ladder(2, 7).pop().unwrap();
+        let charge = |snapshot: &crate::target::FaultSnapshot| {
+            let mut budget = ImageBudget::new(usize::MAX);
+            snapshot.checkpoint_image_charge(&mut budget).unwrap();
+            budget.bytes()
+        };
+        let base = charge(&snapshot);
+        snapshot.observation.parks = Vec::with_capacity(31);
+        snapshot.observation.park_reads = Vec::with_capacity(47);
+        snapshot.observation.check = Some(crate::target::CheckEvidence {
+            points: Vec::with_capacity(11),
+            ..Default::default()
+        });
+        let points = &mut snapshot.observation.check.as_mut().unwrap().points;
+        let mut point = String::with_capacity(8192);
+        point.push_str("check point");
+        points.push(point);
+        let vectors = snapshot.observation.parks.capacity()
+            * size_of::<crate::target::ParkLanding>()
+            + snapshot.observation.park_reads.capacity() * size_of::<crate::target::ParkRead>()
+            + points.capacity() * size_of::<String>()
+            + points[0].capacity();
+        assert_eq!(charge(&snapshot) - base, vectors);
+        for index in 0..8 {
+            let mut name = String::with_capacity(128 + index);
+            name.push_str(&format!("assertion-{index}"));
+            snapshot.observation.assertions.0.insert(
+                name,
+                crate::assertion::AssertionOutcome {
+                    kind: crate::assertion::AssertionKind::Always,
+                    message: String::new(),
+                    location: String::new(),
+                    passed: true,
+                    failed: false,
+                },
+            );
+        }
+        let before_values = charge(&snapshot);
+        let mut containers = ImageBudget::new(usize::MAX);
+        for name in snapshot.observation.assertions.0.keys() {
+            containers
+                .map_entry::<String, crate::assertion::AssertionOutcome>()
+                .unwrap();
+            containers.array::<u8>(name.capacity()).unwrap();
+        }
+        assert_eq!(before_values - base - vectors, containers.bytes());
+        let mut value_capacities = 0;
+        for outcome in snapshot.observation.assertions.0.values_mut() {
+            outcome.message = String::with_capacity(65536);
+            outcome.message.push_str(&"message".repeat(4096));
+            outcome.location = String::with_capacity(32768);
+            outcome.location.push_str(&"location".repeat(1024));
+            value_capacities += outcome.message.capacity() + outcome.location.capacity();
+        }
+        let exact = charge(&snapshot);
+        assert_eq!(exact - before_values, value_capacities);
+        let mut budget = ImageBudget::new(exact);
+        snapshot.checkpoint_image_charge(&mut budget).unwrap();
+        assert_eq!(budget.remaining(), 0);
+        let frozen = snapshot.freeze_checkpoint().unwrap();
+        assert_eq!(frozen, snapshot);
+        let shared_history_only = {
+            let mut budget = ImageBudget::new(usize::MAX);
+            snapshot.checkpoint_image_charge(&mut budget).unwrap();
+            let before = budget.bytes();
+            snapshot.checkpoint_image_charge(&mut budget).unwrap();
+            budget.bytes() - before
+        };
+        assert!(
+            shared_history_only >= value_capacities + vectors + std::mem::size_of_val(&snapshot)
+        );
+        for limit in [exact - 1, before_values] {
+            let mut budget = ImageBudget::new(limit);
+            let error = snapshot.checkpoint_image_charge(&mut budget).unwrap_err();
+            assert!(error.downcast_ref::<ImageLimit>().is_some());
+        }
+    }
+
     #[test]
     fn dag_checkpoint_writes_each_semantic_receipt_once_and_restores_shared_allocations() {
         let snapshots = dag_ladder(128, 3);

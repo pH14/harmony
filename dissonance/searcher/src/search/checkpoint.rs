@@ -13,6 +13,8 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
+pub mod image;
+
 pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v10";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,9 +34,11 @@ pub(crate) mod json_bytes {
         value: &T,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        serde_json::to_vec(value)
-            .map_err(serde::ser::Error::custom)?
-            .serialize(serializer)
+        super::image::StreamedBytes(|out: &mut dyn std::io::Write| {
+            serde_json::to_writer(out, value)?;
+            Ok(())
+        })
+        .serialize(serializer)
     }
 
     pub(crate) fn deserialize<'de, T: DeserializeOwned, D: Deserializer<'de>>(
