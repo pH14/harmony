@@ -1400,6 +1400,7 @@ fn execute_observed_endpoint(
     request: ExecutionRequest,
     handler: &mut dyn ServiceHandler,
     mut decoder: SdkDecoder,
+    stopped: &mut Option<StopReason>,
 ) -> Result<ObservedEndpoint, Box<dyn Error>> {
     let deadline = request.until.deadline.ok_or("endpoint deadline missing")?.0;
     let mut start = ExecutionEndpoint::execute(session, request)?;
@@ -1415,6 +1416,7 @@ fn execute_observed_endpoint(
             ExecutionStart::Endpoint(endpoint) => break endpoint,
         };
     };
+    *stopped = Some(endpoint.page().binding.stop.clone());
     let mut events = 0u64;
     let mut payload_bytes = 0u64;
     let mut decoded = 0u64;
@@ -2333,8 +2335,34 @@ impl Live {
         let combined_branch = request.branch.is_some();
         let run_started = started();
         let mut handler = plan.handler.clone();
-        let outcome =
-            execute_observed_endpoint(self.session.as_mut(), request, &mut handler, decoder);
+        let mut stopped = None;
+        let outcome = execute_observed_endpoint(
+            self.session.as_mut(),
+            request,
+            &mut handler,
+            decoder,
+            &mut stopped,
+        );
+        if let Some(stop) = stopped {
+            if combined_branch {
+                self.telemetry.branches.count += 1;
+            }
+            if matches!(
+                stop,
+                StopReason::Deadline { .. } | StopReason::Decision { .. }
+            ) {
+                self.telemetry.seals.count += 1;
+            }
+            let runs = match kind {
+                RunKind::New => &mut self.telemetry.new,
+                RunKind::Rebuild => &mut self.telemetry.rebuild,
+                RunKind::Replay => &mut self.telemetry.replay,
+            };
+            runs.host.since(run_started);
+            runs.virtual_nanos = runs
+                .virtual_nanos
+                .saturating_add(stop_moment(&stop).saturating_sub(parent.moment));
+        }
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -2342,18 +2370,6 @@ impl Live {
                 return Err(self.abandon("execution endpoint", error.as_ref()));
             }
         };
-        if combined_branch {
-            self.telemetry.branches.count += 1;
-        }
-        let runs = match kind {
-            RunKind::New => &mut self.telemetry.new,
-            RunKind::Rebuild => &mut self.telemetry.rebuild,
-            RunKind::Replay => &mut self.telemetry.replay,
-        };
-        runs.host.since(run_started);
-        runs.virtual_nanos = runs.virtual_nanos.saturating_add(
-            stop_moment(&outcome.receipt.binding.stop).saturating_sub(parent.moment),
-        );
         if let StopReason::Crash { vtime, info } = &outcome.receipt.binding.stop {
             let tail = self.session.console_tail().unwrap_or_default();
             let start = tail.len().saturating_sub(CONSOLE_TAIL);
@@ -2368,9 +2384,6 @@ impl Live {
             StopReason::Decision { vtime, .. } if vtime.0 >= plan.deadline => FaultStop::Deadline,
             actual => FaultStop::from_stop_reason(actual),
         };
-        if outcome.receipt.snapshot.is_some() {
-            self.telemetry.seals.count += 1;
-        }
         self.telemetry.observation_events += outcome.events;
         self.telemetry.observation_payload_bytes += outcome.payload_bytes;
         self.telemetry.observation_decoded_events += outcome.decoded;
@@ -5691,8 +5704,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_hash_failure_drops_the_unpublished_snapshot() {
-        let mut target = unbooted_target();
+    fn ordinary_hash_failure_abandons_all_owned_snapshots_before_publication() {
         let index = Arc::new(LocalIndex::new(1 << 20));
         let mut live = scripted_capture_live(vec![[17; 32]], false);
         live.session = Box::new(TimedOutRestore {
@@ -5733,30 +5745,27 @@ mod tests {
             }),
         );
         live.chain.certify(0, fixture_genesis()).unwrap();
-        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
-        assert!(
-            target
-                .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
-                .unwrap()
-                .is_none()
+        let history = FaultHistory::genesis(fixture_genesis()).unwrap();
+        let error = live
+            .advance(
+                &history,
+                FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
+                RunKind::New,
+            )
+            .unwrap_err();
+        assert!(error.contains("ordinary hash failure"), "{error}");
+        assert!(live.abandoned);
+        assert!(live.session.abandoned());
+        assert_eq!(live.chain.links(), 1);
+        assert!(live.cursor.decoder.is_none());
+        assert_eq!(
+            live.session
+                .telemetry_counters()
+                .into_iter()
+                .collect::<BTreeMap<_, _>>()["test.snapshots"],
+            0
         );
-        assert!(target.failed());
-        LIVE.with(|slot| {
-            let slot = slot.borrow();
-            let live = slot.as_ref().unwrap();
-            assert_eq!(live.chain.links(), 1);
-            assert!(live.cursor.decoder.is_none());
-            assert!(!live.session.abandoned());
-            assert_eq!(
-                live.session
-                    .telemetry_counters()
-                    .into_iter()
-                    .collect::<BTreeMap<_, _>>()["test.snapshots"],
-                1
-            );
-        });
         assert_eq!(index.stats().entries, 0);
-        LIVE.with(|slot| slot.borrow_mut().take());
     }
 
     #[test]

@@ -34,15 +34,21 @@ backend without that metadata validates against the actual selected parent
 before guest execution. Unknown masks, malformed input and unsupported evidence
 are refused before changing the machine.
 
-A `Decision` returns the original stop, moment, question and identity to the
-composition without answering or capturing an endpoint. The composition owns
-its service handler and resumes with a separate explicit resolution request.
-Other stops retain their actual stop kind. The caller's snapshot mask owns seal
+A `Decision` returns the original stop, moment, question and identity under an
+owned token. `ExecutionDecision` borrows the transport while the composition
+consults its service handler. `Resume` supplies an explicit resolution and binds
+its digest to the previous request. `FinalizeDecision` instead captures that
+exact stopped question without any guest resume; the caller explicitly chooses
+whether it needs a snapshot. Its receipt still records `Decision`, even when a
+workload interprets that boundary as its own deadline. Dropping an unresolved
+Decision owner abandons the session. Other stops retain their actual stop kind. The caller's snapshot mask owns seal
 eligibility: a deadline-only workload supplies `EndpointStops::DEADLINE`; the
 execution mechanism assigns no workload meaning to a deadline or terminal stop.
 Required whole-state plus ordered-history evidence is either available or refused
-before mutation. Explicitly omitted evidence is `Unavailable`, including UML;
-an operational hash failure never becomes an absent or fabricated commitment.
+before mutation. `CapturedWholeStateAndHistory` requests those facts only when a
+snapshot is captured, leaving terminal uncaptured cuts explicitly `Unavailable`.
+Explicitly omitted evidence is also `Unavailable`, including UML; an operational
+hash failure never becomes an absent or fabricated commitment.
 
 Successful execution performs the existing branch, run and optional snapshot
 operations, then yields bounded SDK pages under a nonreused token. Every page
@@ -79,10 +85,16 @@ The worker extension preserves every existing inner control-before/after and
 SDK request/response guard; it initially amortizes only outer exchanges.
 Execute plus Commit is the common two-exchange path, with bounded page exchanges
 when needed. New frame bounds must be checked after an opcode prefix and before
-allocating an endpoint request body; INIT/import keep their existing independent
-contracts. Endpoint replies have a fixed receive bound, forbid descriptors and
+allocating an endpoint request body. Page, commit, abort and Decision
+finalization have their own small bounds; Execute and Resume have bounds derived
+from existing input/control payload limits. Both hosts reject descriptors in a
+header remainder or body. INIT/import keep their existing independent contracts. Endpoint replies have a fixed receive bound, forbid descriptors and
 validate every tag, length and trailing byte before acting. Versioned peers must
-agree on the new worker protocol rather than using a compatibility fallback.
+agree on worker image protocol v4 rather than using a compatibility fallback.
+Endpoint error details are bounded to 64 KiB at UTF-8 boundaries while Hung,
+Infrastructure and Abandoned retain their typed wire identity. Success and error
+replies also report retirement, so even a successful Decision abort cannot leave
+the parent believing its worker is reusable.
 
 Implementation milestones are one reviewable sequence: pure transaction engine,
 safe direct owner and failure-retirement witness; bounded worker protocol and

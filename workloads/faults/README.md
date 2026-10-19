@@ -607,6 +607,30 @@ Expected campaign snapshots and root payloads provide no decoder authority; fres
 root imports start from offset zero. Whole-state and ordered-event certificates
 retain their existing formats and fresh integrity checks.
 
+Action execution uses Consonance's generic owned endpoint transaction. A retained
+validated parent decoder checkpoint supplies the exact SDK cursor, allowing one
+Execute exchange to branch, run, capture and return the first bounded suffix
+page. Missing or untrusted checkpoints keep the existing selected-parent branch
+and full-history verification before the guest runs. Every returned page retains
+its request/stop/cursor binding; the workload decodes all pages and checks SDK
+infrastructure status before Commit transfers the provisional snapshot and its
+separate whole-state and ordered-history facts. A decode failure abandons the
+owned session. A capture or proof failure releases all session-owned handles,
+including the selected parent, without publishing an uncertified child.
+
+Service decisions remain workload decisions. Before the deadline the adapter
+answers with its current action handler and explicitly resumes. At or after the
+deadline it finalizes the returned stopped question without answering or running
+again. The Consonance receipt keeps the actual Decision; Faults alone projects
+that observation as Deadline and leaves the pending question in the snapshot for
+the next action's service windows. UML explicitly omits whole-state/history
+proofs, and uncaptured terminal cuts carry unavailable evidence. The common
+worker path takes Execute plus Commit, with extra bounded Page exchanges only
+when needed and a FinalizeDecision exchange at that rare boundary. Inner control
+and SDK guards remain active. Run host time now includes the whole endpoint
+exchange and decoding; combined branch/seal counts remain operation counts,
+while their separate host-time buckets cover only unbatched operations.
+
 Optional Link checkpoints have an internal 8 MiB retention cap, including for
 sessions without a shared index. This is a performance policy, not a logical
 retention setting. Under shared-cache pressure they are discarded before certified

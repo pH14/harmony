@@ -74,6 +74,7 @@ const RUN_RESOLVING: u8 = 16;
 const ENDPOINT: u8 = 20;
 
 const OK: u8 = 0;
+const OK_RETIRED: u8 = 3;
 const FAILED: u8 = 1;
 const FAILED_RETIRED: u8 = 2;
 const OTHER: u8 = 0;
@@ -829,26 +830,46 @@ fn recv_raw_bounded(
     if u64::from_le_bytes(header[8..].try_into().expect("eight bytes")) != fds.len() as u64 {
         return Err(malformed("descriptor count"));
     }
-    let mut prefix = [0];
-    let prefix_len = usize::from(request_bounds && len > 0);
+    let mut prefix = [0; 2];
+    let mut prefix_len = usize::from(request_bounds && len > 0);
     if prefix_len != 0 {
         read_frame_with_rights_exact(
             stream,
-            &mut prefix,
+            &mut prefix[..1],
             deadline,
             &mut delta.body,
             &mut delta.fds,
         )?;
-        if prefix[0] == ENDPOINT && (len > crate::endpoint::ENDPOINT_FRAME_LIMIT || !fds.is_empty())
-        {
-            return Err(malformed(
-                "execution endpoint frame exceeds bounds or carries descriptors",
-            ));
+        if prefix[0] == ENDPOINT {
+            if len > crate::endpoint::ENDPOINT_FRAME_LIMIT || !fds.is_empty() || len < 2 {
+                return Err(malformed(
+                    "execution endpoint frame exceeds bounds or carries descriptors",
+                ));
+            }
+            read_frame_with_rights_exact(
+                stream,
+                &mut prefix[1..],
+                deadline,
+                &mut delta.body,
+                &mut delta.fds,
+            )?;
+            prefix_len = 2;
+            let bound = match prefix[1] {
+                0 => InputSpec::MAX_REPRODUCER_BYTES + control_proto::MAX_FRAME_LEN + 128,
+                1 => 18,
+                2 | 3 => 10,
+                4 => hypercall_proto::MAX_PAYLOAD + 64,
+                5 => 11,
+                _ => return Err(malformed("execution endpoint request opcode")),
+            };
+            if len > bound {
+                return Err(malformed("execution endpoint opcode frame exceeds bounds"));
+            }
         }
     }
     let mut body = vec![0; len];
     if prefix_len != 0 {
-        body[0] = prefix[0];
+        body[..prefix_len].copy_from_slice(&prefix[..prefix_len]);
     }
     read_exact(
         stream,
@@ -1358,7 +1379,10 @@ impl WorkerSession {
     fn reply_status(&self, body: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut input = In(body);
         match input.u8()? {
-            OK => {
+            OK | OK_RETIRED => {
+                if body[0] == OK_RETIRED {
+                    self.failed.set(true);
+                }
                 let result = input.0.to_vec();
                 self.copies.copied(CopySite::Decode, result.len());
                 Ok(result)
@@ -2302,14 +2326,21 @@ fn serve_measured(
             }
         };
         let result = served.handle(&body, &fds, open, &mut allocate);
-        let retired = result.is_err()
-            && served
-                .session
-                .as_ref()
-                .is_some_and(|session| session.abandoned());
-        let mut reply = status_measured(result, &copies);
+        let retired = served
+            .session
+            .as_ref()
+            .is_some_and(|session| session.abandoned());
+        let mut reply = if body.first() == Some(&ENDPOINT) {
+            endpoint::status(result, &copies)
+        } else {
+            status_measured(result, &copies)
+        };
         if retired {
-            reply[0] = FAILED_RETIRED;
+            reply[0] = if reply[0] == OK {
+                OK_RETIRED
+            } else {
+                FAILED_RETIRED
+            };
         }
         if let Some(cause) = allocation_broken {
             return Err(malformed(&format!("allocation exchange failed: {cause}")).into());
@@ -4130,6 +4161,187 @@ mod tests {
             drop(worker);
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn execution_endpoint_commit_reply_loss_and_final_guard_refusal_retire_the_worker() {
+        use crate::endpoint::*;
+        for lost in [false, true] {
+            let (mut worker, server) = if lost {
+                let (parent, child) = UnixStream::pair().unwrap();
+                let server = FixtureThread::spawn(move || {
+                    let mut served = Served::default();
+                    for index in 0..3 {
+                        let (body, fds) = recv(&child).unwrap();
+                        let out = served
+                            .handle(&body, &fds, &mut Fake::open, &mut |_| panic!("allocation"))
+                            .unwrap();
+                        if index == 2 {
+                            assert_eq!(&body[..2], &[ENDPOINT, 2]);
+                            assert_eq!(
+                                served.session().unwrap().snapshot_owned_pages(SnapId(2)),
+                                Some(1)
+                            );
+                            drop(served);
+                            return;
+                        }
+                        send(&child, &status(Ok(out)), &[]).unwrap();
+                    }
+                });
+                (connected_to_script(parent, &server), server)
+            } else {
+                threaded_quarantining(3, None)
+            };
+            let result = {
+                let ExecutionStart::Endpoint(endpoint) =
+                    ExecutionEndpoint::execute(&mut worker, endpoint_request(20)).unwrap()
+                else {
+                    panic!("expected endpoint");
+                };
+                if lost {
+                    endpoint.commit()
+                } else {
+                    let (result, checks, strict) =
+                        crate::image_identity::trace_checks(Some(2), || endpoint.commit());
+                    assert_eq!((checks, strict), (2, 0));
+                    result
+                }
+            };
+            let error = result.unwrap_err();
+            if !lost {
+                assert!(
+                    error.to_string().contains("injected loaded-image refusal"),
+                    "{error}"
+                );
+            }
+            assert!(worker.abandoned());
+            assert!(worker.state_hash().is_err());
+            drop(worker);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn execution_endpoint_rejects_masks_conflicts_trailing_bytes_and_fds_before_mutation() {
+        use crate::endpoint::*;
+        for case in 0..4 {
+            let mut served = Served {
+                session: Some(Box::new(Fake {
+                    current: 5,
+                    next: 2,
+                    states: BTreeMap::from([(1, 3), (2, 9)]),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            let mut out = Out::op(ENDPOINT);
+            if case == 1 {
+                let mut run = Vec::new();
+                control_proto::encode_request(
+                    0,
+                    &control_proto::Request::Run {
+                        until: endpoint_request(20).until,
+                        resolve: Some(Resolution {
+                            vtime: Moment(1),
+                            service: 19,
+                            id: DecisionId(77),
+                            answer: Answer(vec![0]),
+                        }),
+                    },
+                    &mut run,
+                )
+                .unwrap();
+                out.u8(0)
+                    .option(Some(1))
+                    .bytes(&InputSpec::seeded(7).try_encode_reproducer().unwrap())
+                    .bytes(&run)
+                    .u64(0)
+                    .u8(1)
+                    .u8(1);
+            } else {
+                endpoint::put_request(&mut out, &EndpointRequest::Execute(endpoint_request(20)))
+                    .unwrap();
+                if case == 0 {
+                    let index = out.0.len() - 2;
+                    out.0[index] = 128;
+                }
+                if case == 2 {
+                    out.0.push(0);
+                }
+            }
+            let fds: Vec<OwnedFd> = if case == 3 {
+                vec![tempfile::tempfile().unwrap().into()]
+            } else {
+                Vec::new()
+            };
+            assert!(
+                served
+                    .handle(&out.0, &fds, &mut Fake::open, &mut |_| panic!("allocation"))
+                    .is_err()
+            );
+            let session = served.session().unwrap();
+            assert_eq!(session.state_hash().unwrap(), [5; 32]);
+            assert_eq!(session.store_bytes(), Some(8192));
+            assert_eq!(session.telemetry_counters()[0], ("runs".to_owned(), 0));
+            assert!(!session.abandoned());
+        }
+    }
+
+    #[test]
+    fn execution_endpoint_frame_remainders_reject_owned_rights_on_both_hosts() {
+        let (sender, receiver) = UnixStream::pair().unwrap();
+        let descriptor = tempfile::tempfile().unwrap();
+        let mut header = [0; HEADER];
+        header[..8].copy_from_slice(&2_u64.to_le_bytes());
+        (&sender).write_all(&header).unwrap();
+        (&sender).write_all(&[ENDPOINT]).unwrap();
+        send_with_fds(
+            &sender,
+            &[0],
+            &[descriptor.as_fd()],
+            &mut work::Delta::default(),
+        )
+        .unwrap();
+        let mut work = work::Delta::default();
+        let error = recv_raw_bounded(
+            &receiver,
+            usize::MAX,
+            Some(Instant::now() + Duration::from_secs(1)),
+            &mut work,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected descriptors after frame header"),
+            "{error}"
+        );
+        assert_eq!(work.fds, 1);
+        assert_eq!(work.body, 2);
+    }
+
+    #[test]
+    fn execution_endpoint_opcode_bounds_reject_page_padding_before_body_allocation() {
+        let (sender, receiver) = UnixStream::pair().unwrap();
+        let mut header = [0; HEADER];
+        header[..8].copy_from_slice(&19_u64.to_le_bytes());
+        (&sender).write_all(&header).unwrap();
+        (&sender).write_all(&[ENDPOINT, 1]).unwrap();
+        let mut work = work::Delta::default();
+        let error = recv_raw_bounded(
+            &receiver,
+            usize::MAX,
+            Some(Instant::now() + Duration::from_secs(1)),
+            &mut work,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("opcode frame exceeds bounds"),
+            "{error}"
+        );
+        assert_eq!(work.body, 2);
     }
 
     #[test]

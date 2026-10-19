@@ -74,12 +74,14 @@ impl WorkerSession {
             self.retire_endpoint_worker();
             Err(malformed("execution endpoint reply carries descriptors").into())
         };
-        let guard = self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcAfter);
+        let guard = self
+            .loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::ParentRpcAfter);
         if let Err(error) = guard {
             self.retire_endpoint_worker();
             return match result {
                 Err(primary) => Err(primary),
-                Ok(_) => Err(error),
+                Ok(_) => Err(error.into()),
             };
         }
         if self.failed.get()
@@ -401,4 +403,48 @@ fn take_reply(bytes: &[u8]) -> Result<EndpointReply, EndpointError> {
     };
     input.finish()?;
     Ok(reply)
+}
+
+pub(super) fn status(result: Result<Out, Box<dyn Error>>, copies: &Arc<CopyWork>) -> Vec<u8> {
+    let error = match result {
+        Ok(out) => return status_measured(Ok(out), copies),
+        Err(error) => error,
+    };
+    let mut out = Out::measured(FAILED, copies);
+    match error.downcast_ref::<SessionError>() {
+        Some(SessionError::Hung(limit)) => {
+            out.u8(HUNG)
+                .u64(u64::try_from(limit.as_nanos()).unwrap_or(u64::MAX));
+        }
+        Some(SessionError::Abandoned) => {
+            out.u8(ABANDONED);
+        }
+        Some(SessionError::Infrastructure(detail)) => {
+            out.u8(INFRASTRUCTURE)
+                .bytes(bounded_detail(detail).as_bytes());
+        }
+        _ => {
+            out.u8(OTHER)
+                .bytes(bounded_detail(error.as_ref()).as_bytes());
+        }
+    }
+    out.0
+}
+
+fn bounded_detail(detail: impl std::fmt::Display) -> String {
+    use std::fmt::Write;
+    struct Detail(String);
+    impl std::fmt::Write for Detail {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            let mut len = value.len().min((64 << 10) - self.0.len());
+            while !value.is_char_boundary(len) {
+                len -= 1;
+            }
+            self.0.push_str(&value[..len]);
+            Ok(())
+        }
+    }
+    let mut result = Detail(String::new());
+    let _ = write!(&mut result, "{detail}");
+    result.0
 }
