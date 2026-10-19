@@ -215,6 +215,14 @@ service configuration for requests before its deadline. A request at or beyond
 the deadline remains pending at the action snapshot. The next action's branch
 installs its service configuration before resolving that request.
 
+Before executing an uncached prefix, the client compiles its action timeline
+in one checked cumulative pass. One immutable plan supplies the branch's exact
+standing-service configuration, coverage schedule, local decision handler and
+final deadline. Reconstruction compiles each prefix separately so earlier
+branches retain their original configuration bytes. Compilation and full-prefix
+history materialization remain linear in that prefix's depth; plans are not
+retained across actions.
+
 Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
