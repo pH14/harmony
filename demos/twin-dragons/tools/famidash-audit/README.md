@@ -433,6 +433,14 @@ contain actual map reads, but their centre labels need bank-aware reassessment
 when queries originate from switched banks. The retained frame790 caller
 regression demonstrates two intermediate queries previously counted as centres.
 
+The retained [Blast Processing cavity](findings/shared-engine/blastprocessing-cavity/README.md)
+and [Dark Paradise floor](findings/shared-engine/darkparadise-floor/README.md)
+packets contain narrow source-only data proposals, native release/current
+reproducers, independent collision evidence and paired clearing inputs. Blast
+changes a nonfatal contact before death; Dark passes unchanged-approach death
+checks. Their manifests describe tested scope. Other fill regions and complete
+route intent remain under review; neither packet supplies clean-round credit.
+
 `check-wave-slope-segment.py SOURCE OUTPUT` checks the experimental normal-wave
 45-degree continuous triangle routine against 46,139 exact rational clipping
 cases. When the bounded signed product helper is present, it also checks all

@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "target_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "changes": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/BlastProcessing.tmx",
+      "before_sha256": "615362f10b3ceebf77eb856dfeada50353efcf61888259813ef5b2053b7051c6",
+      "after_sha256": "6e5cc58e49b0aea3e6ff49240efe5b90cc40181709d46d0ce9121fd1dcf8d03d",
+      "edits": [
+        {
+          "column": 848,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 849,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 854,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 855,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 849,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 850,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 853,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 854,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 850,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 851,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 852,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 853,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 851,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 852,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 99
+        }
+      ]
+    }
+  ],
+  "status": "exported-built-independently-replayed-section-controls-pass",
+  "evidence": [
+    "See README.md and retained canonical original, fixed outcome, independent-core and section-control files."
+  ],
+  "limitations": [
+    "Narrow data-only repair; interior edge artwork changes.",
+    "Other source regions and whole-route intent remain under review.",
+    "No clean-round qualification."
+  ]
+}

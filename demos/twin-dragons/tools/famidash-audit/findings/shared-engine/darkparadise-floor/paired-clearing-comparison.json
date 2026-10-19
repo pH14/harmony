@@ -1,0 +1,34 @@
+[
+  {
+    "original": "darkparadise-floor-v1-root3900-original-clearing.json.gz",
+    "patched": "darkparadise-floor-v1-root3900-clearing.json.gz",
+    "frames": 4116,
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "retimed": false
+  },
+  {
+    "original": "darkparadise-floor-v1-root0-original-clearing.json.gz",
+    "patched": "darkparadise-floor-v1-root0-clearing.json.gz",
+    "frames": 4120,
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "retimed": false
+  },
+  {
+    "original": "current-darkparadise-floor-v1-root3700-original-clearing.json.gz",
+    "patched": "current-darkparadise-floor-v1-root3700-clearing.json.gz",
+    "frames": 3935,
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "retimed": false
+  },
+  {
+    "original": "current-darkparadise-floor-v1-root0-original-clearing.json.gz",
+    "patched": "current-darkparadise-floor-v1-root0-clearing.json.gz",
+    "frames": 4112,
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "retimed": false
+  }
+]

@@ -1,0 +1,46 @@
+{
+  "blastprocessing:3100": {
+    "frames": 5942,
+    "target_entries": [],
+    "source_mismatches": [],
+    "section_probes": 93,
+    "section_modes": {
+      "3": 93
+    },
+    "other_closed_live_component_counts": {},
+    "limitation": "Target-section controls only. Other closed-region contacts and coin routes require source intent review."
+  },
+  "blastprocessing:0": {
+    "frames": 5947,
+    "target_entries": [],
+    "source_mismatches": [],
+    "section_probes": 93,
+    "section_modes": {
+      "3": 93
+    },
+    "other_closed_live_component_counts": {},
+    "limitation": "Target-section controls only. Other closed-region contacts and coin routes require source intent review."
+  },
+  "darkparadise:3900": {
+    "frames": 4116,
+    "target_entries": [],
+    "source_mismatches": [],
+    "section_probes": 104,
+    "section_modes": {
+      "6": 104
+    },
+    "other_closed_live_component_counts": {},
+    "limitation": "Target-section controls only. Other closed-region contacts and coin routes require source intent review."
+  },
+  "darkparadise:0": {
+    "frames": 4120,
+    "target_entries": [],
+    "source_mismatches": [],
+    "section_probes": 104,
+    "section_modes": {
+      "6": 104
+    },
+    "other_closed_live_component_counts": {},
+    "limitation": "Target-section controls only. Other closed-region contacts and coin routes require source intent review."
+  }
+}

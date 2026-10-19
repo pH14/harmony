@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "changes": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/darkparadise.tmx",
+      "before_sha256": "0ce7bcb0a30a51c6f80d16fd39b9b6b12bba87234cb5d4cd4ec58e61ad0fe7aa",
+      "after_sha256": "d934cc46bb9f25cc2d8ed6175266359f3b73e644c78050f0d075078dfbf6e83e",
+      "edits": [
+        {
+          "column": 586,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 587,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 588,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 589,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 590,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 591,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 584,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 585,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 586,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 587,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 588,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 589,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 590,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 591,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 592,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 593,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 99
+        }
+      ]
+    }
+  ],
+  "status": "exported-built-independently-replayed-section-controls-pass",
+  "evidence": [
+    "See README.md and retained canonical original, fixed outcome, independent-core and section-control files."
+  ],
+  "limitations": [
+    "Narrow data-only repair; interior edge artwork changes.",
+    "Other source regions and whole-route intent remain under review.",
+    "No clean-round qualification."
+  ]
+}

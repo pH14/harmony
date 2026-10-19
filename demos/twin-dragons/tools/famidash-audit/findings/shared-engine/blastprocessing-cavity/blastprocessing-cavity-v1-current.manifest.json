@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "changes": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/blastprocessing.tmx",
+      "before_sha256": "68906954d6eeb043be299727ceba4002efded1604cad4d5b45dd31eba0013e58",
+      "after_sha256": "657d122c1213c5638965affaba5d08e99136428e67dacdfaabe90ca9c23accba",
+      "edits": [
+        {
+          "column": 848,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 849,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 854,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 849,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 850,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 853,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 850,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 851,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 852,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 851,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 101
+        }
+      ]
+    }
+  ],
+  "status": "exported-built-independently-replayed-section-controls-pass",
+  "evidence": [
+    "See README.md and retained canonical original, fixed outcome, independent-core and section-control files."
+  ],
+  "limitations": [
+    "Narrow data-only repair; interior edge artwork changes.",
+    "Other source regions and whole-route intent remain under review.",
+    "No clean-round qualification."
+  ]
+}

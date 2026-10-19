@@ -1,0 +1,48 @@
+{
+  "blastprocessing:100": {
+    "frames": 5949,
+    "target_entries": [],
+    "source_mismatches": [],
+    "section_probes": 93,
+    "section_modes": {
+      "3": 93
+    },
+    "other_closed_live_component_counts": {},
+    "limitation": "Target-section controls. Source-edge passages, sprites and objectives still require intent review."
+  },
+  "blastprocessing:0": {
+    "frames": 5949,
+    "target_entries": [],
+    "source_mismatches": [],
+    "section_probes": 93,
+    "section_modes": {
+      "3": 93
+    },
+    "other_closed_live_component_counts": {},
+    "limitation": "Target-section controls. Source-edge passages, sprites and objectives still require intent review."
+  },
+  "darkparadise:3700": {
+    "frames": 3935,
+    "target_entries": [],
+    "source_mismatches": [],
+    "section_probes": 104,
+    "section_modes": {
+      "6": 104
+    },
+    "other_closed_live_component_counts": {
+      "27": 11
+    },
+    "limitation": "Target-section controls. Source-edge passages, sprites and objectives still require intent review."
+  },
+  "darkparadise:0": {
+    "frames": 4112,
+    "target_entries": [],
+    "source_mismatches": [],
+    "section_probes": 104,
+    "section_modes": {
+      "6": 104
+    },
+    "other_closed_live_component_counts": {},
+    "limitation": "Target-section controls. Source-edge passages, sprites and objectives still require intent review."
+  }
+}

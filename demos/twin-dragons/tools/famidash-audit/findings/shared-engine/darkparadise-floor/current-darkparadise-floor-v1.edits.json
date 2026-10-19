@@ -1,0 +1,111 @@
+{
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "evidence": [
+    "Original FCEUmm raw centre hits3997..4007 inside closed sprite-free floor239; actual originalNESrender4005reviewed. No coins within8tiles. Candidate16fillcells becomeexistingCOLALLblack variants; visual internal edges change. Export/build/pairednegativeandsectioncontrolsrequired."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/darkparadise.tmx",
+      "source_sha256": "0ce7bcb0a30a51c6f80d16fd39b9b6b12bba87234cb5d4cd4ec58e61ad0fe7aa",
+      "edits": [
+        {
+          "column": 586,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 587,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 588,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 589,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 590,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 591,
+          "row": 21,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 584,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 585,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 586,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 587,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 588,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 589,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 590,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 591,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 592,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 593,
+          "row": 22,
+          "from_gid": 112,
+          "to_gid": 99
+        }
+      ]
+    }
+  ],
+  "already_solid_current_cells": []
+}

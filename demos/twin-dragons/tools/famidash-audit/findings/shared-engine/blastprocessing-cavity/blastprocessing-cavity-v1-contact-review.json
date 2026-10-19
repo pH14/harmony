@@ -1,0 +1,25 @@
+{
+  "original-component50": {
+    "target_entries": [
+      4921,
+      4922,
+      4923,
+      4924,
+      4925,
+      4926,
+      4927,
+      4928,
+      4929,
+      4930,
+      4931,
+      4932
+    ],
+    "source_mismatches": [],
+    "centre_probes": 34
+  },
+  "cavity-v1-actual": {
+    "target_entries": [],
+    "source_mismatches": [],
+    "centre_probes": 20
+  }
+}

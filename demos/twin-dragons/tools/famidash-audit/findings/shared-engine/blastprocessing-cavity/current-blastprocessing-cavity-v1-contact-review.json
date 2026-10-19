@@ -1,0 +1,19 @@
+{
+  "original": {
+    "target_entries": [
+      4934,
+      4935,
+      4936,
+      4937,
+      4938,
+      4939
+    ],
+    "source_mismatches": [],
+    "centre_probes": 31
+  },
+  "fixed": {
+    "target_entries": [],
+    "source_mismatches": [],
+    "centre_probes": 23
+  }
+}

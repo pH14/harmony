@@ -1,0 +1,79 @@
+{
+  "releaseA": {
+    "changed": [
+      {
+        "path": "blastprocessing.lz.bin",
+        "before_bytes": 4822,
+        "after_bytes": 4848,
+        "before_sha256": "735658e15c70cc0f20069fe0b032c881194e334a6d9032db6c92ce3eda3d483d",
+        "after_sha256": "0b98fda23008c7582148422f703f95a849b6069d0d4e908c3fc6d21a94b51516"
+      }
+    ],
+    "added": [],
+    "removed": [],
+    "unchanged_payloads": 50
+  },
+  "releaseB": {
+    "changed": [
+      {
+        "path": "darkparadise.lz.bin",
+        "before_bytes": 4328,
+        "after_bytes": 4336,
+        "before_sha256": "95452d7b5419c1c5577e36454e39110da940a1af21b85ba39fd80688d4a1c05b",
+        "after_sha256": "2e320a3893a05edf38be362918ddac4d191ff8f2022a7d7ee5b6e08f99ff924b"
+      }
+    ],
+    "added": [],
+    "removed": [],
+    "unchanged_payloads": 42
+  },
+  "currentA": {
+    "changed": [
+      {
+        "path": "level/blastprocessing.lz.bin",
+        "before_bytes": 5293,
+        "after_bytes": 5312,
+        "before_sha256": "f961d10c66cfa7286df8552e772df4129739fcfcb5fc9819ba21fd1f7f937228",
+        "after_sha256": "488993129e01d67c40ea24b6a5d6f9e03610f7c3bf7f9cacf46e9c6271da5fc3"
+      }
+    ],
+    "added": [],
+    "removed": [],
+    "unchanged_payloads": 93
+  },
+  "currentB": {
+    "changed": [
+      {
+        "path": "level/darkparadise.lz.bin",
+        "before_bytes": 4328,
+        "after_bytes": 4336,
+        "before_sha256": "0223cf42f3d671599195b05eacfc6f18642a8367d99b4e1873c7ce9d93aed30a",
+        "after_sha256": "123806b235eaf3445272c6354e2a14fb6cf929842063daeda328453c9ff0fcc6"
+      }
+    ],
+    "added": [],
+    "removed": [],
+    "unchanged_payloads": 85
+  },
+  "currentHUGE": {
+    "changed": [
+      {
+        "path": "level/blastprocessing.lz.bin",
+        "before_bytes": 5293,
+        "after_bytes": 5312,
+        "before_sha256": "f961d10c66cfa7286df8552e772df4129739fcfcb5fc9819ba21fd1f7f937228",
+        "after_sha256": "488993129e01d67c40ea24b6a5d6f9e03610f7c3bf7f9cacf46e9c6271da5fc3"
+      },
+      {
+        "path": "level/darkparadise.lz.bin",
+        "before_bytes": 4328,
+        "after_bytes": 4336,
+        "before_sha256": "0223cf42f3d671599195b05eacfc6f18642a8367d99b4e1873c7ce9d93aed30a",
+        "after_sha256": "123806b235eaf3445272c6354e2a14fb6cf929842063daeda328453c9ff0fcc6"
+      }
+    ],
+    "added": [],
+    "removed": [],
+    "unchanged_payloads": 405
+  }
+}

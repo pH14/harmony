@@ -1,0 +1,34 @@
+[
+  {
+    "original": "blastprocessing-original-round80-root3100-clearing.json.gz",
+    "patched": "blastprocessing-original-round80-root3100-patched-clearing.json.gz",
+    "frames": 5942,
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "retimed": false
+  },
+  {
+    "original": "blastprocessing-original-round80-root0-clearing.json.gz",
+    "patched": "blastprocessing-original-round80-root0-patched-clearing.json.gz",
+    "frames": 5947,
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "retimed": false
+  },
+  {
+    "original": "current-blastprocessing-original-round84-root100-clearing.json.gz",
+    "patched": "current-blastprocessing-original-round84-root100-patched-clearing.json.gz",
+    "frames": 5949,
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "retimed": false
+  },
+  {
+    "original": "current-blastprocessing-original-round84-root0-clearing.json.gz",
+    "patched": "current-blastprocessing-original-round84-root0-patched-clearing.json.gz",
+    "frames": 5949,
+    "actions_equal": true,
+    "entire_trace_equal": true,
+    "retimed": false
+  }
+]

@@ -1,0 +1,96 @@
+{
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "evidence": [
+    "Fresh original-ROM Dissonance82 candidate3: actual FCE centre inside source component50 frames4921..4932 through SMALL_SAW boundary. Closed outlined cavity, no internal sprites/objectives within8tiles. Source-only14cellCOLALLblack variants; internal edge artwork changes. Needs export/build/negative/section-control validation."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/blastprocessing.tmx",
+      "source_sha256": "68906954d6eeb043be299727ceba4002efded1604cad4d5b45dd31eba0013e58",
+      "edits": [
+        {
+          "column": 848,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 849,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 854,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 849,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 850,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 853,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 850,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 851,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 852,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 851,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 101
+        }
+      ]
+    }
+  ],
+  "already_solid_current_cells": [
+    {
+      "column": 855,
+      "row": 17,
+      "existing_metatile": 107
+    },
+    {
+      "column": 854,
+      "row": 18,
+      "existing_metatile": 107
+    },
+    {
+      "column": 853,
+      "row": 19,
+      "existing_metatile": 107
+    },
+    {
+      "column": 852,
+      "row": 20,
+      "existing_metatile": 107
+    }
+  ]
+}

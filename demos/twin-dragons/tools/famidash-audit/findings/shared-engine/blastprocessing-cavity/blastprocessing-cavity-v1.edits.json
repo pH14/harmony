@@ -1,0 +1,98 @@
+{
+  "target_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "evidence": [
+    "Fresh original-ROM Dissonance82 candidate3: actual FCE centre inside source component50 frames4921..4932 through SMALL_SAW boundary. Closed outlined cavity, no internal sprites/objectives within8tiles. Source-only14cellCOLALLblack variants; internal edge artwork changes. Needs export/build/negative/section-control validation."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/BlastProcessing.tmx",
+      "source_sha256": "615362f10b3ceebf77eb856dfeada50353efcf61888259813ef5b2053b7051c6",
+      "edits": [
+        {
+          "column": 848,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 849,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 854,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 855,
+          "row": 17,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 849,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 850,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 853,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 854,
+          "row": 18,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 850,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 851,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 852,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 111
+        },
+        {
+          "column": 853,
+          "row": 19,
+          "from_gid": 112,
+          "to_gid": 99
+        },
+        {
+          "column": 851,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 101
+        },
+        {
+          "column": 852,
+          "row": 20,
+          "from_gid": 112,
+          "to_gid": 99
+        }
+      ]
+    }
+  ]
+}

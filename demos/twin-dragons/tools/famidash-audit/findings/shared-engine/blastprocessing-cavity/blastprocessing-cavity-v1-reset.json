@@ -1,0 +1,22 @@
+{
+  "case_sha256": "833ddee562758d9edc20ce173882a8a35bbe5caf33d3fadb7d37c6ad42c12ab8",
+  "rom_sha256": "d19efc6a6996e37dfb06eb753849be88e7a0dbfef5dc4c896e9fa941731e1b50",
+  "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+  "released_frames_after_death": 40,
+  "endpoint": {
+    "level": 16,
+    "state": 2,
+    "x": -224,
+    "y": 895,
+    "camera": 719,
+    "vy": 0,
+    "mode": 0,
+    "gravity": 0,
+    "mini": 0,
+    "dual": 0,
+    "dead": false,
+    "debug": 0,
+    "invincible": 8,
+    "paused": 0
+  }
+}
