@@ -719,6 +719,18 @@ the calling thread to one core on Linux. A worker's guest runs on the thread
 that owns its session, so pinning that thread keeps the guest on one core. On
 macOS the pool counts the performance cores and nothing is pinned.
 
+CPU topology metadata has private, fail-closed admission caps: 64 KiB per text
+value, 4 MiB of cumulative census text, 4,096 expanded ID occurrences per list,
+1,024 eligible CPUs and online NUMA nodes, and 8,388,608 cumulative parsed or
+copied ID occurrences. Overlapping ranges count repeatedly before deduplication;
+all range lengths and aggregate charges are checked before expansion or copying.
+Sparse high identifiers remain valid within these cardinality limits. The file
+reader stops at the per-value limit plus one byte and refuses oversize values;
+numeric and cache-kind text share the census budget. Present metadata beyond a
+cap is refused. Present malformed hybrid core-type lists are also refused;
+missing files and valid empty or noneligible pools retain the existing fallback.
+These limits bound host metadata processing, not guest execution or host speed.
+
 Placement runs before target creation and guest population. Memory policy is
 inherited from the host; affinity alone does not relocate populated pages or
 guarantee a NUMA allocation. Shared snapshot extents retain their existing page
