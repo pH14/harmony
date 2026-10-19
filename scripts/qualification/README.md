@@ -232,3 +232,46 @@ library execution remains available, with an unqualified assurance identity
 bound through snapshots, cache namespaces and replay certificates. Existing
 bounded passing receipts retain their stated scope; neither their existence nor
 matching CPU metadata grants a stronger claim.
+
+## Packaged production host composition
+
+`scripts/qualify-packaged-host.py` consumes the exact CLI and guest runtime
+archives under test, rather than linking another VMM test executable. It
+extracts only the expected regular files, checks the runtime manifest against
+this source and its kernel/initramfs bytes, then uses the packaged frontend for
+command execution, same-host replay and one completed search. The owned C
+fixture emits a reviewed RAM-checksum readback before returning or waiting as
+the supervised search node. Direct/replay must retain that nonempty readback,
+positive work, successful application completion and the exact serial record.
+Each public manifest must identify the admitted sealed host and commit the
+actual kernel and composed initramfs with the supplied base prefix.
+
+The search must finish exactly one execution without infrastructure failures or
+watchdog cutoffs. Per-worker protocol counters must show completed work. A
+separate minimal process/open/ioctl trace requires successful `session-worker`
+exec (including `execveat`), a `/dev/kvm` descriptor, VM and vCPU creation, a
+successful `KVM_RUN` on that vCPU, and normal exit in the same child process.
+Parent-only KVM activity, an exec attempt, failed ioctls and another child's
+activity cannot satisfy that witness. Tracing records only the owned fixture's
+process, file-open/close and virtualization calls; it does not expand exec
+environment contents.
+
+`scripts/qualification/packaged-host.json` fixes the finite matrix. This cell
+establishes local public command/readback replay and production worker
+execution for its exact archives and workload. Whole-state/history equality,
+fresh/reused restoration, portable import, cross-host behavior, HVF and UML
+whole state remain explicitly unavailable in its receipt. Internal telemetry
+that counts a restore is not an independent continuation-equivalence oracle.
+No production exact-composition capability follows from this finite cell, and
+the retained AMD/Intel and UML limitations remain in force.
+
+The receipt binds the qualifier file digest and repository head, registry, input archive/fixture
+digests, active executable/runtime/image bytes, loaded host identity, actual
+host inventory and bounded outcomes. Input and active-file hashes must remain
+unchanged through execution. Unavailable hardware records a blocked outcome
+and exits unsuccessfully; required Linux release cells cannot green-skip.
+Diagnostic archives retain selected command/search records and child traces
+without duplicating host binaries, guest RAM or cache stores. Release publication
+requires both Linux architecture cells and publishes those same CLI/runtime
+archives with their composition receipts and diagnostic archives. Pull requests
+exercise the same adapter on x86 using the existing CLI/runtime producer bytes.

@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "scope": "finite same-host Linux KVM production CLI/worker composition for the owned packaged-host readback workload; no general execution or portability qualification",
+  "required_architectures": ["x86_64", "aarch64"],
+  "transforms": {
+    "direct": "guest readback, successful command exit and terminal record",
+    "same-host-replay": "exact command record and serial output",
+    "search-worker": "one completed public search execution with successful worker-child exec, KVM_RUN and normal child exit",
+    "fresh-restore-equivalence": "unavailable",
+    "reused-restore-equivalence": "unavailable",
+    "portable-import-equivalence": "unavailable",
+    "whole-state-equivalence": "unavailable",
+    "ordered-history-equivalence": "unavailable",
+    "cross-host-equivalence": "unavailable",
+    "hvf-composition": "unavailable",
+    "uml-whole-state": "unavailable"
+  }
+}

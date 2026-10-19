@@ -437,6 +437,14 @@ QuickNES recordings retain their native loaded-image identity.
 Linux hosts must permit executable memfds; `vm.memfd_noexec=2` prevents
 Consonance execution and produces an explicit error.
 
+The Linux release check exercises the same packaged frontend, sealed host and
+guest runtime archives that publication uses. The bounded fixture emits a
+reviewed readback, replays a completed command, and runs one public search with
+a traced production worker child. This checks those local public paths; it
+does not establish whole-state or history equivalence, restore portability,
+macOS composition or cross-host behavior. The release retains the finite matrix
+and exact artifact digests beside the executable and runtime assets.
+
 The v4 manifest contains the loaded Harmony executable identity, resolved
 workload and runner identities, artifact hashes, parent recording and a
 package-owned payload. Shared recording storage never decodes

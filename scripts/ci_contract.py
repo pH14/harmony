@@ -705,6 +705,7 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
             select="harmony_languages"),
         Job("UML Command Replay", "pr", 15, select="harmony_languages"),
+        Job("Packaged Composition", "pr", 15, select="harmony_languages"),
     ),
 )
 
@@ -788,6 +789,7 @@ RELEASE = Workflow(
         Job("Guest Runtime — <Architecture>", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
         Job("UML Runtime — <Architecture>", "full", 120),
         Job("Language SDK", "full", 15),
+        Job("Packaged Composition — <Architecture>", "full", 15),
         Job("Publish", "full", 30),
     ),
 )
