@@ -164,7 +164,7 @@ def search_result(directory):
     workers = summary.get("telemetry", {}).get("workers", [])
     if (record.get("execution_ticks", 0) <= 0 or record.get("workers", 0) <= 0
             or len(workers) != record["workers"] or sum(worker.get("jobs", 0) for worker in workers) != 1
-            or not any(worker.get("jobs", 0) > 0 and worker.get("target", {}).get("vmm.transport.child.loop.run.receive.completed", 0) > 0 for worker in workers)):
+            or not any(worker.get("jobs", 0) > 0 and worker.get("target", {}).get("vmm.transport.child.loop.endpoint.receive.completed", 0) > 0 for worker in workers)):
         raise ValueError("public search lacks completed production worker protocol work")
     return {key: record[key] for key in ("executions", "execution_failures", "watchdog_cutoffs", "execution_ticks", "workers")}
 

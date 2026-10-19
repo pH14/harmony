@@ -102,12 +102,31 @@ class PackagedHostTests(unittest.TestCase):
     def test_public_search_requires_completed_work_without_failures(self):
         record = {"mode": "search", "executions": 1, "execution_failures": 0, "watchdog_cutoffs": 0, "bug_found": False, "execution_ticks": 1, "workers": 1}
         P.write(self.root / 'report.json', record)
-        P.write(self.root / 'campaign-summary.json', {"telemetry": {"workers": [{"jobs": 1, "target": {"vmm.transport.child.loop.run.receive.completed": 1}}]}})
+        P.write(self.root / 'campaign-summary.json', {"telemetry": {"workers": [{"jobs": 1, "target": {"vmm.transport.child.loop.endpoint.receive.completed": 3}}]}})
         self.assertEqual(P.search_result(self.root)['executions'], 1)
-        for key, value in (("mode", "replay"), ("executions", 0), ("executions", 2), ("execution_failures", 1), ("watchdog_cutoffs", 1), ("bug_found", True)):
+        for key, value in (("mode", "replay"), ("executions", 0), ("executions", 2), ("execution_failures", 1), ("watchdog_cutoffs", 1), ("bug_found", True), ("execution_ticks", 0), ("workers", 0)):
             P.write(self.root / 'report.json', {**record, key: value})
             with self.subTest(key=key), self.assertRaises(ValueError):
                 P.search_result(self.root)
+
+    def test_public_search_requires_endpoint_completion_on_the_job_worker(self):
+        record = {"mode": "search", "executions": 1, "execution_failures": 0, "watchdog_cutoffs": 0, "bug_found": False, "execution_ticks": 1, "workers": 1}
+        P.write(self.root / 'report.json', record)
+        for target in ({}, {"vmm.transport.child.loop.endpoint.receive.completed": 0},
+                       {"vmm.transport.child.loop.run.receive.completed": 1},
+                       {"vmm.transport.child.loop.hello.receive.completed": 1},
+                       {"vmm.transport.child.loop.identity.receive.completed": 1},
+                       {"vmm.transport.child.loop.endpoint.receive.attempts": 1,
+                        "vmm.transport.child.loop.endpoint.receive.errors": 1}):
+            P.write(self.root / 'campaign-summary.json', {"telemetry": {"workers": [{"jobs": 1, "target": target}]}})
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "completed production worker"):
+                P.search_result(self.root)
+        P.write(self.root / 'report.json', {**record, "workers": 2})
+        P.write(self.root / 'campaign-summary.json', {"telemetry": {"workers": [
+            {"jobs": 1, "target": {"vmm.transport.child.loop.run.receive.completed": 1}},
+            {"jobs": 0, "target": {"vmm.transport.child.loop.endpoint.receive.completed": 1}}]}})
+        with self.assertRaisesRegex(ValueError, "completed production worker"):
+            P.search_result(self.root)
 
     def test_public_manifest_requires_completed_strict_kvm_host(self):
         record = {"status": "complete", "error": None, "binary_identity": "linux-sealed-static-memfd-elf-sha256-v1:" + 'a' * 64, "runner_identity": {"backend": "kvm"}}
@@ -177,7 +196,7 @@ class PackagedHostTests(unittest.TestCase):
             P.write(destination / 'report.json', {'mode': 'search', 'executions': 1, 'execution_failures': 0,
                     'watchdog_cutoffs': 0, 'bug_found': False, 'execution_ticks': 2, 'workers': 1})
             P.write(destination / 'campaign-summary.json', {'telemetry': {'workers': [{'jobs': 1,
-                    'target': {'vmm.transport.child.loop.run.receive.completed': 1}}]}})
+                    'target': {'vmm.transport.child.loop.endpoint.receive.completed': 3}}]}})
         else:
             serial = P.READBACK + b'\n'
             (destination / 'serial.log').write_bytes(serial)
@@ -202,12 +221,15 @@ class PackagedHostTests(unittest.TestCase):
 
     def test_actual_failed_worker_or_changed_runtime_cannot_pass_public_flow(self):
         inputs = self.flow_inputs()
-        for mode in ('missing-worker', 'wrong-kernel', 'wrong-base', 'wrong-readback', 'different-replay'):
+        for mode in ('missing-worker', 'missing-endpoint-work', 'wrong-kernel', 'wrong-base', 'wrong-readback', 'different-replay'):
             def changed(arguments, log, cpus, trace=None):
                 self.fake_execution(arguments, log, cpus, trace)
                 destination = Path(arguments[arguments.index('--out') + 1])
                 if trace and mode == 'missing-worker':
                     (trace / 'search.123').write_text(KVM + EXIT)
+                if trace and mode == 'missing-endpoint-work':
+                    P.write(destination / 'campaign-summary.json', {'telemetry': {'workers': [{'jobs': 1,
+                            'target': {'vmm.transport.child.loop.run.receive.completed': 3}}]}})
                 if mode == 'wrong-readback' and not trace:
                     (destination / 'serial.log').write_bytes(b'other readback\n')
                 if mode == 'different-replay' and destination.name == 'replay':
@@ -226,7 +248,7 @@ class PackagedHostTests(unittest.TestCase):
                 self.flow(inputs, output, changed)
             record = P.read(output / 'receipt.json')
             self.assertEqual(record['outcome'], 'failed')
-            failed = 'search-worker' if mode == 'missing-worker' else 'same-host-replay' if mode == 'different-replay' else 'direct'
+            failed = 'search-worker' if mode in ('missing-worker', 'missing-endpoint-work') else 'same-host-replay' if mode == 'different-replay' else 'direct'
             self.assertEqual(record['transforms'][failed]['outcome'], 'failed')
             self.assertTrue(all(record['transforms'][name]['outcome'] == 'unavailable' for name in P.UNAVAILABLE))
 
