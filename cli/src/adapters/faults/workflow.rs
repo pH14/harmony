@@ -681,6 +681,72 @@ mod tests {
         Ok(())
     }
 
+    fn prepared_fixture_request(
+        execution: &oci_support::PreparedExecution,
+        config: &Config,
+    ) -> Result<crate::package::Request> {
+        Ok(crate::package::Request {
+            operation: if execution.execution().bundle.is_some() {
+                crate::package::Operation::Search
+            } else {
+                crate::package::Operation::Run
+            },
+            config: config.shared()?,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn prepared_fixture_declares_supervised_intent_before_handoff_admission() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::create_dir_all(root.path().join("etc/harmony"))?;
+        fs::write(
+            root.path().join("etc/harmony/bundle"),
+            b"node app /bin/app\n",
+        )?;
+        let image = oci_support::image::StagedImage {
+            rootfs: root.path().to_owned(),
+            owners: Default::default(),
+            config: Default::default(),
+        };
+        for supervised in [false, true] {
+            let launch = if supervised {
+                oci_support::LaunchRequest::default()
+                    .with_bundle(faults_workload::prepare::SUPERVISOR_BUNDLE)
+            } else {
+                oci_support::LaunchRequest::new(vec!["/bin/app".into()])
+            };
+            let execution = oci_support::bundle::prepare(&image, &launch)?;
+            let config = Config {
+                backend: Backend::Kvm,
+                command: if supervised {
+                    Vec::new()
+                } else {
+                    execution.execution().argv.clone()
+                },
+                ..Default::default()
+            };
+            let request = prepared_fixture_request(&execution, &config)?;
+            let mut record = crate::handoff::Record::new(&request)?;
+            record.kernel = b"captured kernel".to_vec();
+            record.base = b"captured base".to_vec();
+            record.execution = Some(execution.record());
+            let file = tempfile::NamedTempFile::new()?;
+            record.write(file.path())?;
+            let (request, prepared) = crate::handoff::Record::read(file.path())?;
+            assert_eq!(
+                request.operation,
+                if supervised {
+                    crate::package::Operation::Search
+                } else {
+                    crate::package::Operation::Run
+                }
+            );
+            assert_eq!(prepared.bundle.is_some(), supervised);
+        }
+        Ok(())
+    }
+
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn prepared_uml_handoff(
         execution: &oci_support::PreparedExecution,
@@ -702,11 +768,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let request = crate::package::Request {
-            operation: crate::package::Operation::Run,
-            config: config.shared()?,
-            ..Default::default()
-        };
+        let request = prepared_fixture_request(execution, &config)?;
         let mut record = crate::handoff::Record::new(&request)?;
         record.kernel = fs::read(kernel)?;
         record.base = fs::read(base)?;

@@ -467,6 +467,12 @@ reconstructs canonical OCI control bytes from the prepared record. It independen
 admits the actual archived application image and supervisor vocabulary. Faults
 supervision must agree with the requested search, captured actions and configured
 nodes; a plain execution cannot discard requested actions or replace supervision.
+Execution-bearing fields are accepted only by operations that consume them:
+actions by Faults/NES runs and branches, guest commands by Faults branches,
+console output by plain Faults runs, and additional budgets by saved searches.
+Raw command overrides must agree with the effective Faults run configuration.
+Saved replay, branch and resume require a selection; incompatible point selectors,
+commands, captures and repeat counts are refused before execution.
 Prepared rootfs inflation is bounded to 1 GiB. Source recipe/image changes after capture
 cannot replace those bytes. Captured UML files are independently loaded through
 the reviewed-profile validator. The temporary profile and captured inputs remain

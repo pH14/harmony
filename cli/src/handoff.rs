@@ -79,6 +79,71 @@ impl Write for RecordWriter {
     }
 }
 
+fn validate_request_inputs(request: &Request) -> Result<()> {
+    let saved = request.selection.is_some();
+    let faults = request.config.workload.package == "faults";
+    let nes = request.config.workload.package == "nes";
+    let branch = request.operation == Operation::Branch;
+    if (request.operation == Operation::Run && saved)
+        || (matches!(
+            request.operation,
+            Operation::Replay | Operation::Branch | Operation::Resume
+        ) && !saved)
+        || (request.operation == Operation::Resume
+            && request
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.finding.is_some()))
+    {
+        return Err("prepared selection differs from its operation".into());
+    }
+    if request.actions.is_some()
+        && (!(faults || nes) || !matches!(request.operation, Operation::Run | Operation::Branch))
+    {
+        return Err("prepared operation does not accept captured actions".into());
+    }
+    if !request.command.is_empty() && !(faults && request.operation == Operation::Run) {
+        return Err("prepared operation does not accept command overrides".into());
+    }
+    let commands = usize::from(request.exec.is_some())
+        + usize::from(request.exec_file.is_some())
+        + usize::from(request.shell);
+    if commands > 1 || (commands != 0 && !(faults && branch)) {
+        return Err("prepared operation does not accept these guest commands".into());
+    }
+    if request.stop && !(branch && (faults || nes)) {
+        return Err("prepared operation does not accept stopping the suffix".into());
+    }
+    if request.console && !(faults && request.operation == Operation::Run) {
+        return Err("prepared operation does not accept a live console".into());
+    }
+    let points = usize::from(request.point.step.is_some())
+        + usize::from(request.point.rewind.is_some())
+        + usize::from(request.point.rewind_time.is_some());
+    if points > 1
+        || (points != 0
+            && !((faults || nes) && (branch || (saved && request.operation == Operation::Search))))
+    {
+        return Err("prepared operation does not accept these point selectors".into());
+    }
+    if request.repeat == 0
+        || (request.repeat != 1
+            && !matches!(request.operation, Operation::Run | Operation::Replay)
+            && !(nes && branch))
+    {
+        return Err("prepared operation does not accept these repeats".into());
+    }
+    let budget = &request.budget;
+    if (budget.seed.is_some() || budget.executions.is_some() || budget.wall_seconds.is_some())
+        && !((faults || nes)
+            && saved
+            && matches!(request.operation, Operation::Search | Operation::Resume))
+    {
+        return Err("prepared operation does not accept additional search budgets".into());
+    }
+    Ok(())
+}
+
 impl Record {
     #[cfg(any(feature = "frontend", test))]
     pub fn new(request: &Request) -> Result<Self> {
@@ -166,6 +231,7 @@ impl Record {
         {
             return Err("the guarded runtime accepts only prepared Consonance execution".into());
         }
+        validate_request_inputs(&request)?;
         let runtime = crate::runners::consonance(&request.config.runner)?;
         if runtime.backend == Backend::Auto {
             return Err("prepared execution must pin its backend".into());
@@ -269,6 +335,11 @@ impl Record {
                 {
                     return Err("prepared execution still contains build work".into());
                 }
+                if !request.command.is_empty() && request.command != config.command {
+                    return Err(
+                        "prepared command override differs from its effective configuration".into(),
+                    );
+                }
                 if let Some(execution) = &execution {
                     let mode = if config.backend == Backend::Uml {
                         faults_workload::admission::ExecutionMode::Uml
@@ -283,6 +354,11 @@ impl Record {
                         || !config.nodes.is_empty();
                     if execution.execution().bundle.is_some() != supervised {
                         return Err("prepared fault supervision differs from its request".into());
+                    }
+                    if supervised && request.console {
+                        return Err(
+                            "prepared supervised execution does not accept a live console".into(),
+                        );
                     }
                     if request.operation == Operation::Run
                         && !config.command.is_empty()
@@ -497,6 +573,186 @@ mod tests {
     }
 
     #[test]
+    fn handoff_rejects_rechecksummed_unused_execution_inputs() {
+        for case in 0..15 {
+            let mut record = fault_record(Operation::Search, false, false, true);
+            let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+            match case {
+                0 => {
+                    request.actions = Some("actions".into());
+                    record.inputs.insert("actions".into(), b"[]".to_vec());
+                }
+                1 => request.command = vec!["/bin/false".into()],
+                2 => request.exec = Some("false".into()),
+                3 => {
+                    request.exec_file = Some("script".into());
+                    record.inputs.insert("exec-file".into(), b"false".to_vec());
+                }
+                4 => request.shell = true,
+                5 => request.stop = true,
+                6 => request.console = true,
+                7 => request.point.step = Some(0),
+                8 => request.point.rewind = Some(1),
+                9 => request.point.rewind_time = Some("1s".into()),
+                10 => request.repeat = 2,
+                11 => request.repeat = 0,
+                12 => request.budget.executions = Some(1),
+                13 => request.budget.seed = Some(1),
+                _ => request.budget.wall_seconds = Some(1),
+            }
+            record.request = serde_json::to_vec(&request).unwrap();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            let error = Record::read(file.path()).err().unwrap().to_string();
+            assert!(error.contains("prepared operation"), "case {case}: {error}");
+        }
+    }
+
+    #[test]
+    fn handoff_checks_raw_commands_and_supervised_console_before_execution() {
+        for case in 0..3 {
+            let mut record = fault_record(Operation::Run, false, case != 0, case != 0);
+            let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+            if case < 2 {
+                request.command = vec!["/bin/false".into()];
+            } else {
+                request.console = true;
+            }
+            record.request = serde_json::to_vec(&request).unwrap();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            let error = Record::read(file.path()).err().unwrap().to_string();
+            assert!(
+                error.contains(if case < 2 {
+                    "command override differs"
+                } else {
+                    "supervised execution does not accept a live console"
+                }),
+                "{error}"
+            );
+        }
+        let mut record = fault_record(Operation::Run, false, false, false);
+        let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+        let mut config =
+            crate::adapters::faults::config::Config::from_shared(&request.config).unwrap();
+        config.command = vec!["/app/service".into()];
+        request.command = config.command.clone();
+        request.config = config.shared().unwrap();
+        request.console = true;
+        record.request = serde_json::to_vec(&request).unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        record.write(file.path()).unwrap();
+        let (request, prepared) = Record::read(file.path()).unwrap();
+        assert_eq!(request.command, ["/app/service"]);
+        assert!(request.console && prepared.bundle.is_none());
+    }
+
+    fn saved_record(operation: Operation, package: &str) -> Record {
+        let mut request = Request {
+            operation,
+            selection: Some(crate::selection::Selection {
+                run: "saved-recording".into(),
+                finding: None,
+            }),
+            ..Default::default()
+        };
+        request.config.workload.package = package.into();
+        request.config.runner.kind = "consonance".into();
+        request.config.runner.backend = Some("kvm".into());
+        Record::new(&request).unwrap()
+    }
+
+    #[test]
+    fn handoff_preserves_saved_execution_inputs_for_their_consumers() {
+        for (operation, package) in [
+            (Operation::Branch, "faults"),
+            (Operation::Branch, "nes"),
+            (Operation::Replay, "faults"),
+            (Operation::Replay, "nes"),
+            (Operation::Replay, "nested"),
+            (Operation::Search, "faults"),
+            (Operation::Search, "nes"),
+            (Operation::Resume, "faults"),
+            (Operation::Resume, "nes"),
+        ] {
+            let mut record = saved_record(operation, package);
+            let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+            match operation {
+                Operation::Branch => {
+                    request.actions = Some("actions".into());
+                    record.inputs.insert("actions".into(), b"[]".to_vec());
+                    request.point.step = Some(0);
+                    request.stop = true;
+                    if package == "faults" {
+                        request.exec_file = Some("script".into());
+                        record.inputs.insert("exec-file".into(), b"true".to_vec());
+                    } else {
+                        request.repeat = 2;
+                    }
+                }
+                Operation::Replay => request.repeat = 2,
+                Operation::Search => {
+                    request.point.step = Some(0);
+                    request.budget.executions = Some(1);
+                }
+                Operation::Resume => request.budget.wall_seconds = Some(1),
+                _ => unreachable!(),
+            }
+            record.request = serde_json::to_vec(&request).unwrap();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            let (request, prepared) = Record::read(file.path()).unwrap();
+            assert_eq!(request.operation, operation);
+            assert!(request.selection.is_some() && prepared.execution.is_none());
+            if let Some(path) = request.actions {
+                assert_eq!(fs::read(path).unwrap(), b"[]");
+            }
+            if let Some(path) = request.exec_file {
+                assert_eq!(fs::read(path).unwrap(), b"true");
+            }
+        }
+    }
+
+    #[test]
+    fn handoff_rejects_unused_saved_inputs_and_conflicting_branch_commands() {
+        for case in 0..8 {
+            let mut record = saved_record(Operation::Replay, "faults");
+            let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+            match case {
+                0 => {
+                    request.actions = Some("actions".into());
+                    record.inputs.insert("actions".into(), b"[]".to_vec());
+                }
+                1 => {
+                    request.exec_file = Some("script".into());
+                    record.inputs.insert("exec-file".into(), b"true".to_vec());
+                }
+                2 => request.point.step = Some(0),
+                3 => {
+                    request.operation = Operation::Branch;
+                    request.exec = Some("true".into());
+                    request.shell = true;
+                }
+                4 => {
+                    request.operation = Operation::Branch;
+                    request.point.step = Some(0);
+                    request.point.rewind = Some(1);
+                }
+                5 => {
+                    request.operation = Operation::Resume;
+                    request.selection.as_mut().unwrap().finding = Some(1);
+                }
+                6 => request.selection = None,
+                _ => request.operation = Operation::Run,
+            }
+            record.request = serde_json::to_vec(&request).unwrap();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            assert!(Record::read(file.path()).is_err(), "case {case}");
+        }
+    }
+
+    #[test]
     fn handoff_rejects_rechecksummed_fault_supervision_mismatches() {
         for (operation, actions, nodes, supervised) in [
             (Operation::Search, false, false, false),
@@ -543,7 +799,7 @@ mod tests {
 
     #[test]
     fn handoff_uses_captured_artifacts_and_inputs_after_sources_change() {
-        let mut record = record();
+        let mut record = fault_record(Operation::Run, true, false, true);
         let directory = tempfile::tempdir().unwrap();
         let original = directory.path().join("actions");
         fs::write(&original, b"original actions").unwrap();
@@ -563,13 +819,19 @@ mod tests {
         );
         assert_eq!(prepared.kernel, b"captured kernel");
         assert_eq!(prepared.base, b"captured base");
-        assert!(prepared.execution.unwrap().exposes_kvm());
+        assert!(prepared.bundle.is_some());
     }
 
     #[test]
     fn handoff_refuses_role_version_and_uncaptured_input_changes() {
         for change in 0..6 {
-            let mut record = record();
+            let mut record = if change == 5 {
+                let mut record = fault_record(Operation::Run, true, false, true);
+                record.inputs.clear();
+                record
+            } else {
+                record()
+            };
             let mut request: Request = serde_json::from_slice(&record.request).unwrap();
             match change {
                 0 => record.format.push('x'),
