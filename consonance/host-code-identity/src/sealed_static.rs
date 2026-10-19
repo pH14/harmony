@@ -276,6 +276,101 @@ fn executable_maps(text: &str) -> io::Result<Vec<ExecutableMap>> {
     Ok(result)
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct ProcmapQuery {
+    size: u64,
+    query_flags: u64,
+    query_addr: u64,
+    vma_start: u64,
+    vma_end: u64,
+    vma_flags: u64,
+    vma_page_size: u64,
+    vma_offset: u64,
+    inode: u64,
+    dev_major: u32,
+    dev_minor: u32,
+    vma_name_size: u32,
+    build_id_size: u32,
+    vma_name_addr: u64,
+    build_id_addr: u64,
+}
+
+const PROCMAP_QUERY: libc::c_ulong = 0xc068_6611;
+const QUERY_READABLE: u64 = 1;
+const QUERY_WRITABLE: u64 = 2;
+const QUERY_EXECUTABLE: u64 = 4;
+const QUERY_SHARED: u64 = 8;
+const QUERY_COVERING_OR_NEXT: u64 = 0x10;
+
+fn queried_map(query: &ProcmapQuery, name: &[u8]) -> io::Result<ExecutableMap> {
+    let name = match query.vma_name_size {
+        0 => &[][..],
+        size => name
+            .get(..size as usize - 1)
+            .ok_or_else(|| denied("malformed process mapping name"))?,
+    };
+    let flag = |bit, set: char, unset: char| {
+        if query.vma_flags & bit != 0 {
+            set
+        } else {
+            unset
+        }
+    };
+    if query.vma_start >= query.vma_end {
+        return Err(denied("empty executable mapping"));
+    }
+    Ok(ExecutableMap {
+        start: query.vma_start,
+        end: query.vma_end,
+        permissions: [
+            flag(QUERY_READABLE, 'r', '-'),
+            flag(QUERY_WRITABLE, 'w', '-'),
+            flag(QUERY_EXECUTABLE, 'x', '-'),
+            flag(QUERY_SHARED, 's', 'p'),
+        ]
+        .into_iter()
+        .collect(),
+        offset: query.vma_offset,
+        device_major: query.dev_major.into(),
+        device_minor: query.dev_minor.into(),
+        inode: query.inode,
+        path: String::from_utf8(name.to_vec())
+            .map_err(|_| denied("process mapping name is not UTF-8"))?,
+    })
+}
+
+fn queried_executable_maps() -> io::Result<Option<Vec<ExecutableMap>>> {
+    let maps = File::open("/proc/self/maps")?;
+    let mut result = Vec::new();
+    let mut address = 0;
+    loop {
+        let mut name = [0u8; 4096];
+        let mut query = ProcmapQuery {
+            size: std::mem::size_of::<ProcmapQuery>() as u64,
+            query_flags: QUERY_EXECUTABLE | QUERY_COVERING_OR_NEXT,
+            query_addr: address,
+            vma_name_size: name.len() as u32,
+            vma_name_addr: name.as_mut_ptr() as u64,
+            ..ProcmapQuery::default()
+        };
+        // SAFETY: query is a live, writable procmap_query whose size field matches its layout, and vma_name_addr names the live writable name buffer of vma_name_size bytes; the kernel writes only within both before the call returns.
+        if unsafe { libc::ioctl(maps.as_raw_fd(), PROCMAP_QUERY as _, &mut query) } != 0 {
+            let error = io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ENOENT) => Ok(Some(result)),
+                Some(libc::ENOTTY | libc::EINVAL) if result.is_empty() => Ok(None),
+                _ => Err(error),
+            };
+        }
+        if query.vma_end <= address {
+            return Err(denied("process mapping query did not advance"));
+        }
+        address = query.vma_end;
+        result.push(queried_map(&query, &name)?);
+    }
+}
+
 fn admit_maps(
     text: &str,
     path: &str,
@@ -283,7 +378,16 @@ fn admit_maps(
     inode: u64,
     segment: ExecutableSegment,
 ) -> io::Result<AdmittedMaps> {
-    let all = executable_maps(text)?;
+    admit_executable_maps(executable_maps(text)?, path, device, inode, segment)
+}
+
+fn admit_executable_maps(
+    all: Vec<ExecutableMap>,
+    path: &str,
+    device: u64,
+    inode: u64,
+    segment: ExecutableSegment,
+) -> io::Result<AdmittedMaps> {
     let mut main = None;
     let mut vdso = None;
     let mut vsyscall = false;
@@ -589,15 +693,42 @@ fn measure(work: &mut GuardMeasurement) -> io::Result<SealedStaticExecutableGuar
     })
 }
 
-fn recheck(admitted: &SealedStaticExecutableGuard, work: &mut GuardMeasurement) -> io::Result<()> {
-    let (path, _, metadata) = open_sealed_executable(Some(admitted))?;
-    let maps_before = census(&path, &metadata, admitted.segment, work)?;
-    if (maps_before.main.start, maps_before.main.end) != admitted.main
-        || (maps_before.vdso.start, maps_before.vdso.end) != admitted.vdso
-        || maps_before.vsyscall != admitted.vsyscall
+fn recheck_census(
+    path: &str,
+    metadata: &fs::Metadata,
+    admitted: &SealedStaticExecutableGuard,
+    work: &mut GuardMeasurement,
+) -> io::Result<AdmittedMaps> {
+    let (maps, vsyscall) = match queried_executable_maps()? {
+        Some(maps) => {
+            work.image_censuses = work.image_censuses.saturating_add(1);
+            let maps = admit_executable_maps(
+                maps,
+                path,
+                metadata.dev(),
+                metadata.ino(),
+                admitted.segment,
+            )?;
+            (maps, admitted.vsyscall)
+        }
+        None => {
+            let maps = census(path, metadata, admitted.segment, work)?;
+            let vsyscall = maps.vsyscall;
+            (maps, vsyscall)
+        }
+    };
+    if (maps.main.start, maps.main.end) != admitted.main
+        || (maps.vdso.start, maps.vdso.end) != admitted.vdso
+        || vsyscall != admitted.vsyscall
     {
         return Err(denied("executable mappings moved after admission"));
     }
+    Ok(maps)
+}
+
+fn recheck(admitted: &SealedStaticExecutableGuard, work: &mut GuardMeasurement) -> io::Result<()> {
+    let (path, _, metadata) = open_sealed_executable(Some(admitted))?;
+    let maps_before = recheck_census(&path, &metadata, admitted, work)?;
     check_code_pages(
         &File::open("/proc/self/pagemap")?,
         &maps_before.main,
@@ -613,7 +744,7 @@ fn recheck(admitted: &SealedStaticExecutableGuard, work: &mut GuardMeasurement) 
     {
         return Err(denied("vDSO changed after admission"));
     }
-    if maps_before.all != census(&path, &metadata, admitted.segment, work)?.all {
+    if maps_before.all != recheck_census(&path, &metadata, admitted, work)?.all {
         return Err(denied(
             "executable mappings changed during identity measurement",
         ));
@@ -863,6 +994,66 @@ mod tests {
             (work.live_exec_read_bytes, work.live_exec_hashed_bytes),
             (12, 12)
         );
+    }
+
+    #[test]
+    fn queried_mapping_matches_its_proc_maps_line() {
+        let query = ProcmapQuery {
+            vma_start: 0x400000,
+            vma_end: 0x401000,
+            vma_flags: QUERY_READABLE | QUERY_EXECUTABLE,
+            vma_offset: 0x1000,
+            inode: 7,
+            dev_major: 0,
+            dev_minor: 1,
+            vma_name_size: 22,
+            ..ProcmapQuery::default()
+        };
+        let mut name = b"/memfd:host (deleted)\0".to_vec();
+        name.resize(4096, 0);
+        let text = "00400000-00401000 r-xp 00001000 00:01 7 /memfd:host (deleted)\n";
+        assert_eq!(
+            vec![queried_map(&query, &name).unwrap()],
+            executable_maps(text).unwrap()
+        );
+        let vdso = ProcmapQuery {
+            vma_flags: QUERY_READABLE | QUERY_EXECUTABLE | QUERY_SHARED,
+            vma_name_size: 0,
+            ..query
+        };
+        let map = queried_map(&vdso, &name).unwrap();
+        assert_eq!((map.permissions.as_str(), map.path.as_str()), ("r-xs", ""));
+        assert!(
+            queried_map(
+                &ProcmapQuery {
+                    vma_name_size: 4097,
+                    ..query
+                },
+                &name
+            )
+            .is_err()
+        );
+        assert!(
+            queried_map(
+                &ProcmapQuery {
+                    vma_end: 0x400000,
+                    ..query
+                },
+                &name
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "issues a procfs ioctl, which Miri cannot execute")]
+    fn queried_census_matches_proc_maps_without_vsyscall() {
+        let Some(queried) = queried_executable_maps().unwrap() else {
+            return;
+        };
+        let mut text = executable_maps(&fs::read_to_string("/proc/self/maps").unwrap()).unwrap();
+        text.retain(|map| map.path != "[vsyscall]");
+        assert_eq!(queried, text);
     }
 
     #[test]
