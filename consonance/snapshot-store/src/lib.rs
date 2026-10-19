@@ -183,6 +183,8 @@ pub struct Store {
     cfg: StoreConfig,
     #[cfg(test)]
     verification_work: std::cell::Cell<VerificationWork>,
+    #[cfg(test)]
+    dense_gfn_scans: std::cell::Cell<usize>,
     verification: std::cell::Cell<VerificationTelemetry>,
     copies: std::cell::Cell<CopyTelemetry>,
     verification_batch_depth: std::cell::Cell<usize>,
@@ -201,6 +203,9 @@ pub struct Store {
     page_verifications: std::cell::Cell<usize>,
 }
 
+const DENSE_MEMBERSHIP_MIN_KEYS: usize = 64;
+const MAX_DENSE_MEMBERSHIP_WORDS: usize = 1024 * 1024 / size_of::<u64>();
+
 enum VerifiedPages {
     Dense(Vec<u64>),
     Sparse {
@@ -210,8 +215,9 @@ enum VerifiedPages {
 }
 impl VerifiedPages {
     fn new(slots: usize, live: usize) -> Self {
-        let dense_words = (slots <= 8 * 1024 * 1024 && slots <= live.saturating_mul(8))
-            .then_some(slots.div_ceil(64));
+        let dense_words = (slots <= MAX_DENSE_MEMBERSHIP_WORDS * 64
+            && slots <= live.saturating_mul(8))
+        .then_some(slots.div_ceil(64));
         Self::Sparse {
             ids: BTreeSet::new(),
             dense_words,
@@ -231,7 +237,7 @@ impl VerifiedPages {
             Self::Sparse { ids, dense_words } => {
                 ids.insert(id);
                 if let Some(len) = *dense_words
-                    && ids.len() >= 64
+                    && ids.len() >= DENSE_MEMBERSHIP_MIN_KEYS
                     && ids.len() >= len
                 {
                     let mut words = vec![0; len];
@@ -240,6 +246,73 @@ impl VerifiedPages {
                     }
                     *self = Self::Dense(words);
                 }
+            }
+        }
+    }
+}
+
+enum GfnMembership {
+    Dense(Vec<u64>),
+    Sparse {
+        gfns: BTreeSet<u64>,
+        dense_words: Option<usize>,
+    },
+}
+
+struct ResolvedGfns {
+    mem_pages: u64,
+    membership: GfnMembership,
+}
+
+impl ResolvedGfns {
+    fn new(mem_pages: u64) -> Self {
+        let dense_words = usize::try_from(mem_pages.div_ceil(64))
+            .ok()
+            .filter(|&words| words <= MAX_DENSE_MEMBERSHIP_WORDS);
+        Self {
+            mem_pages,
+            membership: GfnMembership::Sparse {
+                gfns: BTreeSet::new(),
+                dense_words,
+            },
+        }
+    }
+
+    fn insert(&mut self, gfn: u64) -> Result<bool, StoreError> {
+        let mem_pages = self.mem_pages;
+        if gfn >= mem_pages {
+            return Err(StoreError::GfnOutOfRange { gfn, mem_pages });
+        }
+        match &mut self.membership {
+            GfnMembership::Dense(words) => {
+                let index = usize::try_from(gfn)
+                    .map_err(|_| StoreError::GfnOutOfRange { gfn, mem_pages })?;
+                let word = words
+                    .get_mut(index / 64)
+                    .ok_or(StoreError::GfnOutOfRange { gfn, mem_pages })?;
+                let mask = 1 << (index % 64);
+                let inserted = *word & mask == 0;
+                *word |= mask;
+                Ok(inserted)
+            }
+            GfnMembership::Sparse { gfns, dense_words } => {
+                let inserted = gfns.insert(gfn);
+                if let Some(len) = *dense_words
+                    && gfns.len() >= DENSE_MEMBERSHIP_MIN_KEYS
+                    && gfns.len() >= len
+                {
+                    let mut words = vec![0; len];
+                    for &gfn in gfns.iter() {
+                        let index = usize::try_from(gfn)
+                            .map_err(|_| StoreError::GfnOutOfRange { gfn, mem_pages })?;
+                        let word = words
+                            .get_mut(index / 64)
+                            .ok_or(StoreError::GfnOutOfRange { gfn, mem_pages })?;
+                        *word |= 1 << (index % 64);
+                    }
+                    self.membership = GfnMembership::Dense(words);
+                }
+                Ok(inserted)
             }
         }
     }
@@ -344,6 +417,8 @@ impl Store {
             cfg,
             #[cfg(test)]
             verification_work: std::cell::Cell::default(),
+            #[cfg(test)]
+            dense_gfn_scans: std::cell::Cell::default(),
             verification: std::cell::Cell::default(),
             copies: std::cell::Cell::default(),
             verification_batch_depth: std::cell::Cell::new(0),
@@ -688,7 +763,7 @@ impl Store {
         let _timing = self.verification_batch();
         #[cfg(test)]
         self.note_verification_work(|work| work.scans += 1);
-        let mut seen_gfns = BTreeSet::new();
+        let mut seen_gfns = ResolvedGfns::new(self.cfg.mem_pages);
         let mut current = Some(snap.0);
         while let Some(id) = current {
             let layer = self
@@ -700,12 +775,16 @@ impl Store {
             for &(gfn, page) in &layer.pages {
                 #[cfg(test)]
                 self.note_verification_work(|work| work.rows += 1);
-                if !seen_gfns.insert(gfn) {
+                if !seen_gfns.insert(gfn)? {
                     continue;
                 }
                 self.page_entry(page, gfn, verified_pages)?;
             }
             current = layer.parent;
+        }
+        #[cfg(test)]
+        if matches!(seen_gfns.membership, GfnMembership::Dense(_)) {
+            self.dense_gfn_scans.set(self.dense_gfn_scans.get() + 1);
         }
         Ok(())
     }
@@ -1602,6 +1681,208 @@ mod tests {
                 rows: 2
             }
         );
+    }
+
+    #[test]
+    fn resolved_gfn_membership_promotes_without_losing_zero_or_partial_word_bits() {
+        let mut seen = ResolvedGfns::new(129);
+        for gfn in 0..63 {
+            assert!(seen.insert(gfn).unwrap());
+        }
+        assert!(matches!(seen.membership, GfnMembership::Sparse { .. }));
+        for gfn in [63, 64, 128] {
+            assert!(seen.insert(gfn).unwrap());
+        }
+        assert!(
+            matches!(&seen.membership, GfnMembership::Dense(words) if words == &[u64::MAX, 1, 1])
+        );
+        for gfn in [0, 63, 64, 128] {
+            assert!(!seen.insert(gfn).unwrap());
+        }
+        assert!(matches!(
+            seen.insert(129),
+            Err(StoreError::GfnOutOfRange {
+                gfn: 129,
+                mem_pages: 129
+            })
+        ));
+        assert!(matches!(
+            seen.insert(u64::MAX),
+            Err(StoreError::GfnOutOfRange { .. })
+        ));
+        assert!(
+            matches!(&seen.membership, GfnMembership::Dense(words) if words == &[u64::MAX, 1, 1])
+        );
+    }
+
+    #[test]
+    fn resolved_gfn_membership_bounds_allocation_by_domain_and_encountered_frames() {
+        let mut seen = ResolvedGfns::new(8192);
+        for gfn in 0..127 {
+            assert!(seen.insert(gfn).unwrap());
+        }
+        assert!(matches!(seen.membership, GfnMembership::Sparse { .. }));
+        assert!(seen.insert(8191).unwrap());
+        assert!(matches!(&seen.membership, GfnMembership::Dense(words) if words.len() == 128));
+        for gfn in (0..127).chain([8191]) {
+            assert!(!seen.insert(gfn).unwrap());
+        }
+        assert!(seen.insert(127).unwrap());
+        let maximum = u64::try_from(MAX_DENSE_MEMBERSHIP_WORDS).unwrap() * 64;
+        assert!(matches!(
+            ResolvedGfns::new(maximum).membership,
+            GfnMembership::Sparse {
+                dense_words: Some(MAX_DENSE_MEMBERSHIP_WORDS),
+                ..
+            }
+        ));
+        assert!(matches!(
+            ResolvedGfns::new(maximum + 1).membership,
+            GfnMembership::Sparse {
+                dense_words: None,
+                ..
+            }
+        ));
+        let mut huge = ResolvedGfns::new(u64::MAX);
+        for gfn in (0..64).chain([u64::MAX - 1]) {
+            assert!(huge.insert(gfn).unwrap());
+            assert!(!huge.insert(gfn).unwrap());
+        }
+        assert!(matches!(
+            huge.membership,
+            GfnMembership::Sparse {
+                dense_words: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            huge.insert(u64::MAX),
+            Err(StoreError::GfnOutOfRange { .. })
+        ));
+        let mut empty = ResolvedGfns::new(0);
+        assert!(matches!(
+            empty.insert(0),
+            Err(StoreError::GfnOutOfRange {
+                gfn: 0,
+                mem_pages: 0
+            })
+        ));
+        assert!(matches!(empty.membership, GfnMembership::Sparse { .. }));
+    }
+
+    #[test]
+    fn resolved_gfn_bitmap_distinguishes_alias_frames_and_zero_overrides_from_resident_slots() {
+        let mut store = Store::new(cfg(65));
+        let mut builder = store.begin_base();
+        for gfn in 0..65 {
+            builder.write_page(gfn, &[7; PAGE_SIZE]).unwrap();
+        }
+        let base = builder.seal(vec![]);
+        let child = snap_with(&mut store, base, &[(0, 0)]);
+        assert_eq!(store.page_index.len(), 1);
+        let before = store.verification_telemetry();
+        {
+            let mut read = store.read_transaction();
+            read.verify_snapshots(&[child, child]).unwrap();
+            assert_eq!(store.dense_gfn_scans.get(), 1);
+            assert_eq!(
+                store.verification_work.get(),
+                VerificationWork {
+                    scans: 1,
+                    layers: 2,
+                    rows: 66
+                }
+            );
+            assert!(
+                matches!(&read.verified_pages, VerifiedPages::Sparse { ids, .. } if ids.len() == 1)
+            );
+            let child_checked = store.verification_telemetry();
+            assert_eq!(child_checked.page_requests - before.page_requests, 65);
+            assert_eq!(child_checked.zero_requests - before.zero_requests, 1);
+            assert_eq!(child_checked.resident_hashes - before.resident_hashes, 1);
+            assert_eq!(
+                child_checked.resident_bytes - before.resident_bytes,
+                PAGE_SIZE as u64
+            );
+            assert_eq!(child_checked.memo_hits - before.memo_hits, 63);
+            read.verify_snapshots(&[base]).unwrap();
+            assert_eq!(store.dense_gfn_scans.get(), 2);
+            let base_checked = store.verification_telemetry();
+            assert_eq!(base_checked.page_requests - child_checked.page_requests, 65);
+            assert_eq!(base_checked.memo_hits - child_checked.memo_hits, 65);
+            assert_eq!(base_checked.resident_hashes, child_checked.resident_hashes);
+            assert_eq!(read.read_page(child, 0).unwrap(), &ZERO_PAGE);
+            assert_eq!(read.read_page(child, 64).unwrap(), &[7; PAGE_SIZE]);
+        }
+        let fresh = store.verification_telemetry();
+        store.read_transaction().verify_snapshots(&[child]).unwrap();
+        assert_eq!(
+            store.verification_telemetry().resident_hashes - fresh.resident_hashes,
+            1
+        );
+        let PageRef::Data(id) = store.resolve(base.0, 64) else {
+            panic!("aliased resident page")
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        assert!(matches!(
+            store.read_transaction().verify_snapshots(&[child]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+    }
+
+    #[test]
+    fn huge_sparse_frame_domains_preserve_high_frame_overrides_without_bitmap_allocation() {
+        let mut store = Store::new(cfg(u64::MAX));
+        let mut builder = store.begin_base();
+        for gfn in [0, u64::MAX - 1] {
+            builder.write_page(gfn, &[7; PAGE_SIZE]).unwrap();
+        }
+        let base = builder.seal(vec![]);
+        let child = snap_with(&mut store, base, &[(u64::MAX - 1, 0)]);
+        let before = store.verification_telemetry();
+        let mut read = store.read_transaction();
+        read.verify_snapshots(&[child]).unwrap();
+        assert_eq!(store.dense_gfn_scans.get(), 0);
+        let delta = read.page_delta(base, None, child).unwrap();
+        assert_eq!(delta_summary(&delta), (vec![(u64::MAX - 1, 0)], vec![]));
+        assert_eq!(read.read_page(child, u64::MAX - 1).unwrap(), &ZERO_PAGE);
+        assert_eq!(read.read_page(base, u64::MAX - 1).unwrap(), &[7; PAGE_SIZE]);
+        assert!(matches!(
+            read.read_page(child, u64::MAX),
+            Err(StoreError::GfnOutOfRange { .. })
+        ));
+        assert_eq!(store.dense_gfn_scans.get(), 0);
+        let after = store.verification_telemetry();
+        assert_eq!(after.resident_hashes - before.resident_hashes, 1);
+        assert_eq!(after.errors, before.errors);
+    }
+
+    #[test]
+    fn explicit_zero_overrides_hide_corrupt_ancestors_without_certifying_them() {
+        let mut store = Store::new(cfg(1));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[7; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let child = snap_with(&mut store, base, &[(0, 0)]);
+        let PageRef::Data(id) = store.resolve(base.0, 0) else {
+            panic!("masked resident ancestor")
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let before = store.verification_telemetry();
+        let mut read = store.read_transaction();
+        read.verify_snapshots(&[child]).unwrap();
+        let masked = store.verification_telemetry();
+        assert_eq!(masked.resident_hashes, before.resident_hashes);
+        assert_eq!(masked.zero_requests - before.zero_requests, 1);
+        assert!(matches!(
+            read.verify_snapshots(&[base]),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+        assert_eq!(
+            store.verification_telemetry().resident_hashes - before.resident_hashes,
+            1
+        );
+        assert_eq!(store.verification_telemetry().errors - before.errors, 1);
     }
 
     #[test]
