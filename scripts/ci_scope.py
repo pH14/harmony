@@ -40,7 +40,8 @@ def selected(paths):
         if any(fnmatch.fnmatchcase(path, pattern) for pattern in GLOBAL):
             return dict.fromkeys(result, True)
         if path in ("scripts/qualify-packaged-host.py", "scripts/test_ci_packaged_host_qualification.py",
-                    "scripts/qualification/packaged-host.json", ".github/workflows/release.yml"):
+                    "scripts/qualification/packaged-host.json", ".github/workflows/release.yml",
+                    "workloads/guest-images/oci-package.py") or path.startswith("dissonance/searcher/"):
             result["harmony_languages"] = True
         if path.startswith(("dissonance/", "cli/", "workloads/nes/", "workloads/nes-games/", "workloads/nes-machine/", "workloads/nes-protocol/", "workloads/nes-guest/")):
             result["dissonance_stb"] = True

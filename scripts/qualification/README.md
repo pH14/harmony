@@ -240,7 +240,7 @@ archives under test, rather than linking another VMM test executable. It
 extracts only the expected regular files, checks the runtime manifest against
 this source and its kernel/initramfs bytes, then uses the packaged frontend for
 command execution, same-host replay and one completed search. The owned C
-fixture emits a reviewed RAM-checksum readback before returning or waiting as
+fixture emits a reviewed computed checksum readback before returning or waiting as
 the supervised search node. Direct/replay must retain that nonempty readback,
 positive work, successful application completion and the exact serial record.
 Each public manifest must identify the admitted sealed host and commit the
@@ -252,9 +252,9 @@ separate minimal process/open/ioctl trace requires successful `session-worker`
 exec (including `execveat`), a `/dev/kvm` descriptor, VM and vCPU creation, a
 successful `KVM_RUN` on that vCPU, and normal exit in the same child process.
 Parent-only KVM activity, an exec attempt, failed ioctls and another child's
-activity cannot satisfy that witness. Tracing records only the owned fixture's
-process, file-open/close and virtualization calls; it does not expand exec
-environment contents.
+activity cannot satisfy that witness. Tracing covers the host-side frontend,
+sealed host and workers launched for this owned workload. It records only exec,
+file-open/close and ioctl calls, with exec environments shown as variable counts.
 
 `scripts/qualification/packaged-host.json` fixes the finite matrix. This cell
 establishes local public command/readback replay and production worker
@@ -268,7 +268,9 @@ the retained AMD/Intel and UML limitations remain in force.
 The receipt binds the qualifier file digest and repository head, registry, input archive/fixture
 digests, active executable/runtime/image bytes, loaded host identity, actual
 host inventory and bounded outcomes. Input and active-file hashes must remain
-unchanged through execution. Unavailable hardware records a blocked outcome
+unchanged through execution; a change invalidates measured passes. Attempted
+transformations that fail are distinct from unmeasured unavailable relations.
+Unavailable hardware records a blocked outcome
 and exits unsuccessfully; required Linux release cells cannot green-skip.
 Diagnostic archives retain selected command/search records and child traces
 without duplicating host binaries, guest RAM or cache stores. Release publication

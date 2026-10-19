@@ -191,6 +191,7 @@ def qualify(cli_archive, runtime_archive, fixture, output):
     before = {}
     active = {}
     active_before = {}
+    current_transform = None
     try:
         before = {name: digest(path) for name, path in inputs.items()}
         receipt["inputs"] = before
@@ -235,29 +236,36 @@ def qualify(cli_archive, runtime_archive, fixture, output):
         config = ('[runner]\nkind="consonance"\nbackend="kvm"\n[runner.options]\nram_mib=512\n' +
                   'kernel=' + json.dumps(str(artifacts / kernel)) + '\nbase_initramfs=' + json.dumps(str(artifacts / "initramfs-oci.cpio.gz")) + '\n')
         cli = binaries / "harmony"
+        current_transform = "direct"
         execute([cli, "debug", "run", image, "--config-toml", config, "--for", "60s", "--out", output / "direct"], output / "direct.log", affinity)
         direct = command_result(output / "direct")
         direct_manifest = manifest(output / "direct", artifacts)
         receipt["transforms"]["direct"] = {"outcome": "passed", "record": direct}
+        current_transform = "same-host-replay"
         execute([cli, "debug", "replay", output / "direct", "--out", output / "replay"], output / "replay.log", affinity)
         repeated = command_result(output / "replay")
         repeated_manifest = manifest(output / "replay", artifacts)
         if repeated != direct or repeated_manifest["binary_identity"] != direct_manifest["binary_identity"]:
             raise ValueError("same-host public command replay contradiction")
         receipt["transforms"]["same-host-replay"] = {"outcome": "passed", "record": repeated}
+        current_transform = None
         traces = output / "trace"
         traces.mkdir()
         scenario = config + '[workload.options.nodes.app]\ncommand=["/app/packaged-host","node"]\n'
+        current_transform = "search-worker"
         execute([cli, "search", image, "--config-toml", scenario, "--executions", "1", "--for", "30s", "--out", output / "search"], output / "search.log", affinity, traces)
         search = search_result(output / "search")
         search_manifest = manifest(output / "search", artifacts)
         if search_manifest["binary_identity"] != direct_manifest["binary_identity"]:
             raise ValueError("production search host identity mismatch")
         receipt["transforms"]["search-worker"] = {"outcome": "passed", "workers": trace_workers(traces), "record": search}
+        current_transform = None
         receipt["loaded_identity"] = direct_manifest["binary_identity"]
         receipt["outcome"] = "passed"
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         receipt["reason"] = str(error)
+        if current_transform:
+            receipt["transforms"][current_transform] = {"outcome": "failed", "reason": str(error)}
         raise
     finally:
         def measured(paths):
@@ -274,6 +282,9 @@ def qualify(cli_archive, runtime_archive, fixture, output):
         receipt["inputs_after"] = after
         if (before and before != after) or (active_before and active_before != active_after):
             receipt.update(outcome="failed", reason="packaged qualification inputs changed during execution")
+            for name, row in receipt["transforms"].items():
+                if row["outcome"] == "passed":
+                    receipt["transforms"][name] = {"outcome": "failed", "reason": receipt["reason"]}
         write(output / "receipt.json", receipt)
     if receipt["outcome"] != "passed":
         raise ValueError(receipt.get("reason", "incomplete qualification"))

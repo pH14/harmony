@@ -197,16 +197,23 @@ class PackagedHostTests(unittest.TestCase):
         self.assertEqual(record['inputs'], record['inputs_after'])
         self.assertEqual(record['active_files'], record['active_files_after'])
         self.assertEqual(record['transforms']['search-worker']['workers'][0]['kvm_runs'], 1)
+        self.assertTrue(all(record['transforms'][name]['outcome'] == 'passed' for name in ('direct', 'same-host-replay', 'search-worker')))
         self.assertTrue(all(record['transforms'][name]['outcome'] == 'unavailable' for name in P.UNAVAILABLE))
 
     def test_actual_failed_worker_or_changed_runtime_cannot_pass_public_flow(self):
         inputs = self.flow_inputs()
-        for mode in ('missing-worker', 'wrong-kernel', 'wrong-base'):
+        for mode in ('missing-worker', 'wrong-kernel', 'wrong-base', 'wrong-readback', 'different-replay'):
             def changed(arguments, log, cpus, trace=None):
                 self.fake_execution(arguments, log, cpus, trace)
                 destination = Path(arguments[arguments.index('--out') + 1])
                 if trace and mode == 'missing-worker':
                     (trace / 'search.123').write_text(KVM + EXIT)
+                if mode == 'wrong-readback' and not trace:
+                    (destination / 'serial.log').write_bytes(b'other readback\n')
+                if mode == 'different-replay' and destination.name == 'replay':
+                    record = P.read(destination / 'run.json')
+                    record['steps'] += 1
+                    P.write(destination / 'run.json', record)
                 if mode in ('wrong-kernel', 'wrong-base'):
                     name = 'kernel' if mode == 'wrong-kernel' else 'initramfs'
                     file = destination / 'artifacts' / name
@@ -217,7 +224,11 @@ class PackagedHostTests(unittest.TestCase):
             output = self.root / mode
             with self.subTest(mode=mode), self.assertRaises(ValueError):
                 self.flow(inputs, output, changed)
-            self.assertEqual(P.read(output / 'receipt.json')['outcome'], 'failed')
+            record = P.read(output / 'receipt.json')
+            self.assertEqual(record['outcome'], 'failed')
+            failed = 'search-worker' if mode == 'missing-worker' else 'same-host-replay' if mode == 'different-replay' else 'direct'
+            self.assertEqual(record['transforms'][failed]['outcome'], 'failed')
+            self.assertTrue(all(record['transforms'][name]['outcome'] == 'unavailable' for name in P.UNAVAILABLE))
 
     def test_archive_or_active_executable_changes_refuse_public_flow(self):
         inputs = self.flow_inputs()
@@ -231,7 +242,9 @@ class PackagedHostTests(unittest.TestCase):
             output = self.root / mode
             with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'inputs changed'):
                 self.flow(inputs, output, changed)
-            self.assertEqual(P.read(output / 'receipt.json')['outcome'], 'failed')
+            record = P.read(output / 'receipt.json')
+            self.assertEqual(record['outcome'], 'failed')
+            self.assertFalse(any(row['outcome'] == 'passed' for row in record['transforms'].values()))
 
     def test_missing_kvm_is_blocked_and_nonzero_not_green_skip(self):
         inputs = self.flow_inputs()
