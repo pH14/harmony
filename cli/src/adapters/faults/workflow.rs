@@ -555,22 +555,24 @@ mod tests {
             ("selector0", "xor %ecx,%ecx; xgetbv", true),
             ("restore", "xrstor (%rdi)", true),
             ("math", "fsin; rsqrtps %xmm0,%xmm0", true),
+            ("standard-libc", "int main(void) { return 0; }", true),
         ] {
-            fs::write(
-                &source,
-                format!(
-                    ".text\n.globl _start\n_start:\n{assembly}\nret\n.section .note.GNU-stack,\"\",@progbits\n"
-                ),
-            )?;
+            let mut compiler = std::process::Command::new("cc");
+            compiler.args(["-static", "-no-pie", "-Wl,--build-id=none"]);
+            if name == "standard-libc" {
+                fs::write(&source, assembly)?;
+                compiler.args(["-x", "c", "-O2"]);
+            } else {
+                fs::write(
+                    &source,
+                    format!(
+                        ".text\n.globl _start\n_start:\n{assembly}\nret\n.section .note.GNU-stack,\"\",@progbits\n"
+                    ),
+                )?;
+                compiler.args(["-nostdlib", "-Wl,-e,_start"]);
+            }
             assert!(
-                std::process::Command::new("cc")
-                    .args([
-                        "-static",
-                        "-nostdlib",
-                        "-no-pie",
-                        "-Wl,--build-id=none",
-                        "-Wl,-e,_start"
-                    ])
+                compiler
                     .arg(&source)
                     .arg("-o")
                     .arg(&binary)
@@ -582,6 +584,9 @@ mod tests {
                 fs::write(path.join(format!("{name}.elf")), &bytes)?;
             }
             for (mode, label) in [(ExecutionMode::Vm, "vm"), (ExecutionMode::Uml, "uml")] {
+                if name == "standard-libc" && mode == ExecutionMode::Uml {
+                    continue;
+                }
                 let output = scratch.path().join(format!("{name}-{label}.json"));
                 let python = std::process::Command::new("python3")
                     .arg(
@@ -596,12 +601,31 @@ mod tests {
                 let audit = fs::read(&output)?;
                 let json: serde_json::Value = serde_json::from_slice(&audit)?;
                 assert_eq!(python.success(), admitted, "{name} {label}: {json}");
+                let expected_error = match name {
+                    "fxsave" | "xsave" => Some("save instruction outside a loader trampoline"),
+                    "selector1" => Some("unproved XGETBV selector"),
+                    _ => None,
+                };
+                if let Some(message) = expected_error {
+                    assert!(
+                        json["errors"].as_array().unwrap().iter().any(|error| error
+                            .as_str()
+                            .is_some_and(|error| error.contains(message))),
+                        "{name} {label}: {json}"
+                    );
+                }
                 let result = prepare_plain_staged(
                     &staged,
                     &oci_support::bundle::LaunchRequest::default(),
                     mode,
                 );
                 assert_eq!(result.is_ok(), admitted, "{name} {label}");
+                if let Some(message) = expected_error {
+                    assert!(
+                        result.as_ref().err().unwrap().to_string().contains(message),
+                        "{name} {label}"
+                    );
+                }
                 if let Some(path) = &evidence {
                     fs::write(path.join(format!("{name}-{label}-python.json")), &audit)?;
                     fs::write(

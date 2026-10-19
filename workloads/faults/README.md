@@ -95,15 +95,22 @@ Production preparation applies the x86 xstate policy to the exact packed ELF
 bytes for both VM and UML execution, including ordinary uninstrumented runs.
 FXSAVE/XSAVE-family saves are refused independently of digest/address review.
 Only the complete straight-line glibc eager-resolver and unused-TLSdesc shapes
-receive the existing loader exception; the save operand, mask/reload sequence,
+receive the loader exception; the save operand, matching restore, mask/reload sequence,
 predecessors, alternate entries and overlapping decodes all participate in the
 check. TLSdesc and text relocations anywhere in the scanned x86 ELF closure are
 refused. XGETBV requires a unique nonoverlapping straight-line proof that ECX
-is zero, bounded to 16 predecessor instructions. Restore operations remain
+is zero, bounded to 32 predecessor instructions. The proof follows full-width
+register copies, respects partial-register and CPUID clobbers, and permits
+conditional branches only when no observed entry bypasses the proof. LOOP-family
+instructions, calls and unknown operations stop the proof. Legacy resolver
+FXSAVE/FXRSTOR requires its complete 16-byte-aligned, 0x240-byte frame; the
+XSAVE variants retain the matching mask and 64-byte alignment rules. Restore operations remain
 admitted, and native standard math is unchanged. The Linux fixture compares
-compiled FXSAVE, XSAVE, selector-1, proven selector-0, restore and math programs
+compiled FXSAVE, XSAVE, selector-1, proven selector-0, restore, math and ordinary
+statically linked libc programs
 through both production preparation modes and the Python checker, retaining
-exact ELF bytes and both decisions.
+exact ELF bytes and both decisions. The ordinary libc positive runs in VM mode;
+installed glibc can contain transaction entry already refused by UML admission.
 
 This is a static cooperative-code boundary. It does not enforce future
 executable mappings, mutable files, generated code or instruction preservation

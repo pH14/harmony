@@ -233,6 +233,12 @@ TRAMPOLINE_PROLOGUE = [
     (r"and \$0xffffffffffffffc0,%rsp", 1, 1),
     (r"mov %rsp,%rbx", 1, 1),
 ]
+LEGACY_TRAMPOLINE_PROLOGUE = [
+    (REGISTER_SPILL, 1, 8),
+    (r"sub \$0x240,%rsp", 1, 1),
+    (r"and \$0xfffffffffffffff0,%rsp", 1, 1),
+    (r"mov %rsp,%rbx", 1, 1),
+]
 LOADER_TRAMPOLINES = {
     "eager-resolver": (
         [(r"push %rbx", 1, 1), (r"endbr64", 0, 1)],
@@ -319,13 +325,20 @@ def loader_trampoline(instructions, index, targets, predecessors, overlapping):
     matched by their complete straight-line shape, so no address is pinned."""
     if instruction_text(instructions[index]).split(" ", 1)[-1] != "0x40(%rsp)":
         return None
-    prologue = match_steps(instructions, index - 1, -1, TRAMPOLINE_PROLOGUE)
+    legacy = instructions[index]["mnemonic"] in {"fxsave", "fxsave64"}
+    prologue = match_steps(instructions, index - 1, -1,
+                           LEGACY_TRAMPOLINE_PROLOGUE if legacy else TRAMPOLINE_PROLOGUE)
     if prologue is None:
         return None
     for kind, (entry_steps, body_steps) in LOADER_TRAMPOLINES.items():
         entry = match_steps(instructions, prologue[0] - 1, -1, entry_steps)
+        if legacy:
+            restore = "fxrstor64" if instructions[index]["mnemonic"] == "fxsave64" else "fxrstor"
+            body_steps = [(restore + r" 0x40\(%rsp\)", low, high) if pattern == r"xrstor 0x40\(%rsp\)" else (pattern, low, high)
+                          for pattern, low, high in body_steps
+                          if pattern not in {r"mov \$(0x[0-9a-f]+),%eax", r"xor %edx,%edx"}]
         body = match_steps(instructions, index + 1, 1, body_steps)
-        if entry is None or body is None or set(prologue[1]) != set(body[1]) or len(set(body[1])) != 1:
+        if entry is None or body is None or (not legacy and (set(prologue[1]) != set(body[1]) or len(set(body[1])) != 1)):
             continue
         first, last = entry[0], body[0]
         span_items = instructions[first:last + 1]
@@ -336,7 +349,7 @@ def loader_trampoline(instructions, index, targets, predecessors, overlapping):
         if any(item["address"] in targets or len(predecessors.get(item["address"], [])) != 1
                for item in span_items[1:]):
             continue
-        return kind
+        return kind + ("-fxsave" if legacy else "")
     return None
 
 
@@ -494,6 +507,49 @@ def executable_coverage(data, segments, objdump):
     return sorted(instructions.values(), key=lambda item: item["address"]), targets
 
 
+GPR_ALIASES = {}
+for names in [("rax", "eax", "ax", "al", "ah"), ("rbx", "ebx", "bx", "bl", "bh"),
+              ("rcx", "ecx", "cx", "cl", "ch"), ("rdx", "edx", "dx", "dl", "dh"),
+              ("rsi", "esi", "si", "sil"), ("rdi", "edi", "di", "dil"),
+              ("rbp", "ebp", "bp", "bpl"), ("rsp", "esp", "sp", "spl")]:
+    for index, name in enumerate(names):
+        GPR_ALIASES["%" + name] = (names[1], index < 2)
+for number in range(8, 16):
+    for suffix in ("", "d", "w", "b"):
+        GPR_ALIASES[f"%r{number}{suffix}"] = (f"r{number}d", suffix in ("", "d"))
+JCC = {"ja", "jae", "jb", "jbe", "jc", "je", "jg", "jge", "jl", "jle", "jna", "jnae",
+       "jnb", "jnbe", "jnc", "jne", "jng", "jnge", "jnl", "jnle", "jno", "jnp", "jns",
+       "jnz", "jo", "jp", "jpe", "jpo", "js", "jz"}
+
+
+def selector_step(item, wanted):
+    mnemonic = item["mnemonic"]
+    operands = re.sub(r"\s", "", item["operands"].split("#", 1)[0])
+    source, _, destination = operands.rpartition(",")
+    alias, full = GPR_ALIASES.get(destination, (None, False))
+    if alias == wanted and full:
+        if mnemonic in {"xor", "xorl", "xorq"} and source == destination:
+            return True
+        if mnemonic in {"mov", "movl", "movq", "movabs"}:
+            if source in {"$0", "$0x0"}:
+                return True
+            source_alias, source_full = GPR_ALIASES.get(source, (None, False))
+            if source_full:
+                return source_alias
+    if mnemonic == "cpuid":
+        return wanted if wanted not in {"eax", "ebx", "ecx", "edx"} else None
+    if mnemonic in {"push", "pushq"}:
+        return wanted if wanted != "esp" else None
+    if mnemonic in JCC or mnemonic in {"cmp", "cmpl", "cmpq", "test", "testl", "testq"}:
+        return wanted
+    if mnemonic in {base + suffix for base in ("mov", "lea", "and", "or", "xor", "add", "sub")
+                    for suffix in ("", "b", "w", "l", "q")}:
+        references = re.findall(r"%[a-z0-9]+", destination)
+        if all(GPR_ALIASES.get(register, (None, False))[0] != wanted for register in references):
+            return wanted
+    return None
+
+
 def disassemble(data, segments, objdump):
     instructions, targets = executable_coverage(data, segments, objdump)
     predecessors, overlapping = proof_edges(instructions)
@@ -506,28 +562,22 @@ def disassemble(data, segments, objdump):
             cursor = item["address"]
             zero = False
             chain = []
-            safe = {"mov", "movb", "movw", "movl", "movq", "lea", "leal", "leaq",
-                    "and", "andl", "andq", "or", "orl", "orq", "add", "addl", "addq",
-                    "sub", "subl", "subq", "cmp", "cmpl", "cmpq", "test", "testl", "testq"}
-            for _ in range(16):
+            wanted = "ecx"
+            for _ in range(32):
                 incoming = predecessors.get(cursor, [])
                 if cursor in targets or cursor in overlapping or len(incoming) != 1:
                     break
                 before = incoming[0]
                 if before["address"] in overlapping:
                     break
-                operands = re.sub(r"\s", "", before["operands"])
-                if (before["mnemonic"] in ("xor", "xorl") and operands == "%ecx,%ecx"
-                        or before["mnemonic"] in ("mov", "movl") and operands in ("$0x0,%ecx", "$0,%ecx")):
-                    zero = True
-                    chain.insert(0, before)
-                    break
-                if before["mnemonic"] not in safe:
-                    break
-                destination = operands.rsplit(",", 1)[-1]
-                if not before["mnemonic"].startswith(("cmp", "test")) and re.search(r"%(?:rcx|ecx|cx|cl|ch)\b", destination):
+                outcome = selector_step(before, wanted)
+                if outcome is None:
                     break
                 chain.insert(0, before)
+                if outcome is True:
+                    zero = True
+                    break
+                wanted = outcome
                 cursor = before["address"]
             item["adjacent_ecx_zero"] = bool(zero and len(chain) == 1)
             item["straightline_ecx_zero"] = zero
@@ -535,7 +585,7 @@ def disassemble(data, segments, objdump):
             item["requires_reviewed_control_flow_proof"] = True
         if item["mnemonic"] in SAVE:
             item["loader_trampoline"] = (loader_trampoline(instructions, index, targets, predecessors, overlapping)
-                                         if item["mnemonic"] in {"xsave", "xsave64", "xsavec", "xsavec64"} else None)
+                                         if item["mnemonic"] in {"fxsave", "fxsave64", "xsave", "xsave64", "xsavec", "xsavec64"} else None)
         sites.append(item)
     return sites
 

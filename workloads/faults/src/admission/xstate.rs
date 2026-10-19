@@ -67,7 +67,8 @@ pub(super) fn validate(
         if i.mnemonic() == M::Xgetbv {
             let mut cursor = index;
             let mut zero = false;
-            for _ in 0..16 {
+            let mut wanted = R::ECX;
+            for _ in 0..32 {
                 if !edge(cursor) {
                     break;
                 }
@@ -76,20 +77,41 @@ pub(super) fn validate(
                     break;
                 }
                 let instruction = &instructions[before];
-                if regs(instruction, M::Xor, R::ECX, R::ECX)
-                    || imm(instruction, M::Mov, R::ECX) == Some(0)
-                {
-                    zero = true;
-                    break;
+                let destination = instruction.op0_register();
+                let writes_wanted = instruction.op0_kind() == OpKind::Register
+                    && destination.full_register32() == wanted;
+                if writes_wanted && destination.size() >= 4 {
+                    if regs(instruction, M::Xor, destination, destination)
+                        || imm(instruction, M::Mov, destination) == Some(0)
+                    {
+                        zero = true;
+                        break;
+                    }
+                    let source = instruction.op1_register();
+                    if instruction.mnemonic() == M::Mov
+                        && instruction.op1_kind() == OpKind::Register
+                        && source.size() >= 4
+                        && (source.is_gpr32() || source.is_gpr64())
+                    {
+                        wanted = source.full_register32();
+                        cursor = before;
+                        continue;
+                    }
                 }
-                if !matches!(
-                    instruction.mnemonic(),
-                    M::Mov | M::Lea | M::And | M::Or | M::Add | M::Sub | M::Cmp | M::Test
-                ) || (!matches!(instruction.mnemonic(), M::Cmp | M::Test)
-                    && (cx(instruction.op0_register())
-                        || instruction.op0_kind() == OpKind::Memory
-                            && (cx(instruction.memory_base()) || cx(instruction.memory_index()))))
-                {
+                let preserved = match instruction.mnemonic() {
+                    M::Cpuid => !matches!(wanted, R::EAX | R::EBX | R::ECX | R::EDX),
+                    M::Push => wanted != R::ESP,
+                    _ if instruction.is_jcc_short_or_near() => true,
+                    M::Cmp | M::Test => true,
+                    M::Mov | M::Lea | M::And | M::Or | M::Xor | M::Add | M::Sub => {
+                        !writes_wanted
+                            && (instruction.op0_kind() != OpKind::Memory
+                                || instruction.memory_base().full_register32() != wanted
+                                    && instruction.memory_index().full_register32() != wanted)
+                    }
+                    _ => false,
+                };
+                if !preserved {
                     break;
                 }
                 cursor = before;
@@ -121,9 +143,6 @@ pub(super) fn validate(
     Ok(())
 }
 
-fn cx(r: R) -> bool {
-    matches!(r, R::RCX | R::ECX | R::CX | R::CL | R::CH)
-}
 fn regs(i: &Instruction, m: M, a: R, b: R) -> bool {
     i.mnemonic() == m
         && i.op0_kind() == OpKind::Register
@@ -136,6 +155,7 @@ fn imm(i: &Instruction, m: M, r: R) -> Option<u64> {
         .then(|| match i.op1_kind() {
             OpKind::Immediate8 => Some(u64::from(i.immediate8())),
             OpKind::Immediate32 => Some(u64::from(i.immediate32())),
+            OpKind::Immediate64 => Some(i.immediate64()),
             OpKind::Immediate8to64 => Some(i.immediate8to64() as u64),
             OpKind::Immediate32to64 => Some(i.immediate32to64() as u64),
             _ => None,
@@ -167,6 +187,7 @@ fn spill(i: &Instruction) -> bool {
         && i.op0_kind() == OpKind::Memory
         && i.memory_base() == R::RSP
         && i.memory_index() == R::None
+        && i.memory_displacement64() <= i32::MAX as u64
         && i.op1_kind() == OpKind::Register
         && spill_register(i.op1_register())
 }
@@ -178,6 +199,7 @@ fn reload(i: &Instruction) -> bool {
         && i.op1_kind() == OpKind::Memory
         && i.memory_base() == R::RSP
         && i.memory_index() == R::None
+        && i.memory_displacement64() <= i32::MAX as u64
 }
 fn near(i: &Instruction, mnemonic: M) -> bool {
     i.mnemonic() == mnemonic
@@ -201,25 +223,37 @@ fn take(
 
 fn trampoline(v: &[Instruction], index: usize) -> Option<(usize, usize)> {
     let save = v.get(index)?;
-    if !matches!(
-        save.mnemonic(),
-        M::Xsave | M::Xsave64 | M::Xsavec | M::Xsavec64
-    ) || !memory(save, 0, R::RSP, 0x40)
+    let legacy = matches!(save.mnemonic(), M::Fxsave | M::Fxsave64);
+    if !(legacy
+        || matches!(
+            save.mnemonic(),
+            M::Xsave | M::Xsave64 | M::Xsavec | M::Xsavec64
+        ))
+        || !memory(save, 0, R::RSP, 0x40)
     {
         return None;
     }
     let mut first = index;
     let mut count = 0;
-    while first > 0 && count < 16 && spill(&v[first - 1]) && v[first - 1].op1_register() == R::RDX {
-        first -= 1;
-        count += 1;
-    }
-    first = first.checked_sub(1)?;
-    if !regs(&v[first], M::Xor, R::EDX, R::EDX) {
-        return None;
-    }
-    first = first.checked_sub(1)?;
-    let mask = imm(&v[first], M::Mov, R::EAX)?;
+    let mask = if legacy {
+        None
+    } else {
+        while first > 0
+            && count < 16
+            && spill(&v[first - 1])
+            && v[first - 1].op1_register() == R::RDX
+            && v[first - 1].memory_displacement64() != 0
+        {
+            first -= 1;
+            count += 1;
+        }
+        first = first.checked_sub(1)?;
+        if !regs(&v[first], M::Xor, R::EDX, R::EDX) {
+            return None;
+        }
+        first = first.checked_sub(1)?;
+        Some(imm(&v[first], M::Mov, R::EAX)?)
+    };
     count = 0;
     while first > 0 && count < 8 && spill(&v[first - 1]) {
         first -= 1;
@@ -230,9 +264,15 @@ fn trampoline(v: &[Instruction], index: usize) -> Option<(usize, usize)> {
     }
     first = first.checked_sub(3)?;
     if !regs(&v[first], M::Mov, R::RBX, R::RSP)
-        || imm(&v[first + 1], M::And, R::RSP) != Some((-64_i64) as u64)
+        || imm(&v[first + 1], M::And, R::RSP)
+            != Some(if legacy {
+                (-16_i64) as u64
+            } else {
+                (-64_i64) as u64
+            })
         || v[first + 2].mnemonic() != M::Sub
         || v[first + 2].op0_register() != R::RSP
+        || legacy && imm(&v[first + 2], M::Sub, R::RSP) != Some(0x240)
     {
         return None;
     }
@@ -256,13 +296,30 @@ fn trampoline(v: &[Instruction], index: usize) -> Option<(usize, usize)> {
         || !take(v, &mut next, |i| {
             regs(i, M::Mov, if resolver { R::R11 } else { R::RCX }, R::RAX)
         })
-        || !take(v, &mut next, |i| imm(i, M::Mov, R::EAX) == Some(mask))
-        || !take(v, &mut next, |i| regs(i, M::Xor, R::EDX, R::EDX))
-        || !take(v, &mut next, |i| {
-            i.mnemonic() == M::Xrstor && memory(i, 0, R::RSP, 0x40)
-        })
-        || !resolver && !take(v, &mut next, |i| regs(i, M::Mov, R::RAX, R::RCX))
     {
+        return None;
+    }
+    if let Some(mask) = mask {
+        if !take(v, &mut next, |i| imm(i, M::Mov, R::EAX) == Some(mask))
+            || !take(v, &mut next, |i| regs(i, M::Xor, R::EDX, R::EDX))
+            || !take(v, &mut next, |i| {
+                i.mnemonic() == M::Xrstor && memory(i, 0, R::RSP, 0x40)
+            })
+        {
+            return None;
+        }
+    } else if !take(v, &mut next, |i| {
+        i.mnemonic()
+            == if save.mnemonic() == M::Fxsave64 {
+                M::Fxrstor64
+            } else {
+                M::Fxrstor
+            }
+            && memory(i, 0, R::RSP, 0x40)
+    }) {
+        return None;
+    }
+    if !resolver && !take(v, &mut next, |i| regs(i, M::Mov, R::RAX, R::RCX)) {
         return None;
     }
     count = 0;

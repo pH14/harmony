@@ -64,6 +64,12 @@ def resolver_trampoline(save=b"\x0f\xae\x64\x24\x40", entry_jump=b""):
     return code
 
 
+def legacy_resolver(save="0fae442440", restore="0fae4c2440"):
+    head = bytes.fromhex("f30f1efa 53 4889e3 4883e4f0 4881ec40020000 48890424 48894c2408 4889542410 4889742418 48897c2420 4c89442428 4c894c2430 " + save + " 488b7310 488b7b08")
+    tail = bytes.fromhex("4989c3 " + restore + " 4c8b4c2430 4c8b442428 488b7c2420 488b742418 488b542410 488b4c2408 488b0424 4889dc 488b1c24 4883c418 41ffe3")
+    return head + b"\xe8" + struct.pack("<i", len(tail)) + tail + b"\xc3"
+
+
 def newc(entries):
     output = bytearray()
     for index, (name, mode, content, rdev) in enumerate(entries + [("TRAILER!!!", 0, b"", (0, 0))]):
@@ -118,6 +124,40 @@ class ExecutableCoverageTests(unittest.TestCase):
             self.assertFalse(accepted, report)
             self.assertTrue(report["artifacts"]["/fixture"]["sites"][0]["mnemonic"] in a.SAVE)
         self.assert_rejected(fixture(resolver_trampoline(bytes.fromhex("0fae442440"))), "fxsave")
+
+    def test_legacy_resolver_requires_paired_restore_and_aligned_frame(self):
+        for save, restore in [("0fae442440", "0fae4c2440"), ("480fae442440", "480fae4c2440")]:
+            code = legacy_resolver(save, restore)
+            report, accepted = self.inspect(fixture(code))
+            self.assertTrue(accepted, report)
+            for needle, offset in [("4883e4f0", 3), ("4881ec40020000", 3), (restore, 2)]:
+                changed = bytearray(code)
+                changed[changed.index(bytes.fromhex(needle)) + offset] ^= 8
+                self.assert_rejected(fixture(changed), "fxsave64" if save.startswith("48") else "fxsave")
+            branch = b"\xe9" + struct.pack("<i", code.index(bytes.fromhex(save))) + code
+            self.assert_rejected(fixture(branch), "fxsave64" if save.startswith("48") else "fxsave")
+        self.assert_rejected(fixture(legacy_resolver(restore="0fae6c2440")), "fxsave")
+
+    def test_selector_copy_proof_tracks_aliases_cpuid_and_branch_clobbers(self):
+        cases = [
+            ("31ff 53 89f8 89f9 0fa2 85c0 7470 89c6 89f9 b801000000 0fa2 81e200000004 7460 83fe06 765b 81e10000000c be01000000 81f90000000c 7550 b807000000 89f9 0fa2 89f9 0f01d0 c3", True),
+            ("31ff 0fa2 89f9 0f01d0 c3", True),
+            ("31c9 0fa2 0f01d0 c3", False),
+            ("31ff 40b701 89f9 0f01d0 c3", False),
+            ("31ff 66bf0100 89f9 0f01d0 c3", False),
+            ("31ff 48c7c701000000 89f9 0f01d0 c3", False),
+            ("bf01000000 89f9 0f01d0 c3", False),
+            ("31c9 e270 0f01d0 c3", False),
+            ("31c9 e170 0f01d0 c3", False),
+            ("31c9 e070 0f01d0 c3", False),
+            ("31c9 e370 0f01d0 c3", False),
+            ("31ff 7500 89f9 0f01d0 c3", False),
+        ]
+        cases += [("31c9 " + "85c0 " * count + "0f01d0 c3", expected) for count, expected in [(31, True), (32, False)]]
+        for code, expected in cases:
+            with self.subTest(code=code):
+                report, accepted = self.inspect(fixture(bytes.fromhex(code)))
+                self.assertEqual(accepted, expected, report)
 
     def test_native_math_is_admitted_and_inventoried_with_exact_arithmetic_control(self):
         for raw, name in [("0f53c0", "rcpps"), ("0f52c0", "rsqrtps"),
