@@ -1,0 +1,38 @@
+--- a/SAUCE/functions/collision.h
++++ b/SAUCE/functions/collision.h
+@@ -1020,6 +1020,26 @@
+ 	Clobbers:
+ 	tmp2
+ */
++CODE_BANK_PUSH("XCD_BANK_04")
++
++void wave_slope_center(void) {
++    if ((temp_x & 15) < 12) {
++        if (collision == COL_SLOPE_LU45 && (temp_x & 15) + (temp_y & 15) <= 11) {
++            cube_data[currplayer] |= 1;
++        }
++    } else {
++        temp_x += 4;
++        bg_collision_sub();
++        if (collision == COL_SLOPE_LU45 && (temp_x & 15) + (temp_y & 15) <= 15) {
++            cube_data[currplayer] |= 1;
++        }
++        temp_x -= 4;
++        bg_collision_sub();
++    }
++}
++
++CODE_BANK_POP()
++
+ void bg_coll_death() {
+ 
+ 
+@@ -1053,6 +1073,8 @@
+ 		}
+ 	}
+ 
++
++    if (gamemode == GAMEMODE_WAVE && !currplayer_mini) crossPRGBankJump0(wave_slope_center);
+     if (checked_y_fault) enforce_checked_y_fault();
+ 	check_pit_crossing();
+ 

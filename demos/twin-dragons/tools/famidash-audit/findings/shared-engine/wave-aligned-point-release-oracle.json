@@ -1,0 +1,9 @@
+{
+  "status": "aligned-wave-point-and-probe-state-preservation-verified",
+  "cases": 3538944,
+  "body_slope_routine": "source-identical to baseline",
+  "helper_sha256": "ca2f6180ba739a90fa3bafba48c7b999fb17a65633d33ea73fc2187f45088a9a",
+  "source_sha256": "75653a5683138b87e38bb78c3938ccfe059a707d5fca8a9779365e190107f203",
+  "scope": "host-compiled helper; all byte coordinates, tile seams, both players, three incoming flag states",
+  "limitation": "caller selection, sprite alignment and NES mapper require independent runtime validation"
+}

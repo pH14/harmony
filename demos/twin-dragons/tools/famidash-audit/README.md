@@ -346,3 +346,10 @@ Schema-3 components include sprites whose origin tile belongs to the region.
 The boundary inventory includes stair corners on source edges and rounded
 hazard/fill adjacencies with component references. These are review leads,
 not bug classifications or instructions to modify every listed cell.
+
+`check-wave-slope-point.py ORIGINAL REPAIRED OUTPUT` host-compiles the actual
+experimental LU45 helper, asserts the body slope routine remains identical,
+and exhaustively checks point geometry and probe-state restoration. It does
+not test NES banking or renderer alignment. `check-slope-context.py` belongs
+to the rejected earlier raw-center experiment and is retained for comparing
+that hypothesis; a passing oracle does not make that experiment acceptable.

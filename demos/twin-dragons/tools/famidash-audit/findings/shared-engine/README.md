@@ -498,3 +498,41 @@ the post-frame estimator predicts 641 to 640. The opaque top slab spans
 diverges earlier; this phase diagnosis is an exact QuickNES witness replay,
 not an independently matched FCEUmm contact trace. The disposition and
 hashed history output are retained.
+
+Deadlocked exposes a shared wave/slope failure in both the release and current
+upstream. The normal wave is exempted from LU45 slope tests, enters the
+opaque upper-left triangle at frame 891 and continues below the course.
+Original ordinary-input witnesses match FCEUmm; current discovery came from
+a separate actual Dissonance search.
+
+The aligned-wave slope patches are experimental additions to the combined
+reviewed-cap prototypes, not standalone diffs against pristine upstream.
+They preserve the original body slope routine and its mini-wave exclusions.
+A separate normal-wave point test samples LU45 four pixels right of the
+existing death probe, aligning it with the wave renderer and body offset.
+The helper resamples at tile seams and restores the previous probe metadata.
+The release helper uses XCD_BANK_04; current uses COLLISION_BANK and also
+selects normal Snake, whose dimensions and renderer use the same alignment.
+Current Snake runtime coverage remains pending.
+
+Both combined repairs kill their original Deadlocked witness at frame 891
+with every approach frame unchanged in QuickNES and FCEUmm, followed by a
+confirmed reset. A fresh Dissonance input clears the repaired release at
+frame 5,921; all frames match FCEUmm. The host oracle compiles the actual
+helper and checks 3,538,944 byte-coordinate, seam, player and incoming-state
+cases, including preservation of the previous probe. It does not validate
+mapper operation or establish sprite alignment by itself.
+
+The complete paired comparison preserves 168 of 201 inputs exactly. Of 125
+previously clearing inputs, 97 still clear. Seventeen lost controls first
+differ at a new death; read-only replay inspection finds D-block protection
+off at every such contact. The remaining eleven first differ mechanically
+before death. These losses require further route and timing assessment; the
+new clear does not establish general playability. A rejected earlier raw
+slope-context variant retained only 94 of 125 clears and changed mini-wave
+behavior without a confirmed mini-wave failure proof. Its paired comparison
+is retained as negative evidence. No slope variant is accepted for shipping.
+
+Exploratory round 43 searches all 109 installed levels using the aligned
+prototype and freshly validated ordinary prefixes from round 38. Its source
+dispositions and affected clearing controls remain pending. Clean rounds: 0.
