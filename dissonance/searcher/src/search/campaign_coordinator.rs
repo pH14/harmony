@@ -450,7 +450,6 @@ where
         let result = (|| {
             self.ensure_active()?;
             self.poll_persistence()?;
-            self.workload.verify_integrity()?;
             self.profile.receives = self.profile.receives.saturating_add(1);
             self.running = self
                 .running
@@ -508,6 +507,7 @@ where
     }
 
     fn ensure_active(&self) -> Result<(), Box<dyn Error>> {
+        self.workload.verify_integrity()?;
         if self.failed {
             return Err("campaign coordinator has already failed".into());
         }

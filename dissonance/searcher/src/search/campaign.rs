@@ -5534,6 +5534,7 @@ mod tests {
         bootstrap_readiness: Option<BootstrapReadiness>,
         refuse: bool,
         integrity_invalidated: std::sync::atomic::AtomicBool,
+        integrity_failure_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         fail_next_target: std::sync::atomic::AtomicBool,
         first_action_started: std::sync::atomic::AtomicBool,
         second_selection_waits_for_first_action: std::sync::atomic::AtomicBool,
@@ -5806,11 +5807,14 @@ mod tests {
             })
         }
         fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
-            if self.targets.as_ref().is_some_and(|targets| {
+            if let Some(targets) = self.targets.as_ref().filter(|targets| {
                 targets
                     .integrity_invalidated
                     .load(std::sync::atomic::Ordering::SeqCst)
             }) {
+                if let Some(hook) = targets.integrity_failure_hook.lock().unwrap().clone() {
+                    hook();
+                }
                 return Err(Box::new(TestIntegrityViolation));
             }
             Ok(())
@@ -10536,6 +10540,101 @@ mod tests {
                 "checkpoint worker did not finish"
             );
             std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn typed_integrity_failure_precedes_both_ready_and_pending_persistence_failure() {
+        for ready in [false, true] {
+            for receive in [false, true] {
+                let directory = std::env::temp_dir().join(format!(
+                    "direct-integrity-persistence-{}-{ready}-{receive}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&directory);
+                std::fs::create_dir_all(directory.join("000000000001-interval.ckpt")).unwrap();
+                let (entered_sender, entered) = mpsc::channel();
+                let (released, release) = mpsc::channel();
+                let release = Mutex::new(release);
+                let mut config = three_worker_config();
+                config.window = 1;
+                config.execution_budget = 2;
+                let targets = Arc::new(LiveTargets::default());
+                let workload = TestWorkload {
+                    bootstrap_objective: false,
+                    targets: Some(targets.clone()),
+                };
+                let mut stream = Vec::new();
+                let mut coordinator = CampaignCoordinator::start(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions {
+                        checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                            directory: directory.clone(),
+                            every: std::num::NonZeroU64::new(1),
+                            on_marks: false,
+                            on_top_progress: false,
+                            checkpoint_owner: None,
+                            max_image_bytes: 64 << 20,
+                            before_write: Some(super::super::checkpoint::publisher::TestWriteHook(
+                                Arc::new(move |_| {
+                                    entered_sender.send(()).unwrap();
+                                    release.lock().unwrap().recv().unwrap();
+                                }),
+                            )),
+                        }),
+                        ..CampaignExecutionOptions::default()
+                    },
+                )
+                .unwrap();
+                assert!(coordinator.reserve_next().unwrap());
+                let job = coordinator.plan(1).pop().unwrap();
+                let mut target = workload.new_target().unwrap();
+                coordinator
+                    .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                    .unwrap();
+                entered.recv_timeout(Duration::from_secs(10)).unwrap();
+                let next = receive.then(|| coordinator.plan(1).pop().unwrap().reservation);
+                if ready {
+                    released.send(()).unwrap();
+                    wait_for_checkpoint_worker(&coordinator);
+                } else {
+                    assert!(!coordinator.checkpoint_worker_finished());
+                    let released = Mutex::new(Some(released));
+                    *targets.integrity_failure_hook.lock().unwrap() = Some(Arc::new(move || {
+                        if let Some(released) = released.lock().unwrap().take() {
+                            released.send(()).unwrap();
+                        }
+                    }));
+                }
+                targets
+                    .integrity_invalidated
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let error = match next {
+                    Some(reservation) => coordinator
+                        .fail(reservation, "worker error".into())
+                        .unwrap_err(),
+                    None => coordinator.reserve_next().unwrap_err(),
+                };
+                assert!(
+                    error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>()
+                );
+                assert!(error.source().unwrap().is::<TestIntegrityViolation>());
+                assert!(coordinator.plan(usize::MAX).is_empty());
+                let final_error = coordinator.finish(Vec::new()).unwrap_err();
+                assert!(
+                    final_error
+                        .is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>()
+                );
+                assert!(final_error.source().unwrap().is::<TestIntegrityViolation>());
+                assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+                }));
+                std::fs::remove_dir_all(directory).unwrap();
+            }
         }
     }
 
