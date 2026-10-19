@@ -23,9 +23,9 @@ class ScopeTests(unittest.TestCase):
                       if kind}
         self.assertEqual(set(SCENARIOS) | {"kani", "miri", "miri_matrix", "rust_checks"}, registered)
 
-    def test_a_searcher_change_runs_the_nes_composition_and_nothing_else(self):
+    def test_a_searcher_change_runs_both_public_search_compositions(self):
         self.assertEqual(self.active("dissonance/searcher/src/search/archive.rs"),
-                         {"dissonance_stb"})
+                         {"dissonance_stb", "harmony_languages"})
 
     def test_stb_changes_select_the_stb_check(self):
         for path in ("workloads/nes-games/src/stb/target.rs", "workloads/nes/src/bin/stb-probe.rs",
@@ -69,9 +69,12 @@ class ScopeTests(unittest.TestCase):
 
     def test_publication_and_packaged_adapter_changes_select_the_real_consumer(self):
         for path in (".github/workflows/release.yml", "scripts/qualify-packaged-host.py",
-                     "scripts/test_ci_packaged_host_qualification.py", "scripts/qualification/packaged-host.json"):
+                     "scripts/test_ci_packaged_host_qualification.py", "scripts/qualification/packaged-host.json",
+                     "workloads/guest-images/oci-package.py"):
             with self.subTest(path=path):
                 self.assertEqual(self.active(path), {"harmony_languages"})
+        self.assertEqual(self.active("dissonance/searcher/src/search/campaign.rs"),
+                         {"dissonance_stb", "harmony_languages"})
 
     def test_the_shared_emulator_build_selects_every_source_built_game(self):
         self.assertEqual(self.active("scripts/build-quicknes-core.sh"),
