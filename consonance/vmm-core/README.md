@@ -283,7 +283,7 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 10, and the sparse sidecar is version 12;
+The complete portable format is version 11, and the sparse sidecar is version 13;
 older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
 changed-page numbers and bytes to its sidecar; import verifies them before
 deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
@@ -403,9 +403,9 @@ advancing virtual time. Supported ports keep the same assigned durations once
 their ownership and any explicit width constraint have been validated.
 The modeled 8259 master and slave command and interrupt-mask ports accept only
 byte reads and writes; other widths fail before changing masks or virtual time.
-Every V-time-wired VMM maintains a v2 ordered-history commitment:
+Every V-time-wired VMM maintains a v3 ordered-history commitment:
 `count` starts at zero with a zero digest; each completed normalized event
-advances a tagged SHA-256 chain under `consonance.ordered-event-history.v2`, committing
+advances a tagged SHA-256 chain under `consonance.ordered-event-history.v3`, committing
 the preceding digest, checked cumulative count, event class, payload digest,
 virtual time after completion, and ordered interrupt deadline/vector pairs.
 Delivery outside an active guest-exit context is rejected before consuming the
@@ -1102,3 +1102,13 @@ replace previous cumulative child values and preserve the last values on error.
 Neither worker sums nor these breakdowns are additive to shared cache totals or
 the existing guard timers. This measurement establishes no batching speedup or
 permission to remove publication, deadline, interrupt, or image-check boundaries.
+
+Modeled read completions are part of the normalized payload and version 3
+ordered history. x86 port, xAPIC, RDMSR and CPUID responses, and normalized ARM
+MMIO reads commit the result supplied through the backend completion interface.
+Fault completions have a distinct tag. This detects differing supplied answers
+even when device and guest state later reconverge. It does not independently
+attest that hardware applied the supplied value correctly. ARM raw-only GIC and
+sysreg substrate operations remain outside the portable normalized stream.
+Complete snapshots use version 11 and sparse snapshots use version 13; earlier
+histories cannot be imported under these semantics.

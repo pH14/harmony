@@ -658,7 +658,7 @@ canonicalization does not grant captured execution authority. Branch roots use
 Old history, snapshot, stream, cache and root formats are refused. Missing,
 malformed, or conflicting certificates stop the campaign.
 
-The v2 replay certificate binds the v1 ordered-history format independently of
+The replay certificate binds the v3 ordered-history format independently of
 logical endpoint state. An intermediate event change alters the certificate even
 when endpoint, observations, event count and final virtual time agree. Fresh setup
 preserves the boot event prefix. Replay, branch, portable import and cache import

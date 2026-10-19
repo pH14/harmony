@@ -228,6 +228,7 @@ struct PendingLiveEvent {
     class: NormalizedEventClass,
     payload: Vec<u8>,
     service: Option<(u64, [u8; 32])>,
+    completion: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -346,6 +347,7 @@ impl LiveVirtualTimeTrace {
             class,
             payload,
             service: None,
+            completion: None,
         });
         self.current_interrupts.clear();
         Ok(())
@@ -558,10 +560,22 @@ impl LiveVirtualTimeTrace {
                 class: NormalizedEventClass::InterruptDelivery,
                 payload: Vec::new(),
                 service: None,
+                completion: None,
             });
         }
         self.active_clockevent_schedule = None;
         self.current_interrupts.push(scheduled.into());
+        Ok(())
+    }
+
+    pub(crate) fn record_completion(&mut self, result: &[u8]) -> Result<(), &'static str> {
+        let Some(pending) = self.pending.as_mut() else {
+            return Ok(());
+        };
+        if pending.completion.is_some() {
+            return Err("duplicate guest completion for normalized event");
+        }
+        pending.completion = Some(result.to_vec());
         Ok(())
     }
 
@@ -606,7 +620,7 @@ impl LiveVirtualTimeTrace {
             .checked_add(1)
             .ok_or("event history count overflow")?;
         let mut digest = Sha256::new();
-        digest.update(b"consonance.ordered-event-history.v2\0");
+        digest.update(b"consonance.ordered-event-history.v3\0");
         digest.update(self.history.digest);
         digest.update(count.to_le_bytes());
         digest.update([1]);
@@ -643,7 +657,11 @@ impl LiveVirtualTimeTrace {
         let event = NormalizedEvent {
             event_index: u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX),
             class: pending.class,
-            payload_digest: digest_payload(pending.class, &pending.payload),
+            payload_digest: digest_completed_payload(
+                pending.class,
+                &pending.payload,
+                pending.completion.as_deref(),
+            ),
             vns_after,
             interrupts: std::mem::take(&mut self.current_interrupts),
             state_hash,
@@ -654,7 +672,7 @@ impl LiveVirtualTimeTrace {
             .checked_add(1)
             .ok_or("event history count overflow")?;
         let mut digest = Sha256::new();
-        digest.update(b"consonance.ordered-event-history.v2\0");
+        digest.update(b"consonance.ordered-event-history.v3\0");
         digest.update(self.history.digest);
         digest.update(count.to_le_bytes());
         digest.update([0]);
@@ -926,6 +944,23 @@ impl<B: Backend> VirtualTimeRunLoop<B> {
                 "normalized event append produced no event".to_string(),
             ))
     }
+}
+
+fn digest_completed_payload(
+    class: NormalizedEventClass,
+    request: &[u8],
+    completion: Option<&[u8]>,
+) -> [u8; 32] {
+    let request = digest_payload(class, request);
+    let Some(completion) = completion else {
+        return request;
+    };
+    let mut digest = Sha256::new();
+    digest.update(b"consonance.completed-event.v1\0");
+    digest.update(request);
+    digest.update((completion.len() as u64).to_le_bytes());
+    digest.update(completion);
+    digest.finalize().into()
 }
 
 pub(crate) fn digest_payload(class: NormalizedEventClass, payload: &[u8]) -> [u8; 32] {
@@ -1428,6 +1463,28 @@ mod live_trace_tests {
         later.restore_event_history(prefix);
         later.complete_service(18, [9; 32]).unwrap();
         assert_ne!(later.event_history(), inline.event_history());
+    }
+
+    #[test]
+    fn completed_event_separates_request_result_and_missing_completion() {
+        let class = NormalizedEventClass::ArchitecturalControl;
+        let no_result = digest_completed_payload(class, &[1, 2], None);
+        let read = digest_completed_payload(class, &[1, 2], Some(&[0, 3]));
+        let fault = digest_completed_payload(class, &[1, 2], Some(&[1]));
+        assert_ne!(no_result, read);
+        assert_ne!(read, fault);
+        assert_ne!(
+            read,
+            digest_completed_payload(class, &[1], Some(&[2, 0, 3]))
+        );
+        let mut trace = LiveVirtualTimeTrace::default();
+        trace
+            .begin(ExitReason::Mmio, String::new(), class, vec![1, 2])
+            .unwrap();
+        trace.record_completion(&[0, 3]).unwrap();
+        assert!(trace.record_completion(&[0, 4]).is_err());
+        trace.finish(7, None).unwrap();
+        assert_eq!(trace.normalized_log().events[0].payload_digest, read);
     }
 
     #[test]
