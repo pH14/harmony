@@ -396,6 +396,10 @@ impl EndpointState {
                     EndpointProofRequest::WholeStateAndHistory
                     | EndpointProofRequest::CapturedWholeStateAndHistory => driver.proof(),
                 };
+                let proof = proof.and_then(|proof| {
+                    driver.ensure_active()?;
+                    Ok(proof)
+                });
                 match proof {
                     Ok(proof) => Ok(EndpointReply::Committed(EndpointReceipt {
                         binding: pending.binding,
