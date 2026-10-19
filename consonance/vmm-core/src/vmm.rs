@@ -3204,10 +3204,6 @@ where
         Ok(Step::Continued)
     }
 
-    pub(crate) fn current_vns(&self) -> Option<u64> {
-        self.vtime.as_ref().map(VtimeWiring::virtual_time_vns)
-    }
-
     pub(crate) fn current_vcpu(&mut self) -> Result<VcpuOf<B>, VmmError> {
         match &self.saved_state {
             Some(s) => Ok(s.clone()),
@@ -3408,9 +3404,11 @@ mod tests {
     use vmm_backend::{ExitReason, Gpa, VcpuState, X86, X86Caps, X86Exit, X86Policy};
 
     use crate::vendor::x86::devices::REPORT_PORT;
+    #[cfg(feature = "msr-diagnostics")]
+    use crate::vendor::x86::dispatch::MsrDir;
     use crate::vendor::x86::dispatch::{
-        APIC_MMIO_BASE, COM1_IRQ_VECTOR, DOORBELL_PORT, IA32_TSC_ADJUST, IDLE_PORT, MsrDir,
-        RFLAGS_IF, VIRTUAL_TIME_TICK_PORT, contract_vclock_config, lookup_cpuid,
+        APIC_MMIO_BASE, COM1_IRQ_VECTOR, DOORBELL_PORT, IA32_TSC_ADJUST, IDLE_PORT, RFLAGS_IF,
+        VIRTUAL_TIME_TICK_PORT, contract_vclock_config, lookup_cpuid,
     };
     use crate::vendor::x86::records as snapshot;
 
@@ -3621,6 +3619,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "msr-diagnostics")]
     fn msr_dir_renders_direction_and_exit_reason() {
         assert_eq!(MsrDir::Read.dir(), "RDMSR");
         assert_eq!(MsrDir::Write.dir(), "WRMSR");

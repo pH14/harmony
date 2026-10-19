@@ -557,7 +557,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
         }
         self.devices.msr_diagnostics_remaining -= 1;
         let rip = self.backend.read_x86_regs().map(|regs| regs.rip);
-        loud_msr(dir, index, data, rip, self.current_vns(), disp);
+        loud_msr(dir, index, data, rip, self.effective_vns(), disp);
     }
 
     pub fn wire_lapic(&mut self, lapic: lapic::Lapic) -> &mut Self {
