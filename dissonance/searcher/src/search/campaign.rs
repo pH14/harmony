@@ -10503,7 +10503,7 @@ mod tests {
         core.sequence = 17;
         core.probe_refused = 19;
         core.terminal_endpoints = 23;
-        let reference = CoreCheckpoint::<TestWorkload> {
+        let reference = super::CoreCheckpoint::<TestWorkload> {
             curve: core.curve.clone(),
             curve_interval: core.curve_interval,
             bounded_progress_curve: core.bounded_progress_curve,
@@ -10521,7 +10521,8 @@ mod tests {
         let mut streamed = Vec::new();
         core.write_checkpoint_state(&mut streamed).unwrap();
         assert_eq!(streamed, expected);
-        let restored: CoreCheckpoint<TestWorkload> = postcard::from_bytes(&streamed).unwrap();
+        let restored: super::CoreCheckpoint<TestWorkload> =
+            postcard::from_bytes(&streamed).unwrap();
         assert_eq!(restored.sequence, 17);
         assert_eq!(restored.probe_refused, 19);
         assert_eq!(restored.objective_witness, core.objective_witness);
