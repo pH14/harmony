@@ -25,7 +25,7 @@ pub fn configure_malloc_arenas() {
         eprintln!("error: {error}");
         std::process::exit(1);
     });
-    // SAFETY: mallopt only changes glibc's allocator tuning and takes no pointers. It runs first in main, before the search starts any thread, and limit is a positive c_int.
+    // SAFETY: mallopt only changes glibc's allocator tuning and takes no pointers. Callers invoke it at NES execution startup before creating NES workers, and limit is a positive c_int.
     let set = unsafe { libc::mallopt(libc::M_ARENA_MAX, limit) };
     if set != 1 {
         eprintln!("error: mallopt(M_ARENA_MAX, {limit}) failed");
