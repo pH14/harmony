@@ -23,8 +23,68 @@ class ScalingTests(unittest.TestCase):
             "stream": {"worker_cpu_ns": None, "producer_wait_ns": 20},
         }, 10)
         self.assertEqual(measured["coordinator_cpu_ns_per_job"], 0)
-        self.assertIsNone(measured["encoder_cpu_ns_per_job"])
+        self.assertIsNone(measured["stream_aux_cpu_ns_per_job"])
         self.assertEqual(measured["producer_wait_ns_per_job"], 2)
+
+    def test_parallel_stream_bottleneck_uses_every_role_and_complete_cpu_coverage(self):
+        stream = {"worker_cpu_ns": 90, "serializers": [{"cpu_ns": 60}, {"cpu_ns": 20}],
+                  "relay": {"cpu_ns": 10}, "counter_overflow": False}
+        def measure():
+            return scaling.coordination_costs({"stream": stream}, 10, "task")
+        costs = measure()
+        self.assertEqual(costs["stream_aux_cpu_ns_per_task"], 9)
+        self.assertEqual(costs["serializer_cpu_ns_per_task"], [6, 2])
+        self.assertEqual(costs["relay_cpu_ns_per_task"], 1)
+        self.assertEqual(costs["stream_dedicated_core_bottleneck_ns_per_task"], 6)
+        stream["relay"]["cpu_ns"] = 80
+        self.assertEqual(measure()["stream_dedicated_core_bottleneck_ns_per_task"], 8)
+        stream["serializers"][1]["cpu_ns"] = None
+        self.assertIsNone(measure()["stream_dedicated_core_bottleneck_ns_per_task"])
+        self.assertEqual(measure()["serializer_cpu_ns_per_task"], [6, None])
+        stream["serializers"][1]["cpu_ns"] = 20
+        stream["counter_overflow"] = True
+        self.assertIsNone(measure()["stream_aux_cpu_ns_per_task"])
+        self.assertIsNone(measure()["stream_dedicated_core_bottleneck_ns_per_task"])
+        stream["counter_overflow"] = False
+        stream["serializers"][0]["counter_overflow"] = True
+        self.assertIsNone(measure()["stream_dedicated_core_bottleneck_ns_per_task"])
+        stream["serializers"][0]["counter_overflow"] = False
+        stream["serializers"][0]["cpu_ns"] = True
+        with self.assertRaises(ValueError):
+            measure()
+        stream["serializers"][0]["cpu_ns"] = 60
+        stream["serializers"].pop()
+        with self.assertRaises(ValueError):
+            measure()
+        with self.assertRaises(ValueError):
+            scaling.coordination_costs({}, 0)
+
+    def test_worker_execute_cpu_requires_complete_matching_job_coverage(self):
+        import copy
+        value = dict(clock="thread_cpu_time", scope=
+                     "actual_worker_execute_including_unwind_excluding_queue_reply_and_post_job_telemetry",
+                     supported=True, total_cpu_ns=900, calls=3, samples=3, errors=0, panics=0,
+                     counter_overflow=False, complete=True)
+        telemetry = {"workers": [{"jobs": 3, "execute_cpu": value}]}
+        self.assertEqual(scaling.worker_execute_cost(telemetry, 3), 300)
+        self.assertIsNone(scaling.worker_execute_cost({"workers": [{"jobs": 3}]}, 3))
+        idle = dict(value, calls=0, samples=0, total_cpu_ns=0)
+        telemetry["workers"].append({"jobs": 0, "execute_cpu": idle})
+        self.assertEqual(scaling.worker_execute_cost(telemetry, 3), 300)
+        for patch in ({"samples": 2, "complete": False}, {"supported": False, "complete": False},
+                      {"counter_overflow": True, "complete": False}, {"total_cpu_ns": None, "complete": False},
+                      {"errors": 1}, {"panics": 1}):
+            changed = copy.deepcopy(telemetry)
+            changed["workers"][0]["execute_cpu"].update(patch)
+            self.assertIsNone(scaling.worker_execute_cost(changed, 3))
+        for patch in ({"samples": 2}, {"calls": 2}, {"total_cpu_ns": True},
+                      {"total_cpu_ns": 1 << 128}, {"errors": 3, "panics": 1}, {"scope": "lifetime_cpu"}):
+            changed = copy.deepcopy(telemetry)
+            changed["workers"][0]["execute_cpu"].update(patch)
+            with self.assertRaises(ValueError):
+                scaling.worker_execute_cost(changed, 3)
+        with self.assertRaises(ValueError):
+            scaling.worker_execute_cost(telemetry, 4)
 
     def write_run(self, directory, changed=False, workers=1, checkpoint=b"\x00\xffcheckpoint-v13\x80"):
         directory.mkdir()
@@ -91,7 +151,7 @@ class ScalingTests(unittest.TestCase):
                 self.assertEqual(deltas["reconstruction_frames"], 6 if resumed else 8)
                 self.assertEqual(result["frames_emulated"], 42)
                 costs = scaling.coordination_costs({"stream": {"worker_cpu_ns": 12}}, 3, "task")
-                self.assertEqual(costs["encoder_cpu_ns_per_task"], 4)
+                self.assertEqual(costs["stream_aux_cpu_ns_per_task"], 4)
 
     def test_expansion_rejects_wrong_shape_bad_deltas_and_edge_based_worker_counts(self):
         with tempfile.TemporaryDirectory() as temporary:

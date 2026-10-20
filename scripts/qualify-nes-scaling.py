@@ -152,21 +152,88 @@ def run_trial(command, directory, timeout):
     return time.monotonic() - started
 
 
+def worker_execute_cost(telemetry, jobs):
+    if counter(jobs) == 0:
+        raise ValueError("worker execute CPU denominator must be positive")
+    workers = telemetry.get("workers") or []
+    if not workers or any(worker.get("execute_cpu") is None for worker in workers):
+        return None
+    total_cpu = 0
+    total_calls = 0
+    usable = True
+    for worker in workers:
+        value = worker["execute_cpu"]
+        if (value.get("clock") != "thread_cpu_time" or value.get("scope") !=
+                "actual_worker_execute_including_unwind_excluding_queue_reply_and_post_job_telemetry"):
+            raise ValueError("worker execute CPU boundary differs")
+        for field in ("supported", "complete", "counter_overflow"):
+            if type(value.get(field)) is not bool:
+                raise ValueError("invalid worker execute CPU coverage flag")
+        calls, samples, errors, panics = (counter(value[field]) for field in
+                                           ("calls", "samples", "errors", "panics"))
+        if samples > calls or errors + panics > calls:
+            raise ValueError("worker execute CPU classifications differ")
+        cpu = value.get("total_cpu_ns")
+        if cpu is not None and (type(cpu) is not int or not 0 <= cpu < 1 << 128):
+            raise ValueError("invalid worker execute CPU duration")
+        complete = (value["supported"] and not value["counter_overflow"] and
+                    calls == counter(worker["jobs"]) and samples == calls and cpu is not None)
+        if value["complete"] and not complete:
+            raise ValueError("worker execute CPU completeness contradicts coverage")
+        usable &= value["complete"] and complete and errors == panics == 0
+        total_cpu += cpu or 0
+        total_calls += calls
+    if not usable:
+        return None
+    if total_calls != jobs:
+        raise ValueError("worker execute CPU denominator differs from admitted work")
+    return total_cpu / jobs
+
+
 def coordination_costs(telemetry, executions, unit="job"):
+    if counter(executions) == 0:
+        raise ValueError("coordination cost denominator must be positive")
     phase = telemetry.get("dispatch_phase") or {}
     host = phase.get("host") or {}
     stream = telemetry.get("stream") or {}
+    finish = (telemetry.get("coordinator") or {}).get("stream_finish_host") or {}
+
+    def per_job(value):
+        return counter(value) / executions if value is not None else None
+
+    overflow = stream.get("counter_overflow", False)
+    if type(overflow) is not bool:
+        raise ValueError("invalid stream counter overflow flag")
+    def role_cost(row):
+        nonlocal overflow
+        if not isinstance(row, dict) or type(row.get("counter_overflow", False)) is not bool:
+            raise ValueError("invalid stream thread telemetry")
+        overflow |= row.get("counter_overflow", False)
+        return per_job(row.get("cpu_ns"))
+
+    serializers = stream.get("serializers")
+    serializer_costs = None
+    if serializers is not None:
+        if not isinstance(serializers, list) or len(serializers) != 2:
+            raise ValueError("expected two stream serializers")
+        serializer_costs = [role_cost(row) for row in serializers]
+    relay_cost = role_cost(stream.get("relay") or {})
+    bottleneck = None
+    if not overflow and serializer_costs is not None and relay_cost is not None:
+        if all(value is not None for value in serializer_costs):
+            bottleneck = max(*serializer_costs, relay_cost)
     return {
         "dispatch_phase_ns": phase.get("wall_ns"),
-        f"coordinator_cpu_ns_per_{unit}": (
-            host["coordinator_cpu_ns"] / executions if "coordinator_cpu_ns" in host else None
+        f"worker_execute_cpu_ns_per_{unit}": worker_execute_cost(telemetry, executions),
+        f"coordinator_cpu_ns_per_{unit}": per_job(host.get("coordinator_cpu_ns")),
+        f"coordinator_stream_finish_cpu_ns_per_{unit}": per_job(finish.get("coordinator_cpu_ns")),
+        f"stream_aux_cpu_ns_per_{unit}": (
+            None if overflow else per_job(stream.get("worker_cpu_ns"))
         ),
-        f"encoder_cpu_ns_per_{unit}": (
-            stream["worker_cpu_ns"] / executions if stream.get("worker_cpu_ns") is not None else None
-        ),
-        f"producer_wait_ns_per_{unit}": (
-            stream["producer_wait_ns"] / executions if "producer_wait_ns" in stream else None
-        ),
+        f"serializer_cpu_ns_per_{unit}": serializer_costs,
+        f"relay_cpu_ns_per_{unit}": relay_cost,
+        f"stream_dedicated_core_bottleneck_ns_per_{unit}": bottleneck,
+        f"producer_wait_ns_per_{unit}": per_job(stream.get("producer_wait_ns")),
     }
 
 

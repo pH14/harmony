@@ -238,25 +238,52 @@ archive budget; arbitrary result and snapshot payloads are accounted separately.
 A separate pending count preserves stepped callers' reservation limit, while
 completion gauges include immediately admitted and held results. No hash-map
 iteration affects admission, selection, stream records or checkpoint order.
-The native pool writes the header inline, then moves owned typed records to one
-ordered background encoder that serializes them and owns the stream hash. The
-coordinator retains the borrowed output sink, which need not be `Send`. Sixteen
-queued commands and one queued encoded batch bound the pipeline. Each batch
-contains at most sixteen records; partial batches are submitted after one
-millisecond when the coordinator next pumps output, and on finish or error
-cleanup. This age threshold is not a one-millisecond delivery guarantee. Reusable
-byte and typed record-vector buffers return with later commands. Each campaign
-stages its concrete job/skip/end record enum directly, avoiding a boxed closure
-allocation for each record. The heterogeneous header is serialized inline before
-the encoder starts; it does not enlarge the queued record type. At most 288 accepted records and sixteen staged producer records retain owned
-payloads. These bounds count records rather than claiming a fixed byte charge
-for arbitrary workload serialization. A full queue makes the producer drain
-encoded output before retrying. While waiting for worker results, the coordinator uses five-millisecond
-receive timeouts to pump output. Normal completion drains, joins and flushes before
-returning the digest. A later worker or coordinator failure drains earlier
-accepted records without appending an end record; sink and encoding failures
-stop certification and close both channel directions before joining. Browser and
-stepped coordinators retain inline encoding.
+The native pool writes the header inline, then moves owned typed records to two
+fixed serializers and one ordered relay. Batch sequences alternate serializers;
+each serializer has six queued commands and one queued result. The relay reads
+only the next expected serializer result, hashes its complete-record bytes, and
+publishes through one output slot to the coordinator's borrowed sink, which need
+not be `Send`. Twelve command slots, two active serializers, two result slots,
+one active relay batch and one output slot bound accepted storage to eighteen
+batches, or 288 records, plus sixteen producer-staged or awaiting-enqueue records. These count bounds
+do not bound arbitrary payload or serialized byte sizes. Later completion never
+releases producer storage before ordered sink consumption, and no reorder map
+or per-record boxed task is used. Byte and empty record-vector buffers recycle.
+
+Each batch has at most sixteen records. Partial batches are submitted after one
+millisecond when output is next pumped, and on finish or error cleanup; this is
+not a one-millisecond delivery guarantee. While waiting for results, the
+coordinator uses five-millisecond receive timeouts to pump output. Serializers
+may encode and dispose later values speculatively. Only the relay publishes
+bytes or chooses failure order: an earlier batch's complete prefix and first
+record error precede every later failure. No digest is returned on a serializer,
+relay, transport, sink or cleanup failure. An arbitrary sink can write partial
+bytes before returning an I/O error; those bytes cannot be rolled back, and
+complete-line output is not promised on sink failure. Sink failure closes inputs and the
+borrowed-output receiver before joining; normal finish drains, joins and flushes.
+Browser and stepped coordinators retain inline encoding.
+
+Logical record serialization must be a deterministic function of the owned
+value, including its error. Serialization and destruction callback scheduling,
+thread identity and cross-record order are unspecified. Each record's own
+cleanup still precedes serialization, and its record destruction follows it.
+Owned payloads are destroyed exactly once, including unpublished tails. Stateful
+global-counter serializers do not satisfy this contract. Famidash linear records
+use derived serialization of owned scalar/key/action fields; expansion records
+add fresh postcard observation commitments computed only from their owned
+vectors. Neither reads mutable observers or scheduling state while encoding.
+
+Stream telemetry separates `serializers[0]`, `serializers[1]` and `relay`, with
+Linux TID, optional thread CPU/run-wait, work wall time and channel waits.
+`encode_ns` is summed serializer work wall time, not elapsed pipeline wall or
+CPU. Published background record/byte counts exclude speculative later output.
+`worker_cpu_ns` and `worker_cpu_wait_ns` are totals over all three threads only
+when every component is available; use them for total/shared-auxiliary service,
+not as a single encoder bottleneck. With three actually separate auxiliary cores,
+a per-task stage model uses `1/max(E0,E1,H)` for serializer and relay CPU, not
+blindly twice the inverse summed serializer cost. Shared cores also pay all
+three costs and other auxiliary work. Overflow flags invalidate affected totals;
+missing CPU counters remain null. These threads alone prove no capacity target.
 
 The public result aliases resolve to storage parameterized by their actual field
 types, so owned static payloads do not require the workload type itself to be
@@ -273,7 +300,7 @@ cleanup data. Admission mutably borrows those vectors, copies actions and
 milestones, and takes only accepted snapshots. Duplicate or rejected incoming
 snapshots return to their original candidate; nonviable candidates remain there.
 No snapshot is cloned for cleanup, and snapshot retirement, retention accounting
-and pin release remain on the coordinator. The encoder disposes this payload
+and pin release remain on the coordinator. A serializer disposes this payload
 before serializing its record; cleanup data never enters JSON or the stream hash.
 Inline coordinators perform the same disposal before writing the line without
 requiring their cleanup data to be static or creating a thread. Only native
@@ -297,20 +324,22 @@ destruction separately, preserving the first failure or an existing unwind and
 closing channels before joining. This does not guarantee recovery from multiple
 panics inside one aggregate payload destructor.
 
-`PlacedThread::StreamEncoder` lets launchers place this additional host thread
-separately from the coordinator. Encoder placement failure or panic fails startup
-before dispatch. `telemetry.stream` reports encoder records/bytes and encode time,
-coordinator sink writes and final flush, producer backpressure, the maximum
-number of accepted outstanding records, batch count and size, and the largest
-single reusable buffer capacity. `records_in_flight_peak` excludes the up-to-sixteen
-producer-staged records. `background_records`, `background_bytes` and `sink_bytes`
-exclude the inline header even though the digest includes it; the evaluator result
-`stream_bytes_generated` is the whole-stream byte count. CPU and scheduler-wait
-counters are optional when the host cannot report them. Encoder work is owned by
-this host thread, outside target-worker totals; sink and backpressure time can
-nest inside the coordinator's stream-write span and must not be added to it. Memory held by finished
-results is outside the archive's logical budget and must be measured in host
-RSS. Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
+`StreamEncoder` places the ordered relay, while `StreamSerializer(0)` and
+`StreamSerializer(1)` place the two serializers. A placement failure or panic
+on any of these threads fails startup before dispatch. Their stream CPU totals
+are outside target-worker execution totals. Sink writes and backpressure remain
+coordinator work and can nest inside its stream-write wall span; do not add
+those wall measurements together.
+
+Stream telemetry also reports coordinator sink writes and final flush,
+producer backpressure, accepted outstanding record peak, batch count and size,
+and the largest reusable buffer capacity. `records_in_flight_peak` excludes
+up to sixteen producer-staged or awaiting-enqueue records. Published
+`background_records`, `background_bytes` and `sink_bytes` exclude the inline
+header although the digest includes it; evaluator `stream_bytes_generated`
+counts the whole stream. Finished results remain outside the archive's logical
+budget, and their variable memory must be measured in host RSS.
+Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
 when finished results wait on an earlier job and `idle_no_job_ns` otherwise.
 Worker execution errors also wait for their reservation's planned admission;
 the coordinator can record every earlier successful job and its checkpoint
@@ -1116,6 +1145,16 @@ from it. Receive CPU is a subset of dispatch CPU, while receive wall time also
 includes sleeping and scheduling delays. These measurements are ephemeral
 telemetry only, excluded from logical reports, streams, and checkpoints.
 
+With the same profiling flag, each native worker's `execute_cpu` brackets the
+actual execute call and its panic catcher. It includes task restore,
+reconstruction, required snapshot capture, observations and execution callbacks;
+it excludes startup, idle/queue waits, reply transport and post-job target
+telemetry. Calls, valid samples, errors and panics are separate, and coverage
+must match worker jobs. Missing, backwards, overflowing or unsupported samples
+invalidate completeness rather than standing in for zero. This is worker CPU
+per submitted task, not guest-only cycles or an independently qualified native
+service floor.
+
 Detailed phase clocks are opt-in through this process-start environment
 variable. Without it, public phase spans are null and `timing_complete` is false;
 resuming any segment without detailed timing also leaves that flag false.
@@ -1219,10 +1258,11 @@ snapshot; a terminal target without a snapshot is reported as an execution
 error.
 
 `CampaignExecutionOptions::placement` is a `ThreadPlacement` hook the campaign
-calls once on the coordinator thread, once on the native stream encoder thread,
-and once on each worker thread before that worker builds its target. A launcher
-uses it to pin threads to cores. The encoder has its own `StreamEncoder` role
-so it can run away from a pinned coordinator. A
+calls once on the coordinator thread, once on each of the two native serializer
+threads, once on the ordered relay, and once on each worker before target construction. A launcher
+uses it to pin threads to cores. The relay retains `StreamEncoder`; the serializers use indexed
+`StreamSerializer(0)` and `StreamSerializer(1)` roles so all three can be placed
+separately from the coordinator. A
 failed placement fails the campaign with its message. Placement changes only
 where threads run, so a placed campaign records the same stream as an unplaced
 one.

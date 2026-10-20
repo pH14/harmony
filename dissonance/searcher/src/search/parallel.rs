@@ -15,6 +15,25 @@ use crate::search::telemetry::{
     TargetCounters, WorkerTelemetry, nanos_since, now, thread_schedstat,
 };
 
+fn profiled_execute<Output>(
+    profile: &mut Option<crate::search::telemetry::WorkerExecuteCpuTelemetry>,
+    mut clock: impl FnMut() -> Option<u128>,
+    execute: impl FnOnce() -> Result<Output, String>,
+) -> std::thread::Result<Result<Output, String>> {
+    let before = profile.as_ref().and_then(|_| clock());
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(execute));
+    let after = profile.as_ref().and_then(|_| clock());
+    if let Some(profile) = profile {
+        profile.record(
+            before,
+            after,
+            matches!(&outcome, Ok(Err(_))),
+            outcome.is_err(),
+        );
+    }
+    outcome
+}
+
 pub(crate) struct WorkerReply<Key, Output, O = ()> {
     pub(crate) worker: u32,
     pub(crate) key: Key,
@@ -662,7 +681,11 @@ where
                 };
                 let schedstat_before = thread_schedstat();
                 let booted = now();
-                let mut telemetry = WorkerTelemetry::default();
+                let mut telemetry = WorkerTelemetry {
+                    execute_cpu: super::campaign::profile_clock_enabled()
+                        .then(crate::search::telemetry::WorkerExecuteCpuTelemetry::new),
+                    ..WorkerTelemetry::default()
+                };
                 let initialized =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| initialize(worker)));
                 let mut state = Some(match initialized {
@@ -710,9 +733,11 @@ where
                     }
                     let (outcome, panicked) = match state.as_mut() {
                         Some(target) => {
-                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                execute(target, job)
-                            })) {
+                            match profiled_execute(
+                                &mut telemetry.execute_cpu,
+                                crate::search::telemetry::thread_cpu_time_ns,
+                                || execute(target, job),
+                            ) {
                                 Ok(outcome) => (outcome, false),
                                 Err(_) => {
                                     (Err("worker panicked during execution".to_owned()), true)
@@ -798,6 +823,9 @@ where
                         break;
                     }
                 }
+                if let Some(profile) = telemetry.execute_cpu.as_mut() {
+                    profile.finish(telemetry.jobs);
+                }
                 if let Some(target) = state.as_ref() {
                     telemetry.target =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| finish(target)))
@@ -855,8 +883,131 @@ where
 mod tests {
     use std::{cell::Cell, rc::Rc, sync::mpsc, time::Duration};
 
-    use super::{WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
+    use super::{WorkerPool, WorkerPoolError, WorkerReply, profiled_execute, with_worker_pool};
     use crate::search::telemetry::TargetCounters;
+
+    #[test]
+    fn worker_execute_cpu_disabled_does_not_read_clock() {
+        let result = profiled_execute(&mut None, || panic!("disabled clock read"), || Ok(17));
+        assert_eq!(result.expect("execute did not panic"), Ok(17));
+    }
+
+    #[test]
+    fn worker_execute_cpu_classifies_actual_calls_and_panic() {
+        let mut profile = Some(crate::search::telemetry::WorkerExecuteCpuTelemetry::new());
+        profile.as_mut().expect("profile").supported = true;
+        profile.as_mut().expect("profile").total_cpu_ns = Some(0);
+        let mut tick = 0;
+        let mut clock = || {
+            tick += 7;
+            Some(tick)
+        };
+        assert_eq!(
+            profiled_execute(&mut profile, &mut clock, || Ok(11)).expect("success"),
+            Ok(11)
+        );
+        assert_eq!(
+            profiled_execute(&mut profile, &mut clock, || Err::<u8, _>(
+                "failure".to_owned()
+            ))
+            .expect("ordinary error"),
+            Err("failure".to_owned())
+        );
+        assert!(
+            profiled_execute(&mut profile, &mut clock, || -> Result<u8, String> {
+                panic!("execute panic")
+            })
+            .is_err()
+        );
+        let value = profile.as_mut().expect("profile");
+        value.finish(3);
+        assert_eq!(
+            (value.calls, value.samples, value.errors, value.panics),
+            (3, 3, 1, 1)
+        );
+        assert_eq!(value.total_cpu_ns, Some(21));
+        assert!(value.complete);
+        value.finish(4);
+        assert!(!value.complete);
+    }
+
+    #[test]
+    fn worker_execute_cpu_missing_backwards_and_overflow_are_not_zero() {
+        use crate::search::telemetry::WorkerExecuteCpuTelemetry;
+        for (before, after) in [(None, Some(4)), (Some(4), None), (Some(9), Some(4))] {
+            let mut value = WorkerExecuteCpuTelemetry::new();
+            value.supported = true;
+            value.total_cpu_ns = Some(0);
+            value.record(before, after, false, false);
+            value.record(Some(10), Some(11), false, false);
+            value.finish(2);
+            assert_eq!((value.calls, value.samples), (2, 1));
+            assert_eq!(value.total_cpu_ns, None);
+            assert!(!value.complete);
+        }
+        let mut value = WorkerExecuteCpuTelemetry::new();
+        value.total_cpu_ns = Some(u128::MAX);
+        value.record(Some(0), Some(1), false, false);
+        assert!(value.counter_overflow);
+        assert_eq!(value.total_cpu_ns, None);
+        for field in 0..4 {
+            let mut value = WorkerExecuteCpuTelemetry::new();
+            value.total_cpu_ns = Some(0);
+            match field {
+                0 => value.calls = u64::MAX,
+                1 => value.samples = u64::MAX,
+                2 => value.errors = u64::MAX,
+                _ => value.panics = u64::MAX,
+            }
+            value.record(Some(0), Some(1), field == 2, field == 3);
+            value.finish(1);
+            assert!(value.counter_overflow);
+            assert_eq!(value.total_cpu_ns, None);
+            assert!(!value.complete);
+        }
+    }
+
+    #[test]
+    fn worker_execute_cpu_pool_jobs_match_enabled_coverage() {
+        let (values, workers) = with_worker_pool(
+            1,
+            |_| Ok::<_, String>(10_u64),
+            |_| Ok::<_, String>(10_u64),
+            |state, job: u64| Ok::<_, String>(std::hint::black_box(*state + job)),
+            |_| TargetCounters::new(),
+            |pool| -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+                pool.send(0, 1)?;
+                pool.send(1, 2)?;
+                let values = (0..2)
+                    .map(|_| Ok(pool.receive()?.outcome?))
+                    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                pool.close();
+                Ok(values)
+            },
+        )
+        .expect("worker pool");
+        assert_eq!(values, vec![11, 12]);
+        assert_eq!(workers[0].jobs, 2);
+        if super::super::campaign::profile_clock_enabled() {
+            let value = workers[0]
+                .execute_cpu
+                .as_ref()
+                .expect("enabled execute CPU");
+            assert_eq!(value.calls, 2);
+            assert_eq!((value.errors, value.panics), (0, 0));
+            if cfg!(target_os = "linux") {
+                assert!(value.complete);
+                assert_eq!(value.samples, 2);
+                assert!(value.total_cpu_ns.expect("CPU total") > 0);
+            } else {
+                assert!(!value.supported);
+                assert!(!value.complete);
+                assert_eq!(value.total_cpu_ns, None);
+            }
+        } else {
+            assert!(workers[0].execute_cpu.is_none());
+        }
+    }
 
     #[test]
     fn idle_bitmap_preserves_order_across_words_and_replaces_existing_hints() {

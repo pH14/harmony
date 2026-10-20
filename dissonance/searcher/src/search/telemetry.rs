@@ -16,7 +16,113 @@ pub struct WorkerTelemetry {
     pub cpu_ns: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_wait_ns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execute_cpu: Option<WorkerExecuteCpuTelemetry>,
     pub target: TargetCounters,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WorkerExecuteCpuTelemetry {
+    pub clock: String,
+    pub scope: String,
+    pub supported: bool,
+    pub total_cpu_ns: Option<u128>,
+    pub calls: u64,
+    pub samples: u64,
+    pub errors: u64,
+    pub panics: u64,
+    pub counter_overflow: bool,
+    pub complete: bool,
+}
+
+impl WorkerExecuteCpuTelemetry {
+    pub(crate) fn new() -> Self {
+        Self {
+            clock: "thread_cpu_time".to_owned(),
+            scope: "actual_worker_execute_including_unwind_excluding_queue_reply_and_post_job_telemetry".to_owned(),
+            supported: cfg!(target_os = "linux"),
+            total_cpu_ns: cfg!(target_os = "linux").then_some(0),
+            calls: 0,
+            samples: 0,
+            errors: 0,
+            panics: 0,
+            counter_overflow: false,
+            complete: false,
+        }
+    }
+
+    fn increment(value: &mut u64, overflow: &mut bool) {
+        match value.checked_add(1) {
+            Some(next) => *value = next,
+            None => *overflow = true,
+        }
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        before: Option<u128>,
+        after: Option<u128>,
+        error: bool,
+        panic: bool,
+    ) {
+        Self::increment(&mut self.calls, &mut self.counter_overflow);
+        if panic {
+            Self::increment(&mut self.panics, &mut self.counter_overflow);
+        } else if error {
+            Self::increment(&mut self.errors, &mut self.counter_overflow);
+        }
+        let delta = before
+            .zip(after)
+            .and_then(|(before, after)| after.checked_sub(before));
+        if delta.is_some() {
+            Self::increment(&mut self.samples, &mut self.counter_overflow);
+        }
+        self.total_cpu_ns = match self.total_cpu_ns.zip(delta) {
+            Some((total, delta)) => match total.checked_add(delta) {
+                Some(total) => Some(total),
+                None => {
+                    self.counter_overflow = true;
+                    None
+                }
+            },
+            None => None,
+        };
+        if self.counter_overflow {
+            self.total_cpu_ns = None;
+        }
+        self.complete = false;
+    }
+
+    pub(crate) fn finish(&mut self, jobs: u64) {
+        self.complete = self.supported
+            && !self.counter_overflow
+            && self.total_cpu_ns.is_some()
+            && self.samples == self.calls
+            && self.calls == jobs;
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn cpu_timespec_ns(seconds: i64, nanoseconds: i64) -> Option<u128> {
+    if !(0..1_000_000_000).contains(&nanoseconds) {
+        return None;
+    }
+    u128::try_from(seconds)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u128::try_from(nanoseconds).ok()?)
+}
+
+pub(crate) fn thread_cpu_time_ns() -> Option<u128> {
+    #[cfg(target_os = "linux")]
+    {
+        let sample = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+        cpu_timespec_ns(sample.tv_sec, sample.tv_nsec)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -41,8 +147,24 @@ pub struct CompletedBufferTelemetry {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StreamThreadTelemetry {
+    pub tid: Option<u32>,
+    pub counter_overflow: bool,
+    pub cpu_ns: Option<u64>,
+    pub cpu_wait_ns: Option<u64>,
+    pub work_ns: u64,
+    pub input_wait_ns: u64,
+    pub output_wait_ns: u64,
+    pub batches: u64,
+    pub records: u64,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StreamTelemetry {
     pub command_capacity: usize,
+    pub serializer_command_capacity: usize,
+    pub serializer_output_capacity: usize,
     pub output_capacity: usize,
     pub batch_record_limit: usize,
     pub partial_batch_age_ns: u64,
@@ -51,6 +173,7 @@ pub struct StreamTelemetry {
     pub background_records: u64,
     pub background_bytes: u64,
     pub encode_ns: u64,
+    pub counter_overflow: bool,
     pub sink_ns: u64,
     pub flush_ns: u64,
     pub sink_bytes: u64,
@@ -60,6 +183,8 @@ pub struct StreamTelemetry {
     pub largest_buffer_capacity_bytes: u64,
     pub worker_cpu_ns: Option<u64>,
     pub worker_cpu_wait_ns: Option<u64>,
+    pub serializers: [StreamThreadTelemetry; 2],
+    pub relay: StreamThreadTelemetry,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

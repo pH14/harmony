@@ -24,9 +24,12 @@ serialization and verification are included in campaign seconds; search
 seconds and worker busy fractions are reported separately. Busy time includes
 restore, execution and capture; it does not measure guest cycles. Read raw
 `telemetry.json` for coordinator occupancy, admission stalls and completed
-buffer peaks. Native runs encode and hash the ordered stream on a separate
-thread; its telemetry has a separate owner from the coordinator and execution
-workers. `coordinator_host` samples coordinator CPU and scheduler wait once at
+buffer peaks. Native runs serialize on two bounded background threads and hash their output
+in order on a relay thread. Each has separate CPU, scheduler-wait and queue-wait
+telemetry. The borrowed output sink still runs on the coordinator; its cost
+and final drain must remain in the accounting. Campaign records must serialize
+deterministically from their owned values. Serialization and destruction can
+run ahead; output bytes and failure prefixes retain logical order. `coordinator_host` samples coordinator CPU and scheduler wait once at
 the end of search, before final report persistence, even with verbose profiling off.
 It is absent when the operating system cannot supply these counters. This CPU
 measurement includes work outside the individual coordinator span timers.
@@ -44,6 +47,16 @@ insertion, maintenance, observation, record construction, output and checkpoints
 These spans locate expensive operations; nested spans and scheduling waits make
 their sum unsuitable as coordinator CPU. Use `dispatch_phase.host` for that CPU
 cost, and repeat capacity trials with this optional clock instrumentation off.
+The same profile setting also measures each worker's actual execute closure with
+Linux thread CPU time, including required restore, reconstruction, snapshot
+capture and observation work. It excludes queue waits, reply delivery and
+post-job target telemetry. Its `execute_cpu` coverage reports calls, samples,
+ordinary errors, panics and overflow; unsupported or incomplete coverage cannot
+supply a worker service cost. The boundary includes clock and unwind-probe
+overhead and is not a guest-instruction-only floor. The qualifier reports
+`worker_execute_cpu_ns_per_task` only for complete, successful job coverage with
+the matching admitted-task denominator. Repeat with profiling off to retain the
+observer effect, and compare full logical artifacts within the same executable.
 Profiling state is local to the session and is not checkpointed or recorded in
 the logical stream.
 
@@ -92,11 +105,11 @@ search and invalidates a fixed-work speedup comparison. The native Famidash
 launcher also uses the absolute task window.
 
 On a quiet host, select physical CPUs of one core type (leave room for the
-coordinator, stream encoder, feed and browser/tunnel). For example, on a machine
-with at least 130 usable CPUs:
+coordinator, two stream serializers, ordered relay, feed and browser/tunnel). For example, on a machine
+with at least 133 usable CPUs:
 
 ```sh
-taskset -c 0-129 python3 scripts/qualify-nes-scaling.py \
+taskset -c 0-132 python3 scripts/qualify-nes-scaling.py \
   --evaluator workloads/nes/target/release/nes-eval \
   --request /srv/runs/famidash-scaling-request.json \
   --workers 1 2 4 8 16 32 64 128 --window 512 --repeats 3 \
@@ -125,6 +138,14 @@ session admitted tasks, including checkpoint-pending tasks executed again;
 newly reserved tasks alone are not that denominator. The qualifier itself
 requires fresh requests; the counter validator also understands resumed reports.
 Linear routes continue to use jobs as their execution and cost unit.
+Stream costs distinguish `stream_aux_cpu_ns_per_task`, the sum of all stream
+thread CPU for a shared auxiliary-core budget, from the two serializer costs
+and relay cost. `stream_dedicated_core_bottleneck_ns_per_task` is their maximum,
+valid only when all three have measured CPU coverage and each has a separate
+core. It is unavailable when a role is missing or counters overflow. It is a
+necessary service bound, not a measured throughput or placement guarantee.
+The final coordinator stream-drain CPU is reported separately when profiling
+supplies it; include this cost and all other auxiliary work in the model.
 Missing CPU coverage remains null rather than a zero cost. These costs do not
 automatically establish a worker-count ceiling; apply the capacity model in
 [Performance](../../docs/PERFORMANCE.md) using equivalent-core worker measurements.

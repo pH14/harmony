@@ -11,9 +11,13 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::{PlacedThread, ThreadPlacement};
-use crate::search::telemetry::{Moment, StreamTelemetry, nanos_since, now, thread_schedstat};
+use crate::search::telemetry::{
+    Moment, StreamTelemetry, StreamThreadTelemetry, nanos_since, now, thread_schedstat,
+};
 
-const COMMAND_CAPACITY: usize = 16;
+const SERIALIZERS: usize = 2;
+const COMMAND_CAPACITY: usize = 6;
+const SERIALIZER_OUTPUT_CAPACITY: usize = 1;
 const OUTPUT_CAPACITY: usize = 1;
 const BATCH_RECORD_LIMIT: usize = 16;
 const PARTIAL_BATCH_AGE_NS: u64 = 1_000_000;
@@ -50,148 +54,479 @@ fn encode_envelope<R: Serialize, D>(
 }
 
 struct Command<R, D> {
+    sequence: u64,
     records: Vec<Envelope<R, D>>,
     buffer: Vec<u8>,
 }
 
 struct Chunk<R, D> {
+    sequence: u64,
     buffer: Vec<u8>,
     records: u64,
+    submitted: u64,
     recycled_records: Vec<Envelope<R, D>>,
+    error: Option<String>,
 }
 
+enum SerializerOutput<R, D> {
+    Batch(Chunk<R, D>),
+    Finished,
+}
+
+#[derive(Debug)]
 struct Encoded {
     digest: String,
     telemetry: StreamTelemetry,
 }
 
+fn place_stream(placement: Option<&ThreadPlacement>, role: PlacedThread) -> Result<(), String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ThreadPlacement::place(placement, role)
+    }))
+    .unwrap_or_else(|_| Err("campaign stream placement panicked".to_owned()))
+}
+
+fn add_stream_counter(total: &mut u64, amount: u64, overflow: &mut bool) {
+    match total.checked_add(amount) {
+        Some(value) => *total = value,
+        None => {
+            *total = u64::MAX;
+            *overflow = true;
+        }
+    }
+}
+
+fn serializer_work_ns(serializers: &[StreamThreadTelemetry; SERIALIZERS]) -> Option<u64> {
+    serializers
+        .iter()
+        .try_fold(0_u64, |total, value| total.checked_add(value.work_ns))
+}
+
+fn aggregate_stream_cpu(
+    serializers: &[StreamThreadTelemetry; SERIALIZERS],
+    relay: &StreamThreadTelemetry,
+    read: fn(&StreamThreadTelemetry) -> Option<u64>,
+) -> (Option<u64>, bool) {
+    let mut total = 0_u64;
+    let mut missing = false;
+    for value in serializers.iter().chain(std::iter::once(relay)) {
+        if let Some(value) = read(value) {
+            let Some(next) = total.checked_add(value) else {
+                return (None, true);
+            };
+            total = next;
+        } else {
+            missing = true;
+        }
+    }
+    ((!missing).then_some(total), false)
+}
+
+fn stream_thread_id() -> Option<u32> {
+    std::fs::read_link("/proc/thread-self")
+        .ok()
+        .and_then(|path| path.file_name()?.to_str()?.parse().ok())
+}
+
+fn finish_thread_cpu(telemetry: &mut StreamThreadTelemetry, before: Option<(u64, u64)>) {
+    if let Some(((before_cpu, before_wait), (after_cpu, after_wait))) =
+        before.zip(thread_schedstat())
+    {
+        telemetry.cpu_ns = after_cpu.checked_sub(before_cpu);
+        telemetry.cpu_wait_ns = after_wait.checked_sub(before_wait);
+    }
+}
+
+fn serialize_batches<R: Serialize, D>(
+    pending: Receiver<Command<R, D>>,
+    completed: SyncSender<SerializerOutput<R, D>>,
+) -> Result<StreamThreadTelemetry, String> {
+    let cpu_started = thread_schedstat();
+    let mut telemetry = StreamThreadTelemetry {
+        tid: stream_thread_id(),
+        ..StreamThreadTelemetry::default()
+    };
+    loop {
+        let waiting = now();
+        let command = pending.recv();
+        add_stream_counter(
+            &mut telemetry.input_wait_ns,
+            nanos_since(waiting),
+            &mut telemetry.counter_overflow,
+        );
+        let Ok(mut command) = command else {
+            let waiting = now();
+            completed
+                .send(SerializerOutput::Finished)
+                .map_err(|_| "campaign stream relay disconnected".to_owned())?;
+            add_stream_counter(
+                &mut telemetry.output_wait_ns,
+                nanos_since(waiting),
+                &mut telemetry.counter_overflow,
+            );
+            break;
+        };
+        let started = now();
+        command.buffer.clear();
+        let submitted = command.records.len() as u64;
+        let mut records = 0;
+        let mut failure = None;
+        for record in command.records.drain(..) {
+            let offset = command.buffer.len();
+            match encode_envelope(record, &mut command.buffer) {
+                Ok(()) => {
+                    command.buffer.push(b'\n');
+                    records += 1;
+                }
+                Err(error) => {
+                    command.buffer.truncate(offset);
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        add_stream_counter(
+            &mut telemetry.work_ns,
+            nanos_since(started),
+            &mut telemetry.counter_overflow,
+        );
+        add_stream_counter(&mut telemetry.batches, 1, &mut telemetry.counter_overflow);
+        add_stream_counter(
+            &mut telemetry.records,
+            records,
+            &mut telemetry.counter_overflow,
+        );
+        add_stream_counter(
+            &mut telemetry.bytes,
+            command.buffer.len() as u64,
+            &mut telemetry.counter_overflow,
+        );
+        let failed = failure.is_some();
+        let waiting = now();
+        completed
+            .send(SerializerOutput::Batch(Chunk {
+                sequence: command.sequence,
+                buffer: command.buffer,
+                records,
+                submitted,
+                recycled_records: command.records,
+                error: failure,
+            }))
+            .map_err(|_| "campaign stream relay disconnected".to_owned())?;
+        add_stream_counter(
+            &mut telemetry.output_wait_ns,
+            nanos_since(waiting),
+            &mut telemetry.counter_overflow,
+        );
+        if failed {
+            break;
+        }
+    }
+    finish_thread_cpu(&mut telemetry, cpu_started);
+    Ok(telemetry)
+}
+
+fn relay_batches<R, D>(
+    mut hasher: Sha256,
+    inputs: Vec<Receiver<SerializerOutput<R, D>>>,
+    output: SyncSender<Chunk<R, D>>,
+) -> Result<Encoded, String> {
+    let cpu_started = thread_schedstat();
+    let mut telemetry = StreamTelemetry::default();
+    telemetry.relay.tid = stream_thread_id();
+    let mut expected = 0_u64;
+    loop {
+        let owner = (expected % SERIALIZERS as u64) as usize;
+        let waiting = now();
+        let received = inputs[owner].recv().map_err(|_| {
+            "campaign stream serializer disconnected before its terminal message".to_owned()
+        })?;
+        add_stream_counter(
+            &mut telemetry.relay.input_wait_ns,
+            nanos_since(waiting),
+            &mut telemetry.relay.counter_overflow,
+        );
+        let chunk = match received {
+            SerializerOutput::Batch(chunk) => chunk,
+            SerializerOutput::Finished => {
+                for (index, input) in inputs.iter().enumerate() {
+                    if index == owner {
+                        continue;
+                    }
+                    match input.recv() {
+                        Ok(SerializerOutput::Finished) => {}
+                        _ => {
+                            return Err(
+                                "campaign stream serializer finished before an ordered batch"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                }
+                for input in &inputs {
+                    if input.recv().is_ok() {
+                        return Err(
+                            "campaign stream serializer sent output after its terminal message"
+                                .to_owned(),
+                        );
+                    }
+                }
+                break;
+            }
+        };
+        if chunk.sequence != expected {
+            return Err("campaign stream batch sequence differs from ordered relay".to_owned());
+        }
+        expected = expected
+            .checked_add(1)
+            .ok_or("campaign stream batch sequence overflow")?;
+        let started = now();
+        hasher.update(&chunk.buffer);
+        add_stream_counter(
+            &mut telemetry.relay.work_ns,
+            nanos_since(started),
+            &mut telemetry.relay.counter_overflow,
+        );
+        add_stream_counter(
+            &mut telemetry.background_records,
+            chunk.records,
+            &mut telemetry.counter_overflow,
+        );
+        add_stream_counter(
+            &mut telemetry.background_batches,
+            1,
+            &mut telemetry.counter_overflow,
+        );
+        telemetry.largest_batch_records = telemetry.largest_batch_records.max(chunk.records);
+        add_stream_counter(
+            &mut telemetry.background_bytes,
+            chunk.buffer.len() as u64,
+            &mut telemetry.counter_overflow,
+        );
+        telemetry.largest_buffer_capacity_bytes = telemetry
+            .largest_buffer_capacity_bytes
+            .max(chunk.buffer.capacity() as u64);
+        let failure = chunk.error.clone();
+        let waiting = now();
+        output
+            .send(chunk)
+            .map_err(|_| "campaign stream consumer disconnected".to_owned())?;
+        add_stream_counter(
+            &mut telemetry.relay.output_wait_ns,
+            nanos_since(waiting),
+            &mut telemetry.relay.counter_overflow,
+        );
+        if let Some(error) = failure {
+            return Err(error);
+        }
+    }
+    let digest = format!("{:x}", hasher.finalize());
+    telemetry.relay.batches = telemetry.background_batches;
+    telemetry.relay.records = telemetry.background_records;
+    telemetry.relay.bytes = telemetry.background_bytes;
+    finish_thread_cpu(&mut telemetry.relay, cpu_started);
+    Ok(Encoded { digest, telemetry })
+}
+
 struct Background<R, D> {
-    commands: Option<SyncSender<Command<R, D>>>,
+    commands: Vec<SyncSender<Command<R, D>>>,
     output: Option<Receiver<Chunk<R, D>>>,
-    worker: Option<JoinHandle<Result<Encoded, String>>>,
+    workers: Vec<JoinHandle<Result<StreamThreadTelemetry, String>>>,
+    relay: Option<JoinHandle<Result<Encoded, String>>>,
     recycled: Vec<Vec<u8>>,
     recycled_records: Vec<Vec<Envelope<R, D>>>,
     pending: u64,
+    next_sequence: u64,
+    consumed_sequence: u64,
     telemetry: StreamTelemetry,
+    #[cfg(test)]
+    backpressure: Option<SyncSender<u64>>,
 }
 
 impl<R, D> Background<R, D> {
-    fn start(mut hasher: Sha256, placement: Option<ThreadPlacement>) -> Result<Self, Box<dyn Error>>
+    fn start(hasher: Sha256, placement: Option<ThreadPlacement>) -> Result<Self, Box<dyn Error>>
     where
         R: Serialize + Send + 'static,
         D: Send + 'static,
     {
-        let (commands, pending) = mpsc::sync_channel::<Command<R, D>>(COMMAND_CAPACITY);
         let (completed, output) = mpsc::sync_channel(OUTPUT_CAPACITY);
-        let (ready, startup) = mpsc::sync_channel(1);
-        let worker = thread::Builder::new()
-            .name("campaign-stream".into())
-            .spawn(move || {
-                let placed =
-                    ThreadPlacement::place(placement.as_ref(), PlacedThread::StreamEncoder);
-                let _ = ready.send(placed.clone());
-                placed?;
-                let cpu_started = thread_schedstat();
-                let mut telemetry = StreamTelemetry::default();
-                for mut command in pending {
-                    let started = now();
-                    command.buffer.clear();
-                    let mut records = 0;
-                    let mut failure = None;
-                    for record in command.records.drain(..) {
-                        let offset = command.buffer.len();
-                        match encode_envelope(record, &mut command.buffer) {
-                            Ok(()) => {
-                                command.buffer.push(b'\n');
-                                records += 1;
-                            }
-                            Err(error) => {
-                                command.buffer.truncate(offset);
-                                failure = Some(error);
-                                break;
-                            }
-                        }
-                    }
-                    hasher.update(&command.buffer);
-                    telemetry.encode_ns = telemetry.encode_ns.saturating_add(nanos_since(started));
-                    telemetry.background_records += records;
-                    telemetry.background_batches += 1;
-                    telemetry.largest_batch_records = telemetry.largest_batch_records.max(records);
-                    telemetry.background_bytes += command.buffer.len() as u64;
-                    telemetry.largest_buffer_capacity_bytes = telemetry
-                        .largest_buffer_capacity_bytes
-                        .max(command.buffer.capacity() as u64);
-                    completed
-                        .send(Chunk {
-                            buffer: command.buffer,
-                            records,
-                            recycled_records: command.records,
-                        })
-                        .map_err(|_| "campaign stream consumer disconnected".to_owned())?;
-                    if let Some(error) = failure {
-                        return Err(error);
-                    }
-                }
-                if let Some(((before_cpu, before_wait), (after_cpu, after_wait))) =
-                    cpu_started.zip(thread_schedstat())
-                {
-                    telemetry.worker_cpu_ns = Some(after_cpu.saturating_sub(before_cpu));
-                    telemetry.worker_cpu_wait_ns = Some(after_wait.saturating_sub(before_wait));
-                }
-                Ok(Encoded {
-                    digest: format!("{:x}", hasher.finalize()),
-                    telemetry,
-                })
-            })?;
+        let (ready, startup) = mpsc::sync_channel(SERIALIZERS + 1);
         let mut background = Self {
-            commands: Some(commands),
+            commands: Vec::with_capacity(SERIALIZERS),
             output: Some(output),
-            worker: Some(worker),
+            workers: Vec::with_capacity(SERIALIZERS),
+            relay: None,
             recycled: Vec::new(),
             recycled_records: Vec::new(),
             pending: 0,
+            next_sequence: 0,
+            consumed_sequence: 0,
+            #[cfg(test)]
+            backpressure: None,
             telemetry: StreamTelemetry {
-                command_capacity: COMMAND_CAPACITY,
+                command_capacity: COMMAND_CAPACITY * SERIALIZERS,
+                serializer_command_capacity: COMMAND_CAPACITY,
+                serializer_output_capacity: SERIALIZER_OUTPUT_CAPACITY,
                 output_capacity: OUTPUT_CAPACITY,
                 batch_record_limit: BATCH_RECORD_LIMIT,
                 partial_batch_age_ns: PARTIAL_BATCH_AGE_NS,
                 ..StreamTelemetry::default()
             },
         };
-        match startup.recv() {
-            Ok(Ok(())) => Ok(background),
-            Ok(Err(error)) => Err(error.into()),
-            Err(_) => Err(background.disconnected()),
+        let mut results = Vec::with_capacity(SERIALIZERS);
+        for index in 0..SERIALIZERS {
+            let (commands, pending) = mpsc::sync_channel(COMMAND_CAPACITY);
+            let (serialized, result) = mpsc::sync_channel(SERIALIZER_OUTPUT_CAPACITY);
+            let ready = ready.clone();
+            let placement = placement.clone();
+            let worker = thread::Builder::new()
+                .name(format!("campaign-serialize-{index}"))
+                .spawn(move || {
+                    let placed = place_stream(
+                        placement.as_ref(),
+                        PlacedThread::StreamSerializer(index as u32),
+                    );
+                    let _ = ready.send(placed.clone());
+                    placed?;
+                    serialize_batches(pending, serialized)
+                })?;
+            background.commands.push(commands);
+            background.workers.push(worker);
+            results.push(result);
         }
+        background.relay = Some(
+            thread::Builder::new()
+                .name("campaign-stream".into())
+                .spawn(move || {
+                    let placed = place_stream(placement.as_ref(), PlacedThread::StreamEncoder);
+                    let _ = ready.send(placed.clone());
+                    placed?;
+                    relay_batches(hasher, results, completed)
+                })?,
+        );
+        for _ in 0..SERIALIZERS + 1 {
+            match startup.recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(error.into()),
+                Err(_) => return Err("campaign stream startup disconnected".into()),
+            }
+        }
+        Ok(background)
     }
 
     fn joined(&mut self) -> Result<Encoded, Box<dyn Error>> {
-        self.worker
+        let relay = match self
+            .relay
             .take()
-            .ok_or("campaign stream worker was already joined")?
+            .ok_or("campaign stream relay was already joined")?
             .join()
-            .map_err(|_| "campaign stream encoder panicked")?
-            .map_err(Into::into)
+        {
+            Ok(value) => value,
+            Err(_) => Err("campaign stream relay panicked".to_owned()),
+        };
+        let mut serializers = Vec::with_capacity(SERIALIZERS);
+        let mut worker_failure = None;
+        for worker in self.workers.drain(..) {
+            match worker.join() {
+                Ok(Ok(value)) => serializers.push(value),
+                Ok(Err(error)) => {
+                    worker_failure.get_or_insert(error);
+                }
+                Err(_) => {
+                    worker_failure.get_or_insert("campaign stream serializer panicked".to_owned());
+                }
+            }
+        }
+        let mut encoded = relay.map_err(|error| -> Box<dyn Error> { error.into() })?;
+        if let Some(error) = worker_failure {
+            return Err(error.into());
+        }
+        if serializers.len() != SERIALIZERS {
+            return Err("campaign stream serializer accounting is incomplete".into());
+        }
+        encoded.telemetry.serializers = serializers
+            .try_into()
+            .map_err(|_| "campaign stream serializer accounting differs")?;
+        let encode_ns = serializer_work_ns(&encoded.telemetry.serializers);
+        encoded.telemetry.encode_ns = encode_ns.unwrap_or(u64::MAX);
+        encoded.telemetry.counter_overflow |= encode_ns.is_none()
+            || encoded
+                .telemetry
+                .serializers
+                .iter()
+                .any(|value| value.counter_overflow)
+            || encoded.telemetry.relay.counter_overflow;
+        let (cpu, cpu_overflow) = aggregate_stream_cpu(
+            &encoded.telemetry.serializers,
+            &encoded.telemetry.relay,
+            |value| value.cpu_ns,
+        );
+        let (wait, wait_overflow) = aggregate_stream_cpu(
+            &encoded.telemetry.serializers,
+            &encoded.telemetry.relay,
+            |value| value.cpu_wait_ns,
+        );
+        encoded.telemetry.worker_cpu_ns = cpu;
+        encoded.telemetry.worker_cpu_wait_ns = wait;
+        encoded.telemetry.counter_overflow |= cpu_overflow || wait_overflow;
+        Ok(encoded)
+    }
+
+    fn shutdown(&mut self) {
+        self.commands.clear();
+        self.output.take();
+        if let Some(relay) = self.relay.take() {
+            let _ = relay.join();
+        }
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
     }
 
     fn disconnected(&mut self) -> Box<dyn Error> {
-        self.commands.take();
+        self.commands.clear();
         self.output.take();
         match self.joined() {
-            Ok(_) => "campaign stream encoder disconnected before finish".into(),
+            Ok(_) => "campaign stream relay disconnected before finish".into(),
             Err(error) => error,
         }
     }
 
     fn consume(&mut self, chunk: Chunk<R, D>, sink: &mut dyn Write) -> Result<(), Box<dyn Error>> {
-        self.pending -= chunk.records;
-        let buffer = chunk.buffer;
-        self.recycled_records.push(chunk.recycled_records);
+        if chunk.sequence != self.consumed_sequence {
+            self.shutdown();
+            return Err("campaign stream output sequence differs".into());
+        }
+        self.consumed_sequence = self
+            .consumed_sequence
+            .checked_add(1)
+            .ok_or("campaign stream consumed sequence overflow")?;
+        self.pending = self
+            .pending
+            .checked_sub(chunk.submitted)
+            .ok_or("campaign stream consumed unsubmitted records")?;
         let started = now();
-        sink.write_all(&buffer)?;
-        self.telemetry.sink_ns = self.telemetry.sink_ns.saturating_add(nanos_since(started));
-        self.telemetry.sink_bytes += buffer.len() as u64;
-        self.recycled.push(buffer);
+        let written = sink.write_all(&chunk.buffer);
+        add_stream_counter(
+            &mut self.telemetry.sink_ns,
+            nanos_since(started),
+            &mut self.telemetry.counter_overflow,
+        );
+        if let Err(error) = written {
+            self.shutdown();
+            return Err(error.into());
+        }
+        add_stream_counter(
+            &mut self.telemetry.sink_bytes,
+            chunk.buffer.len() as u64,
+            &mut self.telemetry.counter_overflow,
+        );
+        self.recycled.push(chunk.buffer);
+        self.recycled_records.push(chunk.recycled_records);
+        if let Some(error) = chunk.error {
+            self.shutdown();
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -203,9 +538,23 @@ impl<R, D> Background<R, D> {
                 .ok_or("campaign stream output was closed")?
                 .try_recv()
             {
-                Ok(buffer) => self.consume(buffer, sink)?,
+                Ok(chunk) => self.consume(chunk, sink)?,
                 Err(TryRecvError::Empty) => return Ok(()),
                 Err(TryRecvError::Disconnected) => return Err(self.disconnected()),
+            }
+        }
+    }
+
+    fn drain_failure(&mut self, sink: &mut dyn Write) -> Box<dyn Error> {
+        self.commands.clear();
+        loop {
+            match self.output.as_ref().and_then(|output| output.recv().ok()) {
+                Some(chunk) => {
+                    if let Err(error) = self.consume(chunk, sink) {
+                        return error;
+                    }
+                }
+                None => return self.disconnected(),
             }
         }
     }
@@ -216,66 +565,76 @@ impl<R, D> Background<R, D> {
         sink: &mut dyn Write,
     ) -> Result<(), Box<dyn Error>> {
         let count = records.len() as u64;
+        let next = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or("campaign stream batch sequence overflow")?;
+        let owner = (self.next_sequence % SERIALIZERS as u64) as usize;
         let mut command = Command {
+            sequence: self.next_sequence,
             records,
             buffer: self.recycled.pop().unwrap_or_default(),
         };
         loop {
-            match self
-                .commands
-                .as_ref()
-                .ok_or("campaign stream input was closed")?
-                .try_send(command)
-            {
+            let Some(sender) = self.commands.get(owner) else {
+                return Err(self.drain_failure(sink));
+            };
+            match sender.try_send(command) {
                 Ok(()) => {
-                    self.pending += count;
+                    self.next_sequence = next;
+                    self.pending = self
+                        .pending
+                        .checked_add(count)
+                        .ok_or("campaign stream pending records overflow")?;
                     self.telemetry.records_in_flight_peak =
                         self.telemetry.records_in_flight_peak.max(self.pending);
                     return self.drain(sink);
                 }
                 Err(TrySendError::Full(returned)) => {
                     command = returned;
-                    self.telemetry.producer_backpressure_events += 1;
-                    let started = now();
-                    let received = self
-                        .output
-                        .as_ref()
-                        .ok_or("campaign stream output was closed")?
-                        .recv();
-                    self.telemetry.producer_wait_ns = self
-                        .telemetry
-                        .producer_wait_ns
-                        .saturating_add(nanos_since(started));
+                    #[cfg(test)]
+                    if let Some(signal) = &self.backpressure {
+                        let _ = signal.try_send(self.pending);
+                    }
+                    add_stream_counter(
+                        &mut self.telemetry.producer_backpressure_events,
+                        1,
+                        &mut self.telemetry.counter_overflow,
+                    );
+                    let waiting = now();
+                    let received = self.output.as_ref().and_then(|output| output.recv().ok());
+                    add_stream_counter(
+                        &mut self.telemetry.producer_wait_ns,
+                        nanos_since(waiting),
+                        &mut self.telemetry.counter_overflow,
+                    );
                     match received {
-                        Ok(buffer) => self.consume(buffer, sink)?,
-                        Err(_) => return Err(self.disconnected()),
+                        Some(chunk) => self.consume(chunk, sink)?,
+                        None => return Err(self.disconnected()),
                     }
                 }
-                Err(TrySendError::Disconnected(_)) => {
-                    self.drain(sink)?;
-                    return Err(self.disconnected());
+                Err(TrySendError::Disconnected(returned)) => {
+                    drop(returned);
+                    return Err(self.drain_failure(sink));
                 }
             }
         }
     }
 
     fn finish(mut self, sink: &mut dyn Write) -> Result<Encoded, Box<dyn Error>> {
-        self.commands.take();
-        while let Ok(buffer) = self
-            .output
-            .as_ref()
-            .ok_or("campaign stream output was closed")?
-            .recv()
-        {
-            self.consume(buffer, sink)?;
+        self.commands.clear();
+        while let Some(chunk) = self.output.as_ref().and_then(|output| output.recv().ok()) {
+            self.consume(chunk, sink)?;
         }
         self.output.take();
         let mut encoded = self.joined()?;
-        if self.pending != 0 {
-            return Err("campaign stream lost an encoded record".into());
+        if self.pending != 0 || self.consumed_sequence != self.next_sequence {
+            return Err("campaign stream lost an encoded batch".into());
         }
         encoded.telemetry.command_capacity = self.telemetry.command_capacity;
-        encoded.telemetry.output_capacity = self.telemetry.output_capacity;
+        encoded.telemetry.serializer_command_capacity = COMMAND_CAPACITY;
+        encoded.telemetry.serializer_output_capacity = SERIALIZER_OUTPUT_CAPACITY;
+        encoded.telemetry.output_capacity = OUTPUT_CAPACITY;
         encoded.telemetry.batch_record_limit = BATCH_RECORD_LIMIT;
         encoded.telemetry.partial_batch_age_ns = PARTIAL_BATCH_AGE_NS;
         encoded.telemetry.records_in_flight_peak = self.telemetry.records_in_flight_peak;
@@ -284,17 +643,14 @@ impl<R, D> Background<R, D> {
         encoded.telemetry.producer_wait_ns = self.telemetry.producer_wait_ns;
         encoded.telemetry.sink_ns = self.telemetry.sink_ns;
         encoded.telemetry.sink_bytes = self.telemetry.sink_bytes;
+        encoded.telemetry.counter_overflow |= self.telemetry.counter_overflow;
         Ok(encoded)
     }
 }
 
 impl<R, D> Drop for Background<R, D> {
     fn drop(&mut self) {
-        self.commands.take();
-        self.output.take();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        self.shutdown();
     }
 }
 
@@ -341,7 +697,13 @@ impl<'a, R: Serialize + Send + 'static, D> StreamWriter<'a, R, D> {
                 .hasher
                 .take()
                 .ok_or("campaign stream has no hash state")?;
-            self.background = Some(Background::start(hasher, placement)?);
+            match Background::start(hasher, placement) {
+                Ok(background) => self.background = Some(background),
+                Err(error) => {
+                    self.failed = true;
+                    return Err(error);
+                }
+            }
             self.staged.reserve_exact(BATCH_RECORD_LIMIT);
         }
         Ok(())
@@ -569,7 +931,10 @@ mod tests {
         assert!(telemetry.sink_bytes < inline.len() as u64);
         assert!(
             telemetry.records_in_flight_peak
-                <= ((COMMAND_CAPACITY + OUTPUT_CAPACITY + 1) * BATCH_RECORD_LIMIT) as u64
+                <= ((SERIALIZERS * (COMMAND_CAPACITY + SERIALIZER_OUTPUT_CAPACITY + 1)
+                    + OUTPUT_CAPACITY
+                    + 1)
+                    * BATCH_RECORD_LIMIT) as u64
         );
     }
 
@@ -850,11 +1215,10 @@ mod tests {
 
     #[test]
     fn placement_runs_once_and_startup_errors_and_panics_propagate() {
-        let calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded = Arc::clone(&calls);
         let placement = ThreadPlacement::new(move |role| {
-            assert_eq!(role, PlacedThread::StreamEncoder);
-            recorded.fetch_add(1, Ordering::SeqCst);
+            recorded.lock().unwrap().push(role);
             Ok(())
         });
         let mut sink = Vec::new();
@@ -863,26 +1227,38 @@ mod tests {
         writer.enable_background(Some(placement)).unwrap();
         writer.enable_background(None).unwrap();
         writer.finish().unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        for panic in [false, true] {
-            let placement = ThreadPlacement::new(move |_| {
-                if panic {
-                    panic!("placement panic fixture");
-                }
-                Err("encoder placement refused".into())
-            });
-            let mut sink = Vec::new();
-            let mut writer = StreamWriter::new(&mut sink);
-            writer.write_line(0_u8).unwrap();
-            let error = writer
-                .enable_background(Some(placement))
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains(if panic {
-                "panicked"
-            } else {
-                "placement refused"
-            }));
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        for role in [
+            PlacedThread::StreamEncoder,
+            PlacedThread::StreamSerializer(0),
+            PlacedThread::StreamSerializer(1),
+        ] {
+            assert!(calls.contains(&role));
+            for panic in [false, true] {
+                let placement = ThreadPlacement::new(move |current| {
+                    if current == role {
+                        if panic {
+                            panic!("placement panic fixture");
+                        }
+                        return Err("encoder placement refused".into());
+                    }
+                    Ok(())
+                });
+                let mut sink = Vec::new();
+                let mut writer = StreamWriter::new(&mut sink);
+                writer.write_line(0_u8).unwrap();
+                let error = writer
+                    .enable_background(Some(placement))
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains(if panic {
+                    "panicked"
+                } else {
+                    "placement refused"
+                }));
+                assert!(writer.finish().is_err());
+            }
         }
     }
 
@@ -907,71 +1283,47 @@ mod tests {
         writer.enable_background(None).unwrap();
         let background = writer.background.as_mut().unwrap();
         let (release, blocked) = mpsc::channel();
-        background
-            .commands
-            .as_ref()
-            .unwrap()
-            .send(Command {
+        let mut blocked = Some(blocked);
+        let mut accepted = 0_u64;
+        loop {
+            let command = Command {
+                sequence: accepted,
                 records: vec![Envelope {
                     record: Some(WaitingRecord {
-                        value: 0,
-                        wait: Some(blocked),
+                        value: accepted as usize,
+                        wait: blocked.take(),
                     }),
                     cleanup: None,
                 }],
                 buffer: Vec::new(),
-            })
-            .unwrap_or_else(|_| panic!("encoder stopped"));
-        background.pending += 1;
-        for index in 1..=COMMAND_CAPACITY {
-            background
-                .commands
-                .as_ref()
-                .unwrap()
-                .send(Command {
-                    records: vec![Envelope {
-                        record: Some(WaitingRecord {
-                            value: index,
-                            wait: None,
-                        }),
-                        cleanup: None,
-                    }],
-                    buffer: Vec::new(),
-                })
-                .unwrap_or_else(|_| panic!("encoder stopped"));
-            background.pending += 1;
+            };
+            match background.commands[(accepted % 2) as usize].try_send(command) {
+                Ok(()) => {
+                    accepted += 1;
+                    background.pending += 1;
+                    background.next_sequence += 1;
+                }
+                Err(TrySendError::Full(_)) => break,
+                Err(_) => panic!("serializer stopped"),
+            }
         }
-        assert!(matches!(
-            background.commands.as_ref().unwrap().try_send(Command {
-                records: vec![Envelope {
-                    record: Some(WaitingRecord {
-                        value: usize::MAX,
-                        wait: None
-                    }),
-                    cleanup: None
-                }],
-                buffer: Vec::new()
-            }),
-            Err(TrySendError::Full(_))
-        ));
+        assert!(accepted >= COMMAND_CAPACITY as u64);
+        assert!(accepted <= 18);
         release.send(()).unwrap();
         writer
             .write_line(WaitingRecord {
-                value: COMMAND_CAPACITY + 1,
+                value: accepted as usize,
                 wait: None,
             })
             .unwrap();
         let (_, telemetry) = writer.finish().unwrap();
-        assert_eq!(
-            telemetry.unwrap().background_records,
-            (COMMAND_CAPACITY + 2) as u64
-        );
+        assert_eq!(telemetry.unwrap().background_records, accepted + 1);
         let actual: Vec<usize> = sink
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).unwrap())
             .collect();
-        assert_eq!(actual, (0..=COMMAND_CAPACITY + 1).collect::<Vec<_>>());
+        assert_eq!(actual, (0..=accepted as usize).collect::<Vec<_>>());
     }
     #[test]
     fn inline_cleanup_can_borrow_non_send_non_static_data() {
@@ -1032,13 +1384,13 @@ mod tests {
         }
         impl Serialize for CheckedRecord {
             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                assert_eq!(self.count.load(Ordering::SeqCst), self.value + 1);
+                assert_eq!(self.count.load(Ordering::SeqCst), 1);
                 self.value.serialize(serializer)
             }
         }
         let mut reference = None;
         for background in [false, true] {
-            let count = Arc::new(AtomicUsize::new(0));
+            let mut counts = Vec::new();
             let threads = Arc::new(std::sync::Mutex::new(Vec::new()));
             let mut sink = Vec::new();
             let mut writer = StreamWriter::<CheckedRecord, Cleanup>::new_with_cleanup(&mut sink);
@@ -1047,6 +1399,8 @@ mod tests {
                 writer.enable_background(None).unwrap();
             }
             for value in 0..100 {
+                let count = Arc::new(AtomicUsize::new(0));
+                counts.push(Arc::clone(&count));
                 writer
                     .write_line_with_cleanup(
                         CheckedRecord {
@@ -1063,13 +1417,21 @@ mod tests {
                     .unwrap();
             }
             let (digest, _) = writer.finish().unwrap();
-            assert_eq!(count.load(Ordering::SeqCst), 100);
+            assert!(counts.iter().all(|count| count.load(Ordering::SeqCst) == 1));
             let threads = threads.lock().unwrap();
             assert_eq!(threads.len(), 100);
             if background {
-                assert!(threads.iter().all(|name| name == "campaign-stream"));
+                assert!(
+                    threads
+                        .iter()
+                        .all(|name| name.starts_with("campaign-serialize-"))
+                );
             } else {
-                assert!(threads.iter().all(|name| name != "campaign-stream"));
+                assert!(
+                    threads
+                        .iter()
+                        .all(|name| !name.starts_with("campaign-serialize-"))
+                );
             }
             if let Some((bytes, expected_digest)) = &reference {
                 assert_eq!(&sink, bytes);
@@ -1245,5 +1607,517 @@ mod tests {
                 .contains("broken stream sink")
         );
         assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+    struct ControlledRecord {
+        value: usize,
+        wait: Option<Receiver<()>>,
+        error: Option<&'static str>,
+        dropped: Arc<AtomicUsize>,
+        signal_drop: Option<mpsc::Sender<()>>,
+    }
+
+    impl Serialize for ControlledRecord {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            if let Some(wait) = &self.wait {
+                wait.recv().unwrap();
+            }
+            if let Some(error) = self.error {
+                return Err(S::Error::custom(error));
+            }
+            self.value.serialize(serializer)
+        }
+    }
+
+    impl Drop for ControlledRecord {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+            if let Some(signal) = &self.signal_drop {
+                let _ = signal.send(());
+            }
+        }
+    }
+
+    #[test]
+    fn a_higher_serializer_failure_never_wins_over_an_earlier_logical_failure() {
+        for lower_fails in [false, true] {
+            let (release, blocked) = mpsc::channel();
+            let (higher_seen, higher_done) = mpsc::channel();
+            let (finished, completion) = mpsc::channel();
+            let dropped = Arc::new(AtomicUsize::new(0));
+            let owned = Arc::clone(&dropped);
+            let worker = thread::spawn(move || {
+                let mut sink = Vec::new();
+                let mut writer = StreamWriter::new(&mut sink);
+                writer.enable_background(None).unwrap();
+                let mut blocked = Some(blocked);
+                for value in 0..32 {
+                    writer
+                        .write_line(ControlledRecord {
+                            value,
+                            wait: if value == 3 { blocked.take() } else { None },
+                            error: if value == 3 && lower_fails {
+                                Some("earlier logical failure")
+                            } else if value == 18 {
+                                Some("higher logical failure")
+                            } else {
+                                None
+                            },
+                            dropped: Arc::clone(&owned),
+                            signal_drop: (value == 18).then(|| higher_seen.clone()),
+                        })
+                        .unwrap();
+                }
+                let error = writer.finish().unwrap_err().to_string();
+                finished.send(()).unwrap();
+                (sink, error)
+            });
+            higher_done
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            assert!(matches!(completion.try_recv(), Err(TryRecvError::Empty)));
+            release.send(()).unwrap();
+            let (sink, error) = worker.join().unwrap();
+            assert!(error.contains(if lower_fails {
+                "earlier logical failure"
+            } else {
+                "higher logical failure"
+            }));
+            let prefix = if lower_fails { 3 } else { 18 };
+            assert_eq!(
+                sink,
+                (0..prefix)
+                    .flat_map(|value| format!("{value}\n").into_bytes())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(dropped.load(Ordering::SeqCst), 32);
+        }
+    }
+
+    #[test]
+    fn a_disconnected_higher_input_drains_the_blocked_lower_prefix_before_returning_error() {
+        let (release, blocked) = mpsc::channel();
+        let (tail_dropped, discarded_tail) = mpsc::channel();
+        let (finished, completion) = mpsc::channel();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let owned = Arc::clone(&dropped);
+        let worker = thread::spawn(move || {
+            let mut sink = Vec::new();
+            let mut writer = StreamWriter::new(&mut sink);
+            writer.enable_background(None).unwrap();
+            let mut blocked = Some(blocked);
+            for value in 0..64 {
+                if value == 32 {
+                    let deadline = now() + std::time::Duration::from_secs(10);
+                    while !writer.background.as_ref().unwrap().workers[1].is_finished() {
+                        assert!(now() < deadline);
+                        thread::yield_now();
+                    }
+                }
+                let result = writer.write_line(ControlledRecord {
+                    value,
+                    wait: if value == 0 { blocked.take() } else { None },
+                    error: (value == 18).then_some("higher closed serializer"),
+                    dropped: Arc::clone(&owned),
+                    signal_drop: (value == 63).then(|| tail_dropped.clone()),
+                });
+                if let Err(error) = result {
+                    assert_eq!(value, 63);
+                    drop(writer);
+                    finished.send(()).unwrap();
+                    return (sink, error.to_string());
+                }
+            }
+            panic!("closed serializer accepted a later batch");
+        });
+        discarded_tail
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(matches!(completion.try_recv(), Err(TryRecvError::Empty)));
+        release.send(()).unwrap();
+        let (sink, error) = worker.join().unwrap();
+        assert!(error.contains("higher closed serializer"));
+        assert_eq!(
+            sink,
+            (0..18)
+                .flat_map(|value| format!("{value}\n").into_bytes())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(dropped.load(Ordering::SeqCst), 64);
+    }
+
+    struct FaultRecord {
+        value: usize,
+        failure: usize,
+        kind: u8,
+        dropped: Arc<AtomicUsize>,
+    }
+
+    impl Serialize for FaultRecord {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            if self.value == self.failure {
+                if self.kind == 0 {
+                    return Err(S::Error::custom("position serialization failure"));
+                }
+                assert_ne!(self.kind, 1, "position serialization panic");
+            }
+            self.value.serialize(serializer)
+        }
+    }
+
+    impl Drop for FaultRecord {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                !(self.value == self.failure && self.kind == 2),
+                "position record drop panic"
+            );
+        }
+    }
+
+    #[test]
+    fn every_record_position_in_both_serializers_preserves_complete_prefix_and_exact_cleanup() {
+        for failure in 0..32 {
+            for kind in 0..4 {
+                let dropped = Arc::new(AtomicUsize::new(0));
+                let cleaned = Arc::new(AtomicUsize::new(0));
+                let (release, blocked) = mpsc::channel();
+                let mut blocked = Some(blocked);
+                let mut sink = Vec::new();
+                let mut writer = StreamWriter::<FaultRecord, Cleanup>::new_with_cleanup(&mut sink);
+                writer.enable_background(None).unwrap();
+                for value in 0..32 {
+                    let mut disposal = cleanup(&cleaned, kind == 3 && value == failure);
+                    if value == 0 {
+                        disposal.wait = blocked.take();
+                    }
+                    writer
+                        .write_line_with_cleanup(
+                            FaultRecord {
+                                value,
+                                failure,
+                                kind,
+                                dropped: Arc::clone(&dropped),
+                            },
+                            disposal,
+                        )
+                        .unwrap();
+                }
+                release.send(()).unwrap();
+                assert!(writer.finish().is_err());
+                assert_eq!(
+                    sink,
+                    (0..failure)
+                        .flat_map(|value| format!("{value}\n").into_bytes())
+                        .collect::<Vec<_>>(),
+                    "position {failure} kind {kind}"
+                );
+                assert_eq!(dropped.load(Ordering::SeqCst), 32);
+                assert_eq!(cleaned.load(Ordering::SeqCst), 32);
+            }
+        }
+    }
+
+    fn plain_chunk(sequence: u64) -> Chunk<u8, ()> {
+        Chunk {
+            sequence,
+            buffer: format!("{sequence}\n").into_bytes(),
+            records: 1,
+            submitted: 1,
+            recycled_records: Vec::new(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn relay_rejects_missing_duplicate_out_of_order_and_post_terminal_batches() {
+        for sequence in [0, 2] {
+            let (send0, recv0) = mpsc::sync_channel(1);
+            let (send1, recv1) = mpsc::sync_channel(1);
+            let (send, output) = mpsc::sync_channel(1);
+            let relay =
+                thread::spawn(move || relay_batches(Sha256::new(), vec![recv0, recv1], send));
+            send0
+                .send(SerializerOutput::Batch(plain_chunk(0)))
+                .unwrap_or_else(|_| panic!("relay stopped"));
+            send1
+                .send(SerializerOutput::Batch(plain_chunk(sequence)))
+                .unwrap_or_else(|_| panic!("relay stopped"));
+            assert_eq!(output.recv().unwrap().sequence, 0);
+            assert!(relay.join().unwrap().unwrap_err().contains("sequence"));
+        }
+        let (send0, recv0) = mpsc::sync_channel::<SerializerOutput<u8, ()>>(1);
+        let (_send1, recv1) = mpsc::sync_channel(1);
+        let (send, _output) = mpsc::sync_channel(1);
+        drop(send0);
+        assert!(
+            relay_batches(Sha256::new(), vec![recv0, recv1], send)
+                .unwrap_err()
+                .contains("disconnected")
+        );
+        let (send0, recv0) = mpsc::sync_channel(1);
+        let (send1, recv1) = mpsc::sync_channel(1);
+        let (send, _output) = mpsc::sync_channel(1);
+        let relay = thread::spawn(move || relay_batches(Sha256::new(), vec![recv0, recv1], send));
+        send0
+            .send(SerializerOutput::Finished)
+            .unwrap_or_else(|_| panic!("relay stopped"));
+        send1
+            .send(SerializerOutput::Finished)
+            .unwrap_or_else(|_| panic!("relay stopped"));
+        send0
+            .send(SerializerOutput::Batch(plain_chunk(0)))
+            .unwrap_or_else(|_| panic!("relay stopped"));
+        drop(send0);
+        drop(send1);
+        assert!(
+            relay
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .contains("after its terminal")
+        );
+    }
+
+    #[test]
+    fn batch_sequence_overflow_rejects_before_submitting_and_releases_the_record() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut sink = Vec::new();
+        let mut writer = StreamWriter::new(&mut sink);
+        writer.enable_background(None).unwrap();
+        let background = writer.background.as_mut().unwrap();
+        background.next_sequence = u64::MAX;
+        let error = background
+            .enqueue(
+                vec![Envelope {
+                    record: Some(Dropped(Arc::clone(&dropped))),
+                    cleanup: None,
+                }],
+                &mut Vec::new(),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("sequence overflow"));
+        assert_eq!(background.pending, 0);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        drop(writer);
+    }
+    #[test]
+    fn stream_counter_and_serializer_work_overflow_are_reported() {
+        let mut total = u64::MAX;
+        let mut overflow = false;
+        add_stream_counter(&mut total, 1, &mut overflow);
+        assert_eq!(total, u64::MAX);
+        assert!(overflow);
+        let mut values = [
+            StreamThreadTelemetry::default(),
+            StreamThreadTelemetry::default(),
+        ];
+        values[0].work_ns = u64::MAX;
+        values[1].work_ns = 1;
+        assert_eq!(serializer_work_ns(&values), None);
+        values[0].cpu_ns = Some(2);
+        values[1].cpu_ns = Some(3);
+        let mut relay = StreamThreadTelemetry {
+            cpu_ns: Some(4),
+            ..StreamThreadTelemetry::default()
+        };
+        assert_eq!(
+            aggregate_stream_cpu(&values, &relay, |value| value.cpu_ns),
+            (Some(9), false)
+        );
+        relay.cpu_ns = None;
+        assert_eq!(
+            aggregate_stream_cpu(&values, &relay, |value| value.cpu_ns),
+            (None, false)
+        );
+        values[0].cpu_ns = Some(u64::MAX);
+        assert_eq!(
+            aggregate_stream_cpu(&values, &relay, |value| value.cpu_ns),
+            (None, true)
+        );
+    }
+    #[test]
+    fn typed_header_records_and_end_match_inline_across_empty_partial_and_full_batches() {
+        #[derive(Serialize)]
+        #[serde(tag = "event", rename_all = "snake_case")]
+        enum Typed {
+            Data { index: usize, text: String },
+            End { count: usize },
+        }
+        for count in [0, 1, 15, 16, 17, 31, 32, 47, 100] {
+            let mut reference = None;
+            for background in [false, true] {
+                let mut sink = Vec::new();
+                let mut writer = StreamWriter::new(&mut sink);
+                writer
+                    .write_header(&serde_json::json!({"header":"λ\n\"","count":count}))
+                    .unwrap();
+                if background {
+                    writer.enable_background(None).unwrap();
+                }
+                for index in 0..count {
+                    writer
+                        .write_line(Typed::Data {
+                            index,
+                            text: "λ\n\"".to_owned(),
+                        })
+                        .unwrap();
+                    if background && index % 7 == 0 {
+                        writer.staged_since = Some(now() - std::time::Duration::from_millis(2));
+                        writer.drain_ready().unwrap();
+                    }
+                }
+                writer.write_line(Typed::End { count }).unwrap();
+                let (digest, telemetry) = writer.finish().unwrap();
+                if let Some(telemetry) = telemetry {
+                    assert_eq!(
+                        telemetry
+                            .serializers
+                            .iter()
+                            .map(|value| value.records)
+                            .sum::<u64>(),
+                        count as u64 + 1
+                    );
+                    assert_eq!(telemetry.relay.records, count as u64 + 1);
+                    assert_eq!(
+                        telemetry
+                            .serializers
+                            .iter()
+                            .map(|value| value.bytes)
+                            .sum::<u64>(),
+                        telemetry.background_bytes
+                    );
+                    assert!(!telemetry.counter_overflow);
+                    assert!(
+                        telemetry
+                            .serializers
+                            .iter()
+                            .all(|value| !value.counter_overflow)
+                    );
+                }
+                if let Some((bytes, expected)) = &reference {
+                    assert_eq!(&sink, bytes);
+                    assert_eq!(&digest, expected);
+                } else {
+                    reference = Some((sink, digest));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_blocked_first_batch_bounds_producer_storage_while_the_other_serializer_progresses() {
+        let (release, blocked) = mpsc::channel();
+        let (later_serialized, later_done) = mpsc::channel();
+        let (full, backpressure) = mpsc::sync_channel(1);
+        let (finished, completion) = mpsc::channel();
+        let made = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let made_owned = Arc::clone(&made);
+        let dropped_owned = Arc::clone(&dropped);
+        let worker = thread::spawn(move || {
+            let mut sink = Vec::new();
+            let mut writer = StreamWriter::new(&mut sink);
+            writer.enable_background(None).unwrap();
+            writer.background.as_mut().unwrap().backpressure = Some(full);
+            let mut blocked = Some(blocked);
+            for value in 0..1024 {
+                made_owned.fetch_add(1, Ordering::SeqCst);
+                writer
+                    .write_line(ControlledRecord {
+                        value,
+                        wait: if value == 0 { blocked.take() } else { None },
+                        error: None,
+                        dropped: Arc::clone(&dropped_owned),
+                        signal_drop: (value == 16).then(|| later_serialized.clone()),
+                    })
+                    .unwrap();
+            }
+            let result = writer.finish().unwrap();
+            finished.send(()).unwrap();
+            (sink, result)
+        });
+        later_done
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        let accepted = backpressure
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(accepted > 0 && accepted <= 288);
+        assert_eq!(
+            made.load(Ordering::SeqCst),
+            accepted as usize + BATCH_RECORD_LIMIT
+        );
+        assert!(matches!(completion.try_recv(), Err(TryRecvError::Empty)));
+        release.send(()).unwrap();
+        let (sink, (digest, telemetry)) = worker.join().unwrap();
+        assert_eq!(dropped.load(Ordering::SeqCst), 1024);
+        assert_eq!(
+            sink,
+            (0..1024)
+                .flat_map(|value| format!("{value}\n").into_bytes())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(digest, format!("{:x}", Sha256::digest(&sink)));
+        let telemetry = telemetry.unwrap();
+        assert!(telemetry.records_in_flight_peak <= 288);
+        assert!(telemetry.producer_backpressure_events > 0);
+        assert_eq!(telemetry.background_records, 1024);
+    }
+
+    #[test]
+    fn sink_failures_after_full_queues_release_all_owned_records_and_cleanup_without_hanging() {
+        for fail_flush in [false, true] {
+            let (release, blocked) = mpsc::channel();
+            let (full, backpressure) = mpsc::sync_channel(1);
+            let made = Arc::new(AtomicUsize::new(0));
+            let dropped = Arc::new(AtomicUsize::new(0));
+            let cleaned = Arc::new(AtomicUsize::new(0));
+            let made_owned = Arc::clone(&made);
+            let dropped_owned = Arc::clone(&dropped);
+            let cleaned_owned = Arc::clone(&cleaned);
+            let worker = thread::spawn(move || {
+                let mut sink = BrokenSink { fail_flush };
+                let mut writer =
+                    StreamWriter::<ControlledRecord, Cleanup>::new_with_cleanup(&mut sink);
+                writer.enable_background(None).unwrap();
+                writer.background.as_mut().unwrap().backpressure = Some(full);
+                let mut blocked = Some(blocked);
+                for value in 0..1024 {
+                    made_owned.fetch_add(1, Ordering::SeqCst);
+                    let result = writer.write_line_with_cleanup(
+                        ControlledRecord {
+                            value,
+                            wait: if value == 0 { blocked.take() } else { None },
+                            error: None,
+                            dropped: Arc::clone(&dropped_owned),
+                            signal_drop: None,
+                        },
+                        cleanup(&cleaned_owned, false),
+                    );
+                    if let Err(error) = result {
+                        drop(writer);
+                        return error.to_string();
+                    }
+                }
+                writer.finish().unwrap_err().to_string()
+            });
+            let accepted = backpressure
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            assert!(accepted > 0 && accepted <= 288);
+            assert_eq!(
+                made.load(Ordering::SeqCst),
+                accepted as usize + BATCH_RECORD_LIMIT
+            );
+            release.send(()).unwrap();
+            let error = worker.join().unwrap();
+            assert!(error.contains(if fail_flush {
+                "broken stream flush"
+            } else {
+                "broken stream sink"
+            }));
+            assert_eq!(made.load(Ordering::SeqCst), dropped.load(Ordering::SeqCst));
+            assert_eq!(made.load(Ordering::SeqCst), cleaned.load(Ordering::SeqCst));
+        }
     }
 }

@@ -105,33 +105,15 @@ fn cpu_delta(before: Option<u128>, after: Option<u128>) -> Option<u128> {
     after?.checked_sub(before?)
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn timespec_ns(seconds: i64, nanoseconds: i64) -> Option<u128> {
-    if !(0..1_000_000_000).contains(&nanoseconds) {
-        return None;
-    }
-    u128::try_from(seconds)
-        .ok()?
-        .checked_mul(1_000_000_000)?
-        .checked_add(u128::try_from(nanoseconds).ok()?)
-}
-
 fn read_profile_cpu(enabled: bool, read: impl FnOnce() -> Option<u128>) -> Option<u128> {
     enabled.then(read).flatten()
 }
 
 pub(super) fn profile_cpu_now() -> Option<u128> {
-    read_profile_cpu(profile_clock_enabled(), || {
-        #[cfg(target_os = "linux")]
-        {
-            let sample = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
-            timespec_ns(sample.tv_sec, sample.tv_nsec)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            None
-        }
-    })
+    read_profile_cpu(
+        profile_clock_enabled(),
+        crate::search::telemetry::thread_cpu_time_ns,
+    )
 }
 
 #[cfg(test)]
@@ -149,10 +131,16 @@ mod tests {
 
     #[test]
     fn expansion_cpu_conversion_and_delta_reject_invalid_samples() {
-        assert_eq!(timespec_ns(2, 9), Some(2_000_000_009));
-        assert_eq!(timespec_ns(-1, 0), None);
-        assert_eq!(timespec_ns(0, -1), None);
-        assert_eq!(timespec_ns(0, 1_000_000_000), None);
+        assert_eq!(
+            crate::search::telemetry::cpu_timespec_ns(2, 9),
+            Some(2_000_000_009)
+        );
+        assert_eq!(crate::search::telemetry::cpu_timespec_ns(-1, 0), None);
+        assert_eq!(crate::search::telemetry::cpu_timespec_ns(0, -1), None);
+        assert_eq!(
+            crate::search::telemetry::cpu_timespec_ns(0, 1_000_000_000),
+            None
+        );
         assert_eq!(cpu_delta(Some(4), Some(9)), Some(5));
         assert_eq!(cpu_delta(Some(9), Some(4)), None);
         assert_eq!(cpu_delta(None, Some(4)), None);

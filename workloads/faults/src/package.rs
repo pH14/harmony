@@ -403,7 +403,7 @@ mod live {
         ThreadPlacement::new(move |thread| {
             let cpu = match thread {
                 PlacedThread::Coordinator => plan.coordinator,
-                PlacedThread::StreamEncoder => {
+                PlacedThread::StreamEncoder | PlacedThread::StreamSerializer(_) => {
                     plan.workers.first().copied().flatten().or(plan.coordinator)
                 }
                 PlacedThread::Worker(worker) => {

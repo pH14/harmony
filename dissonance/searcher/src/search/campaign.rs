@@ -144,6 +144,7 @@ pub struct CampaignExecutionOptions {
 pub enum PlacedThread {
     Coordinator,
     StreamEncoder,
+    StreamSerializer(u32),
     Worker(u32),
 }
 
@@ -2733,7 +2734,7 @@ fn record_compaction_elapsed(
     }
 }
 
-fn profile_clock_enabled() -> bool {
+pub(super) fn profile_clock_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some())
 }
@@ -10551,7 +10552,9 @@ mod tests {
                             LOCALITY_WORKER.with(|slot| {
                                 slot.set(match thread {
                                     PlacedThread::Worker(worker) => Some(worker),
-                                    PlacedThread::Coordinator | PlacedThread::StreamEncoder => None,
+                                    PlacedThread::Coordinator
+                                    | PlacedThread::StreamEncoder
+                                    | PlacedThread::StreamSerializer(_) => None,
                                 })
                             });
                             Ok(())
@@ -12326,13 +12329,16 @@ mod tests {
         placed.sort_by_key(|(thread, _)| match thread {
             PlacedThread::Coordinator => 0,
             PlacedThread::StreamEncoder => 1,
-            PlacedThread::Worker(worker) => worker + 2,
+            PlacedThread::StreamSerializer(index) => index + 2,
+            PlacedThread::Worker(worker) => worker + 4,
         });
         assert_eq!(
             placed.iter().map(|(thread, _)| *thread).collect::<Vec<_>>(),
             vec![
                 PlacedThread::Coordinator,
                 PlacedThread::StreamEncoder,
+                PlacedThread::StreamSerializer(0),
+                PlacedThread::StreamSerializer(1),
                 PlacedThread::Worker(0),
                 PlacedThread::Worker(1),
                 PlacedThread::Worker(2),
@@ -12342,7 +12348,7 @@ mod tests {
             .iter()
             .map(|(_, id)| format!("{id:?}"))
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(threads.len(), 5);
+        assert_eq!(threads.len(), 7);
     }
 
     #[test]
@@ -12350,6 +12356,8 @@ mod tests {
         for refused in [
             PlacedThread::Coordinator,
             PlacedThread::StreamEncoder,
+            PlacedThread::StreamSerializer(0),
+            PlacedThread::StreamSerializer(1),
             PlacedThread::Worker(1),
         ] {
             let placement = ThreadPlacement::new(move |thread| {
@@ -12387,7 +12395,9 @@ mod tests {
                 one_failed_sender.send(()).unwrap();
                 Err("worker one refused startup".to_owned())
             }
-            PlacedThread::Coordinator | PlacedThread::StreamEncoder => Ok(()),
+            PlacedThread::Coordinator
+            | PlacedThread::StreamEncoder
+            | PlacedThread::StreamSerializer(_) => Ok(()),
             _ => unreachable!(),
         });
         let (error, stream) = std::thread::scope(|scope| {
