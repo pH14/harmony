@@ -196,6 +196,7 @@ ssh = "cloud-search"
 dir = "/srv/harmony-arcade"
 workers = 128
 memory_mib = 65536
+memory_max_mib = 81920
 ```
 
 These are resource ceilings offered by the launcher, not a claim that 64 GiB
@@ -208,10 +209,12 @@ rendering and video encoding use the viewing computer's resources.
 
 The archive budget is only part of whole-campaign RAM. Also allow for worker
 targets, pending task origins and results, stream buffers, live observation and
-checkpoint/export transients. The launcher's fixed extra 1 GiB is a unit memory
-allowance, not a proven sizing formula for a long search. It sets
-`MemoryMax`, but does not set a CPU set or swap limit. Establish the host/unit
-swap policy and retain `memory.max`, `memory.swap.max`, `memory.peak` and memory
+checkpoint/export transients. Required machine `memory_max_mib` is the explicit
+whole-unit ceiling, greater than the archive ceiling `memory_mib`; it is not an
+automatic overhead estimate. The example sets 80 GiB per run, not an aggregate
+machine reservation. Budget simultaneous runs plus host services within host
+RAM. The launcher sets this `MemoryMax` and `MemorySwapMax=0`, without a CPU set.
+Retain `memory.max`, `memory.swap.max`, `memory.peak` and memory
 events when qualifying a machine. Measure a longer run at the intended archive
 budget before allocating the remaining host RAM to the search.
 

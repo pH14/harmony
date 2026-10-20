@@ -48,7 +48,6 @@ from urllib.parse import unquote, urlsplit
 REPOSITORY = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = Path("~/.config/harmony/arcade-machines.toml")
 UNIT_PREFIX = "harmony-arcade-"
-MEMORY_HEADROOM_MIB = 1024
 LISTEN_PATTERN = re.compile(r"live view listening on 127\.0\.0\.1:(\d+)")
 RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-z0-9-]+$")
 STATUS_SECONDS = 10.0
@@ -83,6 +82,7 @@ class Machine:
     dir: str
     workers: int
     memory_mib: int
+    memory_max_mib: int
     runs: tuple[str, ...] = ()
 
 
@@ -138,12 +138,19 @@ def load_config(path: Path) -> Config:
     data = tomllib.loads(path.expanduser().read_text())
     machines: dict[str, Machine] = {}
     for name, entry in data.get("machines", {}).items():
+        archive = entry.get("memory_mib")
+        whole = entry.get("memory_max_mib")
+        if type(archive) is not int or archive <= 0:
+            raise ValueError(f"{name} memory_mib must be a positive integer archive ceiling")
+        if type(whole) is not int or whole <= archive:
+            raise ValueError(f"{name} memory_max_mib must be an integer whole-unit ceiling greater than memory_mib")
         machines[name] = Machine(
             name=name,
             ssh=str(entry["ssh"]),
             dir=str(entry["dir"]),
             workers=int(entry["workers"]),
-            memory_mib=int(entry["memory_mib"]),
+            memory_mib=archive,
+            memory_max_mib=whole,
             runs=tuple(str(directory) for directory in entry.get("runs", [])),
         )
     if not machines:
@@ -275,7 +282,7 @@ START = (
 mkdir -p "$run"
 cat >"$run/request.json"
 printf '%s\\n' "$3" >"$run/launch.json"
-systemd-run $user --unit "$4" --collect -p MemoryMax="$5"M -p Nice=10 \\
+systemd-run $user --unit "$4" --collect -p MemoryMax="$5"M -p MemorySwapMax=0 -p Nice=10 \\
   -p WorkingDirectory="$run" "$1/src/$6/nes-eval" "$run/request.json" "$run/out" >/dev/null
 for _ in $(seq 1 120); do
   line=$(journalctl $user -u "$4" -o cat --no-pager 2>/dev/null | grep -m1 'live view listening' || true)
@@ -428,7 +435,7 @@ class Launcher:
                     run.id,
                     launch,
                     UNIT_PREFIX + run.id,
-                    str(settings.memory_mib + MEMORY_HEADROOM_MIB),
+                    str(machine.memory_max_mib),
                     commit,
                     stdin=json.dumps(request).encode(),
                 )
@@ -615,7 +622,7 @@ class Handler(BaseHTTPRequestHandler):
         launcher = self.launcher
         if path == "/launcher/machines":
             machines = [
-                {"name": m.name, "workers": m.workers, "memory_mib": m.memory_mib}
+                {"name": m.name, "workers": m.workers, "memory_mib": m.memory_mib, "memory_max_mib": m.memory_max_mib}
                 for m in launcher.config.machines.values()
             ]
             games = available_games(launcher.site, launcher.config)

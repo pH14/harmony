@@ -215,6 +215,7 @@ ssh = "your-cloud-host"
 dir = "/srv/harmony-arcade"
 workers = 128
 memory_mib = 16384
+memory_max_mib = 24576
 ```
 
 The dialog must also select 128 workers to start one 128-worker campaign.
@@ -223,14 +224,20 @@ this is 512 outstanding expansion tasks, each with at most 14 edge attempts,
 so up to 7,168 edge attempts can be pending. Other games retain `window: 4`
 per worker. This is configuration, not a throughput guarantee; memory and
 feedback behavior at this task window still need capacity qualification.
-`memory_mib` budgets the archive and bounded draw state; the launcher's cgroup
-limit adds 1 GiB for workers and other overhead. The example therefore sets a
-17 GiB cgroup limit. That fixed allowance does not establish how much RAM a
-long campaign needs. Measure the whole campaign's cgroup memory, including
-worker targets, pending tasks/results, stream and observation buffers, and
-checkpoint/export transients. Leave host memory for other services; exceeding
-the cgroup limit can terminate the run. The launcher sets `MemoryMax`, but
-does not configure a CPU set or swap limit.
+`memory_mib` is the maximum archive and bounded draw-state budget offered by
+the dialog. Required `memory_max_mib` is a separate whole-unit RAM ceiling,
+strictly greater than the archive ceiling; the example allocates 24 GiB to each
+run. The dialog labels archive memory separately and displays the chosen
+machine's whole-run ceiling. The launcher passes that ceiling to `MemoryMax`
+and disables swap with `MemorySwapMax=0`; it does not configure a CPU set.
+
+The whole ceiling must cover worker targets, pending tasks/results, stream and
+live observation buffers, and checkpoint/export transients as well as the
+archive. No fixed per-worker or archive-to-overhead formula establishes that a
+long campaign fits. Measure whole-cgroup `memory.peak` and memory events at the
+intended worker count, archive budget and live workload. The ceiling applies
+to each run, not all runs on a machine: budget simultaneous runs and leave host
+RAM for other services. Exceeding the ceiling can terminate a run.
 
 Budget CPU beyond the selected workers for the coordinator, two stream
 serializers, ordered relay, live feed and host services. For example, 136
@@ -251,12 +258,12 @@ tools/launcher.py
 
 and open `http://127.0.0.1:8790/`. On a loopback address the page asks
 `/launcher/machines`; when the launcher answers, a Native runs button opens a
-dialog to pick the machine, game, workers, memory cap, seed and time limit. A
+dialog to pick the machine, game, workers, archive budget, seed and time limit. A
 run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
 builds the QuickNES core with `scripts/build-quicknes-core.sh` and `nes-eval`
 there once per commit, uploads the ROM, and starts `nes-eval` with
 `live: 127.0.0.1:0` as a `systemd-run` unit named `harmony-arcade-<id>` with
-`MemoryMax` 1 GiB above the search's memory budget and `Nice=10`. The launcher
+the machine's explicit `MemoryMax`, `MemorySwapMax=0` and `Nice=10`. The launcher
 reads the port `nes-eval` printed, forwards it with `ssh -L`, and serves the
 page at `/runs/<id>/?game=<game>&live` with `/runs/<id>/live/` proxied to that
 port. A restarted launcher finds the running units on each machine and
