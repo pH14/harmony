@@ -192,6 +192,17 @@ When the fence publish fails and two stream lookups 500 ms apart both answer
 "stream not found", the read returns an empty log. A stream that vanished
 then shows up as lost acknowledged appends.
 
+Node logs are `/tmp/nats/<node>.log`. The check prints its result as JSON on
+stdout, so it also serves as the explain history command. An empty
+`ANTITHESIS_OUTPUT_DIR` keeps that extra check out of the assertion stream:
+
+```toml
+[workload.options.explain]
+logs = ["/tmp/nats/*.log"]
+data = ["/tmp/nats/n1", "/tmp/nats/n2", "/tmp/nats/n3"]
+history = "ANTITHESIS_OUTPUT_DIR= /opt/harmony/nats-harness check"
+```
+
 The image builds `nats-server` from pinned source through the Antithesis Go
 instrumentation like the
 [etcd case](../bugs/historical/etcd-3.5-inconsistency/image/README.md). The

@@ -22,6 +22,7 @@ pub enum Operation {
     Timeline,
     Logs,
     Shrink,
+    Explain,
 }
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -37,6 +38,8 @@ pub struct Request {
     pub actions: Option<PathBuf>,
     pub repeat: u32,
     pub jobs: usize,
+    pub explain: crate::adapters::faults::config::Explain,
+    pub skip_shrink: bool,
     pub console: bool,
     pub command: Vec<String>,
     pub exec: Option<String>,
@@ -59,6 +62,8 @@ impl Default for Request {
             actions: None,
             repeat: 1,
             jobs: 1,
+            explain: Default::default(),
+            skip_shrink: false,
             console: false,
             command: Vec::new(),
             exec: None,
