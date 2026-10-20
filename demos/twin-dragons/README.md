@@ -656,9 +656,10 @@ shows another level and runs `famidash_start_level_tape()`, the workload's own
 A press and 40-frame wait. The community group and the side ROMs open the
 community menu, so their tape presses Right on the title menu.
 
-The native search with 16 workers clears Stereo Madness in 10,900 to 14,700
-executions on seeds 1 to 5, so at 120 rollouts per second the browser search
-reaches Back on Track in about two minutes.
+The browser search plans individual rollouts; native Famidash campaigns use
+bounded expansion tasks. Their execution counts and time to a level transition
+must be measured separately. Native search throughput alone does not establish
+how quickly either mode advances through a level.
 
 ### Super Mario Bros.
 
