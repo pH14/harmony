@@ -55,6 +55,8 @@ source endpoint across imports. Their actions are reconstructed under the curren
 executor; the source progress watermark remains inherited historical evidence
 bound to the source file bytes, not evidence produced by that reconstruction.
 Snapshot-root origins use their separate checkpoint contract.
+The coordinator requests the retained suffix prefix through `InputPolicy::expand_suffix_prefix`. Its default expands the complete suffix before truncating, retaining workload side effects and errors. A workload may override it only when discarded local draws have no observable effect.
+
 Admission keeps an uncertified action prefix without allocating a certificate vector. The first certificate materializes the full prefix, including missing earlier certificates, so mixed paths retain the same fail-closed validation. A single-preference slot rejects a losing candidate before allocating its preference mask.
 
 For a workload with endpoint certificates, whole-tree import reconstructs each
@@ -146,7 +148,9 @@ the reported error regardless of host timing.
 
 Workers pull jobs from one shared queue ordered by planned finish, so an idle
 worker takes the queued job that admission reaches first while another worker
-is still busy. A short job reserved after longer ones runs before them,
+is still busy. Enqueueing wakes a worker only when a worker is parked on the
+queue's condition variable; the waiter count is protected by the queue mutex.
+A short job reserved after longer ones runs before them,
 because admission needs its result first. The coordinator dispatches each job
 when it reserves it, including between individual admissions unlocked by a
 buffered-result burst. Workers can start the replacement while the coordinator

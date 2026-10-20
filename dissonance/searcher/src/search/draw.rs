@@ -145,6 +145,30 @@ pub fn draw_suffix<A, B, U>(
     mixture_weight: u8,
     mutation_seed: u64,
     previous: Option<&A>,
+    biased: B,
+    alphabet: U,
+) -> Result<Vec<A>, Box<dyn Error>>
+where
+    B: FnMut(&mut RomuDuoJrRand) -> Result<Option<A>, Box<dyn Error>>,
+    U: FnMut(Option<&A>, &mut RomuDuoJrRand) -> Result<A, Box<dyn Error>>,
+{
+    draw_suffix_prefix(
+        mixture,
+        mixture_weight,
+        mutation_seed,
+        previous,
+        SUFFIX_DOUBLING_LIMIT,
+        biased,
+        alphabet,
+    )
+}
+
+pub fn draw_suffix_prefix<A, B, U>(
+    mixture: DrawMixture,
+    mixture_weight: u8,
+    mutation_seed: u64,
+    previous: Option<&A>,
+    limit: u8,
     mut biased: B,
     mut alphabet: U,
 ) -> Result<Vec<A>, Box<dyn Error>>
@@ -160,7 +184,7 @@ where
         ),
         DrawMixture::AlphabetOnly | DrawMixture::BiasedHalf => None,
     };
-    let length = usize::from(SUFFIX_DOUBLING_LIMIT);
+    let length = usize::from(limit.min(SUFFIX_DOUBLING_LIMIT));
     let mut suffix = Vec::with_capacity(length);
     for _ in 0..length {
         let take_biased = match energy_biased {
@@ -186,6 +210,35 @@ mod tests {
         DrawMixture, EnergyStrategy, MixtureEnergy, draw_mixture_from_identifier,
         draw_mixture_identifier, draw_suffix, energy_strategy,
     };
+
+    #[test]
+    fn bounded_suffix_matches_the_full_draw_prefix_for_all_mixtures() {
+        for mixture in [
+            DrawMixture::AlphabetOnly,
+            DrawMixture::BiasedHalf,
+            DrawMixture::Energy { scale: 6 },
+            DrawMixture::EnergySplice { scale: 6 },
+        ] {
+            for seed in 0..128 {
+                let draw = |limit| {
+                    super::draw_suffix_prefix(
+                        mixture,
+                        85,
+                        seed,
+                        Some(&7_u64),
+                        limit,
+                        |rand| Ok(Some(rand.next_u64())),
+                        |previous, rand| Ok(previous.copied().unwrap_or(0) ^ rand.next_u64()),
+                    )
+                    .unwrap()
+                };
+                let full = draw(super::SUFFIX_DOUBLING_LIMIT);
+                for limit in [0, 1, 2, 4, 16, 32, 63, 64, 255] {
+                    assert_eq!(draw(limit), full[..usize::from(limit.min(64))]);
+                }
+            }
+        }
+    }
 
     #[test]
     fn the_mixture_identifier_round_trips_and_rejects_unknown_names() {

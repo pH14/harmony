@@ -33,7 +33,8 @@ use crate::{
             InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
             postcard_semantic_result_sha256, postcard_value_sha256,
         },
-        draw_tables::DrawTableHeader,
+        draw::{MixtureDraw, draw_suffix_prefix},
+        draw_tables::{DrawTableHeader, DrawTables, biased_step},
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
@@ -369,6 +370,28 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Reporting for FamidashGame<M, G
 }
 
 impl<M: NesBackend<Vec<u8>>, const GROUP: usize> InputPolicy for FamidashGame<M, GROUP> {
+    fn expand_suffix_prefix(
+        &self,
+        run: &FamidashCampaignRun,
+        state: &DrawTables<ButtonChord>,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+        previous: Option<&ButtonChord>,
+        limit: u8,
+    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
+        state.draw(None, false, |view| {
+            draw_suffix_prefix(
+                mixture.mixture,
+                mixture.weight,
+                mutation_seed,
+                previous,
+                limit,
+                |rand| biased_step(view, rand),
+                |previous, rand| self.sample_alphabet(run, previous, rand),
+            )
+        })
+    }
+
     fn policies(&self, _run: &FamidashCampaignRun) -> WorkloadPolicies {
         [
             (
@@ -644,6 +667,46 @@ mod tests {
 
     fn game(execution: &str, stage: Stage) -> FamidashGame<QuickNesMachine> {
         FamidashGame::new(&[0], Path::new("core.so"), "core", execution, stage)
+    }
+
+    #[test]
+    fn bounded_draws_match_full_suffixes_without_changing_table_state() {
+        let game = game("first", Stage::through_group(Side::Main, 0).unwrap());
+        let run = FamidashCampaignRun;
+        let mut state = DrawTables::new(game.draw_table_parameters(&run)).unwrap();
+        state
+            .fold_source(&[ButtonChord::new(0, 2), ButtonChord::new(1, 48)])
+            .unwrap();
+        state.flush().unwrap();
+        let before = state.to_resume_bytes().unwrap();
+        let previous = ButtonChord::new(1, 12);
+        for mixture in [
+            crate::search::draw::DrawMixture::AlphabetOnly,
+            crate::search::draw::DrawMixture::BiasedHalf,
+            crate::search::draw::DrawMixture::Energy { scale: 6 },
+            crate::search::draw::DrawMixture::EnergySplice { scale: 6 },
+        ] {
+            let mixture = MixtureDraw {
+                mixture,
+                weight: 85,
+                splice_weight: 85,
+            };
+            for previous in [None, Some(&previous)] {
+                for seed in 0..128 {
+                    let full = game
+                        .expand_suffix(&run, &state, mixture, seed, previous)
+                        .unwrap();
+                    for limit in [0, 1, 2, 4, 16, 64, 255] {
+                        assert_eq!(
+                            game.expand_suffix_prefix(&run, &state, mixture, seed, previous, limit)
+                                .unwrap(),
+                            full[..usize::from(limit).min(full.len())]
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(before, state.to_resume_bytes().unwrap());
     }
 
     #[test]

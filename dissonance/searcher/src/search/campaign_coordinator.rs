@@ -30,7 +30,7 @@ use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
 };
 use crate::search::checkpoint::{CheckpointReader, CheckpointWriter};
-use crate::search::draw::{EnergyStrategy, MixtureDraw, energy_strategy};
+use crate::search::draw::{EnergyStrategy, MixtureDraw, SUFFIX_DOUBLING_LIMIT, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
 use crate::search::duration::DurationPolicies;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -1288,7 +1288,7 @@ where
                     previous,
                     draw,
                 )?,
-                (None, None) => workload.expand_suffix(
+                (None, None) => workload.expand_suffix_prefix(
                     &config.run,
                     draw_state,
                     MixtureDraw {
@@ -1298,6 +1298,7 @@ where
                     },
                     mutation_seed,
                     previous,
+                    suffix_limit.unwrap_or(SUFFIX_DOUBLING_LIMIT),
                 )?,
             };
             if let Some(limit) = suffix_limit {

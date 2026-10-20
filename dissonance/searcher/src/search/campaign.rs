@@ -396,6 +396,19 @@ pub trait InputPolicy: CampaignTypes {
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         self.expand_recorded_or_live(run, state, mixture, None, mutation_seed, previous, false)
     }
+    fn expand_suffix_prefix(
+        &self,
+        run: &Self::Run,
+        state: &DrawTables<Self::Action>,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+        previous: Option<&Self::Action>,
+        limit: u8,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        let mut suffix = self.expand_suffix(run, state, mixture, mutation_seed, previous)?;
+        suffix.truncate(usize::from(limit));
+        Ok(suffix)
+    }
     fn expand_suffix_recorded(
         &self,
         run: &Self::Run,
@@ -6106,6 +6119,31 @@ mod tests {
         core.bootstrap(&workload, &run, &mut target)
             .expect("bootstrap generic core");
         (workload, run, core, target)
+    }
+
+    #[test]
+    fn default_suffix_prefix_preserves_full_expansion_side_effects() {
+        let targets = Arc::new(LiveTargets::default());
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(Arc::clone(&targets)),
+        };
+        let state = DrawTables::new(workload.draw_table_parameters(&())).unwrap();
+        let mixture = MixtureDraw {
+            mixture: DrawMixture::AlphabetOnly,
+            weight: 0,
+            splice_weight: 0,
+        };
+        for limit in [0, 1, 2] {
+            let suffix = workload
+                .expand_suffix_prefix(&(), &state, mixture, 1 << 32, None, limit)
+                .unwrap();
+            assert_eq!(suffix.len(), usize::from(limit));
+        }
+        assert_eq!(
+            targets.selections.load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
     }
 
     #[test]
