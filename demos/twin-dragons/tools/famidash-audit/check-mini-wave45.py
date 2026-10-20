@@ -49,11 +49,11 @@ def cases():
                rng.randrange(-31, 17), rng.randrange(4))
 
 
-def source_points(collision):
+def source_points(collision, names=NAMES):
     start = re.search(r'char\s+bg_coll_slope\s*\(\s*\)\s*\{', collision).start()
     text = collision[start:]
     blocks = []
-    for name in NAMES:
+    for name in names:
         marker = "col_slope_" + name + ":"
         begin = text.index(marker)
         end = re.search(r'\n\s*col_\w+:', text[begin + len(marker):]).start()
@@ -71,7 +71,7 @@ unsigned char original_point(unsigned char kind, unsigned char x, unsigned char 
     temp_x = x; temp_y = y;
     switch (kind) {
 """
-    jumps = "\n".join(f"case {n}: goto col_slope_{name};" for n, name in enumerate(NAMES))
+    jumps = "\n".join(f"case {n}: goto col_slope_{name};" for n, name in enumerate(names))
     return prefix + jumps + "\n}\n" + "\n".join(blocks) + "\ncol_end: return tmp4 >= tmp7;\n}\n"
 
 

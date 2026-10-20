@@ -504,6 +504,15 @@ include pristine-source patches, opposite-direction negative cases, independent
 NES replays and mode-specific clearing controls. Host arithmetic checks do not
 qualify NES timing, history invalidation or all intended routes.
 
+`check-mini-wave22.py SOURCE OUTPUT` checks all eight experimental mini-wave22
+polygons against independent exact clipping (74,850 motions), the actual
+source's 2,048 point results, and all 65,536 signed products. The conservative
+sweep's stationary mask must be a subset of the original mask; the unchanged
+discrete checks preserve the original boundary pixels. This avoids enlarging
+the stationary hitbox while detecting paths through visible solid geometry.
+It includes the actual Dorabae Basic 10 diagonal-intermediate crossing.
+NES timing, bank dispatch and legitimate routes require separate replay checks.
+
 The [both-size wave66 experiment](findings/shared-engine/wave66-both-sizes/README.md)
 extends that kernel to normal wave and invalidates history on size changes.
 It includes a fresh original-release normal-wave reproducer, unchanged-approach
