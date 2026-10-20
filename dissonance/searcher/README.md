@@ -711,23 +711,23 @@ unchanged.
 
 The campaign also keeps one reach length, `SuffixReach`, shared by every
 parent. A drawn job runs the longer of its parent's length and the reach
-length. The reach length starts at 64 actions. The archive remembers every
+length. The reach length starts at one action. The archive remembers every
 slot that has held a state, so a kept state that opens a slot no state has held
 before (a novel slot) differs from one that replaces a holder or refills a slot
 that memory pressure emptied. The reach counts actions run and novel slots
-opened by drawn jobs over about the last 1,024 actions. Once it has counted 64
-actions, each drawn job moves the reach length: it doubles, up to 64 actions,
-when at least half of the counted actions opened novel slots, and halves, down
-to one action, otherwise. When most actions open novel slots, every action of
-a long job adds a new state, so a long job wastes little and extends a lineage
-by many actions per draw. When few actions do, one-action jobs spread over
-many parents find the rare new state at less cost. Starting long gives the
-first jobs from the root deep lineages, and a failing start costs about 126
-actions, because each job moves the length one step. Most fault actions open
-a novel slot, because the edge bucket is part of the holder identity, so fault
-jobs stay at 64 actions. Tiny worlds open novel slots with at most about one
-action in eight, so the reach length falls to one action within the first
-few jobs and the per-parent length decides. The reach counts and the slot
+opened by drawn jobs over about the last 1,024 actions. After each drawn job,
+the reach length doubles, up to 64 actions, when at least half of the counted
+actions opened novel slots, and halves, down to one action, otherwise. When
+most actions open novel slots, every action of a long job adds a new state, so
+a long job wastes little and extends a lineage by many actions per draw. When
+few actions do, one-action jobs spread over many parents find the rare new
+state at less cost. A search whose first actions open novel slots reaches 64
+actions within seven jobs, while its lineages are still close to the root.
+Most fault actions open a novel slot, because the edge bucket is part of the
+holder identity, so fault jobs stay near 64 actions. Tiny worlds and Super
+Mario Bros. open novel slots with at most about one action in seven after
+their first few jobs, so the reach length returns to one action and the
+per-parent length decides. The reach counts and the slot
 set change only at admission. The core checkpoint carries the counts, the
 archive checkpoint carries the slot set, and the slot set counts toward the
 archive's history memory.

@@ -126,21 +126,11 @@ impl MixtureEnergy {
 
 const SUFFIX_REACH_ACTION_WINDOW: u32 = 1024;
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct SuffixReach {
     doublings: u8,
     actions: u32,
     novel: u32,
-}
-
-impl Default for SuffixReach {
-    fn default() -> Self {
-        Self {
-            doublings: SUFFIX_DOUBLING_LIMIT.trailing_zeros() as u8,
-            actions: 0,
-            novel: 0,
-        }
-    }
 }
 
 impl SuffixReach {
@@ -161,9 +151,6 @@ impl SuffixReach {
         while self.actions >= SUFFIX_REACH_ACTION_WINDOW {
             self.actions /= 2;
             self.novel /= 2;
-        }
-        if self.actions < u32::from(SUFFIX_DOUBLING_LIMIT) {
-            return;
         }
         if 2 * self.novel >= self.actions {
             if self.length() < SUFFIX_DOUBLING_LIMIT {
@@ -339,19 +326,15 @@ mod tests {
     }
 
     #[test]
-    fn suffix_reach_starts_at_the_longest_job_and_waits_for_one_longest_job_of_actions() {
+    fn suffix_reach_doubles_after_each_job_while_most_actions_open_novel_slots() {
         let mut reach = SuffixReach::default();
-        assert_eq!(reach.length(), 64);
-        for _ in 0..63 {
-            reach.record_outcome(1, 0);
-            assert_eq!(reach.length(), 64);
-        }
+        assert_eq!(reach.length(), 1);
         let mut lengths = Vec::new();
-        for _ in 0..7 {
-            reach.record_outcome(1, 0);
+        for actions in [1, 2, 4, 8, 16, 32, 64] {
+            reach.record_outcome(actions, actions);
             lengths.push(reach.length());
         }
-        assert_eq!(lengths, [32, 16, 8, 4, 2, 1, 1]);
+        assert_eq!(lengths, [2, 4, 8, 16, 32, 64, 64]);
     }
 
     #[test]
@@ -381,7 +364,7 @@ mod tests {
         let mut reach = SuffixReach::default();
         for job in 0..4096 {
             reach.record_outcome(1, usize::from(job % 10 == 0));
-            if job >= 68 {
+            if job >= 3 {
                 assert_eq!(reach.length(), 1);
             }
         }
