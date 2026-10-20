@@ -120,20 +120,25 @@ where
             let dispatch = |campaign: &mut ExpansionCoordinator<'_, G, W::Note>,
                             spec: ExpansionTaskSpec<G>|
              -> Result<bool, Box<dyn Error>> {
-                let task = spec.task;
-                let token = campaign
-                    .reservations
-                    .token(&task)
-                    .ok_or("expansion dispatch lost reservation")?;
-                let locality = workload.snapshot_locality(&spec.snapshot);
-                match pool.dispatch_local((task, token), spec, locality) {
-                    Ok(()) => Ok(true),
-                    Err(error) => {
-                        campaign.complete_error(task, error.to_string())?;
-                        campaign.stop_reservations();
-                        Ok(false)
+                let started = profile_now();
+                let result = (|| {
+                    let task = spec.task;
+                    let token = campaign
+                        .reservations
+                        .token(&task)
+                        .ok_or("expansion dispatch lost reservation")?;
+                    let locality = workload.snapshot_locality(&spec.snapshot);
+                    match pool.dispatch_local((task, token), spec, locality) {
+                        Ok(()) => Ok(true),
+                        Err(error) => {
+                            campaign.complete_error(task, error.to_string())?;
+                            campaign.stop_reservations();
+                            Ok(false)
+                        }
                     }
-                }
+                })();
+                record_profile(&mut campaign.profile.dispatch_ns, started);
+                result
             };
             let reserve = |campaign: &mut ExpansionCoordinator<'_, G, W::Note>| -> Result<usize, Box<dyn Error>> {
                 let mut dispatched = 0;
@@ -184,8 +189,14 @@ where
                 if campaign.finished() {
                     break;
                 }
-                writer.drain_ready()?;
-                campaign.poll_persistence()?;
+                let started = profile_now();
+                let drained = writer.drain_ready();
+                record_profile(&mut campaign.profile.drain_ns, started);
+                drained?;
+                let started = profile_now();
+                let polled = campaign.poll_persistence();
+                record_profile(&mut campaign.profile.persistence_poll_ns, started);
+                polled?;
                 idle.update(
                     running,
                     if campaign.reservations.completed_len() > 0 {
@@ -276,7 +287,13 @@ where
         counters: campaign.counters,
         stop_reason,
     })?;
-    let (stream_sha256, stream_telemetry) = writer.finish()?;
+    let finish_cpu_started = profile_clock_enabled().then(thread_schedstat).flatten();
+    let started = profile_now();
+    let finished = writer.finish();
+    record_profile(&mut campaign.profile.stream_finish_ns, started);
+    let stream_finish_host =
+        finish_cpu_started.and_then(|before| HostTimes::try_measure(Some(before), (0, 0)));
+    let (stream_sha256, stream_telemetry) = finished?;
     telemetry.stream = stream_telemetry;
     campaign.core.archive.compact_history_for_final_report()?;
     campaign.core.finish_curve();
@@ -293,6 +310,7 @@ where
             "kind": "bounded_expansion_spans_v1",
             "basis": "inclusive_wall_ns_not_cpu",
             "spans": campaign.profile,
+            "stream_finish_host": stream_finish_host,
         });
     }
     telemetry.sum_targets();

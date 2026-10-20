@@ -331,7 +331,10 @@ where
     write_json(&out.join("identity.json"), &identity)?;
     let mut stream = StreamSink {
         file: if full {
-            Some(BufWriter::new(fs::File::create(out.join("stream.jsonl"))?))
+            Some(BufWriter::with_capacity(
+                1024 * 1024,
+                fs::File::create(out.join("stream.jsonl"))?,
+            ))
         } else {
             None
         },

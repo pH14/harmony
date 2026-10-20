@@ -262,8 +262,16 @@ The public result aliases resolve to storage parameterized by their actual field
 types, so owned static payloads do not require the workload type itself to be
 static. Their serde shapes and diagnostic names remain unchanged. Result literals
 and result-only generic hash helpers require an explicit workload carrier such
-as `CampaignJobResult::<G>` or `postcard_result_sha256::<G>`. Each job record
-carries the original spent job-result vectors as encoder-owned cleanup data. Admission mutably borrows those vectors, copies actions and
+as `CampaignJobResult::<G>` or `postcard_result_sha256::<G>`.
+
+Postcard SHA-256 hashing uses one fixed 64-byte scratch block to batch scalar
+writes and forwards complete slices directly to the hash. Each call hashes the
+freshly serialized bytes, including the final partial block; it retains no
+digest or input cache and changes neither the postcard representation nor
+integrity-check boundaries.
+
+Each job record carries the original spent job-result vectors as encoder-owned
+cleanup data. Admission mutably borrows those vectors, copies actions and
 milestones, and takes only accepted snapshots. Duplicate or rejected incoming
 snapshots return to their original candidate; nonviable candidates remain there.
 No snapshot is cloned for cleanup, and snapshot retirement, retention accounting

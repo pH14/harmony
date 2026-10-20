@@ -313,6 +313,21 @@ optionally persists them without hashing every byte a second time. Full
 verification replays the retained stream, and the scaling qualifier also checks
 its digest and length independently.
 
+Retained native streams use a fixed 1 MiB file buffer outside the archive's
+memory budget. The encoder still owns record serialization; the coordinator
+writes encoded chunks into this buffer. Successful completion explicitly flushes
+the buffer before verification and result publication, so delayed file errors
+remain run failures. Buffering does not change the stream's bytes or ordering.
+
+Expansion's opt-in `HARMONY_COORDINATOR_PROFILE` telemetry records inclusive wall
+spans, including dispatch, stream drain, persistence polling and stream finish.
+These spans can overlap and are not CPU costs. The private
+`telemetry.coordinator.stream_finish_host` measurement records the coordinator's
+thread CPU and scheduler wait only around stream finish, including its final
+flush and the measurement overhead. This tail lies after the dispatch CPU
+boundary; qualification must account for it rather than crediting buffered
+output as free work. Profiling disabled performs no additional timing reads.
+
 ## Famidash expansion evaluation
 
 Normal Famidash evaluation, including stages, whole-game runs and all live ROM

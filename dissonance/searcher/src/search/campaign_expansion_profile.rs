@@ -5,6 +5,7 @@ use super::*;
 #[derive(Default, Serialize)]
 pub(super) struct ExpansionProfile {
     pub reserve_ns: u128,
+    pub dispatch_ns: u128,
     pub selection_ns: u128,
     pub origin_ns: u128,
     pub complete_ns: u128,
@@ -18,6 +19,9 @@ pub(super) struct ExpansionProfile {
     pub stream_ns: u128,
     pub progress_ns: u128,
     pub checkpoint_ns: u128,
+    pub drain_ns: u128,
+    pub persistence_poll_ns: u128,
+    pub stream_finish_ns: u128,
 }
 
 pub(super) fn record_profile(total: &mut u128, started: Option<Moment>) {
