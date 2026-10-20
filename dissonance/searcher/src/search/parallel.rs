@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, btree_map::Entry},
     error::Error,
     fmt,
     sync::{Arc, Condvar, Mutex, mpsc},
@@ -45,6 +45,7 @@ struct JobQueue<Key, Job> {
     jobs: BTreeMap<Key, Job>,
     open: bool,
     workers: usize,
+    waiters: usize,
     failed_job: bool,
 }
 
@@ -60,6 +61,7 @@ impl<Key: Ord, Job> SharedJobs<Key, Job> {
                 jobs: BTreeMap::new(),
                 open: true,
                 workers,
+                waiters: 0,
                 failed_job: false,
             }),
             ready: Condvar::new(),
@@ -75,7 +77,9 @@ impl<Key: Ord, Job> SharedJobs<Key, Job> {
             if !queue.open {
                 return None;
             }
+            queue.waiters += 1;
             queue = self.ready.wait(queue).ok()?;
+            queue.waiters -= 1;
         }
     }
 
@@ -120,12 +124,17 @@ impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
         if queue.workers == 0 && !queue.failed_job {
             return Err(WorkerPoolError::WorkersExited);
         }
-        if queue.jobs.contains_key(&key) {
-            return Err(WorkerPoolError::DuplicateJob);
+        match queue.jobs.entry(key) {
+            Entry::Occupied(_) => return Err(WorkerPoolError::DuplicateJob),
+            Entry::Vacant(entry) => {
+                entry.insert(job);
+            }
         }
-        queue.jobs.insert(key, job);
+        let notify = queue.waiters > 0;
         drop(queue);
-        shared.ready.notify_one();
+        if notify {
+            shared.ready.notify_one();
+        }
         Ok(())
     }
 

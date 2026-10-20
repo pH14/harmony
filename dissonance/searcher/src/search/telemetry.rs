@@ -216,9 +216,14 @@ impl IdleClock {
     }
 
     pub(crate) fn update(&mut self, outstanding: usize, reason: IdleReason) {
+        let busy = outstanding.min(self.workers);
+        if busy == self.busy && (reason == self.reason || busy == self.workers) {
+            self.reason = reason;
+            return;
+        }
         (self.admission_order_ns, self.no_job_ns) = self.totals();
         self.since = now();
-        self.busy = outstanding.min(self.workers);
+        self.busy = busy;
         self.reason = reason;
     }
 
@@ -237,10 +242,8 @@ impl IdleClock {
         }
     }
 
-    pub(crate) fn finish(mut self, waits: &mut AdmissionWaits) {
-        self.update(0, IdleReason::NoJob);
-        waits.idle_admission_order_ns = self.admission_order_ns;
-        waits.idle_no_job_ns = self.no_job_ns;
+    pub(crate) fn finish(self, waits: &mut AdmissionWaits) {
+        (waits.idle_admission_order_ns, waits.idle_no_job_ns) = self.totals();
     }
 }
 
@@ -302,14 +305,19 @@ mod tests {
 
     #[test]
     fn live_idle_totals_include_the_interval_still_open() {
-        let mut clock = IdleClock::new(2);
-        clock.update(0, IdleReason::AdmissionOrder);
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        let (admission_order, no_job) = clock.totals();
-        assert!(admission_order >= 4_000_000);
-        assert_eq!(no_job, clock.no_job_ns);
-        let mut waits = AdmissionWaits::default();
-        clock.finish(&mut waits);
-        assert!(waits.idle_admission_order_ns >= admission_order);
+        for reason in [IdleReason::AdmissionOrder, IdleReason::NoJob] {
+            let mut clock = IdleClock::new(2);
+            clock.update(0, reason);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let (admission_order, no_job) = clock.totals();
+            match reason {
+                IdleReason::AdmissionOrder => assert!(admission_order >= 4_000_000),
+                IdleReason::NoJob => assert!(no_job >= 4_000_000),
+            }
+            let mut waits = AdmissionWaits::default();
+            clock.finish(&mut waits);
+            assert!(waits.idle_admission_order_ns >= admission_order);
+            assert!(waits.idle_no_job_ns >= no_job);
+        }
     }
 }
