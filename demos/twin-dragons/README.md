@@ -435,9 +435,16 @@ On a first visit the camera opens at 1.3 times the close-up, follows for 1.5
 seconds, then eases to the close-up over 0.8 seconds. Returning and
 reduced-motion visitors start at the close-up.
 
-Clicking a cell with retained states opens History, listing up to twelve saved
-paths to that cell. Selecting a path draws its trail in gold and replays its
-controller history in a second emulator, comparing the endpoint byte for byte.
+Clicking a cell with retained states opens History, listing recent saved
+paths to that cell. Each cell keeps twelve recent route IDs and monotonic path
+numbers. The playing route and an outstanding selection fetch can each pin one
+additional route across the heatmap, preserving their labels during new arrivals.
+Leaving the selection or switching searches releases those pins. A cached playing
+history remains usable when the search evicts its state; a forgotten, unselected
+ID receives a new path number if it arrives again. Route metadata therefore does
+not grow with every retained state in a long cloud session. Selecting a path
+draws its trail in gold and replays its controller history in a second emulator,
+comparing the endpoint byte for byte.
 Play from here hands control to the visitor: arrows or WASD move, Z or Space
 jumps and X breathes fire. Branch search from here verifies the controller
 prefix and starts a separate search rooted at that state. The fork point

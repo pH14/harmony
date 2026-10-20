@@ -236,7 +236,21 @@ let playSession = null,
   lastDetailPaint = 0;
 const searchViews = new Map(),
   reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+function invalidateStateRequest() {
+  heat.releasePending();
+  return ++request;
+}
+function clearRouteSelection() {
+  heat.clearPins();
+  invalidateStateRequest();
+}
+function requestStates(ids, cell = selectedCell, ordinal) {
+  const token = ++request;
+  heat.pending(cell, ids[0], token, ordinal);
+  worker.postMessage({ type: "states", ids, request: token });
+}
 function saveSearchView() {
+  clearRouteSelection();
   heat.setRunning(false, performance.now());
   searchViews.set(activeSearch, {
     heat,
@@ -288,6 +302,7 @@ function activateSearchView(id) {
   searchViews.set(id, view);
   swarmRooms = swarm.frame(id, heat.clock(performance.now()), reducedMotion.matches);
   hoverCell = selectedCell = null;
+  clearRouteSelection();
   lastAuto = 0;
   return fresh;
 }
@@ -1352,6 +1367,7 @@ async function seek(target) {
 }
 async function selectState(state, autoplay = false) {
   if (!engine) return;
+  heat.select(selectedCell, state.id);
   stopControl();
   current = state;
   const shared = timeline.reset(state.actions, state.frames);
@@ -1453,7 +1469,9 @@ function renderStates() {
     : "";
   $("state-list").replaceChildren(
     ...ids.map((id) => {
+      const renderedHeat = heat, renderedCell = selectedCell;
       const state = current?.id === id ? current : stateCache.get(id),
+        ordinal = renderedCell?.routes.get(id),
         selected = current?.id === id,
         button = document.createElement("button"),
         marker = document.createElement("span"),
@@ -1492,16 +1510,19 @@ function renderStates() {
       button.onfocus = () => previewRoute(id, button);
       button.onpointerleave = button.onblur = hideRoutePreview;
       button.onclick = () => {
+        if (branchBusy || heat !== renderedHeat || selectedCell !== renderedCell) return;
         hideRoutePreview();
         if (tourSession) tourSession.interacted = true;
         userSelected = true;
         revealReplayRoom = true;
         revealNext = true;
-        ++request;
-        if (state) selectState(state).then(revealTransport).catch(fail);
-        else {
+        if (state) {
+          heat.select(renderedCell, state.id, ordinal);
+          invalidateStateRequest();
+          selectState(state).then(revealTransport).catch(fail);
+        } else {
           transportPending = true;
-          worker.postMessage({ type: "states", ids: [id], request: ++request });
+          requestStates([id], renderedCell, ordinal);
         }
       };
       return button;
@@ -1521,10 +1542,11 @@ function inspect(cell) {
   stopControl();
   music.stop();
   playing = false;
-  ++request;
+  invalidateStateRequest();
   $("inspector").dataset.empty = cell.ids.length ? "false" : "true";
   $("selection-hint").hidden = !!cell.ids.length;
   userSelected = true;
+  clearRouteSelection();
   selectedCell = cell.ids.length ? cell : null;
   revealReplayRoom = true;
   ++replayEpoch;
@@ -1541,7 +1563,7 @@ function inspect(cell) {
   renderStates();
   if (cell.ids.length) {
     openInspector();
-    worker.postMessage({ type: "states", ids: cell.ids, request: ++request });
+    requestStates(cell.ids, cell);
   } else {
     closeInspector({ restoreFocus: false });
     applyCameraMode();
@@ -1580,6 +1602,7 @@ function startSearch(level = bootLevel) {
   swarmRooms = new Map();
   stateCache = new StateCache();
   selectedCell = null;
+  clearRouteSelection();
   current = null;
   replayEpoch++;
   playing = false;
@@ -1667,8 +1690,9 @@ function startSearch(level = bootLevel) {
           saveSearchView();
         }
         pendingOrigin = null;
-        ++request;
+        invalidateStateRequest();
         selectedCell = hoverCell = null;
+        clearRouteSelection();
         paused = data.paused;
         branchBusy = false;
         $("branch-message").hidden = true;
@@ -1784,7 +1808,7 @@ function startSearch(level = bootLevel) {
         offerTour();
       } else if (data.type === "states") {
         for (const state of data.states) stateCache.set(state.id, state);
-        if (data.missing?.length) replaceDropped(heat.forget(data.missing));
+        if (data.missing?.length) replaceDropped(heat.forget(data.missing, data.request));
         if (data.request === -2001) {
           if (routeHover) showRoutePreview(stateCache.get(routeHover.id), routeHover);
         } else if (data.request === 0) {
@@ -1798,6 +1822,7 @@ function startSearch(level = bootLevel) {
             selectState(data.states[0], watchRequested).then((ok) => transportPending && revealTransport(ok)).catch(fail);
           else $("verification").textContent = "The search no longer keeps a path to this spot";
           watchRequested = false;
+          heat.releasePending(data.request);
         }
       } else if (data.type === "limit") {
         paused = true;
@@ -1844,7 +1869,10 @@ function setRoom(level, preserveSelection = false) {
   canvas.dataset.map = level;
   canvas.dataset.mapWidth = mapWidth;
   canvas.dataset.mapHeight = mapHeight;
-  if (!preserveSelection) selectedCell = null;
+  if (!preserveSelection) {
+    selectedCell = null;
+    clearRouteSelection();
+  }
   hoverCell = null;
   const owner = catalog.levels.find((l) => l.rooms.includes(level));
   focusedLevel = owner?.id ?? 0;
@@ -1862,7 +1890,7 @@ function browseRoom(level) {
   const id = bestStates.get(level);
   if (id !== undefined) {
     watchRequested = false;
-    worker.postMessage({ type: "states", ids: [id], request: ++request });
+    requestStates([id]);
   }
 }
 function replaceDropped(replacements) {
@@ -1894,8 +1922,9 @@ $("completion").onclick = () => {
   userSelected = true;
   openInspector();
   selectedCell = null;
+  clearRouteSelection();
   watchRequested = true;
-  worker.postMessage({ type: "states", ids: [witness.id], request: ++request });
+  requestStates([witness.id]);
 };
 function setText(id, text) {
   const node = $(id);
@@ -2603,11 +2632,12 @@ function closeInspector({ restoreFocus = true } = {}) {
     const resume = playSession.branch === activeSearch && !branchBusy && ready && !stats.stopped;
     playSession = null;
     current = selectedCell = null;
+    clearRouteSelection();
     trace = segments = [];
     historyVerified = false;
     ++replayEpoch;
     seeking = false;
-    ++request;
+    invalidateStateRequest();
     if (resume) {
       paused = false;
       worker.postMessage({ type: "resume" });
@@ -2755,6 +2785,7 @@ $("take-control").onclick = () => {
   recordTrail();
   segments = trailSegments(trace);
   selectedCell = null;
+  clearRouteSelection();
   $("cell-title").textContent = "Your branch";
   $("film-title").textContent = "History";
   $("branch-message").hidden = true;
@@ -2787,7 +2818,7 @@ $("search-here").onclick = async () => {
   worker.postMessage({ type: "pause" });
   updateSearchControl();
   branchBusy = true;
-  ++request;
+  invalidateStateRequest();
   const branchFrame = currentFrame,
     observation = engine.observation(),
     point = isMapEvidence(observation, catalog.levels)
@@ -2846,9 +2877,10 @@ function deleteSearch(id) {
   hideRoutePreview();
   closeInspector();
   branchBusy = true;
-  ++request;
+  invalidateStateRequest();
   ++replayEpoch;
   current = null;
+  clearRouteSelection();
   trace = segments = [];
   historyVerified = false;
   updateBranchControls();
@@ -2876,9 +2908,10 @@ function switchSearch(id) {
   ++replayEpoch;
   seeking = false;
   current = null;
+  clearRouteSelection();
   trace = segments = [];
   historyVerified = false;
-  ++request;
+  invalidateStateRequest();
   updateSearchControl();
   updateBranchControls();
   if (phoneLayout.matches) followSearch();
@@ -3386,8 +3419,9 @@ const tour = new GuidedTour({
     tourSession = null;
     let restoration;
     if (!interacted && previous && current !== previous) {
-      ++request;
+      invalidateStateRequest();
       selectedCell = null;
+      clearRouteSelection();
       restoration = selectState(previous)
         .then(async (success) => {
           if (!success) return;
