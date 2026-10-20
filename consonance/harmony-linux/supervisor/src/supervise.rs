@@ -803,6 +803,44 @@ mod tests {
     }
 
     #[test]
+    fn a_corruption_window_inside_another_nodes_corruption_still_corrupts() {
+        let mut sup = Supervisor::new(2);
+        let windows = [
+            (0, ProcessAction::DiskCorrupt { choice: 4 }, 10, 20),
+            (1, ProcessAction::DiskCorrupt { choice: 6 }, 30, 55),
+        ];
+        assert_eq!(sup.poll(&standing(5, &[]), &[]), []);
+        assert_eq!(
+            sup.poll(&standing(15, &windows), &[]),
+            [Action::DiskCorrupt {
+                node: 0,
+                choice: 4,
+                kill: true
+            }]
+        );
+        assert_eq!(
+            sup.poll(&standing(1_800, &windows), &[0]),
+            [
+                Action::Start {
+                    node: 0,
+                    after_fault: true
+                },
+                Action::DiskCorrupt {
+                    node: 1,
+                    choice: 6,
+                    kill: true
+                },
+                Action::Start {
+                    node: 1,
+                    after_fault: true
+                },
+            ]
+        );
+        assert_eq!(sup.alive_bitmap(), 0b11);
+        assert!(sup.disk_faulted(1));
+    }
+
+    #[test]
     fn back_to_back_power_losses_each_reset_the_disk() {
         let mut sup = Supervisor::new(1);
         let windows = [
