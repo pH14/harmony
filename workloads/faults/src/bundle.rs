@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v7";
+pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v8";
 pub const MAX_NODES: u16 = 64;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -10,6 +10,7 @@ pub struct FaultVocabulary {
     nodes: u16,
     hooks: Vec<u32>,
     instrumented_events: bool,
+    clock_faults: bool,
 }
 
 impl FaultVocabulary {
@@ -32,12 +33,19 @@ impl FaultVocabulary {
             nodes,
             hooks: sorted,
             instrumented_events: false,
+            clock_faults: false,
         })
     }
 
     #[must_use]
     pub(crate) fn with_instrumented_events(mut self, enabled: bool) -> Self {
         self.instrumented_events = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_clock_faults(mut self, enabled: bool) -> Self {
+        self.clock_faults = enabled;
         self
     }
 
@@ -106,6 +114,11 @@ impl FaultVocabulary {
     }
 
     #[must_use]
+    pub fn clock_faults(&self) -> bool {
+        self.clock_faults
+    }
+
+    #[must_use]
     pub fn identifier(&self) -> String {
         let hooks = self
             .hooks
@@ -118,8 +131,13 @@ impl FaultVocabulary {
         } else {
             "none"
         };
+        let clock = if self.clock_faults {
+            "time_namespace"
+        } else {
+            "none"
+        };
         format!(
-            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events}",
+            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events};clock={clock}",
             self.nodes,
         )
     }
@@ -150,6 +168,15 @@ impl FaultVocabulary {
             "antithesis" => true,
             _ => return Err("fault vocabulary has an unknown event capability".to_owned()),
         };
+        let clock_faults = match fields
+            .next()
+            .and_then(|field| field.strip_prefix("clock="))
+            .ok_or("fault vocabulary has no clock capability")?
+        {
+            "none" => false,
+            "time_namespace" => true,
+            _ => return Err("fault vocabulary has an unknown clock capability".to_owned()),
+        };
         if fields.next().is_some() {
             return Err("fault vocabulary has trailing fields".to_owned());
         }
@@ -164,7 +191,9 @@ impl FaultVocabulary {
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
-        Ok(Self::new(nodes, hooks)?.with_instrumented_events(instrumented_events))
+        Ok(Self::new(nodes, hooks)?
+            .with_instrumented_events(instrumented_events)
+            .with_clock_faults(clock_faults))
     }
 }
 
@@ -289,11 +318,20 @@ ready /usr/local/pgsql/bin/pg_isready
         );
         assert_eq!(
             etcd.identifier(),
-            "faultlab_bundle_v7;nodes=1;hooks=1,2;events=none"
+            "faultlab_bundle_v8;nodes=1;hooks=1,2;events=none;clock=none"
         );
         assert_ne!(
             etcd.identifier(),
             etcd.clone().with_instrumented_events(true).identifier()
+        );
+        let clocked = etcd.clone().with_clock_faults(true);
+        assert_eq!(
+            clocked.identifier(),
+            "faultlab_bundle_v8;nodes=1;hooks=1,2;events=none;clock=time_namespace"
+        );
+        assert_eq!(
+            FaultVocabulary::from_identifier(&clocked.identifier()).expect("resolve"),
+            clocked
         );
     }
 
@@ -304,20 +342,24 @@ ready /usr/local/pgsql/bin/pg_isready
             "faultlab_bundle_v1;nodes=1;hooks=1",
             "faultlab_bundle_v2;nodes=1",
             "faultlab_bundle_v5;nodes=1;hooks=1;events=none;interrupts=enabled",
-            "faultlab_bundle_v7;nodes=0;hooks=1;events=none",
-            "faultlab_bundle_v7;nodes=x;hooks=1;events=none",
-            "faultlab_bundle_v7;nodes=1;hooks=1;events=other",
-            "faultlab_bundle_v7;nodes=1;hooks=1;events=none;extra=2",
-            "faultlab_bundle_v7;nodes=1;hooks=one;events=none",
+            "faultlab_bundle_v7;nodes=1;hooks=1;events=none",
+            "faultlab_bundle_v8;nodes=1;hooks=1;events=none",
+            "faultlab_bundle_v8;nodes=0;hooks=1;events=none;clock=none",
+            "faultlab_bundle_v8;nodes=x;hooks=1;events=none;clock=none",
+            "faultlab_bundle_v8;nodes=1;hooks=1;events=other;clock=none",
+            "faultlab_bundle_v8;nodes=1;hooks=1;events=none;clock=other",
+            "faultlab_bundle_v8;nodes=1;hooks=1;events=none;clock=none;extra=2",
+            "faultlab_bundle_v8;nodes=1;hooks=one;events=none;clock=none",
         ] {
             assert!(
                 FaultVocabulary::from_identifier(identifier).is_err(),
                 "{identifier} must be refused"
             );
         }
-        let no_hooks =
-            FaultVocabulary::from_identifier("faultlab_bundle_v7;nodes=2;hooks=;events=antithesis")
-                .expect("resolve");
+        let no_hooks = FaultVocabulary::from_identifier(
+            "faultlab_bundle_v8;nodes=2;hooks=;events=antithesis;clock=none",
+        )
+        .expect("resolve");
         assert_eq!(no_hooks.nodes(), 2);
         assert!(no_hooks.hooks().is_empty());
         assert!(no_hooks.instrumented_events());
