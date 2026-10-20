@@ -2,6 +2,9 @@ setup /opt/harmony/setup.sh
 node n1 /opt/harmony/node.sh n1 1
 node n2 /opt/harmony/node.sh n2 2
 node n3 /opt/harmony/node.sh n3 3
+disk n1 /tmp/nats/n1 128M
+disk n2 /tmp/nats/n2 128M
+disk n3 /tmp/nats/n3 128M
 hook 1 /opt/harmony/harness-net partition
 hook 2 /opt/harmony/harness-net isolate
 hook 3 /opt/harmony/harness-net delay
