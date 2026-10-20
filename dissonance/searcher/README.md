@@ -410,6 +410,114 @@ markers and logical memory accounting are unchanged.
 `DISSONANCE_BENCHMARK_LANDINGS_CLEANUP=1` enables paired measurements of this
 cleanup against the original temporary-set implementation.
 
+## Bounded local expansion
+
+`search::expansion` is a local task mechanism, separate from campaign reservation,
+archive admission, stream replay, and workload-specific policy. It has width two,
+fanout two, and four layers. A task has a nonzero edge-attempt budget at most fourteen;
+this is a work budget, not a beam tuning parameter. Requests are planned
+in parent-ordinal/branch order, deduplicated by their complete requested local
+suffix, and reduced in that same order regardless of completion order. Entropy is
+derived from task seed, parent ordinal, depth and branch. The mechanism does not
+claim a path was unexplored by earlier global tasks or count reconstruction and
+witness work as new task edges.
+
+A root carries an opaque stable parent ID, shared domain facts, root cost, last
+action and task seed. The caller keeps that global parent pinned. Root and child
+snapshots are accepted as `Arc`s directly, and domain facts carry the key and
+cumulative milestones needed to execute a child. No global root input is copied
+or reconstructed here. Nodes retain local suffixes of at most four actions, all
+returned evidence, facts, objective and failure records, including filtered
+branches. The root ID and local suffix identify a lazily reconstructed witness.
+Each node retains its requested action separately from its recorded suffix: the
+requested suffix is its parent's recorded suffix followed by the requested
+action. A workload validates terminal action shortening; runnable actions must
+remain unchanged. Different requested terminal actions can produce the same
+shortened recorded path, so the task-unique edge-attempt counter refers to
+requested paths. A preparation failure can consume an attempt without executing guest actions; actual executed
+edges and frames belong to domain evidence, not this generic counter.
+The zero-action root produces no frontier proposal and no attempted edge.
+
+Path cost is the checked sum of actual edge costs from this immutable root.
+Endpoint cost adds the root cost with saturating arithmetic only when endpoint
+and root progress are equal; otherwise it is the local path sum. Leaving and
+returning to root progress therefore includes the root cost again. This agrees
+with admitting each complete suffix independently against the same root through
+`Archive::insert_after`; it differs from resetting cost at each intermediate
+progress transition. Frontier ranking uses workload quality descending, then
+endpoint cost ascending, then canonical ordinal. Its second member is the best
+remaining endpoint in a different workload bucket, falling back to the next
+distinct requested input. Quality is distinct from archive same-slot preference.
+Only runnable, nonobjective endpoints expand; objectives retain their evidence
+and witness suffix even if their reported machine status remains runnable.
+
+At most two parent snapshot payloads and four returned child payloads are locally
+held together. Requests share parent payloads; only frontier nodes retain snapshot
+leases after reduction. External archive owners and aliases retained by an adapter
+are outside this local owner bound. Budget callbacks declare snapshot payload,
+evidence plus domain-fact payload, and action heap charges; path charges also
+include stored action capacities and requested-action copies. Fixed tree/index
+metadata is bounded by fourteen edges. These are checked returned-payload charge
+limits, not hard peak-allocation or RSS limits: action cloning, adapter scratch,
+and a whole returned layer may allocate before their charges are checked. Native
+callers must enforce their own process memory bound. Cancellation and invalid
+replies return normal errors and release kernel-owned snapshots and evidence;
+no partial trace is returned on such errors. The campaign adapter owns failing
+prefix persistence and publication.
+
+`ExpansionWorkload` supplies the local quality and diversity bucket, recorded-action
+validation, owned observation charges, and borrowed evidence merging. The native
+adapter reconstructs the selected parent once through its certified ancestor
+path, then restores local snapshots for individual edges. An empty reconstruction
+path shares the archive snapshot directly. Each edge has a separate watch scope;
+sibling restores must not combine their trails into one linear recording.
+Observation IDs use checked `task * 32 + ordinal`. Normal preparation failures
+retain their observations and consume an attempt without inventing an executed
+action. Integrity and terminal-key errors retain their original typed error at
+the direct adapter boundary. Thread-pool failures use the pool's existing string
+transport and are admitted at their task's FIFO position.
+
+`ExpansionCoordinator` reserves from one adaptive archive. Its fixed task window
+is independent of worker count, and the runner refills immediately after each
+ordered admission. A task claims at most fourteen remaining attempt units; unused
+claims return after admission. A root preparation failure or empty tree consumes
+one budget unit to bound campaigns that produce no executable edges. Reports
+distinguish budget units, edge attempts, actual executed edges, reconstruction
+work and guest execution work. The local frontier contributes at most two ordinary
+proposals, both against the same pinned root. Every executed intermediate edge
+still contributes observations, failures and objective witnesses. This capability
+requires lineage-independent archive key completion; it rejects a completed
+frontier key that changes when bound to the reserved root.
+
+The `dissonance-bounded-expansion-v1` stream records task reservation watermarks,
+root metadata, replay paths and certificates, every node's requested and recorded
+actions, endpoint facts, costs, evidence, result digests, local filtering and
+global admission decisions. Snapshot payloads and watch notes stay outside this
+logical stream. Observer-dependent byte charges also stay outside it. Encoding,
+hashing and spent-result disposal use the existing bounded background writer.
+Full replay reconstructs the reserved task windows, reexecutes each complete
+tree and compares the task records, final digest, counters and logical archive
+report. The final record names budget exhaustion, a reached work budget, an
+objective, or an observed wall stop. Replay checks that the named deterministic
+condition was reached; a wall stop requires a declared wall budget. A shorter
+self-consistent prefix cannot claim budget exhaustion. Replay rejects records
+larger than 256 MiB, truncated records and trailing
+records after the final counter record.
+
+This campaign currently accepts alphabet-only, unprobed execution with objective
+stopping inside each branch. Search checkpoints persist the global archive,
+evidence, random state, counters and FIFO reservations. Pending tasks rerun from
+their saved roots on resume; local trees, completed results and watch notes are
+not checkpoint payloads. The body identifies the expansion algorithm, and
+restore validates its policies, origins, budgets and pins. Interval checkpoints
+trigger when an admitted task crosses an interval boundary. Resume and bootstrap
+both use the coordinator session lifecycle.
+
+The normal Famidash evaluator and live view use this runner. Native throughput
+and game effectiveness remain under qualification. The local mechanism's
+structural bounds do not establish a campaign memory ceiling or a 100-worker
+throughput result.
+
 ## Workload boundary
 
 `searcher` is independently buildable. Workload packages implement its typed

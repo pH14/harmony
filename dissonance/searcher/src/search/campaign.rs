@@ -53,6 +53,25 @@ mod coordinator;
 
 pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
 
+#[path = "campaign_expansion.rs"]
+mod expansion_campaign;
+
+pub use expansion_campaign::{
+    EXPANSION_SCHEDULE, EXPANSION_STREAM_FORMAT, ExpansionAccountingRecord, ExpansionAdmission,
+    ExpansionCoordinator, ExpansionCounters, ExpansionDecision, ExpansionDuplicateRecord,
+    ExpansionEdge, ExpansionEdgeAdmission, ExpansionEdgeId, ExpansionEvidence,
+    ExpansionEvidenceData, ExpansionFacts, ExpansionNodeRecord, ExpansionOutcome,
+    ExpansionReservationRecord, ExpansionRunReport, ExpansionStopReason, ExpansionStreamHeader,
+    ExpansionStreamRecord, ExpansionTaskOutcome, ExpansionTaskRecord, ExpansionTaskSpec,
+    ExpansionTrace, ExpansionWatch, ExpansionWorkload, WorkloadExpansionFacts, replay_expansion,
+    run_expansion_task, run_expansion_watched,
+};
+
+#[path = "campaign_view.rs"]
+mod view;
+
+pub use view::CampaignView;
+
 pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
 
 pub trait CampaignWatch<G: Workload>: Sync {
@@ -13436,5 +13455,9 @@ mod tests {
         assert_eq!(counts.sink_panics, 1);
         assert_eq!(counts.discarded, 1);
         assert_eq!(counts.delivered, 0);
+    }
+
+    mod expansion_tests {
+        include!("campaign_expansion_tests.rs");
     }
 }

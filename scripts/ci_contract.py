@@ -241,6 +241,7 @@ LIB_PARTITIONS = {
         ),
         "Search Coordination": (
             "search::continuation", "search::rand", "search::job_observation",
+            "search::expansion",
         ),
         "Campaign Recording and Replay": (
             "search::campaign", "search::checkpoint", "search::telemetry",

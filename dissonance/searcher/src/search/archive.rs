@@ -2131,6 +2131,29 @@ where
         }
     }
 
+    pub(crate) fn validate_inflight_pins(
+        &self,
+        metadata: &BTreeMap<u64, u32>,
+        snapshots: &BTreeMap<u64, u32>,
+    ) -> Result<(), &'static str> {
+        if &self.metadata_pins != metadata || &self.inflight_snapshot_pins != snapshots {
+            return Err("archive in-flight pin maps differ from the reserved tasks");
+        }
+        if metadata
+            .iter()
+            .any(|(id, count)| *count == 0 || self.index_of_id(*id).is_none())
+            || snapshots.iter().any(|(id, count)| {
+                *count == 0
+                    || self
+                        .index_of_id(*id)
+                        .is_none_or(|index| self.entries[index].snapshot.is_none())
+            })
+        {
+            return Err("archive in-flight pin map names an invalid entry");
+        }
+        Ok(())
+    }
+
     pub(crate) fn preserve_recorded_metadata_uses(&mut self, uses: BTreeMap<u64, u32>) {
         self.metadata_pins = uses;
         self.failed_compaction = None;
@@ -2224,6 +2247,34 @@ where
             .input_index
             .actions_between(keyframe_entry.input_node, entry.input_node, distance)
             .ok_or("job origin keyframe is not on the entry's input path")?;
+        Ok((snapshot, replay, certificates))
+    }
+
+    pub(crate) fn job_origin_from(
+        &self,
+        id: usize,
+        snapshot_id: u64,
+    ) -> Result<JobOriginParts<A, S>, &'static str> {
+        let entry = self
+            .entries
+            .get(id)
+            .ok_or("saved job parent entry is missing")?;
+        let origin_index = self
+            .index_of_id(snapshot_id)
+            .ok_or("saved job snapshot entry is missing")?;
+        let origin = &self.entries[origin_index];
+        let snapshot = origin
+            .snapshot
+            .clone()
+            .ok_or("saved job origin has no resident snapshot")?;
+        let distance = entry
+            .input_len
+            .checked_sub(origin.input_len)
+            .ok_or("saved job origin is longer than its parent")?;
+        let (replay, certificates) = self
+            .input_index
+            .actions_between(origin.input_node, entry.input_node, distance)
+            .ok_or("saved job origin is not on the parent's input path")?;
         Ok((snapshot, replay, certificates))
     }
 
@@ -2714,9 +2765,12 @@ where
         self.replacement_cost_displaced
     }
 
-    #[cfg(test)]
     pub(crate) fn entry_cost_in_group(&self, id: usize) -> u64 {
         self.entry_state[id].cost_in_group
+    }
+
+    pub(crate) fn memory_budget_bytes(&self) -> Option<usize> {
+        self.memory_limit
     }
 
     #[must_use]
@@ -8520,6 +8574,99 @@ mod tests {
         assert!(!dropped);
         assert_eq!(examined, 4);
         assert_eq!(archive.drop_hand, 4);
+    }
+
+    #[test]
+    fn saved_job_origin_uses_the_pinned_snapshot_after_selectability_changes() {
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        for (parent, action) in [(None, 0u8), (Some(0), 1), (Some(0), 2)] {
+            archive
+                .insert(
+                    parent,
+                    u64::from(action),
+                    ArchiveCandidate {
+                        suffix: vec![action],
+                        key: FlatKey([u16::from(action), u16::from(action), 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let parent_id = archive.stable_id(1).unwrap();
+        archive.pin_metadata(parent_id).unwrap();
+        let (held, _, _, origin_id) = archive.pin_job_origin(1).unwrap();
+        archive.entry_state[1].snapshot_selectable = false;
+        archive.entry_state[1].keyframe_id = archive.stable_id(0).unwrap();
+        let before = postcard::to_allocvec(&archive).unwrap();
+        let (restored, replay, certificates) = archive.job_origin_from(1, origin_id).unwrap();
+        assert!(Arc::ptr_eq(&held, &restored));
+        assert!(replay.is_empty());
+        assert!(certificates.is_empty());
+        let (_, current_replay, _) = archive.job_origin(1).unwrap();
+        assert_eq!(current_replay, vec![1]);
+        let metadata = BTreeMap::from([(parent_id, 1)]);
+        let pins = BTreeMap::from([(origin_id, 1)]);
+        archive.validate_inflight_pins(&metadata, &pins).unwrap();
+        assert!(
+            archive
+                .validate_inflight_pins(&BTreeMap::new(), &pins)
+                .is_err()
+        );
+        assert!(archive.job_origin_from(99, origin_id).is_err());
+        assert!(archive.job_origin_from(1, u64::MAX).is_err());
+        assert!(
+            archive
+                .job_origin_from(1, archive.stable_id(2).unwrap())
+                .is_err()
+        );
+        assert_eq!(postcard::to_allocvec(&archive).unwrap(), before);
+        drop(restored);
+        drop(held);
+        archive.unpin_job_origin(origin_id);
+        archive.unpin_metadata(parent_id);
+        archive.entries[2].snapshot = None;
+        assert!(
+            archive
+                .job_origin_from(2, archive.stable_id(2).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn restored_pin_validation_rejects_zero_unknown_and_nonresident_entries() {
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![0],
+                    key: FlatKey([0, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        let id = archive.stable_id(0).unwrap();
+        for bad in [BTreeMap::from([(id, 0)]), BTreeMap::from([(u64::MAX, 1)])] {
+            archive.metadata_pins = bad.clone();
+            assert!(
+                archive
+                    .validate_inflight_pins(&bad, &BTreeMap::new())
+                    .is_err()
+            );
+        }
+        archive.metadata_pins.clear();
+        archive.inflight_snapshot_pins = BTreeMap::from([(id, 1)]);
+        archive.entries[0].snapshot = None;
+        assert!(
+            archive
+                .validate_inflight_pins(&BTreeMap::new(), &archive.inflight_snapshot_pins)
+                .is_err()
+        );
     }
 
     #[test]
