@@ -1534,6 +1534,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     probe_refused: u64,
     pub(crate) mixture_energy: MixtureEnergy,
     suffix_jobs_in_flight: BTreeMap<(u64, u8), u32>,
+    admission_suffix: Vec<G::Action>,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1572,6 +1573,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             probe_refused: 0,
             mixture_energy: MixtureEnergy::default(),
             suffix_jobs_in_flight: BTreeMap::new(),
+            admission_suffix: Vec::new(),
         }
     }
 
@@ -2005,7 +2007,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             return Ok((sequence, Vec::new(), DurationAdmission::default()));
         }
         let mut current_parent = parent_index;
-        let mut pending_suffix = Vec::new();
+        let mut pending_suffix = std::mem::take(&mut self.admission_suffix);
         let mut pending_certificates = Vec::new();
         let mut previous_key = None;
         let mut decisions = Vec::new();
@@ -2140,6 +2142,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         if sequence.is_multiple_of(self.curve_interval) {
             self.push_curve_point();
             self.compact_progress_curve_if_needed();
+        }
+        pending_suffix.clear();
+        if pending_suffix.capacity() <= usize::from(SUFFIX_DOUBLING_LIMIT) {
+            self.admission_suffix = pending_suffix;
         }
         Ok((sequence, decisions, duration))
     }
