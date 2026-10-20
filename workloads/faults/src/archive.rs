@@ -197,6 +197,12 @@ pub fn sample_action(
             alternatives.push(9);
         }
     }
+    if vocabulary.clock_faults() {
+        alternatives.push(13);
+        if vocabulary.nodes() > 1 {
+            alternatives.push(14);
+        }
+    }
     let node_mask = u64::MAX >> (64 - vocabulary.nodes());
     let event_ready = event_ready & node_mask;
     if vocabulary.instrumented_events() && event_ready != 0 {
@@ -228,6 +234,23 @@ pub fn sample_action(
         10 => FaultOperation::DiskError(disk(rand)?, ticks),
         11 => FaultOperation::DiskStall(disk(rand)?, ticks),
         12 => FaultOperation::DiskCorrupt(disk(rand)?, ticks),
+        13 => {
+            let (offset_ms, rate_ppm) = clock_shift(rand)?;
+            FaultOperation::Clock {
+                node,
+                offset_ms,
+                rate_ppm,
+                ticks,
+            }
+        }
+        14 => {
+            let (offset_ms, rate_ppm) = clock_shift(rand)?;
+            FaultOperation::ClockAll {
+                offset_ms,
+                rate_ppm,
+                ticks,
+            }
+        }
         5 => FaultOperation::EventKill {
             node: event_node(rand)?,
             rarity: u8::try_from(pick(rand, 64)?)?,
@@ -263,6 +286,33 @@ pub fn sample_action(
 }
 
 const PARK_EDGE_EXPONENTS: u32 = 14;
+
+const CLOCK_OFFSET_EXPONENTS: u32 = 19;
+
+const CLOCK_RATE_EXPONENTS: u32 = 13;
+
+const CLOCK_RATE_UNIT_PPM: i32 = 1_000;
+
+fn clock_shift(rand: &mut RomuDuoJrRand) -> Result<(i32, i32), Box<dyn Error>> {
+    let mut below = |len: u32| -> Result<u32, Box<dyn Error>> {
+        Ok(u32::try_from(rand.below(
+            NonZeroUsize::new(usize::try_from(len)?).ok_or("empty clock range")?,
+        ))?)
+    };
+    let rate = below(2)? == 1;
+    let negative = below(2)? == 1;
+    let magnitude = if rate {
+        CLOCK_RATE_UNIT_PPM << below(CLOCK_RATE_EXPONENTS)?
+    } else {
+        1_i32 << below(CLOCK_OFFSET_EXPONENTS)?
+    };
+    let signed = if negative { -magnitude } else { magnitude };
+    Ok(if rate {
+        (0, signed.max(fault_policy::CLOCK_RATE_STOPPED_PPM))
+    } else {
+        (signed, 0)
+    })
+}
 
 const PARK_TARGET_LEVELS: usize = 8;
 
@@ -646,6 +696,8 @@ mod tests {
             FaultOperation::DiskError(..) => 10,
             FaultOperation::DiskStall(..) => 11,
             FaultOperation::DiskCorrupt(..) => 12,
+            FaultOperation::Clock { .. } => 13,
+            FaultOperation::ClockAll { .. } => 14,
         };
         for _ in 0..2_000 {
             let action =
@@ -687,6 +739,9 @@ mod tests {
                     assert!(node < vocabulary.nodes());
                 }
                 FaultOperation::Hook(id, _) => assert!(vocabulary.hooks().contains(&id)),
+                FaultOperation::Clock { .. } | FaultOperation::ClockAll { .. } => {
+                    panic!("a vocabulary without clock faults drew one")
+                }
             }
         }
         assert_eq!(kinds.len(), 5, "every available action kind is reachable");
@@ -894,6 +949,69 @@ mod tests {
                 .iter()
                 .any(|operation| matches!(operation, FaultOperation::PowerLossAll(_)))
         );
+    }
+
+    #[test]
+    fn only_a_vocabulary_with_clock_faults_draws_a_clock_shift() {
+        let draws = |nodes, clock| {
+            let vocabulary = FaultVocabulary::new(nodes, Vec::new())
+                .expect("vocabulary")
+                .with_clock_faults(clock);
+            let mut rand = RomuDuoJrRand::with_seed(12);
+            (0..4_000)
+                .map(|_| {
+                    sample_action(&mut rand, &vocabulary, 0, TICKS, None)
+                        .expect("draw")
+                        .operation
+                })
+                .collect::<Vec<_>>()
+        };
+        let shifts = |operations: &[FaultOperation]| {
+            operations
+                .iter()
+                .filter_map(|operation| match *operation {
+                    FaultOperation::Clock {
+                        offset_ms,
+                        rate_ppm,
+                        ..
+                    }
+                    | FaultOperation::ClockAll {
+                        offset_ms,
+                        rate_ppm,
+                        ..
+                    } => Some((offset_ms, rate_ppm)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(shifts(&draws(3, false)).is_empty());
+        let single = draws(1, true);
+        assert!(
+            !single
+                .iter()
+                .any(|operation| matches!(operation, FaultOperation::ClockAll { .. }))
+        );
+        assert!(!shifts(&single).is_empty());
+        let several = draws(3, true);
+        assert!(
+            several
+                .iter()
+                .any(|operation| matches!(operation, FaultOperation::ClockAll { .. }))
+        );
+        let shifts = shifts(&several);
+        for &(offset_ms, rate_ppm) in &shifts {
+            assert!((offset_ms == 0) != (rate_ppm == 0));
+            assert!(offset_ms.unsigned_abs() < 1 << CLOCK_OFFSET_EXPONENTS);
+            assert!(rate_ppm >= fault_policy::CLOCK_RATE_STOPPED_PPM);
+        }
+        assert!(shifts.iter().any(|&(offset, _)| offset < 0));
+        assert!(shifts.iter().any(|&(offset, _)| offset > 0));
+        assert!(
+            shifts
+                .iter()
+                .any(|&(_, rate)| rate == fault_policy::CLOCK_RATE_STOPPED_PPM)
+        );
+        assert!(shifts.iter().any(|&(_, rate)| rate > 0));
     }
 
     #[test]

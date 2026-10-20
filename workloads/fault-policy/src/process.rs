@@ -35,6 +35,15 @@ fn to_process_action(fault: &Fault) -> ProcessAction {
         Fault::ProcDiskError => ProcessAction::DiskError,
         Fault::ProcDiskStall(hold) => ProcessAction::DiskStall { hold_nanos: hold.0 },
         Fault::ProcDiskCorrupt { choice } => ProcessAction::DiskCorrupt { choice: *choice },
+        Fault::ProcClock {
+            offset,
+            rate_ppm,
+            spread,
+        } => ProcessAction::Clock {
+            offset_nanos: *offset,
+            rate_ppm: *rate_ppm,
+            spread: *spread,
+        },
         _ => unreachable!("process_target received a non-process fault"),
     }
 }
@@ -59,6 +68,15 @@ fn from_process_action(action: ProcessAction) -> Option<Fault> {
         ProcessAction::DiskError => Fault::ProcDiskError,
         ProcessAction::DiskStall { hold_nanos } => Fault::ProcDiskStall(Span(hold_nanos)),
         ProcessAction::DiskCorrupt { choice } => Fault::ProcDiskCorrupt { choice },
+        ProcessAction::Clock {
+            offset_nanos,
+            rate_ppm,
+            spread,
+        } => Fault::ProcClock {
+            offset: offset_nanos,
+            rate_ppm,
+            spread,
+        },
     })
 }
 
@@ -89,6 +107,11 @@ mod tests {
             Fault::ProcDiskError,
             Fault::ProcDiskStall(Span(3_000_000)),
             Fault::ProcDiskCorrupt { choice: 11 },
+            Fault::ProcClock {
+                offset: -5_000_000_000,
+                rate_ppm: crate::CLOCK_RATE_STOPPED_PPM,
+                spread: 9,
+            },
         ] {
             let bytes = process_target(3, &f);
             assert_eq!(decode_process_target(&bytes), Some((3, f)));

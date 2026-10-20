@@ -718,7 +718,7 @@ mod runtime {
             })
             .collect();
         for (id, node) in nodes.iter_mut().enumerate() {
-            let spawned = spawn_node(spec, &node.spec)?;
+            let spawned = spawn_node(spec, &node.spec, 0)?;
             node.child = Some(spawned.child);
             node.events = Some(spawned.events);
             log(0, &format!("start node {id}"));
@@ -1262,7 +1262,7 @@ mod runtime {
                         &mut runtime.assertion_output,
                     )?;
                 }
-                let spawned = spawn_node(spec, &entry.spec)?;
+                let spawned = spawn_node(spec, &entry.spec, supervisor.clock_offset(node))?;
                 supervisor.note_event_ready(node, false);
                 entry.child = Some(spawned.child);
                 entry.events = Some(spawned.events);
@@ -1313,6 +1313,9 @@ mod runtime {
                 {
                     events.queue(EventCommand::DisarmPark);
                 }
+            }
+            Action::SetClock { node, offset_nanos } => {
+                set_node_clock(nodes, node, offset_nanos)?;
             }
             Action::RunHook(id) => {
                 let ready_hooks = runtime.recovery.request_hook(id);
@@ -1452,10 +1455,56 @@ mod runtime {
         Ok(())
     }
 
+    fn time_namespaces() -> bool {
+        Path::new(process::TIME_NAMESPACE_PATH).exists()
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn reachable_clock(offset_nanos: i64) -> i64 {
+        let realtime = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        process::reachable_realtime_offset(offset_nanos, realtime)
+    }
+
+    fn set_node_clock(nodes: &[Node], node: u16, offset_nanos: i64) -> Result<(), String> {
+        if !time_namespaces() {
+            return Err(format!(
+                "shift clock node {node}: the guest kernel has no time namespaces"
+            ));
+        }
+        let Some(child) = nodes
+            .get(usize::from(node))
+            .and_then(|entry| entry.child.as_ref())
+        else {
+            return Ok(());
+        };
+        let path = format!("/proc/{}/timens_offsets", child.id());
+        let line = process::realtime_offset_line(reachable_clock(offset_nanos));
+        match std::fs::write(&path, line) {
+            Ok(()) => Ok(()),
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ESRCH | libc::ENOENT)) => {
+                Ok(())
+            }
+            Err(error) => Err(format!("shift clock node {node}: {path}: {error}")),
+        }
+    }
+
     fn spawn_node(
         execution: &execution_proto::ExecutionSpec,
         node: &NodeSpec,
+        clock_offset_nanos: i64,
     ) -> Result<SpawnedNode, String> {
+        let clock = if time_namespaces() {
+            Some(reachable_clock(clock_offset_nanos))
+        } else if clock_offset_nanos == 0 {
+            None
+        } else {
+            return Err(format!(
+                "node {:?}: the guest kernel has no time namespaces for its clock shift",
+                node.name
+            ));
+        };
         let (control, child_control) = UnixStream::pair()
             .map_err(|error| format!("node {:?} event control: {error}", node.name))?;
         let (report, child_report) = UnixStream::pair()
@@ -1467,7 +1516,7 @@ mod runtime {
             .map_err(|error| format!("node {:?} event report inheritance: {error}", node.name))?;
         let control_fd = inherited_control.as_raw_fd();
         let report_fd = inherited_report.as_raw_fd();
-        let mut command = process::command(execution, &node.argv)
+        let mut command = process::node_command(execution, &node.argv, clock)
             .map_err(|error| format!("node {:?}: {error}", node.name))?;
         command
             .env("HARMONY_EVENT_KILL_FD", control_fd.to_string())

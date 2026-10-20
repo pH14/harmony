@@ -307,6 +307,11 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
             {
                 return Err("event park hold must fit its window".into());
             }
+            FaultOperation::Clock { rate_ppm, .. } | FaultOperation::ClockAll { rate_ppm, .. }
+                if *rate_ppm < fault_policy::CLOCK_RATE_STOPPED_PPM =>
+            {
+                return Err("a clock cannot run slower than stopped".into());
+            }
             _ => {}
         }
     }
@@ -1380,6 +1385,16 @@ mod tests {
         assert!(parse_recorded_input(&park(20_000)).is_ok());
         assert!(parse_recorded_input(&park(20_001)).is_err());
         assert!(parse_recorded_input(&park(0)).is_err());
+        let clock = |rate_ppm| {
+            serde_json::to_string(&[FaultAction::from(FaultOperation::ClockAll {
+                offset_ms: 0,
+                rate_ppm,
+                ticks,
+            })])
+            .expect("serialize")
+        };
+        assert!(parse_recorded_input(&clock(fault_policy::CLOCK_RATE_STOPPED_PPM)).is_ok());
+        assert!(parse_recorded_input(&clock(fault_policy::CLOCK_RATE_STOPPED_PPM - 1)).is_err());
     }
 
     fn ids(values: &[u32]) -> Vec<String> {

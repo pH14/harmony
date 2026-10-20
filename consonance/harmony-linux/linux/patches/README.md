@@ -3,8 +3,9 @@
 # Guest-kernel patch series
 
 These diffs apply to the Linux version pinned in `../versions.lock`. The
-platform build applies every numbered patch in `common/` first, then every
-numbered patch in the selected architecture directory. The series stamp
+platform build applies every numbered patch in `common/` first. The x86 and
+arm64 VM kernels then apply every numbered patch in `vm/`. Every build ends
+with the numbered patches in the selected architecture directory. The series stamp
 includes directory names, patch names, and SHA-256 values, so a partially
 applied or changed tree is rejected and must be re-extracted.
 
@@ -18,6 +19,19 @@ The common series owns the architecture-independent Harmony character device
 and observation handles. The device allocates and bounds its shared pages in
 the kernel; platform userspace interacts through the stable character-device
 interfaces.
+
+## VM series
+
+The VM series applies only to the x86 and arm64 VM kernels. Its patch gives
+each time namespace a realtime offset that can change while tasks use it. The
+process supervisor starts every node in its own time namespace and changes
+that offset to inject a per-node clock fault. CLOCK_REALTIME,
+CLOCK_REALTIME_COARSE and CLOCK_TAI reads, `gettimeofday`, `time` and the vDSO
+add the offset. Absolute realtime deadlines convert to host time when they are
+armed. CLOCK_MONOTONIC and CLOCK_BOOTTIME keep their fixed namespace offsets,
+and kernel-internal realtime uses such as file timestamps stay on host time.
+The UML trees lack the generic vDSO time-namespace support, so they omit this
+series.
 
 ## Architecture series
 

@@ -35,6 +35,7 @@ const F_PROC_POWER_LOSS: u8 = 22;
 const F_PROC_DISK_ERROR: u8 = 23;
 const F_PROC_DISK_STALL: u8 = 24;
 const F_PROC_DISK_CORRUPT: u8 = 25;
+const F_PROC_CLOCK: u8 = 26;
 
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
     w.extend_from_slice(&v.to_le_bytes());
@@ -123,6 +124,16 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
             w.push(F_PROC_DISK_CORRUPT);
             put_u64(w, *choice);
         }
+        Fault::ProcClock {
+            offset,
+            rate_ppm,
+            spread,
+        } => {
+            w.push(F_PROC_CLOCK);
+            w.extend_from_slice(&offset.to_le_bytes());
+            w.extend_from_slice(&rate_ppm.to_le_bytes());
+            put_u64(w, *spread);
+        }
         Fault::BuggifyFire => w.push(F_BUGGIFY_FIRE),
         Fault::RunHook(id) => {
             w.push(F_RUN_HOOK);
@@ -175,6 +186,19 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
         F_PROC_DISK_ERROR => Fault::ProcDiskError,
         F_PROC_DISK_STALL => Fault::ProcDiskStall(Span(r.u64()?)),
         F_PROC_DISK_CORRUPT => Fault::ProcDiskCorrupt { choice: r.u64()? },
+        F_PROC_CLOCK => {
+            let offset = i64::from_le_bytes(r.u64()?.to_le_bytes());
+            let rate_ppm = i32::from_le_bytes(r.u32()?.to_le_bytes());
+            let spread = r.u64()?;
+            if rate_ppm < crate::CLOCK_RATE_STOPPED_PPM {
+                return Err(EnvError::Malformed);
+            }
+            Fault::ProcClock {
+                offset,
+                rate_ppm,
+                spread,
+            }
+        }
         F_BUGGIFY_FIRE => Fault::BuggifyFire,
         F_RUN_HOOK => Fault::RunHook(r.u32()?),
         _ => return Err(EnvError::Malformed),

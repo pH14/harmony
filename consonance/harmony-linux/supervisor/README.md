@@ -127,6 +127,20 @@ pending-fault fence.
 A process window addressed to node `EVERY_NODE` (`u16::MAX`) applies its
 kill, pause, restart or power loss to every node at once.
 
+A clock window shifts one node's wall clock. When the guest kernel has time
+namespaces, the supervisor starts every node in its own time namespace. Each
+tick it computes the window's offset plus its rate in parts per million times
+the guest time since the window start, and writes any change to
+`/proc/PID/timens_offsets` as a `realtime` offset. The offset returns to zero
+when the window ends. A node that starts during a window gets the current
+offset before it executes. The supervisor never moves a node's clock before
+the epoch. A clock window for `EVERY_NODE` with a nonzero spread scales the
+offset and rate for each node by a factor in [-1, 1] derived from the spread
+and the node index. Start and end of a clock window advance the disturbance
+generation, and an active clock window counts toward the pending-fault fence.
+A clock window on a kernel without time namespaces is an infrastructure
+failure. Hooks, the workload and the check stay on guest time.
+
 The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the
 generic process actions and event protocol and does not depend on that workload.

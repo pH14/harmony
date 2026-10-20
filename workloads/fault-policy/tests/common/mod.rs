@@ -58,6 +58,16 @@ pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
         Just(Fault::ProcDiskError),
         (1_u64..).prop_map(|hold| Fault::ProcDiskStall(Span(hold))),
         any::<u64>().prop_map(|choice| Fault::ProcDiskCorrupt { choice }),
+        (
+            any::<i64>(),
+            fault_policy::CLOCK_RATE_STOPPED_PPM..=i32::MAX,
+            any::<u64>(),
+        )
+            .prop_map(|(offset, rate_ppm, spread)| Fault::ProcClock {
+                offset,
+                rate_ppm,
+                spread,
+            }),
         any::<u32>().prop_map(Fault::RunHook),
     ]
 }

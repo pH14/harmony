@@ -53,6 +53,17 @@ pub enum FaultOperation {
     Pause(u16, NonZeroU16),
     Restart(u16, NonZeroU16),
     Hook(u32, NonZeroU16),
+    Clock {
+        node: u16,
+        offset_ms: i32,
+        rate_ppm: i32,
+        ticks: NonZeroU16,
+    },
+    ClockAll {
+        offset_ms: i32,
+        rate_ppm: i32,
+        ticks: NonZeroU16,
+    },
 }
 
 impl FaultOperation {
@@ -71,7 +82,9 @@ impl FaultOperation {
             | Self::EventPark { ticks, .. }
             | Self::Pause(_, ticks)
             | Self::Restart(_, ticks)
-            | Self::Hook(_, ticks) => u64::from(ticks.get()),
+            | Self::Hook(_, ticks)
+            | Self::Clock { ticks, .. }
+            | Self::ClockAll { ticks, .. } => u64::from(ticks.get()),
         }
     }
 
@@ -110,6 +123,26 @@ impl FaultOperation {
             Self::Pause(node, _) => Self::Pause(node, ticks),
             Self::Restart(node, _) => Self::Restart(node, ticks),
             Self::Hook(id, _) => Self::Hook(id, ticks),
+            Self::Clock {
+                node,
+                offset_ms,
+                rate_ppm,
+                ..
+            } => Self::Clock {
+                node,
+                offset_ms,
+                rate_ppm,
+                ticks,
+            },
+            Self::ClockAll {
+                offset_ms,
+                rate_ppm,
+                ..
+            } => Self::ClockAll {
+                offset_ms,
+                rate_ppm,
+                ticks,
+            },
         }
     }
 }
@@ -204,6 +237,28 @@ impl FaultOperation {
             Self::DiskCorrupt(node, ticks) => {
                 put(&[12]);
                 put(&node.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::Clock {
+                node,
+                offset_ms,
+                rate_ppm,
+                ticks,
+            } => {
+                put(&[13]);
+                put(&node.to_le_bytes());
+                put(&offset_ms.to_le_bytes());
+                put(&rate_ppm.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::ClockAll {
+                offset_ms,
+                rate_ppm,
+                ticks,
+            } => {
+                put(&[14]);
+                put(&offset_ms.to_le_bytes());
+                put(&rate_ppm.to_le_bytes());
                 put(&ticks.get().to_le_bytes());
             }
         }
@@ -502,6 +557,35 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                 (start, end),
             )),
         },
+        FaultOperation::Clock {
+            node,
+            offset_ms,
+            rate_ppm,
+            ..
+        } => ActionDelta {
+            standing: Some(standing(
+                process_target(node, &clock_fault(offset_ms, rate_ppm, 0)),
+                (start, end),
+            )),
+        },
+        FaultOperation::ClockAll {
+            offset_ms,
+            rate_ppm,
+            ..
+        } => ActionDelta {
+            standing: Some(standing(
+                process_target(EVERY_NODE, &clock_fault(offset_ms, rate_ppm, action.choice)),
+                (start, end),
+            )),
+        },
+    }
+}
+
+fn clock_fault(offset_ms: i32, rate_ppm: i32, spread: u64) -> Fault {
+    Fault::ProcClock {
+        offset: i64::from(offset_ms) * 1_000_000,
+        rate_ppm,
+        spread,
     }
 }
 
@@ -1656,6 +1740,70 @@ mod tests {
             FaultOperation::Restart(0, ticks(50)),
         ]
         .map(|operation| operation.key_bytes());
+        assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), keys.len());
+    }
+
+    #[test]
+    fn a_clock_shift_covers_its_window_and_spreads_only_across_every_node() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        for (operation, node, spread) in [
+            (
+                FaultOperation::Clock {
+                    node: 2,
+                    offset_ms: -1_500,
+                    rate_ppm: 250_000,
+                    ticks: ticks(50),
+                },
+                2,
+                0,
+            ),
+            (
+                FaultOperation::ClockAll {
+                    offset_ms: -1_500,
+                    rate_ppm: 250_000,
+                    ticks: ticks(50),
+                },
+                EVERY_NODE,
+                77,
+            ),
+        ] {
+            let action = FaultAction::from(operation).with_choice(77);
+            let fault = action_delta(action, window)
+                .standing
+                .expect("a clock shift installs a standing fault");
+            assert_eq!(
+                decode_process_target(&fault.target),
+                Some((
+                    node,
+                    Fault::ProcClock {
+                        offset: -1_500_000_000,
+                        rate_ppm: 250_000,
+                        spread,
+                    }
+                ))
+            );
+            assert_eq!((fault.start, fault.end), window);
+            assert_eq!(action.ticks(), 50);
+            assert_eq!(action.with_ticks(ticks(9)).ticks(), 9);
+        }
+        let shift = |offset_ms, rate_ppm| FaultOperation::Clock {
+            node: 0,
+            offset_ms,
+            rate_ppm,
+            ticks: ticks(50),
+        };
+        let keys = [
+            shift(1, 0).key_bytes(),
+            shift(-1, 0).key_bytes(),
+            shift(0, 1).key_bytes(),
+            FaultOperation::ClockAll {
+                offset_ms: 1,
+                rate_ppm: 0,
+                ticks: ticks(50),
+            }
+            .key_bytes(),
+            FaultOperation::Kill(0, ticks(50)).key_bytes(),
+        ];
         assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), keys.len());
     }
 

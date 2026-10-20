@@ -217,6 +217,21 @@ the same quantum, so busy-loop scheduling replays along with fault timing:
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once |
+| `Clock(node, offset_ms, rate_ppm, ticks)` | the node's wall clock steps by the offset and then moves by the rate in parts per million of guest time for the window, then returns to guest time; drawn only for VM execution |
+| `ClockAll(offset_ms, rate_ppm, ticks)` | every node's wall clock shifts as in `Clock`, each by a factor in [-1, 1] that the action's `choice` sets per node; drawn only for VM execution with more than one node |
+
+A drawn clock action changes either the offset or the rate. The offset is a
+power of two from 1 ms through 2^18 ms (about 4.4 minutes) with a random sign.
+The rate is 1,000 ppm times a power of two from 1 through 4,096, with a
+random sign. A negative rate at or below -1,000,000 ppm becomes a stopped
+clock. The
+shift covers CLOCK_REALTIME, CLOCK_REALTIME_COARSE and CLOCK_TAI, which Go's
+`time.Now` wall reading, `gettimeofday` and `time` use. CLOCK_MONOTONIC stays
+on guest time, so Go's monotonic durations and timers are unchanged. The
+platform supervisor applies the shift through a per-node time namespace with a
+realtime offset (see [`patches`](../../consonance/harmony-linux/linux/patches)).
+UML kernels have no time namespaces, so a UML vocabulary has the clock
+capability off and the search never draws a clock action there.
 
 Every action also records a 64-bit `choice`, drawn when the search draws the
 action and kept when a retained action is reused. Each action starts with a
