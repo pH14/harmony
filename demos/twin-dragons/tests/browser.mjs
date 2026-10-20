@@ -19,6 +19,7 @@ const browser = await chromium.launch({
     ? { channel: process.env.CHROME_CHANNEL }
     : {}),
 });
+let selectFixtureCell;
 const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } }),
   errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
@@ -103,6 +104,14 @@ await page.addInitScript((tourKey) => {
     }
     postMessage(data, ...rest) {
       if (data.type === "states") window.tdTestRequest = data.request;
+      if (data.type === "states" && data.request > 0 && window.tdTestFixture) {
+        const state = window.tdTestFixture;
+        window.tdTestFixture = null;
+        window.tdTestFixtureRequest = data.request;
+        window.tdTestFixtureWorker = this;
+        queueMicrotask(() => this.onmessage({ data: { type: "states", request: data.request, states: [state] } }));
+        return;
+      }
       if (data.type === "fork") window.tdTestFork = structuredClone(data);
       super.postMessage(data, ...rest);
     }
@@ -152,14 +161,15 @@ async function selectFixture(tape, id) {
   };
   await page.evaluate((state) => {
     state.snapshot = new Uint8Array(state.snapshot);
-    window.tdTestWorker.onmessage({
-      data: {
-        type: "states",
-        request: window.tdTestRequest,
-        states: [state],
-      },
-    });
+    window.tdTestFixture = state;
+    window.tdTestLastFixture = state;
+    window.tdTestFixtureRequest = null;
   }, state);
+  if (await page.locator("#map").getAttribute("data-map") !== "0")
+    await page.locator('#level-strip button[data-level="0"]').click();
+  if (await page.evaluate(() => window.tdTestFixture !== null))
+    await selectFixtureCell();
+  await page.waitForFunction(() => window.tdTestFixtureRequest !== null);
   return frames;
 }
 async function measurePlayback() {
@@ -295,6 +305,7 @@ try {
     assert.equal(await introMap.evaluate((c) => getComputedStyle(c).cursor), "pointer");
     await page.mouse.click(point.x, point.y);
   };
+  selectFixtureCell = clickIntroCell;
   const emptyCell = async (move) => {
     const room = Number(await introMap.getAttribute("data-map"));
     const point = await showOnMap(page, room, 16, 8);
@@ -521,6 +532,7 @@ try {
         "Exact replay ✓" &&
       document.querySelector("#film-title").dataset.stateId === "fixture-level-one",
   );
+  const firstFixtureRequest = await page.evaluate(() => window.tdTestFixtureRequest);
   const firstMainImage = await page
     .locator("#film")
     .evaluate((c) => c.toDataURL());
@@ -537,6 +549,18 @@ try {
       mainFrames / 2,
     "Reopening a route must reuse its verified history checkpoints",
   );
+  const cachedFixtureRequest = await page.evaluate(() => window.tdTestFixtureRequest);
+  assert.notEqual(cachedFixtureRequest, firstFixtureRequest);
+  await page.evaluate((request) => {
+    window.tdTestFixtureWorker.onmessage({ data: {
+      type: "states", request,
+      states: [{ ...window.tdTestLastFixture, id: "fixture-delayed-old-reply" }],
+    } });
+  }, firstFixtureRequest);
+  await page.waitForTimeout(1000);
+  assert.equal(await page.locator("#film-title").getAttribute("data-state-id"), "fixture-level-one-cached");
+  assert.equal(await page.locator("#verification").textContent(), "Exact replay ✓");
+
   assert.equal(
     await page.locator("#film").evaluate((c) => c.toDataURL()),
     firstMainImage,
@@ -690,12 +714,20 @@ try {
   );
   assert.equal(await page.locator("#error").isVisible(), false);
   assert.ok(longFrames > 60000);
-  await selectFixture({ actions: [] }, "fixture-root");
-  await page.waitForFunction(
-    () =>
-      document.querySelector("#verification").textContent === "Original game" &&
-      document.querySelector("#scrub").max === "0",
-  );
+  const rootMotionPreference = await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  try {
+    assert.equal(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches), true);
+    await selectFixture({ actions: [] }, "fixture-root");
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#verification").textContent === "Original game" &&
+        document.querySelector("#scrub").max === "0",
+    );
+  } finally {
+    await page.emulateMedia({ reducedMotion: null });
+  }
+  assert.equal(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches), rootMotionPreference);
   await setView(page,'heat');
   await settledCamera();
   const originalAttempts = await page.locator("#attempts").textContent();
