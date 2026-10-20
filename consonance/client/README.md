@@ -267,7 +267,7 @@ Completed service exchanges contribute records in addition to normalized
 transport events; this count is not a guest-exit or diagnostic-log count.
 
 Embedded complete portable snapshots use format version 11; sparse sidecars use
-version 14. Older embedded versions are rejected. The outer sparse archive layout
+version 15. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
@@ -343,8 +343,8 @@ sidecar with only the established logical CPU-state projections: init-valued
 x86 XSAVE restore presence and the Arm virtual timer's captured counter.
 Every other sidecar field stays in the commitment, and the original sidecar
 bytes remain in the extent for restore. Sparse delta export derives the
-sidecar's target-pages digest from all target pages that differ from setup,
-independently of the selected parent;
+sidecar's target-pages digest from the hashes of all target pages that differ
+from setup, independently of the selected parent;
 the sidecar also carries the setup RAM digest, canonical state suffix, VM
 state, SDK state, policy, control state and the separate ordered event-history
 commitment/count. Equal logical endpoints reached through different normalized

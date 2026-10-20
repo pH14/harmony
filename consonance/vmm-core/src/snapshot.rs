@@ -47,14 +47,6 @@ pub(crate) struct SnapshotReadTransaction<'store> {
 }
 
 impl<'store> SnapshotReadTransaction<'store> {
-    pub(crate) fn read_page(
-        &mut self,
-        snap: SnapshotId,
-        gfn: u64,
-    ) -> Result<&'store [u8; PAGE_SIZE], SnapshotError> {
-        Ok(self.transaction.read_page(snap, gfn)?)
-    }
-
     pub(crate) fn page_hash(
         &mut self,
         snap: SnapshotId,
@@ -76,12 +68,12 @@ impl<'store> SnapshotReadTransaction<'store> {
         Ok(self.transaction.page_delta(base, parent, target)?)
     }
 
-    pub(crate) fn diff_pages(
+    pub(crate) fn diff_hashed_pages(
         &mut self,
         from: Option<SnapshotId>,
         to: SnapshotId,
-    ) -> Result<Vec<(u64, &'store [u8; PAGE_SIZE])>, SnapshotError> {
-        Ok(self.transaction.diff_pages(from, to)?)
+    ) -> Result<Vec<snapshot_store::HashedPage<'store>>, SnapshotError> {
+        Ok(self.transaction.diff_hashed_pages(from, to)?)
     }
 }
 

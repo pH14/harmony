@@ -127,29 +127,30 @@ fn sparse_target_pages_digest(
     digest
 }
 
+const SPARSE_DELTA_TARGET_PAGES_DOMAIN: &[u8] = b"consonance-sparse-delta-target-pages-v2\0";
+
 fn sparse_delta_target_pages_digest<'a>(
     transaction: &mut SnapshotReadTransaction<'_>,
     setup: snapshot_store::SnapshotId,
-    pages: impl IntoIterator<Item = (u64, &'a [u8; 4096])>,
+    pages: impl IntoIterator<Item = (u64, &'a [u8; 32])>,
     telemetry: &std::cell::Cell<HashTelemetry>,
     site: HashSite,
 ) -> Result<[u8; 32], PortableSnapshotError> {
     let mut changed = Vec::new();
-    for (gfn, page) in pages {
-        if transaction.read_page(setup, gfn)? != page {
-            changed.push((gfn, page));
+    for (gfn, hash) in pages {
+        if transaction.page_hash(setup, gfn)? != hash {
+            changed.push((gfn, hash));
         }
     }
     let mut work = HashWork::new();
     let mut hasher = Sha256::new();
-    hasher.update(b"consonance-sparse-delta-target-pages-v1\0");
-    work.metadata(b"consonance-sparse-delta-target-pages-v1\0".len() + 8);
+    hasher.update(SPARSE_DELTA_TARGET_PAGES_DOMAIN);
+    work.metadata(SPARSE_DELTA_TARGET_PAGES_DOMAIN.len() + 8);
     hasher.update((changed.len() as u64).to_le_bytes());
-    for (gfn, page) in changed {
+    for (gfn, hash) in changed {
         hasher.update(gfn.to_le_bytes());
-        hasher.update(page);
-        work.ram(page.len());
-        work.metadata(8);
+        hasher.update(hash);
+        work.metadata(8 + hash.len());
     }
     let digest = hasher.finalize().into();
     work.finish(telemetry, site, false);
@@ -650,11 +651,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let target_id = self.store_id(target)?;
         let mut transaction = self.engine.read_transaction();
         let delta = transaction.page_delta(setup_id, parent_id, target_id)?;
-        let target_pages = transaction.diff_pages(Some(setup_id), target_id)?;
+        let target_pages = transaction.diff_hashed_pages(Some(setup_id), target_id)?;
         let target_pages_digest = sparse_delta_target_pages_digest(
             &mut transaction,
             setup_id,
-            target_pages,
+            target_pages.iter().map(|&(gfn, hash, _)| (gfn, hash)),
             &self.hash_telemetry,
             HashSite::PortableExport,
         )?;
@@ -849,10 +850,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             pages.iter().map(|(gfn, _, _)| *gfn),
             sidecar,
             |transaction, telemetry| {
+                let mut work = HashWork::new();
+                for &(_, hash, page) in pages {
+                    work.ram(page.len());
+                    if blake3::hash(page).as_bytes() != hash {
+                        work.finish(telemetry, HashSite::PortableImport, true);
+                        return Err(PortableSnapshotError::Malformed(
+                            "sparse target pages differ",
+                        ));
+                    }
+                }
+                work.finish(telemetry, HashSite::PortableImport, false);
                 Ok(Some(sparse_delta_target_pages_digest(
                     transaction,
                     setup_id,
-                    pages.iter().map(|(gfn, _, page)| (*gfn, *page)),
+                    pages.iter().map(|&(gfn, hash, _)| (gfn, hash)),
                     telemetry,
                     HashSite::PortableImport,
                 )?))
@@ -868,17 +880,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 };
                 let rows: Vec<_> = pages.iter().map(|&(gfn, hash, _)| (gfn, hash)).collect();
                 let rebase = engine.rebase(setup_id, near_id, &rows)?;
-                let mut keep = rebase.keep.iter().copied().peekable();
-                for (index, &(gfn, hash, data)) in pages.iter().enumerate() {
-                    if keep.peek().copied() == Some(index) {
-                        keep.next();
-                    } else if blake3::hash(data).as_bytes() != hash {
-                        return Err(SnapshotError::Store(
-                            snapshot_store::StoreError::PageIntegrity { gfn },
-                        )
-                        .into());
-                    }
-                }
                 let mut merged: Vec<(u64, &[u8; 32], &[u8; 4096])> = rebase
                     .keep
                     .iter()
@@ -917,7 +918,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         ) -> Result<snapshot_store::SnapshotId, PortableSnapshotError>,
     ) -> Result<SparsePortableSnapshotReceipt, PortableSnapshotError> {
         let mut transaction = self.engine.read_transaction();
-        let target_pages_digest = target_pages_digest(&mut transaction, &self.hash_telemetry)?;
         let base_id = self.store_id(base)?;
         let mut previous = None;
         for gfn in gfns {
@@ -936,6 +936,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
 
         let portable = decode_sparse_sidecar(sidecar)?;
+        let target_pages_digest = target_pages_digest(&mut transaction, &self.hash_telemetry)?;
         if portable.target_pages_digest != target_pages_digest {
             return Err(PortableSnapshotError::Malformed(
                 "sparse target pages differ",
@@ -8384,11 +8385,11 @@ mod tests {
             }
         }
         let mut digest = Sha256::new();
-        digest.update(b"consonance-sparse-delta-target-pages-v1\0");
+        digest.update(b"consonance-sparse-delta-target-pages-v2\0");
         digest.update((changed.len() as u64).to_le_bytes());
         for (gfn, page) in changed {
             digest.update(gfn.to_le_bytes());
-            digest.update(page);
+            digest.update(blake3::hash(page).as_bytes());
         }
         let reference_target_digest: [u8; 32] = digest.finalize().into();
         let mut digest = blake3::Hasher::new();
@@ -8590,7 +8591,7 @@ mod tests {
             assert_eq!(
                 after.hashes.cost(HashSite::PortableImport).ram_bytes
                     - before.hashes.cost(HashSite::PortableImport).ram_bytes,
-                0
+                input.len() as u64 * 4096
             );
             assert_eq!(server.snapshot_chain_len(imported.id), Some(2));
             imported_for_cap = imported.id;
@@ -8648,7 +8649,7 @@ mod tests {
                 .import_sparse_delta(setup, setup, &[(0, &wrong_hash, &page)], &sidecar)
                 .is_err()
         );
-        assert_eq!(calls.load(Ordering::SeqCst), successful_calls + 1);
+        assert_eq!(calls.load(Ordering::SeqCst), successful_calls);
         assert_eq!(server.next_snap, next);
         assert_eq!(server.snapshot_store_stats(), before);
         assert_eq!(server.latest_snapshot(), latest);
@@ -8669,7 +8670,7 @@ mod tests {
             6
         );
         assert_eq!(after_near_error.errors - before_near_error.errors, 1);
-        assert_eq!(calls.load(Ordering::SeqCst), successful_calls + 2);
+        assert_eq!(calls.load(Ordering::SeqCst), successful_calls + 1);
         assert_eq!(server.next_snap, next);
         assert_eq!(server.latest_snapshot(), latest);
         let setup_id = server.store_id(setup).unwrap();
@@ -8686,7 +8687,7 @@ mod tests {
         let after = server.host_telemetry().verification;
         assert_eq!(after.resident_hashes - verification.resident_hashes, 2);
         assert_eq!(after.errors - verification.errors, 1);
-        assert_eq!(calls.load(Ordering::SeqCst), successful_calls + 2);
+        assert_eq!(calls.load(Ordering::SeqCst), successful_calls + 1);
         assert_eq!(server.next_snap, next);
         assert_eq!(server.latest_snapshot(), latest);
     }

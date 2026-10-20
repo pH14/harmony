@@ -1520,6 +1520,14 @@ impl<'store> ReadTransaction<'store> {
             .collect())
     }
 
+    pub fn diff_hashed_pages(
+        &mut self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+    ) -> Result<Vec<HashedPage<'store>>, StoreError> {
+        self.restore_pages(from, to, &[])
+    }
+
     fn restore_pages(
         &mut self,
         from: Option<SnapshotId>,

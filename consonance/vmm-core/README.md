@@ -350,13 +350,14 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 11, and the sparse sidecar is version 14;
+The complete portable format is version 11, and the sparse sidecar is version 15;
 older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
 changed-page numbers and bytes to its sidecar; import verifies them before
 deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
-page numbers and bytes that differ from setup, independently of the parent or
-near snapshot. Import checks this commitment and every supplied page hash
-before minting a handle. Together with the setup RAM digest, the commitment
+page numbers and BLAKE3 page hashes that differ from setup, independently of
+the parent or near snapshot. Export takes those hashes from the store. Import
+first checks every supplied page against its hash, then checks this commitment,
+both before the service preflight and before minting a handle. Together with the setup RAM digest, the commitment
 checks reconstructed target RAM; it is not a standalone whole-state hash. Use
 a complete portable snapshot when the imported target's whole-state hash must
 be verified directly.
@@ -1177,5 +1178,5 @@ Fault completions have a distinct tag. This detects differing supplied answers
 even when device and guest state later reconverge. It does not independently
 attest that hardware applied the supplied value correctly. ARM raw-only GIC and
 sysreg substrate operations remain outside the portable normalized stream.
-Complete snapshots use version 11 and sparse snapshots use version 14; earlier
+Complete snapshots use version 11 and sparse snapshots use version 15; earlier
 histories cannot be imported under these semantics.
