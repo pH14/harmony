@@ -110,7 +110,11 @@ rose from 1.79 to 21.86 ms. Writing 8,192 pages that intern to one existing page
 rose from 20.27 to 21.08 ms, because hashing the incoming bytes already
 dominates the additional byte comparison on each index hit.
 `verify_snapshot_pages` applies the same distinct-page check to a complete
-resolved snapshot, including inherited pages. Sparse archive consumers use it
+resolved snapshot, including inherited pages. When a complete-image scan finds
+at least 1,024 distinct resident pages that the transaction has not verified,
+it hashes them on scoped threads, one per CPU the process may use, before the
+in-order pass. The in-order pass then reports the same first failing frame,
+counts, and verified slots as a single-threaded scan. Sparse archive consumers use it
 before trusting a cached base-RAM digest; implicit zero pages need no read.
 `verify_snapshots` checks multiple resolved snapshots with one set of verified
 resident pages, so content shared by the base and target is hashed once.

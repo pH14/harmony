@@ -187,6 +187,8 @@ pub struct Store {
     verification_work: std::cell::Cell<VerificationWork>,
     #[cfg(test)]
     dense_gfn_scans: std::cell::Cell<usize>,
+    #[cfg(test)]
+    parallel_verified_pages: std::cell::Cell<usize>,
     verification: std::cell::Cell<VerificationTelemetry>,
     copies: std::cell::Cell<CopyTelemetry>,
     verification_batch_depth: std::cell::Cell<usize>,
@@ -207,6 +209,16 @@ pub struct Store {
 
 const DENSE_MEMBERSHIP_MIN_KEYS: usize = 64;
 const MAX_DENSE_MEMBERSHIP_WORDS: usize = 1024 * 1024 / size_of::<u64>();
+const PARALLEL_VERIFICATION_PAGES: usize = 1024;
+
+type PendingPage<'a> = (NonZeroUsize, &'a [u8], &'a PageHash);
+
+fn pages_match(pages: &[PendingPage<'_>]) -> Vec<bool> {
+    pages
+        .iter()
+        .map(|&(_, data, hash)| blake3::hash(data).as_bytes() == hash)
+        .collect()
+}
 
 enum VerifiedPages {
     Dense(Vec<u64>),
@@ -421,6 +433,8 @@ impl Store {
             verification_work: std::cell::Cell::default(),
             #[cfg(test)]
             dense_gfn_scans: std::cell::Cell::default(),
+            #[cfg(test)]
+            parallel_verified_pages: std::cell::Cell::default(),
             verification: std::cell::Cell::default(),
             copies: std::cell::Cell::default(),
             verification_batch_depth: std::cell::Cell::new(0),
@@ -719,6 +733,16 @@ impl Store {
         gfn: u64,
         verified_pages: &mut VerifiedPages,
     ) -> Result<(&PageHash, &[u8; PAGE_SIZE]), StoreError> {
+        self.page_entry_with(page, gfn, verified_pages, None)
+    }
+
+    fn page_entry_with(
+        &self,
+        page: PageRef,
+        gfn: u64,
+        verified_pages: &mut VerifiedPages,
+        prehashed: Option<&VerifiedPages>,
+    ) -> Result<(&PageHash, &[u8; PAGE_SIZE]), StoreError> {
         self.note_verification(|t| t.page_requests = t.page_requests.saturating_add(1));
         let result = (|| match page {
             PageRef::Zero => {
@@ -740,7 +764,16 @@ impl Store {
                     #[cfg(any(test, feature = "test-utils"))]
                     self.page_verifications
                         .set(self.page_verifications.get() + 1);
-                    if !self.resident_page_matches(data, &entry.hash) {
+                    let matches = if prehashed.is_some_and(|pages| pages.contains(&id)) {
+                        self.note_verification(|t| {
+                            t.resident_hashes = t.resident_hashes.saturating_add(1);
+                            t.resident_bytes = t.resident_bytes.saturating_add(data.len() as u64);
+                        });
+                        true
+                    } else {
+                        self.resident_page_matches(data, &entry.hash)
+                    };
+                    if !matches {
                         return Err(StoreError::PageIntegrity { gfn });
                     }
                 } else {
@@ -778,6 +811,7 @@ impl Store {
         let _timing = self.verification_batch();
         #[cfg(test)]
         self.note_verification_work(|work| work.scans += 1);
+        let prehashed = self.prehash_snapshot_pages(snap, verified_pages);
         let mut seen_gfns = ResolvedGfns::new(self.cfg.mem_pages);
         let mut current = Some(snap.0);
         while let Some(id) = current {
@@ -793,7 +827,7 @@ impl Store {
                 if !seen_gfns.insert(gfn)? {
                     continue;
                 }
-                self.page_entry(page, gfn, verified_pages)?;
+                self.page_entry_with(page, gfn, verified_pages, prehashed.as_ref())?;
             }
             current = layer.parent;
         }
@@ -802,6 +836,78 @@ impl Store {
             self.dense_gfn_scans.set(self.dense_gfn_scans.get() + 1);
         }
         Ok(())
+    }
+
+    fn prehash_snapshot_pages(
+        &self,
+        snap: SnapshotId,
+        verified_pages: &VerifiedPages,
+    ) -> Option<VerifiedPages> {
+        let threads = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+        if threads < 2 {
+            return None;
+        }
+        let mut seen_gfns = ResolvedGfns::new(self.cfg.mem_pages);
+        let mut queued = VerifiedPages::new(self.pages.len(), self.page_index.len());
+        let mut pending: Vec<PendingPage<'_>> = Vec::new();
+        let mut current = Some(snap.0);
+        while let Some(id) = current {
+            let layer = self.layers.get(&id)?;
+            for &(gfn, page) in &layer.pages {
+                if !seen_gfns.insert(gfn).ok()? {
+                    continue;
+                }
+                let PageRef::Data(slot) = page else {
+                    continue;
+                };
+                if verified_pages.contains(&slot) || queued.contains(&slot) {
+                    continue;
+                }
+                let Some(entry) = self.pages.get(slot.get() - 1).and_then(Option::as_ref) else {
+                    continue;
+                };
+                queued.insert(slot);
+                pending.push((slot, &entry.data, &entry.hash));
+            }
+            current = layer.parent;
+        }
+        if pending.len() < PARALLEL_VERIFICATION_PAGES {
+            return None;
+        }
+        #[cfg(test)]
+        self.parallel_verified_pages
+            .set(self.parallel_verified_pages.get() + pending.len());
+        let chunk = pending.len().div_ceil(threads);
+        let matched = std::thread::scope(|scope| {
+            let mut parts = pending.chunks(chunk);
+            let first = parts.next().unwrap_or_default();
+            let workers: Vec<_> = parts
+                .map(|part| {
+                    (
+                        part,
+                        std::thread::Builder::new().spawn_scoped(scope, move || pages_match(part)),
+                    )
+                })
+                .collect();
+            let mut matched = pages_match(first);
+            for (part, worker) in workers {
+                match worker {
+                    Ok(handle) => match handle.join() {
+                        Ok(part_matched) => matched.extend(part_matched),
+                        Err(panic) => std::panic::resume_unwind(panic),
+                    },
+                    Err(_) => matched.extend(pages_match(part)),
+                }
+            }
+            matched
+        });
+        let mut prehashed = VerifiedPages::new(self.pages.len(), self.page_index.len());
+        for (&(slot, _, _), matches) in pending.iter().zip(matched) {
+            if matches {
+                prehashed.insert(slot);
+            }
+        }
+        Some(prehashed)
     }
 
     fn changed_gfns(
@@ -2318,6 +2424,66 @@ mod tests {
         store.layers.get_mut(&snap.0).unwrap().vm_state[0] = 99;
         assert!(store.vm_state(snap).is_err());
         assert_eq!(store.verification_telemetry().vm_state_errors, 1);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "hashes 16 MiB of pages, which takes too long under Miri"
+    )]
+    fn complete_image_verification_of_many_pages_counts_and_rejects_like_one_page_at_a_time() {
+        let pages = 3 * PARALLEL_VERIFICATION_PAGES as u64;
+        let page = |gfn: u64, salt: u8| {
+            let mut data = [salt; PAGE_SIZE];
+            data[..8].copy_from_slice(&gfn.to_le_bytes());
+            data
+        };
+        let mut store = Store::new(cfg(pages + 1));
+        let mut builder = store.begin_base();
+        for gfn in 0..pages {
+            builder.write_page(gfn, &page(gfn, 1)).unwrap();
+        }
+        let base = builder.seal(Vec::new());
+        let mut builder = store.derive(base).unwrap();
+        for gfn in (0..pages).step_by(3) {
+            builder.write_page(gfn, &page(gfn, 2)).unwrap();
+        }
+        builder.write_page(5, &page(4, 1)).unwrap();
+        let child = builder.seal(Vec::new());
+        let before = store.verification_telemetry();
+        store.verify_snapshots(&[child, base]).unwrap();
+        let after = store.verification_telemetry();
+        let distinct = pages + pages.div_ceil(3);
+        assert_eq!(after.resident_hashes - before.resident_hashes, distinct);
+        assert_eq!(
+            after.resident_bytes - before.resident_bytes,
+            distinct * PAGE_SIZE as u64
+        );
+        assert_eq!(after.memo_hits - before.memo_hits, 2 * pages / 3);
+        assert_eq!(after.errors, before.errors);
+        if std::thread::available_parallelism().map_or(1, NonZeroUsize::get) > 1 {
+            assert_eq!(store.parallel_verified_pages.get() as u64, distinct);
+        }
+        let flip = |store: &mut Store, gfn: u64| {
+            let PageRef::Data(id) = store.resolve(base.0, gfn) else {
+                panic!("expected resident page")
+            };
+            store.pages[id.get() - 1].as_mut().unwrap().data[9] ^= 1;
+        };
+        let late = 2 * pages / 3 + 2;
+        flip(&mut store, late);
+        flip(&mut store, 4);
+        assert!(matches!(
+            store.verify_snapshots(&[child]),
+            Err(StoreError::PageIntegrity { gfn: 5 })
+        ));
+        flip(&mut store, 4);
+        assert!(matches!(
+            store.verify_snapshots(&[child]),
+            Err(StoreError::PageIntegrity { gfn }) if gfn == late
+        ));
+        flip(&mut store, late);
+        store.verify_snapshots(&[child, base]).unwrap();
     }
 
     #[test]
