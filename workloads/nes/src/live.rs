@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
+    collections::BTreeSet,
     error::Error,
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -180,10 +181,7 @@ fn native_observer<V: 'static>(
 fn glance<G: ArcadeGame>(campaign: &CampaignCoordinator<'_, G>) -> Vec<(u64, Vec<u8>)> {
     let archive = campaign.archive();
     let entries = archive.live_entry_count();
-    let newest = entries.saturating_sub(GLANCE_NEWEST);
-    let mut indices =
-        Sampler(campaign.executions() | 1).pick(newest, GLANCE_STATES - GLANCE_NEWEST);
-    indices.extend(newest..entries);
+    let indices = glance_indices(entries, &mut Sampler(campaign.executions() | 1));
     indices
         .into_iter()
         .filter_map(|index| {
@@ -193,6 +191,13 @@ fn glance<G: ArcadeGame>(campaign: &CampaignCoordinator<'_, G>) -> Vec<(u64, Vec
             ))
         })
         .collect()
+}
+
+fn glance_indices(entries: usize, sampler: &mut Sampler) -> Vec<usize> {
+    let newest = entries.saturating_sub(GLANCE_NEWEST);
+    let mut indices = sampler.pick(newest, GLANCE_STATES - GLANCE_NEWEST);
+    indices.extend(newest..entries);
+    indices
 }
 
 impl<G: ArcadeGame> LiveWatch<G> {
@@ -415,25 +420,40 @@ struct Sampler(u64);
 
 impl Sampler {
     fn below(&mut self, bound: usize) -> usize {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        (self.0 % bound as u64) as usize
+        Self::below_with(bound, || {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        })
+    }
+
+    fn below_with(bound: usize, mut next: impl FnMut() -> u64) -> usize {
+        let bound = bound as u64;
+        let limit = u64::MAX - u64::MAX % bound;
+        loop {
+            let value = next();
+            if value != 0 && value - 1 < limit {
+                return ((value - 1) % bound) as usize;
+            }
+        }
     }
 
     fn pick(&mut self, len: usize, keep: usize) -> Vec<usize> {
         if len <= keep {
             return (0..len).collect();
         }
-        let mut chosen: Vec<usize> = (0..keep).collect();
-        for index in keep..len {
-            let slot = self.below(index + 1);
-            if slot < keep {
-                chosen[slot] = index;
+        Self::pick_with(len, keep, |bound| self.below(bound))
+    }
+
+    fn pick_with(len: usize, keep: usize, mut below: impl FnMut(usize) -> usize) -> Vec<usize> {
+        let mut chosen = BTreeSet::new();
+        for index in len.saturating_sub(keep)..len {
+            if !chosen.insert(below(index + 1)) {
+                chosen.insert(index);
             }
         }
-        chosen.sort_unstable();
-        chosen
+        chosen.into_iter().collect()
     }
 }
 
@@ -1135,8 +1155,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        Batch, Point, Sampler, Stats, encode_snapshot, local_request, sampled, site_path,
-        take_detail, take_progress,
+        Batch, Point, Sampler, Stats, encode_snapshot, glance_indices, local_request, sampled,
+        site_path, take_detail, take_progress,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1268,6 +1288,64 @@ mod tests {
         assert_eq!(encode_snapshot(b"fo"), "Zm8=");
         assert_eq!(encode_snapshot(b"foo"), "Zm9v");
         assert_eq!(encode_snapshot(&[0xff, 0xfe, 0xfd, 0xfc]), "//79/A==");
+    }
+
+    #[test]
+    fn archive_glances_preserve_newest_states_with_bounded_samples() {
+        for entries in [0, 1, 249, 250, 251, 999, 1_000, 1_001, usize::MAX] {
+            let indices = glance_indices(entries, &mut Sampler(7));
+            assert_eq!(indices.len(), entries.min(super::GLANCE_STATES));
+            assert!(indices.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(indices.iter().all(|index| *index < entries));
+            let newest = entries.saturating_sub(super::GLANCE_NEWEST);
+            assert!(indices.ends_with(&(newest..entries).collect::<Vec<_>>()));
+        }
+    }
+
+    #[test]
+    fn visual_range_reduction_rejects_the_incomplete_tail_without_overflow() {
+        let mut draws = [u64::MAX, 1].into_iter();
+        assert_eq!(Sampler::below_with(2, || draws.next().unwrap()), 0);
+        assert!(draws.next().is_none());
+        assert_eq!(Sampler::below_with(1, || u64::MAX), 0);
+        assert_eq!(
+            Sampler::below_with(usize::MAX, || usize::MAX as u64),
+            usize::MAX - 1
+        );
+        let bound = usize::MAX - 1;
+        assert_eq!(Sampler::below_with(bound, || bound as u64), bound - 1);
+    }
+
+    #[test]
+    fn sampling_work_is_bounded_by_the_requested_count() {
+        for len in [0, 1, 10, 1_000, 1_000_000_000, usize::MAX] {
+            for keep in [0, 1, 7, 750] {
+                let mut calls = 0;
+                let picked = Sampler::pick_with(len, keep, |bound| {
+                    calls += 1;
+                    bound - 1
+                });
+                assert_eq!(calls, len.min(keep));
+                assert_eq!(picked.len(), len.min(keep));
+                assert!(picked.windows(2).all(|pair| pair[0] < pair[1]));
+                assert!(picked.iter().all(|index| *index < len));
+            }
+        }
+    }
+
+    #[test]
+    fn floyd_sampling_gives_each_small_subset_the_same_number_of_draws() {
+        let mut counts = std::collections::BTreeMap::new();
+        for first in 0..3 {
+            for second in 0..4 {
+                let mut draws = [first, second].into_iter();
+                let picked = Sampler::pick_with(4, 2, |_| draws.next().unwrap());
+                assert!(draws.next().is_none());
+                *counts.entry(picked).or_insert(0) += 1;
+            }
+        }
+        assert_eq!(counts.len(), 6);
+        assert!(counts.values().all(|count| *count == 2));
     }
 
     #[test]

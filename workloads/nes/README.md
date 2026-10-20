@@ -343,6 +343,11 @@ decompress them on the HTTP thread, with at most one lookup serviced per
 admission. A viewer that connects first gets a sample of the archive, up to
 1,000 states with the newest 250 among them, decoded from their
 snapshots, so a long run shows where it has reached without keeping a history.
+The older-state sample uses Floyd sampling with at most 750 bounded draws.
+Visual RNG range reduction rejects incomplete tails to avoid modulo bias,
+so attaching a viewer does not scan the archive. Sampling and snapshot copying
+are bounded by the sample size, and decoding runs on the feed thread. This
+visual RNG is independent of search policy and recorded campaign bytes.
 
 Each evaluation writes `telemetry.json` beside `campaign.json`, including
 coordinator, admission wait, completed-buffer and worker busy/idle counters.
