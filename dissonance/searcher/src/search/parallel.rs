@@ -15,6 +15,9 @@ use crate::search::telemetry::{
     TargetCounters, WorkerTelemetry, nanos_since, now, thread_schedstat,
 };
 
+#[path = "parallel_reply.rs"]
+mod reply;
+
 fn profiled_execute<Output>(
     profile: &mut Option<crate::search::telemetry::WorkerExecuteCpuTelemetry>,
     mut clock: impl FnMut() -> Option<u128>,
@@ -397,7 +400,7 @@ impl<Key, Job> Drop for WorkerExit<'_, Key, Job> {
 
 pub(crate) struct WorkerPool<Key: Ord + Clone, Job, Output, O = ()> {
     jobs: Option<Arc<SharedJobs<Key, Job>>>,
-    reply_receiver: mpsc::Receiver<WorkerReply<Key, Output, O>>,
+    reply_receiver: reply::ReplyReceiver<WorkerReply<Key, Output, O>>,
     startup_receiver: mpsc::Receiver<(u32, Result<(), String>)>,
 }
 
@@ -408,6 +411,7 @@ impl<Key: Ord + Clone, Job, Output, O> WorkerPool<Key, Job, Output, O> {
         slot_index: fn(&Key) -> usize,
     ) -> Result<(), WorkerPoolError> {
         let shared = self.jobs.as_ref().ok_or(WorkerPoolError::QueueClosed)?;
+        self.reply_receiver.reserve(capacity)?;
         let mut queue = shared
             .queue
             .lock()
@@ -537,30 +541,20 @@ impl<Key: Ord + Clone, Job, Output, O> WorkerPool<Key, Job, Output, O> {
 
     #[cfg(test)]
     pub(crate) fn receive(&self) -> Result<WorkerReply<Key, Output, O>, WorkerPoolError> {
-        self.reply_receiver
-            .recv()
-            .map_err(|_| WorkerPoolError::RepliesClosed)
+        self.reply_receiver.receive()
     }
 
     pub(crate) fn receive_timeout(
         &self,
         timeout: Duration,
     ) -> Result<Option<WorkerReply<Key, Output, O>>, WorkerPoolError> {
-        match self.reply_receiver.recv_timeout(timeout) {
-            Ok(reply) => Ok(Some(reply)),
-            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(WorkerPoolError::RepliesClosed),
-        }
+        self.reply_receiver.receive_timeout(timeout)
     }
 
     pub(crate) fn try_receive(
         &self,
     ) -> Result<Option<WorkerReply<Key, Output, O>>, WorkerPoolError> {
-        match self.reply_receiver.try_recv() {
-            Ok(reply) => Ok(Some(reply)),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => Err(WorkerPoolError::RepliesClosed),
-        }
+        self.reply_receiver.try_receive()
     }
 }
 
@@ -658,7 +652,7 @@ where
 {
     crate::search::job_observation::bounded::<O>();
     thread::scope(|scope| {
-        let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Key, Output, O>>();
+        let (reply_sender, reply_receiver) = reply::channel::<WorkerReply<Key, Output, O>>();
         let (startup_sender, startup_receiver) = mpsc::channel();
         let jobs = Arc::new(SharedJobs::<Key, Job>::new(workers as usize));
         let mut handles = Vec::with_capacity(workers as usize);
@@ -1255,7 +1249,7 @@ mod tests {
             .unwrap()
             .idle
             .insert(1, WorkerLocality::default());
-        let (_, reply_receiver) = mpsc::channel();
+        let (_, reply_receiver) = super::reply::channel();
         let (_, startup_receiver) = mpsc::channel();
         let pool = super::WorkerPool::<u8, u8, ()> {
             jobs: Some(Arc::clone(&shared)),
@@ -1477,7 +1471,7 @@ mod tests {
 
     #[test]
     fn try_receive_distinguishes_ready_empty_and_disconnected() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = super::reply::channel();
         let (_startup_sender, startup_receiver) = mpsc::channel();
         let pool = WorkerPool::<u8, (), u64> {
             jobs: None,
@@ -1489,14 +1483,16 @@ mod tests {
                 .expect("empty channel remains open")
                 .is_none()
         );
-        sender
-            .send(WorkerReply {
-                worker: 7,
-                key: 0,
-                outcome: Ok(11),
-                observation: Default::default(),
-            })
-            .expect("queue reply");
+        assert!(
+            sender
+                .send(WorkerReply {
+                    worker: 7,
+                    key: 0,
+                    outcome: Ok(11),
+                    observation: Default::default(),
+                })
+                .is_ok()
+        );
         let reply = pool
             .try_receive()
             .expect("ready channel")
@@ -1636,7 +1632,7 @@ mod tests {
 
     #[test]
     fn startup_barrier_reports_a_worker_that_never_sent_status() {
-        let (_reply_sender, reply_receiver) = mpsc::channel();
+        let (_reply_sender, reply_receiver) = super::reply::channel();
         let (startup_sender, startup_receiver) = mpsc::channel();
         drop(startup_sender);
         let pool = WorkerPool::<u8, (), ()> {

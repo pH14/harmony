@@ -183,6 +183,20 @@ hash when nonempty, keeps at most the 4,096 heaviest keys, and reaches each draw
 through `DrawView` with the table version the draw names. Workloads identify
 their input policies and reject unknown or retired identifiers during replay.
 
+Worker replies use a private single-receiver queue with a mutex, deque and
+condition variable; startup status channels remain separate. Senders publish
+under the mutex and notify only after unlocking. The receiver drains queued
+replies before reporting that every sender exited, and last-sender destruction
+wakes a waiting receiver even during unwinding. Closing the receiver rejects
+subsequent sends and releases queued payloads outside the mutex. Queue poisoning
+fails the transport rather than presenting incomplete replies as success.
+Indexed campaigns fallibly reserve reply storage for their fixed in-flight
+window. The reservation window bounds actual outstanding replies, while other
+private pool callers retain their existing unbounded send semantics; this
+storage reservation is not a process memory guarantee. Transport changes do not
+alter keyed replies, ordered admission or worker recovery. Their CPU effect
+requires measurement.
+
 The worker pool starts before the bootstrap. The coordinator bootstraps while
 every worker but the first builds its target, and the first worker builds its
 target after the bootstrap target is dropped, so a campaign never holds more
