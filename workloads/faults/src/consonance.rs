@@ -2365,7 +2365,7 @@ impl Live {
             checkpoint.validate_binding(&parent_receipt)?;
             self.cursor.decoder = Some(checkpoint.decoder().clone());
             self.telemetry.observation_checkpoint_hits += 1;
-            let mut input = InputSpec::seeded(SEED);
+            let mut input = InputSpec::seeded(plan.entropy_seed);
             input.set_config(plan.service_config());
             input.set_payloads(Some(Vec::new()));
             input.set_coverage_schedule(Some(plan.coverage_schedule.clone()));
@@ -2916,7 +2916,7 @@ mod tests {
         static AFTER_RUN_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
     }
 
-    type PlannedBranch = (ServiceConfig, Option<CoverageSchedule>);
+    type PlannedBranch = (u64, ServiceConfig, Option<CoverageSchedule>);
 
     thread_local! {
         static PLANNED_BRANCHES: RefCell<Option<Vec<PlannedBranch>>> = const { RefCell::new(None) };
@@ -3305,7 +3305,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             snapshot: SnapId,
-            _: u64,
+            seed: u64,
             config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
@@ -3314,7 +3314,7 @@ mod tests {
             self.branch_calls += 1;
             PLANNED_BRANCHES.with(|branches| {
                 if let Some(branches) = branches.borrow_mut().as_mut() {
-                    branches.push((config, coverage));
+                    branches.push((seed, config, coverage));
                 }
             });
             if self.hash.is_some() {
@@ -7747,9 +7747,11 @@ mod tests {
     fn executed_and_rebuilt_prefixes_compile_once_and_cached_children_do_no_planning() {
         use crate::target::TIMELINE_STEPS;
         let actions = [
-            FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into(),
-            FaultOperation::Kill(3, std::num::NonZeroU16::new(3).unwrap()).into(),
-            FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
+            FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()))
+                .with_choice(1),
+            FaultAction::from(FaultOperation::Kill(3, std::num::NonZeroU16::new(3).unwrap()))
+                .with_choice(2),
+            FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN)).with_choice(3),
         ];
         let inherited = vec![StandingWindow {
             class: 1,
@@ -7768,9 +7770,10 @@ mod tests {
             history = history.push(receipt.unwrap()).unwrap();
         }
         let original = PLANNED_BRANCHES.with(|branches| branches.borrow_mut().take().unwrap());
-        for (index, (config, schedule)) in original.iter().enumerate() {
+        for (index, (seed, config, schedule)) in original.iter().enumerate() {
             let (expected_config, expected_schedule) =
                 reference_plan(source.windows, &inherited, &actions[..=index]);
+            assert_eq!(*seed, actions[index].entropy_seed(SEED));
             assert_eq!(config, &expected_config);
             assert_eq!(
                 schedule.as_ref().unwrap().encode(),
