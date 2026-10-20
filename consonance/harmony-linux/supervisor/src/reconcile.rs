@@ -178,11 +178,6 @@ impl ActiveWindows {
         }
     }
 
-    pub fn from_answer(body: &[u8]) -> Result<Self, WireError> {
-        let (_moment, windows) = decode_process_windows(body)?;
-        Ok(Self::from_windows(windows.iter()))
-    }
-
     pub fn from_windows<'a>(windows: impl Iterator<Item = &'a ProcessWindow>) -> Self {
         let mut active = Self::new();
         for window in windows {
@@ -258,6 +253,45 @@ impl ActiveWindows {
             }
         }
         pending
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Standing {
+    pub moment: u64,
+    pub windows: Vec<ProcessWindow>,
+}
+
+impl Standing {
+    pub fn decode(body: &[u8]) -> Result<Self, WireError> {
+        let (moment, windows) = decode_process_windows(body)?;
+        Ok(Self { moment, windows })
+    }
+
+    #[must_use]
+    pub fn steps(&self, after: Option<u64>) -> Vec<ActiveWindows> {
+        let mut moments = vec![self.moment];
+        if let Some(after) = after {
+            for window in &self.windows {
+                for edge in [window.start, window.end] {
+                    if after < edge && edge < self.moment {
+                        moments.push(edge);
+                    }
+                }
+            }
+        }
+        moments.sort_unstable();
+        moments.dedup();
+        moments
+            .into_iter()
+            .map(|at| {
+                ActiveWindows::from_windows(
+                    self.windows
+                        .iter()
+                        .filter(|window| window.start <= at && at < window.end),
+                )
+            })
+            .collect()
     }
 }
 
@@ -424,7 +458,9 @@ mod tests {
             ],
         )
         .unwrap();
-        let active = ActiveWindows::from_answer(&body).unwrap();
+        let steps = Standing::decode(&body).unwrap().steps(None);
+        assert_eq!(steps.len(), 1);
+        let active = &steps[0];
         assert!(active.node(3).kill);
         assert!(!active.node(0).any());
         assert!(active.hooks().is_empty());
@@ -500,5 +536,72 @@ mod tests {
             start: 20,
         };
         assert_eq!(active.pending_process_faults(&[canonical, later]), 1);
+    }
+
+    fn window(node: u16, action: ProcessAction, start: u64, end: u64) -> ProcessWindow {
+        ProcessWindow {
+            node,
+            action,
+            start,
+            end,
+        }
+    }
+
+    #[test]
+    fn steps_without_an_earlier_poll_hold_only_the_live_windows() {
+        let standing = Standing {
+            moment: 50,
+            windows: vec![
+                window(0, ProcessAction::Kill, 10, 20),
+                window(1, ProcessAction::Restart, 40, 60),
+            ],
+        };
+        let steps = standing.steps(None);
+        assert_eq!(steps.len(), 1);
+        assert!(!steps[0].node(0).any());
+        assert!(steps[0].node(1).restart);
+    }
+
+    #[test]
+    fn steps_open_and_close_missed_windows_in_time_order() {
+        let standing = Standing {
+            moment: 300,
+            windows: vec![
+                window(0, ProcessAction::PowerLoss { choice: 1 }, 10, 20),
+                window(0, ProcessAction::Restart, 40, 80),
+                window(1, ProcessAction::Kill, 60, 400),
+                window(2, ProcessAction::RunHook(4), 5, 300),
+            ],
+        };
+        let steps = standing.steps(Some(15));
+        let at = |step: &ActiveWindows| {
+            (
+                step.node(0).power_loss.is_some(),
+                step.node(0).restart,
+                step.node(1).kill,
+                step.hooks().len(),
+            )
+        };
+        assert_eq!(
+            steps.iter().map(at).collect::<Vec<_>>(),
+            [
+                (false, false, false, 1),
+                (false, true, false, 1),
+                (false, true, true, 1),
+                (false, false, true, 1),
+                (false, false, true, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_window_that_ended_before_the_last_poll_is_not_replayed() {
+        let standing = Standing {
+            moment: 100,
+            windows: vec![window(0, ProcessAction::Kill, 10, 20)],
+        };
+        let steps = standing.steps(Some(20));
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].is_empty());
     }
 }

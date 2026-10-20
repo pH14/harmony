@@ -253,7 +253,8 @@ retained across actions.
 Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
-moment, so an input is fully described by its encoded window list and one
+moment, plus the windows that closed after the previous poll moment the question
+carries. An input is fully described by its encoded window list and one
 branch installs it. A hold still running when an event-park window closes
 continues after the window, so the next actions can overlap the held thread.
 The park counts as a pending fault until that hold ends.
@@ -824,8 +825,10 @@ arm64 MMIO console wrapper.
 
 The package can prepare a recorded prefix for guest debugging and export the
 resulting state as a durable root. A root binds the prepared boot identity to a
-cache extent containing pages and device/service sidecars, plus the standing
-fault windows still active at its snapshot moment. Import validates that
+cache extent containing pages and device/service sidecars, plus every standing
+fault window that started by its snapshot moment. A closed window stays in the
+root because the supervisor's next poll may still ask for windows that closed
+after its previous poll. Import validates that
 identity and the extent; root bytes also contribute to the workload identity.
 The CLI verifies and loads the saved root once before starting a search, then
 passes those bytes to every worker. Later action prefixes/checkpoints
@@ -866,7 +869,7 @@ an external Decision/resolution exchange; guest doorbells and mandatory guards
 remain. Both handlers decode debug Status before answering. Rejecting malformed
 inactive Status is an intentional tightening: the prior standing handler returned
 empty bytes without decoding it. Standing and debug identities are respectively
-faults-standing-coverage-v3 and faults-debug-terminal-v2.
+faults-standing-coverage-v4 and faults-debug-terminal-v2.
 
 The generic local-answer capability requires unchanged captured handler state;
 the inactive standing debug response satisfies it. Stateful local responses are
