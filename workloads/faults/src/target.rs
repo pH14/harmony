@@ -34,6 +34,9 @@ pub enum FaultOperation {
     KillAll(NonZeroU16),
     PowerLoss(u16, NonZeroU16),
     PowerLossAll(NonZeroU16),
+    DiskError(u16, NonZeroU16),
+    DiskStall(u16, NonZeroU16),
+    DiskCorrupt(u16, NonZeroU16),
     EventKill {
         node: u16,
         rarity: u8,
@@ -61,6 +64,9 @@ impl FaultOperation {
             | Self::KillAll(ticks)
             | Self::PowerLoss(_, ticks)
             | Self::PowerLossAll(ticks)
+            | Self::DiskError(_, ticks)
+            | Self::DiskStall(_, ticks)
+            | Self::DiskCorrupt(_, ticks)
             | Self::EventKill { ticks, .. }
             | Self::EventPark { ticks, .. }
             | Self::Pause(_, ticks)
@@ -77,6 +83,9 @@ impl FaultOperation {
             Self::KillAll(_) => Self::KillAll(ticks),
             Self::PowerLoss(node, _) => Self::PowerLoss(node, ticks),
             Self::PowerLossAll(_) => Self::PowerLossAll(ticks),
+            Self::DiskError(node, _) => Self::DiskError(node, ticks),
+            Self::DiskStall(node, _) => Self::DiskStall(node, ticks),
+            Self::DiskCorrupt(node, _) => Self::DiskCorrupt(node, ticks),
             Self::EventKill { node, rarity, .. } => Self::EventKill {
                 node,
                 rarity,
@@ -180,6 +189,21 @@ impl FaultOperation {
             }
             Self::PowerLossAll(ticks) => {
                 put(&[9]);
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::DiskError(node, ticks) => {
+                put(&[10]);
+                put(&node.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::DiskStall(node, ticks) => {
+                put(&[11]);
+                put(&node.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::DiskCorrupt(node, ticks) => {
+                put(&[12]);
+                put(&node.to_le_bytes());
                 put(&ticks.get().to_le_bytes());
             }
         }
@@ -359,6 +383,10 @@ pub fn action_ticks(action: &FaultAction) -> u64 {
     action.ticks()
 }
 
+fn restart_end(start: u64, horizon: u64) -> u64 {
+    start.saturating_add((horizon / RESTART_DOWN_DIVISOR).max(SUPERVISOR_TICK_NANOS))
+}
+
 fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingWindow {
     StandingWindow {
         class: DecisionClass::Process.as_u16(),
@@ -433,6 +461,29 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                 (start, end),
             )),
         },
+        FaultOperation::DiskError(node, _) => ActionDelta {
+            standing: Some(standing(
+                process_target(node, &Fault::ProcDiskError),
+                (start, end),
+            )),
+        },
+        FaultOperation::DiskStall(node, _) => ActionDelta {
+            standing: Some(standing(
+                process_target(node, &Fault::ProcDiskStall(Span(horizon))),
+                (start, end),
+            )),
+        },
+        FaultOperation::DiskCorrupt(node, _) => ActionDelta {
+            standing: Some(standing(
+                process_target(
+                    node,
+                    &Fault::ProcDiskCorrupt {
+                        choice: action.choice,
+                    },
+                ),
+                (start, restart_end(start, horizon)),
+            )),
+        },
         FaultOperation::Pause(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcPause(Span(horizon))),
@@ -442,12 +493,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         FaultOperation::Restart(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcRestart),
-                (
-                    start,
-                    start.saturating_add(
-                        (horizon / RESTART_DOWN_DIVISOR).max(SUPERVISOR_TICK_NANOS),
-                    ),
-                ),
+                (start, restart_end(start, horizon)),
             )),
         },
         FaultOperation::Hook(id, _) => ActionDelta {
@@ -1571,6 +1617,46 @@ mod tests {
             FaultOperation::PowerLossAll(ticks(50)).key_bytes(),
             FaultOperation::KillAll(ticks(50)).key_bytes()
         );
+    }
+
+    #[test]
+    fn disk_faults_reach_the_supervisor_with_their_windows() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        let horizon = window.1 - window.0;
+        for (operation, fault, end) in [
+            (
+                FaultOperation::DiskError(1, ticks(50)),
+                Fault::ProcDiskError,
+                window.1,
+            ),
+            (
+                FaultOperation::DiskStall(1, ticks(50)),
+                Fault::ProcDiskStall(Span(horizon)),
+                window.1,
+            ),
+            (
+                FaultOperation::DiskCorrupt(1, ticks(50)),
+                Fault::ProcDiskCorrupt { choice: 77 },
+                window.0 + horizon / RESTART_DOWN_DIVISOR,
+            ),
+        ] {
+            let action = FaultAction::from(operation).with_choice(77);
+            let standing = action_delta(action, window)
+                .standing
+                .expect("a disk fault installs a standing fault");
+            assert_eq!(decode_process_target(&standing.target), Some((1, fault)));
+            assert_eq!((standing.start, standing.end), (window.0, end));
+            assert_eq!(operation.with_ticks(ticks(9)).ticks(), 9);
+        }
+        let keys = [
+            FaultOperation::DiskError(0, ticks(50)),
+            FaultOperation::DiskStall(0, ticks(50)),
+            FaultOperation::DiskCorrupt(0, ticks(50)),
+            FaultOperation::PowerLoss(0, ticks(50)),
+            FaultOperation::Restart(0, ticks(50)),
+        ]
+        .map(|operation| operation.key_bytes());
+        assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), keys.len());
     }
 
     #[test]
