@@ -957,6 +957,11 @@ impl FaultTarget {
         Ok(progress)
     }
 
+    #[must_use]
+    pub fn endpoint_certificate(&self) -> Option<[u8; 32]> {
+        self.history.receipt().certificate()
+    }
+
     pub fn probe<T>(&mut self, inspect: impl FnOnce(&mut Self) -> T) -> T {
         let observation = self.observation.clone();
         let result = inspect(self);

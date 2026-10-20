@@ -622,7 +622,8 @@ pub struct Explanation {
     pub commands: Commands,
     pub probes: usize,
     pub probe_replays: usize,
-    pub probe_replays_match: bool,
+    pub reference_matches: bool,
+    pub unverified_probes: Vec<usize>,
     pub shrink_seconds: u64,
     pub probe_seconds: u64,
     pub settings: Explain,
@@ -752,7 +753,8 @@ pub fn explanation(inputs: &Inputs<'_>) -> Explanation {
         },
         probes: inputs.observed.len(),
         probe_replays: 0,
-        probe_replays_match: false,
+        reference_matches: false,
+        unverified_probes: Vec::new(),
         shrink_seconds: 0,
         probe_seconds: 0,
         settings: inputs.settings.clone(),
@@ -880,17 +882,33 @@ pub fn render(explanation: &Explanation) -> String {
             "- Guest clock: CLOCK_MONOTONIC reads virtual time minus {offset:.2} s."
         );
     }
-    let _ = writeln!(
+    let _ = write!(
         text,
-        "- Probes: {} points in {} replays. The probe replays {} the reduced replay.",
-        explanation.probes,
-        explanation.probe_replays,
-        if explanation.probe_replays_match {
-            "match"
-        } else {
-            "DO NOT match"
-        }
+        "- Probes: {} points in {} replays. ",
+        explanation.probes, explanation.probe_replays
     );
+    let _ = if !explanation.reference_matches {
+        writeln!(
+            text,
+            "The probe-free reference replay DOES NOT match the reduced replay, so the probes may describe a different execution."
+        )
+    } else if explanation.unverified_probes.is_empty() {
+        writeln!(
+            text,
+            "Each probe saw the same whole-state certificate as a probe-free reference replay that matches the reduced replay."
+        )
+    } else {
+        writeln!(
+            text,
+            "The probes at steps {} saw a different state from the probe-free reference replay; their excerpts may describe a different execution.",
+            explanation
+                .unverified_probes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let _ = writeln!(
         text,
         "- Time: shrink {} s, probes {} s.\n",
@@ -1052,7 +1070,74 @@ impl Worker<'_> {
     }
 }
 
-type Probed = (ReplaySummary, Vec<Observed>);
+struct Replayed {
+    summary: ReplaySummary,
+    observed: Vec<Observed>,
+    certificates: BTreeMap<usize, [u8; 32]>,
+}
+
+fn hex(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn replay_one(
+    out: &Path,
+    manifest: &Manifest,
+    artifacts: &faults_workload::Artifacts,
+    options: &faults_workload::package::Options,
+    settings: &Explain,
+    name: &str,
+    share: Option<&BTreeMap<usize, Point>>,
+) -> std::result::Result<Replayed, String> {
+    let mut options = options.clone();
+    options.output = out.join("probes").join(name);
+    fs::create_dir_all(&options.output).map_err(|error| error.to_string())?;
+    let mut worker = Worker {
+        out,
+        settings,
+        logs: BTreeMap::new(),
+        observed: Vec::new(),
+    };
+    let mut certificates = BTreeMap::new();
+    let summary = faults_workload::package::execute_visiting(
+        artifacts,
+        &manifest.actions,
+        &options,
+        manifest.settle,
+        &mut |step, target| {
+            let step = step as usize;
+            let point = share.and_then(|share| share.get(&step));
+            if (share.is_none() || point.is_some())
+                && let Some(certificate) = target.endpoint_certificate()
+            {
+                certificates.insert(step, certificate);
+            }
+            if let Some(point) = point {
+                worker.probe(point, target);
+            }
+            Ok(())
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let record = serde_json::json!({
+        "probes": share.map(|share| share.keys().copied().collect::<Vec<_>>()).unwrap_or_default(),
+        "certificates": certificates
+            .iter()
+            .map(|(step, certificate)| (step.to_string(), hex(certificate)))
+            .collect::<BTreeMap<_, _>>(),
+        "summary": summary,
+    });
+    fs::write(
+        options.output.join("replay.json"),
+        serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(Replayed {
+        summary,
+        observed: worker.observed,
+        certificates,
+    })
+}
 
 fn probe_all(
     out: &Path,
@@ -1060,66 +1145,85 @@ fn probe_all(
     settings: &Explain,
     points: &[Point],
     jobs: usize,
-) -> Result<Vec<Probed>> {
+) -> Result<(Replayed, Vec<Replayed>)> {
     let artifacts = manifest.fault_artifacts(out)?;
     let options = manifest.options(out)?;
-    let jobs = jobs.clamp(1, points.len().max(1));
-    let shares = (0..jobs)
+    let probers = jobs.saturating_sub(1).clamp(1, points.len().max(1));
+    let shares = (0..probers)
         .map(|worker| {
             points
                 .iter()
                 .skip(worker)
-                .step_by(jobs)
+                .step_by(probers)
                 .map(|point| (point.step, point.clone()))
                 .collect::<BTreeMap<_, _>>()
         })
         .collect::<Vec<_>>();
-    let outcomes = std::thread::scope(|scope| {
-        let handles = shares
-            .iter()
-            .enumerate()
-            .map(|(index, share)| {
-                let (artifacts, options) = (&artifacts, &options);
-                scope.spawn(move || -> std::result::Result<Probed, String> {
-                    let mut options = options.clone();
-                    options.output = out.join("probes").join(format!("replay-{index}"));
-                    fs::create_dir_all(&options.output).map_err(|error| error.to_string())?;
-                    let mut worker = Worker {
-                        out,
-                        settings,
-                        logs: BTreeMap::new(),
-                        observed: Vec::new(),
-                    };
-                    let summary = faults_workload::package::execute_visiting(
-                        artifacts,
-                        &manifest.actions,
-                        &options,
-                        manifest.settle,
-                        &mut |step, target| {
-                            if let Some(point) = share.get(&(step as usize)) {
-                                worker.probe(point, target);
-                            }
-                            Ok(())
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-                    Ok((summary, worker.observed))
+    let tasks = std::iter::once(None)
+        .chain(shares.iter().map(Some))
+        .collect::<Vec<_>>();
+    let threads = jobs.clamp(1, tasks.len());
+    let mut outcomes = std::thread::scope(|scope| {
+        let handles = (0..threads)
+            .map(|thread| {
+                let (artifacts, options, tasks) = (&artifacts, &options, &tasks);
+                scope.spawn(move || {
+                    (thread..tasks.len())
+                        .step_by(threads)
+                        .map(|index| {
+                            let name = if index == 0 {
+                                "reference".to_owned()
+                            } else {
+                                format!("replay-{index}")
+                            };
+                            (
+                                index,
+                                replay_one(
+                                    out,
+                                    manifest,
+                                    artifacts,
+                                    options,
+                                    settings,
+                                    &name,
+                                    tasks[index],
+                                ),
+                            )
+                        })
+                        .collect::<Vec<_>>()
                 })
             })
             .collect::<Vec<_>>();
         handles
             .into_iter()
-            .map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| Err("an explain probe replay panicked".into()))
+            .flat_map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    vec![(usize::MAX, Err("an explain probe replay panicked".into()))]
+                })
             })
             .collect::<Vec<_>>()
     });
-    outcomes
+    outcomes.sort_by_key(|(index, _)| *index);
+    let mut replayed = outcomes
         .into_iter()
-        .map(|outcome| outcome.map_err(Into::into))
-        .collect()
+        .map(|(_, outcome)| outcome.map_err(Into::into))
+        .collect::<Result<Vec<_>>>()?;
+    let reference = replayed.remove(0);
+    Ok((reference, replayed))
+}
+
+fn unverified(reference: &Replayed, probes: &[Replayed]) -> Vec<usize> {
+    let mut steps = probes
+        .iter()
+        .flat_map(|replayed| {
+            replayed.observed.iter().filter_map(|observed| {
+                let seen = replayed.certificates.get(&observed.step);
+                (seen.is_none() || seen != reference.certificates.get(&observed.step))
+                    .then_some(observed.step)
+            })
+        })
+        .collect::<Vec<_>>();
+    steps.sort_unstable();
+    steps
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -1144,7 +1248,11 @@ pub fn explain_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> 
         .selection
         .clone()
         .ok_or("select a search or branch")?;
-    let shrunk = selection.finding.is_none() && saved.path.join("shrink.json").is_file();
+    if request.skip_shrink && selection.finding.is_some() {
+        return Err("--no-shrink probes a recorded run; omit --finding".into());
+    }
+    let shrunk = request.skip_shrink
+        || (selection.finding.is_none() && saved.path.join("shrink.json").is_file());
     let source = shrink::source(saved, selection.finding, "explain")?;
     let settings = request.explain.or(&source.manifest.config.explain);
     settings.validate()?;
@@ -1189,14 +1297,13 @@ pub fn explain_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> 
             request.jobs.clamp(1, points.len())
         );
         let started = clock();
-        let probed = probe_all(&out, &manifest, &settings, &points, request.jobs)?;
+        let (reference, probed) = probe_all(&out, &manifest, &settings, &points, request.jobs)?;
         let probe_seconds = started.elapsed().as_secs();
-        let matched = probed
-            .iter()
-            .all(|(summary, _)| investigate::equivalent(&expected, summary));
+        let reference_matches = investigate::equivalent(&expected, &reference.summary);
+        let unverified_probes = unverified(&reference, &probed);
         let observed = probed
             .iter()
-            .flat_map(|(_, observed)| observed.iter().cloned())
+            .flat_map(|replayed| replayed.observed.iter().cloned())
             .map(|observed| (observed.step, observed))
             .collect::<BTreeMap<_, _>>();
         let mut explanation = explanation(&Inputs {
@@ -1214,8 +1321,9 @@ pub fn explain_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> 
             explanation.faults_before_shrink = Some(before);
             explanation.shrink_replays = Some(replays);
         }
-        explanation.probe_replays = probed.len();
-        explanation.probe_replays_match = matched;
+        explanation.probe_replays = probed.len() + 1;
+        explanation.reference_matches = reference_matches;
+        explanation.unverified_probes = unverified_probes.clone();
         explanation.shrink_seconds = shrink_seconds;
         explanation.probe_seconds = probe_seconds;
         fs::write(
@@ -1229,11 +1337,18 @@ pub fn explain_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> 
             explanation.faults.len(),
             out.join("explain.md").display()
         );
-        if !matched {
-            return Err(
-                "a probe replay diverged from the reduced replay; the excerpts may describe a different execution"
-                    .into(),
-            );
+        if !reference_matches {
+            return Err(format!(
+                "the probe-free reference replay differs from the reduced replay; compare {} with report.json",
+                out.join("probes/reference/replay.json").display()
+            )
+            .into());
+        }
+        if !unverified_probes.is_empty() {
+            return Err(format!(
+                "the probes at steps {unverified_probes:?} saw a different state from the reference replay"
+            )
+            .into());
         }
         Ok(0)
     })();
@@ -1557,6 +1672,28 @@ mod tests {
     }
 
     #[test]
+    fn a_probe_is_verified_only_when_its_state_matches_the_reference() {
+        let replayed = |certificates: &[(usize, u8)], steps: &[usize]| Replayed {
+            summary: summary(&[]),
+            observed: steps
+                .iter()
+                .map(|&step| Observed {
+                    step,
+                    ..Observed::default()
+                })
+                .collect(),
+            certificates: certificates
+                .iter()
+                .map(|&(step, byte)| (step, [byte; 32]))
+                .collect(),
+        };
+        let reference = replayed(&[(0, 1), (1, 2), (2, 3)], &[]);
+        let probes = [replayed(&[(0, 1), (2, 9)], &[0, 2]), replayed(&[], &[1])];
+        assert_eq!(unverified(&reference, &probes), vec![1, 2]);
+        assert!(unverified(&reference, &[replayed(&[(1, 2)], &[1])]).is_empty());
+    }
+
+    #[test]
     fn the_report_names_the_promise_faults_symptom_evidence_and_commands() {
         let actions = schedule();
         let expected = summary(&actions);
@@ -1602,7 +1739,7 @@ mod tests {
             settings: &settings,
         });
         explanation.probe_replays = 2;
-        explanation.probe_replays_match = true;
+        explanation.reference_matches = true;
         assert_eq!(explanation.faults.len(), 3);
         assert_eq!(explanation.faults[1].step, 3);
         assert_eq!(explanation.faults[1].start_seconds, 19.12);
@@ -1625,7 +1762,7 @@ mod tests {
             "removed `/tmp/n1/streams/` (1 files, 9 bytes)",
             "harmony debug run app.oci --config /runs/x/resolved.toml --seed 51",
             "probe at step 2 failed: guest refused",
-            "The probe replays match the reduced replay",
+            "Each probe saw the same whole-state certificate as a probe-free reference replay",
         ] {
             assert!(text.contains(expected), "missing {expected:?} in\n{text}");
         }

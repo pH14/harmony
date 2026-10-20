@@ -174,7 +174,9 @@ fn validate_request_inputs(request: &Request) -> Result<()> {
     {
         return Err("prepared operation does not accept parallel replays".into());
     }
-    if !request.explain.is_empty() && request.operation != Operation::Explain {
+    if (request.skip_shrink || !request.explain.is_empty())
+        && request.operation != Operation::Explain
+    {
         return Err("prepared operation does not accept explain settings".into());
     }
     request.explain.validate()?;
@@ -936,6 +938,22 @@ mod tests {
                 panic!("{operation:?} accepted {:?}", request.explain);
             };
             assert!(error.to_string().contains(refusal), "{error}");
+        }
+    }
+
+    #[test]
+    fn only_a_fault_explain_skips_the_shrink() {
+        for operation in [Operation::Replay, Operation::Shrink] {
+            let mut record = saved_record(operation, "faults");
+            let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+            request.skip_shrink = true;
+            record.request = serde_json::to_vec(&request).unwrap();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            let Err(error) = Record::read(file.path()) else {
+                panic!("{operation:?} accepted a skipped shrink");
+            };
+            assert!(error.to_string().contains("explain settings"), "{error}");
         }
     }
 

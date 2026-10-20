@@ -124,6 +124,12 @@ enum Command {
             help = "Guest shell text whose output shows the client history at the violation"
         )]
         history: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "finding",
+            help = "Probe the recorded actions as they are, without shrinking"
+        )]
+        no_shrink: bool,
     },
     #[command(about = "List saved searches and branches")]
     List {
@@ -311,6 +317,7 @@ fn execute(command: Command) -> Result<u8> {
             logs,
             data,
             history,
+            no_shrink,
         } => {
             return workflow::saved(Request {
                 operation: Operation::Explain,
@@ -322,6 +329,7 @@ fn execute(command: Command) -> Result<u8> {
                     data,
                     history,
                 },
+                skip_shrink: no_shrink,
                 ..Default::default()
             });
         }
