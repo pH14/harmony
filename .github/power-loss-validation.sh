@@ -50,20 +50,48 @@ hand() {
         "evidence/$tag-repeat/report.json"
 }
 
+wait_ops() {
+    printf '  {"operation":{"Wait":%s},"coverage_quantum":1024,"choice":0}' "$1"
+}
+
 corrupt_all() {
-    schedule "$(op DiskCorrupt 0 100 4660),
-$(op DiskCorrupt 1 100 4661),
-$(op DiskCorrupt 2 100 4662)"
+    schedule "$(op DiskCorrupt 0 100 "$1"),
+$(wait_ops 300),
+$(op DiskCorrupt 1 100 "$2"),
+$(wait_ops 300),
+$(op DiskCorrupt 2 100 "$3")"
+}
+
+corrupt_one() {
+    schedule "$(op DiskCorrupt 0 100 "$1"),
+$(wait_ops 300),
+$(op DiskCorrupt 0 100 "$2"),
+$(wait_ops 300),
+$(op DiskCorrupt 0 100 "$3"),
+$(wait_ops 300),
+$(op DiskCorrupt 0 100 "$4")"
 }
 
 case "$case_id" in
     corrupt-default)
-        corrupt_all
+        corrupt_all 2654435769 5368709 12648430
         hand images/nats-default.oci cd
         ;;
     corrupt-always)
-        corrupt_all
+        corrupt_all 2654435769 5368709 12648430
         hand images/nats-always.oci ca
+        ;;
+    corrupt-default-b)
+        corrupt_all 1111 2222 3333
+        hand images/nats-default.oci cdb
+        ;;
+    corrupt-node0-default)
+        corrupt_one 7 77 777 7777
+        hand images/nats-default.oci c0d
+        ;;
+    corrupt-node0-always)
+        corrupt_one 7 77 777 7777
+        hand images/nats-always.oci c0a
         ;;
     error-always)
         schedule "$(op DiskError 0 300 0),

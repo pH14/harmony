@@ -79,12 +79,12 @@ jobs:
             id: corrupt-default
           - name: Corrupt every disk, sync always
             id: corrupt-always
-          - name: Disk errors on node 0, sync always
-            id: error-always
-          - name: Disk errors on every node, sync always
-            id: error-all-always
-          - name: Disk stalls on every node, sync always
-            id: stall-always
+          - name: Corrupt every disk again, default sync
+            id: corrupt-default-b
+          - name: Corrupt node 0 four times, default sync
+            id: corrupt-node0-default
+          - name: Corrupt node 0 four times, sync always
+            id: corrupt-node0-always
     steps:
       - uses: actions/checkout@v4
       - name: Restore the guest runtime
