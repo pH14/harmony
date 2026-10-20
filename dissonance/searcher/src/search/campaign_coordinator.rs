@@ -20,11 +20,12 @@ use super::{
     StreamWriter, ThreadPlacement, Workload, archive_entry_limit_is_valid, bootstrap_campaign,
     build_report, completed_job_records, continuation_arrival, continuation_attempt,
     derive_selection_seed, execution_work_delta, finish_record, initial_draw_state,
-    memory_is_within_reserve, mixture_weights, planned_finish, profile_elapsed, profile_now,
-    progress_checkpoint_due, progress_record, record_compaction_elapsed, record_mixture_outcome,
-    resolve_origin, restore_search_checkpoint, retained_archive_indexes,
-    stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
-    with_coordinator_session, write_live_progress, write_search_checkpoint,
+    memory_is_within_reserve, mixture_weights, planned_finish, profile_clock_enabled,
+    profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
+    record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
+    retained_archive_indexes, stop_reservations_after_objective,
+    stop_reservations_after_work_budget, stream_header, with_coordinator_session,
+    write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
@@ -65,6 +66,11 @@ pub struct JobOutcome<G: CampaignTypes + ?Sized> {
 pub struct CampaignAdmission {
     pub reservation: usize,
     pub decisions: Vec<CampaignAdmissionDecision>,
+}
+
+struct AdmissionRecords {
+    selected: Option<BTreeSet<usize>>,
+    ready: Vec<CampaignAdmission>,
 }
 
 pub fn run_job<G: Workload>(
@@ -137,7 +143,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     dispatch_phase_started: Option<DispatchPhaseStart>,
     telemetry_started: Moment,
     wall_started: Option<Moment>,
-    admissions: Option<Vec<CampaignAdmission>>,
+    admissions: Option<AdmissionRecords>,
 }
 
 impl<'a, G: Workload> CampaignCoordinator<'a, G>
@@ -279,12 +285,13 @@ where
         let mut reserved = 0_u64;
         let mut admitted = 0_usize;
         let mut planned_clock = 0_u64;
-        let mut profile = LiveCoordinatorProfile::default();
+        let mut profile = LiveCoordinatorProfile::new();
         let mut in_flight = Vec::new();
         if let Some(resume) = resume {
             rand = resume.rand;
             reserved = resume.reserved;
             profile = resume.profile;
+            profile.timing_complete &= profile_clock_enabled();
             admitted = resume.admitted;
             planned_clock = resume.planned_clock;
             in_flight = resume.in_flight;
@@ -329,7 +336,7 @@ where
             running: 0,
             telemetry,
             profile,
-            profile_printed: std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some(),
+            profile_printed: profile_clock_enabled(),
             idle_clock: IdleClock::new(config.workers as usize),
             coordinator_schedstat: thread_schedstat(),
             dispatch_phase_started: None,
@@ -627,7 +634,36 @@ where
     }
 
     pub fn watch_admissions(&mut self) {
-        self.admissions.get_or_insert_with(Vec::new);
+        let records = self.admissions.get_or_insert_with(|| AdmissionRecords {
+            selected: None,
+            ready: Vec::new(),
+        });
+        records.selected = None;
+    }
+
+    pub fn watch_selected_admissions(&mut self) {
+        self.admissions
+            .get_or_insert_with(|| AdmissionRecords {
+                selected: None,
+                ready: Vec::new(),
+            })
+            .selected
+            .get_or_insert_with(BTreeSet::new);
+    }
+
+    pub fn request_admission(&mut self, reservation: usize) -> bool {
+        if self.pending.get(&reservation).is_none() {
+            return false;
+        }
+        let Some(selected) = self
+            .admissions
+            .as_mut()
+            .and_then(|records| records.selected.as_mut())
+        else {
+            return false;
+        };
+        selected.insert(reservation);
+        true
     }
 
     pub fn unwatch_admissions(&mut self) {
@@ -637,7 +673,7 @@ where
     pub fn take_admissions(&mut self) -> Vec<CampaignAdmission> {
         self.admissions
             .as_mut()
-            .map(std::mem::take)
+            .map(|records| std::mem::take(&mut records.ready))
             .unwrap_or_default()
     }
 
@@ -756,7 +792,7 @@ where
                 telemetry.admission.idle_no_job_ns,
             ),
         );
-        telemetry.coordinator = serde_json::to_value(&profile)?;
+        telemetry.coordinator = profile.telemetry_json()?;
         let persistence_started = now();
 
         core.archive.preserve_inactive_snapshots(false)?;
@@ -1043,8 +1079,13 @@ where
         coordinator_profile.bookkeeping_ns = coordinator_profile
             .bookkeeping_ns
             .saturating_add(profile_elapsed(bookkeeping_started));
-        if let Some(admissions) = admissions.as_mut() {
-            admissions.push(CampaignAdmission {
+        if let Some(admissions) = admissions.as_mut()
+            && admissions
+                .selected
+                .as_mut()
+                .is_none_or(|selected| selected.remove(&reservation))
+        {
+            admissions.ready.push(CampaignAdmission {
                 reservation,
                 decisions: decisions.clone(),
             });

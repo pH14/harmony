@@ -63,6 +63,8 @@ pub trait CampaignWatch<G: Workload>: Sync {
         run: impl FnOnce() -> Result<JobOutcome<G>, Box<dyn Error>>,
     ) -> WatchedJob<G, Self::Note>;
 
+    fn prepare_admission(&self, _note: &Self::Note, _campaign: &mut CampaignCoordinator<'_, G>) {}
+
     fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>);
 
     fn start(&self, _campaign: &mut CampaignCoordinator<'_, G>) -> Result<(), Box<dyn Error>> {
@@ -2558,6 +2560,8 @@ fn validate_duration_draw<G: Workload + ?Sized>(
 
 #[derive(Default, Deserialize, Serialize)]
 struct LiveCoordinatorProfile {
+    #[serde(default)]
+    timing_complete: bool,
     receive_wait_ns: u128,
     admission_ns: u128,
     bookkeeping_ns: u128,
@@ -2578,6 +2582,29 @@ struct LiveCoordinatorProfile {
 }
 
 impl LiveCoordinatorProfile {
+    fn new() -> Self {
+        Self {
+            timing_complete: profile_clock_enabled(),
+            ..Self::default()
+        }
+    }
+
+    fn telemetry_json(&self) -> Result<serde_json::Value, serde_json::Error> {
+        let mut value = serde_json::to_value(self)?;
+        if !self.timing_complete {
+            for field in [
+                "admission_ns",
+                "bookkeeping_ns",
+                "history_compaction_ns",
+                "stream_write_ns",
+                "selection_ns",
+            ] {
+                value[field] = serde_json::Value::Null;
+            }
+        }
+        Ok(value)
+    }
+
     fn note_dispatch<G: Workload + ?Sized>(
         &mut self,
         spec: &JobSpec<G>,
@@ -2617,12 +2644,17 @@ fn record_compaction_elapsed(
     }
 }
 
-fn profile_now() -> Moment {
-    now()
+fn profile_clock_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some())
 }
 
-fn profile_elapsed(started: Moment) -> u128 {
-    started.elapsed().as_nanos()
+fn profile_now() -> Option<Moment> {
+    profile_clock_enabled().then(now)
+}
+
+fn profile_elapsed(started: Option<Moment>) -> u128 {
+    started.map_or(0, |started| started.elapsed().as_nanos())
 }
 
 impl CampaignCounters {
@@ -3265,7 +3297,7 @@ fn progress_record<G: Workload>(
             .then(|| G::retained_diagnostics(core.archive.retained_snapshots()))
             .flatten(),
         coordinator: profile
-            .map(|(coordinator, _)| serde_json::to_value(coordinator))
+            .map(|(coordinator, _)| coordinator.telemetry_json())
             .transpose()?,
         host_times: profile.map(|(_, host_times)| host_times),
         progress: Some(serde_json::to_value(G::aggregate_progress(&core.evidence))?),
@@ -3586,9 +3618,9 @@ where
                 }
                 let reply = loop {
                     campaign.drain_background_stream()?;
-                    let receive_started = profile_now();
+                    let receive_started = now();
                     let received = pool.receive_timeout(Duration::from_millis(5));
-                    campaign.note_receive_wait(profile_elapsed(receive_started));
+                    campaign.note_receive_wait(receive_started.elapsed().as_nanos());
                     match received {
                         Ok(Some(reply)) => break reply,
                         Ok(None) => continue,
@@ -3670,6 +3702,7 @@ where
                                     "campaign worker replied for another reservation".into()
                                 );
                             }
+                            watch.prepare_admission(&note, campaign);
                             campaign.admit_dispatch(outcome, &mut |job| {
                                 pool.dispatch((job.planned_finish, job.reservation), job)
                             })?;
@@ -8169,9 +8202,13 @@ mod tests {
         let started = Instant::now()
             .checked_sub(Duration::from_millis(1))
             .expect("one millisecond before now");
-        assert!(profile_elapsed(started) > 0);
+        assert!(profile_elapsed(Some(started)) > 0);
+        assert_eq!(profile_elapsed(None), 0);
 
         let mut profile = LiveCoordinatorProfile::default();
+        assert!(profile.telemetry_json().unwrap()["admission_ns"].is_null());
+        profile.timing_complete = true;
+        assert_eq!(profile.telemetry_json().unwrap()["admission_ns"], 0);
         record_compaction_elapsed(&mut profile, 4, 4, 10);
         record_compaction_elapsed(&mut profile, 4, 3, 20);
         assert_eq!(profile.history_compaction_ns, 0);
@@ -9862,6 +9899,8 @@ mod tests {
         notes: std::sync::Mutex<Vec<usize>>,
         admitted: std::sync::Mutex<Vec<usize>>,
         refuse_start: bool,
+        selected: bool,
+        requested: Mutex<Vec<usize>>,
     }
 
     impl super::CampaignWatch<TestWorkload> for StaggeredWatch {
@@ -9875,6 +9914,20 @@ mod tests {
             let delay = (job.reservation * 7 + self.offset) % 4;
             std::thread::sleep(Duration::from_micros(250 * delay as u64));
             Ok((run()?, job.reservation))
+        }
+
+        fn prepare_admission(
+            &self,
+            note: &usize,
+            campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+        ) {
+            if self.selected {
+                campaign.watch_selected_admissions();
+                if note % 3 == 1 {
+                    assert!(campaign.request_admission(*note));
+                    self.requested.lock().unwrap().push(*note);
+                }
+            }
         }
 
         fn admitted(&self, note: usize, campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
@@ -9894,7 +9947,9 @@ mod tests {
             if self.refuse_start {
                 return Err("the watch refused to start".into());
             }
-            campaign.watch_admissions();
+            if !self.selected {
+                campaign.watch_admissions();
+            }
             Ok(())
         }
     }
@@ -9958,6 +10013,258 @@ mod tests {
             admitted.sort_unstable();
             assert!(!notes.is_empty());
             assert_eq!(notes, admitted);
+        }
+    }
+
+    #[derive(Default)]
+    struct FirstFinishWatch {
+        admitted: Mutex<Vec<super::CampaignAdmission>>,
+    }
+
+    impl super::CampaignWatch<TestWorkload> for FirstFinishWatch {
+        type Note = usize;
+
+        fn run(
+            &self,
+            job: &JobSpec<TestWorkload>,
+            run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+        ) -> super::WatchedJob<TestWorkload, usize> {
+            let outcome = run()?;
+            assert!(
+                outcome
+                    .result
+                    .actions
+                    .iter()
+                    .any(|action| action.outcome.objective_reached)
+            );
+            Ok((outcome, job.reservation))
+        }
+
+        fn prepare_admission(
+            &self,
+            note: &usize,
+            campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+        ) {
+            campaign.watch_selected_admissions();
+            assert!(campaign.request_admission(*note));
+        }
+
+        fn admitted(&self, note: usize, campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+            let admissions = campaign.take_admissions();
+            assert_eq!(admissions.len(), 1);
+            assert_eq!(admissions[0].reservation, note);
+            assert!(
+                admissions[0]
+                    .decisions
+                    .contains(&CampaignAdmissionDecision::Objective)
+            );
+            self.admitted.lock().unwrap().extend(admissions);
+        }
+    }
+
+    #[test]
+    fn the_first_watched_job_keeps_its_admission_when_it_finishes_the_campaign() {
+        let targets = Arc::new(LiveTargets::default());
+        targets
+            .objective_after_work
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        config.stop_campaign_on_objective = true;
+        let mut plain = Vec::new();
+        let expected = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut plain,
+            None,
+        )
+        .unwrap();
+        let mut stream = Vec::new();
+        let watch = FirstFinishWatch::default();
+        let outcome = super::run_campaign_watched(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+            &watch,
+        )
+        .unwrap();
+        assert_eq!(outcome.0.executions_completed, 1);
+        assert_eq!(stream, plain);
+        assert_eq!(outcome, expected);
+        assert_eq!(outcome.1, expected.1);
+        assert_eq!(watch.admitted.into_inner().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn selected_admission_requests_survive_reordered_completions_without_changing_the_campaign() {
+        let mut config = three_worker_config();
+        config.window = 6;
+        config.execution_budget = 60;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut plain = Vec::new();
+        let expected = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut plain,
+            None,
+        )
+        .unwrap();
+        for reverse in [false, true] {
+            let mut stream = Vec::new();
+            let mut coordinator = CampaignCoordinator::start(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default(),
+            )
+            .unwrap();
+            while coordinator.reserve_next().unwrap() {}
+            let mut target = workload.new_target().unwrap();
+            let mut requested = BTreeSet::new();
+            let mut observed = BTreeSet::new();
+            assert!(!coordinator.request_admission(0));
+            coordinator.watch_selected_admissions();
+            assert!(!coordinator.request_admission(usize::MAX));
+            assert!(!coordinator.request_admission(config.execution_budget as usize));
+            while !coordinator.finished() {
+                let jobs = coordinator.plan(usize::MAX);
+                assert!(!jobs.is_empty());
+                let mut outcomes = jobs
+                    .iter()
+                    .map(|job| run_job(&workload, &config, &mut target, job).unwrap())
+                    .collect::<Vec<_>>();
+                if reverse {
+                    outcomes.reverse();
+                }
+                for outcome in outcomes {
+                    let reservation = outcome.reservation;
+                    if reservation % 3 == 1 {
+                        assert!(coordinator.request_admission(reservation));
+                        assert!(coordinator.request_admission(reservation));
+                        requested.insert(reservation);
+                    }
+                    coordinator.admit(outcome).unwrap();
+                    for admission in coordinator.take_admissions() {
+                        assert!(observed.insert(admission.reservation));
+                        assert!(!coordinator.request_admission(admission.reservation));
+                    }
+                }
+            }
+            assert!(!requested.is_empty());
+            assert!(requested.len() < config.execution_budget as usize);
+            assert_eq!(observed, requested);
+            assert!(coordinator.take_admissions().is_empty());
+            let actual = coordinator.finish(Vec::new()).unwrap();
+            assert_eq!(stream, plain);
+            assert_eq!(actual, expected);
+            assert_eq!(
+                serde_json::to_value(&actual.0).unwrap(),
+                serde_json::to_value(&expected.0).unwrap()
+            );
+            assert_eq!(actual.1, expected.1);
+        }
+    }
+
+    #[test]
+    fn disabling_admission_watching_drops_pending_requests_and_collected_records() {
+        let mut config = three_worker_config();
+        config.execution_budget = 3;
+        config.window = 3;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap();
+        while coordinator.reserve_next().unwrap() {}
+        let mut target = workload.new_target().unwrap();
+        let mut jobs = coordinator.plan(usize::MAX);
+        coordinator.watch_selected_admissions();
+        for job in &jobs {
+            assert!(coordinator.request_admission(job.reservation));
+        }
+        let first = jobs.remove(0);
+        coordinator
+            .admit(run_job(&workload, &config, &mut target, &first).unwrap())
+            .unwrap();
+        coordinator.unwatch_admissions();
+        assert!(!coordinator.request_admission(jobs[0].reservation));
+        coordinator.watch_selected_admissions();
+        for job in jobs {
+            coordinator
+                .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                .unwrap();
+        }
+        assert!(coordinator.take_admissions().is_empty());
+    }
+
+    #[test]
+    fn a_sampled_watch_matches_requested_reservations_across_worker_completion_orders() {
+        let config = three_worker_config();
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut plain = Vec::new();
+        let expected = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut plain,
+            None,
+        )
+        .unwrap();
+        for offset in 0..3 {
+            let watch = StaggeredWatch {
+                offset,
+                selected: true,
+                ..StaggeredWatch::default()
+            };
+            let mut stream = Vec::new();
+            let outcome = super::run_campaign_watched(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default(),
+                &watch,
+            )
+            .unwrap();
+            assert_eq!(stream, plain);
+            assert_eq!(outcome, expected);
+            assert_eq!(outcome.1, expected.1);
+            let mut requested = watch.requested.into_inner().unwrap();
+            let mut admitted = watch.admitted.into_inner().unwrap();
+            requested.sort_unstable();
+            admitted.sort_unstable();
+            assert!(!requested.is_empty());
+            assert!(requested.len() < watch.notes.lock().unwrap().len());
+            assert_eq!(admitted, requested);
         }
     }
 

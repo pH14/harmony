@@ -835,6 +835,13 @@ include time the coordinator thread waits for a CPU, so coordinator work per
 job is `coordinator_cpu_ns` over admissions. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
 
+Detailed phase clocks are opt-in through this process-start environment
+variable. Without it, public phase spans are null and `timing_complete` is false;
+resuming any segment without detailed timing also leaves that flag false.
+Job counters, receive/idle waits and the optional coordinator/encoder CPU
+counters remain available independently of detailed profiling.
+Search-checkpoint layout v10 retains the timing-coverage flag with the profile.
+
 The campaign report carries `telemetry`, the host measurements that explain
 where a run's time went. It records bootstrap, search, and persistence wall
 time. Native `dispatch_phase` measures wall time and optional coordinator host
@@ -1080,11 +1087,21 @@ stream as the pool for the same seed and window.
 
 `run_campaign_watched` runs the same pool with a `CampaignWatch`. Its `run`
 hook wraps each job on the worker thread and returns a note with the outcome.
-Its `admitted` hook receives that note and the coordinator on the coordinator
-thread after each admission, and `start` runs once after the coordinator
-starts; an error from `start` stops the campaign. `watch_admissions` makes the
-coordinator keep each admission's decisions, and `take_admissions` drains them,
-so a watcher reads retained ids without parsing the stream.
+`start` runs once after the coordinator starts; an error stops the campaign.
+`prepare_admission` receives the note on the coordinator thread before its
+outcome enters the reorder buffer, while the reservation is still pending.
+`admitted` receives that note after processing the outcome, which can release
+zero or several logically ordered admissions. Notes and decisions are matched
+by reservation, independent of physical completion order.
+
+`watch_admissions` keeps every admission's decisions. A sampled watcher instead
+calls `watch_selected_admissions` and requests each detailed note's reservation
+with `request_admission` during `prepare_admission`. Requests outside selected
+mode or for unknown/non-pending reservations return false. The pending window
+bounds the requested IDs; requests survive completion reordering and are removed
+at logical admission. Only selected decisions are cloned. `take_admissions`
+drains collected records, and `unwatch_admissions` clears records and requests.
+These observer operations leave the stream, report and checkpoint unchanged.
 
 The crate builds for `wasm32-unknown-unknown`. On wasm32 the telemetry clock
 reads zero and progress lines carry `unix_time` 0, because `std::time::Instant`

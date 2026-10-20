@@ -325,7 +325,12 @@ coordinator turns off admission records. An atomic empty-queue check avoids
 locking and polling the state-lookup channel on each idle-view admission. A
 connected viewer turns the records back on with a shared budget of 256 detailed
 jobs per 100 ms feed
-interval. Jobs beyond the budget still update frame and death totals, but skip
+interval. Viewer transitions are applied before submitting the completed job
+for admission. Only notes containing steps or a trail request matching admission
+decisions; unsampled jobs do not clone decision vectors. Selected reservations
+remain matched across out-of-order completions, including the first watched
+high-water completion when no later job can supply its missing decisions.
+Jobs beyond the budget still update frame and death totals, but skip
 trail capture, candidate decompression and display hashing. This sampling affects
 only the view; it does not change selection or archive admission. The first job
 observing each new cleared-level count always contributes its endpoint views

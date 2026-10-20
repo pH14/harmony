@@ -324,12 +324,12 @@ where
         Ok((outcome, note))
     }
 
-    fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>) {
+    fn prepare_admission(&self, note: &Self::Note, campaign: &mut CampaignCoordinator<'_, G>) {
         let watched = self.viewers.load(Ordering::Relaxed) > 0;
         if watched != self.recording.load(Ordering::Relaxed) {
             self.recording.store(watched, Ordering::Relaxed);
             if watched {
-                campaign.watch_admissions();
+                campaign.watch_selected_admissions();
             } else {
                 campaign.unwatch_admissions();
                 if let Some(feed) = lock(&self.shared).feed.as_mut() {
@@ -337,6 +337,13 @@ where
                 }
             }
         }
+        if watched && note.needs_admission() {
+            campaign.request_admission(note.reservation);
+        }
+    }
+
+    fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>) {
+        let watched = self.recording.load(Ordering::Relaxed);
         if watched {
             let admissions = campaign.take_admissions();
             {

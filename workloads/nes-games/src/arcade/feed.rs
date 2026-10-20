@@ -43,6 +43,13 @@ pub struct Note<V> {
     pub death: bool,
 }
 
+impl<V> Note<V> {
+    #[must_use]
+    pub fn needs_admission(&self) -> bool {
+        !self.steps.is_empty() || self.trail.is_some()
+    }
+}
+
 #[derive(Clone, Copy, Serialize)]
 pub struct Point<V> {
     pub observation: V,
@@ -287,7 +294,7 @@ impl<V: Copy> Feed<V> {
     pub fn note(&mut self, note: Note<V>) {
         self.frames = self.frames.saturating_add(note.execution_work);
         self.deaths += u64::from(note.death);
-        if !note.steps.is_empty() || note.trail.is_some() {
+        if note.needs_admission() {
             self.sampled_jobs = self.sampled_jobs.saturating_add(1);
             self.pending.insert(note.reservation, note);
         }
@@ -472,6 +479,43 @@ mod tests {
             decisions: vec![CampaignAdmissionDecision::Retained { id: 8 }],
         }]);
         assert_eq!(feed.view(8), Some(5));
+    }
+
+    #[test]
+    fn the_first_high_water_finish_without_a_trail_keeps_its_matching_admission() {
+        let mut feed = Feed::new(0_u8, 0, 99);
+        let note = Note {
+            reservation: 19,
+            steps: vec![step(43, Some(430), true)],
+            trail: None,
+            next_level: 43,
+            execution_work: 430,
+            death: false,
+        };
+        assert!(note.needs_admission());
+        feed.note(note);
+        feed.admit(vec![CampaignAdmission {
+            reservation: 19,
+            decisions: vec![
+                CampaignAdmissionDecision::Objective,
+                CampaignAdmissionDecision::Retained { id: 7 },
+            ],
+        }]);
+        let batch = feed.take_batch(Stats {
+            stopped: true,
+            won: true,
+            ..Stats::default()
+        });
+        assert_eq!(batch.points.len(), 1);
+        assert_eq!(
+            (batch.points[0].observation, batch.points[0].retained),
+            (43, Some(7))
+        );
+        assert!(batch.points[0].priority);
+        assert_eq!(batch.sampled_jobs, 1);
+        assert_eq!(feed.view(7), Some(43));
+        assert_eq!(feed.digest(7), Some(430));
+        assert!(feed.pending.is_empty());
     }
 
     #[test]
