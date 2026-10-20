@@ -316,7 +316,7 @@ ready /usr/local/pgsql/bin/pg_isready
         let identifier = vocabulary.identifier();
         assert_eq!(
             identifier,
-            "faultlab_bundle_v9;nodes=3;hooks=;disks=0,1;events=none"
+            "faultlab_bundle_v9;nodes=3;hooks=;disks=0,1;events=none;clock=none"
         );
         assert_eq!(
             FaultVocabulary::from_identifier(&identifier).expect("resolve"),

@@ -475,6 +475,52 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
             hold_us,
             ..
         } => format!("park {} after {edges} edges for {hold_us} us", node(index)),
+        FaultOperation::PowerLoss(index, _) => format!(
+            "cut power to {} (unflushed writes lost, down until a later restart)",
+            node(index)
+        ),
+        FaultOperation::PowerLossAll(_) => {
+            "cut power to every node (unflushed writes lost, each down until a later restart)"
+                .into()
+        }
+        FaultOperation::DiskError(index, ticks) => {
+            format!("fail {}'s disk I/O for {}", node(index), span(ticks))
+        }
+        FaultOperation::DiskStall(index, ticks) => {
+            format!("stall {}'s disk I/O for {}", node(index), span(ticks))
+        }
+        FaultOperation::DiskCorrupt(index, _) => format!(
+            "flip one bit of a write on {}'s disk and restart it",
+            node(index)
+        ),
+        FaultOperation::Clock {
+            node: index,
+            offset_ms,
+            rate_ppm,
+            ticks,
+        } => format!(
+            "{} on {} for {}",
+            clock_shift(offset_ms, rate_ppm),
+            node(index),
+            span(ticks)
+        ),
+        FaultOperation::ClockAll {
+            offset_ms,
+            rate_ppm,
+            ticks,
+        } => format!(
+            "{} on every node, scaled per node, for {}",
+            clock_shift(offset_ms, rate_ppm),
+            span(ticks)
+        ),
+    }
+}
+
+fn clock_shift(offset_ms: i32, rate_ppm: i32) -> String {
+    if rate_ppm <= process_proto::CLOCK_RATE_STOPPED_PPM {
+        format!("stop the wall clock after a {offset_ms} ms step")
+    } else {
+        format!("step the wall clock {offset_ms} ms, then drift {rate_ppm} ppm")
     }
 }
 
@@ -1658,6 +1704,22 @@ mod tests {
         assert_eq!(
             describe(&FaultOperation::Kill(7, ticks(1)), &names),
             "kill node 7 (down until a later restart)"
+        );
+        assert_eq!(
+            describe(&FaultOperation::DiskStall(0, ticks(64)), &names),
+            "stall n1's disk I/O for 0.64 s"
+        );
+        assert_eq!(
+            describe(
+                &FaultOperation::Clock {
+                    node: 1,
+                    offset_ms: 0,
+                    rate_ppm: process_proto::CLOCK_RATE_STOPPED_PPM,
+                    ticks: ticks(128),
+                },
+                &names
+            ),
+            "stop the wall clock after a 0 ms step on n2 for 1.28 s"
         );
         assert_eq!(alive(0b101, &names), vec!["n1", "n3"]);
     }

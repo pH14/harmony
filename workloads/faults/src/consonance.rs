@@ -2971,6 +2971,7 @@ mod tests {
         fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
             self.branch_with_service(
                 parent,
+                input.seed(),
                 input.config().clone(),
                 input.payloads().unwrap_or_default().to_vec(),
                 Vec::new(),
@@ -3750,6 +3751,7 @@ mod tests {
         fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
             self.branch_with_service(
                 parent,
+                input.seed(),
                 input.config().clone(),
                 Vec::new(),
                 Vec::new(),
@@ -5516,6 +5518,7 @@ mod tests {
                 ram_mib: DEFAULT_RAM_MIB,
                 backend: GuestBackend::Vm,
                 root: None,
+                boot_cache: None,
             },
         );
         use searcher::search::campaign::Reporting;
@@ -5550,6 +5553,7 @@ mod tests {
                 ram_mib: DEFAULT_RAM_MIB,
                 backend: GuestBackend::Vm,
                 root: None,
+                boot_cache: None,
             },
         );
         let target = unbooted_target();
