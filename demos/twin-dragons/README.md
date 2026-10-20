@@ -9,8 +9,9 @@ parameter picks the game, and the level selector switches between them. The
 page opens the level selector and starts searching once a level is chosen, or
 from the first level if the selector is closed. A `level` URL parameter with a
 level id starts that level's search at once. Each
-game has one map per level. All execution happens on the visitor's computer,
-so hosting needs only static files.
+game has one map per level. By default, search and rendering run on the
+visitor's computer, so hosting needs only static files. Native runs move the
+search to a Linux machine while the viewing browser renders and records it.
 
 ## Run
 
@@ -142,8 +143,9 @@ save it. MediaRecorder chunks write to that file in order as they arrive;
 there is no recording duration or file size limit. The browser holds at most
 8 MiB of pending writes plus an encoder chunk and its normal frame buffers.
 If storage cannot keep up, capture pauses while writes drain and resumes
-without stopping the search; the status explains the pause. Disk or encoder
-failures abort the uncommitted file and report the error. Stop recording before
+without stopping the search; the status explains the pause. Video omits the
+search activity during these pauses. Disk or encoder failures abort the
+uncommitted file and report the error. Stop recording before
 leaving the page so the browser can finish and commit the file.
 
 **Record clip** works in browsers without the file picker too: let the search
@@ -193,11 +195,38 @@ record/download checks against its actual event stream.
 ### Native runs
 
 `tools/launcher.py` starts live campaigns on Linux machines over SSH and serves
-the page that watches them. Copy `tools/arcade-machines.example.toml` to
+the page that watches them. On the Mac, install `uv` and complete the
+[Run](#run) prerequisites and `npm ci` / `./tools/build-runtime.sh` steps first;
+these build the browser runtime, maps and homebrew ROM assets. The Linux
+machine needs the repository's pinned Rust toolchain (installed through
+`rustup`), git, curl, a C++ compiler, make, patch, flock and sha256sum. Its SSH
+account needs a writable working directory and permission to start systemd
+user units, or system units when connecting as root.
+
+From `demos/twin-dragons`, copy `tools/arcade-machines.example.toml` to
 `~/.config/harmony/arcade-machines.toml` and list each machine with its SSH
 destination, a working directory, and the most workers and memory the page may
 ask for. The optional `roms` directory holds the ROMs the site does not ship,
-named as in `roms/manifest.json`. Then run:
+named as in `roms/manifest.json`. For example, to offer up to 128 workers:
+
+```toml
+[machines.cloud]
+ssh = "your-cloud-host"
+dir = "/srv/harmony-arcade"
+workers = 128
+memory_mib = 16384
+```
+
+The dialog must also select 128 workers to start one 128-worker campaign.
+The launcher sets `window: 4`; `nes-eval` multiplies this by workers, so 128
+workers allow 512 outstanding reservations. This is configuration, not a
+throughput guarantee. `memory_mib` budgets the archive and bounded draw state;
+the launcher's process limit adds 1 GiB for workers and other overhead. The example therefore
+sets a 17 GiB process limit. Leave host memory for other services and check
+actual process usage for the chosen workload and worker count; exceeding the
+process limit can terminate the run.
+
+Then run on the Mac:
 
 ```bash
 npm run build

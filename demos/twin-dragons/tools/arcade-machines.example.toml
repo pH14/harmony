@@ -6,11 +6,18 @@
 roms = "~/arcade-roms"
 
 # One table per machine. `ssh` is any destination `ssh` accepts, such as a
-# Host alias from ~/.ssh/config. The machine needs Linux with systemd, Rust,
-# git, curl and a C++ compiler. `dir` holds the source, builds, ROMs and runs.
+# Host alias from ~/.ssh/config. The machine needs Linux with systemd, the
+# repository-pinned Rust toolchain through rustup, git, curl, a C++ compiler,
+# make, patch, flock and sha256sum. The SSH account must be able to start
+# systemd user units (or system units as root) and write to `dir`.
+# `dir` holds the source, builds, ROMs and runs.
 # `workers` and `memory_mib` are the largest values the page offers. `runs`
 # lists directories that hold other `nes-eval` campaigns; the page lists every
-# running campaign under them so it can be watched.
+# running campaign under them so it can be watched. Set workers = 128 to offer
+# that choice; select 128 in the dialog to use it. The launcher uses window = 4
+# per worker (512 outstanding reservations at 128 workers). Its process memory
+# limit is memory_mib + 1024 MiB; allow additional host memory for other services.
+# This config sets limits, not a throughput or resource-adequacy guarantee.
 [machines.example]
 ssh = "builder.example.com"
 dir = "/srv/harmony-arcade"
