@@ -32,6 +32,9 @@ fn to_process_action(fault: &Fault) -> ProcessAction {
             target: *target,
         },
         Fault::ProcPowerLoss { choice } => ProcessAction::PowerLoss { choice: *choice },
+        Fault::ProcDiskError => ProcessAction::DiskError,
+        Fault::ProcDiskStall(hold) => ProcessAction::DiskStall { hold_nanos: hold.0 },
+        Fault::ProcDiskCorrupt { choice } => ProcessAction::DiskCorrupt { choice: *choice },
         _ => unreachable!("process_target received a non-process fault"),
     }
 }
@@ -53,6 +56,9 @@ fn from_process_action(action: ProcessAction) -> Option<Fault> {
             target,
         },
         ProcessAction::PowerLoss { choice } => Fault::ProcPowerLoss { choice },
+        ProcessAction::DiskError => Fault::ProcDiskError,
+        ProcessAction::DiskStall { hold_nanos } => Fault::ProcDiskStall(Span(hold_nanos)),
+        ProcessAction::DiskCorrupt { choice } => Fault::ProcDiskCorrupt { choice },
     })
 }
 
@@ -80,6 +86,9 @@ mod tests {
                 target: crate::ParkTarget::new(0x1000, 0x1004),
             },
             Fault::ProcPowerLoss { choice: 9 },
+            Fault::ProcDiskError,
+            Fault::ProcDiskStall(Span(3_000_000)),
+            Fault::ProcDiskCorrupt { choice: 11 },
         ] {
             let bytes = process_target(3, &f);
             assert_eq!(decode_process_target(&bytes), Some((3, f)));
