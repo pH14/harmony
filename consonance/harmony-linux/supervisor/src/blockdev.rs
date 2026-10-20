@@ -106,8 +106,8 @@ fn ram_path(index: u32) -> PathBuf {
 fn ioctl(file: &File, request: u64, argument: *mut libc::c_void) -> io::Result<()> {
     // SAFETY: `file` stays open for the call, and every caller passes a
     // request whose argument layout matches `argument`: a two-word range for
-    // BLKDISCARD, or a device-mapper buffer at least as long as the
-    // `data_size` it declares.
+    // the block discard request, or a device-mapper buffer at least as long
+    // as the `data_size` it declares.
     let result = unsafe { libc::ioctl(file.as_raw_fd(), request as _, argument) };
     if result < 0 {
         return Err(io::Error::last_os_error());
