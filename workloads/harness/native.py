@@ -345,8 +345,10 @@ class Run:
         (self.out / "antithesis").mkdir()
         (self.out / "pids").mkdir()
         (self.out / "antithesis" / "sdk.jsonl").touch()
-        cpus = ["--cpuset-cpus", self.args.cpuset_cpus] if self.args.cpuset_cpus else []
-        self.docker("run", "-d", "--init", "--privileged", "--name", self.name, *cpus,
+        limits = ["--cpuset-cpus", self.args.cpuset_cpus] if self.args.cpuset_cpus else []
+        if self.args.memory:
+            limits += ["--memory", self.args.memory]
+        self.docker("run", "-d", "--init", "--privileged", "--name", self.name, *limits,
                     "--tmpfs", "/tmp:rw,exec,mode=1777,size=8g",
                     "-v", f"{self.out}:{MOUNT}", "--entrypoint", "sleep", image, "infinity",
                     check=True, stdout=subprocess.DEVNULL)
@@ -461,6 +463,7 @@ def main():
     parser.add_argument("--kill-all-probability", type=float, default=0.0, metavar="P",
                         help="chance that a random fault kills every node instead of one")
     parser.add_argument("--cpuset-cpus", default=None, help="CPUs for the container, as in docker run")
+    parser.add_argument("--memory", default=None, help="memory limit for the container, as in docker run")
     parser.add_argument("--final-probe", default=None, metavar="COMMAND",
                         help="command run in the container after the run; its last stdout line goes in the result")
     args = parser.parse_args()
