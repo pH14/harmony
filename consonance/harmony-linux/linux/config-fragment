@@ -147,9 +147,11 @@ CONFIG_SYSFS=y
 CONFIG_DEVTMPFS=y
 # The package-neutral guest network substrate is built in so workloads can
 # create private network namespaces and apply deterministic directional netem
-# faults without loading modules or depending on a richer host kernel.
+# faults without loading modules or depending on a richer host kernel. Time
+# namespaces give each supervised node its own wall-clock offset.
 CONFIG_NAMESPACES=y
 CONFIG_NET_NS=y
+CONFIG_TIME_NS=y
 CONFIG_NET=y
 CONFIG_UNIX=y
 CONFIG_INET=y
