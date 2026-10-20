@@ -318,6 +318,8 @@ namespaces, with HTTP ports 4001, 4003 and 4005, Raft ports 4002, 4004 and
 4006 and data under `/tmp/rqlite/<node>`. The setup script forwards the HTTP
 ports on 127.0.0.1 to the nodes, and the adapter dials 127.0.0.1. `ready`
 creates the tables through the first node that accepts the statements.
+Each node's data directory is a 256 MiB node disk in both bundles, so the
+search draws power-loss and disk faults for every node.
 
 The default `bundle` drives the `register` family on table `kv`. `write` is an
 upsert, `cas` is an `UPDATE` that matches the old value and fails definitely
