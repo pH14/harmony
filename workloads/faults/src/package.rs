@@ -389,7 +389,7 @@ mod live {
         MemoryNeeds {
             coordinator: (MEMORY_BUDGET_MIB as u64) << 20,
             worker: guest.saturating_add(WORKER_OVERHEAD_MIB << 20),
-            store_floor: guest,
+            store_floor: guest.saturating_add(guest / 2),
         }
     }
 
