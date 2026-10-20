@@ -36,15 +36,11 @@ fn patterns(paths: &[String]) -> String {
 
 pub fn script(settings: &Explain, offsets: &BTreeMap<String, u64>, history: bool) -> String {
     let mut text =
-        format!("IFS='\n'\nm={MARK}\necho \"$m clock $(cat /proc/uptime 2>/dev/null)\"\n");
+        format!("IFS='\n'\nm={MARK}\nsizes=\necho \"$m clock $(cat /proc/uptime 2>/dev/null)\"\n");
     if !settings.logs.is_empty() {
-        let cases = offsets
-            .iter()
-            .map(|(path, offset)| format!("      {}) start={offset} ;;\n", quote(path)))
-            .collect::<String>();
         let _ = write!(
             text,
-            "for p in {}; do\n  for f in $p; do\n    [ -f \"$f\" ] || continue\n    size=$(($(wc -c < \"$f\")))\n    case \"$f\" in\n{cases}      *) start=0 ;;\n    esac\n    [ \"$size\" -lt \"$start\" ] && start=0\n    [ $((size - start)) -gt {LOG_LIMIT} ] && start=$((size - {LOG_LIMIT}))\n    echo \"$m log $size $start $f\"\n    tail -c +$((start + 1)) \"$f\" | head -c $((size - start))\n    echo\n    echo \"$m end\"\n  done\ndone\n",
+            "for p in {}; do\n  for f in $p; do\n    [ -f \"$f\" ] && sizes=\"$sizes$(($(wc -c < \"$f\"))) $f\n\"\n  done\ndone\n",
             patterns(&settings.logs)
         );
     }
@@ -53,6 +49,17 @@ pub fn script(settings: &Explain, offsets: &BTreeMap<String, u64>, history: bool
             text,
             "for p in {}; do\n  for d in $p; do\n    [ -d \"$d\" ] || continue\n    echo \"$m data $d\"\n    find \"$d\" -type f -exec cksum {{}} + 2>/dev/null\n    echo \"$m end\"\n  done\ndone\n",
             patterns(&settings.data)
+        );
+    }
+    text.push_str("echo \"$m settled $(cat /proc/uptime 2>/dev/null)\"\n");
+    if !settings.logs.is_empty() {
+        let cases = offsets
+            .iter()
+            .map(|(path, offset)| format!("    {}) start={offset} ;;\n", quote(path)))
+            .collect::<String>();
+        let _ = write!(
+            text,
+            "for e in $sizes; do\n  size=${{e%% *}}\n  f=${{e#* }}\n  case \"$f\" in\n{cases}    *) start=0 ;;\n  esac\n  [ \"$size\" -lt \"$start\" ] && start=0\n  [ $((size - start)) -gt {LOG_LIMIT} ] && start=$((size - {LOG_LIMIT}))\n  echo \"$m log $size $start $f\"\n  tail -c +$((start + 1)) \"$f\" | head -c $((size - start))\n  echo\n  echo \"$m end\"\ndone\n"
         );
     }
     if let Some(command) = settings.history.as_ref().filter(|_| history) {
@@ -76,6 +83,7 @@ pub type Files = BTreeMap<String, (u64, u64)>;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Capture {
     pub uptime: Option<f64>,
+    pub settled: Option<f64>,
     pub logs: BTreeMap<String, LogPart>,
     pub data: BTreeMap<String, Files>,
     pub history: Option<String>,
@@ -94,11 +102,16 @@ pub fn parse(output: &str) -> Capture {
             continue;
         };
         let (kind, arguments) = rest.split_once(' ').unwrap_or((rest, ""));
-        if kind == "clock" {
-            capture.uptime = arguments
+        if matches!(kind, "clock" | "settled") {
+            let value = arguments
                 .split_whitespace()
                 .next()
                 .and_then(|value| value.parse().ok());
+            if kind == "clock" {
+                capture.uptime = value;
+            } else {
+                capture.settled = value;
+            }
             continue;
         }
         if !matches!(kind, "log" | "data" | "history") {
@@ -210,6 +223,15 @@ pub fn template(line: &str) -> String {
 pub fn appended<'a>(before: &str, after: &'a str) -> &'a str {
     if let Some(rest) = after.strip_prefix(before) {
         return rest;
+    }
+    let common = before
+        .split_inclusive('\n')
+        .zip(after.split_inclusive('\n'))
+        .take_while(|(old, new)| old == new && old.ends_with('\n'))
+        .map(|(old, _)| old.len())
+        .sum::<usize>();
+    if common > 0 {
+        return &after[common..];
     }
     let last = before.trim_end_matches('\n').rsplit('\n').next();
     if let Some(last) = last.filter(|line| !line.is_empty())
@@ -571,6 +593,7 @@ pub fn spans(actions: &[FaultAction], violation: usize, names: &Names) -> Vec<Sp
 pub struct Observed {
     pub step: usize,
     pub uptime: Option<f64>,
+    pub settled: Option<f64>,
     pub logs: BTreeMap<String, Log>,
     pub data: BTreeMap<String, Files>,
     pub history: Option<String>,
@@ -617,6 +640,7 @@ pub struct Explanation {
     pub shrink_replays: Option<usize>,
     pub faults: Vec<Fault>,
     pub guest_clock_offset_seconds: Option<f64>,
+    pub capture_seconds: Option<f64>,
     pub history: Option<String>,
     pub windows: Vec<Window>,
     pub commands: Commands,
@@ -734,6 +758,11 @@ pub fn explanation(inputs: &Inputs<'_>) -> Explanation {
         shrink_replays: None,
         faults,
         guest_clock_offset_seconds: offset,
+        capture_seconds: inputs
+            .observed
+            .values()
+            .filter_map(|observed| Some(observed.settled? - observed.uptime?))
+            .reduce(f64::max),
         history: inputs
             .observed
             .get(&inputs.violation)
@@ -875,6 +904,12 @@ pub fn render(explanation: &Explanation) -> String {
                 explanation.faults.len()
             );
         }
+    }
+    if let Some(capture) = explanation.capture_seconds {
+        let _ = writeln!(
+            text,
+            "- Capture: each probe recorded log sizes and data checksums within {capture:.2} s of guest time after its boundary. The guest keeps running during a probe, without the next fault."
+        );
     }
     if let Some(offset) = explanation.guest_clock_offset_seconds {
         let _ = writeln!(
@@ -1062,6 +1097,7 @@ impl Worker<'_> {
                 observed.logs = self.logs.clone();
                 observed.data = capture.data;
                 observed.uptime = capture.uptime;
+                observed.settled = capture.settled;
                 observed.history = capture.history;
             }
             Err(error) => observed.error = Some(error.to_string()),
@@ -1425,6 +1461,8 @@ mod tests {
         );
         assert_eq!(first.logs[&format!("{base}/n2.log")].text, "start");
         assert_eq!(first.history.as_deref(), Some("{\"lost\":[7]}\n2"));
+        assert_eq!(first.settled.is_some(), first.uptime.is_some());
+        assert!(first.settled >= first.uptime);
         let files = &first.data[&format!("{base}/n1")];
         assert_eq!(
             files.keys().cloned().collect::<Vec<_>>(),
@@ -1513,6 +1551,10 @@ mod tests {
         assert_eq!(appended("x\nb\n", "b\nc\n"), "c\n");
         assert_eq!(appended("", "c\n"), "c\n");
         assert_eq!(appended("gone\n", "fresh\n"), "fresh\n");
+        assert_eq!(
+            appended("a\nb\nlost\n", "a\nb\nlater\nmore\n"),
+            "later\nmore\n"
+        );
     }
 
     #[test]
