@@ -232,6 +232,10 @@ error or stall window stays down until the window closes, then restarts after
 a fault. For a node without a disk, error and stall windows do nothing and a
 corruption window only restarts the node.
 
+A power loss or corruption runs inside the supervisor's poll loop and takes
+from about 200 ms to a few seconds of guest time, growing with the log. A
+window that opens and closes in that time is never seen.
+
 ## Investigation terminal
 
 The supervisor polls the process-proto debug namespace alongside standing policy.
