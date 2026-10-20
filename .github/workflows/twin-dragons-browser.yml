@@ -51,6 +51,8 @@ jobs:
           wasm-pack test --node demos/twin-dragons/rust
           cd demos/twin-dragons
           npm test
+          npm run test:famidash-audit
+          python3 ../../workloads/nes/famidash-repairs/regressions.py public/famidash public
           python3 -m unittest discover -s tools -p test_launcher.py
       - name: Static demo and corresponding source
         uses: actions/upload-artifact@v4

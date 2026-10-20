@@ -52,6 +52,8 @@ cp "$demo/CREDITS.md" "$demo/public/licenses/CREDITS.md"
 cp "$build/twin-dragons/UPSTREAM-LICENSE.txt" "$demo/public/licenses/twin-dragons-LICENSE.txt"
 cp "$build/famidash/UPSTREAM-LICENSE.txt" "$demo/public/licenses/famidash-LICENSE.txt"
 cp "$build/famidash/UPSTREAM-CREDITS.md" "$demo/public/licenses/famidash-CREDITS.md"
+mkdir -p "$demo/public/licenses/famidash-repairs"
+cp "$root"/workloads/nes/famidash-repairs/{README.md,source.patch,source-files.json,level-edits.json,roms.json,apply.py,rebuild.py,LICENSE-FAMIDASH.txt} "$demo/public/licenses/famidash-repairs/"
 for side in main b-sides c-sides d-sides; do
     cp "$build/famidash/UPSTREAM-music-$side.json5" "$demo/public/licenses/famidash-music-$side.json5"
 done

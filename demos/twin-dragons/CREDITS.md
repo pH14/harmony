@@ -43,11 +43,13 @@ endorsed by the authors.
 - Release: https://github.com/tfdsoft/famidash/releases/tag/1.2.8, built from
   commit `0df680d0e02f0ccb438f1224d162a0ab073b7204`
 - Game code: **MIT license**, shipped as `licenses/famidash-LICENSE.txt`.
-- The site ships the four official release ROMs unchanged:
+- The site ships Harmony-repaired builds derived from these official ROMs:
   `Famidash.v1.2.8.nes`, `Famidash.B.Sides.v1.2.8.nes`,
   `Famidash.C.Sides.v1.2.8.nes` and `Famidash.D.Sides.v1.2.8.nes`.
-  `workloads/nes/scripts/build-famidash-rom.sh` downloads them and checks their
-  SHA-256.
+  `workloads/nes/scripts/build-famidash-rom.sh` checks the official inputs,
+  applies the reviewed repair delta, and verifies each resulting SHA-256.
+  Modified collision code and level data, source rebuild instructions and
+  validation are in `licenses/famidash-repairs/`.
 - Music is arranged from tracks by the artists that the release's music
   metadata names for each song. The Famidash credits dialog lists them by
   side. The metadata ships as `licenses/famidash-music-main.json5`,

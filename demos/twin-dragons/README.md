@@ -48,8 +48,9 @@ source archive supplies level data, tiles and tables for the maps. The build
 extracts only those files into the gitignored `.build/` directory and never
 publishes the archive. `workloads/nes/scripts/build-famidash-rom.sh` downloads
 the four official Famidash 1.2.8 release ROMs, the MIT license, the music
-credits and the music metadata and checks their SHA-256. The site ships the
-ROMs unchanged.
+credits and the music metadata and checks their SHA-256. The build applies Harmony’s checksum-verified collision and level repairs
+before shipping the ROMs. The [repair package](../../workloads/nes/famidash-repairs/README.md)
+contains source patches, an exact source rebuild, and regression instructions.
 
 ## The game
 

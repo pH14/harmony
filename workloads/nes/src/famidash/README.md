@@ -16,7 +16,8 @@ pinned in `famidash-versions.env`: the main game and the B-Sides, C-Sides and
 D-Sides. It also downloads the MIT license, the credits and the four music
 metadata files from release commit 0df680d, and checks every SHA-256 value. It
 writes `famidash.nes`, `famidash-b-sides.nes`, `famidash-c-sides.nes` and
-`famidash-d-sides.nes` to `build/famidash` unchanged, with
+`famidash-d-sides.nes` to `build/famidash` after applying the checksum-verified
+[Harmony repair package](../../famidash-repairs/README.md), with
 `UPSTREAM-music-*.json5` naming the artist of each level's song. The game is
 MIT licensed, copyright 2023-2024 TFDSoft.
 
@@ -42,7 +43,7 @@ groups the arcade shows, 109 levels in all:
 The title menu's first button opens the main levels and the second opens the
 community levels. On the side ROMs the first button only shows a notice, so
 their levels come from the second. `Side::from_rom` names the side from the
-ROM's SHA-256. Release 1.2.8 has no E-Sides ROM.
+patched ROM's SHA-256. Saved maps and campaign identities include that digest. Release 1.2.8 has no E-Sides ROM.
 
 ## Memory map
 

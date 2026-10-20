@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "kind": "strict-negative",
+      "case": "demos/twin-dragons/tools/famidash-audit/findings/shared-engine/mini-wave45/fingerdash-mini45-original-negative.json.gz",
+      "rom": "famidash.nes",
+      "sha256": "5eb6dc6f142029c5ca52d654db7356e3e33f6a1e9a19b39f5049734ac16ec6cf"
+    },
+    {
+      "kind": "strict-negative",
+      "case": "demos/twin-dragons/tools/famidash-audit/findings/shared-engine/wave66-shared-tile-reads/hell-normal66-combined-original-witness.json.gz",
+      "rom": "famidash-c-sides.nes",
+      "sha256": "b9ed42700bb4e0525b210db18823af8f7f8b25fc2dcf9bdce2b3b9e368e7a4ca"
+    },
+    {
+      "kind": "strict-negative",
+      "case": "demos/twin-dragons/tools/famidash-audit/findings/shared-engine/mini-wave66/release-hell-mini66-original-witness.json.gz",
+      "rom": "famidash-c-sides.nes",
+      "sha256": "203041314ce0cdc334e08c92db51a53380a025137cd4ae106235560ea0e50d6e"
+    },
+    {
+      "kind": "strict-negative",
+      "case": "demos/twin-dragons/tools/famidash-audit/findings/shared-engine/mini-wave45-shared-tile-reads/hell-wave-slope-corner-original-witness.json.gz",
+      "rom": "famidash-c-sides.nes",
+      "sha256": "bed00ba197b71479712792321b1b262f93b054942031d74d5e011cf24649d778"
+    },
+    {
+      "kind": "strict-negative",
+      "case": "demos/twin-dragons/tools/famidash-audit/findings/shared-engine/mini-wave45-shared-tile-reads/hell-wave-lower-slope-original-witness.json.gz",
+      "rom": "famidash-c-sides.nes",
+      "sha256": "a5b022a952b37568581f65014589caa4b6ebf331aadb86642bef814d410e98aa"
+    },
+    {
+      "kind": "strict-negative",
+      "case": "demos/twin-dragons/tools/famidash-audit/findings/shared-engine/mini-wave66/aftercatabath-mini66-lu-original-witness.json.gz",
+      "rom": "famidash-d-sides.nes",
+      "sha256": "7ebb28083419ba60f5d2cd50f4f81fba7008466cf2e538b2b6064b0da678238e"
+    },
+    {
+      "kind": "strict-negative",
+      "case": "demos/twin-dragons/tools/famidash-audit/findings/shared-engine/xstep-wall/xstep-original-round76-closed-wall-witness.json.gz",
+      "rom": "famidash.nes",
+      "sha256": "6399e1dd370b20bac0c4600f51eb447394d858ec016c45f47d319dadb65b1bdd"
+    },
+    {
+      "kind": "strict-negative",
+      "case": "demos/twin-dragons/tools/famidash-audit/findings/shared-engine/kappa-three-cavities/kappa-cavity35-original-witness.json.gz",
+      "rom": "famidash.nes",
+      "sha256": "5bdd1dcf012ff598a3fc5685cc71cdebcd49c4ef77eabe903981e548a5bb9d52"
+    },
+    {
+      "kind": "strict-negative",
+      "case": "demos/twin-dragons/tools/famidash-audit/findings/shared-engine/kappa-three-cavities/kappa-cavity36-original-witness.json.gz",
+      "rom": "famidash.nes",
+      "sha256": "8ea66dc7b9218f2a0d469f2d1b3c31c50463081126276d0beda5581e6fa4d046"
+    },
+    {
+      "kind": "strict-negative",
+      "case": "demos/twin-dragons/tools/famidash-audit/findings/shared-engine/kappa-three-cavities/kappa-cavity47-original-witness.json.gz",
+      "rom": "famidash.nes",
+      "sha256": "0a78402f699dc557ba55ee1f22789131a056f58446c95328dcee8749d8816e04"
+    },
+    {
+      "kind": "strict-negative",
+      "case": "workloads/nes/famidash-repairs/cases/dorabae-mini22-original-negative.json.gz",
+      "rom": "famidash-b-sides.nes",
+      "sha256": "cf1522458eb2fa1ea08deb4f0c28bff87600b322c116159119dd5864f7688543"
+    },
+    {
+      "kind": "contact-fixed",
+      "case": "workloads/nes/famidash-repairs/cases/harmony-v1-toe-negative.json.gz",
+      "rom": "famidash.nes",
+      "sha256": "78f4c758c7fb725eaf8f253993c966b3bd668deda42460def5f94edfbeda309f"
+    },
+    {
+      "kind": "contact-original",
+      "case": "workloads/nes/famidash-repairs/cases/toe-round96-original-replay.json.gz",
+      "rom": "famidash.nes",
+      "sha256": "d12a2e4bcab33152465179ae7de2d34fefb0ddcbc7be8574ab3dcee535f0f8d0"
+    },
+    {
+      "kind": "clearing-control",
+      "case": "workloads/nes/famidash-repairs/cases/harmony-v1-toe-clearing.json.gz",
+      "rom": "famidash.nes",
+      "sha256": "3cfd86bf0b5f62741b1ecc1ccfdaab788cd6ad39adfc9ff287f9407c0b4994ca"
+    },
+    {
+      "kind": "clearing-control",
+      "case": "workloads/nes/famidash-repairs/cases/harmony-v1-fingerdash-clearing.json.gz",
+      "rom": "famidash.nes",
+      "sha256": "951c3c04573d52922ffbaeb517599314c492cbc6384fb69bf0d44c14978d9611"
+    },
+    {
+      "kind": "clearing-control",
+      "case": "workloads/nes/famidash-repairs/cases/harmony-v1-dorabae-clearing.json.gz",
+      "rom": "famidash-b-sides.nes",
+      "sha256": "1d64f4f97233e40e8534afb6d8ea96d55d08698fa0d0c64b27a656cc81b169b1"
+    }
+  ]
+}

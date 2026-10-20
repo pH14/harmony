@@ -1,0 +1,51 @@
+{
+  "status": "verified",
+  "cases": 131072,
+  "maximum_instructions_to_decision": 57,
+  "mini45_classes": [
+    11,
+    12,
+    21,
+    22
+  ],
+  "mini22_classes": [
+    13,
+    14,
+    15,
+    16,
+    23,
+    24,
+    25,
+    26
+  ],
+  "direct_call_banks": [
+    {
+      "caller": "_check_spike_motion",
+      "callee": "_ss_test_tile",
+      "caller_prg_bank": 56,
+      "callee_prg_bank": 56,
+      "direct_call_rom_offsets": [
+        465313,
+        465411,
+        465512,
+        465585
+      ]
+    },
+    {
+      "caller": "_ss_test_tile",
+      "callee": "_ss_test_spike_tile",
+      "caller_prg_bank": 56,
+      "callee_prg_bank": 63,
+      "direct_call_rom_offsets": [
+        464999
+      ]
+    }
+  ],
+  "rom_sha256": "549458fc0a82868cdefa3df9398e4d49782e1b06debace846bbd570c803ee43d",
+  "debug_sha256": "8b68db7f6b56eed4efaea14b9f7480c149d5dcb10cbeb77a4815aa63c3622d89",
+  "source_sha256": {
+    "pit_crossing.h": "8f57a4d0e111105c417e74216df1205d23c28af1063cd3aaf8eaee967e4d3832",
+    "spike_sweep.h": "41ae16d2608267c755d4ab04b73909c7c2cb5d9daa04a06d42f8b6a4507c088d"
+  },
+  "limitation": "Executes the assembled query decision, not the dispatched motion kernel, mapper or frame budget."
+}

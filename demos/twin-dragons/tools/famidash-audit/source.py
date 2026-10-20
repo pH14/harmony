@@ -62,10 +62,10 @@ def export(source):
     assert len(definitions) == 256
     levels = []
     for side, letter, rom, sha_key in (
-        ("main", "A", "famidash.nes", "FAMIDASH_ROM_SHA256"),
-        ("b", "B", "famidash-b-sides.nes", "FAMIDASH_B_SIDES_ROM_SHA256"),
-        ("c", "C", "famidash-c-sides.nes", "FAMIDASH_C_SIDES_ROM_SHA256"),
-        ("d", "D", "famidash-d-sides.nes", "FAMIDASH_D_SIDES_ROM_SHA256"),
+        ("main", "A", "famidash.nes", "FAMIDASH_UPSTREAM_ROM_SHA256"),
+        ("b", "B", "famidash-b-sides.nes", "FAMIDASH_B_SIDES_UPSTREAM_ROM_SHA256"),
+        ("c", "C", "famidash-c-sides.nes", "FAMIDASH_C_SIDES_UPSTREAM_ROM_SHA256"),
+        ("d", "D", "famidash-d-sides.nes", "FAMIDASH_D_SIDES_UPSTREAM_ROM_SHA256"),
     ):
         table = source / f"LEVELS/include/lvlset_{letter}/all_level_table.s"
         object_names = {int(value, 16): name for name, value in re.findall(

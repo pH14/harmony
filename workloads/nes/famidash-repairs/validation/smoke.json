@@ -1,0 +1,12 @@
+{
+  "searched_levels": 109,
+  "executions": 283536,
+  "candidates": 5617,
+  "reviewed_candidates": 5617,
+  "endpoint_mismatches": 0,
+  "ledger_sha256": "2496756212e939bdeb85a1bbb275882a8ba468e3d2cabf2455bed203d80a805f",
+  "review_sha256": "5c83206fc8890de618bed505f5f58c0ca88ccc98f0852dade3f1bc2a04343744",
+  "source_review_complete": false,
+  "clean_round_count": 0,
+  "limitation": "Bounded integration smoke; earlier experimental full campaigns do not qualify these ROMs."
+}

@@ -13,7 +13,7 @@ const CREDIT = {
   source: "https://github.com/tfdsoft/famidash/tree/0df680d0e02f0ccb438f1224d162a0ab073b7204",
   code_license: "MIT",
   artwork:
-    "Captured from the screens of Famidash 1.2.8 by TFDSoft, MIT license. Modified: composed into level maps and a sprite sheet. Famidash is an unofficial fan demake of Geometry Dash by RobTop Games.",
+    "Captured from the screens of Famidash 1.2.8 by TFDSoft, MIT license. Modified: Harmony collision and level repairs, composed into level maps and a sprite sheet. Famidash is an unofficial fan demake of Geometry Dash by RobTop Games.",
 };
 const LEVEL = 0x47b,
   GAME_STATE = 0x498,
@@ -468,7 +468,24 @@ for (const entry of chosen) {
   const maps = [];
   for (const level of entry.levels) {
     if (!routes[level.id]) throw new Error(`${entry.name} has no recorded route for ${level.name}; run with --search ${entry.id} ${level.id}`);
-    const map = await buildLevel(out, level.id, routes[level.id]);
+    let map;
+    try {
+      map = await buildLevel(out, level.id, routes[level.id]);
+    } catch (error) {
+      if (mode !== "--repair" || !error.message.includes("no longer reaches its end")) throw error;
+      console.log("Regenerating map capture route for", entry.name, level.name);
+      const original = routes[level.id];
+      let route = typeof original === "string"
+        ? [...original].map(code => String.fromCharCode(97 + decode(code) % ASSIST)).join("")
+        : { ...original, inputs: original.inputs.map(([buttons, frames]) => [buttons, frames, true]) };
+      try { map = await buildLevel(out, level.id, route); }
+      catch (captureError) {
+        if (!captureError.message.includes("no longer reaches its end")) throw captureError;
+        route = encode(search(level.id, true));
+        map = await buildLevel(out, level.id, route);
+      }
+      await writeRoute(entry, level.id, route);
+    }
     maps.push(map);
     tops.get(entry.side)[level.id] = map.top;
     if (map.top !== level.top) moved.push(`${entry.name} ${level.name}`);

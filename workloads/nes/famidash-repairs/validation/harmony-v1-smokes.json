@@ -1,0 +1,112 @@
+[
+  {
+    "case": "mini45",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "mini45",
+    "engine": "fceumm",
+    "status": "passed"
+  },
+  {
+    "case": "normal66",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "normal66",
+    "engine": "fceumm",
+    "status": "passed"
+  },
+  {
+    "case": "mini",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "mini",
+    "engine": "fceumm",
+    "status": "passed"
+  },
+  {
+    "case": "upper",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "upper",
+    "engine": "fceumm",
+    "status": "passed"
+  },
+  {
+    "case": "lower",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "lower",
+    "engine": "fceumm",
+    "status": "passed"
+  },
+  {
+    "case": "aftercatabath",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "aftercatabath",
+    "engine": "fceumm",
+    "status": "passed"
+  },
+  {
+    "case": "xstep",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "xstep",
+    "engine": "fceumm",
+    "status": "passed"
+  },
+  {
+    "case": "kappa35",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "kappa35",
+    "engine": "fceumm",
+    "status": "passed"
+  },
+  {
+    "case": "kappa36",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "kappa36",
+    "engine": "fceumm",
+    "status": "passed"
+  },
+  {
+    "case": "kappa47",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "kappa47",
+    "engine": "fceumm",
+    "status": "passed"
+  },
+  {
+    "case": "mini22",
+    "engine": "quicknes",
+    "status": "passed"
+  },
+  {
+    "case": "mini22",
+    "engine": "fceumm",
+    "status": "passed"
+  }
+]

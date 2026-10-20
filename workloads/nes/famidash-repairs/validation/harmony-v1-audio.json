@@ -1,0 +1,118 @@
+{
+  "status": "verified",
+  "cases": [
+    {
+      "build": "b-sides",
+      "original_rom_sha256": "47623468b4f7ca3c85cbd1c55f11c5d59ad5502dcfd71b1cbfe82d4b85413781",
+      "repaired_rom_sha256": "31a7c539ba2df69fc4f1ff7a87dc562811b389e6d54763b8bf66c74b703c7e28",
+      "segments": [
+        {
+          "segment": "SFX_BANK",
+          "cpu_address": 40960,
+          "rom_offset": 426000,
+          "bytes": 2305,
+          "sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+        },
+        {
+          "segment": "PCM_BANK",
+          "cpu_address": 40960,
+          "rom_offset": 442384,
+          "bytes": 6337,
+          "sha256": "c69407e6fd726268bcd3a16ca1326a8a4e58c4605528d523dcb9f2fc575e95cd"
+        },
+        {
+          "segment": "PCM_BANK_B",
+          "cpu_address": 40960,
+          "rom_offset": 434192,
+          "bytes": 7954,
+          "sha256": "25d8aecf9a0fe7e4a3d922a3680250c609a107f45b7efd14cd5f4fc1292142fb"
+        }
+      ]
+    },
+    {
+      "build": "c-sides",
+      "original_rom_sha256": "ab24fedcfcf8d5f3e1f29958b3cd783ea986f7a5dcfe5ddc1fbd177cad756934",
+      "repaired_rom_sha256": "e2886d7c0e1f9e460f424e1e19db8a962264dec86c12572c179cf05a5c4d108d",
+      "segments": [
+        {
+          "segment": "SFX_BANK",
+          "cpu_address": 40960,
+          "rom_offset": 426000,
+          "bytes": 2305,
+          "sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+        },
+        {
+          "segment": "PCM_BANK",
+          "cpu_address": 40960,
+          "rom_offset": 442384,
+          "bytes": 6337,
+          "sha256": "c69407e6fd726268bcd3a16ca1326a8a4e58c4605528d523dcb9f2fc575e95cd"
+        },
+        {
+          "segment": "PCM_BANK_B",
+          "cpu_address": 40960,
+          "rom_offset": 434192,
+          "bytes": 7954,
+          "sha256": "25d8aecf9a0fe7e4a3d922a3680250c609a107f45b7efd14cd5f4fc1292142fb"
+        }
+      ]
+    },
+    {
+      "build": "d-sides",
+      "original_rom_sha256": "b365667f0bb28a3397b46d648057ee71031050de41bf126959bd66ee03af8bf3",
+      "repaired_rom_sha256": "1a2e6e20c1eb5f8bae1b717f456016c87673ba38b1377fa44c24de740616e99f",
+      "segments": [
+        {
+          "segment": "SFX_BANK",
+          "cpu_address": 40960,
+          "rom_offset": 426000,
+          "bytes": 2305,
+          "sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+        },
+        {
+          "segment": "PCM_BANK",
+          "cpu_address": 40960,
+          "rom_offset": 442384,
+          "bytes": 6337,
+          "sha256": "c69407e6fd726268bcd3a16ca1326a8a4e58c4605528d523dcb9f2fc575e95cd"
+        },
+        {
+          "segment": "PCM_BANK_B",
+          "cpu_address": 40960,
+          "rom_offset": 434192,
+          "bytes": 7954,
+          "sha256": "25d8aecf9a0fe7e4a3d922a3680250c609a107f45b7efd14cd5f4fc1292142fb"
+        }
+      ]
+    },
+    {
+      "build": "main",
+      "original_rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+      "repaired_rom_sha256": "549458fc0a82868cdefa3df9398e4d49782e1b06debace846bbd570c803ee43d",
+      "segments": [
+        {
+          "segment": "SFX_BANK",
+          "cpu_address": 40960,
+          "rom_offset": 426000,
+          "bytes": 2305,
+          "sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1"
+        },
+        {
+          "segment": "PCM_BANK",
+          "cpu_address": 40960,
+          "rom_offset": 442384,
+          "bytes": 6337,
+          "sha256": "c69407e6fd726268bcd3a16ca1326a8a4e58c4605528d523dcb9f2fc575e95cd"
+        },
+        {
+          "segment": "PCM_BANK_B",
+          "cpu_address": 40960,
+          "rom_offset": 434192,
+          "bytes": 7954,
+          "sha256": "25d8aecf9a0fe7e4a3d922a3680250c609a107f45b7efd14cd5f4fc1292142fb"
+        }
+      ]
+    }
+  ],
+  "limitation": "Verifies selected compiled assets and placement, not audio playback or mapper timing."
+}

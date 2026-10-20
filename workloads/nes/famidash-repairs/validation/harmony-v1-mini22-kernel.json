@@ -1,0 +1,12 @@
+{
+  "status": "verified",
+  "geometry_cases": 74850,
+  "source_point_preservation_cases": 2048,
+  "signed_product_cases": 65536,
+  "conservative_boundary_points": 64,
+  "source_sha256": "8b713f1011944022b9158a7c2326a6b903a22752a2a617bea4525b196bb7165e",
+  "point_source_sha256": "fc5f2bd6c9a885f7192f06a2ae04f1e8786bae72c235017483934b8563f2c6b6",
+  "coordinate_convention": "Pixel centres and conservative visible polygons; original discrete point checks remain active.",
+  "invariant": "The sweep's stationary mask is a subset of the original mask. Their union preserves every original point result.",
+  "limitation": "Host geometry only; NES banking, history, unchanged-input negatives and legitimate routes require independent replay."
+}

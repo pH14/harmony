@@ -1,0 +1,312 @@
+{
+  "schema": 1,
+  "source_commit": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "patch_sha256": "eb42b7ea89f83c7dadbc13c2d66ba4f08fca715791d2a03f76b8fcea88cd6f09",
+  "changes": [
+    {
+      "path": "SAUCE/famidash.h",
+      "before_sha256": "ecda541e3474c1e09b4d6aabb1e1054cf6276896ea6a79f0bafcac091881035a",
+      "after_sha256": "c39d87cd170e2a4c8ca86d9a1964ba8613dccf9c51bed51c81b4959d5a8d5570"
+    },
+    {
+      "path": "SAUCE/functions/mini_wave66.h",
+      "before_sha256": null,
+      "after_sha256": "200b0cf3048fc423faf4a1717f818a5f05ec19f2a0c0036df7e2d6a60f2e02b1"
+    },
+    {
+      "path": "SAUCE/functions/collision.h",
+      "before_sha256": "e70c12af24fc9786eb13430311583a3a34408646477d1023a10712d4b068aa37",
+      "after_sha256": "788ea2f0394c88e649ee9ae18b609dd3825534704c0d87e757d7726aa9eb6778"
+    },
+    {
+      "path": "SAUCE/functions/spider_bases.h",
+      "before_sha256": null,
+      "after_sha256": "2eef7119ed260c5510ddcd2c0acd5a58e3f861a8f008a44a25785c0f227659d5"
+    },
+    {
+      "path": "SAUCE/functions/mini_wave45.h",
+      "before_sha256": null,
+      "after_sha256": "a6fe73e6b1c86bc373b5162d80343a788ad1f9bd82be2ab57a524b5eaf1a06be"
+    },
+    {
+      "path": "SAUCE/functions/pit_crossing.h",
+      "before_sha256": null,
+      "after_sha256": "8f57a4d0e111105c417e74216df1205d23c28af1063cd3aaf8eaee967e4d3832"
+    },
+    {
+      "path": "SAUCE/functions/mini_wave22.h",
+      "before_sha256": null,
+      "after_sha256": "8b713f1011944022b9158a7c2326a6b903a22752a2a617bea4525b196bb7165e"
+    },
+    {
+      "path": "SAUCE/functions/checked_motion.h",
+      "before_sha256": null,
+      "after_sha256": "da54dfa03a9178331340dd445b51528ecca50a35da0b004e0a0dee4c772d2728"
+    },
+    {
+      "path": "SAUCE/functions/base_crossing.h",
+      "before_sha256": null,
+      "after_sha256": "c7b2c3b72a1a5ef9f30471ff379d5510e8153867126a5cf3cf2628b689f2a620"
+    },
+    {
+      "path": "SAUCE/functions/reset_level.h",
+      "before_sha256": "6221a61dc1c8e30ed924977622d910f42b14f63dba2820b6fb656c7e053f4178",
+      "after_sha256": "aa407806e94541c7555e6f998697ac85b24c3bad2d351a6783d938534071ed61"
+    },
+    {
+      "path": "SAUCE/functions/spike_sweep.h",
+      "before_sha256": null,
+      "after_sha256": "41ae16d2608267c755d4ab04b73909c7c2cb5d9daa04a06d42f8b6a4507c088d"
+    },
+    {
+      "path": "SAUCE/functions/sprite_loading.h",
+      "before_sha256": "6f64fe0a0e100f4b6a52c2208b05aaa3cb74fc2b84cae91c98ff9f208e68d058",
+      "after_sha256": "d3b4b1fbffb68222eb73165130d8ddbf7c67f9235167165ac187623b3e307651"
+    },
+    {
+      "path": "SAUCE/gamemodes/gamemode_cube.h",
+      "before_sha256": "60884be1c9f458bcd931d8689f61a67fa0eb830b33aa66e3281887630ab555fe",
+      "after_sha256": "374c1ee20b2614af09f796ae2e98db258a90ff88478aa2d241b2003c4f267244"
+    },
+    {
+      "path": "SAUCE/gamemodes/gamemode_wave.h",
+      "before_sha256": "77108497de0e6650ff1a4a1c2081f9f5ce43020c9254417a664a76a19b301a49",
+      "after_sha256": "3dd0028286a6414fe28bf5c844b8185fb4c7c72db8d6b426c8752c4cc3d35cc6"
+    },
+    {
+      "path": "SAUCE/gamemodes/gamemode_spider.h",
+      "before_sha256": "71a7b9eb5ea2663b3129945738b7449f3fa5aaed4c4fbc8b355f8850e66bf374",
+      "after_sha256": "7c9fc3dc7251cc193f22f0dfa9e28b39e66d18d03fbff5db6805fce6d809d21a"
+    },
+    {
+      "path": "SAUCE/gamemodes/gamemode_ball.h",
+      "before_sha256": "5b37ae1df498bd34e7cfae89dc1e6da1440c95e94bb1a0081b5daaf6436751a2",
+      "after_sha256": "c3f06794d22c0ce57fd1d6617227cd4c24687831467b14bdc5c6cf5ff27fb5d0"
+    },
+    {
+      "path": "SAUCE/gamemodes/gamemode_ship.h",
+      "before_sha256": "002eb1f0c378701f5ac09f08b6f1fa1fd4ce6c0bb541d0869300bb719f5250d2",
+      "after_sha256": "04de94e973286d1d4dde717a107b6246a2f8e92cb23db97066f54c91d92b0c9b"
+    },
+    {
+      "path": "SAUCE/gamestates/state_game.h",
+      "before_sha256": "154a110e344ce384957af535776c91167a46d817b6c747c8d85b9bbd9498e476",
+      "after_sha256": "e06fdc9d7d600edc3c8f3ace6f7fcea1fab59c77ba7dbcdb34789600d0e6273b"
+    },
+    {
+      "path": "CONFIG/mmc3-huge-vs.cfg",
+      "before_sha256": "2dd01ed8479eecc537cdc8d39dec22b7e687e86a135089fdde79416ab52ee193",
+      "after_sha256": "7fe6304b4c7782559b6756c9f2adb677e02468790be2bcb8a10d63aa2f676742"
+    },
+    {
+      "path": "CONFIG/mmc3.cfg",
+      "before_sha256": "224f002d41ea14247ef232752e844d3123b3f5e84268aa60fd8816dd0b8a1b37",
+      "after_sha256": "85be828308302deebcb55aae21f819107e3271954d5610c4feb19463271ed239"
+    },
+    {
+      "path": "CONFIG/mmc3-big.cfg",
+      "before_sha256": "64bbaf50333f220039f83c0f7ab0f0a0e9e2c3e7f3e7e59e7e8510691f4deae0",
+      "after_sha256": "1029c6182d347bca8a64a5113f4fbc49b3f826240afdb778144806013d5ffec8"
+    },
+    {
+      "path": "CONFIG/vs-sys.cfg",
+      "before_sha256": "3ee99774b14513c04c50e5af9ab62a1da86815f9e04863ac40f8f622c95e8afd",
+      "after_sha256": "8a8420c16ea991eb066c06ef73dda2b2196edf2d7806059dfaa6c94e0e7cf411"
+    },
+    {
+      "path": "CONFIG/mmc3-huge.cfg",
+      "before_sha256": "6da94eef9c2aecc96120912f1d8bd8f7c8c8c46088d9938c0d7aa4ec6768aee8",
+      "after_sha256": "bf1f79744ee0de38279c84bd933c6b5d9d7dabb6bb93ebdb5d97d3fb4a7e8b1f"
+    },
+    {
+      "path": "CONFIG/mmc3-album.cfg",
+      "before_sha256": "fd395a48804d4eb529e00956fdfebca6ea5f46ed9c99e29061f1afebc65254fe",
+      "after_sha256": "3ad4701e11375540b48765ab6d78c07d7dbc1dfb9950c644e96fb676a6386aae"
+    },
+    {
+      "path": "CONFIG/nsf.cfg",
+      "before_sha256": "47499b654f918c26ed64931e8a7708fb03206d570927b6ea38add42672d32af8",
+      "after_sha256": "012290ffaf1ef99d2ba99dcd04bd73e221cfb0a18b2cd6d94773ee732ceb6ec6"
+    },
+    {
+      "path": "LIB/asm/nesdash.s",
+      "before_sha256": "602ee978c936f3327e936fe80fa42f4d7d3a3205e95dbaa899f198c5c3b26cad",
+      "after_sha256": "95568df80b11e3136e11ff4641939b6184bfaf71809a91d1b18fdf56406b37aa"
+    },
+    {
+      "path": "METATILES/spike_bases.inc",
+      "before_sha256": null,
+      "after_sha256": "f58cd8b0da16d7a2e4f6580a710f6f0a063b2c58ff80fd53beaf33718dad818f"
+    },
+    {
+      "path": "METATILES/metatiles.h",
+      "before_sha256": "593caa4d16ffbfd963e1e03c9e2947bb8398c14629b5952a66924d345b8266ca",
+      "after_sha256": "e7eb6f7b106001d974f34a09567176f94572acfa9dbe511419fe07048cd1b483"
+    },
+    {
+      "path": "METATILES/metatiles_macro.inc",
+      "before_sha256": "7fb4f7ea174dbc85fd6afda58891231daee1fede7735cd9e9df8adc65adc2b7e",
+      "after_sha256": "98e03641775b887c04745ea346fe71c06aaff477cb52d5f26794ce0ccffa6e2e"
+    },
+    {
+      "path": "METATILES/metatiles.s",
+      "before_sha256": "8c27405d90108bda26f2666a109e5b5199ba8f861e7fcd31cd03bbae400c9fab",
+      "after_sha256": "27e0b85e7b9c28e52ba1efde4a293b066ba9a5249e0cfa803cd7de998d856ff3"
+    },
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/theoryofeverything.tmx",
+      "before_sha256": "5b30b9f76500d008a1a5c1080ffb5cee42032c5d965c927cff97d58b9ed9a378",
+      "after_sha256": "6d5db8461daf4fe89df5ffb93c0c9f4759a1966671b9a1abb462eb9cff55923b"
+    },
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/BlastProcessing.tmx",
+      "before_sha256": "615362f10b3ceebf77eb856dfeada50353efcf61888259813ef5b2053b7051c6",
+      "after_sha256": "6e5cc58e49b0aea3e6ff49240efe5b90cc40181709d46d0ce9121fd1dcf8d03d"
+    },
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/GeometricalDominator.tmx",
+      "before_sha256": "6867b1410789ab0b8ddc03b3f714e6385954284b43d60a780a8fc1a70073bc1a",
+      "after_sha256": "bd8bc1058b7d35fbab453ed0d9cee80c726c49534609901a977a20999888d5f1"
+    },
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/kappaclysm.tmx",
+      "before_sha256": "fea1b3a138f88117f5c0fc50a4a26c07932c41c8461d56138bc6804231aad5dc",
+      "after_sha256": "21fc1628859787089fd3f4e970a249020d42fde4ae3bbef9eb325657ef0d4228"
+    },
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_B/fofii_fofii_fofii.tmx",
+      "before_sha256": "17884a7718edf781636c11ac291d081724afbbac988415a5a33a4807f995e056",
+      "after_sha256": "9da6a951f411eaf3a2b182e6904fe3c1e99383bd0e4f5f7a391b7c13b018319d"
+    },
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_B/darkparadise.tmx",
+      "before_sha256": "a2f602a08cdba31c5a06159e989741900a96c25b7e7727effe92db5a7d0654ad",
+      "after_sha256": "30b319126d79b6731e7e5354282db2debb8f74b1cded43acc064cdec9b1b40d2"
+    },
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_D/silentclubstep.tmx",
+      "before_sha256": "be8280c7a2abac563e498bb0f55e8b512ea49f0623b6395b25c5f1b0129e0aec",
+      "after_sha256": "ef843c43cd976ba05e33b41de2c8978b9dd9ed67061d948d597c93ed4022d3d7"
+    },
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_D/foresttemple.tmx",
+      "before_sha256": "d6100b33646bcfa6f3ef725e5fa083460103d0d2cbe8d30b2948fc7465a4af4e",
+      "after_sha256": "5a0e22be002cc9352fc186bf603fd997dff498f03c8d6c7d8a37ab9b18f5d98d"
+    },
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_C/xx.tmx",
+      "before_sha256": "6f804212be3fce8585a925ae1914f01188d8bf4c98958e3df4f7861a5e51add7",
+      "after_sha256": "b488c3451801bb9c74d346231e7a2cdc2318d5b328cd1f3cf76dde09087295de"
+    },
+    {
+      "path": "LEVELS/include/lvlset_A/level_data_cache.json",
+      "before_sha256": "c3cf091f43f4e0a17cf5cec4167a9e4aa8586fa7b42274a801dda7e8cadc0472",
+      "after_sha256": "5f2b85b37ee2887e6945b32e7fbd5f6dee62b9451b5dd15926837601f196b60d"
+    },
+    {
+      "path": "LEVELS/include/lvlset_A/all_level_data.s",
+      "before_sha256": "7eb264a141535120df17445430aad281ffe2e24bf59b8e1330c91ca842c8e92f",
+      "after_sha256": "ef81f0701e0265c074366d5330a412723a779a333aaf9f95c60bca8d7069310b"
+    },
+    {
+      "path": "LEVELS/include/lvlset_B/level_data_cache.json",
+      "before_sha256": "8b1608ce50f8adcdfacb28cbedfd277d8b3ba5d1606235a5eb2931f4b4b6b7f8",
+      "after_sha256": "cb3eefc78ba4880675dfec72ea66c7e4687aec6f419ea7de2f1baa6e39dda632"
+    },
+    {
+      "path": "LEVELS/include/lvlset_B/all_level_data.s",
+      "before_sha256": "041d7e24fc15fa3221ff50dfe4f1ed5fea30f0ec106c5ba1d981f279e9deff97",
+      "after_sha256": "1c602b9b2ebb5c88fa7d7a96518807ff838565f967920a45ef906d7c5e17bfd9"
+    },
+    {
+      "path": "LEVELS/include/lvlset_D/level_data_cache.json",
+      "before_sha256": "51a0784eb0becea8769b4dc3caecfaadb0a3e6296777e1f6b1c644a47ebe5265",
+      "after_sha256": "8a2ff6a592a884f76234cfc0932f96237f33d8c2c13ce9a94d3a410efcf4ecdf"
+    },
+    {
+      "path": "LEVELS/include/lvlset_D/all_level_data.s",
+      "before_sha256": "3824690b00e0979026b026c94289979530e73af821043d2ad1ae0ce8310edc1e",
+      "after_sha256": "cc3521d11f976ba668adbd3ebdc030121f333f9fe6295c50a8dbe222334bd072"
+    },
+    {
+      "path": "LEVELS/include/lvlset_D/all_sprite_data.s",
+      "before_sha256": "5fbd70e558f272196ec3b6e73afbd1a0fab8a1ac7f52561e75254b50d4d039d2",
+      "after_sha256": "46e22894172cd5cba2af824743c57dd576ce2061fe30d1c906f44bc6da724e2c"
+    },
+    {
+      "path": "LEVELS/include/lvlset_C/level_data_cache.json",
+      "before_sha256": "8c3c8156e162d395fe127cbbec3fb93eb23b7fd50fdc303271f371f57ff59ed7",
+      "after_sha256": "b847a8227f2c805e541430e541de052c7b11ae72d9cc077124ec8b3cd37ad4f8"
+    },
+    {
+      "path": "LEVELS/include/lvlset_C/all_level_data.s",
+      "before_sha256": "ebb9d6fb3a58a29352948d98f6575bdfede1dbc8cb2d2cd64ec3d815c3f4710b",
+      "after_sha256": "05b61992dd0a48f982da5affdbe7d1cf09527f1219dc4529ffe28b912242833f"
+    },
+    {
+      "path": "LEVELS/include/lvlset_C/all_sprite_data.s",
+      "before_sha256": "688756c6da33765ae110a52d3b9ffd2dfbee514d312a0dae7089785cc4c925ed",
+      "after_sha256": "900d33fd394393764ce6503a566da5f4286b993bf5c77d3f2daceb8aa2d1d876"
+    },
+    {
+      "path": "LEVELS/include/lvlset_A/EXPORTS/blastprocessing.lz.bin",
+      "before_sha256": "735658e15c70cc0f20069fe0b032c881194e334a6d9032db6c92ce3eda3d483d",
+      "after_sha256": "0b98fda23008c7582148422f703f95a849b6069d0d4e908c3fc6d21a94b51516"
+    },
+    {
+      "path": "LEVELS/include/lvlset_A/EXPORTS/geometricaldominator.lz.bin",
+      "before_sha256": "4b92d57d2fa387e2aa7ece2c52d4aa5e299a3b923df803abe7c8549ec465141e",
+      "after_sha256": "d52553b1987ce2761d7339f265672f8ed0abd16d3fb3c3263c82c991072f1ec4"
+    },
+    {
+      "path": "LEVELS/include/lvlset_A/EXPORTS/kappaclysm.lz.bin",
+      "before_sha256": "2e6c7fe4eba51b172d7a7fbbd7c3282e24be22364cf90ce2e95b3ce0a3277ddd",
+      "after_sha256": "732ea031a84b86483d31b2aa385e1367c4df4f22ace931e836488894d5db9bdc"
+    },
+    {
+      "path": "LEVELS/include/lvlset_A/EXPORTS/theoryofeverything.lz.bin",
+      "before_sha256": "81a62bd1a2ccae7b7f9b31d1109c72e376a1d33c182c3fcf87a115aba67fd5d0",
+      "after_sha256": "9983d00e32362cb06ef19bf480941d0d152025265e0b2f0fc85cc3d04dd27ae6"
+    },
+    {
+      "path": "LEVELS/include/lvlset_B/EXPORTS/fofii_fofii_fofii.lz.bin",
+      "before_sha256": "5ecadd01e6f9d4998d3f735adae902e3f287b666e1c01fec96abaa03be82410f",
+      "after_sha256": "720367e01870ae5384a3db5403b558dcb49126d41ecd71e91f983c68ee2bbf72"
+    },
+    {
+      "path": "LEVELS/include/lvlset_B/EXPORTS/darkparadise.lz.bin",
+      "before_sha256": "95452d7b5419c1c5577e36454e39110da940a1af21b85ba39fd80688d4a1c05b",
+      "after_sha256": "2e320a3893a05edf38be362918ddac4d191ff8f2022a7d7ee5b6e08f99ff924b"
+    },
+    {
+      "path": "LEVELS/include/lvlset_D/EXPORTS/windylandscape.lz.0.bin",
+      "before_sha256": "507007e923f2204b69de8b5fa582ae47b3260191ccec5e5e6f7381d61daee1d7",
+      "after_sha256": "817ac8c3947779d915622eb43253076175bda62284ce6394025c9a1273940184"
+    },
+    {
+      "path": "LEVELS/include/lvlset_D/EXPORTS/silentclubstep.lz.bin",
+      "before_sha256": "57965ccc180aa5ab5a0e4344339db0f0069e29fa7a1e9e0f261d912fb74c5af2",
+      "after_sha256": "d97f340fd0b4cd537f1198d8a7c1c660ff065884525b9c0d92dbe086ceef3933"
+    },
+    {
+      "path": "LEVELS/include/lvlset_D/EXPORTS/aftercatabath.lz.1.bin",
+      "before_sha256": "4b7809954f3f71d9127c04dfbf0d109ed4880804e4bdb80c31f84e44d4ff3b58",
+      "after_sha256": "2784dff1a0f04b8be10e497887b9fbff5610f8c46fd169d6a06ef442f894afc5"
+    },
+    {
+      "path": "LEVELS/include/lvlset_D/EXPORTS/foresttemple.lz.bin",
+      "before_sha256": "65805214655a0f611eb59899be80f4807dac98c833dc0e3ba9833908a4b1d9e4",
+      "after_sha256": "cc14c78be4f9b33d43a462660934388403c0f71b856e44d63920fffebef9f8a7"
+    },
+    {
+      "path": "LEVELS/include/lvlset_D/EXPORTS/aftercatabath.lz.0.bin",
+      "before_sha256": "94b2df141d749903f59b1bff72acaa754035e4b8fbd822e295b93b0a1e240664",
+      "after_sha256": "ac5d84c93dcd850a7a079fb344e89d5cd19d0159209855d30d514d039a6643e0"
+    },
+    {
+      "path": "LEVELS/include/lvlset_C/EXPORTS/xx.lz.bin",
+      "before_sha256": "cf10ddf1c89c2dc2b98bcff6e6ab71f352bf2cb88f0250dac4c48113947e7885",
+      "after_sha256": "fb5d131b5ccdbf3bc3d46983c75bfa5404fca7e3baf944f65a5f3883b771c408"
+    }
+  ]
+}

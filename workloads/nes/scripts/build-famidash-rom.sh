@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Fetch the pinned Famidash release ROMs with the license and music credits.
+# Fetch pinned Famidash inputs and apply the verified Harmony repair delta.
 set -euo pipefail
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -13,7 +13,7 @@ output_dir=${1:-"$repo_root/workloads/nes/build/famidash"}
 mkdir -p "$output_dir"
 output_dir=$(CDPATH='' cd -- "$output_dir" && pwd)
 
-for tool in curl sha256sum cut; do
+for tool in curl sha256sum cut python3; do
     command -v "$tool" >/dev/null || {
         echo "missing required tool: $tool" >&2
         exit 1
@@ -34,10 +34,10 @@ fetch() {
     }
 }
 
-fetch "$FAMIDASH_ROM_URL" "$FAMIDASH_ROM_SHA256" famidash.nes
-fetch "$FAMIDASH_B_SIDES_ROM_URL" "$FAMIDASH_B_SIDES_ROM_SHA256" famidash-b-sides.nes
-fetch "$FAMIDASH_C_SIDES_ROM_URL" "$FAMIDASH_C_SIDES_ROM_SHA256" famidash-c-sides.nes
-fetch "$FAMIDASH_D_SIDES_ROM_URL" "$FAMIDASH_D_SIDES_ROM_SHA256" famidash-d-sides.nes
+fetch "$FAMIDASH_ROM_URL" "$FAMIDASH_UPSTREAM_ROM_SHA256" famidash.nes
+fetch "$FAMIDASH_B_SIDES_ROM_URL" "$FAMIDASH_B_SIDES_UPSTREAM_ROM_SHA256" famidash-b-sides.nes
+fetch "$FAMIDASH_C_SIDES_ROM_URL" "$FAMIDASH_C_SIDES_UPSTREAM_ROM_SHA256" famidash-c-sides.nes
+fetch "$FAMIDASH_D_SIDES_ROM_URL" "$FAMIDASH_D_SIDES_UPSTREAM_ROM_SHA256" famidash-d-sides.nes
 fetch "$FAMIDASH_LICENSE_URL" "$FAMIDASH_LICENSE_SHA256" LICENSE
 fetch "$FAMIDASH_CREDITS_URL" "$FAMIDASH_CREDITS_SHA256" CREDITS.md
 fetch "$FAMIDASH_MUSIC_URL/lvlset_A_metadata.json5" "$FAMIDASH_MUSIC_A_SHA256" music-main.json5
@@ -45,14 +45,17 @@ fetch "$FAMIDASH_MUSIC_URL/lvlset_B_metadata.json5" "$FAMIDASH_MUSIC_B_SHA256" m
 fetch "$FAMIDASH_MUSIC_URL/lvlset_C_metadata.json5" "$FAMIDASH_MUSIC_C_SHA256" music-c-sides.json5
 fetch "$FAMIDASH_MUSIC_URL/lvlset_D_metadata.json5" "$FAMIDASH_MUSIC_D_SHA256" music-d-sides.json5
 
+python3 "$repo_root/workloads/nes/famidash-repairs/apply.py" "$work_dir" "$work_dir/patched"
+
 for rom in famidash.nes famidash-b-sides.nes famidash-c-sides.nes famidash-d-sides.nes; do
-    install -m 0644 "$work_dir/$rom" "$output_dir/$rom"
+    install -m 0644 "$work_dir/patched/$rom" "$output_dir/$rom"
 done
 install -m 0644 "$work_dir/LICENSE" "$output_dir/UPSTREAM-LICENSE.txt"
 install -m 0644 "$work_dir/CREDITS.md" "$output_dir/UPSTREAM-CREDITS.md"
 for music in music-main music-b-sides music-c-sides music-d-sides; do
     install -m 0644 "$work_dir/$music.json5" "$output_dir/UPSTREAM-$music.json5"
 done
-printf '%s\n' "$FAMIDASH_COMMIT" >"$output_dir/famidash.commit"
+install -m 0644 "$repo_root/workloads/nes/famidash-repairs/roms.json" "$output_dir/REPAIRS.json"
+printf '%s\n' "$FAMIDASH_COMMIT+$FAMIDASH_REPAIR_VERSION" >"$output_dir/famidash.commit"
 (cd "$output_dir" && sha256sum famidash.nes famidash-b-sides.nes famidash-c-sides.nes famidash-d-sides.nes >SHA256SUMS)
 echo "Famidash ROMs ready: $output_dir"

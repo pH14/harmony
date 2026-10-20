@@ -1,0 +1,968 @@
+[
+  {
+    "path": "LEVELS/LEVEL DATA/lvlset_A/theoryofeverything.tmx",
+    "sprites_unchanged": true,
+    "changed_tiles": [
+      {
+        "column": 245,
+        "row": 55,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 246,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 247,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 248,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 249,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 250,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 251,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 252,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 253,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 254,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 255,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 256,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 257,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 258,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 259,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 260,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 261,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 262,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 263,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 264,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 265,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 266,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 267,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 268,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 269,
+        "row": 55,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 270,
+        "row": 55,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 243,
+        "row": 56,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 244,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 245,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 246,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 247,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 248,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 249,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 250,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 251,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 252,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 253,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 254,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 255,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 256,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 257,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 258,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 259,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 260,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 261,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 262,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 263,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 264,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 265,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 266,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 267,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 268,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 269,
+        "row": 56,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 270,
+        "row": 56,
+        "from": 111,
+        "to": 98
+      }
+    ]
+  },
+  {
+    "path": "LEVELS/LEVEL DATA/lvlset_A/BlastProcessing.tmx",
+    "sprites_unchanged": true,
+    "changed_tiles": [
+      {
+        "column": 848,
+        "row": 17,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 849,
+        "row": 17,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 854,
+        "row": 17,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 855,
+        "row": 17,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 849,
+        "row": 18,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 850,
+        "row": 18,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 853,
+        "row": 18,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 854,
+        "row": 18,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 850,
+        "row": 19,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 851,
+        "row": 19,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 852,
+        "row": 19,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 853,
+        "row": 19,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 851,
+        "row": 20,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 852,
+        "row": 20,
+        "from": 111,
+        "to": 98
+      }
+    ]
+  },
+  {
+    "path": "LEVELS/LEVEL DATA/lvlset_A/GeometricalDominator.tmx",
+    "sprites_unchanged": true,
+    "changed_tiles": [
+      {
+        "column": 137,
+        "row": 19,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 138,
+        "row": 19,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 139,
+        "row": 19,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 916,
+        "row": 24,
+        "from": 111,
+        "to": 17
+      }
+    ]
+  },
+  {
+    "path": "LEVELS/LEVEL DATA/lvlset_A/kappaclysm.tmx",
+    "sprites_unchanged": true,
+    "changed_tiles": [
+      {
+        "column": 133,
+        "row": 17,
+        "from": 111,
+        "to": 109
+      },
+      {
+        "column": 140,
+        "row": 17,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 141,
+        "row": 17,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 182,
+        "row": 17,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 185,
+        "row": 17,
+        "from": 111,
+        "to": 99
+      },
+      {
+        "column": 118,
+        "row": 18,
+        "from": 111,
+        "to": 109
+      },
+      {
+        "column": 140,
+        "row": 18,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 141,
+        "row": 18,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 183,
+        "row": 18,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 184,
+        "row": 18,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 186,
+        "row": 18,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 187,
+        "row": 18,
+        "from": 111,
+        "to": 99
+      },
+      {
+        "column": 203,
+        "row": 18,
+        "from": 111,
+        "to": 99
+      },
+      {
+        "column": 118,
+        "row": 19,
+        "from": 111,
+        "to": 109
+      },
+      {
+        "column": 140,
+        "row": 19,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 141,
+        "row": 19,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 188,
+        "row": 19,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 192,
+        "row": 19,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 197,
+        "row": 19,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 198,
+        "row": 19,
+        "from": 111,
+        "to": 99
+      },
+      {
+        "column": 199,
+        "row": 19,
+        "from": 111,
+        "to": 99
+      },
+      {
+        "column": 202,
+        "row": 19,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 204,
+        "row": 19,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 140,
+        "row": 20,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 141,
+        "row": 20,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 205,
+        "row": 20,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 206,
+        "row": 21,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 207,
+        "row": 21,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 355,
+        "row": 22,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 357,
+        "row": 22,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 351,
+        "row": 23,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 353,
+        "row": 23,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 354,
+        "row": 23,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 358,
+        "row": 23,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 360,
+        "row": 23,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 247,
+        "row": 24,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 249,
+        "row": 24,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 264,
+        "row": 24,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 265,
+        "row": 24,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 339,
+        "row": 24,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 342,
+        "row": 24,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 349,
+        "row": 24,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 364,
+        "row": 24,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 366,
+        "row": 24,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 369,
+        "row": 24,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 244,
+        "row": 25,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 338,
+        "row": 25,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 343,
+        "row": 25,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 344,
+        "row": 25,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 365,
+        "row": 25,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 242,
+        "row": 26,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 336,
+        "row": 26,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 337,
+        "row": 26,
+        "from": 111,
+        "to": 97
+      }
+    ]
+  },
+  {
+    "path": "LEVELS/LEVEL DATA/lvlset_B/fofii_fofii_fofii.tmx",
+    "sprites_unchanged": true,
+    "changed_tiles": [
+      {
+        "column": 233,
+        "row": 39,
+        "from": 79,
+        "to": 17
+      },
+      {
+        "column": 234,
+        "row": 39,
+        "from": 79,
+        "to": 17
+      },
+      {
+        "column": 235,
+        "row": 39,
+        "from": 79,
+        "to": 17
+      }
+    ]
+  },
+  {
+    "path": "LEVELS/LEVEL DATA/lvlset_B/darkparadise.tmx",
+    "sprites_unchanged": true,
+    "changed_tiles": [
+      {
+        "column": 586,
+        "row": 21,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 587,
+        "row": 21,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 588,
+        "row": 21,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 589,
+        "row": 21,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 590,
+        "row": 21,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 591,
+        "row": 21,
+        "from": 111,
+        "to": 98
+      },
+      {
+        "column": 584,
+        "row": 22,
+        "from": 111,
+        "to": 100
+      },
+      {
+        "column": 585,
+        "row": 22,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 586,
+        "row": 22,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 587,
+        "row": 22,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 588,
+        "row": 22,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 589,
+        "row": 22,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 590,
+        "row": 22,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 591,
+        "row": 22,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 592,
+        "row": 22,
+        "from": 111,
+        "to": 110
+      },
+      {
+        "column": 593,
+        "row": 22,
+        "from": 111,
+        "to": 98
+      }
+    ]
+  },
+  {
+    "path": "LEVELS/LEVEL DATA/lvlset_D/silentclubstep.tmx",
+    "sprites_unchanged": true,
+    "changed_tiles": [
+      {
+        "column": 29,
+        "row": 52,
+        "from": 127,
+        "to": 24
+      }
+    ]
+  },
+  {
+    "path": "LEVELS/LEVEL DATA/lvlset_D/foresttemple.tmx",
+    "sprites_unchanged": true,
+    "changed_tiles": [
+      {
+        "column": 468,
+        "row": 26,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 470,
+        "row": 26,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 475,
+        "row": 26,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 480,
+        "row": 26,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 502,
+        "row": 26,
+        "from": 111,
+        "to": 97
+      },
+      {
+        "column": 504,
+        "row": 26,
+        "from": 111,
+        "to": 97
+      }
+    ]
+  },
+  {
+    "path": "LEVELS/LEVEL DATA/lvlset_C/xx.tmx",
+    "sprites_unchanged": true,
+    "changed_tiles": [
+      {
+        "column": 844,
+        "row": 48,
+        "from": 111,
+        "to": 97
+      }
+    ]
+  }
+]

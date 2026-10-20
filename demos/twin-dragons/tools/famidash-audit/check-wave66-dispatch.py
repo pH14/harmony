@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Exhaustively execute the assembled collision-history query gate."""
+"""Exhaustively execute the assembled collision-history query decision."""
 
 import argparse
 import hashlib
@@ -65,12 +65,17 @@ def check(source, rom_path, debug_path):
         mini45 = {int(value, 0) for name, value in re.findall(
             r'^#define\s+(COL_SLOPE_\w+45)\s+(0x[\da-fA-F]+|\d+)', definitions, re.M)}
         assert len(mini45) == 4
+    mini22 = set()
+    if (source / "SAUCE/functions/mini_wave22.h").exists():
+        mini22 = {int(value, 0) for name, value in re.findall(
+            r'^#define\s+(COL_SLOPE_\w+22_(?:LEFT|RIGHT))\s+(0x[\da-fA-F]+|\d+)', definitions, re.M)}
+        assert len(mini22) == 8
     wave = int(re.search(r'^#define\s+GAMEMODE_WAVE\s+(0x[\da-fA-F]+|\d+)',
                          (source / "SAUCE/famidash.h").read_text(), re.M)[1], 0)
     table = address("_ss_wave66")
-    assert {n for n in range(32) if memory[table + n]} == steep | mini45
+    assert {n for n in range(32) if memory[table + n]} == steep | mini45 | mini22
     if mini45:
-        assert all(memory[table + n] == (1 if n in steep else 2 if n in mini45 else 0)
+        assert all(memory[table + n] == (1 if n in steep else 2 if n in mini45 else 4 if n in mini22 else 0)
                    for n in range(32))
     shapes = memory[address("_ss_shapes"):address("_ss_shapes") + 64]
     callees = {address(name) for name in ("crossPRGBankJump", "_check_spike_motion")
@@ -140,7 +145,7 @@ def check(source, rom_path, debug_path):
             elif opcode in (0xC9, 0xC0):
                 register = a if opcode == 0xC9 else y
                 carry, zero = register >= value, register == value
-        raise AssertionError("query gate did not terminate")
+        raise AssertionError("query decision did not terminate")
 
     cases, maximum_steps = 0, 0
     for old, new, mode, dx, dy, player, mini in itertools.product(
@@ -156,19 +161,19 @@ def check(source, rom_path, debug_path):
         expected = bool(shapes[old] or shapes[new] or (dx and dy) or
                         (mode == wave and (dx or dy) and
                          (old in steep or new in steep or
-                          (mini and (old in mini45 or new in mini45)))))
+                          (mini and (old in mini45 | mini22 or new in mini45 | mini22)))))
         actual, steps = execute()
         assert actual == expected, (old, new, mode, dx, dy, player, mini, actual, expected)
         maximum_steps = max(maximum_steps, steps)
         cases += 1
     return {"status": "verified", "cases": cases, "maximum_instructions_to_decision": maximum_steps,
-            "mini45_classes": sorted(mini45),
+            "mini45_classes": sorted(mini45), "mini22_classes": sorted(mini22),
             "direct_call_banks": direct_calls,
             "rom_sha256": hashlib.sha256(rom).hexdigest(),
             "debug_sha256": hashlib.sha256(debug).hexdigest(),
             "source_sha256": {name: hashlib.sha256((source / "SAUCE/functions" / name).read_bytes()).hexdigest()
                               for name in ("pit_crossing.h", "spike_sweep.h")},
-            "limitation": "Executes the assembled query gate, not the dispatched motion kernel, mapper or frame budget."}
+            "limitation": "Executes the assembled query decision, not the dispatched motion kernel, mapper or frame budget."}
 
 
 if __name__ == "__main__":

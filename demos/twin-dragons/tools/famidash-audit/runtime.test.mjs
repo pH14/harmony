@@ -98,3 +98,9 @@ test("decorative-fill signal excludes unsupported and transient gameplay", () =>
   assert.equal(suspect(point, layout, [{ name: "X_NO_OUTLINE", collision: "COL_ALL" }], bands), null);
   assert.equal(suspect(point, layout, [{ name: "FAKE_SPIKE_UP", collision: "COL_NONE" }], bands), null);
 });
+
+
+test("assisted object capture routes cannot seed ordinary gameplay controls", () => {
+  assert.throws(() => routeTape({ inputs: [[0, 8], [1, 4, true]] }), /assisted route/);
+  assert.deepEqual(routeTape({ inputs: [[0, 2], [1, 1]] }), [0, 0, 1]);
+});

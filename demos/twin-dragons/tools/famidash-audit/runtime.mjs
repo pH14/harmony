@@ -14,6 +14,8 @@ export function routeTape(route) {
     return [...route].flatMap((code) => patterns[Number(code)].flatMap(([buttons, frames]) => Array(frames).fill(buttons)));
   }
   if (!route || !Array.isArray(route.inputs)) throw new Error("missing route");
+  if (route.inputs.some(([, , assisted]) => assisted))
+    throw new Error("assisted route: not a normal-play control");
   return expand(route.inputs.map(([buttons, frames]) => ({ buttons, frames })));
 }
 

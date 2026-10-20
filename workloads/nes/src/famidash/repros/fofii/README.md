@@ -80,9 +80,10 @@ make -B b-sides
 The compressed Fofii level grows from 5,434 to 5,440 bytes. Data bank 10
 grows from 8,168 to 8,174 bytes, within its 8,192-byte capacity.
 
-The arcade continues to ship the official unmodified ROM. Adopting a patched
-ROM requires updating its pinned checksum and regenerating the map; applying
-only a visualization filter would hide the game bug.
+The arcade now ships the combined Harmony repair build, which includes this
+pit repair. Its pinned checksum, reproducible source build and regression
+checks are in `workloads/nes/famidash-repairs`. The original mode above remains
+a historical reproduction using the official release ROM.
 
 The upstream changes are derived from Famidash by TFDSoft, MIT licensed.
 See the license in the upstream checkout and the arcade's Famidash credits.

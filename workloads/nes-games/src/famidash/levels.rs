@@ -247,10 +247,10 @@ impl Side {
     #[must_use]
     pub fn rom_sha256(self) -> &'static str {
         match self {
-            Self::Main => "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
-            Self::B => "47623468b4f7ca3c85cbd1c55f11c5d59ad5502dcfd71b1cbfe82d4b85413781",
-            Self::C => "ab24fedcfcf8d5f3e1f29958b3cd783ea986f7a5dcfe5ddc1fbd177cad756934",
-            Self::D => "b365667f0bb28a3397b46d648057ee71031050de41bf126959bd66ee03af8bf3",
+            Self::Main => "549458fc0a82868cdefa3df9398e4d49782e1b06debace846bbd570c803ee43d",
+            Self::B => "31a7c539ba2df69fc4f1ff7a87dc562811b389e6d54763b8bf66c74b703c7e28",
+            Self::C => "e2886d7c0e1f9e460f424e1e19db8a962264dec86c12572c179cf05a5c4d108d",
+            Self::D => "1a2e6e20c1eb5f8bae1b717f456016c87673ba38b1377fa44c24de740616e99f",
         }
     }
 
@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rom_digests_match_the_pinned_release() {
+    fn the_rom_digests_match_the_pinned_harmony_build() {
         let pins = include_str!("../../../nes/famidash-versions.env");
         for (side, key) in [
             (Side::Main, "FAMIDASH_ROM_SHA256"),
