@@ -1948,20 +1948,42 @@ where
         if !self.snapshot_selectable[keyframe] {
             return Err("job origin keyframe has no resident snapshot");
         }
-        let keyframe_entry = &self.entries[keyframe];
-        let snapshot = keyframe_entry
+        let snapshot = self.entries[keyframe]
             .snapshot
             .clone()
             .ok_or("job origin keyframe has no resident snapshot")?;
+        let (replay, certificates) = self.replay_from(keyframe, id)?;
+        Ok((snapshot, replay, certificates))
+    }
+
+    pub(crate) fn pinned_job_replay(
+        &self,
+        id: usize,
+        origin_id: u64,
+    ) -> Result<(Vec<A>, ReplayCertificates), &'static str> {
+        let origin = self
+            .index_of_id(origin_id)
+            .ok_or("job origin keyframe is missing")?;
+        if origin == id {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        self.replay_from(origin, id)
+    }
+
+    fn replay_from(
+        &self,
+        origin: usize,
+        id: usize,
+    ) -> Result<(Vec<A>, ReplayCertificates), &'static str> {
+        let origin_entry = &self.entries[origin];
+        let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
         let distance = entry
             .input_len
-            .checked_sub(keyframe_entry.input_len)
+            .checked_sub(origin_entry.input_len)
             .ok_or("job origin keyframe is longer than its dependent")?;
-        let (replay, certificates) = self
-            .input_index
-            .actions_between(keyframe_entry.input_node, entry.input_node, distance)
-            .ok_or("job origin keyframe is not on the entry's input path")?;
-        Ok((snapshot, replay, certificates))
+        self.input_index
+            .actions_between(origin_entry.input_node, entry.input_node, distance)
+            .ok_or("job origin keyframe is not on the entry's input path")
     }
 
     fn existing_input_id(&self, parent_id: Option<usize>, suffix: &[A]) -> Option<usize> {
