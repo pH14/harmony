@@ -127,9 +127,18 @@ isolated equivalent-core reference and preserve the distinction.
 This bound is necessary rather than sufficient. Ordered admission can leave
 workers idle behind an unfinished earlier job, even when the coordinator has
 spare CPU. Retain head-of-line waits, the completed-result peak, and the fixed
-admission window alongside CPU measurements. Budget cores for the coordinator,
-encoder and viewer, and memory for every worker, queued job and buffered result.
-Startup and final persistence still count toward end-to-end campaign throughput.
+admission window alongside CPU measurements. A full window includes completed
+results awaiting admission, so its occupancy does not establish runnable width.
+Separate startup, a sustained full-window interval and budget drain when reading
+worker utilization. Startup, drain and final persistence still count toward
+end-to-end campaign throughput. Budget cores for the coordinator, encoder and
+viewer, and memory for every worker, queued job and buffered result.
+
+Widening the window also delays selection based on newly admitted states.
+Compare useful search progress at fixed actual guest work before treating a
+larger window as a scaling improvement. A frozen-work scheduling model can test
+ready-work assumptions, but task frame counts alone do not establish native CPU
+tails, cache costs or encoder backpressure.
 
 At these costs, an exit every 25 µs of guest work adds about 10% overhead.
 Copying a page every 10 µs adds another 10%.

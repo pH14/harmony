@@ -542,7 +542,10 @@ transport and are admitted at their task's FIFO position.
 
 `ExpansionCoordinator` reserves from one adaptive archive. Its fixed task window
 is independent of worker count, and the runner refills immediately after each
-ordered admission. A task claims at most fourteen remaining attempt units; unused
+ordered admission. A larger window exposes more tasks but reserves more parents
+before earlier results become available to global selection. Completed tasks
+awaiting FIFO admission still occupy slots; a full window is not a count of
+runnable tasks. A task claims at most fourteen remaining attempt units; unused
 claims return after admission. A root preparation failure or empty tree consumes
 one budget unit to bound campaigns that produce no executable edges. Reports
 distinguish budget units, edge attempts, actual executed edges, reconstruction
