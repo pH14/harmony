@@ -349,6 +349,20 @@ so attaching a viewer does not scan the archive. Sampling and snapshot copying
 are bounded by the sample size, and decoding runs on the feed thread. This
 visual RNG is independent of search policy and recorded campaign bytes.
 
+A slow viewer may skip ordinary visualization batches. Completion uses a separate
+immutable terminal snapshot containing the ready state, a sparse summary of
+observed cleared-level endpoints and the final status. HTTP writers discard stale
+queued batches when that snapshot becomes available and send its points before
+the completion event. The summary retains at most one endpoint per nonzero `u8`
+cleared-level count plus one objective endpoint, including endpoints already
+sent in earlier batches. Reconnecting while the server remains alive replays
+this terminal snapshot; it restores observed progress and final status. Closing
+the page does not stop the cloud search. After search and
+export complete, shutdown waits only for active event streams, up to the existing
+ten-second I/O timeout; no viewer adds no shutdown delay. A peer that cannot read
+within that deadline can still lose the final delivery, and replay is unavailable
+after the server process exits.
+
 Each evaluation writes `telemetry.json` beside `campaign.json`, including
 coordinator, admission wait, completed-buffer and worker busy/idle counters.
 These host measurements stay separate from the deterministic logical report.

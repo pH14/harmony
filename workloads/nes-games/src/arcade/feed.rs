@@ -30,6 +30,8 @@ pub struct Step<V> {
     pub frame: u64,
     pub digest: Option<u64>,
     pub objective: bool,
+    #[serde(skip)]
+    pub cleared: u8,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -144,6 +146,7 @@ pub fn steps<G: ArcadeGame>(
             frame: G::frame_count(last),
             digest,
             objective: action.outcome.objective_reached,
+            cleared: G::cleared(last),
         });
     }
     Ok(steps)
@@ -262,6 +265,8 @@ where
 
 pub struct Feed<V> {
     pending: BTreeMap<usize, Note<V>>,
+    progress: BTreeMap<u8, Point<V>>,
+    objective: Option<Point<V>>,
     views: BTreeMap<u64, V>,
     frames_at: BTreeMap<u64, u64>,
     digests: BTreeMap<u64, u64>,
@@ -278,6 +283,8 @@ impl<V: Copy> Feed<V> {
     pub fn new(root: V, root_frames: u64, root_digest: u64) -> Self {
         Self {
             pending: BTreeMap::new(),
+            progress: BTreeMap::new(),
+            objective: None,
             views: BTreeMap::from([(0, root)]),
             frames_at: BTreeMap::from([(0, root_frames)]),
             digests: BTreeMap::from([(0, root_digest)]),
@@ -328,12 +335,19 @@ impl<V: Copy> Feed<V> {
                     self.frames_at.insert(id, step.frame);
                     self.digests.insert(id, digest);
                 }
-                self.points.push(Point {
+                let point = Point {
                     observation: step.view,
                     retained,
                     frame: step.frame,
                     priority: note.next_level > 0 || step.objective,
-                });
+                };
+                self.points.push(point);
+                if note.next_level > 0 && step.cleared > 0 {
+                    self.progress.entry(step.cleared).or_insert(point);
+                }
+                if step.objective {
+                    self.objective = Some(point);
+                }
             }
             if let Some(trail) = note.trail {
                 if note.next_level > 0 {
@@ -360,6 +374,20 @@ impl<V: Copy> Feed<V> {
             finishes: std::mem::take(&mut self.finishes),
             exits: std::mem::take(&mut self.exits),
         }
+    }
+
+    pub fn take_terminal_batch(&mut self, stats: Stats) -> Batch<V> {
+        let mut batch = self.take_batch(stats);
+        batch.points = self
+            .progress
+            .values()
+            .copied()
+            .chain(self.objective)
+            .collect();
+        batch.motion.clear();
+        batch.finishes.clear();
+        batch.exits.clear();
+        batch
     }
 
     pub fn forget_dropped<G: Workload>(&mut self, campaign: &CampaignCoordinator<'_, G>)
@@ -405,6 +433,7 @@ mod tests {
             frame: u64::from(view) * 10,
             digest,
             objective,
+            cleared: view,
         }
     }
 
@@ -516,6 +545,79 @@ mod tests {
         assert_eq!(feed.view(7), Some(43));
         assert_eq!(feed.digest(7), Some(430));
         assert!(feed.pending.is_empty());
+    }
+
+    #[test]
+    fn terminal_progress_survives_earlier_batches_and_keeps_finishing_endpoints_with_a_bound() {
+        let mut feed = Feed::new(0_u8, 0, 99);
+        for cleared in 1..=u8::MAX {
+            let objective = cleared == u8::MAX;
+            feed.note(Note {
+                reservation: usize::from(cleared),
+                steps: vec![step(0, None, false), step(cleared, None, objective)],
+                trail: None,
+                next_level: cleared,
+                execution_work: 1,
+                death: false,
+            });
+            feed.admit(vec![CampaignAdmission {
+                reservation: usize::from(cleared),
+                decisions: if objective {
+                    vec![CampaignAdmissionDecision::Objective]
+                } else {
+                    Vec::new()
+                },
+            }]);
+            assert_eq!(feed.take_batch(Stats::default()).points.len(), 2);
+        }
+        assert_eq!(feed.progress.len(), usize::from(u8::MAX));
+        let terminal = feed.take_terminal_batch(Stats {
+            stopped: true,
+            won: true,
+            ..Stats::default()
+        });
+        assert_eq!(terminal.points.len(), usize::from(u8::MAX) + 1);
+        assert_eq!(
+            terminal.points[..usize::from(u8::MAX)]
+                .iter()
+                .map(|point| point.observation)
+                .collect::<Vec<_>>(),
+            (1..=u8::MAX).collect::<Vec<_>>()
+        );
+        assert_eq!(terminal.points.last().unwrap().observation, u8::MAX);
+        assert!(terminal.points.iter().all(|point| point.priority));
+        assert!(terminal.stats.won && terminal.stats.stopped);
+        assert_eq!(
+            (terminal.sampled_jobs, terminal.frames),
+            (u64::from(u8::MAX), u64::from(u8::MAX))
+        );
+        assert!(
+            terminal.motion.is_empty() && terminal.finishes.is_empty() && terminal.exits.is_empty()
+        );
+    }
+
+    #[test]
+    fn terminal_summary_keeps_the_step_that_reaches_a_clear_before_a_hidden_later_step() {
+        let mut feed = Feed::new(0_u8, 0, 0);
+        feed.note(Note {
+            reservation: 1,
+            steps: vec![
+                step(0, None, false),
+                step(3, None, false),
+                step(0, None, false),
+            ],
+            trail: None,
+            next_level: 3,
+            execution_work: 1,
+            death: false,
+        });
+        feed.admit(vec![CampaignAdmission {
+            reservation: 1,
+            decisions: Vec::new(),
+        }]);
+        let terminal = feed.take_terminal_batch(Stats::default());
+        assert_eq!(terminal.points.len(), 1);
+        assert_eq!(terminal.points[0].observation, 3);
     }
 
     #[test]

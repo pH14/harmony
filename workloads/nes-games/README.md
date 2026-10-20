@@ -62,6 +62,11 @@ coordinator's admission decisions into the `Batch` the page reads: points,
 trails, finished trails and their exits. Aggregate-only notes update the full
 frame and death totals without entering the pending admission map; batches
 report the cumulative `sampled_jobs` count for notes containing display data.
+A bounded terminal ledger keeps one actual cleared-level step per nonzero `u8`
+count plus an objective endpoint after ordinary batches are drained. Internal
+per-step cleared-count metadata identifies the finishing step within a job;
+it is not part of the browser protocol. `take_terminal_batch` replays that sparse
+summary without retaining transient motion or all historical points.
 It drops ids the archive no longer
 holds once it keeps more than twice the archive's entries.
 `feed::archived_state` builds a state's controller history and replays it

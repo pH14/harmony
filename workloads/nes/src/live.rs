@@ -8,7 +8,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError},
     },
@@ -363,6 +363,8 @@ where
             if self.glance.swap(false, Ordering::AcqRel) {
                 let _ = self.events.send(Event::Glance(glance(campaign)));
             }
+        } else if campaign.finished() {
+            lock(&self.shared).stats = feed::stats(campaign);
         }
         self.serve(campaign);
     }
@@ -454,6 +456,92 @@ impl Sampler {
             }
         }
         chosen.into_iter().collect()
+    }
+}
+
+struct Terminal {
+    ready: Option<Arc<str>>,
+    batch: Option<Arc<str>>,
+    limit: Arc<str>,
+}
+
+impl Terminal {
+    fn write(&self, stream: &mut impl Write, include_ready: bool) -> std::io::Result<()> {
+        if include_ready && let Some(ready) = &self.ready {
+            write_event(stream, ready)?;
+        }
+        if let Some(batch) = &self.batch {
+            write_event(stream, batch)?;
+        }
+        write_event(stream, &self.limit)
+    }
+}
+
+#[derive(Default)]
+struct Streams {
+    active: Mutex<usize>,
+    changed: Condvar,
+}
+
+impl Streams {
+    fn enter(&self) -> StreamGuard<'_> {
+        *self.active.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        StreamGuard(self)
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        let active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        let (active, _) = self
+            .changed
+            .wait_timeout_while(active, timeout, |active| *active > 0)
+            .unwrap_or_else(PoisonError::into_inner);
+        *active == 0
+    }
+}
+
+struct StreamGuard<'a>(&'a Streams);
+
+impl Drop for StreamGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.active.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        self.0.changed.notify_all();
+    }
+}
+
+fn write_event(stream: &mut impl Write, message: &str) -> std::io::Result<()> {
+    stream.write_all(b"data: ")?;
+    stream.write_all(message.as_bytes())?;
+    stream.write_all(b"\n\n")
+}
+
+fn event_header(stream: &mut impl Write) -> std::io::Result<()> {
+    stream.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\n",
+    )
+}
+
+fn write_events(
+    stream: &mut impl Write,
+    receiver: &Receiver<Arc<str>>,
+    terminal: &OnceLock<Terminal>,
+) -> std::io::Result<()> {
+    let mut started = false;
+    loop {
+        if let Some(terminal) = terminal.get() {
+            return terminal.write(stream, !started);
+        }
+        let received = receiver.recv_timeout(HEARTBEAT);
+        if let Some(terminal) = terminal.get() {
+            return terminal.write(stream, !started);
+        }
+        match received {
+            Ok(message) => {
+                write_event(stream, &message)?;
+                started = true;
+            }
+            Err(RecvTimeoutError::Timeout) => stream.write_all(b": heartbeat\n\n")?,
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
     }
 }
 
@@ -613,6 +701,7 @@ struct Feeding<'a, V> {
     glance: &'a AtomicBool,
     details: &'a AtomicUsize,
     workers: u32,
+    terminal: &'a OnceLock<Terminal>,
 }
 
 fn feed_loop<V: Serialize + Copy>(feeding: &Feeding<'_, V>, mut viewers: Viewers) {
@@ -623,6 +712,7 @@ fn feed_loop<V: Serialize + Copy>(feeding: &Feeding<'_, V>, mut viewers: Viewers
         glance,
         details,
         workers,
+        terminal,
     } = *feeding;
     let mut ready: Option<Arc<str>> = None;
     let mut sampler = Sampler(0x9e37_79b9_7f4a_7c15);
@@ -661,21 +751,21 @@ fn feed_loop<V: Serialize + Copy>(feeding: &Feeding<'_, V>, mut viewers: Viewers
             }
             Err(RecvTimeoutError::Timeout) => {}
             Ok(Event::Finished) | Err(RecvTimeoutError::Disconnected) => {
-                let won = lock(shared).stats.won;
-                if let Some(mut batch) = take_batch(shared) {
-                    batch
-                        .points
-                        .retain(|point| point.retained.is_some() || point.priority);
-                    batch.motion.clear();
-                    batch.finishes.clear();
-                    batch.exits.clear();
-                    viewers.broadcast(&batch_json(&batch, workers));
-                }
-                let mut everyone = std::mem::take(&mut viewers.waiting);
-                everyone.append(&mut viewers.senders);
-                viewers.senders = everyone;
-                let done = json!({"type": "limit", "won": won, "finished": true});
-                viewers.broadcast(&Arc::from(done.to_string()));
+                let mut shared = lock(shared);
+                let stats = shared.stats;
+                let batch = shared
+                    .feed
+                    .as_mut()
+                    .map(|feed| batch_json(&feed.take_terminal_batch(stats), workers));
+                drop(shared);
+                let _ = terminal.set(Terminal {
+                    ready,
+                    batch,
+                    limit: Arc::from(
+                        json!({"type": "limit", "won": stats.won, "finished": true}).to_string(),
+                    ),
+                });
+                viewers.count.store(0, Ordering::Relaxed);
                 return;
             }
         }
@@ -745,6 +835,8 @@ struct Server<G: ArcadeGame> {
     site: Option<PathBuf>,
     games: Option<Games<G>>,
     observe: Observe<G::View>,
+    terminal: Arc<OnceLock<Terminal>>,
+    streams: Arc<Streams>,
 }
 
 impl<G: ArcadeGame> Server<G> {
@@ -871,8 +963,17 @@ impl<G: ArcadeGame> Server<G> {
             );
         }
         if target.starts_with("/live/events") {
+            let _active = self.streams.enter();
+            if let Some(terminal) = self.terminal.get() {
+                event_header(&mut stream)?;
+                return terminal.write(&mut stream, true);
+            }
             let (sender, receiver) = mpsc::sync_channel(CLIENT_QUEUE);
             if self.events.send(Event::Viewer(sender)).is_err() {
+                if let Some(terminal) = self.terminal.get() {
+                    event_header(&mut stream)?;
+                    return terminal.write(&mut stream, true);
+                }
                 return respond(
                     &mut stream,
                     "410 Gone",
@@ -880,20 +981,8 @@ impl<G: ArcadeGame> Server<G> {
                     b"the campaign has ended",
                 );
             }
-            stream.write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\n",
-            )?;
-            loop {
-                match receiver.recv_timeout(HEARTBEAT) {
-                    Ok(message) => {
-                        stream.write_all(b"data: ")?;
-                        stream.write_all(message.as_bytes())?;
-                        stream.write_all(b"\n\n")?;
-                    }
-                    Err(RecvTimeoutError::Timeout) => stream.write_all(b": heartbeat\n\n")?,
-                    Err(RecvTimeoutError::Disconnected) => return Ok(()),
-                }
-            }
+            event_header(&mut stream)?;
+            return write_events(&mut stream, &receiver, &self.terminal);
         }
         if target.starts_with("/live/states") {
             return match self.states(&target) {
@@ -1105,7 +1194,10 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
             cleared: AtomicUsize::new(0),
         };
         let workers = self.request.workers;
+        let terminal = Arc::new(OnceLock::new());
+        let streams = Arc::new(Streams::default());
         let feed = {
+            let terminal = Arc::clone(&terminal);
             let observe = Arc::clone(&observe);
             thread::spawn(move || {
                 feed_loop(
@@ -1116,6 +1208,7 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
                         glance: &glance,
                         details: &details,
                         workers,
+                        terminal: &terminal,
                     },
                     Viewers {
                         senders: Vec::new(),
@@ -1132,6 +1225,8 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
             site: self.request.live_site.clone(),
             games,
             observe,
+            terminal,
+            streams: Arc::clone(&streams),
         });
         thread::spawn(move || listen(&listener, &server));
         let result = evaluate_watched(
@@ -1145,6 +1240,7 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
         );
         let _ = watch.events.send(Event::Finished);
         let _ = feed.join();
+        streams.wait(IO_TIMEOUT);
         let _ = fs::remove_file(record);
         result
     }
@@ -1159,6 +1255,190 @@ mod tests {
         site_path, take_detail, take_progress,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn terminal_fixture() -> super::Terminal {
+        super::Terminal {
+            ready: Some(std::sync::Arc::from(r#"{"type":"ready"}"#)),
+            batch: Some(std::sync::Arc::from(r#"{"type":"batch","points":[43]}"#)),
+            limit: std::sync::Arc::from(r#"{"type":"limit","won":true,"finished":true}"#),
+        }
+    }
+
+    #[test]
+    fn terminal_bypasses_a_full_ordinary_queue_and_sends_points_before_completion() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(super::CLIENT_QUEUE);
+        for _ in 0..super::CLIENT_QUEUE {
+            sender.send(std::sync::Arc::from("stale")).unwrap();
+        }
+        assert!(matches!(
+            sender.try_send(std::sync::Arc::from("overflow")),
+            Err(std::sync::mpsc::TrySendError::Full(_))
+        ));
+        let terminal = std::sync::OnceLock::new();
+        assert!(terminal.set(terminal_fixture()).is_ok());
+        let mut output = Vec::new();
+        super::write_events(&mut output, &receiver, &terminal).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(!text.contains("stale"));
+        assert!(text.find("ready").unwrap() < text.find("batch").unwrap());
+        assert!(text.find("batch").unwrap() < text.find("limit").unwrap());
+    }
+
+    #[test]
+    fn a_waiting_viewer_gets_previously_drained_progress_at_finish() {
+        use nes_games::arcade::feed::{Feed, Note, Step};
+        use std::sync::{Arc, Mutex, OnceLock, atomic::AtomicBool, mpsc};
+        let mut feed = Feed::new(0_u8, 0, 0);
+        feed.note(Note {
+            reservation: 1,
+            steps: vec![Step {
+                view: 43,
+                frame: 77,
+                digest: None,
+                objective: true,
+                cleared: 43,
+            }],
+            trail: None,
+            next_level: 43,
+            execution_work: 77,
+            death: false,
+        });
+        feed.admit(vec![crate::search::campaign::CampaignAdmission {
+            reservation: 1,
+            decisions: vec![crate::search::campaign::CampaignAdmissionDecision::Objective],
+        }]);
+        assert_eq!(feed.take_batch(Stats::default()).points.len(), 1);
+        let shared = Mutex::new(super::Shared {
+            feed: Some(feed),
+            stats: Stats {
+                executions: 99,
+                stopped: true,
+                won: true,
+                ..Stats::default()
+            },
+        });
+        let (events, received) = mpsc::channel();
+        let (viewer, receiver) = mpsc::sync_channel(1);
+        viewer.send(Arc::from("stale")).unwrap();
+        events
+            .send(super::Event::Ready(Arc::from(r#"{"type":"ready"}"#)))
+            .unwrap();
+        events.send(super::Event::Viewer(viewer)).unwrap();
+        events.send(super::Event::Finished).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let terminal = OnceLock::new();
+        let observe: super::Observe<u8> = Arc::new(|_| Vec::new());
+        super::feed_loop(
+            &super::Feeding {
+                events: &received,
+                shared: &shared,
+                observe: &observe,
+                glance: &AtomicBool::new(false),
+                details: &AtomicUsize::new(0),
+                workers: 128,
+                terminal: &terminal,
+            },
+            super::Viewers {
+                senders: Vec::new(),
+                waiting: Vec::new(),
+                count: Arc::clone(&count),
+            },
+        );
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+        let snapshot = terminal.get().unwrap();
+        let batch: serde_json::Value =
+            serde_json::from_str(snapshot.batch.as_ref().unwrap()).unwrap();
+        assert_eq!(batch["executions"], 99);
+        assert_eq!(batch["frames"], 77);
+        assert!(batch["won"].as_bool().unwrap());
+        assert!(
+            batch["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|point| point["observation"] == 43)
+        );
+        let mut output = Vec::new();
+        super::write_events(&mut output, &receiver, &terminal).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("43") && text.contains("limit"));
+        assert!(!text.contains("stale"));
+    }
+
+    #[test]
+    fn late_event_requests_replay_terminal_after_the_feed_receiver_exits() {
+        use std::{
+            io::{Read, Write},
+            net::{TcpListener, TcpStream},
+            sync::{Arc, OnceLock, mpsc},
+        };
+        type Game = nes_games::famidash::campaign::FamidashGame<super::NativeMachine>;
+        let (events, received) = mpsc::channel();
+        drop(received);
+        let (lookups, _) = mpsc::channel();
+        let terminal = Arc::new(OnceLock::new());
+        assert!(terminal.set(terminal_fixture()).is_ok());
+        let server = super::Server::<Game> {
+            events,
+            lookups,
+            pending_lookups: Arc::new(AtomicUsize::new(0)),
+            site: None,
+            games: None,
+            observe: Arc::new(|_| Vec::new()),
+            terminal,
+            streams: Arc::new(super::Streams::default()),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            server.handle(stream).unwrap();
+        });
+        client
+            .write_all(b"GET /live/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        handle.join().unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200 OK"));
+        assert!(reply.find("ready").unwrap() < reply.find("batch").unwrap());
+        assert!(reply.find("batch").unwrap() < reply.find("limit").unwrap());
+    }
+
+    #[test]
+    fn shutdown_drain_is_immediate_when_empty_and_bounded_for_a_nonreader() {
+        let streams = super::Streams::default();
+        assert!(streams.wait(std::time::Duration::ZERO));
+        let active = streams.enter();
+        assert!(!streams.wait(std::time::Duration::from_millis(1)));
+        drop(active);
+        assert!(streams.wait(std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn shutdown_drain_wakes_when_a_fast_reader_finishes() {
+        use std::{
+            sync::{Arc, mpsc},
+            time::Duration,
+        };
+        let streams = Arc::new(super::Streams::default());
+        let (ready, entered) = mpsc::channel();
+        let (release, finished) = mpsc::channel();
+        let reader_streams = Arc::clone(&streams);
+        let reader = std::thread::spawn(move || {
+            let _active = reader_streams.enter();
+            ready.send(()).unwrap();
+            finished.recv().unwrap();
+        });
+        entered.recv().unwrap();
+        release.send(()).unwrap();
+        assert!(streams.wait(Duration::from_secs(1)));
+        reader.join().unwrap();
+        assert!(streams.wait(Duration::ZERO));
+    }
 
     #[test]
     fn unsampled_completion_points_survive_output_downsampling() {
