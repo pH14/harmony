@@ -44,6 +44,57 @@ pub struct Node {
     pub command: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Explain {
+    pub logs: Vec<String>,
+    pub data: Vec<String>,
+    pub history: Option<String>,
+}
+
+impl Explain {
+    pub fn validate(&self) -> Result<()> {
+        for path in self.logs.iter().chain(&self.data) {
+            if path.is_empty() || path.contains(['\n', '\r', '\0']) {
+                return Err(format!(
+                    "explain path {path:?} must be nonempty without newlines or NUL"
+                )
+                .into());
+            }
+        }
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|text| text.trim().is_empty() || text.contains('\0'))
+        {
+            return Err("explain history must be nonempty shell text without NUL".into());
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    #[must_use]
+    pub fn or(&self, saved: &Self) -> Self {
+        Self {
+            logs: if self.logs.is_empty() {
+                saved.logs.clone()
+            } else {
+                self.logs.clone()
+            },
+            data: if self.data.is_empty() {
+                saved.data.clone()
+            } else {
+                self.data.clone()
+            },
+            history: self.history.clone().or_else(|| saved.history.clone()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -66,6 +117,7 @@ pub struct Config {
     pub workload: Vec<String>,
     pub check: Vec<String>,
     pub hooks: BTreeMap<String, Vec<String>>,
+    pub explain: Explain,
 }
 
 impl Default for Config {
@@ -90,6 +142,7 @@ impl Default for Config {
             workload: Vec::new(),
             check: Vec::new(),
             hooks: BTreeMap::new(),
+            explain: Explain::default(),
         }
     }
 }
@@ -125,6 +178,7 @@ impl Config {
                 .into());
             }
         }
+        self.explain.validate()?;
         self.bundle()?;
         Ok(())
     }

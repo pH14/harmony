@@ -59,6 +59,7 @@ fn dispatch_with_diagnostics(
             | Operation::Resume
             | Operation::Search
             | Operation::Shrink
+            | Operation::Explain
     ) && let Some(selection) = &request.selection
     {
         let source = crate::runs::locate(&selection.run)?;

@@ -93,22 +93,32 @@ finding from `campaign-summary.json`.
 
 1. `harmony show runs/NAME --finding K --timeline` gives the action sequence
    and the assertion details.
-2. `harmony show runs/NAME --finding K --logs` gives guest output at the
-   failure. Read the node logs under `/tmp` with
-   `harmony branch runs/NAME --finding K --exec 'tail -n 200 /tmp/<node>.log'`.
-3. Rewind with `--rewind` or `--rewind-time` to the last state before the
-   violation and branch there to test one explanation at a time.
-4. Reduce the action sequence with
-   `harmony shrink runs/NAME --finding K --jobs 4 --out runs/NAME-min`. It
-   replaces faults with waits of the same length and keeps only the faults the
-   violation needs. `runs/NAME-min/shrink.json` lists every attempt. Branch
-   the reduced run at its steps to read files and logs before and after each
-   remaining fault.
+2. Run `harmony explain runs/NAME --finding K --jobs 4 --out runs/NAME-why`
+   with the target's node logs (`--log`), data directories (`--data`) and a
+   guest command that prints the client history (`--history`); put them in
+   `[workload.options.explain]` to reuse them. It shrinks the finding to the
+   faults the violation needs, then reads the logs and data files before and
+   after each remaining fault and at the violation. Start from
+   `runs/NAME-why/explain.md`: it names the promise, the fault table with
+   guest times, the history output, and per fault the log lines with patterns
+   that never appeared before and the files that appeared, vanished or
+   changed size. Expect it to take about one finding replay per shrink
+   attempt plus one replay per job.
+3. Test each explanation the report suggests. The report's `branch --shell`
+   command opens a guest shell at the violation; `--rewind` or
+   `--rewind-time` on `runs/NAME-why` reaches the state before any fault.
+   A log line marked new is a lead; confirm it in the source.
+   A cause that leaves no log line shows up only in the data changes, so read
+   both.
+4. To shrink without the report, run
+   `harmony shrink runs/NAME --finding K --jobs 4 --out runs/NAME-min`.
+   `shrink.json` lists every attempt.
 5. Check a fix. Replay the reduced actions against the fixed version's image
-   with the same seed:
-   `harmony debug run FIXED.oci --config cfg.toml --seed N --actions
-   runs/NAME-min/shrink.json --out runs/NAME-fixed`. Replay them against the
-   failing image too, as the control. A changed binary changes guest timing, so
+   with the same seed, using the fix-check command at the end of
+   `explain.md`:
+   `harmony debug run FIXED.oci --config runs/NAME-why/resolved.toml --seed N
+   --actions runs/NAME-why/actions.json --out runs/NAME-fixed`. Replay them
+   against the failing image too, as the control. A changed binary changes guest timing, so
    a clean replay is evidence for the fix, not proof; run a search on the fixed
    version with the same budget as well.
 6. Reproduce the reduced sequence natively when it uses only kills, pauses and
