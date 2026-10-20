@@ -411,6 +411,9 @@ leave. When nothing can be evicted the index refuses the extent and the worker
 keeps its snapshot local. A report that leaves the total over budget after
 eviction asks the worker with the largest store to shrink.
 
+`Session::store_bytes` reports the snapshot store's page and VM-state bytes
+plus its index bytes, which include each layer's page table and lookup cache.
+
 `Session::publish_snapshot` exports a delta straight into an extent and
 publishes it. `Session::import_cached` resolves a chain into one page list over
 setup, decompresses only the pages that list keeps, and imports it; the store

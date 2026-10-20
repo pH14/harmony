@@ -333,7 +333,7 @@ cache measures free memory again and lowers the budget when memory it does not
 count grows past this plan (see the
 [client README](../../consonance/client/README.md)).
 Before each execution and after each sealed prefix, a worker reports its
-store's resident bytes to the cache, which evicts entries to keep the total in
+store's page, VM-state and index bytes to the cache, which evicts entries to keep the total in
 budget. When eviction cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
 its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and
