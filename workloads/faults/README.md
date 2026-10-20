@@ -19,12 +19,12 @@ in the platform supervisor's bundle format:
 | `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |
 | `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
-| `disk <node> <path> <size>` | gives that node an ext4 filesystem at `path`, sized `16M` through `1G` in whole 4 KiB pages, which power-loss actions can cut |
+| `disk <node> <path> <size>` | gives that node an ext4 filesystem at `path`, sized `16M` through `1G` in whole 4 KiB pages, which power-loss and disk actions act on |
 
 A `disk` line names a node declared by a `node` line, and each node has at most
 one disk. The image must contain `mkfs.ext4`. The
 [supervisor README](../../consonance/harmony-linux/supervisor/README.md#node-disks)
-describes how the disk is built and replayed.
+describes how the disk is built, replayed and faulted.
 
 [`prepare`](src/prepare.rs) stages that image, packs its rootfs, reads the packed
 bundle for the action alphabet, and selects `/etc/harmony/bundle` for structured
@@ -211,6 +211,9 @@ the same quantum, so busy-loop scheduling replays along with fault timing:
 | `KillAll(ticks)` | every node goes down, as in a host crash, and each stays down until a later `Restart` window for it; drawn only for bundles with more than one node |
 | `PowerLoss(node, ticks)` | the node goes down as in `Kill`, and its disk keeps only the writes that reached it before its last cache flush, plus a prefix of the later writes chosen by the action's `choice`; drawn only for a node with a `disk` line |
 | `PowerLossAll(ticks)` | every node goes down as in `KillAll`, and every disk loses its unflushed writes the same way, each with its own prefix; drawn only for bundles with a `disk` line and more than one node |
+| `DiskError(node, ticks)` | every read, write and flush on the node's disk fails with `EIO` for the window; drawn only for a node with a `disk` line |
+| `DiskStall(node, ticks)` | every request to the node's disk waits until the window closes; drawn only for a node with a `disk` line |
+| `DiskCorrupt(node, ticks)` | the node is killed, one bit flips in a block it wrote since its disk was last cut, and it comes back after a quarter of the window, as in `Restart`; drawn only for a node with a `disk` line |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once |
@@ -224,7 +227,9 @@ that stream therefore makes different decisions in each continuation of a
 snapshot, and replay installs the same choices. The choice is part of the
 action's key, so two choices never share a cached snapshot. A choice of zero
 keeps the unmixed seed. A power-loss action also uses its choice to pick how
-many unflushed writes each disk keeps; a choice of zero keeps none. The guest kernel's `getrandom` state is restored with
+many unflushed writes each disk keeps; a choice of zero keeps none. A
+`DiskCorrupt` action uses its choice to pick the write, byte and bit it
+corrupts. The guest kernel's `getrandom` state is restored with
 the snapshot and is not reseeded, so decisions drawn from it repeat across
 continuations.
 

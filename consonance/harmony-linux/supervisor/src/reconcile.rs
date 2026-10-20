@@ -3,6 +3,8 @@
 use process_proto::events::ParkTarget;
 use process_proto::{EVERY_NODE, ProcessAction, ProcessWindow, WireError, decode_process_windows};
 
+use crate::disk::DiskMode;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EventPark {
     pub edges: u32,
@@ -19,9 +21,15 @@ pub struct EventKillWindow {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct PowerLossWindow {
+pub struct CutWindow {
     pub start: u64,
     pub choice: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct StallWindow {
+    pub start: u64,
+    pub hold_nanos: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -30,17 +38,42 @@ pub struct NodeActions {
     pub pause: bool,
     pub restart: bool,
     pub event_park: Option<EventPark>,
-    pub power_loss: Option<PowerLossWindow>,
+    pub power_loss: Option<CutWindow>,
+    pub disk_error: bool,
+    pub disk_stall: Option<StallWindow>,
+    pub disk_corrupt: Option<CutWindow>,
 }
 
 impl NodeActions {
     #[must_use]
     pub fn any(self) -> bool {
-        self.kill || self.pause || self.restart || self.power_loss.is_some()
+        self.kill
+            || self.pause
+            || self.restart
+            || self.power_loss.is_some()
+            || self.disk_error
+            || self.disk_stall.is_some()
+            || self.disk_corrupt.is_some()
+    }
+
+    #[must_use]
+    pub fn restarting(self) -> bool {
+        self.restart || self.disk_corrupt.is_some()
+    }
+
+    #[must_use]
+    pub fn disk_mode(self) -> DiskMode {
+        match self.disk_stall {
+            _ if self.disk_error => DiskMode::Error,
+            Some(window) => DiskMode::Stall {
+                hold_nanos: window.hold_nanos,
+            },
+            None => DiskMode::Normal,
+        }
     }
 }
 
-fn first(a: Option<PowerLossWindow>, b: Option<PowerLossWindow>) -> Option<PowerLossWindow> {
+fn first<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -90,7 +123,10 @@ impl ActiveWindows {
             | ProcessAction::Pause(_)
             | ProcessAction::Restart
             | ProcessAction::EventPark { .. }
-            | ProcessAction::PowerLoss { .. } => {}
+            | ProcessAction::PowerLoss { .. }
+            | ProcessAction::DiskError
+            | ProcessAction::DiskStall { .. }
+            | ProcessAction::DiskCorrupt { .. } => {}
         }
         let index = match self.nodes.binary_search_by_key(&node, |entry| entry.0) {
             Ok(index) => index,
@@ -117,11 +153,26 @@ impl ActiveWindows {
                 });
             }
             ProcessAction::PowerLoss { choice } => {
-                let window = PowerLossWindow {
+                let window = CutWindow {
                     start,
                     choice: *choice,
                 };
                 flags.power_loss = first(flags.power_loss, Some(window));
+            }
+            ProcessAction::DiskError => flags.disk_error = true,
+            ProcessAction::DiskStall { hold_nanos } => {
+                let window = StallWindow {
+                    start,
+                    hold_nanos: *hold_nanos,
+                };
+                flags.disk_stall = first(flags.disk_stall, Some(window));
+            }
+            ProcessAction::DiskCorrupt { choice } => {
+                let window = CutWindow {
+                    start,
+                    choice: *choice,
+                };
+                flags.disk_corrupt = first(flags.disk_corrupt, Some(window));
             }
             ProcessAction::EventKill { .. } | ProcessAction::RunHook(_) => {}
         }
@@ -150,6 +201,9 @@ impl ActiveWindows {
             restart: own.restart || every.restart,
             event_park: own.event_park,
             power_loss: first(own.power_loss, every.power_loss),
+            disk_error: own.disk_error || every.disk_error,
+            disk_stall: first(own.disk_stall, every.disk_stall),
+            disk_corrupt: first(own.disk_corrupt, every.disk_corrupt),
         }
     }
 
@@ -192,6 +246,9 @@ impl ActiveWindows {
             pending = pending.saturating_add(u64::from(actions.restart));
             pending = pending.saturating_add(u64::from(actions.event_park.is_some()));
             pending = pending.saturating_add(u64::from(actions.power_loss.is_some()));
+            pending = pending.saturating_add(u64::from(actions.disk_error));
+            pending = pending.saturating_add(u64::from(actions.disk_stall.is_some()));
+            pending = pending.saturating_add(u64::from(actions.disk_corrupt.is_some()));
         }
         let mut last_pending_node = None;
         for window in &self.event_kills {
@@ -268,9 +325,7 @@ mod tests {
             NodeActions {
                 pause: true,
                 restart: true,
-                kill: false,
-                event_park: None,
-                power_loss: None,
+                ..NodeActions::default()
             }
         );
         assert_eq!(active.node(2), NodeActions::default());
@@ -293,20 +348,47 @@ mod tests {
         active.insert(1, &ProcessAction::PowerLoss { choice: 2 }, 25);
         assert_eq!(
             active.node(1).power_loss,
-            Some(PowerLossWindow {
+            Some(CutWindow {
                 start: 20,
                 choice: 4
             })
         );
         assert_eq!(
             active.node(0).power_loss,
-            Some(PowerLossWindow {
+            Some(CutWindow {
                 start: 30,
                 choice: 9
             })
         );
         assert!(active.node(0).any());
         assert_eq!(active.pending_process_faults(&[]), 2);
+    }
+
+    #[test]
+    fn disk_windows_set_the_disk_mode_and_hold_the_node() {
+        let mut active = ActiveWindows::new();
+        assert_eq!(active.node(0).disk_mode(), DiskMode::Normal);
+        active.insert(0, &ProcessAction::DiskStall { hold_nanos: 50 }, 10);
+        active.insert(0, &ProcessAction::DiskStall { hold_nanos: 20 }, 12);
+        assert_eq!(
+            active.node(0).disk_mode(),
+            DiskMode::Stall { hold_nanos: 50 }
+        );
+        active.insert(EVERY_NODE, &ProcessAction::DiskError, 11);
+        assert_eq!(active.node(0).disk_mode(), DiskMode::Error);
+        assert_eq!(active.node(1).disk_mode(), DiskMode::Error);
+        active.insert(1, &ProcessAction::DiskCorrupt { choice: 6 }, 13);
+        assert_eq!(
+            active.node(1).disk_corrupt,
+            Some(CutWindow {
+                start: 13,
+                choice: 6
+            })
+        );
+        assert!(active.node(1).restarting());
+        assert!(!active.node(0).restarting());
+        assert!(active.node(1).any());
+        assert_eq!(active.pending_process_faults(&[]), 3);
     }
 
     #[test]

@@ -32,6 +32,9 @@ const F_RUN_HOOK: u8 = 17;
 const F_PROC_EVENT_KILL: u8 = 20;
 const F_PROC_EVENT_PARK: u8 = 21;
 const F_PROC_POWER_LOSS: u8 = 22;
+const F_PROC_DISK_ERROR: u8 = 23;
+const F_PROC_DISK_STALL: u8 = 24;
+const F_PROC_DISK_CORRUPT: u8 = 25;
 
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
     w.extend_from_slice(&v.to_le_bytes());
@@ -111,6 +114,15 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
             w.push(F_PROC_POWER_LOSS);
             put_u64(w, *choice);
         }
+        Fault::ProcDiskError => w.push(F_PROC_DISK_ERROR),
+        Fault::ProcDiskStall(hold) => {
+            w.push(F_PROC_DISK_STALL);
+            put_u64(w, hold.0);
+        }
+        Fault::ProcDiskCorrupt { choice } => {
+            w.push(F_PROC_DISK_CORRUPT);
+            put_u64(w, *choice);
+        }
         Fault::BuggifyFire => w.push(F_BUGGIFY_FIRE),
         Fault::RunHook(id) => {
             w.push(F_RUN_HOOK);
@@ -160,6 +172,9 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
             }
         }
         F_PROC_POWER_LOSS => Fault::ProcPowerLoss { choice: r.u64()? },
+        F_PROC_DISK_ERROR => Fault::ProcDiskError,
+        F_PROC_DISK_STALL => Fault::ProcDiskStall(Span(r.u64()?)),
+        F_PROC_DISK_CORRUPT => Fault::ProcDiskCorrupt { choice: r.u64()? },
         F_BUGGIFY_FIRE => Fault::BuggifyFire,
         F_RUN_HOOK => Fault::RunHook(r.u32()?),
         _ => return Err(EnvError::Malformed),

@@ -192,7 +192,7 @@ pub fn sample_action(
         alternatives.push(7);
     }
     if !vocabulary.disks().is_empty() {
-        alternatives.push(8);
+        alternatives.extend([8, 10, 11, 12]);
         if vocabulary.nodes() > 1 {
             alternatives.push(9);
         }
@@ -210,6 +210,9 @@ pub fn sample_action(
         }
         Ok(u16::try_from(bits.trailing_zeros())?)
     };
+    let disk = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
+        Ok(vocabulary.disks()[pick(rand, vocabulary.disks().len())?])
+    };
     let action = match alternatives[pick(rand, alternatives.len())?] {
         0 => FaultOperation::Wait(ticks),
         1 => FaultOperation::Kill(node, ticks),
@@ -220,11 +223,11 @@ pub fn sample_action(
             ticks,
         ),
         7 => FaultOperation::KillAll(ticks),
-        8 => FaultOperation::PowerLoss(
-            vocabulary.disks()[pick(rand, vocabulary.disks().len())?],
-            ticks,
-        ),
+        8 => FaultOperation::PowerLoss(disk(rand)?, ticks),
         9 => FaultOperation::PowerLossAll(ticks),
+        10 => FaultOperation::DiskError(disk(rand)?, ticks),
+        11 => FaultOperation::DiskStall(disk(rand)?, ticks),
+        12 => FaultOperation::DiskCorrupt(disk(rand)?, ticks),
         5 => FaultOperation::EventKill {
             node: event_node(rand)?,
             rarity: u8::try_from(pick(rand, 64)?)?,
@@ -640,6 +643,9 @@ mod tests {
             FaultOperation::KillAll(_) => 7,
             FaultOperation::PowerLoss(..) => 8,
             FaultOperation::PowerLossAll(_) => 9,
+            FaultOperation::DiskError(..) => 10,
+            FaultOperation::DiskStall(..) => 11,
+            FaultOperation::DiskCorrupt(..) => 12,
         };
         for _ in 0..2_000 {
             let action =
@@ -650,7 +656,12 @@ mod tests {
                 FaultOperation::Wait(_)
                 | FaultOperation::KillAll(_)
                 | FaultOperation::PowerLossAll(_) => {}
-                FaultOperation::PowerLoss(node, _) => assert!(vocabulary.disks().contains(&node)),
+                FaultOperation::PowerLoss(node, _)
+                | FaultOperation::DiskError(node, _)
+                | FaultOperation::DiskStall(node, _)
+                | FaultOperation::DiskCorrupt(node, _) => {
+                    assert!(vocabulary.disks().contains(&node));
+                }
                 FaultOperation::EventKill { node, rarity, .. } => {
                     assert!(vocabulary.instrumented_events());
                     assert!(node < vocabulary.nodes());
@@ -842,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_node_with_a_disk_draws_a_power_loss() {
+    fn only_a_node_with_a_disk_draws_a_disk_fault() {
         let draws = |nodes, disks: Vec<u16>| {
             let vocabulary = FaultVocabulary::new(nodes, Vec::new())
                 .and_then(|vocabulary| vocabulary.with_disks(disks))
@@ -856,20 +867,24 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
+        let disk_node = |operation: &FaultOperation| match *operation {
+            FaultOperation::PowerLoss(node, _) => Some((0, node)),
+            FaultOperation::DiskError(node, _) => Some((1, node)),
+            FaultOperation::DiskStall(node, _) => Some((2, node)),
+            FaultOperation::DiskCorrupt(node, _) => Some((3, node)),
+            _ => None,
+        };
         let none = draws(3, Vec::new());
-        assert!(!none.iter().any(|operation| matches!(
-            operation,
-            FaultOperation::PowerLoss(..) | FaultOperation::PowerLossAll(_)
-        )));
+        assert!(!none.iter().any(|operation| disk_node(operation).is_some()
+            || matches!(operation, FaultOperation::PowerLossAll(_))));
         let some = draws(3, vec![1, 2]);
-        let nodes = some
-            .iter()
-            .filter_map(|operation| match operation {
-                FaultOperation::PowerLoss(node, _) => Some(*node),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>();
-        assert_eq!(nodes, BTreeSet::from([1, 2]));
+        let drawn = some.iter().filter_map(disk_node).collect::<BTreeSet<_>>();
+        assert_eq!(
+            drawn,
+            (0..4)
+                .flat_map(|kind| [(kind, 1), (kind, 2)])
+                .collect::<BTreeSet<_>>()
+        );
         assert!(
             some.iter()
                 .any(|operation| matches!(operation, FaultOperation::PowerLossAll(_)))
