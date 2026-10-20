@@ -6,8 +6,9 @@ The script follows the image's /etc/harmony/bundle the way the platform
 supervisor does: setup, supervised nodes that restart after they die, a ready
 probe, one workload driver and a serial check loop. It injects random kills,
 pauses and bundle hooks from a seeded generator and stops at the first failing
-Always or Unreachable assertion the image writes to its SDK output. At the end
-it runs the heal hooks and a final check.
+Always or Unreachable assertion the image writes to its SDK output, or with
+--keep-going records each failing assertion and runs on. At the end it runs
+the heal hooks and a final check.
 
 The container has no /dev/harmony, so the script deletes the image's
 libvoidstar.so inside the container. Without it the Antithesis Go SDK in
@@ -100,6 +101,7 @@ class Run:
         self.counts = {"kill": 0, "stop": 0, "kill_all": 0, "hooks": 0, "natural_deaths": 0, "checks": 0,
                        "check_failures": 0}
         self.passed = set()
+        self.violations = {}
         self.last_check = None
         self.start = None
         self.probe = None
@@ -128,6 +130,15 @@ class Run:
             if self.result is None:
                 self.result = result
         self.done.set()
+
+    def violate(self, ident, details):
+        if not self.args.keep_going:
+            self.finish({"result": "violation", "elapsed_s": self.elapsed(), "assertion": ident, "details": details})
+            return
+        with self.lock:
+            entry = self.violations.setdefault(ident, {"assertion": ident, "first_s": self.elapsed(), "records": 0,
+                                                       "details": details})
+            entry["records"] += 1
 
     def elapsed(self):
         return 0.0 if self.start is None else round(time.monotonic() - self.start, 3)
@@ -158,12 +169,8 @@ class Run:
                     continue
                 kind, must_hit = record.get("assert_type"), record.get("must_hit", True)
                 ident = record.get("id") or record.get("message")
-                if kind == "always" and not record.get("condition"):
-                    self.finish({"result": "violation", "elapsed_s": self.elapsed(), "assertion": ident,
-                                 "details": record.get("details")})
-                elif kind == "reachability" and not must_hit:
-                    self.finish({"result": "violation", "elapsed_s": self.elapsed(), "assertion": ident,
-                                 "details": record.get("details")})
+                if (kind == "always" and not record.get("condition")) or (kind == "reachability" and not must_hit):
+                    self.violate(ident, record.get("details"))
                 elif kind in ("sometimes", "reachability") and record.get("condition", True):
                     self.passed.add(ident)
 
@@ -417,6 +424,13 @@ class Run:
 
     def report(self):
         result = dict(self.result)
+        with self.lock:
+            violations = sorted(self.violations.values(), key=lambda entry: entry["first_s"])
+        if violations:
+            result["violations"] = violations
+            if result["result"] == "clean":
+                result.update(result="violation", assertion=violations[0]["assertion"],
+                              details=violations[0]["details"])
         result.update({
             "image": self.args.image,
             "seed": self.args.seed,
@@ -455,6 +469,8 @@ def main():
     parser.add_argument("--out", default=None, help="directory for run output (default: system temp)")
     parser.add_argument("--ready-timeout", type=float, default=180.0)
     parser.add_argument("--keep", action="store_true", help="keep the container after the run")
+    parser.add_argument("--keep-going", action="store_true",
+                        help="record every failing assertion and run for the full duration")
     parser.add_argument("--kill-all-after", type=float, default=None, metavar="SECONDS",
                         help="SIGKILL every node at this time after ready and restart them after --kill-all-hold")
     parser.add_argument("--kill-all-hold", type=float, default=1.0, metavar="SECONDS")
