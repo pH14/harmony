@@ -552,6 +552,13 @@ still contributes observations, failures and objective witnesses. This capabilit
 requires lineage-independent archive key completion; it rejects a completed
 frontier key that changes when bound to the reserved root.
 
+Task record staging reserves its node vector from the already validated trace
+length. Frontier prefix-certificate collection uses fixed depth-bounded stack
+storage while preserving root-to-leaf order and mixed-certificate and missing-prefix-evidence
+rejection. These storage choices do not change expansion policy, integrity
+checks, archive mutation order or encoded records; their CPU effect requires
+measurement.
+
 The `dissonance-bounded-expansion-v2` stream records task reservation watermarks,
 root metadata, replay paths and certificates, every node's requested and recorded
 actions, endpoint facts, costs, evidence, result digests, local filtering and

@@ -247,7 +247,13 @@ impl<G: ExpansionWorkload> ExpansionTaskRecord<G> {
                 .preparation_failure
                 .take()
                 .map(ExpansionObservations::raw),
-            nodes: Vec::new(),
+            nodes: Vec::with_capacity(
+                admission
+                    .outcome
+                    .trace
+                    .as_ref()
+                    .map_or(0, |trace| trace.nodes.len()),
+            ),
             duplicates: Vec::new(),
             frontier: Vec::new(),
             objectives: Vec::new(),

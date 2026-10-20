@@ -1000,3 +1000,62 @@ fn expansion_runtime_replay_matches_under_bounded_memory_and_history_pressure() 
         replayed_snapshot.to_bytes().unwrap()
     );
 }
+
+#[test]
+fn expansion_record_staging_preallocates_and_moves_current_observations() {
+    let workload = TestWorkload::new(Mode::Normal);
+    let mut config = run_config(1);
+    config.window = 1;
+    config.execution_budget = 14;
+    let mut campaign =
+        ExpansionCoordinator::<TestWorkload>::start(&workload, &config, &CampaignOrigin::Genesis)
+            .unwrap();
+    let task = campaign.reserve().unwrap().unwrap();
+    let outcome = run_expansion_task(&workload, &(), &mut Target::default(), &task, &()).unwrap();
+    drop(task);
+    campaign.complete(outcome).unwrap();
+    let mut admission = campaign.admit_next().unwrap().unwrap();
+    let trace = admission.outcome.trace.as_mut().unwrap();
+    let node_count = trace.nodes.len();
+    assert!(node_count > 4 && !node_count.is_power_of_two());
+    let mut expected = Vec::new();
+    for node in &mut trace.nodes {
+        if let Some(edge) = node.evidence.as_mut() {
+            edge.evidence.observations[0] ^= 128;
+            expected.push((
+                node.ordinal,
+                postcard_value_sha256(&edge.evidence.observations).unwrap(),
+                edge.evidence.result_sha256.clone(),
+            ));
+        }
+    }
+    let record = ExpansionTaskRecord::take(&mut admission, campaign.counters().tasks_reserved);
+    assert_eq!(record.nodes.len(), node_count);
+    assert_eq!(record.nodes.capacity(), node_count);
+    for node in &admission.outcome.trace.as_ref().unwrap().nodes {
+        assert!(node.suffix.is_empty());
+        if let Some(edge) = &node.evidence {
+            assert!(edge.evidence.observations.is_empty());
+            assert!(edge.evidence.result_sha256.is_empty());
+        }
+    }
+    let wire = serde_json::to_vec(&record).unwrap();
+    let decoded: ExpansionTaskRecord<TestWorkload> = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), wire);
+    for (ordinal, digest, result_sha) in expected {
+        let evidence = decoded
+            .nodes
+            .iter()
+            .find(|node| node.ordinal == ordinal)
+            .unwrap()
+            .evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(evidence.observations.count(), 1);
+        assert_eq!(
+            serde_json::to_value(&evidence.observations).unwrap()["sha256"],
+            digest
+        );
+        assert_eq!(evidence.result_sha256, result_sha);
+    }
+}

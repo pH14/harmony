@@ -759,34 +759,13 @@ fn merge_task<G: ExpansionWorkload, N>(
             {
                 return Err("expansion workload requires lineage-dependent key completion".into());
             }
-            let mut certificates = Vec::with_capacity(node.suffix.len());
-            let mut parent = node.parent_ordinal;
-            while let Some(ordinal) = parent {
-                if ordinal == 0 {
-                    break;
-                }
-                let ancestor = prefix
-                    .iter()
-                    .find(|ancestor| ancestor.ordinal == ordinal)
-                    .ok_or("expansion prefix is missing")?;
-                certificates.push(
-                    ancestor
-                        .evidence
-                        .as_ref()
-                        .ok_or("expansion prefix evidence is missing")?
-                        .evidence
-                        .replay_certificate,
-                );
-                parent = ancestor.parent_ordinal;
-            }
-            certificates.reverse();
-            certificates.push(evidence.replay_certificate);
-            if certificates.len() != node.suffix.len()
-                || (certificates.iter().any(Option::is_some)
-                    && certificates.iter().any(Option::is_none))
-            {
-                return Err("expansion path has incomplete replay certificates".into());
-            }
+            let certificates = prefix_certificates(
+                prefix,
+                node.parent_ordinal,
+                evidence.replay_certificate,
+                node.suffix.len(),
+                |edge| edge.evidence.replay_certificate,
+            )?;
             let snapshot = node
                 .snapshot
                 .take()
@@ -805,6 +784,7 @@ fn merge_task<G: ExpansionWorkload, N>(
                 },
                 snapshot,
                 certificates
+                    .as_slice()
                     .iter()
                     .any(Option::is_some)
                     .then_some(certificates.as_slice()),
@@ -854,6 +834,63 @@ fn merge_task<G: ExpansionWorkload, N>(
         core.archive.retained > retained_before || !trace.objectives.is_empty(),
         attempts.max(1),
     ))
+}
+
+#[derive(Debug)]
+struct PrefixCertificates {
+    values: [Option<[u8; 32]>; expansion::DEPTH as usize],
+    len: usize,
+}
+
+impl PrefixCertificates {
+    fn as_slice(&self) -> &[Option<[u8; 32]>] {
+        &self.values[..self.len]
+    }
+}
+
+fn prefix_certificates<A, S, F, E>(
+    prefix: &[expansion::Node<A, S, F, E>],
+    mut parent: Option<u32>,
+    leaf_certificate: Option<[u8; 32]>,
+    suffix_len: usize,
+    certificate: impl Fn(&E) -> Option<[u8; 32]>,
+) -> Result<PrefixCertificates, Box<dyn Error>> {
+    let mut result = PrefixCertificates {
+        values: [None; expansion::DEPTH as usize],
+        len: 0,
+    };
+    while let Some(ordinal) = parent {
+        if ordinal == 0 {
+            break;
+        }
+        let ancestor = prefix
+            .iter()
+            .find(|ancestor| ancestor.ordinal == ordinal)
+            .ok_or("expansion prefix is missing")?;
+        let evidence = ancestor
+            .evidence
+            .as_ref()
+            .ok_or("expansion prefix evidence is missing")?;
+        *result
+            .values
+            .get_mut(result.len)
+            .ok_or("expansion path has incomplete replay certificates")? = certificate(evidence);
+        result.len += 1;
+        parent = ancestor.parent_ordinal;
+    }
+    result.values[..result.len].reverse();
+    *result
+        .values
+        .get_mut(result.len)
+        .ok_or("expansion path has incomplete replay certificates")? = leaf_certificate;
+    result.len += 1;
+    if result.len != suffix_len
+        || (result.as_slice().iter().any(Option::is_some)
+            && result.as_slice().iter().any(Option::is_none))
+    {
+        return Err("expansion path has incomplete replay certificates".into());
+    }
+    Ok(result)
 }
 
 fn validate_trace<G: ExpansionWorkload, N>(
@@ -1010,4 +1047,85 @@ fn validate_trace<G: ExpansionWorkload, N>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::*;
+
+    type PrefixNode = expansion::Node<(), (), (), Option<[u8; 32]>>;
+
+    fn path(depth: u8, mask: u8) -> Vec<PrefixNode> {
+        (0..depth)
+            .map(|level| PrefixNode {
+                ordinal: (1 << level) - 1,
+                parent_ordinal: (level != 0).then(|| (1 << (level - 1)) - 1),
+                depth: level,
+                requested_action: None,
+                suffix: Vec::new(),
+                facts: None,
+                path_cost: 0,
+                cost_in_group: None,
+                edge_cost: 0,
+                status: expansion::Status::Runnable,
+                objective: false,
+                evidence: (level != 0)
+                    .then(|| (mask & (1 << (level - 1)) != 0).then_some([level; 32])),
+                snapshot: None,
+                charged_snapshot_bytes: 0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn expansion_prefix_scratch_preserves_all_certificate_patterns_and_path_order() {
+        for depth in 1..=expansion::DEPTH {
+            for mask in 0..1_u8 << depth {
+                let prefix = path(depth, mask);
+                let parent = Some((1 << (depth - 1)) - 1);
+                let leaf = (mask & (1 << (depth - 1)) != 0).then_some([depth; 32]);
+                let result =
+                    prefix_certificates(&prefix, parent, leaf, depth as usize, |value| *value);
+                if mask == 0 || mask == (1 << depth) - 1 {
+                    let expected: Vec<_> = (1..=depth)
+                        .map(|level| (mask != 0).then_some([level; 32]))
+                        .collect();
+                    assert_eq!(result.unwrap().as_slice(), expected);
+                } else {
+                    assert_eq!(
+                        result.unwrap_err().to_string(),
+                        "expansion path has incomplete replay certificates"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn expansion_prefix_scratch_rejects_missing_evidence_parent_length_and_cycles() {
+        let prefix = path(4, 15);
+        assert_eq!(
+            prefix_certificates(&prefix, Some(99), Some([4; 32]), 4, |value| *value)
+                .unwrap_err()
+                .to_string(),
+            "expansion prefix is missing"
+        );
+        let mut missing = path(4, 15);
+        missing[3].evidence = None;
+        assert_eq!(
+            prefix_certificates(&missing, Some(7), Some([4; 32]), 4, |value| *value)
+                .unwrap_err()
+                .to_string(),
+            "expansion prefix evidence is missing"
+        );
+        for length in [0, 1, 3, 5, usize::MAX] {
+            assert!(
+                prefix_certificates(&prefix, Some(7), Some([4; 32]), length, |value| *value)
+                    .is_err()
+            );
+        }
+        let mut cyclic = path(4, 15);
+        cyclic[3].parent_ordinal = Some(7);
+        assert!(prefix_certificates(&cyclic, Some(7), Some([4; 32]), 4, |value| *value).is_err());
+    }
 }
