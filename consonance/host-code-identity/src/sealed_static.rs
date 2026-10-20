@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, ErrorKind};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, MetadataExt};
+use std::sync::{Mutex, PoisonError};
 
 use crate::guard_work::read_exact_counted_at;
 use crate::{GuardBytes, GuardMeasurement};
@@ -51,7 +52,6 @@ pub struct SealedStaticExecutableGuard {
     segment: ExecutableSegment,
     main: (u64, u64),
     vdso: (u64, u64),
-    vdso_digest: [u8; 32],
     vsyscall: bool,
 }
 
@@ -485,6 +485,29 @@ fn hash_file(file: &File, file_len: u64, work: &mut GuardBytes) -> io::Result<[u
     Ok(digest.finalize().into())
 }
 
+type SealedFileKey = (u64, u64, u64);
+
+static SEALED_FILE_DIGEST: Mutex<Option<(SealedFileKey, [u8; 32])>> = Mutex::new(None);
+
+fn sealed_file_digest(
+    file: &File,
+    metadata: &fs::Metadata,
+    work: &mut GuardBytes,
+) -> io::Result<[u8; 32]> {
+    let key = (metadata.dev(), metadata.ino(), metadata.len());
+    let mut cached = SEALED_FILE_DIGEST
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some((cached_key, digest)) = *cached
+        && cached_key == key
+    {
+        return Ok(digest);
+    }
+    let digest = hash_file(file, metadata.len(), work)?;
+    *cached = Some((key, digest));
+    Ok(digest)
+}
+
 fn hash_main_mapping(
     digest: &mut Sha256,
     file: &File,
@@ -557,23 +580,105 @@ fn check_code_pages(
     Ok(())
 }
 
-fn hash_vdso(
-    mut identity: Option<&mut Sha256>,
-    memory: &File,
-    (start, end): (u64, u64),
-    work: &mut GuardBytes,
-) -> io::Result<[u8; 32]> {
-    let mut alone = Sha256::new();
-    for digest in [Some(&mut alone), identity.as_deref_mut()]
-        .into_iter()
-        .flatten()
-    {
-        digest.update((end - start).to_le_bytes());
+#[repr(C)]
+#[derive(Default)]
+struct PagemapScan {
+    size: u64,
+    flags: u64,
+    start: u64,
+    end: u64,
+    walk_end: u64,
+    vec: u64,
+    vec_len: u64,
+    max_pages: u64,
+    category_inverted: u64,
+    category_mask: u64,
+    category_anyof_mask: u64,
+    return_mask: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct PageRegion {
+    start: u64,
+    end: u64,
+    categories: u64,
+}
+
+const PAGEMAP_SCAN: libc::c_ulong = 0xc060_6610;
+const SCAN_FILE: u64 = 1 << 2;
+const SCAN_PRESENT: u64 = 1 << 3;
+const SCAN_SWAPPED: u64 = 1 << 4;
+
+fn scanned_unwritten(found: libc::c_long, walk_end: u64, end: u64) -> io::Result<()> {
+    match found {
+        0 if walk_end == end => Ok(()),
+        0 => Err(denied("code page scan ended early")),
+        _ => Err(denied("live code page was written after it was loaded")),
     }
+}
+
+fn scan_code_pages(pagemap: &File, (start, end): (u64, u64)) -> io::Result<Option<()>> {
+    let mut found = PageRegion::default();
+    let mut scan = PagemapScan {
+        size: std::mem::size_of::<PagemapScan>() as u64,
+        start,
+        end,
+        vec: std::ptr::from_mut(&mut found) as u64,
+        vec_len: 1,
+        category_inverted: SCAN_FILE,
+        category_mask: SCAN_FILE,
+        category_anyof_mask: SCAN_PRESENT | SCAN_SWAPPED,
+        return_mask: SCAN_FILE | SCAN_PRESENT | SCAN_SWAPPED,
+        ..PagemapScan::default()
+    };
+    // SAFETY: scan is a live, writable pm_scan_arg whose size field matches its layout, and vec names one live writable page_region matching vec_len; the kernel writes only within both before the call returns.
+    let regions = unsafe { libc::ioctl(pagemap.as_raw_fd(), PAGEMAP_SCAN as _, &mut scan) };
+    if regions < 0 {
+        let error = io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ENOTTY | libc::EINVAL) => Ok(None),
+            _ => Err(error),
+        };
+    }
+    scanned_unwritten(regions.into(), scan.walk_end, end).map(Some)
+}
+
+static PAGEMAP: Mutex<Option<(u32, File)>> = Mutex::new(None);
+
+fn check_unwritten_code(
+    range: (u64, u64),
+    page_size: u64,
+    work: &mut GuardBytes,
+) -> io::Result<()> {
+    let mut opened = PAGEMAP.lock().unwrap_or_else(PoisonError::into_inner);
+    let process = std::process::id();
+    if opened.as_ref().is_none_or(|(owner, _)| *owner != process) {
+        *opened = Some((process, File::open("/proc/self/pagemap")?));
+    }
+    let pagemap = &opened.as_ref().unwrap().1;
+    match scan_code_pages(pagemap, range)? {
+        Some(()) => {
+            work.code_page_entries = work
+                .code_page_entries
+                .saturating_add((range.1 - range.0) / page_size);
+            Ok(())
+        }
+        None => check_code_pages(pagemap, range, page_size, work),
+    }
+}
+
+fn hash_vdso(
+    digest: &mut Sha256,
+    memory: &File,
+    map: &ExecutableMap,
+    work: &mut GuardBytes,
+) -> io::Result<()> {
+    digest.update((map.end - map.start).to_le_bytes());
     let mut bytes = [0u8; 65536];
-    let mut position = start;
-    while position < end {
-        let count = usize::try_from((end - position).min(bytes.len() as u64))
+    let mut position = map.start;
+    while position < map.end {
+        let count = usize::try_from((map.end - position).min(bytes.len() as u64))
             .map_err(|_| denied("vDSO mapping length overflows"))?;
         read_exact_counted_at(
             |bytes, offset| memory.read_at(bytes, offset),
@@ -581,16 +686,11 @@ fn hash_vdso(
             position,
             &mut work.live_exec_read_bytes,
         )?;
-        for digest in [Some(&mut alone), identity.as_deref_mut()]
-            .into_iter()
-            .flatten()
-        {
-            digest.update(&bytes[..count]);
-            work.live_exec_hashed_bytes = work.live_exec_hashed_bytes.saturating_add(count as u64);
-        }
+        digest.update(&bytes[..count]);
+        work.live_exec_hashed_bytes = work.live_exec_hashed_bytes.saturating_add(count as u64);
         position += count as u64;
     }
-    Ok(alone.finalize().into())
+    Ok(())
 }
 
 fn file_seals(file: &File) -> io::Result<i32> {
@@ -650,14 +750,15 @@ fn measure(work: &mut GuardMeasurement) -> io::Result<SealedStaticExecutableGuar
     let (path, file, metadata) = open_sealed_executable(None)?;
     let page_size = page_size()?;
     let segment = executable_segment(&file, metadata.len(), page_size)?;
-    let file_digest = hash_file(&file, metadata.len(), work.bytes.as_mut().unwrap())?;
+    let file_digest = sealed_file_digest(&file, &metadata, work.bytes.as_mut().unwrap())?;
     let maps_before = census(&path, &metadata, segment, work)?;
-    check_code_pages(
-        &File::open("/proc/self/pagemap")?,
-        (maps_before.main.start, maps_before.main.end),
-        page_size,
-        work.bytes.as_mut().unwrap(),
-    )?;
+    for map in [&maps_before.main, &maps_before.vdso] {
+        check_unwritten_code(
+            (map.start, map.end),
+            page_size,
+            work.bytes.as_mut().unwrap(),
+        )?;
+    }
     let memory = File::open("/proc/self/mem")?;
     let mut digest = Sha256::new();
     digest.update(DOMAIN);
@@ -671,10 +772,10 @@ fn measure(work: &mut GuardMeasurement) -> io::Result<SealedStaticExecutableGuar
         &maps_before.main,
         work.bytes.as_mut().unwrap(),
     )?;
-    let vdso_digest = hash_vdso(
-        Some(&mut digest),
+    hash_vdso(
+        &mut digest,
         &memory,
-        (maps_before.vdso.start, maps_before.vdso.end),
+        &maps_before.vdso,
         work.bytes.as_mut().unwrap(),
     )?;
     digest.update([u8::from(maps_before.vsyscall)]);
@@ -694,7 +795,6 @@ fn measure(work: &mut GuardMeasurement) -> io::Result<SealedStaticExecutableGuar
         segment,
         main: (maps_before.main.start, maps_before.main.end),
         vdso: (maps_before.vdso.start, maps_before.vdso.end),
-        vdso_digest,
         vsyscall: maps_before.vsyscall,
     })
 }
@@ -704,17 +804,9 @@ fn check_code(
     work: &mut GuardMeasurement,
 ) -> io::Result<()> {
     let work = work.bytes.get_or_insert_default();
-    check_code_pages(
-        &File::open("/proc/self/pagemap")?,
-        admitted.main,
-        page_size()?,
-        work,
-    )?;
-    if hash_vdso(None, &File::open("/proc/self/mem")?, admitted.vdso, work)? != admitted.vdso_digest
-    {
-        return Err(denied("vDSO changed after admission"));
-    }
-    Ok(())
+    let page_size = page_size()?;
+    check_unwritten_code(admitted.main, page_size, work)?;
+    check_unwritten_code(admitted.vdso, page_size, work)
 }
 
 fn recheck_census(
@@ -1007,15 +1099,10 @@ mod tests {
             ),
             (8, 4)
         );
-        hash_vdso(Some(&mut Sha256::new()), &memory, (0, 4), &mut work).unwrap();
+        hash_vdso(&mut Sha256::new(), &memory, &map, &mut work).unwrap();
         assert_eq!(
             (work.live_exec_read_bytes, work.live_exec_hashed_bytes),
-            (12, 12)
-        );
-        hash_vdso(None, &memory, (0, 4), &mut work).unwrap();
-        assert_eq!(
-            (work.live_exec_read_bytes, work.live_exec_hashed_bytes),
-            (16, 16)
+            (12, 8)
         );
     }
 
@@ -1077,6 +1164,38 @@ mod tests {
         let mut text = executable_maps(&fs::read_to_string("/proc/self/maps").unwrap()).unwrap();
         text.retain(|map| map.path != "[vsyscall]");
         assert_eq!(queried, text);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "maps a temporary file and reads procfs, which Miri isolation refuses"
+    )]
+    fn page_scan_and_pagemap_both_refuse_a_copied_private_file_page() {
+        let page = page_size().unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&vec![7_u8; usize::try_from(page * 4).unwrap()])
+            .unwrap();
+        // SAFETY: the private copy-on-write mapping of this unshared temporary file stays alive and is accessed only through the returned slice.
+        let mut mapping = unsafe { memmap2::MmapOptions::new().map_copy(&file) }.unwrap();
+        let start = mapping.as_ptr() as u64;
+        let range = (start, start + page * 4);
+        assert_eq!(mapping[usize::try_from(page).unwrap()], 7);
+        let pagemap = File::open("/proc/self/pagemap").unwrap();
+        let scanned = scan_code_pages(&pagemap, range).unwrap();
+        check_code_pages(&pagemap, range, page, &mut GuardBytes::default()).unwrap();
+        mapping[usize::try_from(page * 2).unwrap()] = 7;
+        if scanned.is_some() {
+            assert!(scan_code_pages(&pagemap, range).is_err());
+        }
+        assert!(check_code_pages(&pagemap, range, page, &mut GuardBytes::default()).is_err());
+    }
+
+    #[test]
+    fn page_scan_accepts_only_a_complete_scan_without_copied_pages() {
+        scanned_unwritten(0, 0x5000, 0x5000).unwrap();
+        assert!(scanned_unwritten(0, 0x4000, 0x5000).is_err());
+        assert!(scanned_unwritten(1, 0x5000, 0x5000).is_err());
     }
 
     #[test]
@@ -1160,32 +1279,40 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn cached_guard_rejects_code_page_rewritten_with_its_own_bytes() {
         const CHILD_ENV: &str = "HARMONY_CACHED_GUARD_REWRITE_CHILD";
-        if std::env::var_os(CHILD_ENV).is_none() {
-            let output = std::process::Command::new("/proc/self/exe")
-                .args([
-                    "--exact",
-                    "sealed_static::tests::cached_guard_rejects_code_page_rewritten_with_its_own_bytes",
-                    "--nocapture",
-                ])
-                .env(CHILD_ENV, "1")
-                .output()
-                .unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                output.status.success()
-                    && stdout.contains("running 1 test")
-                    && stdout.contains("1 passed"),
-                "{}\nstdout: {stdout}\nstderr: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            );
+        let Some(target) = std::env::var_os(CHILD_ENV) else {
+            for target in ["main", "vdso"] {
+                let output = std::process::Command::new("/proc/self/exe")
+                    .args([
+                        "--exact",
+                        "sealed_static::tests::cached_guard_rejects_code_page_rewritten_with_its_own_bytes",
+                        "--nocapture",
+                    ])
+                    .env(CHILD_ENV, target)
+                    .output()
+                    .unwrap();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    output.status.success()
+                        && stdout.contains("running 1 test")
+                        && stdout.contains("1 passed"),
+                    "{target}: {}\nstdout: {stdout}\nstderr: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
             return;
-        }
+        };
         let (_, guard) = SealedStaticExecutableGuard::capture().unwrap();
         guard.check().unwrap();
+        guard.check_code().unwrap();
+        let (mapped, last) = if target == "vdso" {
+            guard.vdso
+        } else {
+            guard.main
+        };
         let page = page_size().unwrap();
-        let code = guard.main.0 + page;
-        assert!(code + page <= guard.main.1);
+        let code = mapped + (last - mapped) / page / 2 * page;
+        assert!(code + page <= last);
         let memory = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -1194,8 +1321,8 @@ mod tests {
         let mut byte = [0_u8; 1];
         memory.read_exact_at(&mut byte, code).unwrap();
         if memory.write_at(&byte, code).is_err() {
-            let start = usize::try_from(guard.main.0).unwrap() as *mut libc::c_void;
-            let length = usize::try_from(guard.main.1 - guard.main.0).unwrap();
+            let start = usize::try_from(mapped).unwrap() as *mut libc::c_void;
+            let length = usize::try_from(last - mapped).unwrap();
             // SAFETY: start and length name exactly this process's own private code mapping; adding write permission keeps it readable and executable, and no Rust reference aliases it.
             let unprotected = unsafe {
                 libc::mprotect(
@@ -1215,13 +1342,14 @@ mod tests {
         let mut after = [0_u8; 1];
         memory.read_exact_at(&mut after, code).unwrap();
         assert_eq!(after, byte);
-        assert!(
-            guard
-                .check()
-                .unwrap_err()
-                .to_string()
-                .contains("live code page was written")
-        );
+        for refused in [guard.check(), guard.check_code()] {
+            assert!(
+                refused
+                    .unwrap_err()
+                    .to_string()
+                    .contains("live code page was written")
+            );
+        }
     }
 
     #[test]

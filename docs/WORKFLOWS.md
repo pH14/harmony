@@ -78,9 +78,9 @@ fully sealed executable memfd before execution. All 19 exact tests require
 one test to start and pass. The musl positive tests fail if strict host
 admission is unavailable, so a missing runner cannot produce a green skip.
 The list includes shared-launcher telemetry-owner isolation, exact executable
-read/hash/comparison bytes and their partial-failure accounting, and mapping
-refusal with publication revocation, and refusal of a code page rewritten with
-its own bytes.
+read/hash/comparison bytes and their partial-failure accounting, mapping
+refusal with publication revocation, and refusal of a code or vDSO page
+rewritten with its own bytes.
 `Checks / Harmony Host Compatibility` also runs the Arm64-only direct leased-extent
 export regression in its existing macOS Arm64 workspace nextest suite, whose
 unified features enable the client mock backend. An exact-name PASS assertion
