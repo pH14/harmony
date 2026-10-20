@@ -13,7 +13,7 @@ pub use bundle::{Bundle, BundleError, HookSpec, NodeSpec, parse_bundle};
 pub use evidence::CheckEvidence;
 pub use reconcile::{
     ActiveWindows, ClockShift, CutWindow, EventKillWindow, EventPark, HookWindow, NodeActions,
-    StallWindow,
+    StallWindow, Standing,
 };
 pub use recovery::{RecoveryError, RecoveryReadiness};
 pub use supervise::{Action, Counters, ProcessSupervisor, Supervisor};

@@ -18,7 +18,7 @@ use searcher::search::{
 };
 
 use crate::assertion::{AssertionSet, Assertions};
-use crate::bundle::FaultVocabulary;
+use crate::bundle::{FaultKind, FaultVocabulary};
 use crate::target::{FaultAction, FaultObservations, FaultOperation, SUPERVISOR_TICK_MICROS};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
@@ -184,30 +184,42 @@ pub fn sample_action(
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
     };
     let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
-    let mut alternatives = vec![0, 1, 2, 3];
-    if !vocabulary.hooks().is_empty() {
-        alternatives.push(4);
-    }
-    if vocabulary.nodes() > 1 {
-        alternatives.push(7);
-    }
-    if !vocabulary.disks().is_empty() {
-        alternatives.extend([8, 10, 11, 12]);
-        if vocabulary.nodes() > 1 {
-            alternatives.push(9);
-        }
-    }
-    if vocabulary.clock_faults() {
-        alternatives.push(13);
-        if vocabulary.nodes() > 1 {
-            alternatives.push(14);
-        }
-    }
     let node_mask = u64::MAX >> (64 - vocabulary.nodes());
     let event_ready = event_ready & node_mask;
-    if vocabulary.instrumented_events() && event_ready != 0 {
-        alternatives.extend([5, 6]);
-    }
+    let several = vocabulary.nodes() > 1;
+    let disks = !vocabulary.disks().is_empty();
+    let events = vocabulary.instrumented_events() && event_ready != 0;
+    let alternatives = std::iter::once(0)
+        .chain(
+            [
+                (FaultKind::Kill, 1, true),
+                (FaultKind::Pause, 2, true),
+                (FaultKind::Restart, 3, true),
+                (FaultKind::Hook, 4, !vocabulary.hooks().is_empty()),
+                (FaultKind::KillAll, 7, several),
+                (FaultKind::PowerLoss, 8, disks),
+                (FaultKind::DiskError, 10, disks),
+                (FaultKind::DiskStall, 11, disks),
+                (
+                    FaultKind::DiskCorrupt,
+                    12,
+                    !vocabulary.checksummed().is_empty(),
+                ),
+                (FaultKind::PowerLossAll, 9, disks && several),
+                (FaultKind::Clock, 13, vocabulary.clock_faults()),
+                (
+                    FaultKind::ClockAll,
+                    14,
+                    vocabulary.clock_faults() && several,
+                ),
+                (FaultKind::EventKill, 5, events),
+                (FaultKind::EventPark, 6, events),
+            ]
+            .into_iter()
+            .filter(|&(kind, _, offered)| offered && vocabulary.draws(kind))
+            .map(|(_, alternative, _)| alternative),
+        )
+        .collect::<Vec<_>>();
     let event_node = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
         let index = pick(rand, event_ready.count_ones() as usize)?;
         let mut bits = event_ready;
@@ -218,6 +230,9 @@ pub fn sample_action(
     };
     let disk = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
         Ok(vocabulary.disks()[pick(rand, vocabulary.disks().len())?])
+    };
+    let checksummed = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
+        Ok(vocabulary.checksummed()[pick(rand, vocabulary.checksummed().len())?])
     };
     let action = match alternatives[pick(rand, alternatives.len())?] {
         0 => FaultOperation::Wait(ticks),
@@ -233,7 +248,7 @@ pub fn sample_action(
         9 => FaultOperation::PowerLossAll(ticks),
         10 => FaultOperation::DiskError(disk(rand)?, ticks),
         11 => FaultOperation::DiskStall(disk(rand)?, ticks),
-        12 => FaultOperation::DiskCorrupt(disk(rand)?, ticks),
+        12 => FaultOperation::DiskCorrupt(checksummed(rand)?, ticks),
         13 => {
             let (offset_ms, rate_ppm) = clock_shift(rand)?;
             FaultOperation::Clock {
@@ -720,9 +735,11 @@ mod tests {
                 | FaultOperation::PowerLossAll(_) => {}
                 FaultOperation::PowerLoss(node, _)
                 | FaultOperation::DiskError(node, _)
-                | FaultOperation::DiskStall(node, _)
-                | FaultOperation::DiskCorrupt(node, _) => {
+                | FaultOperation::DiskStall(node, _) => {
                     assert!(vocabulary.disks().contains(&node));
+                }
+                FaultOperation::DiskCorrupt(node, _) => {
+                    assert!(vocabulary.checksummed().contains(&node));
                 }
                 FaultOperation::EventKill { node, rarity, .. } => {
                     assert!(vocabulary.instrumented_events());
@@ -920,8 +937,10 @@ mod tests {
     #[test]
     fn only_a_node_with_a_disk_draws_a_disk_fault() {
         let draws = |nodes, disks: Vec<u16>| {
+            let checksummed = disks.clone();
             let vocabulary = FaultVocabulary::new(nodes, Vec::new())
                 .and_then(|vocabulary| vocabulary.with_disks(disks))
+                .and_then(|vocabulary| vocabulary.with_checksummed(checksummed))
                 .expect("vocabulary");
             let mut rand = RomuDuoJrRand::with_seed(9);
             (0..2_000)
@@ -958,6 +977,94 @@ mod tests {
             !draws(1, vec![0])
                 .iter()
                 .any(|operation| matches!(operation, FaultOperation::PowerLossAll(_)))
+        );
+    }
+
+    fn draw_operations(vocabulary: &FaultVocabulary, seed: u64) -> Vec<FaultOperation> {
+        let mut rand = RomuDuoJrRand::with_seed(seed);
+        (0..2_000)
+            .map(|_| {
+                sample_action(&mut rand, vocabulary, 0b111, TICKS, None)
+                    .expect("draw")
+                    .operation
+            })
+            .collect()
+    }
+
+    #[test]
+    fn only_a_checksummed_disk_draws_a_corruption() {
+        let vocabulary = |checksummed: Vec<u16>| {
+            FaultVocabulary::new(3, Vec::new())
+                .and_then(|vocabulary| vocabulary.with_disks(vec![0, 1, 2]))
+                .and_then(|vocabulary| vocabulary.with_checksummed(checksummed))
+                .expect("vocabulary")
+        };
+        let corrupted = |operations: &[FaultOperation]| {
+            operations
+                .iter()
+                .filter_map(|operation| match *operation {
+                    FaultOperation::DiskCorrupt(node, _) => Some(node),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let plain = draw_operations(&vocabulary(Vec::new()), 12);
+        assert!(corrupted(&plain).is_empty());
+        for wanted in [
+            |operation: &FaultOperation| matches!(operation, FaultOperation::DiskError(..)),
+            |operation: &FaultOperation| matches!(operation, FaultOperation::DiskStall(..)),
+            |operation: &FaultOperation| matches!(operation, FaultOperation::PowerLoss(..)),
+        ] {
+            assert!(plain.iter().any(wanted));
+        }
+        assert_eq!(
+            corrupted(&draw_operations(&vocabulary(vec![1]), 12)),
+            BTreeSet::from([1])
+        );
+    }
+
+    #[test]
+    fn an_excluded_fault_kind_is_never_drawn() {
+        let full = FaultVocabulary::new(3, vec![1])
+            .and_then(|vocabulary| vocabulary.with_disks(vec![0, 1, 2]))
+            .and_then(|vocabulary| vocabulary.with_checksummed(vec![0, 1, 2]))
+            .expect("vocabulary")
+            .with_instrumented_events(true)
+            .with_clock_faults(true);
+        let kind = |operation: &FaultOperation| match operation {
+            FaultOperation::Wait(_) => None,
+            FaultOperation::Kill(..) => Some(FaultKind::Kill),
+            FaultOperation::KillAll(_) => Some(FaultKind::KillAll),
+            FaultOperation::Pause(..) => Some(FaultKind::Pause),
+            FaultOperation::Restart(..) => Some(FaultKind::Restart),
+            FaultOperation::Hook(..) => Some(FaultKind::Hook),
+            FaultOperation::PowerLoss(..) => Some(FaultKind::PowerLoss),
+            FaultOperation::PowerLossAll(_) => Some(FaultKind::PowerLossAll),
+            FaultOperation::DiskError(..) => Some(FaultKind::DiskError),
+            FaultOperation::DiskStall(..) => Some(FaultKind::DiskStall),
+            FaultOperation::DiskCorrupt(..) => Some(FaultKind::DiskCorrupt),
+            FaultOperation::EventKill { .. } => Some(FaultKind::EventKill),
+            FaultOperation::EventPark { .. } => Some(FaultKind::EventPark),
+            FaultOperation::Clock { .. } => Some(FaultKind::Clock),
+            FaultOperation::ClockAll { .. } => Some(FaultKind::ClockAll),
+        };
+        let drawn = |vocabulary: &FaultVocabulary| {
+            draw_operations(vocabulary, 13)
+                .iter()
+                .filter_map(kind)
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(drawn(&full), BTreeSet::from(FaultKind::ALL));
+        for excluded in FaultKind::ALL {
+            let mut expected = BTreeSet::from(FaultKind::ALL);
+            expected.remove(&excluded);
+            assert_eq!(drawn(&full.clone().excluding(&[excluded])), expected);
+        }
+        let only_waits = full.excluding(&FaultKind::ALL);
+        assert!(
+            draw_operations(&only_waits, 14)
+                .iter()
+                .all(|operation| matches!(operation, FaultOperation::Wait(_)))
         );
     }
 

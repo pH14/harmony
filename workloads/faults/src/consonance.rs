@@ -45,7 +45,7 @@ use crate::target::{
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
-pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v4";
+pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v5";
 const LOCAL_SERVICES: [u16; 2] = [STANDING_NAMESPACE, process_proto::debug::NAMESPACE];
 pub const SESSION_SERVICE: &str = "faults";
 const SEED: u64 = 0x4661_756c_744c_6162;
@@ -332,14 +332,17 @@ impl ServiceHandler for StandingHandler {
                 "the fault package answers only the standing namespace".to_owned(),
             ));
         }
-        let live: Vec<StandingWindow> = self
+        let after = process_proto::decode_standing_question(question.payload())
+            .map_err(|_| ChannelError::Malformed)?
+            .map_or(moment, |after| after.min(moment));
+        let answer: Vec<StandingWindow> = self
             .0
             .windows
             .iter()
-            .filter(|window| window.contains(moment))
+            .filter(|window| window.start <= moment && after < window.end)
             .cloned()
             .collect();
-        let bytes = encode_standing(moment, &live).map_err(|_| ChannelError::TooLarge)?;
+        let bytes = encode_standing(moment, &answer).map_err(|_| ChannelError::TooLarge)?;
         Ok(ServiceResponse::Answered(ChannelAnswer::data(bytes)?))
     }
 
@@ -7881,6 +7884,49 @@ mod tests {
     }
 
     #[test]
+    fn a_standing_question_with_the_previous_poll_returns_windows_closed_since() {
+        let window = |start, end| StandingWindow {
+            class: process_proto::PROCESS_CLASS,
+            target: process_proto::encode_target(0, &process_proto::ProcessAction::Restart),
+            start,
+            end,
+        };
+        let mut handler = StandingHandler(Arc::new(StandingPlan {
+            configuration: Vec::new(),
+            windows: vec![
+                window(10, 20),
+                window(40, 80),
+                window(100, 400),
+                window(500, 600),
+            ],
+            coverage: Vec::new(),
+        }));
+        let mut answer = |after| {
+            let question = Question::with_request_id(
+                1,
+                STANDING_NAMESPACE,
+                process_proto::encode_standing_question(after),
+            )
+            .unwrap();
+            let ServiceResponse::Answered(ChannelAnswer::Data(bytes)) =
+                handler.respond(300, &question).unwrap()
+            else {
+                panic!("the standing service must answer");
+            };
+            let (moment, iter) = fault_policy::parse_standing(&bytes).unwrap();
+            assert_eq!(moment, 300);
+            iter.map(|entry| (entry.start, entry.end))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(answer(None), [(100, 400)]);
+        assert_eq!(answer(Some(15)), [(10, 20), (40, 80), (100, 400)]);
+        assert_eq!(answer(Some(20)), [(40, 80), (100, 400)]);
+        assert_eq!(answer(Some(900)), [(100, 400)]);
+        let malformed = Question::with_request_id(2, STANDING_NAMESPACE, vec![1, 2, 3]).unwrap();
+        assert!(handler.respond(300, &malformed).is_err());
+    }
+
+    #[test]
     fn root_continuation_keeps_an_unfired_event_kill_window() {
         let root = ActionWindows { root_seal: 1_000 };
         let prefix = [FaultAction::from(FaultOperation::EventKill {
@@ -7905,6 +7951,16 @@ mod tests {
         assert_eq!(
             original.respond(moment, &question).unwrap(),
             continuation.respond(moment, &question).unwrap()
+        );
+        let since_start = Question::with_request_id(
+            2,
+            STANDING_NAMESPACE,
+            process_proto::encode_standing_question(Some(0)),
+        )
+        .unwrap();
+        assert_eq!(
+            original.respond(moment, &since_start).unwrap(),
+            continuation.respond(moment, &since_start).unwrap()
         );
         let rooted = ActionWindows { root_seal: moment };
         let suffix = [FaultAction::from(FaultOperation::Wait(
@@ -8212,7 +8268,7 @@ fn active_root_windows(
 ) -> Result<Vec<StandingWindow>, String> {
     let mut standing = inherited.to_vec();
     standing.extend(standing_windows(windows, actions)?);
-    standing.retain(|window| window.contains(moment));
+    standing.retain(|window| window.start <= moment);
     Ok(standing)
 }
 
@@ -8239,8 +8295,8 @@ fn import_root(
         1,
     )?;
     let (setup, moment) = session.import_root(&index, &lease)?;
-    if standing.iter().any(|window| !window.contains(moment)) {
-        return Err("branch root standing window is inactive at its snapshot moment".into());
+    if standing.iter().any(|window| window.start > moment) {
+        return Err("branch root standing window starts after its snapshot moment".into());
     }
     Ok((setup, moment, standing))
 }

@@ -118,6 +118,7 @@ pub struct Config {
     pub check: Vec<String>,
     pub hooks: BTreeMap<String, Vec<String>>,
     pub explain: Explain,
+    pub exclude_faults: Vec<faults_workload::bundle::FaultKind>,
 }
 
 impl Default for Config {
@@ -143,6 +144,7 @@ impl Default for Config {
             check: Vec::new(),
             hooks: BTreeMap::new(),
             explain: Explain::default(),
+            exclude_faults: Vec::new(),
         }
     }
 }
@@ -409,5 +411,30 @@ mod tests {
         );
         std::fs::write(base, b"changed after resolution").unwrap();
         assert!(crate::runtime::read_pair(&restored.runtime()).is_err());
+    }
+
+    #[test]
+    fn excluded_fault_kinds_come_from_workload_options_and_survive_roundtrip() {
+        use faults_workload::bundle::FaultKind;
+        let shared = |kinds: &str| -> Result<Config> {
+            let shared: crate::config::Config = toml::from_str(&format!(
+                "[workload]\npackage = \"faults\"\n[workload.options]\nexclude_faults = {kinds}\n"
+            ))?;
+            Config::from_shared(&shared)
+        };
+        let config = shared("[\"disk_corrupt\", \"kill_all\"]").unwrap();
+        assert_eq!(
+            config.exclude_faults,
+            [FaultKind::DiskCorrupt, FaultKind::KillAll]
+        );
+        assert_eq!(
+            Config::from_shared(&config.shared().unwrap())
+                .unwrap()
+                .exclude_faults,
+            config.exclude_faults
+        );
+        assert!(shared("[\"wait\"]").is_err());
+        assert!(shared("[\"disk-corrupt\"]").is_err());
+        assert!(Config::default().exclude_faults.is_empty());
     }
 }

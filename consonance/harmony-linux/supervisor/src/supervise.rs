@@ -2,7 +2,7 @@
 
 use crate::disk::DiskMode;
 use crate::evidence::CheckEvidence;
-use crate::reconcile::{ActiveWindows, EventKillWindow, EventPark};
+use crate::reconcile::{ActiveWindows, EventKillWindow, EventPark, Standing};
 use crate::regs::RegisterSnapshot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -15,7 +15,7 @@ pub enum Action {
     Cont(u16),
     Start { node: u16, after_fault: bool },
     RunHook(u32),
-    ArmEventKill(u16, u8),
+    ArmEventKill(u16, u8, u64),
     DisarmEventKill(u16),
     ArmEventPark(u16, EventPark),
     DisarmEventPark(u16),
@@ -40,7 +40,7 @@ impl Action {
             Action::Cont(node) => format!("resume node {node}"),
             Action::Start { node, .. } => format!("start node {node}"),
             Action::RunHook(id) => format!("run hook {id}"),
-            Action::ArmEventKill(node, rarity) => {
+            Action::ArmEventKill(node, rarity, _) => {
                 format!("arm event kill node {node} rarity {rarity}")
             }
             Action::DisarmEventKill(node) => format!("disarm event kill node {node}"),
@@ -111,6 +111,7 @@ pub struct ProcessSupervisor {
     natural_deaths: Vec<u16>,
     recovery_pending: bool,
     clocks: Vec<i64>,
+    moment: Option<u64>,
 }
 
 pub type Supervisor = ProcessSupervisor;
@@ -139,6 +140,7 @@ impl ProcessSupervisor {
             natural_deaths: Vec::new(),
             recovery_pending: false,
             clocks: vec![0; node_count],
+            moment: None,
         }
     }
 
@@ -150,7 +152,27 @@ impl ProcessSupervisor {
         self.recovery_pending = pending;
     }
 
+    #[must_use]
+    pub fn moment(&self) -> Option<u64> {
+        self.moment
+    }
+
+    #[must_use]
+    pub fn active(&self) -> &ActiveWindows {
+        &self.previous
+    }
+
+    pub fn poll(&mut self, standing: &Standing, deaths: &[u16]) -> Vec<Action> {
+        let steps = standing.steps(self.moment);
+        self.moment = Some(standing.moment);
+        self.tick_steps(&steps, deaths)
+    }
+
     pub fn tick(&mut self, active: &ActiveWindows, deaths: &[u16]) -> Vec<Action> {
+        self.tick_steps(std::slice::from_ref(active), deaths)
+    }
+
+    fn tick_steps(&mut self, steps: &[ActiveWindows], deaths: &[u16]) -> Vec<Action> {
         self.counters.ticks += 1;
         for &node in deaths {
             let natural = {
@@ -179,6 +201,13 @@ impl ProcessSupervisor {
         }
 
         let mut actions = Vec::new();
+        for active in steps {
+            self.step(active, &mut actions);
+        }
+        actions
+    }
+
+    fn step(&mut self, active: &ActiveWindows, actions: &mut Vec<Action>) {
         for index in 0..self.nodes.len() {
             let node = index as u16;
             let was = self.previous.node(node);
@@ -249,7 +278,7 @@ impl ProcessSupervisor {
                 if !state.event_kill_death {
                     match (was_event_kill, now_event_kill) {
                         (None, Some(window)) => {
-                            actions.push(Action::ArmEventKill(node, window.rarity));
+                            actions.push(Action::ArmEventKill(node, window.rarity, window.start));
                         }
                         (Some(_), None) if !was_event_kill_fired => {
                             actions.push(Action::DisarmEventKill(node));
@@ -258,7 +287,7 @@ impl ProcessSupervisor {
                             if !was_event_kill_fired {
                                 actions.push(Action::DisarmEventKill(node));
                             }
-                            actions.push(Action::ArmEventKill(node, window.rarity));
+                            actions.push(Action::ArmEventKill(node, window.rarity, window.start));
                         }
                         _ => {}
                     }
@@ -290,7 +319,7 @@ impl ProcessSupervisor {
                 state.restart_after_fault = false;
                 self.counters.restarts += 1;
                 if let Some(window) = now_event_kill {
-                    actions.push(Action::ArmEventKill(node, window.rarity));
+                    actions.push(Action::ArmEventKill(node, window.rarity, window.start));
                 }
                 if let Some(park) = now.event_park {
                     actions.push(Action::ArmEventPark(node, park));
@@ -320,7 +349,7 @@ impl ProcessSupervisor {
             self.nodes[index].restart_after_fault = false;
             self.counters.restarts += 1;
             if let Some(window) = self.event_kill_selected[index] {
-                actions.push(Action::ArmEventKill(node, window.rarity));
+                actions.push(Action::ArmEventKill(node, window.rarity, window.start));
             }
             if let Some(park) = active.node(node).event_park {
                 actions.push(Action::ArmEventPark(node, park));
@@ -344,7 +373,6 @@ impl ProcessSupervisor {
 
         self.counters.pending_faults = active.pending_process_faults(&self.event_kill_fired);
         self.previous = active.clone();
-        actions
     }
 
     #[must_use]
@@ -431,16 +459,6 @@ impl ProcessSupervisor {
             state.event_kill_death = true;
         }
         true
-    }
-
-    #[must_use]
-    pub fn event_kill_start(&self, node: u16, rarity: u8) -> Option<u64> {
-        self.event_kill_selected
-            .get(usize::from(node))
-            .copied()
-            .flatten()
-            .filter(|window| window.rarity == rarity)
-            .map(|window| window.start)
     }
 
     pub fn note_event_parked(&mut self, fires: u64) {
@@ -623,7 +641,7 @@ mod tests {
             ..check
         }
     }
-    use process_proto::{EVERY_NODE, ProcessAction};
+    use process_proto::{EVERY_NODE, ProcessAction, ProcessWindow};
 
     fn active(actions: &[(u16, ProcessAction)]) -> ActiveWindows {
         let mut set = ActiveWindows::new();
@@ -725,6 +743,195 @@ mod tests {
         );
         assert!(sup.any_node_held_down());
         assert_eq!(sup.alive_bitmap(), 0b01);
+    }
+
+    fn standing(moment: u64, windows: &[(u16, ProcessAction, u64, u64)]) -> Standing {
+        Standing {
+            moment,
+            windows: windows
+                .iter()
+                .map(|&(node, action, start, end)| ProcessWindow {
+                    node,
+                    action,
+                    start,
+                    end,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_restart_that_opens_and_closes_during_a_rebuild_starts_the_node() {
+        let mut sup = Supervisor::new(1);
+        let windows = [
+            (0, ProcessAction::PowerLoss { choice: 7 }, 10, 20),
+            (0, ProcessAction::Restart, 40, 80),
+        ];
+        assert_eq!(sup.poll(&standing(5, &[]), &[]), []);
+        assert_eq!(
+            sup.poll(&standing(15, &windows), &[]),
+            [Action::PowerLoss {
+                node: 0,
+                choice: 7,
+                kill: true
+            }]
+        );
+        assert_eq!(
+            sup.poll(&standing(260, &windows), &[0]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
+        assert_eq!(sup.alive_bitmap(), 1);
+        assert!(!sup.any_node_held_down());
+        assert_eq!(sup.counters().unexpected_deaths, 0);
+        assert_eq!(sup.counters().restarts, 1);
+        assert_eq!(sup.poll(&standing(270, &[]), &[]), []);
+    }
+
+    #[test]
+    fn another_nodes_faults_during_a_rebuild_take_effect_in_order() {
+        let mut sup = Supervisor::new(2);
+        let windows = [
+            (0, ProcessAction::PowerLoss { choice: 3 }, 10, 20),
+            (1, ProcessAction::Restart, 70, 90),
+            (1, ProcessAction::PowerLoss { choice: 5 }, 40, 60),
+            (1, ProcessAction::Pause(1), 100, 120),
+        ];
+        assert_eq!(sup.poll(&standing(5, &[]), &[]), []);
+        assert_eq!(
+            sup.poll(&standing(15, &windows), &[]),
+            [Action::PowerLoss {
+                node: 0,
+                choice: 3,
+                kill: true
+            }]
+        );
+        assert_eq!(
+            sup.poll(&standing(1_800, &windows), &[0]),
+            [
+                Action::PowerLoss {
+                    node: 1,
+                    choice: 5,
+                    kill: true
+                },
+                Action::Start {
+                    node: 1,
+                    after_fault: true
+                },
+                Action::Stop(1),
+                Action::Cont(1),
+            ]
+        );
+        assert_eq!(sup.alive_bitmap(), 0b10);
+        assert_eq!(sup.counters().unexpected_deaths, 0);
+    }
+
+    #[test]
+    fn a_corruption_window_inside_another_nodes_corruption_still_corrupts() {
+        let mut sup = Supervisor::new(2);
+        let windows = [
+            (0, ProcessAction::DiskCorrupt { choice: 4 }, 10, 20),
+            (1, ProcessAction::DiskCorrupt { choice: 6 }, 30, 55),
+        ];
+        assert_eq!(sup.poll(&standing(5, &[]), &[]), []);
+        assert_eq!(
+            sup.poll(&standing(15, &windows), &[]),
+            [Action::DiskCorrupt {
+                node: 0,
+                choice: 4,
+                kill: true
+            }]
+        );
+        assert_eq!(
+            sup.poll(&standing(1_800, &windows), &[0]),
+            [
+                Action::Start {
+                    node: 0,
+                    after_fault: true
+                },
+                Action::DiskCorrupt {
+                    node: 1,
+                    choice: 6,
+                    kill: true
+                },
+                Action::Start {
+                    node: 1,
+                    after_fault: true
+                },
+            ]
+        );
+        assert_eq!(sup.alive_bitmap(), 0b11);
+        assert!(sup.disk_faulted(1));
+    }
+
+    #[test]
+    fn back_to_back_power_losses_each_reset_the_disk() {
+        let mut sup = Supervisor::new(1);
+        let windows = [
+            (0, ProcessAction::PowerLoss { choice: 1 }, 10, 20),
+            (0, ProcessAction::PowerLoss { choice: 2 }, 20, 30),
+            (0, ProcessAction::PowerLoss { choice: 3 }, 35, 45),
+            (0, ProcessAction::Restart, 50, 60),
+        ];
+        assert_eq!(sup.poll(&standing(5, &[]), &[]), []);
+        assert_eq!(
+            sup.poll(&standing(15, &windows), &[]),
+            [Action::PowerLoss {
+                node: 0,
+                choice: 1,
+                kill: true
+            }]
+        );
+        assert_eq!(
+            sup.poll(&standing(32, &windows), &[0]),
+            [Action::PowerLoss {
+                node: 0,
+                choice: 2,
+                kill: false
+            }]
+        );
+        assert_eq!(
+            sup.poll(&standing(400, &windows), &[]),
+            [
+                Action::PowerLoss {
+                    node: 0,
+                    choice: 3,
+                    kill: false
+                },
+                Action::Start {
+                    node: 0,
+                    after_fault: true
+                }
+            ]
+        );
+        assert_eq!(sup.alive_bitmap(), 1);
+        assert_eq!(sup.counters().restarts, 1);
+        assert_eq!(sup.counters().unexpected_deaths, 0);
+    }
+
+    #[test]
+    fn an_event_kill_window_missed_between_polls_arms_with_its_own_start() {
+        let mut sup = Supervisor::new(1);
+        let windows = [(0, ProcessAction::EventKill { rarity: 2 }, 40, 60)];
+        assert_eq!(sup.poll(&standing(15, &[]), &[]), []);
+        assert_eq!(
+            sup.poll(&standing(100, &windows), &[]),
+            [Action::ArmEventKill(0, 2, 40), Action::DisarmEventKill(0)]
+        );
+        assert_eq!(sup.pending_faults(), 0);
+        assert!(sup.active().is_empty());
+    }
+
+    #[test]
+    fn the_first_poll_replays_no_window_that_already_closed() {
+        let mut sup = Supervisor::new(1);
+        let windows = [(0, ProcessAction::Kill, 10, 20)];
+        assert_eq!(sup.moment(), None);
+        assert_eq!(sup.poll(&standing(100, &windows), &[]), []);
+        assert_eq!(sup.moment(), Some(100));
+        assert_eq!(sup.alive_bitmap(), 1);
     }
 
     #[test]
@@ -1005,7 +1212,7 @@ mod tests {
         assert_eq!(
             sup.tick(&event, &[]),
             [
-                Action::ArmEventKill(0, 2),
+                Action::ArmEventKill(0, 2, 0),
                 Action::ArmEventPark(
                     0,
                     EventPark {
@@ -1080,7 +1287,7 @@ mod tests {
     fn an_event_kill_report_is_required_to_avoid_unexpected_death() {
         let mut sup = Supervisor::new(1);
         let event = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
-        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0, 0)]);
         assert_eq!(
             sup.tick(&event, &[0]),
             [
@@ -1088,13 +1295,13 @@ mod tests {
                     node: 0,
                     after_fault: false
                 },
-                Action::ArmEventKill(0, 0)
+                Action::ArmEventKill(0, 0, 0)
             ]
         );
         assert_eq!(sup.counters().unexpected_deaths, 1);
 
         let mut sup = Supervisor::new(1);
-        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0, 0)]);
         sup.note_event_kill_armed(0, 0, 0);
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
         assert_eq!(
@@ -1113,7 +1320,7 @@ mod tests {
     fn an_event_kill_report_survives_until_the_death_is_observed() {
         let mut sup = Supervisor::new(1);
         let event = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
-        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0, 0)]);
         sup.note_event_kill_armed(0, 0, 0);
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
         assert_eq!(sup.tick(&event, &[]), []);
@@ -1131,7 +1338,7 @@ mod tests {
     fn an_event_kill_report_does_not_cross_an_incarnation_replacement() {
         let mut sup = Supervisor::new(1);
         let event = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
-        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0, 0)]);
         sup.note_event_kill_armed(0, 0, 0);
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
         let restart = active(&[(0, ProcessAction::Restart)]);
@@ -1160,7 +1367,7 @@ mod tests {
         events.insert(0, &ProcessAction::EventKill { rarity: 0 }, 0);
         events.insert(0, &ProcessAction::EventKill { rarity: 0 }, 500_000_000);
 
-        assert_eq!(sup.tick(&events, &[]), [Action::ArmEventKill(0, 0)]);
+        assert_eq!(sup.tick(&events, &[]), [Action::ArmEventKill(0, 0, 0)]);
         sup.note_event_kill_armed(0, 0, 0);
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
         assert_eq!(
@@ -1170,10 +1377,9 @@ mod tests {
                     node: 0,
                     after_fault: true
                 },
-                Action::ArmEventKill(0, 0)
+                Action::ArmEventKill(0, 0, 500_000_000)
             ]
         );
-        assert_eq!(sup.event_kill_start(0, 0), Some(500_000_000));
         assert_eq!(sup.pending_faults(), 1);
 
         sup.note_event_kill_armed(0, 0, 500_000_000);
@@ -1193,7 +1399,7 @@ mod tests {
     fn restarting_a_node_rearms_an_event_fault_that_stayed_active() {
         let mut sup = Supervisor::new(1);
         let event = active(&[(0, ProcessAction::EventKill { rarity: 1 })]);
-        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 1)]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 1, 0)]);
         assert_eq!(
             sup.tick(&event, &[0]),
             [
@@ -1201,7 +1407,7 @@ mod tests {
                     node: 0,
                     after_fault: false
                 },
-                Action::ArmEventKill(0, 1)
+                Action::ArmEventKill(0, 1, 0)
             ]
         );
     }
@@ -1210,7 +1416,7 @@ mod tests {
     fn a_report_for_an_obsolete_arm_does_not_credit_the_current_incarnation() {
         let mut sup = Supervisor::new(1);
         let event = active(&[(0, ProcessAction::EventKill { rarity: 4 })]);
-        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 4)]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 4, 0)]);
         assert!(!sup.note_event_kill(0, 4, 9, 0x10));
         assert_eq!(
             sup.tick(&event, &[0]),
@@ -1219,7 +1425,7 @@ mod tests {
                     node: 0,
                     after_fault: false
                 },
-                Action::ArmEventKill(0, 4)
+                Action::ArmEventKill(0, 4, 0)
             ]
         );
         assert_eq!(sup.counters().event_kill_fires, 0);
@@ -1231,14 +1437,14 @@ mod tests {
     fn an_acknowledged_old_window_is_valid_after_the_current_window_changes() {
         let mut sup = Supervisor::new(1);
         let first = active(&[(0, ProcessAction::EventKill { rarity: 4 })]);
-        assert_eq!(sup.tick(&first, &[]), [Action::ArmEventKill(0, 4)]);
+        assert_eq!(sup.tick(&first, &[]), [Action::ArmEventKill(0, 4, 0)]);
         sup.note_event_kill_armed(0, 4, 0);
 
         let mut second = ActiveWindows::new();
         second.insert(0, &ProcessAction::EventKill { rarity: 4 }, 1);
         assert_eq!(
             sup.tick(&second, &[]),
-            [Action::DisarmEventKill(0), Action::ArmEventKill(0, 4)]
+            [Action::DisarmEventKill(0), Action::ArmEventKill(0, 4, 1)]
         );
         assert!(sup.note_event_kill(0, 4, 0, 0x10));
         assert_eq!(sup.counters().event_kill_fires, 1);
@@ -1391,7 +1597,7 @@ mod tests {
     fn a_node_that_dies_under_a_pause_window_publishes_no_armed_kill() {
         let mut sup = Supervisor::new(1);
         let kill = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
-        assert_eq!(sup.tick(&kill, &[]), [Action::ArmEventKill(0, 0)]);
+        assert_eq!(sup.tick(&kill, &[]), [Action::ArmEventKill(0, 0, 0)]);
         sup.note_event_kill_armed(0, 0, 0);
         assert_eq!(sup.snapshot().event_kill_armed, 1);
         let paused = active(&[
@@ -1408,7 +1614,7 @@ mod tests {
                     node: 0,
                     after_fault: false
                 },
-                Action::ArmEventKill(0, 0)
+                Action::ArmEventKill(0, 0, 0)
             ]
         );
     }
@@ -1428,7 +1634,7 @@ mod tests {
     fn pending_faults_drop_after_the_canonical_event_report() {
         let mut sup = Supervisor::new(1);
         let event = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
-        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0, 0)]);
         sup.note_event_kill_armed(0, 0, 0);
         assert_eq!(sup.snapshot().pending_faults, 1);
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
@@ -1507,7 +1713,7 @@ mod tests {
     fn a_pending_event_arm_excludes_completed_check_provenance() {
         let mut sup = Supervisor::new(1);
         let event = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
-        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0, 0)]);
         sup.note_event_kill_armed(0, 0, 0);
         let capture = started(5, &sup);
         sup.note_check_completed(completed(capture, &sup));
@@ -1605,7 +1811,7 @@ mod tests {
         );
         assert_eq!(Action::RunHook(5).describe(), "run hook 5");
         assert_eq!(
-            Action::ArmEventKill(0, 3).describe(),
+            Action::ArmEventKill(0, 3, 0).describe(),
             "arm event kill node 0 rarity 3"
         );
         assert_eq!(

@@ -19,10 +19,14 @@ in the platform supervisor's bundle format:
 | `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |
 | `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
-| `disk <node> <path> <size>` | gives that node an ext4 filesystem at `path`, sized `16M` through `1G` in whole 4 KiB pages, which power-loss and disk actions act on |
+| `disk <node> <path> <size> [checksummed]` | gives that node an ext4 filesystem at `path`, sized `16M` through `1G` in whole 4 KiB pages, which power-loss and disk actions act on |
 
 A `disk` line names a node declared by a `node` line, and each node has at most
-one disk. The image must contain `mkfs.ext4`. The
+one disk. The image must contain `mkfs.ext4`. The `checksummed` flag declares
+that the node's software checksums the data it stores there and claims to
+detect a corrupted block. Only a checksummed disk draws `DiskCorrupt`. A flipped
+bit breaks a durable-write check on any storage that does not checksum its
+data, so a finding from it on an unflagged disk says nothing about the software. The
 [supervisor README](../../consonance/harmony-linux/supervisor/README.md#node-disks)
 describes how the disk is built, replayed and faulted.
 
@@ -213,7 +217,7 @@ the same quantum, so busy-loop scheduling replays along with fault timing:
 | `PowerLossAll(ticks)` | every node goes down as in `KillAll`, and every disk loses its unflushed writes the same way, each with its own prefix; drawn only for bundles with a `disk` line and more than one node |
 | `DiskError(node, ticks)` | every read, write and flush on the node's disk fails with `EIO` for the window; drawn only for a node with a `disk` line |
 | `DiskStall(node, ticks)` | every request to the node's disk waits until the window closes; drawn only for a node with a `disk` line |
-| `DiskCorrupt(node, ticks)` | the node is killed, one bit flips in a block it wrote since its disk was last cut, and it comes back after a quarter of the window, as in `Restart`; drawn only for a node with a `disk` line |
+| `DiskCorrupt(node, ticks)` | the node is killed, one bit flips in a block it wrote since its disk was last cut, and it comes back after a quarter of the window, as in `Restart`; drawn only for a node whose `disk` line has the `checksummed` flag |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once |
@@ -232,6 +236,14 @@ platform supervisor applies the shift through a per-node time namespace with a
 realtime offset (see [`patches`](../../consonance/harmony-linux/linux/patches)).
 UML kernels have no time namespaces, so a UML vocabulary has the clock
 capability off and the search never draws a clock action there.
+
+A search can leave out fault kinds. The faults package option
+`exclude_faults` (in `[workload.options]` of `harmony.toml`) lists them by
+name: `kill`, `kill_all`, `pause`, `restart`, `hook`, `power_loss`,
+`power_loss_all`, `disk_error`, `disk_stall`, `disk_corrupt`, `event_kill`,
+`event_park`, `clock` and `clock_all`. The search then never draws them. `Wait` is always drawn. The
+search records the excluded kinds in its vocabulary identifier, so a resumed
+search keeps them. A replay of recorded actions runs every action it is given.
 
 Every action also records a 64-bit `choice`, drawn when the search draws the
 action and kept when a retained action is reused. Each action starts with a
@@ -270,7 +282,8 @@ retained across actions.
 Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
-moment, so an input is fully described by its encoded window list and one
+moment, plus the windows that closed after the previous poll moment the question
+carries. An input is fully described by its encoded window list and one
 branch installs it. A hold still running when an event-park window closes
 continues after the window, so the next actions can overlap the held thread.
 The park counts as a pending fault until that hold ends.
@@ -930,8 +943,10 @@ arm64 MMIO console wrapper.
 
 The package can prepare a recorded prefix for guest debugging and export the
 resulting state as a durable root. A root binds the prepared boot identity to a
-cache extent containing pages and device/service sidecars, plus the standing
-fault windows still active at its snapshot moment. Import validates that
+cache extent containing pages and device/service sidecars, plus every standing
+fault window that started by its snapshot moment. A closed window stays in the
+root because the supervisor's next poll may still ask for windows that closed
+after its previous poll. Import validates that
 identity and the extent; root bytes also contribute to the workload identity.
 The CLI verifies and loads the saved root once before starting a search, then
 passes those bytes to every worker. Later action prefixes/checkpoints
@@ -974,7 +989,7 @@ attachment after a standing reply is delivered at the same next debug request,
 without a dormant flag or an extra tick. Local answering removes only the
 external Decision/resolution exchange; guest doorbells and mandatory guards
 remain. Both handlers decode debug Status before answering. Standing and debug
-identities are respectively faults-standing-coverage-v4 and
+identities are respectively faults-standing-coverage-v5 and
 faults-debug-terminal-v2.
 
 The generic local-answer capability requires unchanged captured handler state;

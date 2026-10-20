@@ -196,7 +196,7 @@ ready /usr/bin/servicectl endpoint health
         );
         assert_eq!(
             prepared.vocabulary.identifier(),
-            "faultlab_bundle_v10;nodes=1;hooks=1,2;disks=;events=none;clock=time_namespace"
+            "faultlab_bundle_v10;nodes=1;hooks=1,2;disks=;checksummed=;events=none;clock=time_namespace;exclude="
         );
     }
 

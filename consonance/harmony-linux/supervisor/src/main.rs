@@ -123,7 +123,7 @@ mod runtime {
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
     use harmony_supervisor::evidence::CheckEvidence;
     use harmony_supervisor::process;
-    use harmony_supervisor::reconcile::ActiveWindows;
+    use harmony_supervisor::reconcile::Standing;
     use harmony_supervisor::recovery::{RecoveryReadiness, RecoveryWatch};
     use harmony_supervisor::regs::{
         REG_ALIVE, REG_CHECK_ENABLED, REG_CHECKS_FINISHED, REG_CHECKS_STARTED,
@@ -137,11 +137,11 @@ mod runtime {
     use harmony_supervisor::supervise::{Action, Supervisor};
     use hypercall_doorbell::linux::DeviceTransport;
     use hypercall_proto::MAX_PAYLOAD;
-    use process_proto::STANDING_NAMESPACE;
     use process_proto::events::{
         self, Command as EventCommand, Reply as EventReply, Report as EventReport, decode_reply,
         decode_report,
     };
+    use process_proto::{STANDING_NAMESPACE, encode_standing_question};
     use std::collections::VecDeque;
     use std::fs::File;
     use std::io::{ErrorKind, Read, Write};
@@ -910,7 +910,12 @@ mod runtime {
             thread::sleep(Duration::from_nanos(harmony_supervisor::TICK_NANOS));
             sdk.state_set(REG_PENDING_FAULTS, u64::MAX)
                 .map_err(|error| format!("state_set({REG_PENDING_FAULTS}): {error}"))?;
-            let active = poll_standing(sdk, supervisor.counters().ticks, &mut buffer)?;
+            let standing = poll_standing(
+                sdk,
+                supervisor.counters().ticks,
+                supervisor.moment(),
+                &mut buffer,
+            )?;
             let answered = sdk
                 .client_mut()
                 .service_request(
@@ -966,7 +971,7 @@ mod runtime {
                 supervisor,
             )?;
             supervisor.note_recovery_pending(runtime.recovery.is_fault_pending());
-            let actions = supervisor.tick(&active, &deaths);
+            let actions = supervisor.poll(&standing, &deaths);
             report_node_exits(
                 supervisor,
                 &exits,
@@ -1008,7 +1013,7 @@ mod runtime {
             for ready in ready_hooks {
                 launch_ready_hook(ready, spec, bundle, &mut runtime.hooks, supervisor, tick)?;
             }
-            let disturbed = !active.is_empty()
+            let disturbed = !supervisor.active().is_empty()
                 || supervisor.pending_faults() != 0
                 || supervisor.any_node_held_down();
             if let Some(quiet) = runtime
@@ -1052,17 +1057,22 @@ mod runtime {
     fn poll_standing(
         sdk: &mut GuestSdk,
         tick: u64,
+        after: Option<u64>,
         buffer: &mut [u8],
-    ) -> Result<ActiveWindows, String> {
+    ) -> Result<Standing, String> {
         let answered = sdk
             .client_mut()
-            .service_request(STANDING_NAMESPACE, tick, &[], buffer)
+            .service_request(
+                STANDING_NAMESPACE,
+                tick,
+                &encode_standing_question(after),
+                buffer,
+            )
             .map_err(|error| format!("standing poll: {error:?}"))?;
         let Some(length) = answered else {
-            return Ok(ActiveWindows::new());
+            return Ok(Standing::default());
         };
-        ActiveWindows::from_answer(&buffer[..length])
-            .map_err(|error| format!("standing answer: {error}"))
+        Standing::decode(&buffer[..length]).map_err(|error| format!("standing answer: {error}"))
     }
 
     fn reap_nodes(nodes: &mut [Node]) -> Result<Vec<(u16, Option<ExitStatus>)>, String> {
@@ -1277,12 +1287,7 @@ mod runtime {
                         .map_err(|error| format!("recovery: {error}"))?;
                 }
             }
-            Action::ArmEventKill(node, rarity) => {
-                let Some(start) = supervisor.event_kill_start(node, rarity) else {
-                    return Err(format!(
-                        "arm event kill node {node}: no active window for rarity {rarity}"
-                    ));
-                };
+            Action::ArmEventKill(node, rarity, start) => {
                 if let Some(entry) = nodes.get_mut(usize::from(node))
                     && let Some(events) = entry.events.as_mut()
                 {
@@ -1622,9 +1627,10 @@ mod runtime {
     #[cfg(test)]
     mod tests {
         use super::{
-            Action, ActiveWindows, EventChannel, EventCommand, Supervisor, events,
-            inherit_event_fd, node_exit_violations, retire_node_child,
+            Action, EventChannel, EventCommand, Supervisor, events, inherit_event_fd,
+            node_exit_violations, retire_node_child,
         };
+        use harmony_supervisor::reconcile::ActiveWindows;
         use harmony_supervisor::recovery::RecoveryReadiness;
         use process_proto::ProcessAction;
         use std::io::{Read, Write};
@@ -1800,7 +1806,10 @@ mod runtime {
             let mut channel = EventChannel::new(control, report).expect("event channel");
             let mut supervisor = Supervisor::new(1);
             let active = event_faults();
-            assert_eq!(supervisor.tick(&active, &[]), [Action::ArmEventKill(0, 0)]);
+            assert_eq!(
+                supervisor.tick(&active, &[]),
+                [Action::ArmEventKill(0, 0, 0)]
+            );
             channel.ready = true;
             channel.queue(EventCommand::ArmKill {
                 rarity: 0,
