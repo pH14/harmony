@@ -717,16 +717,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             ))?;
         let mut work = HashWork::new();
         let result = (|| {
-            let mut hasher = Sha256::new();
-            hasher.update(b"consonance-sparse-base-ram-v1\0");
-            hasher.update(memory_len.to_le_bytes());
-            work.metadata(b"consonance-sparse-base-ram-v1\0".len() + 8);
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"consonance-sparse-base-ram-pages-v2\0");
+            hasher.update(&memory_len.to_le_bytes());
+            work.metadata(b"consonance-sparse-base-ram-pages-v2\0".len() + 8);
             for gfn in 0..self.engine.mem_pages() {
-                let page = transaction.read_page(base_id, gfn)?;
-                hasher.update(page);
-                work.ram(page.len());
+                hasher.update(transaction.page_hash(base_id, gfn)?);
+                work.metadata(32);
             }
-            Ok::<[u8; 32], PortableSnapshotError>(hasher.finalize().into())
+            Ok::<[u8; 32], PortableSnapshotError>(*hasher.finalize().as_bytes())
         })();
         work.finish(&self.hash_telemetry, HashSite::SparseBase, result.is_err());
         let digest = result?;
@@ -5807,7 +5806,11 @@ mod tests {
         server.export_sparse_delta(origin, None, origin).unwrap();
         let first = server.host_telemetry().hashes.cost(HashSite::SparseBase);
         assert_eq!(first.calls - before.calls, 1);
-        assert_eq!(first.ram_bytes - before.ram_bytes, RAM as u64);
+        assert_eq!(first.ram_bytes, before.ram_bytes);
+        assert_eq!(
+            first.metadata_bytes - before.metadata_bytes,
+            (b"consonance-sparse-base-ram-pages-v2\0".len() + 8 + 32 * (RAM / 4096)) as u64
+        );
         server.export_sparse_delta(origin, None, origin).unwrap();
         assert_eq!(
             server.host_telemetry().hashes.cost(HashSite::SparseBase),
@@ -8339,13 +8342,15 @@ mod tests {
             digest.update(page);
         }
         let reference_target_digest: [u8; 32] = digest.finalize().into();
-        let mut digest = Sha256::new();
-        digest.update(b"consonance-sparse-base-ram-v1\0");
-        digest.update((source.engine.mem_pages() * snapshot_store::PAGE_SIZE as u64).to_le_bytes());
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"consonance-sparse-base-ram-pages-v2\0");
+        digest
+            .update(&(source.engine.mem_pages() * snapshot_store::PAGE_SIZE as u64).to_le_bytes());
         for gfn in 0..source.engine.mem_pages() {
-            digest.update(source.engine.read_page(setup_id, gfn).unwrap());
+            digest
+                .update(blake3::hash(&source.engine.read_page(setup_id, gfn).unwrap()).as_bytes());
         }
-        let reference_base_digest: [u8; 32] = digest.finalize().into();
+        let reference_base_digest: [u8; 32] = *digest.finalize().as_bytes();
         let portable = decode_sparse_sidecar(&exported[0].2).unwrap();
         assert_eq!(portable.target_pages_digest, Some(reference_target_digest));
         assert_eq!(portable.base_ram_digest, reference_base_digest);

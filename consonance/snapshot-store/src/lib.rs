@@ -1346,6 +1346,26 @@ impl<'store> ReadTransaction<'store> {
         Ok(data)
     }
 
+    pub fn page_hash(
+        &mut self,
+        snap: SnapshotId,
+        gfn: u64,
+    ) -> Result<&'store PageHash, StoreError> {
+        self.store.live_layer(snap)?;
+        if gfn >= self.store.cfg.mem_pages {
+            return Err(StoreError::GfnOutOfRange {
+                gfn,
+                mem_pages: self.store.cfg.mem_pages,
+            });
+        }
+        let (hash, _) = self.store.page_entry(
+            self.store.resolve(snap.0, gfn),
+            gfn,
+            &mut self.verified_pages,
+        )?;
+        Ok(hash)
+    }
+
     fn verify_snapshot(&mut self, snap: SnapshotId) -> Result<(), StoreError> {
         self.store.live_layer(snap)?;
         let key = (snap.0, snap.1);

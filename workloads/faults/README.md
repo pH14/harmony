@@ -748,9 +748,12 @@ retained-input table. The continuous client and oracle remain image-owned
 commands; the oracle decides when its observations are conclusive, including
 when some nodes are down.
 
-Every replay run boots a session no earlier run has touched, so no snapshot
-another run cached can stand in for guest execution: each run reaches the
-sealed setup point and executes the recorded actions itself. Each run records
+Every replay run starts from a session no earlier run has touched, and executes
+the recorded actions itself, so no snapshot another run cached can stand in for
+an action. The setup point comes from the host boot cache
+(`SessionConfig::with_boot_cache`, under `HARMONY_CACHE_DIR/boot`) when an
+earlier boot with the same image, executable, configuration and host stored
+it, and from a fresh boot otherwise; both give the same setup state hash. Each run records
 the actions it applied beside the horizons it ran in the guest, and the two are
 equal when nothing came from a cache. A search replays every bug it records the
 same way, and reports the bug as confirmed only when the replay reproduced the

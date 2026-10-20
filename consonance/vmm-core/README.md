@@ -335,8 +335,11 @@ distinct resident base page before reusing the cached digest. Sparse exports
 also verify every distinct resident target page, including inherited pages
 omitted from a delta. Pages shared by the base and target are hashed once per
 export when the base digest is cached; delta export performs this check before
-encoding its sidecar and does not repeat it there. The first base-digest
-calculation still reads the base pages to compute its SHA-256 identity. A
+encoding its sidecar and does not repeat it there. The base digest is BLAKE3
+over the domain `consonance-sparse-base-ram-pages-v2`, the RAM length and the
+ordered BLAKE3 page digests the snapshot store keeps, so after page
+verification it costs 32 bytes per page. Version 13 sidecars carried a SHA-256
+over the full base RAM instead. A
 release microbenchmark on Apple silicon measured 30.11 ms per
 base-only check for 8,192 distinct 4 KiB pages (32 MiB) and 0.45 ms when
 those frames shared one interned page. Checking that base together with a
@@ -347,7 +350,7 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 11, and the sparse sidecar is version 13;
+The complete portable format is version 11, and the sparse sidecar is version 14;
 older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
 changed-page numbers and bytes to its sidecar; import verifies them before
 deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
@@ -1174,5 +1177,5 @@ Fault completions have a distinct tag. This detects differing supplied answers
 even when device and guest state later reconverge. It does not independently
 attest that hardware applied the supplied value correctly. ARM raw-only GIC and
 sysreg substrate operations remain outside the portable normalized stream.
-Complete snapshots use version 11 and sparse snapshots use version 13; earlier
+Complete snapshots use version 11 and sparse snapshots use version 14; earlier
 histories cannot be imported under these semantics.

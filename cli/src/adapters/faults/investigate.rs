@@ -609,6 +609,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "replay",
@@ -750,6 +751,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "search",
@@ -827,6 +829,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "search",

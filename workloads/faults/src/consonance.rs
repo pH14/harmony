@@ -108,6 +108,7 @@ pub struct FaultConfig {
     pub ram_mib: u32,
     pub backend: GuestBackend,
     pub root: Option<Arc<Vec<u8>>>,
+    pub boot_cache: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -212,10 +213,14 @@ impl FaultConfig {
         let ram = usize::try_from(self.ram_mib)
             .unwrap_or(usize::MAX / (1024 * 1024))
             .saturating_mul(1024 * 1024);
-        SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
+        let config = SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
             .with_identity_tag(IDENTITY_TAG)
             .with_wall_limit(WALL_LIMIT)
-            .with_deferred_virtual_time_checkpoint_hashes()
+            .with_deferred_virtual_time_checkpoint_hashes();
+        match &self.boot_cache {
+            Some(dir) => config.with_boot_cache(dir),
+            None => config,
+        }
     }
 }
 
@@ -2645,6 +2650,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Uml(Box::new(guest.clone())),
             root: None,
+            boot_cache: None,
         };
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
@@ -2685,6 +2691,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Uml(Box::new(guest)),
             root: None,
+            boot_cache: None,
         };
         let split = FaultConfig {
             knobs: vec!["foo=bar".into(), "root=/dev/ram0".into()],
@@ -2729,6 +2736,7 @@ mod tests {
                     ram_mib: DEFAULT_RAM_MIB,
                     backend: GuestBackend::Vm,
                     root: None,
+                    boot_cache: None,
                 }
                 .session_config(),
                 cache: None,
@@ -3625,6 +3633,7 @@ mod tests {
                 ram_mib: DEFAULT_RAM_MIB,
                 backend: GuestBackend::Vm,
                 root: None,
+                boot_cache: None,
             },
         );
         let run = crate::campaign::FaultCampaignRun {
@@ -4227,6 +4236,7 @@ mod tests {
                 ram_mib: DEFAULT_RAM_MIB,
                 backend,
                 root: None,
+                boot_cache: None,
             },
         )
     }
@@ -7311,6 +7321,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Vm,
             root: None,
+            boot_cache: None,
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         let run = crate::campaign::FaultCampaignRun {
@@ -7951,6 +7962,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Vm,
             root: None,
+            boot_cache: None,
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         for terminal in [false, true] {

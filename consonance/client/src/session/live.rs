@@ -30,6 +30,7 @@ use vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time;
 use super::*;
 use crate::Client;
 
+mod boot_cache;
 mod endpoint;
 
 type Server = Client<ControlServer<Box<dyn Backend<A = HostArch>>>>;
@@ -255,22 +256,46 @@ impl Session {
             .map_err(|error| SessionError::Control(error.to_string()))?;
 
         let genesis = snapshot_handle(&mut client, "genesis snapshot")?;
-        branch_payload(&mut client, genesis.id, setup_payloads, config.seed)?;
+        let slot = config
+            .boot_cache
+            .as_deref()
+            .and_then(|dir| boot_cache::Slot::new(dir, &image_identity, &config));
+        let cached = match &slot {
+            Some(slot) => restore_cached_boot(&mut client, &loaded_image_guard, genesis.id, slot)?,
+            None => None,
+        };
         let mut abandoned = false;
-        let setup_stop = run_to_snapshot(
-            &mut client,
-            genesis.at,
-            config.run_budget,
-            config.wall_limit,
-            &mut abandoned,
-        )?;
-        let setup = snapshot_handle(&mut client, "setup snapshot")?;
-        if setup_stop != setup.at {
-            return Err(SessionError::Control(
-                "setup lifecycle point and setup seal have different V-times".into(),
-            )
-            .into());
-        }
+        let setup = match cached {
+            Some(setup) => setup,
+            None => {
+                branch_payload(&mut client, genesis.id, setup_payloads, config.seed)?;
+                let setup_stop = run_to_snapshot(
+                    &mut client,
+                    genesis.at,
+                    config.run_budget,
+                    config.wall_limit,
+                    &mut abandoned,
+                )?;
+                let setup = snapshot_handle(&mut client, "setup snapshot")?;
+                if setup_stop != setup.at {
+                    return Err(SessionError::Control(
+                        "setup lifecycle point and setup seal have different V-times".into(),
+                    )
+                    .into());
+                }
+                if let Some(slot) = &slot {
+                    loaded_image_guard.check()?;
+                    if let Ok(sparse) = client
+                        .transport()
+                        .export_sparse_snapshot(genesis.id, setup.id)
+                    {
+                        loaded_image_guard.check()?;
+                        slot.store(setup.at, &sparse.pages, &sparse.sidecar);
+                    }
+                }
+                setup
+            }
+        };
         loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         Ok(Self {
             client,
@@ -958,6 +983,39 @@ where
         Ok(value) => cleanup_error.map_or(Ok(value), Err),
         Err(error) => Err(error),
     }
+}
+
+fn restore_cached_boot(
+    client: &mut Server,
+    guard: &crate::image_identity::LoadedImageGuard,
+    genesis: SnapId,
+    slot: &boot_cache::Slot,
+) -> Result<Option<SnapshotReceipt>, Box<dyn Error>> {
+    let Some(entry) = slot.load() else {
+        return Ok(None);
+    };
+    guard.check()?;
+    let Ok(receipt) =
+        client
+            .transport_mut()
+            .import_sparse_snapshot_parts(genesis, &entry.pages, &entry.sidecar)
+    else {
+        return Ok(None);
+    };
+    guard.check()?;
+    if receipt.at.0 != entry.at {
+        let _ = drop_control_handle(client, receipt.id);
+        return Err(SessionError::Portable("cached boot V-time differs".into()).into());
+    }
+    let reply = client
+        .request(&Request::Replay(receipt.id))
+        .map_err(|error| SessionError::Control(error.to_string()))?;
+    expect_unit(reply, "replay cached boot")?;
+    retire_restore_trace(client);
+    Ok(Some(SnapshotReceipt {
+        id: receipt.id,
+        at: entry.at,
+    }))
 }
 
 fn branch_payload(

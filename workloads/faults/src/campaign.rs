@@ -1536,6 +1536,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Vm,
             root: None,
+            boot_cache: None,
         }
     }
 

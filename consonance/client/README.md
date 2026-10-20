@@ -227,6 +227,23 @@ reserves SIGUSR1 process-wide, so every composition that arms a host bound
 shares this one guard. A request that returns as the bound expires claims the
 run and keeps its reply.
 
+`SessionConfig::with_boot_cache(dir)` keeps the setup snapshot of a booted
+session in `dir` and lets a later session with the same key restore it instead
+of booting. The key is SHA-256 over the session image identity (assurance,
+loaded executable, kernel, initramfs, RAM, seed, run budget, command line,
+identity tag, guest contract and setup payloads), the checkpoint-hash deferral
+flag, and the host: the `vendor_id`, `cpu family`, `model`, `stepping`,
+`microcode` and `flags` of every CPU in the thread's affinity mask, and the
+kernel `osrelease` and `version`. An entry holds the setup V-time, the sparse
+setup snapshot relative to the genesis snapshot, and a SHA-256 over its header
+and sidecar; the sidecar commits to the pages. A hit takes the genesis snapshot,
+imports the entry with the ordinary sparse-import checks, including the genesis
+RAM digest, and replays it, so the session's genesis and setup handles are the
+same as after a fresh boot. A missing, damaged or refused entry falls back to a
+fresh boot, which then rewrites the entry. Writes are atomic renames, and the
+directory keeps the four newest entries. The cache is used only on Linux x86
+and travels neither in the worker protocol nor in any identity.
+
 `SparseSnapshot` is the explicit `consonance-whole-vm-v2` archive shape used
 by adapters that need page and sidecar sharing across related checkpoints.
 Its serde fields remain `base`, `image_identity`, `pages`, and `sidecar`; the
@@ -250,7 +267,7 @@ Completed service exchanges contribute records in addition to normalized
 transport events; this count is not a guest-exit or diagnostic-log count.
 
 Embedded complete portable snapshots use format version 11; sparse sidecars use
-version 13. Older embedded versions are rejected. The outer sparse archive layout
+version 14. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw

@@ -19,6 +19,7 @@ pub struct Options {
     pub uml_profile: Option<(PathBuf, String)>,
     pub root: Option<Arc<Vec<u8>>>,
     pub checkpoint_owner: Option<String>,
+    pub boot_cache: Option<PathBuf>,
 }
 
 impl Options {
@@ -426,6 +427,7 @@ mod live {
             ram_mib: options.ram_mib,
             backend,
             root: options.root.clone(),
+            boot_cache: options.boot_cache.clone(),
         })
     }
 
@@ -1073,6 +1075,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         }
     }
 
