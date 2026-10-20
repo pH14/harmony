@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Scratch validation of power-loss faults on NATS JetStream 2.15.1. Lives only
+# on the validation branch.
+name: Scratch / Power Loss Validation
+
+on:
+  push:
+    branches: [claude/power-loss-validation]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build CLI and images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools podman
+      - name: Build the paired CLI
+        run: bash scripts/build-consonance-cli-pair.sh paired-cli
+      - name: Build NATS images
+        run: |
+          set -euo pipefail
+          runtime=$(HARMONY_CONTAINER_TOOL=podman bash workloads/languages/build-runtime.sh)
+          mkdir -p images
+          for sync in default always; do
+            podman build --format docker --platform=linux/amd64 \
+              --build-arg HARMONY_RUNTIME_IMAGE="$runtime" \
+              --build-arg NATS_VERSION=v2.15.1 \
+              --build-arg NATS_SYNC="$sync" \
+              --file workloads/harness/targets/nats/Dockerfile \
+              --tag "localhost/nats-pl:$sync" .
+            podman save --format oci-archive -o "images/nats-$sync.oci" "localhost/nats-pl:$sync"
+          done
+          ls -la images
+      - uses: actions/upload-artifact@v4
+        with:
+          name: power-loss-build
+          path: |
+            paired-cli
+            images
+          retention-days: 3
+
+  run:
+    name: ${{ matrix.name }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Branch search default sync
+            id: branch-default
+          - name: Branch search sync always
+            id: branch-always
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the guest runtime
+        uses: ./.github/actions/platform-runtime
+        with:
+          report: evidence
+      - uses: actions/download-artifact@v4
+        with:
+          name: power-loss-build
+      - name: Enable KVM
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          chmod +x paired-cli/harmony paired-cli/harmony-consonance-host
+      - name: Run
+        env:
+          CASE: ${{ matrix.id }}
+        run: bash .github/power-loss-validation.sh "$CASE"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: power-loss-${{ matrix.id }}
+          path: evidence
+          retention-days: 7
