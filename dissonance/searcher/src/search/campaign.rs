@@ -3025,9 +3025,15 @@ impl<K: Eq + Hash, V> ReservationLookup<K, V> {
 }
 
 struct CompletedBuffer<K: Eq + Hash, V> {
-    entries: ReservationLookup<K, V>,
+    entries: ReservationLookup<K, BufferedResult<V>>,
     telemetry: CompletedBufferTelemetry,
     records: fn(&V) -> (u64, u64),
+}
+
+struct BufferedResult<V> {
+    value: V,
+    actions: u64,
+    candidates: u64,
 }
 
 impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
@@ -3045,7 +3051,11 @@ impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
             std::collections::hash_map::Entry::Vacant(slot) => slot,
         };
         let (actions, candidates) = (self.records)(&value);
-        slot.insert(value);
+        slot.insert(BufferedResult {
+            value,
+            actions,
+            candidates,
+        });
         let stats = &mut self.telemetry;
         stats.results_live = stats.results_live.saturating_add(1);
         stats.actions_live = stats.actions_live.saturating_add(actions);
@@ -3057,8 +3067,11 @@ impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
     }
 
     fn remove(&mut self, key: &K) -> Option<V> {
-        let value = self.entries.remove(key)?;
-        let (actions, candidates) = (self.records)(&value);
+        let BufferedResult {
+            value,
+            actions,
+            candidates,
+        } = self.entries.remove(key)?;
         let stats = &mut self.telemetry;
         stats.results_live = stats
             .results_live
@@ -3078,7 +3091,7 @@ impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
 
 impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
     fn get(&self, key: &K) -> Option<&V> {
-        self.entries.get(key)
+        self.entries.get(key).map(|entry| &entry.value)
     }
 
     fn len(&self) -> usize {
@@ -8673,6 +8686,33 @@ mod tests {
         assert_eq!(buffer.telemetry.results_peak, 3);
         assert_eq!(buffer.telemetry.actions_peak, 3);
         assert_eq!(buffer.telemetry.candidates_peak, 2);
+    }
+
+    #[test]
+    fn completed_buffer_counts_each_accepted_result_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let scans = Arc::new(AtomicUsize::new(0));
+        let mut buffer = super::CompletedBuffer::new(
+            |value: &(Arc<AtomicUsize>, (u64, u64))| {
+                value.0.fetch_add(1, Ordering::Relaxed);
+                value.1
+            },
+            2,
+        );
+        assert!(buffer.insert(7, (Arc::clone(&scans), (5, 2))).is_none());
+        assert!(buffer.insert(9, (Arc::clone(&scans), (3, 1))).is_none());
+        assert!(buffer.insert(7, (Arc::clone(&scans), (8, 4))).is_some());
+        assert_eq!(scans.load(Ordering::Relaxed), 2);
+        assert_eq!(buffer.get(&7).unwrap().1, (5, 2));
+        assert_eq!(buffer.remove(&9).unwrap().1, (3, 1));
+        assert_eq!(buffer.remove(&7).unwrap().1, (5, 2));
+        assert!(buffer.remove(&7).is_none());
+        assert_eq!(scans.load(Ordering::Relaxed), 2);
+        assert_eq!(buffer.telemetry.results_live, 0);
+        assert_eq!(buffer.telemetry.actions_live, 0);
+        assert_eq!(buffer.telemetry.candidates_live, 0);
+        assert_eq!(buffer.telemetry.actions_peak, 8);
+        assert_eq!(buffer.telemetry.candidates_peak, 3);
     }
 
     #[test]

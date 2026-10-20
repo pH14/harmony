@@ -118,7 +118,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     work_budget: Option<u64>,
     header: CampaignStreamHeader<DrawTableHeader>,
     origin_record: CampaignOriginRecord,
-    writer: StreamWriter<'a>,
+    writer: StreamWriter<'a, CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key>>,
     progress: Option<&'a mut dyn Write>,
     core: CoordinatorCore<G>,
     counters: CampaignCounters,
@@ -236,7 +236,7 @@ where
         );
         header.work_budget = work_budget;
         let mut writer = StreamWriter::new(stream);
-        writer.write_line(header.clone())?;
+        writer.write_header(&header)?;
 
         let mut core = CoordinatorCore::new(
             workload,

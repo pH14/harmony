@@ -691,7 +691,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub active: Vec<bool>,
     active_count: usize,
     pub slots: BTreeMap<Slot<K>, Vec<usize>>,
-    cells: BTreeMap<Cell<K>, CellState>,
+    cells: CellArena<K>,
+    cell_handles: Vec<usize>,
     input_index: InputIndex<A>,
     historical_input_actions: usize,
     stored_input_actions: usize,
@@ -773,6 +774,118 @@ struct CellState {
     draws_total: u64,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound = "K: ArchiveKey")]
+struct CellArena<K: ArchiveKey> {
+    index: BTreeMap<Cell<K>, usize>,
+    records: Vec<CellRecord<K>>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(bound = "K: ArchiveKey")]
+struct CellRecord<K: ArchiveKey> {
+    key: Cell<K>,
+    state: CellState,
+    members: CellMembers<K>,
+}
+
+impl<K: ArchiveKey> Default for CellArena<K> {
+    fn default() -> Self {
+        Self {
+            index: BTreeMap::new(),
+            records: Vec::new(),
+        }
+    }
+}
+
+impl<K: ArchiveKey> CellArena<K> {
+    fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    fn handle(&self, key: &Cell<K>) -> Option<usize> {
+        self.index.get(key).copied()
+    }
+
+    fn ensure(&mut self, key: Cell<K>) -> usize {
+        match self.index.entry(key) {
+            std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let id = self.records.len();
+                self.records.push(CellRecord {
+                    key,
+                    state: CellState::default(),
+                    members: CellMembers::default(),
+                });
+                entry.insert(id);
+                id
+            }
+        }
+    }
+
+    fn state_mut(&mut self, key: Cell<K>) -> &mut CellState {
+        let id = self.ensure(key);
+        &mut self.records[id].state
+    }
+
+    fn get(&self, key: &Cell<K>) -> Option<&CellState> {
+        self.handle(key)
+            .and_then(|id| self.records.get(id))
+            .map(|record| &record.state)
+    }
+
+    fn get_mut(&mut self, key: &Cell<K>) -> Option<&mut CellState> {
+        let id = self.handle(key)?;
+        self.records.get_mut(id).map(|record| &mut record.state)
+    }
+
+    fn contains_key(&self, key: &Cell<K>) -> bool {
+        self.index.contains_key(key)
+    }
+
+    fn values(&self) -> impl Iterator<Item = &CellState> {
+        self.records.iter().map(|record| &record.state)
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut CellState> {
+        self.records.iter_mut().map(|record| &mut record.state)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Cell<K>, &CellState)> {
+        self.index
+            .iter()
+            .map(|(key, id)| (key, &self.records[*id].state))
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&Cell<K>, &CellState) -> bool) {
+        self.records = std::mem::take(&mut self.records)
+            .into_iter()
+            .filter(|record| keep(&record.key, &record.state))
+            .collect();
+        self.records = std::mem::take(&mut self.records)
+            .into_boxed_slice()
+            .into_vec();
+        self.index = self
+            .records
+            .iter()
+            .enumerate()
+            .map(|(id, record)| (record.key, id))
+            .collect();
+    }
+
+    #[cfg(test)]
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    #[cfg(test)]
+    fn insert(&mut self, key: Cell<K>, state: CellState) -> Option<CellState> {
+        let previous = self.get(&key).copied();
+        *self.state_mut(key) = state;
+        previous
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct HolderRank<K> {
     key: K,
@@ -824,7 +937,7 @@ impl<K> Default for CellMembers<K> {
 #[derive(Deserialize, Serialize)]
 #[serde(transparent, bound = "K: ArchiveKey")]
 struct TierCells<K: ArchiveKey> {
-    places: BTreeMap<K::Place, CellMembers<K>>,
+    places: BTreeMap<K::Place, usize>,
     #[serde(skip)]
     weights: WeightedSet<K::Place>,
 }
@@ -1300,7 +1413,8 @@ where
             active: Vec::new(),
             active_count: 0,
             slots: BTreeMap::new(),
-            cells: BTreeMap::new(),
+            cells: CellArena::default(),
+            cell_handles: Vec::new(),
             input_index: InputIndex::default(),
             historical_input_actions: 0,
             stored_input_actions: 0,
@@ -1850,7 +1964,7 @@ where
                     .entry(slot_of_key(entry.key))
                     .or_default()
                     .push(index);
-                self.cells.entry(cell_of(entry.key)).or_default().active += 1;
+                self.cells.state_mut(cell_of(entry.key)).active += 1;
             }
             if self.snapshot_selectable[index] {
                 self.resident_snapshots = self.resident_snapshots.saturating_add(1);
@@ -1869,6 +1983,11 @@ where
             }
         }
         self.cells.retain(|_, state| state.active > 0);
+        self.cell_handles = self
+            .entries
+            .iter()
+            .map(|entry| self.cells.handle(&cell_of(entry.key)).unwrap_or(usize::MAX))
+            .collect();
         self.retain_indexed_landings();
 
         if let Some(bank) = &mut self.continuations {
@@ -2133,6 +2252,7 @@ where
             column(&self.lineages, entries),
             column(&self.deepest_leaf, entries),
             column(&self.parent_index, entries),
+            column(&self.cell_handles, entries),
             column(&self.snapshot_selectable, entries),
             column(&self.keyframe, entries),
             column(&self.keyframe_id, entries),
@@ -2160,7 +2280,7 @@ where
             ))
             .saturating_add(heap::vec_bytes::<usize>(self.entries.len().min(256)))
             .saturating_add(heap::btree_bytes::<K::Progress, TierCells<K>>(1, tiers))
-            .saturating_add(heap::btree_bytes::<K::Place, CellMembers<K>>(tiers, places))
+            .saturating_add(heap::btree_bytes::<K::Place, usize>(tiers, places))
             .saturating_add(WeightedSet::<K::Place>::heap_bound(tiers, places, removals))
             .saturating_add(WeightedSet::<usize>::heap_bound(places, active, removals))
             .saturating_add(
@@ -2219,20 +2339,21 @@ where
                 .or_default()
                 .push(id);
         }
+        for record in &mut self.cells.records {
+            record.members = CellMembers::default();
+        }
         self.tiers = grouped
             .into_iter()
             .map(|(progress, places)| {
                 let places = places
                     .into_iter()
                     .map(|(place, ids)| {
-                        let ids = WeightedSet::from_sorted(ids.into_iter().map(|id| (id, 0)));
-                        (
-                            place,
-                            CellMembers {
-                                ids,
-                                ranked: Vec::new(),
-                            },
-                        )
+                        let handle = self.cells.ensure((progress, place));
+                        self.cells.records[handle].members = CellMembers {
+                            ids: WeightedSet::from_sorted(ids.into_iter().map(|id| (id, 0))),
+                            ranked: Vec::new(),
+                        };
+                        (place, handle)
                     })
                     .collect();
                 (
@@ -2243,6 +2364,11 @@ where
                     },
                 )
             })
+            .collect();
+        self.cell_handles = self
+            .entries
+            .iter()
+            .map(|entry| self.cells.handle(&cell_of(entry.key)).unwrap_or(usize::MAX))
             .collect();
         self.reweight_selector_index();
     }
@@ -2264,7 +2390,10 @@ where
     fn activate_membership(&mut self, index: usize) {
         let key = self.entries[index].key;
         self.slots.entry(slot_of_key(key)).or_default().push(index);
-        self.cells.entry(cell_of(key)).or_default().active += 1;
+        let handle = self.cells.ensure(cell_of(key));
+        self.cells.records[handle].state.active += 1;
+        self.cell_handles.resize(self.entries.len(), usize::MAX);
+        self.cell_handles[index] = handle;
     }
 
     fn reactivate_liveness_anchor(&mut self) -> bool {
@@ -2377,7 +2506,8 @@ where
         let Some(tier) = self.tiers.get_mut(&progress) else {
             return;
         };
-        if let Some(members) = tier.places.get_mut(&place) {
+        if let Some(&handle) = tier.places.get(&place) {
+            let members = &mut self.cells.records[handle].members;
             members.ids.remove(&id);
             for (preference, ranked) in members.ranked.iter_mut().enumerate() {
                 ranked.remove(&HolderRank { preference, ..rank });
@@ -2385,6 +2515,7 @@ where
             if members.ids.is_empty() {
                 tier.places.remove(&place);
                 tier.weights.remove(&place);
+                self.cells.records[handle].members = CellMembers::default();
             }
         }
         if tier.places.is_empty() {
@@ -2397,14 +2528,29 @@ where
         let (progress, place) = (rank.key.progress(), rank.key.place());
         let place_weight = self.place_weight(progress, place);
         let holder_weight = count_decay(self.selected[id]);
+        let handle = self.cell_handle(id);
         let tier = self.tiers.entry(progress).or_default();
         tier.weights.insert(place, place_weight);
-        let members = tier.places.entry(place).or_default();
+        tier.places.insert(place, handle);
+        let members = &mut self.cells.records[handle].members;
         members.ids.insert(id, holder_weight);
         members.ranked.resize_with(K::preferences(), BTreeSet::new);
         for (preference, ranked) in members.ranked.iter_mut().enumerate() {
             ranked.insert(HolderRank { preference, ..rank });
         }
+    }
+
+    fn cell_handle(&mut self, id: usize) -> usize {
+        let key = cell_of(self.entries[id].key);
+        if let Some(handle) = self.cell_handles.get(id).copied()
+            && handle < self.cells.records.len()
+        {
+            return handle;
+        }
+        let handle = self.cells.ensure(key);
+        self.cell_handles.resize(self.entries.len(), usize::MAX);
+        self.cell_handles[id] = handle;
+        handle
     }
 
     fn place_weight(&self, progress: K::Progress, place: K::Place) -> u64 {
@@ -2468,14 +2614,17 @@ where
                     .keys()
                     .map(|place| (*place, self.place_weight(*progress, *place))),
             );
-            for members in tier.places.values_mut() {
+            for handle in tier.places.values() {
+                let members = &self.cells.records[*handle].members;
                 let ids = WeightedSet::from_sorted(
                     members
                         .ids
                         .iter()
                         .map(|id| (id, count_decay(self.selected[id]))),
                 );
-                members.ranked = self.cell_ranks(&ids);
+                let ranked = self.cell_ranks(&ids);
+                let members = &mut self.cells.records[*handle].members;
+                members.ranked = ranked;
                 members.ids = ids;
             }
         }
@@ -2545,6 +2694,7 @@ where
         charge: Option<fn(&S) -> usize>,
         snapshots: Vec<(u64, S)>,
     ) -> Result<(), &'static str> {
+        self.validate_cell_arena()?;
         self.action_cost = action_cost;
         self.selector_accounting
             .best_holder_draws
@@ -2583,6 +2733,60 @@ where
                         .inflight_snapshot_bytes
                         .checked_add(charge)
                         .ok_or("restored in-flight snapshot charge overflow")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_cell_arena(&self) -> Result<(), &'static str> {
+        if self.cells.index.len() != self.cells.records.len() {
+            return Err("cell arena index length disagrees with its records");
+        }
+        for (key, handle) in &self.cells.index {
+            if self
+                .cells
+                .records
+                .get(*handle)
+                .is_none_or(|record| record.key != *key)
+            {
+                return Err("cell arena index points to another cell");
+            }
+        }
+        if self.cell_handles.len() != self.entries.len() {
+            return Err("archive cell handles disagree with its entries");
+        }
+        for (index, (entry, handle)) in self.entries.iter().zip(&self.cell_handles).enumerate() {
+            if *handle == usize::MAX {
+                if self.active.get(index).copied().unwrap_or(false) {
+                    return Err("active archive entry has no cell handle");
+                }
+                continue;
+            }
+            if self
+                .cells
+                .records
+                .get(*handle)
+                .is_none_or(|record| record.key != cell_of(entry.key))
+            {
+                return Err("archive entry handle points to another cell");
+            }
+        }
+        for (progress, tier) in &self.tiers {
+            for (place, handle) in &tier.places {
+                let record = self
+                    .cells
+                    .records
+                    .get(*handle)
+                    .filter(|record| record.key == (*progress, *place))
+                    .ok_or("tier handle points to another cell")?;
+                if record.members.ids.iter().any(|id| {
+                    self.entries
+                        .get(id)
+                        .is_none_or(|entry| cell_of(entry.key) != record.key)
+                        || !self.active.get(id).copied().unwrap_or(false)
+                }) {
+                    return Err("cell holder points to another archive cell");
                 }
             }
         }
@@ -3436,7 +3640,14 @@ where
 
     fn tier_weights_current(&self, progress: K::Progress, tier: &TierCells<K>) -> bool {
         tier.weights.len() == tier.places.len()
-            && tier.places.iter().all(|(place, members)| {
+            && tier.places.iter().all(|(place, handle)| {
+                let Some(record) = self.cells.records.get(*handle) else {
+                    return false;
+                };
+                if record.key != (progress, *place) {
+                    return false;
+                }
+                let members = &record.members;
                 tier.weights.weight(place) == Some(self.place_weight(progress, *place))
                     && members.ids.len() == members.ids.iter().count()
                     && members
@@ -3501,6 +3712,8 @@ where
             .tiers
             .get(&progress)
             .and_then(|tier| tier.places.get(&place))
+            .and_then(|handle| self.cells.records.get(*handle))
+            .map(|record| &record.members)
             .ok_or("cell draw chose an absent cell")?;
         if let Some(preference) = self.draw_best_share(rand)? {
             return Ok((
@@ -3829,7 +4042,8 @@ where
     #[must_use]
     pub(crate) fn cell_memory_bytes(&self) -> usize {
         let slots = self.slots.len();
-        heap::btree_bytes::<Cell<K>, CellState>(1, self.cells.len())
+        heap::btree_bytes::<Cell<K>, usize>(1, self.cells.len())
+            .saturating_add(heap::vec_bytes::<CellRecord<K>>(self.cells.len()))
             .saturating_add(heap::btree_bytes::<Slot<K>, Vec<usize>>(1, slots))
             .saturating_add(slots.saturating_mul(heap::vec_bytes::<usize>(K::capacity().max(1))))
             .saturating_add(self.selector_memory_bytes())
@@ -3869,7 +4083,8 @@ where
         runs.current = runs.current.saturating_add(1);
         runs.dry = runs.dry.saturating_add(1);
         runs.draws = runs.draws.saturating_add(1);
-        let state = self.cells.entry(cell_of(key)).or_default();
+        let handle = self.cell_handle(id);
+        let state = &mut self.cells.records[handle].state;
         state.draws = state.draws.saturating_add(1);
         state.draws_total = state.draws_total.saturating_add(1);
         let place_weight = count_decay(state.draws);
@@ -3882,8 +4097,74 @@ where
         let holder_weight = count_decay(self.selected[id]);
         if let Some(tier) = self.tiers.get_mut(&key.progress()) {
             tier.weights.set_weight(&key.place(), place_weight);
-            if let Some(members) = tier.places.get_mut(&key.place()) {
-                members.ids.set_weight(&id, holder_weight);
+            self.cells.records[handle]
+                .members
+                .ids
+                .set_weight(&id, holder_weight);
+        }
+        match draw.path {
+            SelectorPath::Continuation => {
+                let count = self
+                    .selector_accounting
+                    .continuation_selections
+                    .get_or_insert(0);
+                *count = count.saturating_add(1);
+            }
+            SelectorPath::Tiers | SelectorPath::Recent => {
+                if draw.path == SelectorPath::Recent {
+                    let count = self.selector_accounting.recent_selections.get_or_insert(0);
+                    *count = count.saturating_add(1);
+                }
+                self.selector_accounting.cell_selections =
+                    self.selector_accounting.cell_selections.saturating_add(1);
+            }
+        }
+        if let Some(count) = draw.best_preference.and_then(|preference| {
+            self.selector_accounting
+                .best_holder_draws
+                .get_mut(usize::from(preference))
+        }) {
+            *count = count.saturating_add(1);
+        }
+        if let Some(rank) = draw.tier_rank {
+            let rank = usize::from(rank);
+            if self.selector_accounting.tier_draws_by_rank.len() <= rank {
+                self.selector_accounting
+                    .tier_draws_by_rank
+                    .resize(rank.saturating_add(1), 0);
+            }
+            self.selector_accounting.tier_draws_by_rank[rank] =
+                self.selector_accounting.tier_draws_by_rank[rank].saturating_add(1);
+        }
+    }
+
+    #[cfg(test)]
+    fn record_selection_reference(&mut self, id: usize, draw: &SelectorDraw) {
+        self.selected[id] = self.selected[id].saturating_add(1);
+        self.referenced[id] = true;
+        let key = self.entries[id].key;
+        let runs = self.tier_runs_mut(key.progress());
+        runs.current = runs.current.saturating_add(1);
+        runs.dry = runs.dry.saturating_add(1);
+        runs.draws = runs.draws.saturating_add(1);
+        let state = self.cells.state_mut(cell_of(key));
+        state.draws = state.draws.saturating_add(1);
+        state.draws_total = state.draws_total.saturating_add(1);
+        let place_weight = count_decay(state.draws);
+        if state.draws <= 32 {
+            self.recent_cells.get_mut().set_weight(
+                cell_of(key),
+                if state.draws < 32 { place_weight } else { 0 },
+            );
+        }
+        let holder_weight = count_decay(self.selected[id]);
+        if let Some(tier) = self.tiers.get_mut(&key.progress()) {
+            tier.weights.set_weight(&key.place(), place_weight);
+            if let Some(handle) = tier.places.get(&key.place()) {
+                self.cells.records[*handle]
+                    .members
+                    .ids
+                    .set_weight(&id, holder_weight);
             }
         }
         match draw.path {
@@ -4232,6 +4513,8 @@ where
             .tiers
             .get(&progress)
             .and_then(|tier| tier.places.get(&place))
+            .and_then(|handle| self.cells.records.get(*handle))
+            .map(|record| &record.members)
             .ok_or("cell draw chose an absent cell")?;
         let ids = members.ids.iter().collect::<Vec<_>>();
         let preferences = K::preferences();
@@ -4317,11 +4600,10 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::{
-        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
-        HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
-        MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
-        SharedAllocation, SharedSnapshotMemory, SnapshotRetention, TIER_RANK_SHIFT, TierCells,
-        WeightedSet, tier_weight,
+        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellState, HISTORY_COMPACTION_MIN_DROPS,
+        HISTORY_COMPACTION_SHARE, Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY,
+        SelectorAccounting, SelectorDraw, SelectorPath, SharedAllocation, SharedSnapshotMemory,
+        SnapshotRetention, TIER_RANK_SHIFT, TierCells, WeightedSet, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -5899,7 +6181,8 @@ mod tests {
         let mut tier = TierCells::default();
         for index in 0..count {
             let place = u16::try_from(index * 3 + 1).unwrap();
-            tier.places.insert(place, CellMembers::default());
+            let handle = archive.cells.ensure(((0, 0), place));
+            tier.places.insert(place, handle);
             archive.cells.insert(
                 ((0, 0), place),
                 CellState {
@@ -5908,9 +6191,13 @@ mod tests {
                 },
             );
         }
-        let members = tier.places.entry(1).or_default();
+        let handle = archive.cells.ensure(((0, 0), 1));
+        tier.places.entry(1).or_insert(handle);
         for id in 0..count {
-            members.ids.insert(id * 3 + 1, 0);
+            archive.cells.records[handle]
+                .members
+                .ids
+                .insert(id * 3 + 1, 0);
         }
         if count == 0 {
             tier.places.clear();
@@ -5964,18 +6251,15 @@ mod tests {
         for case in 0..4 {
             let mut archive = candidate_draw_fixture(7, 1);
             match case {
-                0 => archive.cells.clear(),
+                0 => archive
+                    .cells
+                    .values_mut()
+                    .for_each(|state| *state = CellState::default()),
                 1 => archive.tiers.clear(),
                 2 => archive.tiers.get_mut(&(0, 0)).unwrap().places.clear(),
                 _ => {
-                    archive
-                        .tiers
-                        .get_mut(&(0, 0))
-                        .unwrap()
-                        .places
-                        .get_mut(&1)
-                        .unwrap()
-                        .ids = WeightedSet::default();
+                    let handle = archive.tiers[&(0, 0)].places[&1];
+                    archive.cells.records[handle].members.ids = WeightedSet::default();
                 }
             }
             archive.reweight_selector_index();
@@ -8580,6 +8864,173 @@ mod tests {
             .compact_history(true)
             .expect("a preservation flag without a snapshot retains nothing");
         assert_eq!(empty.live_entry_count(), 0);
+    }
+
+    #[test]
+    fn cell_arena_selection_graph_matches_keyed_reference_after_compaction_and_restore() {
+        fn roundtrip(source: &Archive<u8, FlatKey, (), ()>) -> Archive<u8, FlatKey, (), ()> {
+            let snapshots = source
+                .entries
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .snapshot
+                        .as_ref()
+                        .map(|snapshot| (entry.id, **snapshot))
+                })
+                .collect();
+            let mut restored: Archive<u8, FlatKey, (), ()> =
+                postcard::from_bytes(&postcard::to_stdvec(source).unwrap()).unwrap();
+            restored.restore_runtime(|_| 1, None, snapshots).unwrap();
+            restored
+        }
+        let keys = (0..64)
+            .map(|id| [id, id % 16, id / 16, 0])
+            .collect::<Vec<_>>();
+        let mut actual = flat_archive(&keys);
+        actual.prepare_selection();
+        let mut reference = roundtrip(&actual);
+        reference.prepare_selection();
+        let mut actual_rng = RomuDuoJrRand::with_seed(923);
+        let mut reference_rng = actual_rng;
+        for round in 0..512 {
+            if round == 128 {
+                for index in (0..actual.entries.len()).step_by(3) {
+                    actual.deactivate(index);
+                    reference.deactivate(index);
+                }
+                actual.compact_history(true).unwrap();
+                reference.compact_history(true).unwrap();
+                assert_eq!(actual.cells.records.capacity(), actual.cells.records.len());
+            }
+            if round == 256 {
+                actual = roundtrip(&actual);
+                reference = roundtrip(&reference);
+                actual.prepare_selection();
+                reference.prepare_selection();
+            }
+            let drawn = actual.select_parent(&mut actual_rng).unwrap();
+            let expected = reference
+                .select_parent_candidates_reference(&mut reference_rng)
+                .unwrap();
+            assert_eq!(drawn, expected);
+            actual.record_selection(drawn.0, &drawn.1);
+            reference.cell_handle(expected.0);
+            reference.record_selection_reference(expected.0, &expected.1);
+            actual.record_selection_outcome(drawn.0, round % 7 == 0);
+            reference.record_selection_outcome(expected.0, round % 7 == 0);
+            if round % 17 == 0 {
+                let candidate = || ArchiveCandidate {
+                    suffix: u16::try_from(round).unwrap().to_be_bytes().to_vec(),
+                    key: FlatKey([
+                        u16::try_from(round + 1_024).unwrap(),
+                        u16::try_from(round % 32).unwrap(),
+                        0,
+                        0,
+                    ]),
+                    milestones: (),
+                };
+                let retained = actual
+                    .insert(Some(drawn.0), round as u64 + 64, candidate(), ())
+                    .unwrap();
+                let expected_retained = reference
+                    .insert(Some(expected.0), round as u64 + 64, candidate(), ())
+                    .unwrap();
+                assert_eq!(retained, expected_retained);
+            }
+            assert_eq!(
+                postcard::to_stdvec(&actual_rng).unwrap(),
+                postcard::to_stdvec(&reference_rng).unwrap()
+            );
+            assert_eq!(
+                postcard::to_stdvec(&actual).unwrap(),
+                postcard::to_stdvec(&reference).unwrap()
+            );
+            actual.validate_cell_arena().unwrap();
+        }
+    }
+
+    #[test]
+    fn cell_arena_recreates_compacted_cells_for_multiple_inactive_pinned_parents() {
+        let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 0, 0, 0], [2, 1, 0, 0]]);
+        archive.prepare_selection();
+        let stable = [archive.stable_id(0).unwrap(), archive.stable_id(1).unwrap()];
+        for id in stable {
+            archive.pin_metadata(id).unwrap();
+        }
+        assert!(archive.deactivate(0));
+        assert!(archive.deactivate(1));
+        archive.compact_history(true).unwrap();
+        let index = archive.index_of_id(stable[0]).unwrap();
+        assert!(!archive.cells.contains_key(&((), [0, 0, 0])));
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        archive.record_selection(index, &draw);
+        archive.validate_cell_arena().unwrap();
+        let snapshots = archive
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| (entry.id, **snapshot))
+            })
+            .collect();
+        let mut restored: Archive<u8, FlatKey, (), ()> =
+            postcard::from_bytes(&postcard::to_stdvec(&archive).unwrap()).unwrap();
+        restored.restore_runtime(|_| 1, None, snapshots).unwrap();
+        let second = restored.index_of_id(stable[1]).unwrap();
+        assert_eq!(restored.cell_handles[second], usize::MAX);
+        restored.record_selection(second, &draw);
+        let state = restored.cells.get(&((), [0, 0, 0])).unwrap();
+        assert_eq!((state.active, state.draws, state.draws_total), (0, 2, 2));
+        restored.validate_cell_arena().unwrap();
+    }
+
+    #[test]
+    fn restored_cell_arena_rejects_forged_index_entry_and_tier_edges() {
+        let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
+        archive.prepare_selection();
+        let bytes = postcard::to_stdvec(&archive).unwrap();
+        for case in 0..8 {
+            let mut forged: Archive<u8, FlatKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+            match case {
+                0 => *forged.cells.index.values_mut().next().unwrap() = usize::MAX,
+                1 => *forged.cells.index.values_mut().next().unwrap() = 1,
+                2 => forged.cell_handles[0] = 1,
+                3 => forged.cell_handles.clear(),
+                4 => {
+                    *forged
+                        .tiers
+                        .get_mut(&())
+                        .unwrap()
+                        .places
+                        .values_mut()
+                        .next()
+                        .unwrap() = usize::MAX
+                }
+                5 => {
+                    *forged
+                        .tiers
+                        .get_mut(&())
+                        .unwrap()
+                        .places
+                        .values_mut()
+                        .next()
+                        .unwrap() = 1
+                }
+                6 => forged.cell_handles[0] = usize::MAX,
+                _ => forged.cells.clear(),
+            }
+            assert!(
+                forged.restore_runtime(|_| 1, None, Vec::new()).is_err(),
+                "case {case}"
+            );
+        }
     }
 
     #[test]

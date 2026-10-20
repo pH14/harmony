@@ -148,8 +148,18 @@ the reported error regardless of host timing.
 
 Workers pull jobs from one shared queue ordered by planned finish, so an idle
 worker takes the queued job that admission reaches first while another worker
-is still busy. Enqueueing wakes a worker only when a worker is parked on the
-queue's condition variable; the waiter count is protected by the queue mutex.
+is still busy. Enqueueing wakes a worker only when the number of queued jobs
+is no greater than the number of registered condition-variable waiters. Both
+counts are protected by the queue mutex. A burst's first N queued jobs can wake
+N waiters; further queued jobs need no additional wakeup while those workers
+are already being notified. If queued jobs outnumber waiters, those earlier
+enqueue thresholds have already requested enough wakeups. Workers register as waiters only after observing an
+empty queue, and waiting atomically releases the same mutex, so an empty-to-
+nonempty enqueue cannot miss a parked worker. A worker cannot newly park while
+queued work exists. Workers that are already awake can drain that backlog;
+queue close and worker exit still wake all waiters. This suppresses redundant
+burst notifications without changing queue priority or delaying an idle
+worker's first available job.
 A short job reserved after longer ones runs before them,
 because admission needs its result first. The coordinator dispatches each job
 when it reserves it, including between individual admissions unlocked by a
@@ -172,7 +182,10 @@ queued commands and one queued encoded batch bound the pipeline. Each batch
 contains at most sixteen records; partial batches are submitted after one
 millisecond when the coordinator next pumps output, and on finish or error
 cleanup. This age threshold is not a one-millisecond delivery guarantee. Reusable
-byte and record-vector buffers return with later commands. At most 288 accepted records and sixteen staged producer records retain owned
+byte and typed record-vector buffers return with later commands. Each campaign
+stages its concrete job/skip/end record enum directly, avoiding a boxed closure
+allocation for each record. The heterogeneous header is serialized inline before
+the encoder starts; it does not enlarge the queued record type. At most 288 accepted records and sixteen staged producer records retain owned
 payloads. These bounds count records rather than claiming a fixed byte charge
 for arbitrary workload serialization. A full queue makes the producer drain
 encoded output before retrying. While waiting for worker results, the coordinator uses five-millisecond
@@ -236,6 +249,18 @@ and rejects an archive that is still over its limit. Because of that lag, the
 archive's resident bytes are not checked against the whole budget during the
 campaign.
 
+Cells store counters and holder rankings together in a dense arena. Ordered
+cell keys and tier places resolve to stable arena IDs; entries retain their
+cell IDs so admission accounting reaches both structures without repeating
+composite-key lookups. An inactive historical cell retains its counters but
+releases its holder allocations. History compaction rebuilds IDs and entry
+handles and clamps arena capacity to its surviving length. Checkpoint format
+v11 stores this layout and validates every index, entry handle, tier edge and
+holder key before restoring runtime state. The memory charge includes the
+arena, ordered indexes and entry handles. Its changed structural bound can
+change eviction timing under a tight memory budget; seed and fixed-window
+reproducibility still applies within this layout.
+
 The archive charges its own heap from logical counts: entries, stored suffix
 actions, live prefix nodes, slots, cells, active entries, tiers, pins, landing
 markers, continuation edges and shared snapshot allocations. A checkpoint
@@ -250,9 +275,8 @@ The selector's weighted sets keep freed slots until the selector index is
 rebuilt, and compaction rebuilds it, so freed slots are charged as one per
 inactive entry. Compaction shrinks the entry columns to their length so the
 doubling bound holds afterwards. Each resident snapshot also charges its
-reference-count block. On synthetic archives these charges sit 15-50% above the
-measured heap; the `memory_tests` unit tests count the archive's allocations and
-fail when any part exceeds its charge. Allocator fragmentation and heap a
+reference-count block. The `memory_tests` unit tests count the archive's
+allocations and fail when any part exceeds its charge. Allocator fragmentation and heap a
 workload's snapshot charge omits stay outside the archive's limit and show only
 in RSS.
 
@@ -840,7 +864,7 @@ variable. Without it, public phase spans are null and `timing_complete` is false
 resuming any segment without detailed timing also leaves that flag false.
 Job counters, receive/idle waits and the optional coordinator/encoder CPU
 counters remain available independently of detailed profiling.
-Search-checkpoint layout v10 retains the timing-coverage flag with the profile.
+Search-checkpoint layout v11 retains the timing-coverage flag with the profile.
 
 The campaign report carries `telemetry`, the host measurements that explain
 where a run's time went. It records bootstrap, search, and persistence wall
@@ -898,8 +922,11 @@ bound their own output rows; no internal per-job log is retained.
 starts fresh gauges and peaks. A result enters when the coordinator receives it
 and leaves when ordered admission removes it. Failed worker results count as one result
 with zero action/candidate records; candidates count every present optional
-candidate, including nonviable ones. Successful reports end with zero live
-counts; peaks include immediately admitted results as well as held results.
+candidate, including nonviable ones. Each accepted result caches its two record
+counts when received, avoiding another action scan when removed. The two
+64-bit counts are host queue storage outside the archive budget. Successful
+reports end with zero live counts; peaks include immediately admitted results
+as well as held results.
 Coordinator profile lines expose the same action/candidate live counts and all
 three peaks beside the existing `completed_buffered` result count.
 These are record counts, not heap bytes, unique snapshots or process RSS. They

@@ -108,6 +108,10 @@ impl<Key, Job> Drop for WorkerExit<'_, Key, Job> {
     }
 }
 
+fn queued_work_needs_wakeup(queued: usize, waiters: usize) -> bool {
+    queued > 0 && queued <= waiters
+}
+
 pub(crate) struct WorkerPool<Key: Ord, Job, Output, O = ()> {
     jobs: Option<Arc<SharedJobs<Key, Job>>>,
     reply_receiver: mpsc::Receiver<WorkerReply<Key, Output, O>>,
@@ -130,7 +134,7 @@ impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
                 entry.insert(job);
             }
         }
-        let notify = queue.waiters > 0;
+        let notify = queued_work_needs_wakeup(queue.jobs.len(), queue.waiters);
         drop(queue);
         if notify {
             shared.ready.notify_one();
@@ -501,6 +505,68 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn parked_workers_take_a_burst_and_wake_again_after_reparking() {
+        type Job = (u8, mpsc::Sender<u8>, mpsc::Receiver<()>);
+        let (started, arrivals) = mpsc::channel();
+        let (_, workers) = with_worker_pool(
+            3,
+            |_| Ok::<_, String>(()),
+            |_| Ok::<_, String>(()),
+            |(), (value, started, release): Job| {
+                started.send(value).map_err(|error| error.to_string())?;
+                release
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>(value)
+            },
+            |_| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(3)?;
+                for round in 0..2 {
+                    let waiting = super::now();
+                    loop {
+                        if pool.jobs.as_ref().unwrap().queue.lock().unwrap().waiters == 3 {
+                            break;
+                        }
+                        if waiting.elapsed() > Duration::from_secs(5) {
+                            return Err("workers did not park".into());
+                        }
+                        std::thread::yield_now();
+                    }
+                    let mut release = Vec::new();
+                    for value in round * 3..round * 3 + 3 {
+                        let (ready, blocked) = mpsc::channel();
+                        release.push(ready);
+                        pool.send(value, (value, started.clone(), blocked))?;
+                    }
+                    let mut observed = (0..3)
+                        .map(|_| arrivals.recv_timeout(Duration::from_secs(5)))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    observed.sort_unstable();
+                    assert_eq!(observed, (round * 3..round * 3 + 3).collect::<Vec<_>>());
+                    for ready in release {
+                        ready.send(())?;
+                    }
+                    let mut replies = (0..3)
+                        .map(|_| -> Result<_, Box<dyn std::error::Error>> {
+                            Ok(pool
+                                .receive_timeout(Duration::from_secs(5))?
+                                .ok_or("missing reply")?
+                                .outcome?)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    replies.sort_unstable();
+                    assert_eq!(replies, observed);
+                }
+                pool.close();
+                Ok(())
+            },
+        )
+        .expect("parked workers must consume both bursts");
+        assert_eq!(workers.iter().map(|worker| worker.jobs).sum::<u64>(), 6);
     }
 
     #[test]
