@@ -2395,7 +2395,7 @@ mod tests {
     use super::*;
     use crate::cache::{
         LocalIndex,
-        extent::{extent_len, read_extent, resolve, write_extent},
+        extent::{encode, read_extent, resolve},
     };
 
     #[derive(Clone, Debug)]
@@ -2749,13 +2749,10 @@ mod tests {
             sidecar.push(0);
             let machine = super::super::live::raw_target_commitment(&sidecar)?;
             let sidecar = super::super::attachment::encode(&sidecar, machine, attachment)?;
-            let mut out = allocate(extent_len(1, 0, sidecar.len()).unwrap())?;
-            write_extent(
-                out.bytes_mut(),
-                &[(0, &[fill; 32], &[fill; 4096])],
-                &[],
-                &sidecar,
-            )?;
+            let (hash, page) = ([fill; 32], [fill; 4096]);
+            let encoded = encode(&[(0, &hash, &page)], &[], &sidecar)?;
+            let mut out = allocate(encoded.len())?;
+            encoded.write(out.bytes_mut())?;
             drop(out);
             Ok(())
         }
@@ -2769,10 +2766,11 @@ mod tests {
                 .iter()
                 .map(|extent| read_extent(extent))
                 .collect::<Result<Vec<_>, _>>()?;
-            self.current = resolve(&deltas)?.pages.last().ok_or("no pages")?.2[0];
+            self.current = resolve(&deltas)?.pages().last().ok_or("no pages")?.2[0];
             if let Some(index) = self.quarantine_on_import.take() {
-                let mut extent = index.extent(extent_len(0, 0, 0).unwrap())?;
-                write_extent(extent.bytes_mut(), &[], &[], &[])?;
+                let encoded = encode(&[], &[], &[])?;
+                let mut extent = index.extent(encoded.len())?;
+                encoded.write(extent.bytes_mut())?;
                 assert!(matches!(
                     index.publish(namespace(), b"key", None, extent, [0xee; 32], 0),
                     Err(crate::cache::CacheError::DivergentDuplicate { .. })
@@ -3496,9 +3494,10 @@ mod tests {
             .unwrap();
         let chain = index.chain(&lease).unwrap();
         assert_eq!(chain.len(), 1);
-        let range = chain[0].shared_range();
-        assert_eq!(range.offset, 0);
-        let span = range.len;
+        assert_eq!(chain[0].shared_range().offset, 0);
+        let delta = read_extent(chain[0].bytes()).unwrap();
+        let written = delta.with_sidecar(delta.sidecar).len();
+        let mapped = chain[0].bytes().len();
         session.import_cached(&index, &lease, SnapId(1)).unwrap();
         let before = session
             .copies
@@ -3514,12 +3513,12 @@ mod tests {
             .telemetry_counters()
             .into_iter()
             .collect::<BTreeMap<_, _>>();
-        for direction in ["import", "export"] {
+        for (direction, len) in [("import", mapped), ("export", written)] {
             for (leaf, expected) in [
                 ("attempts", 1),
                 ("errors", 0),
-                ("range_bytes", range.len as u64),
-                ("span_bytes", span as u64),
+                ("range_bytes", len as u64),
+                ("span_bytes", len as u64),
             ] {
                 assert_eq!(
                     counters[&format!("copy.child.loop.{direction}_mapping.{leaf}")],
@@ -6398,7 +6397,7 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
 
     #[test]
     fn accepted_worker_imports_report_references_backings_and_session_recurrence() {
-        for (segment_pages, unique) in [(8, 1), (4, 2), (2, 4)] {
+        for (segment_pages, unique) in [(4, 1), (2, 2), (1, 4)] {
             let index = LocalIndex::with_segment_bytes(1 << 20, segment_pages * 4096);
             let (mut source, source_server) = threaded(3);
             let (mut destination, destination_server) = threaded(50);
@@ -6630,7 +6629,7 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
 
     #[test]
     fn worker_import_selects_target_attachment_and_rejects_independent_digest_mismatch() {
-        use crate::cache::extent::{extent_len, read_extent, write_extent};
+        use crate::cache::extent::read_extent;
         let index = LocalIndex::new(1 << 20);
         let space = Namespace::exact(&[b"worker-exact"]);
         let (mut source, server) = threaded(3);
@@ -6678,9 +6677,9 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
         let forged =
             super::super::attachment::encode(envelope.raw, envelope.machine_commitment, &first)
                 .unwrap();
-        let len = extent_len(target.pages.len(), target.reverted.len(), forged.len()).unwrap();
-        let mut extent = index.extent(len).unwrap();
-        write_extent(extent.bytes_mut(), &target.pages, &target.reverted, &forged).unwrap();
+        let encoded = target.with_sidecar(&forged);
+        let mut extent = index.extent(encoded.len()).unwrap();
+        encoded.write(extent.bytes_mut()).unwrap();
         let bad = index
             .publish(
                 space,
@@ -6703,9 +6702,9 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
         );
         assert_eq!(destination.store_bytes(), before);
         let forged = super::super::attachment::encode(envelope.raw, [0xee; 32], &second).unwrap();
-        let len = extent_len(target.pages.len(), target.reverted.len(), forged.len()).unwrap();
-        let mut extent = index.extent(len).unwrap();
-        write_extent(extent.bytes_mut(), &target.pages, &target.reverted, &forged).unwrap();
+        let encoded = target.with_sidecar(&forged);
+        let mut extent = index.extent(encoded.len()).unwrap();
+        encoded.write(extent.bytes_mut()).unwrap();
         let digest = super::super::attachment::commitment([0xee; 32], &second);
         let wrong_machine = index
             .publish(space, &[5; 32], Some(&parent_lease), extent, digest, 1)
