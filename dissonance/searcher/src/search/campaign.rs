@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque},
     error::Error,
     fmt::Debug,
     hash::Hash,
@@ -3040,7 +3041,7 @@ struct PendingJob<G: Workload + ?Sized> {
 
 struct CompletedJob<G: Workload + ?Sized> {
     held_since: Option<Moment>,
-    pending: PendingJob<G>,
+    token: ReservationToken,
     outcome: Result<(CampaignJobResult<G>, u64, String), String>,
 }
 
@@ -3052,12 +3053,6 @@ struct ReservationLookup<K, V> {
 }
 
 impl<K: Eq + Hash, V> ReservationLookup<K, V> {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            map: HostLookupMap::with_capacity(capacity),
-        }
-    }
-
     #[cfg(test)]
     fn with_capacity_and_hasher(
         capacity: usize,
@@ -3068,33 +3063,99 @@ impl<K: Eq + Hash, V> ReservationLookup<K, V> {
         }
     }
 
-    fn entry(&mut self, key: K) -> std::collections::hash_map::Entry<'_, K, V> {
-        self.map.entry(key)
-    }
-
     fn get(&self, key: &K) -> Option<&V> {
         self.map.get(key)
     }
 
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.map.is_empty()
+    fn remove(&mut self, key: &K) -> Option<V> {
+        self.map.remove(key)
     }
 }
 
-struct ReservationSlots<K: Eq + Hash, P, V> {
-    entries: ReservationLookup<K, ReservationSlot<P, V>>,
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ReservationToken {
+    slot: usize,
+    generation: u64,
+}
+
+struct AdmissionSchedule {
+    heap: BinaryHeap<Reverse<((u64, usize), ReservationToken)>>,
+}
+
+impl AdmissionSchedule {
+    fn try_new(capacity: usize) -> Result<Self, std::collections::TryReserveError> {
+        let mut heap = BinaryHeap::new();
+        heap.try_reserve(capacity)?;
+        Ok(Self { heap })
+    }
+    fn insert(&mut self, key: (u64, usize), token: ReservationToken) {
+        self.heap.push(Reverse((key, token)));
+    }
+    fn first(&self) -> Option<&(u64, usize)> {
+        self.heap.peek().map(|Reverse((key, _))| key)
+    }
+    fn first_token(&self) -> Option<ReservationToken> {
+        self.heap.peek().map(|Reverse((_, token))| *token)
+    }
+    fn pop_first(&mut self) {
+        self.heap.pop();
+    }
+    fn validate<P, V>(
+        &self,
+        reservations: &ReservationSlots<usize, P, V>,
+        finish: impl Fn(&P) -> u64,
+    ) -> Result<(), &'static str> {
+        if reservations.len() != self.len() {
+            return Err("search checkpoint reservation count differs");
+        }
+        let words = reservations.slots.len().div_ceil(64);
+        let mut seen = Vec::new();
+        seen.try_reserve_exact(words)
+            .map_err(|_| "search checkpoint validation capacity cannot be allocated")?;
+        seen.resize(words, 0_u64);
+        for Reverse(((planned, reservation), token)) in &self.heap {
+            let slot = reservations
+                .slot(*token)
+                .ok_or("search checkpoint lost an in-flight reservation")?;
+            let bit = 1_u64 << (token.slot % 64);
+            let word = &mut seen[token.slot / 64];
+            if slot.key != *reservation || finish(&slot.pending) != *planned || *word & bit != 0 {
+                return Err("search checkpoint in-flight schedule differs");
+            }
+            *word |= bit;
+        }
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.heap.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.heap.is_empty()
+    }
+}
+
+struct ReservationSlots<K: Eq + Hash + Copy, P, V> {
+    entries: ReservationLookup<K, ReservationToken>,
+    slots: Vec<ReservationCell<K, P, V>>,
+    free: Vec<usize>,
     pending: usize,
+    admitting: usize,
+    inserted: Option<ReservationToken>,
     telemetry: CompletedBufferTelemetry,
     records: fn(&V) -> (u64, u64),
 }
 
-struct ReservationSlot<P, V> {
+struct ReservationCell<K, P, V> {
+    generation: u64,
+    entry: Option<ReservationSlot<K, P, V>>,
+}
+
+struct ReservationSlot<K, P, V> {
+    key: K,
     pending: P,
     completed: Option<BufferedResult<V>>,
+    admitting: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -3136,38 +3197,120 @@ struct CompletedOutcome<G: Workload + ?Sized> {
     outcome: Result<(CampaignJobResult<G>, u64, String), String>,
 }
 
-impl<K: Eq + Hash, P, V> ReservationSlots<K, P, V> {
+impl<K: Eq + Hash + Copy, P, V> ReservationSlots<K, P, V> {
+    #[cfg(test)]
     fn new(records: fn(&V) -> (u64, u64), capacity: usize) -> Self {
-        Self {
-            entries: ReservationLookup::with_capacity(capacity),
+        Self::try_new(records, capacity).expect("test reservation capacity")
+    }
+
+    fn try_new(
+        records: fn(&V) -> (u64, u64),
+        capacity: usize,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        let mut entries = ReservationLookup {
+            map: HostLookupMap::new(),
+        };
+        entries.map.try_reserve(capacity)?;
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(capacity)?;
+        slots.resize_with(capacity, || ReservationCell {
+            generation: 0,
+            entry: None,
+        });
+        let mut free = Vec::new();
+        free.try_reserve_exact(capacity)?;
+        free.extend((0..capacity).rev());
+        Ok(Self {
+            entries,
+            slots,
+            free,
             pending: 0,
+            admitting: 0,
+            inserted: None,
             telemetry: CompletedBufferTelemetry::default(),
             records,
+        })
+    }
+
+    fn token(&self, key: &K) -> Option<ReservationToken> {
+        self.entries.get(key).copied()
+    }
+
+    fn len(&self) -> usize {
+        self.slots.len() - self.free.len()
+    }
+
+    fn slot(&self, token: ReservationToken) -> Option<&ReservationSlot<K, P, V>> {
+        self.slots
+            .get(token.slot)
+            .filter(|cell| cell.generation == token.generation)
+            .and_then(|cell| cell.entry.as_ref())
+    }
+
+    fn slot_mut(&mut self, token: ReservationToken) -> Option<&mut ReservationSlot<K, P, V>> {
+        self.slots
+            .get_mut(token.slot)
+            .filter(|cell| cell.generation == token.generation)
+            .and_then(|cell| cell.entry.as_mut())
+    }
+
+    fn validate_pending(&self, token: ReservationToken, key: K) -> Result<(), &'static str> {
+        let slot = self
+            .slot(token)
+            .ok_or("campaign worker replied with a stale reservation token")?;
+        if slot.key != key {
+            return Err("campaign worker replied for another reservation");
         }
+        if slot.completed.is_some() || slot.admitting {
+            return Err("campaign worker completed one reservation twice");
+        }
+        Ok(())
     }
 
     fn insert(&mut self, key: K, pending: P) -> Option<P> {
-        let slot = match self.entries.entry(key) {
+        let entry = match self.entries.map.entry(key) {
             std::collections::hash_map::Entry::Occupied(_) => return Some(pending),
-            std::collections::hash_map::Entry::Vacant(slot) => slot,
+            std::collections::hash_map::Entry::Vacant(entry) => entry,
         };
-        slot.insert(ReservationSlot {
+        let index = self.free.pop().unwrap_or_else(|| {
+            let index = self.slots.len();
+            self.slots.push(ReservationCell {
+                generation: 0,
+                entry: None,
+            });
+            index
+        });
+        let cell = &mut self.slots[index];
+        assert!(cell.entry.is_none());
+        let token = ReservationToken {
+            slot: index,
+            generation: cell.generation,
+        };
+        cell.entry = Some(ReservationSlot {
+            key,
             pending,
             completed: None,
+            admitting: false,
         });
+        entry.insert(token);
+        self.inserted = Some(token);
         self.pending += 1;
         None
     }
 
     fn pending(&self, key: &K) -> Option<&P> {
-        self.entries
-            .get(key)
-            .filter(|slot| slot.completed.is_none())
+        self.slot(self.token(key)?)
+            .filter(|slot| slot.completed.is_none() && !slot.admitting)
             .map(|slot| &slot.pending)
     }
 
+    #[cfg(test)]
     fn metadata(&self, key: &K) -> Option<&P> {
-        self.entries.get(key).map(|slot| &slot.pending)
+        self.slot(self.token(key)?).map(|slot| &slot.pending)
+    }
+
+    fn metadata_token_mut(&mut self, token: ReservationToken) -> Option<&mut P> {
+        self.slot_mut(token).map(|slot| &mut slot.pending)
     }
 
     #[cfg(test)]
@@ -3180,6 +3323,7 @@ impl<K: Eq + Hash, P, V> ReservationSlots<K, P, V> {
         self.complete_with_records(key, value, None, validate)
     }
 
+    #[cfg(test)]
     fn complete_with_records(
         &mut self,
         key: K,
@@ -3187,13 +3331,22 @@ impl<K: Eq + Hash, P, V> ReservationSlots<K, P, V> {
         records: Option<CompletedRecords>,
         validate: impl FnOnce(&P) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
-        let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(key) else {
-            return Err("campaign worker replied for an unknown reservation");
-        };
-        let slot = entry.get_mut();
-        if slot.completed.is_some() {
-            return Err("campaign worker completed one reservation twice");
-        }
+        let token = self
+            .token(&key)
+            .ok_or("campaign worker replied for an unknown reservation")?;
+        self.complete_token(token, key, value, records, validate)
+    }
+
+    fn complete_token(
+        &mut self,
+        token: ReservationToken,
+        key: K,
+        value: V,
+        records: Option<CompletedRecords>,
+        validate: impl FnOnce(&P) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        self.validate_pending(token, key)?;
+        let slot = self.slot(token).expect("validated reservation token");
         validate(&slot.pending)?;
         let CompletedRecords {
             actions,
@@ -3205,7 +3358,9 @@ impl<K: Eq + Hash, P, V> ReservationSlots<K, P, V> {
                 candidates,
             }
         });
-        slot.completed = Some(BufferedResult {
+        self.slot_mut(token)
+            .expect("validated reservation token")
+            .completed = Some(BufferedResult {
             value,
             actions,
             candidates,
@@ -3221,17 +3376,15 @@ impl<K: Eq + Hash, P, V> ReservationSlots<K, P, V> {
         Ok(())
     }
 
-    fn take_completed(&mut self, key: K) -> Option<(P, V)> {
-        let std::collections::hash_map::Entry::Occupied(entry) = self.entries.entry(key) else {
-            return None;
-        };
-        entry.get().completed.as_ref()?;
-        let ReservationSlot { pending, completed } = entry.remove();
+    fn begin_admission(&mut self, token: ReservationToken) -> Option<V> {
+        let slot = self.slot_mut(token)?;
         let BufferedResult {
             value,
             actions,
             candidates,
-        } = completed?;
+        } = slot.completed.take()?;
+        slot.admitting = true;
+        self.admitting += 1;
         let stats = &mut self.telemetry;
         stats.results_live = stats
             .results_live
@@ -3245,15 +3398,55 @@ impl<K: Eq + Hash, P, V> ReservationSlots<K, P, V> {
             .candidates_live
             .checked_sub(candidates)
             .expect("completed candidate accounting");
+        Some(value)
+    }
+
+    fn finish_admission(&mut self, token: ReservationToken) -> Result<(), &'static str> {
+        let cell = self
+            .slots
+            .get_mut(token.slot)
+            .ok_or("campaign admission lost its reservation")?;
+        if cell.generation != token.generation
+            || cell.entry.as_ref().is_none_or(|slot| !slot.admitting)
+        {
+            return Err("campaign admission lost its reservation");
+        }
+        let generation = cell
+            .generation
+            .checked_add(1)
+            .ok_or("campaign reservation generation overflow")?;
+        let key = cell
+            .entry
+            .as_ref()
+            .expect("validated admitting reservation")
+            .key;
+        cell.entry = None;
+        cell.generation = generation;
+        self.entries.remove(&key);
+        self.free.push(token.slot);
+        self.admitting -= 1;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn take_completed(&mut self, key: K) -> Option<(P, V)>
+    where
+        P: Clone,
+    {
+        let token = self.token(&key)?;
+        let pending = self.slot(token)?.pending.clone();
+        let value = self.begin_admission(token)?;
+        self.finish_admission(token)
+            .expect("reservation generation available");
         Some((pending, value))
     }
 
     fn completed_len(&self) -> usize {
-        self.entries.len() - self.pending
+        self.len() - self.pending - self.admitting
     }
 
     fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.len() == 0
     }
 }
 
@@ -3784,24 +3977,28 @@ where
                 progress.map(|sink| -> &mut dyn Write { sink }),
                 options,
             )?);
+            pool.configure_indexed(
+                campaign.reservation_capacity(),
+                |key: &(u64, usize, ReservationToken)| key.2.slot,
+            )?;
             campaign.enable_background_stream(placement.cloned())?;
             watch.start(campaign)?;
             bootstrapped.send(())?;
             drop(bootstrapped);
             pool.wait_ready(config.workers)?;
             campaign.begin_dispatch_phase();
-            while campaign.reserve_next_dispatch(&mut |job| {
+            while campaign.reserve_next_dispatch(&mut |job, token| {
                 #[cfg(test)]
                 tests::before_locality_dispatch(pool, job.reservation, true)?;
                 let locality = workload.snapshot_locality(&job.snapshot);
-                pool.dispatch_local((job.planned_finish, job.reservation), job, locality)
+                pool.dispatch_local((job.planned_finish, job.reservation, token), job, locality)
             })? {}
             loop {
-                campaign.dispatch_queued(&mut |job| {
+                campaign.dispatch_queued(&mut |job, token| {
                     #[cfg(test)]
                     tests::before_locality_dispatch(pool, job.reservation, false)?;
                     let locality = workload.snapshot_locality(&job.snapshot);
-                    pool.dispatch_local((job.planned_finish, job.reservation), job, locality)
+                    pool.dispatch_local((job.planned_finish, job.reservation, token), job, locality)
                 })?;
                 if campaign.finished() {
                     break;
@@ -3834,7 +4031,8 @@ where
                             "campaign worker replied with an unknown physical identifier".into(),
                         );
                     }
-                    let (planned_finish, reservation) = reply.key;
+                    let (planned_finish, reservation, token) = reply.key;
+                    campaign.validate_reply_token(token, reservation, planned_finish)?;
                     let (outcome, records) = match reply.outcome {
                         Ok((claimed, outcome, records)) if claimed == reservation => {
                             (outcome, records)
@@ -3844,9 +4042,14 @@ where
                         }
                         Err(error) => (Err(error), CompletedRecords::default()),
                     };
+                    if let Ok((outcome, _)) = &outcome
+                        && outcome.reservation != reservation
+                    {
+                        return Err("campaign worker replied for another reservation".into());
+                    }
                     if let Some(observer) = observer.as_mut()
                         && !sink_disabled
-                        && let Some((parent_id, snapshot_id)) = campaign.pending_origin(reservation)
+                        && let Some((parent_id, snapshot_id)) = campaign.pending_origin_token(token)
                     {
                         let receipt = reply.observation.take();
                         let has_payload = receipt.payload.is_some();
@@ -3889,31 +4092,35 @@ where
                     }
                     match outcome {
                         Ok((outcome, note)) => {
-                            if outcome.reservation != reservation {
-                                return Err(
-                                    "campaign worker replied for another reservation".into()
-                                );
-                            }
                             watch.prepare_admission(&note, campaign);
-                            campaign.admit_dispatch(outcome, records, &mut |job| {
-                                #[cfg(test)]
-                                tests::before_locality_dispatch(pool, job.reservation, false)?;
-                                let locality = workload.snapshot_locality(&job.snapshot);
-                                pool.dispatch_local(
-                                    (job.planned_finish, job.reservation),
-                                    job,
-                                    locality,
-                                )
-                            })?;
+                            campaign.admit_dispatch(
+                                outcome,
+                                records,
+                                token,
+                                &mut |job, token| {
+                                    #[cfg(test)]
+                                    tests::before_locality_dispatch(pool, job.reservation, false)?;
+                                    let locality = workload.snapshot_locality(&job.snapshot);
+                                    pool.dispatch_local(
+                                        (job.planned_finish, job.reservation, token),
+                                        job,
+                                        locality,
+                                    )
+                                },
+                            )?;
                             watch.admitted(note, campaign);
                         }
-                        Err(error) => campaign.fail(reservation, error)?,
+                        Err(error) => campaign.fail_dispatch(reservation, token, error)?,
                     }
-                    campaign.dispatch_queued(&mut |job| {
+                    campaign.dispatch_queued(&mut |job, token| {
                         #[cfg(test)]
                         tests::before_locality_dispatch(pool, job.reservation, false)?;
                         let locality = workload.snapshot_locality(&job.snapshot);
-                        pool.dispatch_local((job.planned_finish, job.reservation), job, locality)
+                        pool.dispatch_local(
+                            (job.planned_finish, job.reservation, token),
+                            job,
+                            locality,
+                        )
                     })?;
                     ready_reply = match pool.try_receive() {
                         Ok(reply) => reply,
@@ -4253,9 +4460,9 @@ fn write_search_checkpoint<G: Workload>(
     reserved: u64,
     admitted: usize,
     planned_clock: u64,
-    schedule: &BTreeSet<(u64, usize)>,
+    schedule: &AdmissionSchedule,
     reservations: &ReservationSlots<usize, PendingJob<G>, CompletedOutcome<G>>,
-    spec_records: &BTreeMap<usize, JobSpecRecord<G>>,
+    spec_records: &BTreeMap<usize, (ReservationToken, JobSpecRecord<G>)>,
 ) -> Result<(), Box<dyn Error>> {
     workload.verify_integrity()?;
     let in_flight = InFlightCheckpointRef {
@@ -4292,9 +4499,9 @@ fn write_search_checkpoint<G: Workload>(
 }
 
 struct InFlightCheckpointRef<'a, G: Workload> {
-    schedule: &'a BTreeSet<(u64, usize)>,
+    schedule: &'a AdmissionSchedule,
     reservations: &'a ReservationSlots<usize, PendingJob<G>, CompletedOutcome<G>>,
-    spec_records: &'a BTreeMap<usize, JobSpecRecord<G>>,
+    spec_records: &'a BTreeMap<usize, (ReservationToken, JobSpecRecord<G>)>,
 }
 impl<G: Workload> Serialize for InFlightCheckpointRef<'_, G> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -4304,19 +4511,19 @@ impl<G: Workload> Serialize for InFlightCheckpointRef<'_, G> {
                 "search checkpoint in-flight input count differs",
             ));
         }
+        self.schedule
+            .validate(self.reservations, |pending| pending.planned_finish)
+            .map_err(serde::ser::Error::custom)?;
         let mut sequence = serializer.serialize_seq(Some(self.schedule.len()))?;
-        for (reservation, spec) in self.spec_records {
-            let pending = self.reservations.metadata(reservation).ok_or_else(|| {
-                serde::ser::Error::custom("search checkpoint lost an in-flight reservation")
-            })?;
-            if !self
-                .schedule
-                .contains(&(pending.planned_finish, *reservation))
-            {
-                return Err(serde::ser::Error::custom(
-                    "search checkpoint in-flight schedule differs",
-                ));
-            }
+        for (reservation, (token, spec)) in self.spec_records {
+            let pending = self
+                .reservations
+                .slot(*token)
+                .filter(|slot| slot.key == *reservation)
+                .map(|slot| &slot.pending)
+                .ok_or_else(|| {
+                    serde::ser::Error::custom("search checkpoint lost an in-flight reservation")
+                })?;
             sequence.serialize_element(&InFlightJobRef {
                 reservation: *reservation,
                 spec,
@@ -9240,6 +9447,425 @@ mod tests {
     }
 
     #[test]
+    fn arena_tokens_reject_reuse_and_keep_pending_metadata_in_place() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct Pending {
+            drops: Arc<AtomicUsize>,
+            value: u64,
+        }
+        impl Drop for Pending {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut slots = super::ReservationSlots::new(|_: &u64| (1, 0), 1);
+        assert!(
+            slots
+                .insert(
+                    100,
+                    Pending {
+                        drops: Arc::clone(&drops),
+                        value: 9
+                    }
+                )
+                .is_none()
+        );
+        let first = slots.token(&100).unwrap();
+        let address = std::ptr::from_ref(&slots.slot(first).unwrap().pending);
+        slots
+            .complete_token(first, 100, 7, None, |_| Ok(()))
+            .unwrap();
+        assert_eq!(slots.begin_admission(first), Some(7));
+        assert_eq!(
+            std::ptr::from_ref(&slots.slot(first).unwrap().pending),
+            address
+        );
+        assert_eq!(slots.slot(first).unwrap().pending.value, 9);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        slots.finish_admission(first).unwrap();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(
+            slots
+                .insert(
+                    usize::MAX,
+                    Pending {
+                        drops: Arc::clone(&drops),
+                        value: 10
+                    }
+                )
+                .is_none()
+        );
+        let second = slots.token(&usize::MAX).unwrap();
+        assert_eq!(first.slot, second.slot);
+        assert_ne!(first.generation, second.generation);
+        assert_eq!(slots.slots.len(), 1);
+        assert!(
+            slots
+                .validate_pending(first, usize::MAX)
+                .unwrap_err()
+                .contains("stale")
+        );
+        assert!(
+            slots
+                .validate_pending(second, 100)
+                .unwrap_err()
+                .contains("another")
+        );
+        assert_eq!(slots.pending, 1);
+        slots
+            .complete_token(second, usize::MAX, 8, None, |_| Ok(()))
+            .unwrap();
+        slots.begin_admission(second).unwrap();
+        slots.finish_admission(second).unwrap();
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn arena_generation_overflow_fails_without_reusing_or_dropping_a_live_slot() {
+        let mut slots = super::ReservationSlots::new(|_: &u64| (0, 0), 1);
+        slots.insert(2, 5);
+        slots.slots[0].generation = u64::MAX;
+        let token = super::ReservationToken {
+            slot: 0,
+            generation: u64::MAX,
+        };
+        slots.entries.map.insert(2, token);
+        slots.complete_token(token, 2, 7, None, |_| Ok(())).unwrap();
+        assert_eq!(slots.begin_admission(token), Some(7));
+        assert_eq!(
+            slots.finish_admission(token),
+            Err("campaign reservation generation overflow")
+        );
+        assert!(slots.free.is_empty());
+        assert_eq!(slots.slot(token).unwrap().pending, 5);
+    }
+
+    #[test]
+    fn arena_window_reuse_and_explicit_stepped_growth_depend_on_live_count_not_identifiers() {
+        let mut slots = super::ReservationSlots::new(|_: &u64| (1, 1), 2);
+        for id in 100_usize..10_100 {
+            slots.insert(id, id);
+            let token = slots.token(&id).unwrap();
+            slots
+                .complete_token(token, id, id as u64, None, |_| Ok(()))
+                .unwrap();
+            slots.begin_admission(token).unwrap();
+            slots.finish_admission(token).unwrap();
+            assert_eq!(slots.slots.len(), 2);
+        }
+        for id in [usize::MAX, 9, 1] {
+            assert!(slots.insert(id, id).is_none());
+            let token = slots.token(&id).unwrap();
+            slots
+                .complete_token(token, id, id as u64, None, |_| Ok(()))
+                .unwrap();
+        }
+        assert_eq!(slots.slots.len(), 3);
+        assert_eq!(slots.pending, 0);
+        assert_eq!(slots.completed_len(), 3);
+        assert_eq!(slots.telemetry.results_peak, 3);
+    }
+
+    #[test]
+    fn arena_checkpoint_schedule_validates_bijection_order_and_reused_generations() {
+        let mut slots = super::ReservationSlots::new(|_: &u64| (0, 0), 2);
+        slots.insert(99, 2_u64);
+        let a = slots.token(&99).unwrap();
+        slots.insert(1, 1_u64);
+        let b = slots.token(&1).unwrap();
+        let mut schedule = super::AdmissionSchedule::try_new(2).unwrap();
+        schedule.insert((2, 99), a);
+        schedule.insert((1, 1), b);
+        assert_eq!(schedule.first(), Some(&(1, 1)));
+        assert_eq!(schedule.validate(&slots, |finish| *finish), Ok(()));
+        schedule.heap.clear();
+        schedule.insert((2, 99), a);
+        schedule.insert((2, 99), a);
+        assert!(schedule.validate(&slots, |finish| *finish).is_err());
+        schedule.heap.clear();
+        schedule.insert((2, 99), a);
+        schedule.insert((2, 1), b);
+        assert!(schedule.validate(&slots, |finish| *finish).is_err());
+        schedule.heap.clear();
+        schedule.insert((2, 99), a);
+        schedule.insert((1, 1), super::ReservationToken { generation: 1, ..b });
+        assert!(schedule.validate(&slots, |finish| *finish).is_err());
+    }
+
+    #[test]
+    fn arena_impossible_initial_capacity_returns_a_normal_error() {
+        assert!(
+            super::ReservationSlots::<usize, u64, u64>::try_new(|_| (0, 0), usize::MAX).is_err()
+        );
+        assert!(super::AdmissionSchedule::try_new(usize::MAX).is_err());
+        let mut config = three_worker_config();
+        config.window = usize::MAX;
+        config.execution_budget = u64::MAX;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        assert!(
+            CampaignCoordinator::start(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn native_resume_preserves_a_stepped_checkpoint_with_more_live_jobs_than_window() {
+        let directory = std::env::temp_dir().join(format!(
+            "reservation-arena-stepped-overflow-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut config = three_worker_config();
+        config.window = 2;
+        config.execution_budget = 20;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let options = CampaignExecutionOptions {
+            checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                directory: directory.clone(),
+                every: std::num::NonZeroU64::new(1),
+                on_marks: false,
+                on_top_progress: false,
+                checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
+            }),
+            ..Default::default()
+        };
+        {
+            let mut initial_stream = Vec::new();
+            let mut coordinator = CampaignCoordinator::start(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut initial_stream,
+                None,
+                options,
+            )
+            .unwrap();
+            while coordinator.reserve_next().unwrap() {}
+            let mut jobs = coordinator.plan(usize::MAX);
+            let first = jobs.remove(0);
+            let held = jobs.remove(0);
+            let mut target = workload.new_target().unwrap();
+            coordinator
+                .admit(run_job(&workload, &config, &mut target, &held).unwrap())
+                .unwrap();
+            assert_eq!(coordinator.executions(), 0);
+            assert!(coordinator.reserve_next().unwrap());
+            coordinator
+                .admit(run_job(&workload, &config, &mut target, &first).unwrap())
+                .unwrap();
+            assert_eq!(coordinator.executions(), 2);
+            assert_eq!(coordinator.reservation_capacity(), 3);
+        }
+        let origin = CampaignOrigin::SearchCheckpoint {
+            path: directory.join("000000000002-interval.ckpt"),
+            expected_sha256: None,
+        };
+        struct Watch;
+        impl super::CampaignWatch<TestWorkload> for Watch {
+            type Note = usize;
+            fn run(
+                &self,
+                job: &JobSpec<TestWorkload>,
+                run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn std::error::Error>>,
+            ) -> super::WatchedJob<TestWorkload, usize> {
+                Ok((run()?, job.reservation))
+            }
+            fn start(
+                &self,
+                campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+            ) -> Result<(), Box<dyn std::error::Error>> {
+                assert_eq!(campaign.reservation_capacity(), 3);
+                campaign.watch_selected_admissions();
+                Ok(())
+            }
+            fn prepare_admission(
+                &self,
+                note: &usize,
+                campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+            ) {
+                assert!(campaign.request_admission(*note));
+            }
+            fn admitted(&self, _: usize, campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+                assert_eq!(campaign.reservation_capacity(), 3);
+                campaign.take_admissions();
+            }
+        }
+        let mut native_stream = Vec::new();
+        let native = super::run_campaign(
+            &workload,
+            &config,
+            &origin,
+            &mut native_stream,
+            None,
+            Default::default(),
+            &Watch,
+            None,
+        )
+        .unwrap();
+        let mut stepped_stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &origin,
+            &mut stepped_stream,
+            None,
+            Default::default(),
+        )
+        .unwrap();
+        while coordinator.reserve_next().unwrap() {}
+        let mut target = workload.new_target().unwrap();
+        while !coordinator.finished() {
+            let jobs = coordinator.plan(2);
+            assert!(!jobs.is_empty());
+            for job in jobs.into_iter().rev() {
+                coordinator
+                    .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                    .unwrap();
+            }
+        }
+        let stepped = coordinator.finish(Vec::new()).unwrap();
+        assert_eq!(native_stream, stepped_stream);
+        assert_eq!(native, stepped);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn native_reply_token_validates_the_full_logical_key_before_admission() {
+        let config = three_worker_config();
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap();
+        coordinator.reserve_next().unwrap();
+        let job = coordinator.plan(1).pop().unwrap();
+        let token = coordinator.reservation_token(job.reservation).unwrap();
+        assert!(
+            coordinator
+                .validate_reply_token(token, job.reservation, job.planned_finish + 1)
+                .unwrap_err()
+                .to_string()
+                .contains("planned finish")
+        );
+        assert!(
+            coordinator
+                .validate_reply_token(token, job.reservation + 1, job.planned_finish)
+                .unwrap_err()
+                .to_string()
+                .contains("another reservation")
+        );
+        assert!(
+            coordinator
+                .validate_reply_token(
+                    super::ReservationToken {
+                        generation: token.generation + 1,
+                        ..token
+                    },
+                    job.reservation,
+                    job.planned_finish
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("stale")
+        );
+        assert!(
+            coordinator
+                .validate_reply_token(token, job.reservation, job.planned_finish)
+                .is_ok()
+        );
+        assert_eq!(coordinator.executions(), 0);
+    }
+
+    #[test]
+    fn native_invalid_inner_reservation_never_reaches_the_observer_or_admission_watch() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Invalid {
+            admitted: AtomicUsize,
+        }
+        impl super::CampaignWatch<TestWorkload> for Invalid {
+            type Note = ();
+            fn run(
+                &self,
+                _: &JobSpec<TestWorkload>,
+                execute: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn std::error::Error>>,
+            ) -> Result<(JobOutcome<TestWorkload>, ()), Box<dyn std::error::Error>> {
+                let mut outcome = execute()?;
+                outcome.reservation = usize::MAX;
+                Ok((outcome, ()))
+            }
+            fn admitted(&self, _: (), _: &mut CampaignCoordinator<'_, TestWorkload>) {
+                self.admitted.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let mut config = three_worker_config();
+        config.execution_budget = 6;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let watch = Invalid {
+            admitted: AtomicUsize::new(0),
+        };
+        let mut observed = 0;
+        let mut sink = |_| {
+            observed += 1;
+            Ok(())
+        };
+        let mut stream = Vec::new();
+        let result = super::run_campaign(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+            &watch,
+            Some(crate::search::job_observation::JobObserver {
+                diagnostics: Default::default(),
+                sink: &mut sink,
+            }),
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("another reservation")
+        );
+        assert_eq!(observed, 0);
+        assert_eq!(watch.admitted.load(Ordering::SeqCst), 0);
+        assert!(job_lines(&stream).is_empty());
+    }
+
+    #[test]
     fn reservation_slots_count_owned_records_and_balance_removal() {
         let result = |flags: &[bool]| {
             Ok((
@@ -10008,8 +10634,11 @@ mod tests {
         }
         assert_eq!(coordinator.executions(), before);
         let records = super::CompletedRecords::of_result::<TestWorkload>(&head.result);
+        let token = coordinator.reservation_token(head.reservation).unwrap();
         let error = coordinator
-            .admit_dispatch(head, records, &mut |_| Err("dispatch witness".into()))
+            .admit_dispatch(head, records, token, &mut |_, _| {
+                Err("dispatch witness".into())
+            })
             .unwrap_err();
         assert_eq!(error.to_string(), "dispatch witness");
         assert_eq!(coordinator.executions(), before + 1);
@@ -11988,19 +12617,22 @@ mod tests {
                 let error = match operation {
                     "reserve" => coordinator.reserve_next().unwrap_err(),
                     "dispatch" => coordinator
-                        .reserve_next_dispatch(&mut |_| panic!("dispatch after integrity failure"))
+                        .reserve_next_dispatch(&mut |_, _| {
+                            panic!("dispatch after integrity failure")
+                        })
                         .unwrap_err(),
                     "fail" => coordinator
                         .fail(next.unwrap().reservation, "worker error".into())
                         .unwrap_err(),
                     "drain-stream" => coordinator.drain_background_stream().unwrap_err(),
                     "dispatch-queued" => coordinator
-                        .dispatch_queued(&mut |_| panic!("dispatch after integrity failure"))
+                        .dispatch_queued(&mut |_, _| panic!("dispatch after integrity failure"))
                         .unwrap_err(),
                     "admit-dispatch" => {
                         let (outcome, records) = counted.unwrap();
+                        let token = coordinator.reservation_token(outcome.reservation).unwrap();
                         coordinator
-                            .admit_dispatch(outcome, records, &mut |_| {
+                            .admit_dispatch(outcome, records, token, &mut |_, _| {
                                 panic!("dispatch after integrity failure")
                             })
                             .unwrap_err()

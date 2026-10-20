@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet, btree_map::Entry},
+    cmp::Reverse,
+    collections::{BTreeMap, BinaryHeap},
     error::Error,
     fmt,
     sync::{Arc, Condvar, Mutex, mpsc},
@@ -27,6 +28,7 @@ pub(crate) enum WorkerPoolError {
     DuplicateJob,
     WorkersExited,
     RepliesClosed,
+    QueueCapacity,
 }
 
 impl fmt::Display for WorkerPoolError {
@@ -36,17 +38,98 @@ impl fmt::Display for WorkerPoolError {
             Self::DuplicateJob => "campaign job queue already holds a job with this order key",
             Self::WorkersExited => "every campaign worker exited before taking the next job",
             Self::RepliesClosed => "every campaign worker exited while a reply was expected",
+            Self::QueueCapacity => "campaign worker queue capacity cannot be allocated",
         })
     }
 }
 
 impl Error for WorkerPoolError {}
 
+struct IdleWorkers {
+    values: Vec<Option<WorkerLocality>>,
+    identifiers: Vec<u32>,
+    bits: Vec<u64>,
+    len: usize,
+}
+
+impl IdleWorkers {
+    fn new(workers: usize) -> Self {
+        Self {
+            values: std::iter::repeat_with(|| None).take(workers).collect(),
+            identifiers: (0..workers)
+                .map(|worker| u32::try_from(worker).expect("worker identifier"))
+                .collect(),
+            bits: vec![0; workers.div_ceil(64)],
+            len: 0,
+        }
+    }
+
+    fn insert(&mut self, worker: u32, locality: WorkerLocality) {
+        let index = worker as usize;
+        if self.values[index].replace(locality).is_none() {
+            self.len += 1;
+        }
+        self.bits[index / 64] |= 1_u64 << (index % 64);
+    }
+
+    fn remove(&mut self, worker: &u32) {
+        let index = *worker as usize;
+        if self.values[index].take().is_some() {
+            self.len -= 1;
+        }
+        self.bits[index / 64] &= !(1_u64 << (index % 64));
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&u32, &WorkerLocality)> {
+        self.bits.iter().enumerate().flat_map(move |(word, &bits)| {
+            let mut remaining = bits;
+            std::iter::from_fn(move || {
+                if remaining == 0 {
+                    return None;
+                }
+                let bit = remaining.trailing_zeros() as usize;
+                remaining &= remaining - 1;
+                let index = word * 64 + bit;
+                Some((
+                    &self.identifiers[index],
+                    self.values[index].as_ref().expect("idle worker bit"),
+                ))
+            })
+        })
+    }
+
+    fn first_key_value(&self) -> Option<(&u32, &WorkerLocality)> {
+        self.iter().next()
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, worker: &u32) -> bool {
+        self.values
+            .get(*worker as usize)
+            .is_some_and(Option::is_some)
+    }
+    #[cfg(test)]
+    fn keys(&self) -> impl Iterator<Item = &u32> {
+        self.iter().map(|(worker, _)| worker)
+    }
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.len
+    }
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 struct JobQueue<Key, Job> {
-    jobs: BTreeMap<Key, QueuedJob<Job>>,
-    idle: BTreeMap<u32, WorkerLocality>,
-    assigned: Vec<Option<(Key, Job)>>,
-    assigned_keys: BTreeSet<Key>,
+    jobs: BinaryHeap<Reverse<(Key, usize)>>,
+    slots: Vec<Option<QueuedSlot<Key, Job>>>,
+    free: Vec<usize>,
+    keys: BTreeMap<Key, usize>,
+    slot_index: Option<fn(&Key) -> usize>,
+    idle: IdleWorkers,
+    assigned: Vec<Option<usize>>,
     open: bool,
     workers: usize,
     failed_job: bool,
@@ -57,10 +140,56 @@ struct QueuedJob<Job> {
     locality: Option<LocalityKey>,
 }
 
+struct QueuedSlot<Key, Job> {
+    key: Key,
+    queued: QueuedJob<Job>,
+}
+
 impl<Key: Ord + Clone, Job> JobQueue<Key, Job> {
+    fn enqueue(
+        &mut self,
+        key: Key,
+        job: Job,
+        locality: Option<LocalityKey>,
+    ) -> Result<(), WorkerPoolError> {
+        let index = if let Some(slot_index) = self.slot_index {
+            let index = slot_index(&key);
+            if self.slots.get(index).is_none_or(Option::is_some) {
+                return Err(WorkerPoolError::DuplicateJob);
+            }
+            index
+        } else {
+            if self.keys.contains_key(&key) {
+                return Err(WorkerPoolError::DuplicateJob);
+            }
+            let index = self.free.pop().unwrap_or_else(|| {
+                self.slots.push(None);
+                self.slots.len() - 1
+            });
+            self.keys.insert(key.clone(), index);
+            index
+        };
+        self.jobs.push(Reverse((key.clone(), index)));
+        self.slots[index] = Some(QueuedSlot {
+            key,
+            queued: QueuedJob { job, locality },
+        });
+        Ok(())
+    }
+
+    fn release(&mut self, index: usize) -> (Key, QueuedJob<Job>) {
+        let slot = self.slots[index].take().expect("assigned job slot");
+        if self.slot_index.is_none() {
+            assert!(self.keys.remove(&slot.key).is_some());
+            self.free.push(index);
+        }
+        (slot.key, slot.queued)
+    }
+
     fn assign(&mut self, mut notify: impl FnMut(u32)) -> bool {
         let mut assigned = false;
-        while let Some((_, first)) = self.jobs.first_key_value() {
+        while let Some(Reverse((_, index))) = self.jobs.peek() {
+            let first = &self.slots[*index].as_ref().expect("queued job slot").queued;
             let worker = if first.locality.is_none() {
                 self.idle.first_key_value().map(|(&worker, _)| worker)
             } else {
@@ -74,14 +203,11 @@ impl<Key: Ord + Clone, Job> JobQueue<Key, Job> {
             let Some(worker) = worker else {
                 break;
             };
-            let Some((key, queued)) = self.jobs.pop_first() else {
-                break;
-            };
+            let Reverse((_, index)) = self.jobs.pop().expect("queued job head");
             self.idle.remove(&worker);
             let slot = &mut self.assigned[worker as usize];
             assert!(slot.is_none());
-            assert!(self.assigned_keys.insert(key.clone()));
-            *slot = Some((key, queued.job));
+            *slot = Some(index);
             notify(worker);
             assigned = true;
         }
@@ -89,9 +215,66 @@ impl<Key: Ord + Clone, Job> JobQueue<Key, Job> {
     }
 
     fn take_assigned(&mut self, worker: u32) -> Option<(Key, Job)> {
-        let job = self.assigned[worker as usize].take()?;
-        assert!(self.assigned_keys.remove(&job.0));
-        Some(job)
+        let index = self.assigned[worker as usize].take()?;
+        let (key, queued) = self.release(index);
+        Some((key, queued.job))
+    }
+
+    #[cfg(test)]
+    fn assigned_keys(&self) -> Vec<Key> {
+        let mut keys = self
+            .assigned
+            .iter()
+            .flatten()
+            .map(|index| self.slots[*index].as_ref().unwrap().key.clone())
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    #[cfg(test)]
+    fn queued_keys(&self) -> Vec<Key> {
+        let mut keys = self
+            .jobs
+            .iter()
+            .map(|Reverse((key, _))| key.clone())
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    #[cfg(test)]
+    fn pop_queued(&mut self) -> Option<(Key, QueuedJob<Job>)> {
+        let Reverse((_, index)) = self.jobs.pop()?;
+        Some(self.release(index))
+    }
+
+    #[cfg(test)]
+    fn from_parts(
+        jobs: BTreeMap<Key, QueuedJob<Job>>,
+        idle: BTreeMap<u32, WorkerLocality>,
+        workers: usize,
+        open: bool,
+    ) -> Self {
+        let mut queue = Self {
+            jobs: BinaryHeap::new(),
+            slots: Vec::new(),
+            free: Vec::new(),
+            keys: BTreeMap::new(),
+            slot_index: None,
+            idle: IdleWorkers::new(workers),
+            assigned: vec![None; workers],
+            open,
+            workers,
+            failed_job: false,
+        };
+        for (worker, locality) in idle {
+            queue.idle.insert(worker, locality);
+        }
+        for (key, queued) in jobs {
+            queue.enqueue(key, queued.job, queued.locality).unwrap();
+        }
+        queue
     }
 }
 
@@ -116,10 +299,13 @@ impl<Key: Ord + Clone, Job> SharedJobs<Key, Job> {
     fn new(workers: usize) -> Self {
         Self {
             queue: Mutex::new(JobQueue {
-                jobs: BTreeMap::new(),
-                idle: BTreeMap::new(),
+                jobs: BinaryHeap::new(),
+                slots: Vec::new(),
+                free: Vec::new(),
+                keys: BTreeMap::new(),
+                slot_index: None,
+                idle: IdleWorkers::new(workers),
                 assigned: std::iter::repeat_with(|| None).take(workers).collect(),
-                assigned_keys: BTreeSet::new(),
                 open: true,
                 workers,
                 failed_job: false,
@@ -197,6 +383,35 @@ pub(crate) struct WorkerPool<Key: Ord + Clone, Job, Output, O = ()> {
 }
 
 impl<Key: Ord + Clone, Job, Output, O> WorkerPool<Key, Job, Output, O> {
+    pub(crate) fn configure_indexed(
+        &mut self,
+        capacity: usize,
+        slot_index: fn(&Key) -> usize,
+    ) -> Result<(), WorkerPoolError> {
+        let shared = self.jobs.as_ref().ok_or(WorkerPoolError::QueueClosed)?;
+        let mut queue = shared
+            .queue
+            .lock()
+            .map_err(|_| WorkerPoolError::WorkersExited)?;
+        if !queue.jobs.is_empty() || queue.assigned.iter().any(Option::is_some) {
+            return Err(WorkerPoolError::DuplicateJob);
+        }
+        queue
+            .jobs
+            .try_reserve(capacity)
+            .map_err(|_| WorkerPoolError::QueueCapacity)?;
+        let additional = capacity.saturating_sub(queue.slots.len());
+        queue
+            .slots
+            .try_reserve_exact(additional)
+            .map_err(|_| WorkerPoolError::QueueCapacity)?;
+        queue.slots.resize_with(capacity, || None);
+        queue.free.clear();
+        queue.keys.clear();
+        queue.slot_index = Some(slot_index);
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn send(&self, key: Key, job: Job) -> Result<(), WorkerPoolError> {
         self.send_local(key, job, None)
@@ -216,15 +431,7 @@ impl<Key: Ord + Clone, Job, Output, O> WorkerPool<Key, Job, Output, O> {
         if queue.workers == 0 && !queue.failed_job {
             return Err(WorkerPoolError::WorkersExited);
         }
-        if queue.assigned_keys.contains(&key) {
-            return Err(WorkerPoolError::DuplicateJob);
-        }
-        match queue.jobs.entry(key) {
-            Entry::Occupied(_) => return Err(WorkerPoolError::DuplicateJob),
-            Entry::Vacant(entry) => {
-                entry.insert(QueuedJob { job, locality });
-            }
-        }
+        queue.enqueue(key, job, locality)?;
         queue.assign(|assigned| shared.ready[assigned as usize].notify_one());
         Ok(())
     }
@@ -652,6 +859,85 @@ mod tests {
     use crate::search::telemetry::TargetCounters;
 
     #[test]
+    fn idle_bitmap_preserves_order_across_words_and_replaces_existing_hints() {
+        let mut idle = super::IdleWorkers::new(130);
+        for worker in [129, 64, 0] {
+            idle.insert(worker, Default::default());
+        }
+        assert_eq!(idle.keys().copied().collect::<Vec<_>>(), [0, 64, 129]);
+        idle.remove(&0);
+        idle.insert(64, Default::default());
+        assert_eq!(idle.len(), 2);
+        assert_eq!(idle.first_key_value().unwrap().0, &64);
+        idle.remove(&64);
+        idle.remove(&64);
+        assert_eq!(idle.first_key_value().unwrap().0, &129);
+        idle.remove(&129);
+        assert!(idle.is_empty());
+        assert!(idle.first_key_value().is_none());
+    }
+
+    #[test]
+    fn indexed_queue_reuses_fixed_payload_slots_without_assigned_key_allocations() {
+        let mut queue = super::JobQueue::from_parts(
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+            2,
+            true,
+        );
+        queue.slots.resize_with(2, || None);
+        queue.jobs.reserve(2);
+        queue.slot_index = Some(|key: &(u64, usize)| key.1);
+        let capacities = (queue.slots.capacity(), queue.jobs.capacity());
+        for round in 0..1_000 {
+            queue.enqueue((round, 1), round, None).unwrap();
+            let address = std::ptr::from_ref(&queue.slots[1].as_ref().unwrap().queued.job);
+            assert_eq!(
+                queue.enqueue((round, 1), 0, None),
+                Err(WorkerPoolError::DuplicateJob)
+            );
+            queue.idle.insert(0, Default::default());
+            assert!(queue.assign(|worker| assert_eq!(worker, 0)));
+            assert_eq!(
+                std::ptr::from_ref(&queue.slots[1].as_ref().unwrap().queued.job),
+                address
+            );
+            assert_eq!(
+                queue.enqueue((round + 1, 1), 0, None),
+                Err(WorkerPoolError::DuplicateJob)
+            );
+            assert_eq!(queue.take_assigned(0), Some(((round, 1), round)));
+            assert!(queue.keys.is_empty());
+            assert_eq!((queue.slots.capacity(), queue.jobs.capacity()), capacities);
+        }
+        assert_eq!(
+            queue.enqueue((0, 2), 0, None),
+            Err(WorkerPoolError::DuplicateJob)
+        );
+        assert!(queue.slots.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn indexed_pool_impossible_capacity_is_a_normal_error() {
+        with_worker_pool(
+            1,
+            |_| Ok::<_, String>(()),
+            |_| Ok::<_, String>(()),
+            |(), job: u8| Ok::<_, String>(job),
+            |_| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(1)?;
+                assert_eq!(
+                    pool.configure_indexed(usize::MAX, |key: &usize| *key),
+                    Err(WorkerPoolError::QueueCapacity)
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn timed_receive_distinguishes_waiting_ready_and_closed_workers() {
         with_worker_pool(
             1,
@@ -828,17 +1114,17 @@ mod tests {
         {
             let mut queue = shared.queue.lock().unwrap();
             assert_eq!(queue.take_assigned(1), Some((7, 10)));
-            assert!(queue.assigned_keys.is_empty());
+            assert!(queue.assigned_keys().is_empty());
             queue.idle.insert(1, WorkerLocality::default());
         }
         pool.send(7, 12).unwrap();
         let mut queue = shared.queue.lock().unwrap();
         assert_eq!(queue.take_assigned(1), Some((7, 12)));
         assert_eq!(
-            queue.jobs.pop_first().map(|(key, value)| (key, value.job)),
+            queue.pop_queued().map(|(key, value)| (key, value.job)),
             Some((8, 11))
         );
-        assert!(queue.assigned_keys.is_empty());
+        assert!(queue.assigned_keys().is_empty());
         drop(queue);
     }
 
@@ -850,8 +1136,8 @@ mod tests {
 
         let parent = LocalityKey([1; 32]);
         let other = LocalityKey([2; 32]);
-        let mut queue = JobQueue {
-            jobs: BTreeMap::from([
+        let mut queue = JobQueue::from_parts(
+            BTreeMap::from([
                 (
                     10,
                     QueuedJob {
@@ -874,27 +1160,25 @@ mod tests {
                     },
                 ),
             ]),
-            idle: BTreeMap::from([
+            BTreeMap::from([
                 (0, WorkerLocality::new([(other, 1)])),
                 (1, WorkerLocality::new([(parent, 0)])),
                 (2, WorkerLocality::new([(parent, 1)])),
             ]),
-            assigned: vec![None; 3],
-            assigned_keys: Default::default(),
-            open: true,
-            workers: 3,
-            failed_job: false,
-        };
+            3,
+            true,
+        );
         let mut notified = Vec::new();
         assert!(queue.assign(|worker| notified.push(worker)));
         assert_eq!(notified, [2, 0, 1]);
+        assert_eq!(queue.assigned_keys(), [10, 20, 30]);
         assert_eq!(
-            queue.assigned,
+            [
+                queue.take_assigned(0),
+                queue.take_assigned(1),
+                queue.take_assigned(2)
+            ],
             [Some((20, 20)), Some((30, 30)), Some((10, 10))]
-        );
-        assert_eq!(
-            queue.assigned_keys.iter().copied().collect::<Vec<_>>(),
-            [10, 20, 30]
         );
         assert!(queue.jobs.is_empty());
         assert!(queue.idle.is_empty());
@@ -909,8 +1193,8 @@ mod tests {
 
         let busy_parent = LocalityKey([1; 32]);
         let local_parent = LocalityKey([2; 32]);
-        let mut queue = JobQueue {
-            jobs: BTreeMap::from([
+        let mut queue = JobQueue::from_parts(
+            BTreeMap::from([
                 (
                     10,
                     QueuedJob {
@@ -926,22 +1210,19 @@ mod tests {
                     },
                 ),
             ]),
-            idle: BTreeMap::from([(1, WorkerLocality::new([(local_parent, 9)]))]),
-            assigned: vec![None; 2],
-            assigned_keys: Default::default(),
-            open: false,
-            workers: 2,
-            failed_job: false,
-        };
+            BTreeMap::from([(1, WorkerLocality::new([(local_parent, 9)]))]),
+            2,
+            false,
+        );
         assert!(queue.assign(|_| {}));
         assert!(!queue.assign(|_| panic!("backlog woke a worker without an assignment")));
         assert_eq!(queue.take_assigned(1), Some((10, 10)));
-        assert!(queue.assigned_keys.is_empty());
-        assert_eq!(queue.jobs.keys().copied().collect::<Vec<_>>(), [20]);
+        assert!(queue.assigned_keys().is_empty());
+        assert_eq!(queue.queued_keys(), [20]);
         queue.idle.insert(1, WorkerLocality::default());
         assert!(queue.assign(|_| {}));
         assert_eq!(queue.take_assigned(1), Some((20, 20)));
-        assert!(queue.assigned_keys.is_empty());
+        assert!(queue.assigned_keys().is_empty());
     }
 
     #[test]
@@ -950,24 +1231,21 @@ mod tests {
         use crate::search::locality::WorkerLocality;
         use std::collections::BTreeMap;
 
-        let mut queue = JobQueue {
-            jobs: BTreeMap::from([(
+        let mut queue = JobQueue::from_parts(
+            BTreeMap::from([(
                 7,
                 QueuedJob {
                     job: (),
                     locality: None,
                 },
             )]),
-            idle: BTreeMap::from([
+            BTreeMap::from([
                 (5, WorkerLocality::default()),
                 (2, WorkerLocality::default()),
             ]),
-            assigned: vec![None; 6],
-            assigned_keys: Default::default(),
-            open: true,
-            workers: 6,
-            failed_job: false,
-        };
+            6,
+            true,
+        );
         assert!(queue.assign(|_| {}));
         assert_eq!(queue.take_assigned(2), Some((7, ())));
         assert_eq!(queue.idle.keys().copied().collect::<Vec<_>>(), [5]);

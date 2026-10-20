@@ -11,16 +11,16 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CONSECUTIVE_SKIP_LIMIT, CampaignAdmissionDecision, CampaignConfig, CampaignCounters,
-    CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
-    CampaignOrigin, CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord,
-    CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-    CampaignTypes, CompletedJob, CompletedOutcome, CompletedRecords, CoordinatorCore,
-    JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, ReservationSlots,
-    SelectedJob, StreamWriter, ThreadPlacement, Workload, archive_entry_limit_is_valid,
-    bootstrap_campaign, build_report, completed_job_records, continuation_arrival,
-    continuation_attempt, derive_selection_seed, execution_work_delta, finish_record,
-    initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
+    AdmissionSchedule, CONSECUTIVE_SKIP_LIMIT, CampaignAdmissionDecision, CampaignConfig,
+    CampaignCounters, CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord,
+    CampaignJobResult, CampaignOrigin, CampaignOriginRecord, CampaignOutcome,
+    CampaignProgressRecord, CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader,
+    CampaignStreamRecord, CampaignTypes, CompletedJob, CompletedOutcome, CompletedRecords,
+    CoordinatorCore, JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob,
+    ReservationSlots, ReservationToken, SelectedJob, StreamWriter, ThreadPlacement, Workload,
+    archive_entry_limit_is_valid, bootstrap_campaign, build_report, completed_job_records,
+    continuation_arrival, continuation_attempt, derive_selection_seed, execution_work_delta,
+    finish_record, initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
     profile_clock_enabled, profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
     record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
     retained_archive_indexes, search_checkpoint_header, stop_reservations_after_objective,
@@ -103,7 +103,13 @@ pub fn run_job<G: Workload>(
     })
 }
 
-type JobDispatch<'a, G> = dyn FnMut(JobSpec<G>) -> Result<(), Box<dyn Error>> + 'a;
+struct ReservedDispatch<G: CampaignTypes + ?Sized> {
+    job: JobSpec<G>,
+    token: ReservationToken,
+}
+
+type JobDispatch<'a, G> =
+    dyn FnMut(JobSpec<G>, ReservationToken) -> Result<(), Box<dyn Error>> + 'a;
 
 struct DispatchPhaseStart {
     started: Moment,
@@ -134,9 +140,9 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     admitted: usize,
     planned_clock: u64,
     reservations: ReservationSlots<usize, PendingJob<G>, CompletedOutcome<G>>,
-    schedule: BTreeSet<(u64, usize)>,
-    queued: BTreeMap<(u64, usize), JobSpec<G>>,
-    spec_records: BTreeMap<usize, JobSpecRecord<G>>,
+    schedule: AdmissionSchedule,
+    queued: BTreeMap<(u64, usize), ReservedDispatch<G>>,
+    spec_records: BTreeMap<usize, (ReservationToken, JobSpecRecord<G>)>,
     running: usize,
     telemetry: CampaignTelemetry,
     profile: LiveCoordinatorProfile,
@@ -322,7 +328,7 @@ where
         let reservation_capacity = config
             .window
             .min(usize::try_from(config.execution_budget).unwrap_or(usize::MAX))
-            .min(4_096);
+            .max(in_flight.len());
         let mut coordinator = Self {
             workload,
             config,
@@ -341,8 +347,8 @@ where
             reserved,
             admitted,
             planned_clock,
-            reservations: ReservationSlots::new(completed_job_records, reservation_capacity),
-            schedule: BTreeSet::new(),
+            reservations: ReservationSlots::try_new(completed_job_records, reservation_capacity)?,
+            schedule: AdmissionSchedule::try_new(reservation_capacity)?,
             queued: BTreeMap::new(),
             spec_records: BTreeMap::new(),
             running: 0,
@@ -385,25 +391,35 @@ where
                 .core
                 .start_suffix_job(job.pending.parent_id, job.pending.suffix_limit);
             let key = (job.pending.planned_finish, job.reservation);
-            coordinator.schedule.insert(key);
-            coordinator.queued.insert(
-                key,
-                JobSpec {
-                    reservation: job.reservation,
-                    planned_finish: job.pending.planned_finish,
-                    snapshot,
-                    replay: job.spec.replay.clone(),
-                    replay_certificates: job.spec.replay_certificates.clone(),
-                    parent_milestones: job.spec.parent_milestones,
-                    suffix: job.spec.suffix.clone(),
-                },
-            );
-            if coordinator.checkpoints.is_some() {
-                coordinator.spec_records.insert(job.reservation, job.spec);
-            }
+
             coordinator
                 .reservations
                 .insert(job.reservation, job.pending);
+            let token = coordinator
+                .reservations
+                .inserted
+                .expect("restored reservation token");
+            coordinator.schedule.insert(key, token);
+            coordinator.queued.insert(
+                key,
+                ReservedDispatch {
+                    token,
+                    job: JobSpec {
+                        reservation: job.reservation,
+                        planned_finish: key.0,
+                        snapshot,
+                        replay: job.spec.replay.clone(),
+                        replay_certificates: job.spec.replay_certificates.clone(),
+                        parent_milestones: job.spec.parent_milestones,
+                        suffix: job.spec.suffix.clone(),
+                    },
+                },
+            );
+            if coordinator.checkpoints.is_some() {
+                coordinator
+                    .spec_records
+                    .insert(job.reservation, (token, job.spec));
+            }
         }
         Ok(coordinator)
     }
@@ -494,16 +510,17 @@ where
         self.handback_on_error(result)
     }
 
-    fn queue_job(&mut self, job: JobSpec<G>) {
+    fn queue_job(&mut self, job: ReservedDispatch<G>) {
         self.queued
-            .insert((job.planned_finish, job.reservation), job);
+            .insert((job.job.planned_finish, job.job.reservation), job);
     }
 
     fn dispatch_job(
         &mut self,
-        job: JobSpec<G>,
+        job: ReservedDispatch<G>,
         dispatch: &mut JobDispatch<'_, G>,
     ) -> Result<(), Box<dyn Error>> {
+        self.validate_reply_token(job.token, job.job.reservation, job.job.planned_finish)?;
         self.running = self.running.saturating_add(1);
         self.idle_clock.update(
             self.running,
@@ -513,7 +530,7 @@ where
                 IdleReason::AdmissionOrder
             },
         );
-        dispatch(job)
+        dispatch(job.job, job.token)
     }
 
     pub fn plan(&mut self, limit: usize) -> Vec<JobSpec<G>> {
@@ -524,7 +541,7 @@ where
         while jobs.len() < limit
             && let Some((_, job)) = self.queued.pop_first()
         {
-            jobs.push(job);
+            jobs.push(job.job);
         }
         self.running = self.running.saturating_add(jobs.len());
         self.idle_clock.update(
@@ -572,6 +589,7 @@ where
             Ok((result, execution_work, result_sha256)),
             None,
             None,
+            None,
         )
     }
 
@@ -579,6 +597,7 @@ where
         &mut self,
         outcome: JobOutcome<G>,
         records: CompletedRecords,
+        token: ReservationToken,
         dispatch: &mut JobDispatch<'_, G>,
     ) -> Result<(), Box<dyn Error>> {
         let JobOutcome {
@@ -592,11 +611,12 @@ where
             Ok((result, execution_work, result_sha256)),
             Some(records),
             Some(dispatch),
+            Some(token),
         )
     }
 
     pub fn fail(&mut self, reservation: usize, error: String) -> Result<(), Box<dyn Error>> {
-        self.receive(reservation, Err(error), None, None)
+        self.receive(reservation, Err(error), None, None, None)
     }
 
     #[must_use]
@@ -604,10 +624,49 @@ where
         self.schedule.first().map(|(_, reservation)| *reservation)
     }
 
-    pub(crate) fn pending_origin(&self, reservation: usize) -> Option<(u64, u64)> {
+    pub(super) fn reservation_capacity(&self) -> usize {
+        self.reservations.slots.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn reservation_token(&self, reservation: usize) -> Option<ReservationToken> {
+        self.reservations.token(&reservation)
+    }
+
+    pub(super) fn validate_reply_token(
+        &self,
+        token: ReservationToken,
+        reservation: usize,
+        planned_finish: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        self.reservations.validate_pending(token, reservation)?;
+        if self
+            .reservations
+            .slot(token)
+            .expect("validated reservation token")
+            .pending
+            .planned_finish
+            != planned_finish
+        {
+            return Err("campaign worker replied for another planned finish".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn pending_origin_token(&self, token: ReservationToken) -> Option<(u64, u64)> {
         self.reservations
-            .pending(&reservation)
-            .map(|job| (job.parent_id, job.snapshot_id))
+            .slot(token)
+            .filter(|slot| slot.completed.is_none() && !slot.admitting)
+            .map(|slot| (slot.pending.parent_id, slot.pending.snapshot_id))
+    }
+
+    pub(super) fn fail_dispatch(
+        &mut self,
+        reservation: usize,
+        token: ReservationToken,
+        error: String,
+    ) -> Result<(), Box<dyn Error>> {
+        self.receive(reservation, Err(error), None, None, Some(token))
     }
 
     fn receive(
@@ -616,6 +675,7 @@ where
         outcome: Result<(CampaignJobResult<G>, u64, String), String>,
         records: Option<CompletedRecords>,
         mut dispatch: Option<&mut JobDispatch<'_, G>>,
+        token: Option<ReservationToken>,
     ) -> Result<(), Box<dyn Error>> {
         let result = (|| {
             self.ensure_active()?;
@@ -635,7 +695,11 @@ where
                 },
             );
             let queued = &self.queued;
-            self.reservations.complete_with_records(
+            let token = token
+                .or_else(|| self.reservations.token(&reservation))
+                .ok_or("campaign worker replied for an unknown reservation")?;
+            self.reservations.complete_token(
+                token,
                 reservation,
                 CompletedOutcome {
                     held_since: held.then(now),
@@ -652,8 +716,11 @@ where
             )?;
             while let Some(&(finish, reservation)) = self.schedule.first() {
                 self.workload.verify_integrity()?;
-                let Some((pending, completed)) = self.reservations.take_completed(reservation)
-                else {
+                let token = self
+                    .schedule
+                    .first_token()
+                    .expect("scheduled reservation token");
+                let Some(completed) = self.reservations.begin_admission(token) else {
                     break;
                 };
                 self.schedule.pop_first();
@@ -661,11 +728,12 @@ where
                     finish,
                     reservation,
                     CompletedJob {
-                        pending,
+                        token,
                         held_since: completed.held_since,
                         outcome: completed.outcome,
                     },
                 )?;
+                self.reservations.finish_admission(token)?;
                 let next = self.reserve()?;
                 self.write_due_checkpoint()?;
                 if let Some(job) = next {
@@ -961,7 +1029,7 @@ where
         Ok((report, checkpoint))
     }
 
-    fn reserve(&mut self) -> Result<Option<JobSpec<G>>, Box<dyn Error>> {
+    fn reserve(&mut self) -> Result<Option<ReservedDispatch<G>>, Box<dyn Error>> {
         let selection_started = profile_now();
         let selected = self.select()?;
         self.profile.selection_ns = self
@@ -987,11 +1055,22 @@ where
             return Err("campaign reserved one job twice".into());
         }
         if self.checkpoints.is_some() {
-            self.spec_records
-                .insert(reservation, JobSpecRecord::of(&spec));
+            self.spec_records.insert(
+                reservation,
+                (
+                    self.reservations
+                        .inserted
+                        .expect("inserted reservation token"),
+                    JobSpecRecord::of(&spec),
+                ),
+            );
         }
-        self.schedule.insert(key);
-        Ok(Some(spec))
+        let token = self
+            .reservations
+            .inserted
+            .expect("inserted reservation token");
+        self.schedule.insert(key, token);
+        Ok(Some(ReservedDispatch { job: spec, token }))
     }
 
     fn write_due_checkpoint(&mut self) -> Result<(), Box<dyn Error>> {
@@ -1056,7 +1135,9 @@ where
         let admission = &mut telemetry.admission;
         *planned_clock = finish;
         spec_records.remove(&reservation);
-        let pending_job = completed_job.pending;
+        let pending_job = reservations
+            .metadata_token_mut(completed_job.token)
+            .ok_or("campaign admission lost its reservation")?;
         let (mut result, execution_work, result_sha256) =
             completed_job.outcome.map_err(|error| -> Box<dyn Error> {
                 format!("campaign reservation {reservation} failed: {error}").into()
@@ -1212,15 +1293,15 @@ where
                 decisions,
                 mixture_weight: pending_job.mixture_weight,
                 splice_weight: pending_job.splice_weight,
-                splice: pending_job.splice,
+                splice: pending_job.splice.take(),
                 selector: pending_job.selector,
-                draw_checkpoint_before: pending_job.draw_checkpoint_before,
+                draw_checkpoint_before: pending_job.draw_checkpoint_before.take(),
                 draw_checkpoint_after,
                 duration_draw: pending_job.duration_draw,
                 duration_admission_sequence_at_draw: pending_job
                     .duration_admission_sequence_at_draw,
                 duration_remaining_work: pending_job.duration_remaining_work,
-                duration_checkpoint_at_draw: pending_job.duration_checkpoint_at_draw,
+                duration_checkpoint_at_draw: pending_job.duration_checkpoint_at_draw.take(),
                 duration_checkpoint_before,
                 duration_checkpoint_after,
                 suffix_limit: pending_job.suffix_limit,

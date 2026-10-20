@@ -43,10 +43,18 @@ recovery. They convey no ownership or integrity authority. Selection, seeds,
 planned finishes, checkpoint state, retention and admission remain independent
 of these hints. Workloads without locality keys use the same queue with empty
 advertisements. Without a locality key, assignment takes the first idle worker
-directly instead of scanning its advertisements. Each worker has one fixed
-assignment slot and its own condition variable. A separate ordered key index
-rejects duplicate assigned jobs without scanning the worker slots. These host
-structures scale with the worker count and sit outside the archive budget.
+by scanning idle bitmap words instead of all advertisements. Idle locality slots
+and the bitmap are allocated once per worker pool; an idle-to-assigned transition
+moves the value without allocating or freeing an idle-tree node. Matching ranks
+still inspect only idle workers, with the smaller identifier breaking ties. Each
+worker has one fixed assignment slot and its own condition variable. Queued job
+payloads occupy reusable arena slots; a preallocated min-heap moves only order
+keys and slot indexes. Assignment names the payload slot instead of moving a job
+between tree nodes. Native campaign tokens address these slots directly and
+reject an occupied slot before dispatch. Other private pool callers use an
+ordered key-to-slot adapter for duplicate detection. Assignment and claiming
+preserve earliest-key priority, locality rules and synchronous dispatch errors.
+These host structures sit outside the archive budget.
 
 A deterministic two-worker campaign fixture exercises initial and refill
 plan drains with an owned decoded-snapshot cache. It waits for actual queue idle
@@ -200,18 +208,37 @@ replies, so draining a ready reply channel does not defer dispatch. The admissio
 window limits the automatic runner's total jobs that are queued, running or
 finished but not yet admitted. Public stepped callers preserve the pending-only
 `reserve_next` limit: explicitly reserving more after an out-of-order completion
-can exceed that total until admission catches up. One unordered host hash map owns each reservation's metadata from
-selection through admission. Receiving a result attaches its outcome and cached
-record counts to that existing slot; ordered admission removes the slot. Metadata
-does not move between pending and completed maps. A separate pending count
-preserves stepped callers' reservation limit, while completion gauges include
-immediately admitted and held results. No hash-map iteration affects admission,
-selection, stream records or checkpoint order. The ordered schedule chooses
-admissions, and checkpoint references are written in reservation order. Checkpoint
-projection reads the same metadata from either slot state, stores no completed
-outcome, and dispatches every in-flight job again on restore. The initial allocation request is capped at
-4,096 reservations, the admission window and the execution budget; the hash-map
-implementation can round capacity upward, and larger windows can grow as needed. These allocations are host queue memory outside the archive budget. The native pool writes the header inline, then moves owned typed records to one
+can exceed that total until admission catches up. A reusable reservation arena
+owns pending metadata and the eventual outcome. A small unordered ID-to-token
+map preserves efficient arbitrary stepped and selected-admission requests;
+large pending/completed values never occupy its buckets. Native dispatch and
+reply envelopes carry a private slot/generation token alongside the unchanged
+logical planned finish and reservation identity. Tokens and both logical order
+fields are checked before observer or admission-watch callbacks. Ordered
+admission addresses the arena directly, borrows pending metadata in place and
+drops it in place after use. Reuse advances the generation; overflow is a normal
+error, never a wrapped token. No token or allocation order enters serialized
+JobSpec, JobOutcome, stream records or checkpoints.
+
+The planned-admission min-heap stores small order keys and tokens, separately
+from the pool's queued-job priority view. Checkpoint records remain sorted by
+logical reservation identity. A linear heap/arena bijection check rejects stale,
+duplicate or mismatched entries using one temporary bit per arena slot, rounded
+to whole u64 words. Checkpoint projection reads pending metadata in either slot
+state, stores no completed outcome, and dispatches every in-flight job again on
+restore. A normal native run preallocates `min(window, execution_budget)`
+reservation and queue slots. A restored checkpoint can contain more jobs after
+explicit stepped refills; its initial capacity is the greater of that bound and
+the actual restored job count. Stepped growth follows live reservations, never
+the largest sparse reservation ID. Impossible initial capacities return normal
+allocation errors instead of overflowing a collection. Reservation slots, both
+small-key heaps, ID adapters, queued payload slots, worker assignment/locality
+arrays and checkpoint-validation scratch are host pipeline memory outside the
+archive budget; arbitrary result and snapshot payloads are accounted separately.
+A separate pending count preserves stepped callers' reservation limit, while
+completion gauges include immediately admitted and held results. No hash-map
+iteration affects admission, selection, stream records or checkpoint order.
+The native pool writes the header inline, then moves owned typed records to one
 ordered background encoder that serializes them and owns the stream hash. The
 coordinator retains the borrowed output sink, which need not be `Send`. Sixteen
 queued commands and one queued encoded batch bound the pipeline. Each batch
