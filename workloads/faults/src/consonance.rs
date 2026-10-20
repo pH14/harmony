@@ -45,7 +45,8 @@ use crate::target::{
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
-pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v3";
+pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v4";
+const LOCAL_SERVICES: [u16; 2] = [STANDING_NAMESPACE, process_proto::debug::NAMESPACE];
 pub const SESSION_SERVICE: &str = "faults";
 const SEED: u64 = 0x4661_756c_744c_6162;
 const SETUP_BUDGET: u64 = 120_000_000_000;
@@ -108,6 +109,7 @@ pub struct FaultConfig {
     pub ram_mib: u32,
     pub backend: GuestBackend,
     pub root: Option<Arc<Vec<u8>>>,
+    pub boot_cache: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -212,10 +214,14 @@ impl FaultConfig {
         let ram = usize::try_from(self.ram_mib)
             .unwrap_or(usize::MAX / (1024 * 1024))
             .saturating_mul(1024 * 1024);
-        SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
+        let config = SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
             .with_identity_tag(IDENTITY_TAG)
             .with_wall_limit(WALL_LIMIT)
-            .with_deferred_virtual_time_checkpoint_hashes()
+            .with_deferred_virtual_time_checkpoint_hashes();
+        match &self.boot_cache {
+            Some(dir) => config.with_boot_cache(dir),
+            None => config,
+        }
     }
 }
 
@@ -285,7 +291,7 @@ impl StandingHandler {
 
 impl ServiceHandler for StandingHandler {
     fn local_services(&self) -> &[u16] {
-        &[process_proto::debug::NAMESPACE]
+        &LOCAL_SERVICES
     }
     fn identity(&self) -> &[u8] {
         SERVICE_IDENTITY
@@ -371,7 +377,7 @@ pub fn service_factory() -> ServiceFactory {
         if config.identity != SERVICE_IDENTITY {
             return nominal(config);
         }
-        if config.local_services != [process_proto::debug::NAMESPACE] {
+        if config.local_services != LOCAL_SERVICES {
             return Err(ChannelError::Malformed);
         }
         Ok(
@@ -422,7 +428,7 @@ impl ActionPlan {
 
     fn service_config(&self) -> ServiceConfig {
         ServiceConfig {
-            local_services: vec![process_proto::debug::NAMESPACE],
+            local_services: LOCAL_SERVICES.to_vec(),
             identity: SERVICE_IDENTITY.to_vec(),
             configuration: self.handler.0.configuration.clone(),
         }
@@ -2574,7 +2580,7 @@ mod tests {
     use crate::target::{FaultOperation, decode_sdk_events};
     use consonance_client::cache::{
         LocalIndex,
-        extent::{extent_len, read_extent, write_extent},
+        extent::{encode, read_extent},
     };
 
     fn test_branch_config(
@@ -2663,6 +2669,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Uml(Box::new(guest.clone())),
             root: None,
+            boot_cache: None,
         };
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
@@ -2703,6 +2710,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Uml(Box::new(guest)),
             root: None,
+            boot_cache: None,
         };
         let split = FaultConfig {
             knobs: vec!["foo=bar".into(), "root=/dev/ram0".into()],
@@ -2747,6 +2755,7 @@ mod tests {
                     ram_mib: DEFAULT_RAM_MIB,
                     backend: GuestBackend::Vm,
                     root: None,
+                    boot_cache: None,
                 }
                 .session_config(),
                 cache: None,
@@ -3109,8 +3118,9 @@ mod tests {
         ) -> Result<Lease, Box<dyn Error>> {
             let target_commitment = *self.snapshots.get(&target.0).ok_or("unknown snapshot")?;
             let sidecar = target.0.to_le_bytes();
-            let mut extent = index.extent(extent_len(0, 0, sidecar.len()).unwrap())?;
-            write_extent(extent.bytes_mut(), &[], &[], &sidecar)?;
+            let encoded = encode(&[], &[], &sidecar)?;
+            let mut extent = index.extent(encoded.len())?;
+            encoded.write(extent.bytes_mut())?;
             Ok(index.publish(
                 namespace,
                 key,
@@ -3188,8 +3198,9 @@ mod tests {
                 &attachment.bytes,
             ))?)
             .into();
-            let mut extent = index.extent(extent_len(0, 0, sidecar.len()).unwrap())?;
-            write_extent(extent.bytes_mut(), &[], &[], &sidecar)?;
+            let encoded = encode(&[], &[], &sidecar)?;
+            let mut extent = index.extent(encoded.len())?;
+            encoded.write(extent.bytes_mut())?;
             Ok(index.publish(
                 namespace,
                 key,
@@ -3643,6 +3654,7 @@ mod tests {
                 ram_mib: DEFAULT_RAM_MIB,
                 backend: GuestBackend::Vm,
                 root: None,
+                boot_cache: None,
             },
         );
         let run = crate::campaign::FaultCampaignRun {
@@ -3971,7 +3983,7 @@ mod tests {
     fn coordinator_retired_telemetry_refuses_live_before_session_query() {
         let _fixture = ResidencyFixture;
         let counters =
-            BTreeMap::from([("vmm.sdk_dispatch.event.request_guard_calls".to_owned(), 17)]);
+            BTreeMap::from([("vmm.sdk_dispatch.event.response_guard_calls".to_owned(), 17)]);
         RETIRED.with(|retired| *retired.borrow_mut() = counters.clone());
         assert_eq!(coordinator_retired_work_telemetry().unwrap(), counters);
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
@@ -4245,6 +4257,7 @@ mod tests {
                 ram_mib: DEFAULT_RAM_MIB,
                 backend,
                 root: None,
+                boot_cache: None,
             },
         )
     }
@@ -7373,6 +7386,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Vm,
             root: None,
+            boot_cache: None,
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         let run = crate::campaign::FaultCampaignRun {
@@ -7463,7 +7477,7 @@ mod tests {
         }
         (
             ServiceConfig {
-                local_services: vec![process_proto::debug::NAMESPACE],
+                local_services: LOCAL_SERVICES.to_vec(),
                 identity: SERVICE_IDENTITY.to_vec(),
                 configuration,
             },
@@ -7842,15 +7856,12 @@ mod tests {
         let config = test_branch_config(ActionWindows { root_seal: 0 }, &[], &[]).unwrap();
         let factory = service_factory();
         let mut standing = factory(&config).unwrap();
-        assert_eq!(
-            standing.local_services(),
-            &[process_proto::debug::NAMESPACE]
-        );
+        assert_eq!(standing.local_services(), &LOCAL_SERVICES);
         let active = debug_configuration(&config.configuration, None).unwrap();
         let mut debug = factory(&active).unwrap();
         assert!(debug.local_services().is_empty());
         let mut forged_active = active.clone();
-        forged_active.local_services = vec![process_proto::debug::NAMESPACE];
+        forged_active.local_services = LOCAL_SERVICES.to_vec();
         assert!(factory(&forged_active).is_err());
         let status = process_proto::debug::Status {
             acknowledged: 3,
@@ -7892,7 +7903,7 @@ mod tests {
         let handler = factory(&ServiceConfig::default()).expect("nominal service");
         assert_eq!(handler.identity(), ServiceConfig::default().identity);
         let own = factory(&ServiceConfig {
-            local_services: vec![process_proto::debug::NAMESPACE],
+            local_services: LOCAL_SERVICES.to_vec(),
             identity: SERVICE_IDENTITY.to_vec(),
             configuration: encode_configuration(
                 &encode_windows(&[]).expect("an empty standing list encodes"),
@@ -8013,6 +8024,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Vm,
             root: None,
+            boot_cache: None,
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         for terminal in [false, true] {

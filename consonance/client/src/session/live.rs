@@ -14,7 +14,7 @@ use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
 use vmm_core::portable_snapshot::sparse_delta_target_commitment;
 
-use crate::cache::extent::{ExtentWrites, extent_len, read_extent, resolve, write_extent_measured};
+use crate::cache::extent::{ExtentWrites, encode, read_extent, resolve};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace, WritableExtent};
 use crate::watchdog::Watchdog;
 
@@ -30,6 +30,7 @@ use vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time;
 use super::*;
 use crate::Client;
 
+mod boot_cache;
 mod endpoint;
 
 type Server = Client<ControlServer<Box<dyn Backend<A = HostArch>>>>;
@@ -243,35 +244,58 @@ impl Session {
         server.set_host_operation_guard(Arc::new(move |site| {
             use crate::image_identity::GuardSite;
             use vmm_core::vmm::HostOperationSite;
-            let site = match site {
-                HostOperationSite::ControlBefore => GuardSite::ControlBefore,
-                HostOperationSite::ControlAfter => GuardSite::ControlAfter,
-                HostOperationSite::SdkRequest => GuardSite::SdkRequest,
-                HostOperationSite::SdkResponse => GuardSite::SdkResponse,
-            };
-            core_guard.check_at(site).map_err(|error| error.to_string())
+            match site {
+                HostOperationSite::ControlBefore => core_guard.check_at(GuardSite::ControlBefore),
+                HostOperationSite::ControlAfter => core_guard.check_at(GuardSite::ControlAfter),
+                HostOperationSite::SdkResponse => core_guard.check_code_at(GuardSite::SdkResponse),
+            }
+            .map_err(|error| error.to_string())
         }));
         server.set_restore_mode(RestoreMode::InPlace);
         let mut client = Client::connect(server, server_caps())
             .map_err(|error| SessionError::Control(error.to_string()))?;
 
         let genesis = snapshot_handle(&mut client, "genesis snapshot")?;
-        branch_payload(&mut client, genesis.id, setup_payloads, config.seed)?;
+        let slot = config
+            .boot_cache
+            .as_deref()
+            .and_then(|dir| boot_cache::Slot::new(dir, &image_identity, &config));
+        let cached = match &slot {
+            Some(slot) => restore_cached_boot(&mut client, &loaded_image_guard, genesis.id, slot)?,
+            None => None,
+        };
         let mut abandoned = false;
-        let setup_stop = run_to_snapshot(
-            &mut client,
-            genesis.at,
-            config.run_budget,
-            config.wall_limit,
-            &mut abandoned,
-        )?;
-        let setup = snapshot_handle(&mut client, "setup snapshot")?;
-        if setup_stop != setup.at {
-            return Err(SessionError::Control(
-                "setup lifecycle point and setup seal have different V-times".into(),
-            )
-            .into());
-        }
+        let setup = match cached {
+            Some(setup) => setup,
+            None => {
+                branch_payload(&mut client, genesis.id, setup_payloads, config.seed)?;
+                let setup_stop = run_to_snapshot(
+                    &mut client,
+                    genesis.at,
+                    config.run_budget,
+                    config.wall_limit,
+                    &mut abandoned,
+                )?;
+                let setup = snapshot_handle(&mut client, "setup snapshot")?;
+                if setup_stop != setup.at {
+                    return Err(SessionError::Control(
+                        "setup lifecycle point and setup seal have different V-times".into(),
+                    )
+                    .into());
+                }
+                if let Some(slot) = &slot {
+                    loaded_image_guard.check()?;
+                    if let Ok(sparse) = client
+                        .transport()
+                        .export_sparse_snapshot(genesis.id, setup.id)
+                    {
+                        loaded_image_guard.check()?;
+                        slot.store(setup.at, &sparse.pages, &sparse.sidecar);
+                    }
+                }
+                setup
+            }
+        };
         loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         Ok(Self {
             client,
@@ -449,17 +473,10 @@ impl Session {
         sidecar.extend_from_slice(&delta.sidecar);
         let machine = raw_target_commitment(&sidecar)?;
         let sidecar = super::attachment::encode(&sidecar, machine, attachment)?;
-        let len = extent_len(delta.pages.len(), delta.reverted.len(), sidecar.len())
-            .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
-        let mut out = allocate(len)?;
+        let encoded = encode(&delta.pages, &delta.reverted, &sidecar)?;
+        let mut out = allocate(encoded.len())?;
         let mut work = ExtentWrites::default();
-        let result = write_extent_measured(
-            bytes(&mut out),
-            &delta.pages,
-            &delta.reverted,
-            &sidecar,
-            &mut work,
-        );
+        let result = encoded.write_measured(bytes(&mut out), &mut work);
         let mut total = self.extent_writes.get();
         total.merge(work);
         self.extent_writes.set(total);
@@ -538,7 +555,7 @@ impl Session {
         let receipt = self
             .client
             .transport_mut()
-            .import_sparse_delta(self.setup, near, &resolved.pages, resolved.sidecar)
+            .import_sparse_delta(self.setup, near, &resolved.pages(), resolved.sidecar)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
         if let Err(error) = self.loaded_image_guard.check() {
             let _ = self.drop_handle(receipt.id);
@@ -959,6 +976,39 @@ where
         Ok(value) => cleanup_error.map_or(Ok(value), Err),
         Err(error) => Err(error),
     }
+}
+
+fn restore_cached_boot(
+    client: &mut Server,
+    guard: &crate::image_identity::LoadedImageGuard,
+    genesis: SnapId,
+    slot: &boot_cache::Slot,
+) -> Result<Option<SnapshotReceipt>, Box<dyn Error>> {
+    let Some(entry) = slot.load() else {
+        return Ok(None);
+    };
+    guard.check()?;
+    let Ok(receipt) =
+        client
+            .transport_mut()
+            .import_sparse_snapshot_parts(genesis, &entry.pages, &entry.sidecar)
+    else {
+        return Ok(None);
+    };
+    guard.check()?;
+    if receipt.at.0 != entry.at {
+        let _ = drop_control_handle(client, receipt.id);
+        return Err(SessionError::Portable("cached boot V-time differs".into()).into());
+    }
+    let reply = client
+        .request(&Request::Replay(receipt.id))
+        .map_err(|error| SessionError::Control(error.to_string()))?;
+    expect_unit(reply, "replay cached boot")?;
+    retire_restore_trace(client);
+    Ok(Some(SnapshotReceipt {
+        id: receipt.id,
+        at: entry.at,
+    }))
 }
 
 fn branch_payload(
@@ -1434,6 +1484,8 @@ mod tests {
             );
             assert_eq!(allocations.len(), 1);
             let actual = read_extent(extent.bytes_mut()).unwrap();
+            let stored: usize = actual.pages.iter().map(|page| page.2.len()).sum();
+            assert!(actual.pages.is_empty() || stored < actual.pages.len() * 4096);
             let after_writes = source.extent_writes.get();
             let reported = source
                 .telemetry_counters()
@@ -1453,25 +1505,18 @@ mod tests {
             );
             assert_eq!(
                 after_writes.page_copy_bytes - before_writes.page_copy_bytes,
-                (actual.pages.len() * 4096) as u64
+                stored as u64
             );
             assert_eq!(
                 after_writes.metadata_copy_bytes - before_writes.metadata_copy_bytes,
-                (64 + actual.pages.len() * 40 + actual.reverted.len() * 8 + actual.sidecar.len())
+                (72 + actual.pages.len() * 44 + actual.reverted.len() * 8 + actual.sidecar.len())
                     as u64
             );
             assert_eq!(
                 after_writes.encoded_bytes - before_writes.encoded_bytes,
                 allocations[0].1 as u64
             );
-            assert_eq!(
-                writes,
-                vec![(
-                    allocations[0].0,
-                    allocations[0].1,
-                    actual.pages.len() * 4096
-                )]
-            );
+            assert_eq!(writes, vec![(allocations[0].0, allocations[0].1, stored)]);
             let direct = source
                 .write_delta_attached(
                     parent,
@@ -1487,7 +1532,7 @@ mod tests {
             assert_eq!(actual.sidecar, expected.sidecar);
             assert_eq!(vmm_target_commitment(&mut extent).unwrap(), {
                 let mut direct_extent = index.extent(direct.len()).unwrap();
-                direct_extent.bytes_mut().copy_from_slice(&direct);
+                direct_extent.bytes_mut()[..direct.len()].copy_from_slice(&direct);
                 vmm_target_commitment(&mut direct_extent).unwrap()
             });
             chain.push(extent.bytes_mut().to_vec());

@@ -16,7 +16,7 @@ pub struct CorePool {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct Placement {
     pub coordinator: Option<usize>,
-    pub workers: Vec<Option<usize>>,
+    pub workers: Vec<Vec<usize>>,
 }
 
 impl CorePool {
@@ -109,12 +109,17 @@ impl CorePool {
         if !self.pinned {
             return Ok(Placement {
                 coordinator: None,
-                workers: vec![None; workers],
+                workers: vec![Vec::new(); workers],
             });
+        }
+        let mut sets: Vec<Vec<usize>> = self.cpus[..workers].iter().map(|&cpu| vec![cpu]).collect();
+        let spare = &self.cpus[workers..self.cpus.len().saturating_sub(1).max(workers)];
+        for (index, &cpu) in spare.iter().enumerate() {
+            sets[index % workers].push(cpu);
         }
         Ok(Placement {
             coordinator: self.cpus.last().copied(),
-            workers: self.cpus[..workers].iter().copied().map(Some).collect(),
+            workers: sets,
         })
     }
 }
@@ -254,7 +259,7 @@ fn fastest_pool(
 }
 
 #[cfg(target_os = "linux")]
-fn allowed_cpus() -> Result<BTreeSet<usize>, String> {
+pub(crate) fn allowed_cpus() -> Result<BTreeSet<usize>, String> {
     // SAFETY: cpu_set_t is a plain bit array for which all zero bits is the empty set.
     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
     // SAFETY: set is a live cpu_set_t of the size passed; pid 0 names the calling thread.
@@ -274,21 +279,26 @@ fn allowed_cpus() -> Result<BTreeSet<usize>, String> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn pin_current_thread(cpu: usize) -> Result<(), String> {
-    if cpu >= usize::try_from(libc::CPU_SETSIZE).unwrap_or(0) {
-        return Err(format!("CPU {cpu} is outside the affinity set"));
+pub fn pin_current_thread(cpus: &[usize]) -> Result<(), String> {
+    if cpus.is_empty() {
+        return Err("a thread needs at least one CPU".to_owned());
     }
     // SAFETY: cpu_set_t is a plain bit array for which all zero bits is the empty set.
     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-    // SAFETY: cpu is below CPU_SETSIZE, so CPU_SET writes inside set.
-    unsafe { libc::CPU_SET(cpu, &mut set) };
+    for &cpu in cpus {
+        if cpu >= usize::try_from(libc::CPU_SETSIZE).unwrap_or(0) {
+            return Err(format!("CPU {cpu} is outside the affinity set"));
+        }
+        // SAFETY: cpu is below CPU_SETSIZE, so CPU_SET writes inside set.
+        unsafe { libc::CPU_SET(cpu, &mut set) };
+    }
     // SAFETY: set is a live cpu_set_t of the size passed; pid 0 names the calling thread.
     let rc = unsafe {
         libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &raw const set)
     };
     if rc != 0 {
         return Err(format!(
-            "pin thread to CPU {cpu}: {}",
+            "pin thread to CPUs {cpus:?}: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -296,8 +306,8 @@ pub fn pin_current_thread(cpu: usize) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn pin_current_thread(cpu: usize) -> Result<(), String> {
-    Err(format!("this host cannot pin a thread to CPU {cpu}"))
+pub fn pin_current_thread(cpus: &[usize]) -> Result<(), String> {
+    Err(format!("this host cannot pin a thread to CPUs {cpus:?}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -495,7 +505,13 @@ mod tests {
         assert_eq!(pool.max_workers(), 7);
         let plan = pool.plan(7).expect("seven workers fit");
         assert_eq!(plan.coordinator, Some(9));
-        assert_eq!(plan.workers, [0, 1, 10, 11, 6, 7, 8].map(Some).to_vec());
+        assert_eq!(
+            plan.workers,
+            [0, 1, 10, 11, 6, 7, 8].map(|cpu| vec![cpu]).to_vec()
+        );
+        let plan = pool.plan(3).expect("three workers fit");
+        assert_eq!(plan.coordinator, Some(9));
+        assert_eq!(plan.workers, [vec![0, 11, 8], vec![1, 6], vec![10, 7]]);
         assert!(pool.plan(8).is_err());
         assert!(pool.plan(0).is_err());
         let unpinned = CorePool {
@@ -505,7 +521,7 @@ mod tests {
         };
         assert_eq!(
             unpinned.plan(4).expect("four workers fit").workers,
-            vec![None; 4]
+            vec![Vec::<usize>::new(); 4]
         );
         assert!(unpinned.plan(8).is_err());
         let single = CorePool {
@@ -515,7 +531,7 @@ mod tests {
         };
         assert_eq!(single.max_workers(), 1);
         let plan = single.plan(1).expect("one worker shares the only core");
-        assert_eq!((plan.coordinator, plan.workers), (Some(3), vec![Some(3)]));
+        assert_eq!((plan.coordinator, plan.workers), (Some(3), vec![vec![3]]));
     }
 
     #[cfg(target_os = "linux")]
@@ -524,8 +540,9 @@ mod tests {
         let allowed = allowed_cpus().expect("affinity");
         let cpu = *allowed.iter().next().expect("one allowed CPU");
         std::thread::spawn(move || {
-            pin_current_thread(cpu).expect("pin");
+            pin_current_thread(&[cpu]).expect("pin");
             assert_eq!(allowed_cpus().expect("affinity"), BTreeSet::from([cpu]));
+            assert!(pin_current_thread(&[]).is_err());
         })
         .join()
         .expect("pinned thread");

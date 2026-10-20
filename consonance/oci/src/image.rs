@@ -216,18 +216,27 @@ impl Ownership {
 
     fn remove_tree(&mut self, path: &Path) {
         let path = normalized(path);
-        self.owners
-            .retain(|recorded, _| !recorded.starts_with(&path));
-        self.modes
-            .retain(|recorded, _| !recorded.starts_with(&path));
+        remove_path_tree(&mut self.owners, &path, true);
+        remove_path_tree(&mut self.modes, &path, true);
     }
 
     fn remove_below(&mut self, path: &Path) {
         let path = normalized(path);
-        self.owners
-            .retain(|recorded, _| recorded == &path || !recorded.starts_with(&path));
-        self.modes
-            .retain(|recorded, _| recorded == &path || !recorded.starts_with(&path));
+        remove_path_tree(&mut self.owners, &path, false);
+        remove_path_tree(&mut self.modes, &path, false);
+    }
+}
+
+fn remove_path_tree<V>(map: &mut BTreeMap<PathBuf, V>, path: &Path, include_root: bool) {
+    let doomed: Vec<PathBuf> = map
+        .range::<Path, _>((std::ops::Bound::Included(path), std::ops::Bound::Unbounded))
+        .map(|(recorded, _)| recorded)
+        .take_while(|recorded| recorded.starts_with(path))
+        .filter(|recorded| include_root || recorded.as_path() != path)
+        .cloned()
+        .collect();
+    for recorded in doomed {
+        map.remove(&recorded);
     }
 }
 
@@ -852,11 +861,27 @@ fn check_portable_path(
 }
 
 fn remove_portable_tree(names: &mut BTreeMap<Vec<u8>, Vec<u8>>, key: &[u8], include_root: bool) {
+    if key.is_empty() {
+        names.clear();
+        return;
+    }
+    if include_root {
+        names.remove(key);
+    }
     let mut prefix = key.to_vec();
     prefix.push(b'/');
-    names.retain(|candidate, _| {
-        !((include_root && candidate == key) || key.is_empty() || candidate.starts_with(&prefix))
-    });
+    let doomed: Vec<Vec<u8>> = names
+        .range::<[u8], _>((
+            std::ops::Bound::Included(prefix.as_slice()),
+            std::ops::Bound::Unbounded,
+        ))
+        .map(|(candidate, _)| candidate)
+        .take_while(|candidate| candidate.starts_with(&prefix))
+        .cloned()
+        .collect();
+    for candidate in doomed {
+        names.remove(&candidate);
+    }
 }
 
 fn check_layer_portable_names(
@@ -2172,6 +2197,42 @@ fn apply_whiteouts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tree_removal_matches_a_full_prefix_scan() {
+        let names = [
+            "a", "a/b", "a/b/c", "a/b/c/d", "a/b.txt", "a/bc", "a/b-c", "b", "b/a",
+        ];
+        for target in ["a", "a/b", "a/b/c", "b", "c", ""] {
+            for include_root in [false, true] {
+                let mut fast: BTreeMap<PathBuf, ()> =
+                    names.iter().map(|name| (PathBuf::from(name), ())).collect();
+                let mut slow = fast.clone();
+                let path = Path::new(target);
+                remove_path_tree(&mut fast, path, include_root);
+                slow.retain(|recorded, _| {
+                    (!include_root && recorded == path) || !recorded.starts_with(path)
+                });
+                assert_eq!(fast, slow, "{target} {include_root}");
+
+                let mut fast: BTreeMap<Vec<u8>, Vec<u8>> = names
+                    .iter()
+                    .map(|name| (name.as_bytes().to_vec(), Vec::new()))
+                    .collect();
+                let mut slow = fast.clone();
+                let key = target.as_bytes();
+                remove_portable_tree(&mut fast, key, include_root);
+                let mut prefix = key.to_vec();
+                prefix.push(b'/');
+                slow.retain(|candidate, _| {
+                    !((include_root && candidate == key)
+                        || key.is_empty()
+                        || candidate.starts_with(&prefix))
+                });
+                assert_eq!(fast, slow, "{target} {include_root}");
+            }
+        }
+    }
 
     struct OciFixture {
         manifest: PathBuf,

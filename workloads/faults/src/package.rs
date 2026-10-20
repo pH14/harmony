@@ -19,6 +19,7 @@ pub struct Options {
     pub uml_profile: Option<(PathBuf, String)>,
     pub root: Option<Arc<Vec<u8>>>,
     pub checkpoint_owner: Option<String>,
+    pub boot_cache: Option<PathBuf>,
 }
 
 impl Options {
@@ -62,6 +63,7 @@ pub struct BugSummary {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateHashEncoding {
+    EnginePageDigest,
     EngineDigest,
     Unavailable,
     #[default]
@@ -153,7 +155,7 @@ impl ReplaySummary {
                 .map(state_digest_hex)
                 .unwrap_or_default(),
             state_hash_encoding: if state_digest.is_some() {
-                StateHashEncoding::EngineDigest
+                StateHashEncoding::EnginePageDigest
             } else {
                 StateHashEncoding::Unavailable
             },
@@ -401,13 +403,19 @@ mod live {
 
     fn pinned(plan: Placement) -> ThreadPlacement {
         ThreadPlacement::new(move |thread| {
-            let cpu = match thread {
-                PlacedThread::Coordinator => plan.coordinator,
-                PlacedThread::Worker(worker) => {
-                    plan.workers.get(worker as usize).copied().flatten()
-                }
+            let cpus = match thread {
+                PlacedThread::Coordinator => plan.coordinator.into_iter().collect(),
+                PlacedThread::Worker(worker) => plan
+                    .workers
+                    .get(worker as usize)
+                    .cloned()
+                    .unwrap_or_default(),
             };
-            cpu.map_or(Ok(()), pin_current_thread)
+            if cpus.is_empty() {
+                Ok(())
+            } else {
+                pin_current_thread(&cpus)
+            }
         })
     }
 
@@ -427,6 +435,7 @@ mod live {
             ram_mib: options.ram_mib,
             backend,
             root: options.root.clone(),
+            boot_cache: options.boot_cache.clone(),
         })
     }
 
@@ -1080,6 +1089,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         }
     }
 
@@ -1406,7 +1416,7 @@ mod tests {
         assert_eq!(report.replays[0].state_hash, expected);
         assert_eq!(
             report.replays[0].state_hash_encoding,
-            StateHashEncoding::EngineDigest
+            StateHashEncoding::EnginePageDigest
         );
         assert_ne!(report.replays[0].state_hash, sha256_hex(&state_digest));
 
@@ -1417,7 +1427,7 @@ mod tests {
         assert_eq!(decoded.replays[0].state_hash, expected);
         assert_eq!(
             decoded.replays[0].state_hash_encoding,
-            StateHashEncoding::EngineDigest
+            StateHashEncoding::EnginePageDigest
         );
     }
 

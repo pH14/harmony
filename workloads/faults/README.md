@@ -41,6 +41,8 @@ rootfs segment that the guest receives ([`admission`](src/admission.rs)). It
 derives the bundle and event attestation from those same archived bytes. A
 staged file changed between scanning and packing cannot make admission name
 different executable or bundle bytes from the guest image.
+The scan decodes each distinct executable digest once, largest first, on every
+CPU the process may use, and reports files in path order.
 
 Packaging temporarily grants host read and directory search permission while
 copying staged files, then restores their original modes. The archived scan
@@ -496,7 +498,13 @@ image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
-lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
+lowercase hex and mark it with `state_hash_encoding: "engine_page_digest"`.
+That digest is the page-digest state hash that `vmm-core` describes: BLAKE3
+over per-page BLAKE3 digests of guest RAM, then the VM-state suffix.
+`"engine_digest"` marks reports from earlier versions, whose engine digest was
+SHA-256 over all of guest RAM and the same suffix. The two encodings never
+compare equal, so replay checks refuse to match a report against one written
+with the other encoding.
 UML outcomes instead have an empty `state_hash` and
 `state_hash_encoding: "unavailable"`: their guest memory has no canonical
 cross-process state digest. Search still confirms a bug when the fresh replay
@@ -773,9 +781,12 @@ retained-input table. The continuous client and oracle remain image-owned
 commands; the oracle decides when its observations are conclusive, including
 when some nodes are down.
 
-Every replay run boots a session no earlier run has touched, so no snapshot
-another run cached can stand in for guest execution: each run reaches the
-sealed setup point and executes the recorded actions itself. Each run records
+Every replay run starts from a session no earlier run has touched, and executes
+the recorded actions itself, so no snapshot another run cached can stand in for
+an action. The setup point comes from the host boot cache
+(`SessionConfig::with_boot_cache`, under `HARMONY_CACHE_DIR/boot`) when an
+earlier boot with the same image, executable, configuration and host stored
+it, and from a fresh boot otherwise; both give the same setup state hash. Each run records
 the actions it applied beside the horizons it ran in the guest, and the two are
 equal when nothing came from a cache. A search replays every bug it records the
 same way, and reports the bug as confirmed only when the replay reproduced the
@@ -885,16 +896,19 @@ result. macOS target Drop defers to that active scope, preserving session reuse
 inside it. The faults CLI's own replay commands use FaultTarget directly and do
 not enter this generic replay scope.
 
-The standing service declares inactive debug questions local to the installed
-deterministic handler. The attached debug handler declares them external even
-when no message is supplied. The supervisor still makes each actual debug SDK
-request: attachment after a standing reply is delivered at the same next debug
-request, without a dormant flag or an extra tick. Local answering removes only
-an external Decision/resolution exchange; guest doorbells and mandatory guards
-remain. Both handlers decode debug Status before answering. Rejecting malformed
-inactive Status is an intentional tightening: the prior standing handler returned
-empty bytes without decoding it. Standing and debug identities are respectively
-faults-standing-coverage-v3 and faults-debug-terminal-v2.
+The standing service declares standing questions and inactive debug questions
+local to the installed deterministic handler, so the VMM answers them without a
+Decision stop and a resolution round trip to the coordinator. A question asked
+at or after the run deadline still stops the run unanswered, and the next
+action's handler answers it. The attached debug handler declares no local
+services, so standing and debug questions both take the external path while it
+is installed. The supervisor still makes each actual debug SDK request:
+attachment after a standing reply is delivered at the same next debug request,
+without a dormant flag or an extra tick. Local answering removes only the
+external Decision/resolution exchange; guest doorbells and mandatory guards
+remain. Both handlers decode debug Status before answering. Standing and debug
+identities are respectively faults-standing-coverage-v4 and
+faults-debug-terminal-v2.
 
 The generic local-answer capability requires unchanged captured handler state;
 the inactive standing debug response satisfies it. Stateful local responses are

@@ -609,6 +609,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "replay",
@@ -750,6 +751,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "search",
@@ -768,7 +770,7 @@ mod tests {
             violations: vec!["2".into()],
             sometimes: Vec::new(),
             state_hash: String::new(),
-            state_hash_encoding: StateHashEncoding::EngineDigest,
+            state_hash_encoding: StateHashEncoding::EnginePageDigest,
             confirmed: false,
             replay: Some(ReplaySummary::from_observation(
                 &FaultObservations::default(),
@@ -827,6 +829,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "search",
@@ -845,7 +848,7 @@ mod tests {
             violations: vec!["2".into()],
             sometimes: Vec::new(),
             state_hash: String::new(),
-            state_hash_encoding: StateHashEncoding::EngineDigest,
+            state_hash_encoding: StateHashEncoding::EnginePageDigest,
             confirmed: false,
             replay: Some(ReplaySummary::from_observation(
                 &FaultObservations::default(),

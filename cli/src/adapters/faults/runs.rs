@@ -192,6 +192,7 @@ impl Manifest {
             root,
             uml_profile,
             checkpoint_owner: self.record.checkpoint_owner.clone(),
+            boot_cache: crate::runtime::cache_dir().map(|dir| dir.join("boot")),
         })
     }
 
