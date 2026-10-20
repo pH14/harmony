@@ -1110,6 +1110,9 @@ mod runtime {
             let Some(exit) = status.as_ref().and_then(process::unexpected_exit) else {
                 continue;
             };
+            if supervisor.disk_faulted(*node) {
+                continue;
+            }
             if !recovery_pending {
                 if !natural_deaths.contains(node) {
                     supervisor.note_late_unexpected_death();
@@ -1212,6 +1215,23 @@ mod runtime {
                 }
                 supervisor.note_process_transition();
             }
+            Action::SetDiskMode { node, mode } => {
+                if runtime.disks.set_mode(node, mode)? {
+                    supervisor.note_process_transition();
+                }
+            }
+            Action::DiskCorrupt { node, choice, kill } => {
+                if kill {
+                    kill_node(nodes, node, supervisor, tick)?;
+                }
+                if let Some(corruption) = runtime.disks.corrupt(node, choice)? {
+                    log(
+                        tick,
+                        &format!("node {node} disk corrupted: {}", corruption.describe()),
+                    );
+                }
+                supervisor.note_process_transition();
+            }
             Action::Stop(node) => {
                 if signal_node(nodes, node, libc::SIGSTOP)? {
                     supervisor.note_process_transition();
@@ -1228,6 +1248,9 @@ mod runtime {
                 };
                 if let Some(events) = entry.events.as_mut() {
                     events.retire(node, supervisor, tick);
+                }
+                if entry.child.is_some() {
+                    runtime.disks.release_stalled(node)?;
                 }
                 if let Some(mut child) = entry.child.take() {
                     retire_node_child(
@@ -1604,6 +1627,25 @@ mod runtime {
             );
             let exits = [(0, Some(ExitStatus::from_raw(libc::SIGSEGV)))];
             assert!(node_exit_violations(&mut recovering, &exits, true).is_empty());
+        }
+
+        #[test]
+        fn a_node_exit_after_its_disk_faulted_is_not_a_violation() {
+            let mut supervisor = Supervisor::new(2);
+            let mut error = ActiveWindows::new();
+            error.insert(0, &ProcessAction::DiskError, 0);
+            supervisor.tick(&error, &[]);
+            supervisor.tick(&ActiveWindows::new(), &[]);
+            supervisor.tick(&ActiveWindows::new(), &[0]);
+            let exits = [
+                (0, Some(ExitStatus::from_raw(1 << 8))),
+                (1, Some(ExitStatus::from_raw(1 << 8))),
+            ];
+            assert_eq!(
+                node_exit_violations(&mut supervisor, &exits, false),
+                [(1, "exit status 1".to_owned())]
+            );
+            assert_eq!(supervisor.counters().unexpected_deaths, 1);
         }
 
         #[test]

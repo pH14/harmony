@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use crate::disk::DiskMode;
 use crate::evidence::CheckEvidence;
 use crate::reconcile::{ActiveWindows, EventKillWindow, EventPark};
 use crate::regs::RegisterSnapshot;
@@ -8,6 +9,8 @@ use crate::regs::RegisterSnapshot;
 pub enum Action {
     Kill(u16),
     PowerLoss { node: u16, choice: u64, kill: bool },
+    SetDiskMode { node: u16, mode: DiskMode },
+    DiskCorrupt { node: u16, choice: u64, kill: bool },
     Stop(u16),
     Cont(u16),
     Start { node: u16, after_fault: bool },
@@ -25,6 +28,12 @@ impl Action {
             Action::Kill(node) => format!("kill node {node}"),
             Action::PowerLoss { node, choice, .. } => {
                 format!("power loss node {node} choice {choice:#x}")
+            }
+            Action::SetDiskMode { node, mode } => {
+                format!("disk node {node} {}", mode.describe())
+            }
+            Action::DiskCorrupt { node, choice, .. } => {
+                format!("corrupt disk node {node} choice {choice:#x}")
             }
             Action::Stop(node) => format!("pause node {node}"),
             Action::Cont(node) => format!("resume node {node}"),
@@ -84,6 +93,7 @@ struct NodeState {
     expected_down: bool,
     event_kill_death: bool,
     restart_after_fault: bool,
+    disk_faulted: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -112,6 +122,7 @@ impl ProcessSupervisor {
                     expected_down: false,
                     event_kill_death: false,
                     restart_after_fault: false,
+                    disk_faulted: false,
                 };
                 node_count
             ],
@@ -145,8 +156,9 @@ impl ProcessSupervisor {
                 if !state.alive {
                     continue;
                 }
-                let natural = !state.expected_down && !event_kill_death;
-                state.restart_after_fault = state.expected_down || event_kill_death;
+                let natural = !state.expected_down && !event_kill_death && !state.disk_faulted;
+                state.restart_after_fault =
+                    state.expected_down || event_kill_death || state.disk_faulted;
                 state.alive = false;
                 state.paused = false;
                 natural
@@ -196,6 +208,29 @@ impl ProcessSupervisor {
                 }
                 state.expected_down = true;
             }
+            if let Some(window) = now.disk_corrupt
+                && was.disk_corrupt != now.disk_corrupt
+            {
+                actions.push(Action::DiskCorrupt {
+                    node,
+                    choice: window.choice,
+                    kill: state.alive,
+                });
+                if state.alive {
+                    state.alive = false;
+                    state.paused = false;
+                    state.restart_after_fault = true;
+                }
+                state.expected_down = true;
+                state.disk_faulted = true;
+            }
+            if now.disk_mode() != was.disk_mode() {
+                actions.push(Action::SetDiskMode {
+                    node,
+                    mode: now.disk_mode(),
+                });
+                state.disk_faulted |= now.disk_mode() != DiskMode::Normal;
+            }
             if now.pause && !was.pause && state.alive && !state.paused {
                 actions.push(Action::Stop(node));
                 state.paused = true;
@@ -232,7 +267,11 @@ impl ProcessSupervisor {
                     _ => {}
                 }
             }
-            if !now.restart && was.restart && !now.kill && now.power_loss.is_none() && !state.alive
+            if !now.restarting()
+                && was.restarting()
+                && !now.kill
+                && now.power_loss.is_none()
+                && !state.alive
             {
                 actions.push(Action::Start {
                     node,
@@ -435,6 +474,13 @@ impl ProcessSupervisor {
     #[must_use]
     pub fn pending_faults(&self) -> u64 {
         self.counters.pending_faults
+    }
+
+    #[must_use]
+    pub fn disk_faulted(&self, node: u16) -> bool {
+        self.nodes
+            .get(usize::from(node))
+            .is_some_and(|state| state.disk_faulted)
     }
 
     #[must_use]
@@ -681,6 +727,101 @@ mod tests {
                 kill: false
             }]
         );
+    }
+
+    #[test]
+    fn a_disk_corruption_kills_once_and_restarts_when_its_window_closes() {
+        let mut sup = Supervisor::new(2);
+        let corrupt = active(&[(1, ProcessAction::DiskCorrupt { choice: 5 })]);
+        assert_eq!(
+            sup.tick(&corrupt, &[]),
+            [Action::DiskCorrupt {
+                node: 1,
+                choice: 5,
+                kill: true
+            }]
+        );
+        assert_eq!(sup.alive_bitmap(), 0b01);
+        assert_eq!(sup.tick(&corrupt, &[1]), []);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::Start {
+                node: 1,
+                after_fault: true
+            }]
+        );
+        assert_eq!(sup.alive_bitmap(), 0b11);
+        assert_eq!(sup.counters().unexpected_deaths, 0);
+        assert!(sup.disk_faulted(1));
+        assert!(!sup.disk_faulted(0));
+    }
+
+    #[test]
+    fn disk_error_and_stall_windows_set_and_clear_the_disk_mode() {
+        let mut sup = Supervisor::new(1);
+        let error = active(&[(0, ProcessAction::DiskError)]);
+        assert_eq!(
+            sup.tick(&error, &[]),
+            [Action::SetDiskMode {
+                node: 0,
+                mode: DiskMode::Error
+            }]
+        );
+        assert!(sup.disk_faulted(0));
+        let both = active(&[
+            (0, ProcessAction::DiskError),
+            (0, ProcessAction::DiskStall { hold_nanos: 70 }),
+        ]);
+        assert_eq!(sup.tick(&both, &[]), []);
+        let stall = active(&[(0, ProcessAction::DiskStall { hold_nanos: 70 })]);
+        assert_eq!(
+            sup.tick(&stall, &[]),
+            [Action::SetDiskMode {
+                node: 0,
+                mode: DiskMode::Stall { hold_nanos: 70 }
+            }]
+        );
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::SetDiskMode {
+                node: 0,
+                mode: DiskMode::Normal
+            }]
+        );
+        assert_eq!(sup.alive_bitmap(), 1);
+        assert_eq!(sup.counters().restarts, 0);
+    }
+
+    #[test]
+    fn a_node_that_exits_after_a_disk_fault_returns_when_the_window_closes() {
+        let mut sup = Supervisor::new(1);
+        let error = active(&[(0, ProcessAction::DiskError)]);
+        sup.tick(&error, &[]);
+        assert_eq!(sup.tick(&error, &[0]), []);
+        assert!(sup.take_natural_deaths().is_empty());
+        assert_eq!(sup.counters().unexpected_deaths, 0);
+        assert_eq!(sup.tick(&error, &[]), []);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [
+                Action::SetDiskMode {
+                    node: 0,
+                    mode: DiskMode::Normal
+                },
+                Action::Start {
+                    node: 0,
+                    after_fault: true
+                }
+            ]
+        );
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[0]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
+        assert!(sup.take_natural_deaths().is_empty());
     }
 
     #[test]
@@ -1390,6 +1531,41 @@ mod tests {
             }
             .describe(),
             "power loss node 1 choice 0x2a"
+        );
+        assert_eq!(
+            Action::DiskCorrupt {
+                node: 1,
+                choice: 0x2a,
+                kill: true
+            }
+            .describe(),
+            "corrupt disk node 1 choice 0x2a"
+        );
+        assert_eq!(
+            Action::SetDiskMode {
+                node: 2,
+                mode: DiskMode::Stall {
+                    hold_nanos: 120_000_000
+                }
+            }
+            .describe(),
+            "disk node 2 stalls every request for 120 ms"
+        );
+        assert_eq!(
+            Action::SetDiskMode {
+                node: 2,
+                mode: DiskMode::Error
+            }
+            .describe(),
+            "disk node 2 fails every request"
+        );
+        assert_eq!(
+            Action::SetDiskMode {
+                node: 2,
+                mode: DiskMode::Normal
+            }
+            .describe(),
+            "disk node 2 serves requests"
         );
         assert_eq!(Action::Stop(0).describe(), "pause node 0");
         assert_eq!(Action::Cont(0).describe(), "resume node 0");

@@ -16,8 +16,53 @@ const FLUSH: u64 = 1 << 0;
 const FUA: u64 = 1 << 1;
 const DISCARD: u64 = 1 << 2;
 const MARK: u64 = 1 << 3;
+const METADATA: u64 = 1 << 4;
 const END_MARK: &[u8] = b"dm-log-writes-end";
 const COPY_SECTORS: u64 = 128;
+const PAGE_SECTORS: u64 = 8;
+const GOLDEN: u64 = 0x9e37_79b9_7f4a_7c15;
+pub const FORMAT_MARK: &str = "harmony-formatted";
+pub const MIN_STALL_MILLIS: u64 = 50;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DiskMode {
+    #[default]
+    Normal,
+    Error,
+    Stall {
+        hold_nanos: u64,
+    },
+}
+
+impl DiskMode {
+    #[must_use]
+    pub fn table(self, device: &str) -> (&'static str, String) {
+        match self {
+            Self::Normal => ("linear", format!("{device} 0")),
+            Self::Error => ("error", String::new()),
+            Self::Stall { hold_nanos } => {
+                ("delay", format!("{device} 0 {}", stall_millis(hold_nanos)))
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn describe(self) -> String {
+        match self {
+            Self::Normal => "serves requests".to_owned(),
+            Self::Error => "fails every request".to_owned(),
+            Self::Stall { hold_nanos } => {
+                format!("stalls every request for {} ms", stall_millis(hold_nanos))
+            }
+        }
+    }
+}
+
+fn stall_millis(hold_nanos: u64) -> u64 {
+    hold_nanos
+        .div_ceil(1_000_000)
+        .clamp(MIN_STALL_MILLIS, u64::from(u32::MAX))
+}
 
 #[must_use]
 pub fn parse_size(text: &str) -> Option<u64> {
@@ -40,10 +85,22 @@ pub fn node_choice(choice: u64, node: u16) -> u64 {
     if choice == 0 {
         return 0;
     }
-    let mut z = (choice ^ u64::from(node)).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    mix((choice ^ u64::from(node)).wrapping_add(GOLDEN))
+}
+
+fn mix(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
+}
+
+struct Draw(u64);
+
+impl Draw {
+    fn below(&mut self, bound: u64) -> u64 {
+        self.0 = self.0.wrapping_add(GOLDEN);
+        mix(self.0) % bound
+    }
 }
 
 pub trait Sectors {
@@ -78,6 +135,16 @@ impl LogEntry {
     #[must_use]
     pub fn discards(self) -> bool {
         self.flags & DISCARD != 0
+    }
+
+    #[must_use]
+    pub fn marks(self) -> bool {
+        self.flags & MARK != 0
+    }
+
+    #[must_use]
+    pub fn plain(self) -> bool {
+        self.flags & (FLUSH | FUA | DISCARD | MARK | METADATA) == 0 && self.sectors != 0
     }
 }
 
@@ -170,17 +237,33 @@ impl Plan {
     }
 }
 
-#[must_use]
-pub fn plan(entries: &[LogEntry], choice: u64) -> Plan {
-    let durable = entries
+fn durable(entries: &[LogEntry]) -> usize {
+    entries
         .iter()
         .rposition(|entry| entry.flushes())
-        .map_or(0, |index| index + 1);
+        .map_or(0, |index| index + 1)
+}
+
+#[must_use]
+pub fn plan(entries: &[LogEntry], choice: u64) -> Plan {
+    let durable = durable(entries);
     let unforced = entries[durable..]
         .iter()
         .filter(|entry| entry.changes_data() && !entry.forced())
         .count();
-    let kept = usize::try_from(choice % (unforced as u64 + 1)).unwrap_or(0);
+    keep(
+        entries,
+        durable,
+        usize::try_from(choice % (unforced as u64 + 1)).unwrap_or(0),
+    )
+}
+
+#[must_use]
+pub fn plan_all(entries: &[LogEntry]) -> Plan {
+    keep(entries, durable(entries), usize::MAX)
+}
+
+fn keep(entries: &[LogEntry], durable: usize, kept: usize) -> Plan {
     let mut apply: Vec<LogEntry> = entries[..durable]
         .iter()
         .copied()
@@ -208,8 +291,54 @@ pub fn plan(entries: &[LogEntry], choice: u64) -> Plan {
         restore,
         entries: entries.len(),
         durable,
-        kept,
+        kept: kept.min(seen),
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Flip {
+    pub sector: u64,
+    pub byte: usize,
+    pub bit: u8,
+}
+
+impl Flip {
+    #[must_use]
+    pub fn describe(self) -> String {
+        format!(
+            "bit {} of byte {} in sector {} flipped",
+            self.bit, self.byte, self.sector
+        )
+    }
+
+    pub fn apply(self, device: &mut impl Sectors) -> io::Result<()> {
+        let page = self.sector - self.sector % PAGE_SECTORS;
+        let mut bytes = [0_u8; PAGE_SECTORS as usize * SECTOR_BYTES];
+        device.read_at(page, &mut bytes)?;
+        let at = usize::try_from(self.sector - page).unwrap_or(0) * SECTOR_BYTES + self.byte;
+        bytes[at] ^= 1 << self.bit;
+        device.write_at(page, &bytes)
+    }
+}
+
+#[must_use]
+pub fn corruption(entries: &[LogEntry], choice: u64) -> Option<Flip> {
+    let formatted = entries
+        .len()
+        .checked_sub(1)
+        .and_then(|last| entries[..last].iter().rposition(|entry| entry.marks()))
+        .map_or(0, |index| index + 1);
+    let written = entries[formatted..]
+        .iter()
+        .filter(|entry| entry.plain())
+        .collect::<Vec<_>>();
+    let mut draw = Draw(choice);
+    let entry = written.get(usize::try_from(draw.below(written.len().max(1) as u64)).ok()?)?;
+    Some(Flip {
+        sector: entry.sector + draw.below(entry.sectors),
+        byte: usize::try_from(draw.below(SECTOR_BYTES as u64)).ok()?,
+        bit: u8::try_from(draw.below(8)).ok()?,
+    })
 }
 
 pub fn rebuild(
@@ -262,6 +391,7 @@ pub mod dm {
     pub const DEV_REMOVE: u8 = 4;
     pub const DEV_SUSPEND: u8 = 6;
     pub const TABLE_LOAD: u8 = 9;
+    pub const TARGET_MSG: u8 = 14;
     pub const SUSPEND: u32 = 1 << 1;
     pub const SKIP_LOCKFS: u32 = 1 << 10;
     pub const NOFLUSH: u32 = 1 << 11;
@@ -307,6 +437,20 @@ pub mod dm {
         let size = u32::try_from(out.len()).map_err(|error| error.to_string())?;
         set_u32(&mut out, 12, size);
         set_u32(&mut out, 20, 1);
+        Ok(out)
+    }
+
+    pub fn message(name: &str, text: &str) -> Result<Vec<u8>, String> {
+        if text.contains('\0') {
+            return Err(format!("device-mapper message {text:?} is invalid"));
+        }
+        let mut out = header(name, 0)?;
+        out.extend_from_slice(&0_u64.to_le_bytes());
+        out.extend_from_slice(text.as_bytes());
+        out.push(0);
+        out.resize(out.len().next_multiple_of(8), 0);
+        let size = u32::try_from(out.len()).map_err(|error| error.to_string())?;
+        set_u32(&mut out, 12, size);
         Ok(out)
     }
 
@@ -361,8 +505,10 @@ mod tests {
     enum Op {
         Write(u64, u8, u64),
         Fua(u64, u8, u64),
+        Meta(u64, u8, u64),
         Discard(u64, u64),
         Flush,
+        Mark,
     }
 
     struct Recorder {
@@ -402,10 +548,16 @@ mod tests {
 
         fn apply(&mut self, op: &Op) {
             match *op {
-                Op::Write(sector, fill, sectors) | Op::Fua(sector, fill, sectors) => {
+                Op::Write(sector, fill, sectors)
+                | Op::Fua(sector, fill, sectors)
+                | Op::Meta(sector, fill, sectors) => {
                     let payload = vec![fill; sectors as usize * SECTOR_BYTES];
                     self.data.write_at(sector, &payload).unwrap();
-                    let flags = if matches!(op, Op::Fua(..)) { FUA } else { 0 };
+                    let flags = match op {
+                        Op::Fua(..) => FUA,
+                        Op::Meta(..) => METADATA,
+                        _ => 0,
+                    };
                     self.entry(sector, sectors, flags, &payload);
                 }
                 Op::Discard(sector, sectors) => {
@@ -415,6 +567,7 @@ mod tests {
                     self.entry(sector, sectors, DISCARD, &[]);
                 }
                 Op::Flush => self.entry(0, 0, FLUSH, &[]),
+                Op::Mark => self.entry(0, 0, MARK, FORMAT_MARK.as_bytes()),
             }
         }
 
@@ -437,14 +590,23 @@ mod tests {
         recorder.data.0
     }
 
-    fn crash(ops: &[Op], choice: u64) -> (Plan, Vec<u8>, Vec<u8>) {
+    fn logged(ops: &[Op]) -> (Recorder, Vec<LogEntry>) {
         let mut recorder = Recorder::new();
         for op in ops {
             recorder.apply(op);
         }
         recorder.finish();
         let entries = read_log(&mut recorder.log, 256).unwrap();
-        let plan = plan(&entries, choice);
+        (recorder, entries)
+    }
+
+    fn crash(ops: &[Op], choice: u64) -> (Plan, Vec<u8>, Vec<u8>) {
+        crash_with(ops, |entries| plan(entries, choice))
+    }
+
+    fn crash_with(ops: &[Op], planner: impl Fn(&[LogEntry]) -> Plan) -> (Plan, Vec<u8>, Vec<u8>) {
+        let (mut recorder, entries) = logged(ops);
+        let plan = planner(&entries);
         let mut base = Memory::sectors(64);
         rebuild(&plan, &mut recorder.log, &mut base, &mut recorder.data, 64).unwrap();
         (plan, base.0, recorder.data.0)
@@ -491,6 +653,86 @@ mod tests {
         }
         assert_eq!(crash(&ops, 5).0.kept, 0, "the choice wraps around the tail");
         assert_eq!(crash(&ops, 4).1, image(&ops));
+    }
+
+    #[test]
+    fn keeping_every_write_rebuilds_the_disk_as_it_was_written() {
+        let ops = history();
+        let (plan, base, data) = crash_with(&ops, plan_all);
+        assert_eq!(plan.kept, 4);
+        assert!(plan.restore.is_empty());
+        assert_eq!(base, image(&ops));
+        assert_eq!(data, base);
+    }
+
+    #[test]
+    fn a_corruption_lands_in_a_plain_write_after_the_format_mark() {
+        let ops = [
+            Op::Write(0, 1, 4),
+            Op::Flush,
+            Op::Mark,
+            Op::Meta(10, 2, 2),
+            Op::Fua(20, 3, 1),
+            Op::Write(30, 4, 2),
+            Op::Flush,
+            Op::Discard(40, 1),
+            Op::Write(50, 5, 1),
+        ];
+        let (_, entries) = logged(&ops);
+        let mut sectors = std::collections::BTreeSet::new();
+        for choice in 0..200 {
+            let flip = corruption(&entries, choice).expect("a plain write to corrupt");
+            assert_eq!(corruption(&entries, choice), Some(flip));
+            assert!(flip.byte < SECTOR_BYTES && flip.bit < 8);
+            sectors.insert(flip.sector);
+        }
+        assert_eq!(sectors, [30, 31, 50].into());
+        let (_, before_mark) = logged(&ops[..2]);
+        assert!(corruption(&before_mark, 3).is_some());
+        let (_, after_mark) = logged(&ops[..5]);
+        assert_eq!(corruption(&after_mark, 3), None);
+    }
+
+    #[test]
+    fn a_flip_changes_one_bit_and_a_second_flip_restores_it() {
+        let mut device = Memory::sectors(64);
+        for (index, byte) in device.0.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        let before = device.0.clone();
+        let flip = Flip {
+            sector: 9,
+            byte: 3,
+            bit: 5,
+        };
+        flip.apply(&mut device).unwrap();
+        let changed = (0..before.len())
+            .filter(|&at| before[at] != device.0[at])
+            .collect::<Vec<_>>();
+        assert_eq!(changed, [9 * SECTOR_BYTES + 3]);
+        assert_eq!(before[changed[0]] ^ device.0[changed[0]], 1 << 5);
+        flip.apply(&mut device).unwrap();
+        assert_eq!(device.0, before);
+    }
+
+    #[test]
+    fn disk_modes_load_the_matching_device_mapper_table() {
+        assert_eq!(
+            DiskMode::Normal.table("253:4"),
+            ("linear", "253:4 0".to_owned())
+        );
+        assert_eq!(DiskMode::Error.table("253:4"), ("error", String::new()));
+        for (hold_nanos, millis) in [
+            (1, 50),
+            (120_000_000, 120),
+            (120_000_001, 121),
+            (u64::MAX, u64::from(u32::MAX)),
+        ] {
+            assert_eq!(
+                DiskMode::Stall { hold_nanos }.table("253:4"),
+                ("delay", format!("253:4 0 {millis}"))
+            );
+        }
     }
 
     #[test]
@@ -590,5 +832,15 @@ mod tests {
         let dev: u64 = 0x12 | (253 << 8) | (0x345 << 20);
         reply[40..48].copy_from_slice(&dev.to_le_bytes());
         assert_eq!(dm::device(&reply), (253, 0x34512));
+        let message = dm::message("harmony-log-0-0", "mark harmony-formatted").unwrap();
+        assert_eq!(message.len() % 8, 0);
+        assert_eq!(
+            u32::from_le_bytes(message[12..16].try_into().unwrap()) as usize,
+            message.len()
+        );
+        assert_eq!(&message[spec..spec + 8], &[0; 8]);
+        assert_eq!(&message[spec + 8..spec + 31], b"mark harmony-formatted\0");
+        assert!(dm::message("d", "a\0b").is_err());
+        assert_eq!(dm::request(dm::TARGET_MSG), 0xc138_fd0e);
     }
 }
