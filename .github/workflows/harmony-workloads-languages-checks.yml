@@ -358,7 +358,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.harmony_harness == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       GOTOOLCHAIN: local
     steps:
@@ -374,3 +374,12 @@ jobs:
           for target in targets/*/; do
             (cd "$target" && go vet ./... && go build -o "$RUNNER_TEMP/harness-build/" ./...)
           done
+      - name: Build the etcd image and check it without faults
+        run: |
+          runtime=$(bash workloads/languages/build-runtime.sh)
+          docker build --build-arg HARMONY_RUNTIME_IMAGE="$runtime" \
+            --build-arg ETCD_VERSION=v3.5.5 --build-arg HARNESS_BUNDLE=bundle-single \
+            --file workloads/harness/targets/etcd/Dockerfile --tag harness-etcd:ci .
+          python3 workloads/harness/native.py harness-etcd:ci --tool docker --for 30 --no-faults \
+            | tee "$RUNNER_TEMP/native.json"
+          tail -n 1 "$RUNNER_TEMP/native.json" | python3 -c 'import json, sys; r = json.load(sys.stdin); sys.exit(r["result"] != "clean" or not r["last_check"]["decided"])'
