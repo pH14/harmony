@@ -373,7 +373,6 @@ mod live {
     };
 
     const MEMORY_BUDGET_MIB: usize = 512;
-    const COORDINATOR_OVERHEAD_MIB: u64 = 512;
     const WORKER_OVERHEAD_MIB: u64 = 256;
     #[cfg(target_os = "macos")]
     const VM_WORKER_LIMIT: usize = 4;
@@ -388,7 +387,7 @@ mod live {
     fn memory_needs(ram_mib: u32) -> MemoryNeeds {
         let guest = u64::from(ram_mib) << 20;
         MemoryNeeds {
-            coordinator: (MEMORY_BUDGET_MIB as u64 + COORDINATOR_OVERHEAD_MIB) << 20,
+            coordinator: (MEMORY_BUDGET_MIB as u64) << 20,
             worker: guest
                 .saturating_mul(2)
                 .saturating_add(WORKER_OVERHEAD_MIB << 20),

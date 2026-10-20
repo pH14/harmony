@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn page_cache_left_by_a_build_keeps_every_worker() {
-        let needs = needs(GIB, 2 * GIB + GIB / 4, GIB);
+        let needs = needs(GIB / 2, 2 * GIB + GIB / 4, GIB);
         let empty = cgroup_headroom(14 * GIB, 0, "file 0\nshmem 0\n");
         let built = cgroup_headroom(
             14 * GIB,
@@ -215,20 +215,19 @@ mod tests {
 
     #[test]
     fn a_fourteen_gib_cgroup_keeps_guests_and_transients_out_of_the_budget() {
+        let worker = 2 * GIB + GIB / 4;
+        let faults = needs(GIB / 2, worker, GIB);
         let headroom = cgroup_headroom(14 * GIB, 0, "file 0\n");
-        let plan = fit(headroom, 5, needs(GIB, 2 * GIB + GIB / 4, GIB)).expect("plan");
+        let plan = fit(headroom, 5, faults).expect("plan");
         assert_eq!(plan.workers, 3);
         let budget = plan.budget as u64;
-        assert_eq!(budget, 12 * GIB - 3 * (2 * GIB + GIB / 4));
-        assert!(budget + 3 * (2 * GIB + GIB / 4) + GIB + RESERVE_BYTES <= 14 * GIB);
-        let plan = fit(
-            cgroup_headroom(12 * GIB, 0, ""),
-            5,
-            needs(GIB, 2 * GIB + GIB / 4, GIB),
-        )
-        .expect("plan");
+        assert_eq!(budget, 14 * GIB - RESERVE_BYTES - GIB / 2 - 3 * worker);
+        let plan = fit(cgroup_headroom(12 * GIB, 0, ""), 5, faults).expect("plan");
         assert_eq!(plan.workers, 3);
-        assert_eq!(plan.budget as u64, 10 * GIB - 3 * (2 * GIB + GIB / 4));
+        assert_eq!(
+            plan.budget as u64,
+            12 * GIB - RESERVE_BYTES - GIB / 2 - 3 * worker
+        );
     }
 
     #[test]

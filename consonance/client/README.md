@@ -427,7 +427,8 @@ coordinator's need, fits as many workers as the cores allow with room for each
 worker and a minimum store, and gives the rest, after the workers, to the
 budget. It fails when one worker does not fit. `MemoryNeeds` names the
 coordinator, worker and minimum store sizes; the caller derives them from the
-guest's configured memory. On Linux the free memory is the lower of
+guest's configured memory. The coordinator's need is the memory it will still
+allocate, because its running process is already part of the usage. On Linux the free memory is the lower of
 `MemAvailable` and, for each enclosing cgroup, the lower of `memory.max` and
 `memory.high` minus usage. Usage is `memory.current` less clean page cache:
 the `file` count in `memory.stat` minus `shmem`, `file_dirty` and

@@ -323,8 +323,8 @@ prefix in the shared cache, and only the remaining actions run again. Chain
 bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a
 missing prefix is rebuilt from the chain's longest matching link.
 One memory budget covers the shared cache and every worker's local snapshot
-store. It is the free memory left after a 1 GiB reserve, 1 GiB for the
-coordinator (its 512 MiB search state and the process), and for each worker
+store. It is the free memory left after a 1 GiB reserve, the coordinator's 512 MiB
+search state, and for each worker
 twice its guest RAM plus 256 MiB: the guest itself and the guest pages a
 snapshot import or export holds while it decompresses or compresses them. The
 worker count drops until each worker also has room for a store as large as its
