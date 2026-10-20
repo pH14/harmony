@@ -29,8 +29,8 @@ jobs:
       - name: Prepare the exact runtime
         uses: ./.github/actions/exact-platform-runtime
 
-  build:
-    name: Build CLI and images
+  cli:
+    name: Build the paired CLI
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -40,46 +40,62 @@ jobs:
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
           rustup default "$HARMONY_RUST_TOOLCHAIN"
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools podman
+          sudo apt-get install -y --no-install-recommends musl-tools
       - name: Build the paired CLI
         run: bash scripts/build-consonance-cli-pair.sh paired-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clock-cli
+          path: paired-cli
+          retention-days: 3
+
+  image:
+    name: Image ${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [v2.10.23, v2.15.1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends podman
       - name: Build the NATS key-value image with clock probes
+        env:
+          VERSION: ${{ matrix.version }}
         run: |
           set -euo pipefail
           runtime=$(HARMONY_CONTAINER_TOOL=podman bash workloads/languages/build-runtime.sh)
           mkdir -p images
           podman build --format docker --platform=linux/amd64 \
             --build-arg HARMONY_RUNTIME_IMAGE="$runtime" \
+            --build-arg NATS_VERSION="$VERSION" \
             --file workloads/harness/targets/nats-kv/Dockerfile \
             --tag localhost/nats-kv:base .
           podman build --format docker --platform=linux/amd64 \
             --file .github/clock-validation/Dockerfile \
             --tag localhost/nats-kv:clock .
-          podman save --format oci-archive -o images/nats-kv-clock.oci localhost/nats-kv:clock
+          podman save --format oci-archive -o "images/nats-kv-$VERSION.oci" localhost/nats-kv:clock
           ls -la images
       - uses: actions/upload-artifact@v4
         with:
-          name: clock-build
-          path: |
-            paired-cli
-            images
+          name: clock-image-${{ matrix.version }}
+          path: images
           retention-days: 3
 
   run:
-    name: ${{ matrix.name }}
-    needs: [runtime, build]
+    name: ${{ matrix.version }} ${{ matrix.variant }}
+    needs: [runtime, cli, image]
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Hand schedule with clock faults
-            id: hand
-          - name: Hand schedule with waits only
-            id: baseline
-          - name: Search from power-on
-            id: search
+        version: [v2.10.20, v2.10.23, v2.15.1]
+        variant: [explain, stopped, rate50, rate10, rate1, offset1s, offset10s, noclock]
     steps:
       - uses: actions/checkout@v4
       - name: Restore the guest runtime
@@ -88,19 +104,46 @@ jobs:
           report: evidence
       - uses: actions/download-artifact@v4
         with:
+          name: clock-cli
+          path: paired-cli
+      - uses: actions/download-artifact@v4
+        if: matrix.version != 'v2.10.20'
+        with:
+          name: clock-image-${{ matrix.version }}
+          path: images
+      - uses: actions/download-artifact@v4
+        if: matrix.version == 'v2.10.20'
+        with:
           name: clock-build
+          path: finding
+          run-id: 39410317486
+          github-token: ${{ github.token }}
+      - name: Place the finding image
+        if: matrix.version == 'v2.10.20'
+        run: |
+          mkdir -p images
+          mv finding/images/nats-kv-clock.oci images/nats-kv-v2.10.20.oci
+          rm -rf finding
       - name: Enable KVM
         run: |
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           chmod +x paired-cli/harmony paired-cli/harmony-consonance-host
+          sha256sum images/*.oci
       - name: Run
         env:
-          CASE: ${{ matrix.id }}
-        run: bash .github/clock-validation/run.sh "$CASE"
+          VERSION: ${{ matrix.version }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          image="$PWD/images/nats-kv-$VERSION.oci"
+          if [ "$VARIANT" = explain ]; then
+            bash .github/clock-validation/run.sh explain "$image"
+          else
+            bash .github/clock-validation/run.sh variant "$image" "$VARIANT" 12
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: clock-${{ matrix.id }}
+          name: triage-${{ matrix.version }}-${{ matrix.variant }}
           path: evidence
           retention-days: 7

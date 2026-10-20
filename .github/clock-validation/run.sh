@@ -1,10 +1,9 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Scratch validation of clock faults on NATS JetStream key-value; see the workflow.
+# Scratch triage of the NATS key-value clock-fault finding; see the workflow.
 set -uo pipefail
-case_id=$1
+here=$(cd "$(dirname "$0")" && pwd)
 harmony=$PWD/paired-cli/harmony
-image=$PWD/images/nats-kv-clock.oci
 mkdir -p evidence
 cat >cfg.toml <<'EOF'
 [runner]
@@ -14,39 +13,58 @@ backend = "kvm"
 ram_mib = 2048
 EOF
 
-action() {
-    printf '  {"operation":%s,"coverage_quantum":1024,"choice":%s}' "$1" "${2:-0}"
+clock_operation() {
+    case "$1" in
+        stopped) echo '{"Clock":{"node":1,"offset_ms":0,"rate_ppm":-1000000,"ticks":128}}' ;;
+        rate50) echo '{"Clock":{"node":1,"offset_ms":0,"rate_ppm":-500000,"ticks":128}}' ;;
+        rate10) echo '{"Clock":{"node":1,"offset_ms":0,"rate_ppm":-100000,"ticks":128}}' ;;
+        rate1) echo '{"Clock":{"node":1,"offset_ms":0,"rate_ppm":-10000,"ticks":128}}' ;;
+        offset1s) echo '{"Clock":{"node":1,"offset_ms":-1000,"rate_ppm":0,"ticks":128}}' ;;
+        offset10s) echo '{"Clock":{"node":1,"offset_ms":-10000,"rate_ppm":0,"ticks":128}}' ;;
+        noclock) echo '{"Wait":128}' ;;
+        *)
+            echo "unknown variant $1" >&2
+            exit 2
+            ;;
+    esac
 }
 
-schedule() {
-    local clock=$1
-    local shift_one shift_stop shift_fast shift_back
-    if [ "$clock" = yes ]; then
-        shift_one='{"Clock":{"node":0,"offset_ms":3600000,"rate_ppm":0,"ticks":500}}'
-        shift_stop='{"Clock":{"node":1,"offset_ms":0,"rate_ppm":-1000000,"ticks":500}}'
-        shift_fast='{"ClockAll":{"offset_ms":0,"rate_ppm":4000000,"ticks":500}}'
-        shift_back='{"ClockAll":{"offset_ms":-10000,"rate_ppm":0,"ticks":300}}'
-    else
-        shift_one='{"Wait":500}'
-        shift_stop='{"Wait":500}'
-        shift_fast='{"Wait":500}'
-        shift_back='{"Wait":300}'
-    fi
-    {
-        echo '['
-        action '{"Wait":1000}'; echo ,
-        action '{"Wait":1000}'; echo ,
-        action "$shift_one"; echo ,
-        action '{"Wait":300}'; echo ,
-        action "$shift_stop"; echo ,
-        action '{"Wait":300}'; echo ,
-        action "$shift_fast" 24301; echo ,
-        action '{"Wait":300}'; echo ,
-        action "$shift_back"; echo ,
-        action '{"Wait":1000}'; echo ,
-        action '{"Wait":1000}'; echo
-        echo ']'
-    }
+actions() {
+    python3 -I - "$here/shrunk.json" "$(clock_operation "$1")" "$2" <<'EOF'
+import json, random, sys
+actions = json.load(open(sys.argv[1]))
+actions[1]["operation"] = json.loads(sys.argv[2])
+draw = int(sys.argv[3])
+if draw:
+    rand = random.Random(draw)
+    for action in actions:
+        action["choice"] = rand.getrandbits(64)
+print(json.dumps(actions, indent=1))
+EOF
+}
+
+summarize() {
+    python3 -I - "$@" <<'EOF'
+import json, sys
+case, draw, report = sys.argv[1:4]
+try:
+    replay = json.load(open(report))["replays"][0]
+    print("\t".join([case, draw, "violation" if replay["bug"] else "clean",
+                     replay["state_hash"][:16], "; ".join(replay["violations"])]))
+except Exception as error:
+    print("\t".join([case, draw, "error", "", str(error)]))
+EOF
+}
+
+one() {
+    local image=$1 variant=$2 draw=$3
+    local tag="$variant-$draw"
+    actions "$variant" "$draw" >"evidence/$tag-actions.json"
+    "$harmony" debug run "$image" --config cfg.toml --seed 7 \
+        --actions "evidence/$tag-actions.json" --out "evidence/$tag" \
+        >"evidence/$tag.log" 2>&1
+    summarize "$variant" "$draw" "evidence/$tag/report.json" >"evidence/$tag.tsv"
+    cat "evidence/$tag.tsv"
 }
 
 step() {
@@ -57,51 +75,39 @@ step() {
     "$@" >"evidence/$name.log" 2>&1
     local status=$?
     echo "== $name: exit $status after $((SECONDS - started)) s"
-    tail -n 60 "evidence/$name.log"
+    tail -n 80 "evidence/$name.log"
     return 0
 }
 
-probe='for n in 1 2 3; do echo "== n$n clock probe"; cat /tmp/nats/n$n.clock; echo "== n$n nats log"; cat /tmp/nats/n$n.log; done'
-
-hand() {
-    local tag=$1 clock=$2
-    schedule "$clock" >"evidence/$tag-schedule.json"
-    cat "evidence/$tag-schedule.json"
-    step "$tag-run" "$harmony" debug run "$image" --config cfg.toml --seed 1 \
-        --actions "evidence/$tag-schedule.json" --out "evidence/$tag"
-    step "$tag-repeat" "$harmony" debug run "$image" --config cfg.toml --seed 1 \
-        --actions "evidence/$tag-schedule.json" --repeat 2 --out "evidence/$tag-repeat"
-    step "$tag-show" "$harmony" show "evidence/$tag"
-    step "$tag-timeline" "$harmony" show "evidence/$tag" --timeline
-    step "$tag-logs" "$harmony" show "evidence/$tag" --logs
-    step "$tag-report" cat "evidence/$tag/report.json"
-    step "$tag-repeat-report" cat "evidence/$tag-repeat/report.json"
-    step "$tag-probe" "$harmony" branch "evidence/$tag" --step 11 --stop \
-        --exec "$probe" --out "evidence/$tag-probe"
-}
-
-case "$case_id" in
-    hand)
-        hand hand yes
+case "$1" in
+    one)
+        one "$2" "$3" "$4"
         ;;
-    baseline)
-        hand baseline no
+    variant)
+        image=$2 variant=$3 draws=$4
+        seq 0 "$draws" | xargs -P 2 -I{} bash "$0" one "$image" "$variant" {}
+        cat evidence/"$variant"-*.tsv | sort -t "$(printf '\t')" -k2,2n >evidence/summary.tsv
+        echo "== summary"
+        cat evidence/summary.tsv
         ;;
-    search)
-        step search "$harmony" search "$image" --config cfg.toml --seed 7 \
-            --for 60m --out evidence/search
-        step search-show "$harmony" show evidence/search
-        step search-report cat evidence/search/report.json
-        if grep -q '"bug_found": true' evidence/search/report.json; then
-            step search-timeline "$harmony" show evidence/search --finding 1 --timeline
-            step search-shrink "$harmony" shrink evidence/search --finding 1 \
-                --out evidence/search-shrink --jobs 3
-            step search-shrink-show "$harmony" show evidence/search-shrink
-            step search-shrink-timeline "$harmony" show evidence/search-shrink --timeline
+    explain)
+        image=$2
+        actions stopped 0 >evidence/recording-actions.json
+        step recording "$harmony" debug run "$image" --config cfg.toml --seed 7 \
+            --actions evidence/recording-actions.json --out evidence/recording
+        summarize recording 0 evidence/recording/report.json | tee evidence/summary.tsv
+        if grep -q violation evidence/summary.tsv; then
+            step explain "$harmony" explain evidence/recording --no-shrink --jobs 3 \
+                --log '/tmp/nats/*.log' \
+                --data /tmp/nats/n1 --data /tmp/nats/n2 --data /tmp/nats/n3 \
+                --history 'ANTITHESIS_OUTPUT_DIR= /opt/harmony/nats-kv-harness check' \
+                --out evidence/explain
+            step explain-md cat evidence/explain/explain.md
+            step timeline "$harmony" show evidence/explain --timeline
         fi
         ;;
     *)
-        echo "unknown case $case_id" >&2
+        echo "unknown case $1" >&2
         exit 2
         ;;
 esac

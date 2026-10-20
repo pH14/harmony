@@ -475,6 +475,24 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
             hold_us,
             ..
         } => format!("park {} after {edges} edges for {hold_us} us", node(index)),
+        FaultOperation::Clock {
+            node: index,
+            offset_ms,
+            rate_ppm,
+            ticks,
+        } => format!(
+            "shift the wall clock of {} by {offset_ms} ms and {rate_ppm} ppm for {}",
+            node(index),
+            span(ticks)
+        ),
+        FaultOperation::ClockAll {
+            offset_ms,
+            rate_ppm,
+            ticks,
+        } => format!(
+            "shift every node's wall clock by up to {offset_ms} ms and {rate_ppm} ppm for {}",
+            span(ticks)
+        ),
     }
 }
 
