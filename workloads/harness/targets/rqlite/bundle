@@ -5,6 +5,9 @@ node n3 /opt/harmony/node.sh n3 4005 4006
 disk n1 /tmp/rqlite/n1 256M
 disk n2 /tmp/rqlite/n2 256M
 disk n3 /tmp/rqlite/n3 256M
+log n1 /tmp/rqlite/n1.log
+log n2 /tmp/rqlite/n2.log
+log n3 /tmp/rqlite/n3.log
 hook 1 /opt/harmony/harness-net partition
 hook 2 /opt/harmony/harness-net isolate
 hook 3 /opt/harmony/harness-net delay

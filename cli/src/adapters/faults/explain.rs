@@ -405,6 +405,19 @@ pub fn data_changes(root: &str, before: Option<&Files>, after: Option<&Files>) -
     }
 }
 
+pub fn declared(bundle: &str) -> Explain {
+    let mut declared = Explain::default();
+    for line in bundle.lines() {
+        let mut fields = line.split_whitespace();
+        match (fields.next(), fields.next(), fields.next()) {
+            (Some("log"), Some(_), Some(path)) => declared.logs.push(path.to_owned()),
+            (Some("disk"), Some(_), Some(path)) => declared.data.push(path.to_owned()),
+            _ => {}
+        }
+    }
+    declared
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Names {
     pub nodes: Vec<String>,
@@ -1314,7 +1327,12 @@ pub fn explain_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> 
     let shrunk = request.skip_shrink
         || (selection.finding.is_none() && saved.path.join("shrink.json").is_file());
     let source = shrink::source(saved, selection.finding, "explain")?;
-    let settings = request.explain.or(&source.manifest.config.explain);
+    let settings = request
+        .explain
+        .or(&source.manifest.config.explain)
+        .or(&declared(
+            source.manifest.bundle.as_deref().unwrap_or_default(),
+        ));
     settings.validate()?;
     let out = request.destination.create()?;
     let mut manifest = source.manifest.inherit(&source.path, &out, "replay")?;
@@ -1442,6 +1460,25 @@ mod tests {
     }
 
     const BUNDLE: &str = "node n1 /app/node 1\nnode n2 /app/node 2\nnode n3 /app/node 3\nhook 1 /app/net partition\n";
+
+    #[test]
+    fn bundle_disks_and_logs_fill_only_the_settings_left_empty() {
+        let bundle = format!(
+            "{BUNDLE}disk n1 /data/n1 64M\ndisk n2 /data/n2 64M checksummed\nlog n1 /logs/n1.log\nlog n2 /logs/n2.log\n"
+        );
+        let declared = declared(&bundle);
+        assert_eq!(declared.logs, ["/logs/n1.log", "/logs/n2.log"]);
+        assert_eq!(declared.data, ["/data/n1", "/data/n2"]);
+        assert_eq!(declared.history, None);
+        let given = Explain {
+            logs: vec!["/other/*.log".into()],
+            ..Explain::default()
+        };
+        let settings = given.or(&Explain::default()).or(&declared);
+        assert_eq!(settings.logs, ["/other/*.log"]);
+        assert_eq!(settings.data, ["/data/n1", "/data/n2"]);
+        assert!(super::declared(BUNDLE).is_empty());
+    }
 
     fn log(text: &str) -> Log {
         Log {

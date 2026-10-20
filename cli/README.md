@@ -377,7 +377,11 @@ history = "/app/check --json"
 ```
 
 Paths are guest paths, and globs are expanded by the guest shell. The history
-command runs with `/bin/sh` in the workload's working directory.
+command runs with `/bin/sh` in the workload's working directory. When neither
+a flag nor the recipe sets `logs` or `data`, explain uses the paths the
+recorded bundle declares: every `log NODE PATH` line for logs and every
+`disk NODE PATH SIZE [checksummed]` line for data
+([supervisor bundle](../consonance/harmony-linux/supervisor/README.md)).
 
 `search --from` starts fresh exploration from a branch endpoint. `search --resume`
 restores the existing corpus, snapshots, scheduler and evidence from the latest

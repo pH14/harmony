@@ -21,11 +21,18 @@ pub struct DiskSpec {
     pub bytes: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogSpec {
+    pub node: u16,
+    pub path: String,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Bundle {
     pub nodes: Vec<NodeSpec>,
     pub hooks: Vec<HookSpec>,
     pub disks: Vec<DiskSpec>,
+    pub logs: Vec<LogSpec>,
     pub ready: Option<Vec<String>>,
     pub setup: Option<Vec<String>>,
     pub workload: Option<Vec<String>>,
@@ -94,11 +101,16 @@ pub enum BundleError {
     TooManyDisks { line: usize },
     #[error("line {line}: disk flag {word:?} is not \"checksummed\"")]
     DiskFlag { line: usize, word: String },
+    #[error("line {line}: log names undeclared node {name:?}")]
+    LogNode { line: usize, name: String },
+    #[error("line {line}: log path {path:?} is not absolute")]
+    LogPath { line: usize, path: String },
 }
 
 pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
     let mut bundle = Bundle::default();
     let mut disks = Vec::new();
+    let mut logs = Vec::new();
     for (index, raw) in text.lines().enumerate() {
         let line = index + 1;
         let trimmed = raw.trim();
@@ -132,6 +144,16 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
                         need: 3_usize.saturating_sub(words.len()),
                     })?;
                 disks.push((line, node, path, size));
+            }
+            "log" => {
+                let words: Vec<String> = words.collect();
+                let [node, path] =
+                    <[String; 2]>::try_from(words).map_err(|words| BundleError::Incomplete {
+                        line,
+                        item: "log",
+                        need: 2_usize.saturating_sub(words.len()),
+                    })?;
+                logs.push((line, node, path));
             }
             "ready" => {
                 let argv: Vec<String> = words.collect();
@@ -199,6 +221,20 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
     }
     for (line, name, path, size) in disks {
         parse_disk(&mut bundle, line, name, path, size)?;
+    }
+    for (line, name, path) in logs {
+        let Some(node) = bundle
+            .nodes
+            .iter()
+            .position(|node| node.name == name)
+            .and_then(|index| u16::try_from(index).ok())
+        else {
+            return Err(BundleError::LogNode { line, name });
+        };
+        if !path.starts_with('/') || path.contains('\0') {
+            return Err(BundleError::LogPath { line, path });
+        }
+        bundle.logs.push(LogSpec { node, path });
     }
     bundle.hooks.sort_by_key(|hook| hook.id);
     Ok(bundle)
@@ -539,6 +575,40 @@ check /bin/check --json
             error(&text),
             BundleError::TooManyDisks {
                 line: 2 * crate::disk::MAX_DISKS + 2
+            }
+        );
+    }
+
+    #[test]
+    fn log_lines_name_a_declared_node_and_an_absolute_path() {
+        let bundle = parse_bundle("log b /tmp/b.log\nnode a /a\nnode b /b\n").unwrap();
+        assert_eq!(
+            bundle.logs,
+            [LogSpec {
+                node: 1,
+                path: "/tmp/b.log".to_owned(),
+            }]
+        );
+        assert_eq!(
+            parse_bundle("node a /a\nlog c /c.log\n").unwrap_err(),
+            BundleError::LogNode {
+                line: 2,
+                name: "c".to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_bundle("node a /a\nlog a a.log\n").unwrap_err(),
+            BundleError::LogPath {
+                line: 2,
+                path: "a.log".to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_bundle("node a /a\nlog a\n").unwrap_err(),
+            BundleError::Incomplete {
+                line: 2,
+                item: "log",
+                need: 1,
             }
         );
     }
