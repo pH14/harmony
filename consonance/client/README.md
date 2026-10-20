@@ -87,7 +87,7 @@ whole worker/session, so ambiguous transferred ownership cannot remain in a
 reusable session.
 
 The worker extension preserves every existing inner control-before/after and
-SDK request/response guard; it initially amortizes only outer exchanges.
+SDK response guard; it initially amortizes only outer exchanges.
 Execute plus Commit is the common two-exchange path, with bounded page exchanges
 when needed. New frame bounds must be checked after an opcode prefix and before
 allocating an endpoint request body. Page, commit, abort and Decision
@@ -129,8 +129,8 @@ live code and vDSO page to be unwritten, so a code write since admission fails
 the check even after its bytes are restored. `host-code-identity` describes
 this check. Session, cache, artifact and control boundaries run the full
 recheck, which also requires the same sealed file and executable mappings. The
-VMM's SDK request and response sites run only the page check on Linux and the
-full recheck on macOS. Every recorded
+VMM's SDK response site runs only the page check on Linux and the full recheck
+on macOS, once per SDK exchange. Every recorded
 outcome is produced inside a control request, which full rechecks bracket, and
 a code write leaves a copied page that the next full recheck refuses. An
 ordinary GNU executable and a dynamic library whose constructor clears its
@@ -630,7 +630,7 @@ retains refused admission work when that boundary needs observation.
 
 Sites are `admission`, `session_boundary`, `launcher_before/after`,
 `rpc_before/after`, `receive`, `handled`, `sent`, `publication_before/after`,
-`control_before/after`, and `sdk_request/response`. Direct export uses four
+`control_before/after`, and `sdk_response`. Direct export uses four
 parent sites: `export_before` before EXPORT, `extent_requested` after the first
 reply (NEED_EXTENT or FAILED),
 `extent_allocated` after the allocator callback before FD handoff, and

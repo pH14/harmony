@@ -246,7 +246,6 @@ impl Session {
             match site {
                 HostOperationSite::ControlBefore => core_guard.check_at(GuardSite::ControlBefore),
                 HostOperationSite::ControlAfter => core_guard.check_at(GuardSite::ControlAfter),
-                HostOperationSite::SdkRequest => core_guard.check_code_at(GuardSite::SdkRequest),
                 HostOperationSite::SdkResponse => core_guard.check_code_at(GuardSite::SdkResponse),
             }
             .map_err(|error| error.to_string())

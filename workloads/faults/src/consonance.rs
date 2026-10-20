@@ -3953,7 +3953,7 @@ mod tests {
     fn coordinator_retired_telemetry_refuses_live_before_session_query() {
         let _fixture = ResidencyFixture;
         let counters =
-            BTreeMap::from([("vmm.sdk_dispatch.event.request_guard_calls".to_owned(), 17)]);
+            BTreeMap::from([("vmm.sdk_dispatch.event.response_guard_calls".to_owned(), 17)]);
         RETIRED.with(|retired| *retired.borrow_mut() = counters.clone());
         assert_eq!(coordinator_retired_work_telemetry().unwrap(), counters);
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));

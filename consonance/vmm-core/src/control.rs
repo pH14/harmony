@@ -3017,12 +3017,12 @@ mod tests {
         }
         changed.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(matches!(
-            server.vmm_mut().unwrap().service_doorbell(0),
+            server.vmm_mut().unwrap().write_doorbell_response(&[]),
             Err(VmmError::ContractViolation(reason)) if reason == "host loader changed"
         ));
         assert_eq!(
             sites.lock().unwrap().last(),
-            Some(&crate::vmm::HostOperationSite::SdkRequest)
+            Some(&crate::vmm::HostOperationSite::SdkResponse)
         );
         assert!(matches!(
             server.handle(&Request::RecordedEnv),
@@ -5624,7 +5624,7 @@ mod tests {
         assert!(
             before
                 .counters()
-                .contains(&("sdk_dispatch.unreadable.request_guard_calls".into(), 1))
+                .contains(&("sdk_dispatch.unreadable.requests".into(), 1))
         );
         assert_eq!(server.host_telemetry().sdk_dispatch, before);
         server.retire_vmm();
@@ -5659,7 +5659,7 @@ mod tests {
             before
                 .sdk_dispatch
                 .counters()
-                .contains(&("sdk_dispatch.unreadable.request_guard_calls".into(), 1))
+                .contains(&("sdk_dispatch.unreadable.requests".into(), 1))
         );
         assert_eq!(server.host_telemetry().sdk_dispatch, before.sdk_dispatch);
         assert!(before.exits.guest_runs.count > 0);
@@ -11035,17 +11035,11 @@ mod tests {
                 .unwrap()
                 .iter()
                 .copied()
-                .filter(|site| {
-                    matches!(
-                        site,
-                        HostOperationSite::SdkRequest | HostOperationSite::SdkResponse
-                    )
-                })
+                .filter(|site| *site == HostOperationSite::SdkResponse)
                 .collect();
             assert_eq!(
                 sdk_sites,
                 vec![
-                    HostOperationSite::SdkRequest,
                     HostOperationSite::SdkResponse,
                     HostOperationSite::SdkResponse
                 ]

@@ -115,12 +115,15 @@ admission or integrity checks to create, restore, publish or execute state.
 The composition layer can inject a host-operation guard into `ControlServer`.
 The server checks it before and after each control request, including before
 the request's reply is encoded, and attaches it to every fresh or recovery VM.
-The VMM checks the same guard before servicing a doorbell and immediately
-before writing any service answer to guest memory. Consonance uses this hook
-to reject host loader changes without making the execution core depend on a
-particular process-loader implementation. The callback receives a bounded
-`HostOperationSite` tag for control-before, control-after, SDK request or SDK
-response. Tags describe existing call boundaries and add no guard calls or
+The VMM checks the same guard once per SDK exchange, immediately before writing
+the service answer to guest memory. A request that stops for a decision or a
+control deadline is answered inside a later control request, which the control
+checks bracket. Every recorded outcome is produced inside a control request,
+so full checks bracket it, and the per-exchange check refuses a changed host
+before a guest reads an answer that host code produced. Consonance uses this
+hook to reject host loader changes without making the execution core depend on
+a particular process-loader implementation. The callback receives a bounded
+`HostOperationSite` tag for control-before, control-after, or SDK response. Tags describe existing call boundaries and add no guard calls or
 executable policy; runtime measurement ownership belongs to the composition.
 
 When a `Run` deadline is the earlier idle wake and resumes the guest, control
@@ -1127,19 +1130,18 @@ the data, so at most MAX_PAYLOAD - 1 data bytes fit. Oversized local responses
 return MalformedEnvironment with the question still pending, matching explicit
 resolution, rather than reaching a writer failure that retires the VM.
 
-SDK dispatch attribution partitions existing request and response guard callback
+SDK dispatch attribution counts requests and partitions response guard callback
 calls, errors, and outer callback nanoseconds by bounded generic wire-operation
 bins. It does not add checks, RPCs, copied-byte estimates, or canonical state.
 The outer duration wraps `check_host_operation_guard`, including its optional
 callback invocation and error mapping, and overlaps session guard metrics.
 Constructing the callback record, classifying the request, and updating witness
 rows occur outside this timer. Inner strict-check time and executable-read bytes
-are unavailable by operation. Request counts include unreadable and predecode-refused attempts;
+are unavailable by operation. Request counts include unreadable attempts;
 callback counts/time do not count successful response writes or semantic
 outcomes. The first scope has no separate semantic-status/write-success or
 copy-byte counters. An absent guard contributes zero callback calls, not a measured
-successful check. Request refusals before reading guest memory remain explicitly
-unclassified. Invalid frames and unreadable/oversize requests have separate
+successful check. Invalid frames and unreadable/oversize requests have separate
 bins; a valid frame's
 operation bin does not imply a semantically valid payload.
 
