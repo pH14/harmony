@@ -240,13 +240,13 @@ impl Session {
         server.set_host_operation_guard(Arc::new(move |site| {
             use crate::image_identity::GuardSite;
             use vmm_core::vmm::HostOperationSite;
-            let site = match site {
-                HostOperationSite::ControlBefore => GuardSite::ControlBefore,
-                HostOperationSite::ControlAfter => GuardSite::ControlAfter,
-                HostOperationSite::SdkRequest => GuardSite::SdkRequest,
-                HostOperationSite::SdkResponse => GuardSite::SdkResponse,
-            };
-            core_guard.check_at(site).map_err(|error| error.to_string())
+            match site {
+                HostOperationSite::ControlBefore => core_guard.check_at(GuardSite::ControlBefore),
+                HostOperationSite::ControlAfter => core_guard.check_at(GuardSite::ControlAfter),
+                HostOperationSite::SdkRequest => core_guard.check_code_at(GuardSite::SdkRequest),
+                HostOperationSite::SdkResponse => core_guard.check_code_at(GuardSite::SdkResponse),
+            }
+            .map_err(|error| error.to_string())
         }));
         server.set_restore_mode(RestoreMode::InPlace);
         let mut client = Client::connect(server, server_caps())
