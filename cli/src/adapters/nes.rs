@@ -60,7 +60,7 @@ impl Package for Nes {
         Ok(())
     }
     fn execute(&self, mut request: Request) -> Result<u8> {
-        nes_workload::allocator::use_one_malloc_arena();
+        nes_workload::allocator::configure_malloc_arenas();
         self.validate_runner(&mut request.config)?;
         if request.selection.is_some() {
             return saved(request);
