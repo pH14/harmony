@@ -222,11 +222,25 @@ For Famidash the launcher sets a fixed `window: 512` at every worker count:
 this is 512 outstanding expansion tasks, each with at most 14 edge attempts,
 so up to 7,168 edge attempts can be pending. Other games retain `window: 4`
 per worker. This is configuration, not a throughput guarantee; memory and
-feedback behavior at this task window still need capacity qualification. `memory_mib` budgets the archive and bounded draw state;
-the launcher's process limit adds 1 GiB for workers and other overhead. The example therefore
-sets a 17 GiB process limit. Leave host memory for other services and check
-actual process usage for the chosen workload and worker count; exceeding the
-process limit can terminate the run.
+feedback behavior at this task window still need capacity qualification.
+`memory_mib` budgets the archive and bounded draw state; the launcher's cgroup
+limit adds 1 GiB for workers and other overhead. The example therefore sets a
+17 GiB cgroup limit. That fixed allowance does not establish how much RAM a
+long campaign needs. Measure the whole campaign's cgroup memory, including
+worker targets, pending tasks/results, stream and observation buffers, and
+checkpoint/export transients. Leave host memory for other services; exceeding
+the cgroup limit can terminate the run. The launcher sets `MemoryMax`, but
+does not configure a CPU set or swap limit.
+
+Budget CPU beyond the selected workers for the coordinator, two stream
+serializers, ordered relay, live feed and host services. For example, 136
+physical cores allow 128 workers, four coordinator/stream roles, one live-feed
+allowance and three cores for OS, monitoring and network work. These are sizing
+allowances, not dedicated thread placement or a throughput guarantee. Rendering
+and video encoding run on the Mac. See the
+[scaling qualification guide](../../scripts/qualification/nes-scaling.md) for
+CPU coverage, memory accounting and the distinction between functional checks
+and measured scaling.
 
 Then run on the Mac:
 

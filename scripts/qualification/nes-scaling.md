@@ -122,12 +122,14 @@ flag selects this behavior. Changing the logical window changes adaptive
 search and invalidates a fixed-work speedup comparison. The native Famidash
 launcher also uses the absolute task window.
 
-On a quiet host, select physical CPUs of one core type (leave room for the
-coordinator, two stream serializers, ordered relay, feed and browser/tunnel). For example, on a machine
-with at least 133 usable CPUs:
+On a quiet host, select physical CPUs of one core type. In addition to the
+workers, budget CPU for one coordinator, two stream serializers and one ordered
+relay. A dedicated-role service model therefore needs 132 cores for 128 workers
+before live observation and host services. As an illustrative headless budget,
+use 134 usable CPUs, allowing two more for monitoring and host work:
 
 ```sh
-taskset -c 0-132 python3 scripts/qualify-nes-scaling.py \
+taskset -c 0-133 python3 scripts/qualify-nes-scaling.py \
   --evaluator workloads/nes/target/release/nes-eval \
   --request /srv/runs/famidash-scaling-request.json \
   --workers 1 2 4 8 16 32 64 128 --window 512 --repeats 3 \
@@ -136,8 +138,11 @@ taskset -c 0-132 python3 scripts/qualify-nes-scaling.py \
 
 For lab checks use `--workers 1 2 4 8`. The qualifier refuses more workers than
 the process affinity permits unless `--allow-oversubscription` is explicit;
-oversubscribed runs are functional evidence only. Affinity is held fixed across
-trials but does not force the one-worker arm onto each individual core. For
+this check counts workers only and does not reserve the auxiliary cores above.
+Oversubscribed runs are functional evidence only. Affinity is held fixed across
+trials and shared by the campaign threads; it does not dedicate a core to each
+role or force the one-worker arm onto each individual core. A model that shares
+stream roles on one core must use their summed CPU cost. For
 precise efficiency estimates also measure each selected core separately, as
 [Performance](../../docs/PERFORMANCE.md) requires. Record host load, core types,
 thermal/frequency behavior and cgroup capacity; `/proc` inventories and load
@@ -195,7 +200,22 @@ memory_mib = 65536
 
 These are resource ceilings offered by the launcher, not a claim that 64 GiB
 fits every long search. Choose them from the actual host capacity and keep
-headroom for per-worker emulators and observation buffers. Run
+headroom for per-worker emulators and observation buffers. For a live 128-worker
+run, an illustrative CPU budget is 136 physical cores: 128 workers, four
+coordinator/stream roles, one live-feed allowance and three for OS, monitoring
+and network work. This budget does not enforce thread placement. The browser's
+rendering and video encoding use the viewing computer's resources.
+
+The archive budget is only part of whole-campaign RAM. Also allow for worker
+targets, pending task origins and results, stream buffers, live observation and
+checkpoint/export transients. The launcher's fixed extra 1 GiB is a unit memory
+allowance, not a proven sizing formula for a long search. It sets
+`MemoryMax`, but does not set a CPU set or swap limit. Establish the host/unit
+swap policy and retain `memory.max`, `memory.swap.max`, `memory.peak` and memory
+events when qualifying a machine. Measure a longer run at the intended archive
+budget before allocating the remaining host RAM to the search.
+
+Run
 `demos/twin-dragons/tools/launcher.py` on the viewing computer, open its
 loopback URL, select **Native runs**, then Famidash and the machine. The launcher
 ships committed HEAD, builds it remotely, uses a systemd memory limit and
