@@ -160,6 +160,10 @@ impl<M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for MetroidGame<M>
         cleared(observation.decoded)
     }
 
+    fn snapshot_frame_count(snapshot: &MetroidSnapshot) -> u64 {
+        snapshot.frame_count()
+    }
+
     fn emulator_state(snapshot: &MetroidSnapshot) -> &[u8] {
         snapshot.emulator_state()
     }

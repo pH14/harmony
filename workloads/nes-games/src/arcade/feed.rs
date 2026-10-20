@@ -13,7 +13,7 @@ use crate::{
     nes_backend::unpack_state_into,
     search::{
         campaign::{
-            CampaignAdmission, CampaignAdmissionDecision, CampaignCoordinator, CampaignJobResult,
+            CampaignAdmission, CampaignAdmissionDecision, CampaignJobResult, CampaignView,
             JobOutcome, JobSpec, WatchedJob, Workload,
         },
         rollout::ExecutionDisposition,
@@ -211,11 +211,15 @@ pub fn archived_state<V>(
         chords.truncate(prefix.len());
         chords.extend(played(input)?);
     }
+    let frames = chord_frames(&chords);
+    if frames_at.is_some_and(|expected| frames != expected) {
+        return Err("the replay frame count differs from the archived state".into());
+    }
     Ok(State {
         id,
         observation,
         actions: actions(&chords),
-        frames: chord_frames(&chords),
+        frames,
     })
 }
 
@@ -249,10 +253,7 @@ pub fn run_noted<G: ArcadeGame>(
 }
 
 #[must_use]
-pub fn stats<G: Workload>(campaign: &CampaignCoordinator<'_, G>) -> Stats
-where
-    G::ArchiveReport: Serialize,
-{
+pub fn stats<G: Workload>(campaign: &impl CampaignView<G>) -> Stats {
     let won = campaign.objective_witness().is_some();
     Stats {
         executions: campaign.executions(),
@@ -280,14 +281,14 @@ pub struct Feed<V> {
 }
 
 impl<V: Copy> Feed<V> {
-    pub fn new(root: V, root_frames: u64, root_digest: u64) -> Self {
+    pub fn new(root_id: u64, root: V, root_frames: u64, root_digest: u64) -> Self {
         Self {
             pending: BTreeMap::new(),
             progress: BTreeMap::new(),
             objective: None,
-            views: BTreeMap::from([(0, root)]),
-            frames_at: BTreeMap::from([(0, root_frames)]),
-            digests: BTreeMap::from([(0, root_digest)]),
+            views: BTreeMap::from([(root_id, root)]),
+            frames_at: BTreeMap::from([(root_id, root_frames)]),
+            digests: BTreeMap::from([(root_id, root_digest)]),
             points: Vec::new(),
             motion: Vec::new(),
             finishes: Vec::new(),
@@ -296,6 +297,10 @@ impl<V: Copy> Feed<V> {
             deaths: 0,
             sampled_jobs: 0,
         }
+    }
+
+    pub fn add_reconstruction_frames(&mut self, frames: u64) {
+        self.frames = self.frames.saturating_add(frames);
     }
 
     pub fn note(&mut self, note: Note<V>) {
@@ -390,10 +395,7 @@ impl<V: Copy> Feed<V> {
         batch
     }
 
-    pub fn forget_dropped<G: Workload>(&mut self, campaign: &CampaignCoordinator<'_, G>)
-    where
-        G::ArchiveReport: Serialize,
-    {
+    pub fn forget_dropped<G: Workload>(&mut self, campaign: &impl CampaignView<G>) {
         let archive = campaign.archive();
         if self.views.len() <= 2 * archive.live_entry_count() + PRUNE_SLACK {
             return;
@@ -427,6 +429,85 @@ mod tests {
     use super::{Feed, Note, Stats, Step, archived_state};
     use crate::search::campaign::{CampaignAdmission, CampaignAdmissionDecision};
 
+    #[test]
+    fn nonzero_root_keeps_ready_and_lookup_identity_with_recovered_preparation_frames() {
+        let input = [super::ButtonChord::new(1, 4), super::ButtonChord::new(2, 6)];
+        let ready = archived_state(7, 42_u8, &[], &input, Some(17), |requested| {
+            assert_eq!(requested, input);
+            Ok(vec![
+                super::ButtonChord::new(1, 4),
+                super::ButtonChord::new(0, 7),
+                super::ButtonChord::new(2, 6),
+            ])
+        })
+        .unwrap();
+        assert_eq!((ready.id, ready.frames), (7, 17));
+        let feed = Feed::new(ready.id, ready.observation, ready.frames, 99);
+        assert_eq!(
+            (feed.view(7), feed.frames_at(7), feed.digest(7)),
+            (Some(42), Some(17), Some(99))
+        );
+        assert_eq!(
+            (feed.view(0), feed.frames_at(0), feed.digest(0)),
+            (None, None, None)
+        );
+        let replayed: Vec<_> = ready
+            .actions
+            .iter()
+            .map(|a| super::ButtonChord::new(a.buttons, a.frames))
+            .collect();
+        let lookup = archived_state(
+            7,
+            feed.view(7).unwrap(),
+            &[],
+            &replayed,
+            feed.frames_at(7),
+            |_| panic!("the recovered path must be complete"),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&ready).unwrap(),
+            serde_json::to_value(&lookup).unwrap()
+        );
+        assert_eq!(
+            ready
+                .actions
+                .iter()
+                .map(|a| u64::from(a.frames))
+                .sum::<u64>(),
+            17
+        );
+    }
+
+    #[test]
+    fn recovered_frame_count_mismatch_is_a_normal_error() {
+        let input = [super::ButtonChord::new(1, 4)];
+        let error = archived_state(7, 0_u8, &[], &input, Some(11), |_| Ok(input.to_vec()))
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.to_string(),
+            "the replay frame count differs from the archived state"
+        );
+    }
+
+    #[test]
+    fn reconstruction_frames_do_not_fabricate_executions_deaths_or_samples() {
+        let mut feed = Feed::new(0, 0_u8, 0, 99);
+        feed.add_reconstruction_frames(23);
+        let batch = feed.take_batch(Stats {
+            executions: 7,
+            ..Stats::default()
+        });
+        assert_eq!(batch.frames, 23);
+        assert_eq!(batch.stats.executions, 7);
+        assert_eq!(batch.deaths, 0);
+        assert_eq!(batch.sampled_jobs, 0);
+        assert!(batch.points.is_empty());
+        feed.add_reconstruction_frames(u64::MAX);
+        assert_eq!(feed.take_batch(Stats::default()).frames, u64::MAX);
+    }
+
     fn step(view: u8, digest: Option<u64>, objective: bool) -> Step<u8> {
         Step {
             view,
@@ -439,7 +520,7 @@ mod tests {
 
     #[test]
     fn aggregate_notes_count_all_work_without_retaining_unsampled_jobs() {
-        let mut feed = Feed::new(0_u8, 0, 99);
+        let mut feed = Feed::new(0, 0_u8, 0, 99);
         for reservation in 0..10_000 {
             feed.note(Note {
                 reservation,
@@ -460,7 +541,7 @@ mod tests {
 
     #[test]
     fn admission_decisions_name_the_retained_steps() {
-        let mut feed = Feed::new(0_u8, 0, 99);
+        let mut feed = Feed::new(0, 0_u8, 0, 99);
         feed.note(Note {
             reservation: 3,
             steps: vec![
@@ -512,7 +593,7 @@ mod tests {
 
     #[test]
     fn the_first_high_water_finish_without_a_trail_keeps_its_matching_admission() {
-        let mut feed = Feed::new(0_u8, 0, 99);
+        let mut feed = Feed::new(0, 0_u8, 0, 99);
         let note = Note {
             reservation: 19,
             steps: vec![step(43, Some(430), true)],
@@ -549,7 +630,7 @@ mod tests {
 
     #[test]
     fn terminal_progress_survives_earlier_batches_and_keeps_finishing_endpoints_with_a_bound() {
-        let mut feed = Feed::new(0_u8, 0, 99);
+        let mut feed = Feed::new(0, 0_u8, 0, 99);
         for cleared in 1..=u8::MAX {
             let objective = cleared == u8::MAX;
             feed.note(Note {
@@ -598,7 +679,7 @@ mod tests {
 
     #[test]
     fn terminal_summary_keeps_the_step_that_reaches_a_clear_before_a_hidden_later_step() {
-        let mut feed = Feed::new(0_u8, 0, 0);
+        let mut feed = Feed::new(0, 0_u8, 0, 0);
         feed.note(Note {
             reservation: 1,
             steps: vec![

@@ -51,6 +51,21 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(request["wall_seconds"], 5400)
         self.assertNotIn("mixture", request)
 
+    def test_famidash_task_window_and_live_routing_are_fixed_across_worker_counts(self) -> None:
+        for game in ("famidash", "famidash-community", "famidash-b", "famidash-c", "famidash-d"):
+            for workers in (1, 128):
+                with self.subTest(game=game, workers=workers):
+                    settings = launcher.Settings(game, "cloud", workers, 4096, 19, 1)
+                    request = launcher.run_request(settings, "/r.nes", "aa", "/c.so", "bb")
+                    self.assertEqual(request["game"], game)
+                    self.assertEqual(request["live"], "127.0.0.1:0")
+                    self.assertEqual(request["workers"], workers)
+                    self.assertEqual(request["window"], 512)
+                    self.assertNotIn("algorithm", request)
+        for game in ("super-mario-bros", "mega-man-2", "metroid", "twin-dragons"):
+            settings = launcher.Settings(game, "cloud", 128, 4096, 19, 1)
+            self.assertEqual(launcher.run_request(settings, "/r.nes", "aa", "/c.so", "bb")["window"], 4)
+
     def test_roms_come_from_the_site_or_the_rom_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

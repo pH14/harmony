@@ -218,9 +218,11 @@ memory_mib = 16384
 ```
 
 The dialog must also select 128 workers to start one 128-worker campaign.
-The launcher sets `window: 4`; `nes-eval` multiplies this by workers, so 128
-workers allow 512 outstanding reservations. This is configuration, not a
-throughput guarantee. `memory_mib` budgets the archive and bounded draw state;
+For Famidash the launcher sets a fixed `window: 512` at every worker count:
+this is 512 outstanding expansion tasks, each with at most 14 edge attempts,
+so up to 7,168 edge attempts can be pending. Other games retain `window: 4`
+per worker. This is configuration, not a throughput guarantee; memory and
+feedback behavior at this task window still need capacity qualification. `memory_mib` budgets the archive and bounded draw state;
 the launcher's process limit adds 1 GiB for workers and other overhead. The example therefore
 sets a 17 GiB process limit. Leave host memory for other services and check
 actual process usage for the chosen workload and worker count; exceeding the

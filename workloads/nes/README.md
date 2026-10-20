@@ -313,6 +313,42 @@ optionally persists them without hashing every byte a second time. Full
 verification replays the retained stream, and the scaling qualifier also checks
 its digest and length independently.
 
+## Famidash expansion evaluation
+
+Normal Famidash evaluation, including stages, whole-game runs and all live ROM
+groups, uses the bounded expansion engine. Each task explores the fixed
+width-two, fanout-two, depth-four beam and can attempt at most 14 edges. The
+request's `window` is the exact number of outstanding tasks, independent of
+`workers`; qualification across worker counts must hold this task window fixed.
+Other games retain the existing per-worker request-window interpretation. The
+Arcade launcher sends a fixed 512-task Famidash window (up to 7,168 pending edge
+attempts); its memory and feedback capacity are not a throughput qualification.
+
+`identity.json` records the expansion policy and task-window semantics. In
+`result.json`, `executions` counts actual executed edges; `edge_attempts` includes
+edge preparation failures, `budget_consumed` also includes empty-task progress,
+and reserved/admitted tasks are separate. `frames_emulated` includes bootstrap,
+parent reconstruction and edge work, each also exported separately. First-victory
+counts refer to actual edges and canonical work at the first objective. Progress
+and budget counts are cumulative after checkpoint resume. Rates use only
+`session_counter_deltas` (final counters minus `initial_counters`) over the new
+session's search wall time, including startup/finalization wall. Fresh bootstrap
+work is present in the initial counters and cumulative total, separately from
+the dispatch delta; inherited checkpoint work never inflates session rates.
+Worker job telemetry also covers only the current session. A victory
+observed only beyond the requested frame budget does not pass the solved check.
+The request execution limit bounds attempts rather than guaranteeing that many
+actual edges. Worker count changes physical execution, not the task window.
+
+Expansion uses the common evaluator's ROM/core/prepared-execution identity,
+phase/timing exports, two witness replays, milestone checks and bounded full
+verification. Full verification replays the typed tree stream and compares the
+logical report and final snapshot checkpoint. Search checkpoint/resume options
+are passed to the expansion engine without being silently discarded; their
+format and supported policy are owned by the searcher. A resumed expansion run
+can use full verification: replay starts at its checkpoint and verifies the new
+session's typed stream and final artifacts.
+
 ## Live view
 
 Every `nes-eval` campaign of Super Mario Bros., Mega Man 2, Metroid, Twin
@@ -327,6 +363,14 @@ server refuses any other address, and answers 403 to a request whose `Host` or
 directory. To watch from another machine, forward the port over SSH, for
 example `ssh -L 8790:127.0.0.1:PORT HOST`, or use the arcade launcher in
 [`demos/twin-dragons`](../../demos/twin-dragons/README.md#native-runs).
+
+The initial view prefers the resident genesis snapshot. After eviction or
+checkpoint resume, it falls back to the first resident archived snapshot and
+uses that entry's stable id; metadata without a snapshot is not a viewable root.
+Ready states and subsequent lookups use the snapshot's actual frame clock and
+full archived input. The evaluator, feed and lookup server share the exact
+configured workload, including stage setup. When the input omits preparation
+frames, recovery replays that workload; a remaining frame mismatch is an error.
 
 With no viewer connected, workers skip trail and per-action records, and the
 coordinator turns off admission records. An atomic empty-queue check avoids

@@ -43,6 +43,120 @@ class ScalingTests(unittest.TestCase):
             (directory / f"{name}.json").write_text(json.dumps(value))
         (directory / "checkpoint.bin").write_bytes(checkpoint)
 
+    def write_expansion(self, directory, workers=1, resumed=False):
+        self.write_run(directory, workers=workers)
+        initial = dict(tasks_reserved=2 if resumed else 0, tasks_admitted=1 if resumed else 0,
+                       edge_attempts=4 if resumed else 0, executed_edges=3 if resumed else 0,
+                       budget_consumed=4 if resumed else 0, preparation_failures=1 if resumed else 0,
+                       empty_tasks=0, bootstrap_work=3, reconstruction_work=2 if resumed else 0,
+                       execution_work=10 if resumed else 0,
+                       executions_to_first_objective=None, work_to_first_objective=None)
+        final = dict(tasks_reserved=3, tasks_admitted=3, edge_attempts=9, executed_edges=7,
+                     budget_consumed=10, preparation_failures=2, empty_tasks=1,
+                     bootstrap_work=3, reconstruction_work=8, execution_work=31,
+                     executions_to_first_objective=None, work_to_first_objective=None)
+        deltas = {target: final[source] - initial[source]
+                  for source, target in scaling.EXPANSION_FIELDS.items()}
+        deltas["frames_emulated"] = sum(deltas[name] for name in
+                                       ("bootstrap_frames", "reconstruction_frames", "edge_frames"))
+        report = json.loads((directory / "campaign.json").read_text())
+        report.update(header={"format": "dissonance-bounded-expansion-v1",
+                              "schedule": "bounded_beam_fifo_tasks_v1", "window": 512,
+                              "execution_budget": 10}, counters=final, initial_counters=initial)
+        (directory / "campaign.json").write_text(json.dumps(report))
+        result = json.loads((directory / "result.json").read_text())
+        result.update(engine="bounded_expansion", window_semantics="fixed_outstanding_tasks",
+                      initial_counters=initial, session_counter_deltas=deltas, executions=7,
+                      frames_emulated=42, executions_per_second=deltas["executed_edges"],
+                      rate_basis="session_counter_deltas_over_search_seconds",
+                      rates_include_startup_and_finalization_wall=True)
+        for source, target in scaling.EXPANSION_FIELDS.items():
+            if source != "executed_edges":
+                result[target] = final[source]
+        (directory / "result.json").write_text(json.dumps(result))
+        telemetry = json.loads((directory / "telemetry.json").read_text())
+        telemetry["workers"][0]["jobs"] = deltas["tasks_admitted"]
+        (directory / "telemetry.json").write_text(json.dumps(telemetry))
+
+    def test_expansion_schema_uses_tasks_not_executed_edges_and_checked_resumed_deltas(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for resumed in (False, True):
+                directory = Path(temporary) / str(resumed)
+                self.write_expansion(directory, resumed=resumed)
+                result, telemetry, _ = scaling.validate_result(directory, "bounded_expansion")
+                report = scaling.read_json(directory / "campaign.json")
+                deltas = scaling.expansion_deltas(result, report)
+                self.assertEqual(sum(row["jobs"] for row in telemetry["workers"]), 2 if resumed else 3)
+                self.assertEqual(deltas["executed_edges"], 4 if resumed else 7)
+                self.assertEqual(deltas["reconstruction_frames"], 6 if resumed else 8)
+                self.assertEqual(result["frames_emulated"], 42)
+                costs = scaling.coordination_costs({"stream": {"worker_cpu_ns": 12}}, 3, "task")
+                self.assertEqual(costs["encoder_cpu_ns_per_task"], 4)
+
+    def test_expansion_rejects_wrong_shape_bad_deltas_and_edge_based_worker_counts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "run"
+            self.write_expansion(directory)
+            result_path, report_path = directory / "result.json", directory / "campaign.json"
+            original_result, original_report = scaling.read_json(result_path), scaling.read_json(report_path)
+            plants = [lambda r, p: r.update(engine="linear"),
+                      lambda r, p: r.update(window_semantics="per_worker"),
+                      lambda r, p: p.pop("counters"),
+                      lambda r, p: p["counters"].update(executed_edges=8),
+                      lambda r, p: (p["initial_counters"].update(execution_work=99),
+                                    r["initial_counters"].update(execution_work=99)),
+                      lambda r, p: r["session_counter_deltas"].update(tasks_admitted=7),
+                      lambda r, p: r["session_counter_deltas"].update(empty_tasks=True),
+                      lambda r, p: r.update(frames_emulated=31),
+                      lambda r, p: r.update(rate_basis="cumulative"),
+                      lambda r, p: p["counters"].update(tasks_reserved=4)]
+            for plant in plants:
+                r, p = json.loads(json.dumps(original_result)), json.loads(json.dumps(original_report))
+                plant(r, p)
+                result_path.write_text(json.dumps(r)); report_path.write_text(json.dumps(p))
+                with self.assertRaises((ValueError, KeyError)):
+                    scaling.validate_result(directory, "bounded_expansion")
+            result_path.write_text(json.dumps(original_result)); report_path.write_text(json.dumps(original_report))
+            telemetry_path = directory / "telemetry.json"
+            telemetry = scaling.read_json(telemetry_path)
+            telemetry["workers"][0]["jobs"] = original_result["executions"]
+            telemetry_path.write_text(json.dumps(telemetry))
+            with self.assertRaisesRegex(ValueError, "worker telemetry"):
+                scaling.validate_result(directory, "bounded_expansion")
+
+    def test_counter_bounds_never_accept_boolean_negative_or_overflow(self):
+        for value in (True, -1, 1 << 64, 1.0, None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                scaling.counter(value)
+        with self.assertRaises(ValueError):
+            scaling.checked_sum([(1 << 64) - 1, 1])
+
+    def test_expansion_fixed_absolute_window_allows_nondividing_worker_counts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evaluator = root / "evaluator"; evaluator.write_text("immutable executable")
+            request = root / "request.json"
+            request.write_text(json.dumps({"game": "famidash", "executions": 10}))
+            observed = []
+            def run(command, directory, timeout):
+                configured = scaling.read_json(Path(command[1]))
+                observed.append((configured["workers"], configured["window"]))
+                self.write_expansion(Path(command[2]), workers=configured["workers"])
+                return 1.0
+            output = root / "evidence"
+            args = ["qualify", "--evaluator", str(evaluator), "--request", str(request),
+                    "--out", str(output), "--workers", "1", "3", "--window", "512", "--repeats", "1",
+                    "--allow-oversubscription"]
+            with patch.object(sys, "argv", args), patch.object(scaling, "run_trial", side_effect=run):
+                scaling.main()
+            self.assertEqual(observed, [(1, 512), (3, 512)])
+            summary = scaling.read_json(output / "summary.json")
+            self.assertEqual(summary["status"], "verified")
+            self.assertEqual(summary["throughput_unit"], "tasks_per_second")
+            self.assertEqual(summary["trials"][0]["throughput_per_second"], 3)
+            self.assertEqual(summary["trials"][0]["executed_edges_per_second"], 7)
+            self.assertEqual(summary["trials"][0]["coordination"]["unit"], "task")
+
     def test_checkpoint_identity_hashes_binary_bytes_and_requires_current_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / "run"

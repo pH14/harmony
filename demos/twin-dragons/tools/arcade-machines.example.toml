@@ -14,8 +14,10 @@ roms = "~/arcade-roms"
 # `workers` and `memory_mib` are the largest values the page offers. `runs`
 # lists directories that hold other `nes-eval` campaigns; the page lists every
 # running campaign under them so it can be watched. Set workers = 128 to offer
-# that choice; select 128 in the dialog to use it. The launcher uses window = 4
-# per worker (512 outstanding reservations at 128 workers). Its process memory
+# that choice; select 128 in the dialog to use it. Famidash uses a fixed window
+# of 512 expansion tasks (up to 7168 pending edge attempts), independent of
+# workers; other games use window = 4 per worker. Memory/feedback capacity at
+# the Famidash task window remains to be qualified. Its process memory
 # limit is memory_mib + 1024 MiB; allow additional host memory for other services.
 # This config sets limits, not a throughput or resource-adequacy guarantee.
 [machines.example]

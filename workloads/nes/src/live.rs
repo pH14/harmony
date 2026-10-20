@@ -34,9 +34,14 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::{
-    eval::{Request, Result, evaluate_watched},
+    eval::{Request, Result, evaluate_expansion_watched, evaluate_watched},
     search::{
-        campaign::{CampaignCoordinator, CampaignWatch, JobOutcome, JobSpec, WatchedJob},
+        campaign::{
+            CampaignAdmission, CampaignAdmissionDecision, CampaignCoordinator, CampaignView,
+            CampaignWatch, ExpansionAdmission, ExpansionCoordinator, ExpansionDecision,
+            ExpansionEdgeAdmission, ExpansionEdgeId, ExpansionWatch, ExpansionWorkload, JobOutcome,
+            JobSpec, WatchedJob,
+        },
         draw::draw_mixture_identifier,
     },
     witness::EndpointIdentity,
@@ -88,8 +93,6 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
     )
 }
 
-type Games<G> = Arc<dyn Fn() -> G + Send + Sync>;
-
 pub type MemoryView<V> = fn(&[u8]) -> std::result::Result<V, Box<dyn Error>>;
 
 type Observe<V> = Arc<dyn Fn(&[Vec<u8>]) -> Vec<Option<V>> + Send + Sync>;
@@ -127,6 +130,7 @@ enum Event {
 }
 
 pub struct LiveWatch<G: ArcadeGame> {
+    workload: Arc<G>,
     shared: SharedFeed<G::View>,
     events: Sender<Event>,
     lookups: Mutex<Receiver<Lookup<G::View>>>,
@@ -178,7 +182,7 @@ fn native_observer<V: 'static>(
     })
 }
 
-fn glance<G: ArcadeGame>(campaign: &CampaignCoordinator<'_, G>) -> Vec<(u64, Vec<u8>)> {
+fn glance<G: ArcadeGame>(campaign: &impl CampaignView<G>) -> Vec<(u64, Vec<u8>)> {
     let archive = campaign.archive();
     let entries = archive.live_entry_count();
     let indices = glance_indices(entries, &mut Sampler(campaign.executions() | 1));
@@ -200,17 +204,49 @@ fn glance_indices(entries: usize, sampler: &mut Sampler) -> Vec<usize> {
     indices
 }
 
+fn live_state<G: ArcadeGame>(
+    workload: &G,
+    id: u64,
+    view: G::View,
+    input: &[ButtonChord],
+    frames: Option<u64>,
+    genesis: &mut Option<usize>,
+) -> Result<State<G::View>> {
+    feed::archived_state(id, view, &[], input, frames, |input| {
+        let count = match *genesis {
+            Some(count) => count,
+            None => {
+                let count = feed::genesis_actions(workload)?;
+                *genesis = Some(count);
+                count
+            }
+        };
+        feed::played(workload, None, count, input)
+    })
+}
+
+fn resident_root<A, K, M, S>(
+    archive: &crate::search::archive::Archive<A, K, M, S>,
+) -> Result<(u64, &S)>
+where
+    A: Clone + std::fmt::Debug + Eq + Ord + Serialize + serde::de::DeserializeOwned,
+    K: crate::search::archive::ArchiveKey,
+    M: Clone + Copy + std::fmt::Debug + Eq + Serialize + serde::de::DeserializeOwned,
+    S: Clone,
+{
+    let resident = |index| Some((archive.stable_id(index)?, archive.entry_snapshot(index)?));
+    archive
+        .index_of_id(0)
+        .and_then(resident)
+        .or_else(|| (0..archive.live_entry_count()).find_map(resident))
+        .ok_or_else(|| "the live view found no archived state to start from".into())
+}
+
 impl<G: ArcadeGame> LiveWatch<G> {
-    fn root(&self, campaign: &CampaignCoordinator<'_, G>) -> Result<()>
-    where
-        G::ArchiveReport: Serialize,
-    {
+    fn root(&self, campaign: &impl CampaignView<G>) -> Result<()> {
         let archive = campaign.archive();
-        let (id, snapshot) = archive
-            .index_of_id(0)
-            .or((archive.live_entry_count() > 0).then_some(0))
-            .and_then(|index| Some((archive.stable_id(index)?, archive.entry_snapshot(index)?)))
-            .ok_or("the live view found no archived state to start from")?;
+        let (id, snapshot) = resident_root(archive)?;
+        let frames = G::snapshot_frame_count(snapshot);
         let raw = raw_state(G::emulator_state(snapshot))?;
         let view = (self.observe)(std::slice::from_ref(&raw))
             .pop()
@@ -218,17 +254,23 @@ impl<G: ArcadeGame> LiveWatch<G> {
             .ok_or("the live view could not read the first archived state")?;
         let snapshot = core_state(&raw);
         let digest = snapshot_digest(snapshot);
+        let index = archive
+            .index_of_id(id)
+            .ok_or("the live root metadata disappeared")?;
+        let input = archive.entry_input(index)?.actions;
+        let root = live_state(
+            self.workload.as_ref(),
+            id,
+            view,
+            &input,
+            Some(frames),
+            &mut None,
+        )?;
         {
             let mut shared = lock(&self.shared);
-            shared.feed = Some(Feed::new(view, 0, digest));
+            shared.feed = Some(Feed::new(id, view, frames, digest));
             shared.stats = feed::stats(campaign);
         }
-        let root = State {
-            id,
-            observation: view,
-            actions: Vec::new(),
-            frames: 0,
-        };
         let ready = json!({
             "type": "ready",
             "game": self.game,
@@ -242,10 +284,7 @@ impl<G: ArcadeGame> LiveWatch<G> {
         Ok(())
     }
 
-    fn serve(&self, campaign: &CampaignCoordinator<'_, G>)
-    where
-        G::ArchiveReport: Serialize,
-    {
+    fn serve(&self, campaign: &impl CampaignView<G>) {
         if self.pending_lookups.load(Ordering::Relaxed) == 0 {
             return;
         }
@@ -266,7 +305,9 @@ impl<G: ArcadeGame> LiveWatch<G> {
                         id,
                         observation: feed.and_then(|feed| feed.view(id)),
                         digest: feed.and_then(|feed| feed.digest(id)),
-                        frames_at: feed.and_then(|feed| feed.frames_at(id)),
+                        frames_at: feed
+                            .and_then(|feed| feed.frames_at(id))
+                            .or_else(|| archive.entry_snapshot(index).map(G::snapshot_frame_count)),
                         input: archive.entry_input(index).ok()?.actions,
                         packed: archive
                             .entry_snapshot(index)
@@ -280,7 +321,7 @@ impl<G: ArcadeGame> LiveWatch<G> {
     }
 }
 
-impl<G: ArcadeGame> CampaignWatch<G> for LiveWatch<G>
+impl<G: ArcadeGame + Send> CampaignWatch<G> for LiveWatch<G>
 where
     G::ArchiveReport: Serialize,
 {
@@ -371,6 +412,113 @@ where
 
     fn start(&self, campaign: &mut CampaignCoordinator<'_, G>) -> Result<()> {
         self.root(campaign)
+    }
+}
+
+fn expansion_feed_admission(edge: &ExpansionEdgeAdmission) -> Result<CampaignAdmission> {
+    let decision = match edge.decision {
+        ExpansionDecision::Retained { id } => CampaignAdmissionDecision::Retained { id },
+        ExpansionDecision::Duplicate { id } => CampaignAdmissionDecision::Duplicate { id },
+        ExpansionDecision::Objective => CampaignAdmissionDecision::Objective,
+        ExpansionDecision::Filtered
+        | ExpansionDecision::PreparationFailed
+        | ExpansionDecision::Rejected => CampaignAdmissionDecision::Rejected,
+    };
+    Ok(CampaignAdmission {
+        reservation: edge.id.observation_reservation()?,
+        decisions: vec![decision],
+    })
+}
+
+fn live_note_memory_charge<V>(note: &Note<V>) -> usize {
+    std::mem::size_of::<Note<V>>()
+        .saturating_add(
+            note.steps
+                .capacity()
+                .saturating_mul(std::mem::size_of::<feed::Step<V>>()),
+        )
+        .saturating_add(note.trail.as_ref().map_or(0, |trail| {
+            trail.capacity().saturating_mul(std::mem::size_of::<u16>())
+        }))
+}
+
+impl<G: ArcadeGame + ExpansionWorkload + Send> ExpansionWatch<G> for LiveWatch<G>
+where
+    G::ArchiveReport: Serialize,
+{
+    type Note = Note<G::View>;
+
+    fn note_memory_charge(&self, note: &Self::Note) -> usize {
+        live_note_memory_charge(note)
+    }
+
+    fn start(&self, campaign: &ExpansionCoordinator<'_, G, Self::Note>) -> Result<()> {
+        self.root(campaign)
+    }
+
+    fn run_edge(
+        &self,
+        id: ExpansionEdgeId,
+        job: &JobSpec<G>,
+        execute: impl FnOnce() -> std::result::Result<JobOutcome<G>, Box<dyn Error>>,
+    ) -> WatchedJob<G, Self::Note> {
+        if id.observation_reservation()? != job.reservation {
+            return Err("expansion live edge observation identity differs".into());
+        }
+        <Self as CampaignWatch<G>>::run(self, job, execute)
+    }
+
+    fn admitted(
+        &self,
+        admission: &mut ExpansionAdmission<G, Self::Note>,
+        campaign: &ExpansionCoordinator<'_, G, Self::Note>,
+    ) {
+        let watched = self.viewers.load(Ordering::Relaxed) > 0;
+        let changed = self.recording.swap(watched, Ordering::Relaxed) != watched;
+        if watched || changed || campaign.finished() {
+            let mut shared = lock(&self.shared);
+            if let Some(feed) = shared.feed.as_mut() {
+                if changed && !watched {
+                    feed.forget_pending();
+                }
+                if watched {
+                    feed.add_reconstruction_frames(admission.outcome.reconstruction_work);
+                    if let Some(trace) = admission.outcome.trace.as_mut() {
+                        let mut mapped = Vec::with_capacity(admission.decisions.len());
+                        for edge in &admission.decisions {
+                            let note = trace
+                                .nodes
+                                .iter_mut()
+                                .find(|node| node.ordinal == edge.id.ordinal)
+                                .and_then(|node| node.evidence.as_mut())
+                                .and_then(|edge| edge.note.take());
+                            if let Some(note) = note {
+                                mapped.push(
+                                    expansion_feed_admission(edge).expect(
+                                        "executed expansion live edge identity was validated",
+                                    ),
+                                );
+                                feed.note(note);
+                            }
+                        }
+                        feed.admit(mapped);
+                    }
+                    feed.forget_dropped(campaign);
+                }
+            }
+            shared.stats = feed::stats(campaign);
+        }
+        if !watched && let Some(trace) = admission.outcome.trace.as_mut() {
+            for node in &mut trace.nodes {
+                if let Some(edge) = node.evidence.as_mut() {
+                    edge.note.take();
+                }
+            }
+        }
+        if watched && self.glance.swap(false, Ordering::AcqRel) {
+            let _ = self.events.send(Event::Glance(glance(campaign)));
+        }
+        self.serve(campaign);
     }
 }
 
@@ -752,6 +900,7 @@ fn feed_loop<V: Serialize + Copy>(feeding: &Feeding<'_, V>, mut viewers: Viewers
             Err(RecvTimeoutError::Timeout) => {}
             Ok(Event::Finished) | Err(RecvTimeoutError::Disconnected) => {
                 let mut shared = lock(shared);
+                shared.stats.stopped = true;
                 let stats = shared.stats;
                 let batch = shared
                     .feed
@@ -833,7 +982,7 @@ struct Server<G: ArcadeGame> {
     lookups: Sender<Lookup<G::View>>,
     pending_lookups: Arc<AtomicUsize>,
     site: Option<PathBuf>,
-    games: Option<Games<G>>,
+    workload: Arc<G>,
     observe: Observe<G::View>,
     terminal: Arc<OnceLock<Terminal>>,
     streams: Arc<Streams>,
@@ -883,7 +1032,7 @@ impl<G: ArcadeGame> Server<G> {
         for (index, observation) in unseen.into_iter().zip((self.observe)(&raws)) {
             found[index].observation = observation;
         }
-        let mut replay: Option<(G, usize)> = None;
+        let mut genesis = None;
         let mut states = Vec::new();
         let mut answered = Vec::new();
         for (found, raw) in found.into_iter().zip(raw) {
@@ -894,21 +1043,13 @@ impl<G: ArcadeGame> Server<G> {
             ) else {
                 continue;
             };
-            let state = feed::archived_state(
+            let state = live_state(
+                self.workload.as_ref(),
                 found.id,
                 observation,
-                &[],
                 &found.input,
-                found.frames_at.filter(|_| self.games.is_some()),
-                |input| {
-                    if replay.is_none() {
-                        let game = (self.games.as_ref().ok_or("no replay game")?)();
-                        let genesis = feed::genesis_actions(&game)?;
-                        replay = Some((game, genesis));
-                    }
-                    let (game, genesis) = replay.as_ref().ok_or("no replay game")?;
-                    feed::played(game, None, *genesis, input)
-                },
+                found.frames_at,
+                &mut genesis,
             );
             if let Ok(state) = state {
                 states.push(state_json(&state, digest, snapshot));
@@ -1038,7 +1179,7 @@ fn process_start() -> Option<u64> {
         .ok()
 }
 
-fn listen<G: ArcadeGame>(listener: &TcpListener, server: &Arc<Server<G>>) {
+fn listen<G: ArcadeGame + Send>(listener: &TcpListener, server: &Arc<Server<G>>) {
     let open = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
         if open.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
@@ -1061,7 +1202,32 @@ pub fn evaluate_live<G>(
     id: &str,
 ) -> Result<()>
 where
-    G: ArcadeGame<Machine = NativeMachine>,
+    G: ArcadeGame<Machine = NativeMachine> + Send,
+    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: EndpointIdentity + 'static,
+{
+    evaluate_live_with::<G>(
+        rom,
+        request,
+        out,
+        id,
+        |game, run, effective, execution, watch| {
+            evaluate_watched(game, run, effective, execution, out, started, watch)
+        },
+    )
+}
+
+fn evaluate_live_with<G>(
+    rom: &[u8],
+    request: &Request,
+    out: &Path,
+    id: &str,
+    evaluate: impl FnOnce(&G, G::Run, &Request, &str, &LiveWatch<G>) -> Result<()>,
+) -> Result<()>
+where
+    G: ArcadeGame<Machine = NativeMachine> + Send,
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
     G::Milestones: 'static,
     G::Observations: 'static,
@@ -1077,24 +1243,20 @@ where
     };
     let execution_sha256 =
         machine::quicknes::prepared_execution_sha256(&request.core, &request.core_sha256)?;
-    let (game_rom, core, core_sha256, execution) = (
-        rom.to_vec(),
-        request.core.clone(),
-        request.core_sha256.clone(),
-        execution_sha256.clone(),
-    );
-    let games: Games<G> = Arc::new(move || native_game(&game_rom, &core, &core_sha256, &execution));
     let watched = Watched {
         rom,
         request,
         execution_sha256: &execution_sha256,
         out,
-        started,
         id,
         address,
         view: G::memory_view,
     };
-    watched.evaluate(games(), G::run(), Some(games))
+    watched.evaluate(
+        native_game::<G>(rom, &request.core, &request.core_sha256, &execution_sha256),
+        G::run(),
+        |game, run, watch| evaluate(game, run, request, &execution_sha256, watch),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1110,7 +1272,7 @@ pub fn evaluate_watching<G>(
     view: MemoryView<G::View>,
 ) -> Result<()>
 where
-    G: ArcadeGame,
+    G: ArcadeGame + Send,
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
     G::Milestones: 'static,
     G::Observations: 'static,
@@ -1121,12 +1283,77 @@ where
         request,
         execution_sha256,
         out,
-        started,
         id,
         address: "127.0.0.1:0",
         view,
     };
-    watched.evaluate(game, run, None)
+    watched.evaluate(game, run, |game, run, watch| {
+        evaluate_watched(game, run, request, execution_sha256, out, started, watch)
+    })
+}
+
+pub fn evaluate_live_expansion<G>(
+    rom: &[u8],
+    request: &Request,
+    out: &Path,
+    started: Instant,
+    id: &str,
+) -> Result<()>
+where
+    G: ArcadeGame<Machine = NativeMachine> + ExpansionWorkload + Send + 'static,
+    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: EndpointIdentity + 'static,
+    <G::Key as crate::search::archive::ArchiveKey>::Progress: Send + Sync + 'static,
+    G::ExpansionQuality: 'static,
+    G::ExpansionBucket: 'static,
+{
+    evaluate_live_with::<G>(
+        rom,
+        request,
+        out,
+        id,
+        |game, run, effective, execution, watch| {
+            evaluate_expansion_watched(game, run, effective, execution, out, started, watch)
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_watching_expansion<G>(
+    game: G,
+    run: G::Run,
+    rom: &[u8],
+    request: &Request,
+    execution_sha256: &str,
+    out: &Path,
+    started: Instant,
+    id: &str,
+    view: MemoryView<G::View>,
+) -> Result<()>
+where
+    G: ArcadeGame + ExpansionWorkload + Send + 'static,
+    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: EndpointIdentity + 'static,
+    <G::Key as crate::search::archive::ArchiveKey>::Progress: Send + Sync + 'static,
+    G::ExpansionQuality: 'static,
+    G::ExpansionBucket: 'static,
+{
+    let watched = Watched {
+        rom,
+        request,
+        execution_sha256,
+        out,
+        id,
+        address: "127.0.0.1:0",
+        view,
+    };
+    watched.evaluate(game, run, |game, run, watch| {
+        evaluate_expansion_watched(game, run, request, execution_sha256, out, started, watch)
+    })
 }
 
 struct Watched<'a, V> {
@@ -1134,21 +1361,26 @@ struct Watched<'a, V> {
     request: &'a Request,
     execution_sha256: &'a str,
     out: &'a Path,
-    started: Instant,
     id: &'a str,
     address: &'a str,
     view: MemoryView<V>,
 }
 
 impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
-    fn evaluate<G>(&self, game: G, run: G::Run, games: Option<Games<G>>) -> Result<()>
+    fn evaluate<G>(
+        &self,
+        game: G,
+        run: G::Run,
+        evaluate: impl FnOnce(&G, G::Run, &LiveWatch<G>) -> Result<()>,
+    ) -> Result<()>
     where
-        G: ArcadeGame<View = V>,
+        G: ArcadeGame<View = V> + Send,
         G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
         G::Milestones: 'static,
         G::Observations: 'static,
         G::Snapshot: EndpointIdentity + 'static,
     {
+        let game = Arc::new(game);
         let listener = TcpListener::bind(self.address)?;
         let local = listener.local_addr()?;
         if !local.ip().is_loopback() {
@@ -1187,6 +1419,7 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
         let glance = Arc::new(AtomicBool::new(false));
         let details = Arc::new(AtomicUsize::new(TRAILS_PER_TICK));
         let watch = LiveWatch::<G> {
+            workload: Arc::clone(&game),
             shared: Arc::clone(&shared),
             events: events.clone(),
             lookups: Mutex::new(pending),
@@ -1229,21 +1462,13 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
             lookups,
             pending_lookups,
             site: self.request.live_site.clone(),
-            games,
+            workload: Arc::clone(&game),
             observe,
             terminal,
             streams: Arc::clone(&streams),
         });
         thread::spawn(move || listen(&listener, &server));
-        let result = evaluate_watched(
-            game,
-            run,
-            self.request,
-            self.execution_sha256,
-            self.out,
-            self.started,
-            &watch,
-        );
+        let result = evaluate(game.as_ref(), run, &watch);
         let _ = watch.events.send(Event::Finished);
         let _ = feed.join();
         streams.wait(IO_TIMEOUT);
@@ -1261,6 +1486,206 @@ mod tests {
         site_path, take_detail, take_progress,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(
+        Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+    )]
+    struct ResidentKey(u8);
+
+    impl crate::search::archive::ArchiveKey for ResidentKey {
+        type Place = u8;
+        type Progress = u8;
+        type Identity = ();
+        type Lineage = ();
+
+        fn place(self) -> Self::Place {
+            self.0
+        }
+        fn progress(self) -> Self::Progress {
+            self.0
+        }
+        fn identity(self) -> Self::Identity {}
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn live_nonzero_ready_and_lookup_share_the_exact_configured_workload() {
+        use nes_games::{
+            arcade::ArcadeGame,
+            famidash::{
+                campaign::FamidashGame,
+                levels::{Side, Stage},
+            },
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        type Game = FamidashGame<super::NativeMachine>;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let configured = Arc::new(Game::with_targets(
+            b"test-rom",
+            "test-core",
+            "test-sha",
+            Stage {
+                side: Side::Main,
+                level: 7,
+                goal: 9,
+            },
+            Box::new(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Err("configured level7 factory".into())
+            }),
+        ));
+        let view = Game::memory_view(&[0_u8; machine::nes::WRAM_SIZE]).unwrap();
+        let input = [machine::nes::ButtonChord::new(1, 4)];
+        let ready =
+            super::live_state(configured.as_ref(), 7, view, &input, Some(4), &mut None).unwrap();
+        let feed = nes_games::arcade::feed::Feed::new(7, view, ready.frames, 81);
+        let lookup = super::live_state(
+            configured.as_ref(),
+            7,
+            feed.view(7).unwrap(),
+            &input,
+            feed.frames_at(7),
+            &mut None,
+        )
+        .unwrap();
+        let ready_json = super::state_json(&ready, 81, None);
+        assert_eq!(
+            ready_json,
+            super::state_json(&lookup, feed.digest(7).unwrap(), None)
+        );
+        assert_eq!(ready_json["id"], 7);
+        assert_eq!(ready_json["frames"], 4);
+        assert_eq!(ready_json["actions"][0]["frames"], 4);
+        assert!(feed.view(0).is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let error = super::live_state(configured.as_ref(), 7, view, &input, Some(11), &mut None)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("configured level7 factory"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn live_resident_root_skips_evicted_genesis_metadata_and_rejects_missing_snapshots() {
+        use crate::search::archive::{Archive, ArchiveCandidate};
+        let mut archive = Archive::<u8, ResidentKey, (), u8>::new(|_| 1);
+        archive.max_entries = 1;
+        let first = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![0],
+                    key: ResidentKey(0),
+                    milestones: (),
+                },
+                11,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(archive.stable_id(first), Some(0));
+        assert_eq!(super::resident_root(&archive).unwrap(), (0, &11));
+        let second = archive
+            .insert(
+                None,
+                1,
+                ArchiveCandidate {
+                    suffix: vec![1],
+                    key: ResidentKey(1),
+                    milestones: (),
+                },
+                22,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(archive.index_of_id(0), Some(first));
+        assert!(archive.entry_snapshot(first).is_none());
+        assert_eq!(archive.entry_drops(), 1);
+        assert_eq!(
+            super::resident_root(&archive).unwrap(),
+            (archive.stable_id(second).unwrap(), &22)
+        );
+        let bytes = postcard::to_allocvec(&archive).unwrap();
+        let absent: Archive<u8, ResidentKey, (), u8> = postcard::from_bytes(&bytes).unwrap();
+        assert!(absent.live_entry_count() > 0);
+        assert!((0..absent.live_entry_count()).all(|index| absent.entry_snapshot(index).is_none()));
+        assert_eq!(
+            super::resident_root(&absent).unwrap_err().to_string(),
+            "the live view found no archived state to start from"
+        );
+    }
+
+    #[test]
+    fn expansion_note_charge_counts_reserved_storage_even_when_empty() {
+        let note = super::Note::<u8> {
+            reservation: 0,
+            steps: Vec::with_capacity(4),
+            trail: Some(Vec::with_capacity(18)),
+            next_level: 0,
+            execution_work: 0,
+            death: false,
+        };
+        assert_eq!(
+            super::live_note_memory_charge(&note),
+            std::mem::size_of_val(&note)
+                + note.steps.capacity() * std::mem::size_of::<nes_games::arcade::feed::Step<u8>>()
+                + note.trail.as_ref().unwrap().capacity() * std::mem::size_of::<u16>()
+        );
+    }
+
+    #[test]
+    fn expansion_feed_mapping_preserves_identity_and_every_decision() {
+        use crate::search::campaign::{
+            CampaignAdmissionDecision as Old, ExpansionDecision as New, ExpansionEdgeAdmission,
+            ExpansionEdgeId,
+        };
+        for (decision, expected) in [
+            (New::Retained { id: 7 }, Old::Retained { id: 7 }),
+            (New::Duplicate { id: 8 }, Old::Duplicate { id: 8 }),
+            (New::Objective, Old::Objective),
+            (New::Rejected, Old::Rejected),
+            (New::Filtered, Old::Rejected),
+            (New::PreparationFailed, Old::Rejected),
+        ] {
+            let edge = ExpansionEdgeAdmission {
+                id: ExpansionEdgeId {
+                    task: 9,
+                    ordinal: 2,
+                },
+                sequence: 11,
+                decision,
+            };
+            let mapped = super::expansion_feed_admission(&edge).unwrap();
+            assert_eq!(mapped.reservation, 9 * 32 + 2);
+            assert_eq!(mapped.decisions, [expected]);
+        }
+        for id in [
+            ExpansionEdgeId {
+                task: 0,
+                ordinal: 0,
+            },
+            ExpansionEdgeId {
+                task: u64::MAX,
+                ordinal: 1,
+            },
+        ] {
+            assert!(
+                super::expansion_feed_admission(&ExpansionEdgeAdmission {
+                    id,
+                    sequence: 0,
+                    decision: New::Filtered
+                })
+                .is_err()
+            );
+        }
+    }
 
     fn terminal_fixture() -> super::Terminal {
         super::Terminal {
@@ -1294,7 +1719,7 @@ mod tests {
     fn a_waiting_viewer_gets_previously_drained_progress_at_finish() {
         use nes_games::arcade::feed::{Feed, Note, Step};
         use std::sync::{Arc, Mutex, OnceLock, atomic::AtomicBool, mpsc};
-        let mut feed = Feed::new(0_u8, 0, 0);
+        let mut feed = Feed::new(0, 0_u8, 0, 0);
         feed.note(Note {
             reservation: 1,
             steps: vec![Step {
@@ -1318,7 +1743,7 @@ mod tests {
             feed: Some(feed),
             stats: Stats {
                 executions: 99,
-                stopped: true,
+                stopped: false,
                 won: true,
                 ..Stats::default()
             },
@@ -1356,6 +1781,7 @@ mod tests {
             serde_json::from_str(snapshot.batch.as_ref().unwrap()).unwrap();
         assert_eq!(batch["executions"], 99);
         assert_eq!(batch["frames"], 77);
+        assert!(batch["stopped"].as_bool().unwrap());
         assert!(batch["won"].as_bool().unwrap());
         assert!(
             batch["points"]
@@ -1389,7 +1815,13 @@ mod tests {
             lookups,
             pending_lookups: Arc::new(AtomicUsize::new(0)),
             site: None,
-            games: None,
+            workload: Arc::new(Game::with_targets(
+                b"test-rom",
+                "test-core",
+                "test-core-sha",
+                nes_games::arcade::famidash::group_stage(0),
+                Box::new(|| Err("this terminal-only test must not execute a target".into())),
+            )),
             observe: Arc::new(|_| Vec::new()),
             terminal,
             streams: Arc::new(super::Streams::default()),

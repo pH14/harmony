@@ -12,8 +12,10 @@ and preserves evidence. A new build needs a separate output directory and its
 own one-worker reference.
 
 This is a bounded throughput and ordering check, not a whole-game effectiveness
-experiment or proof of saturation on an unmeasured host. The 10,000 execution
-ceiling comes from the evaluator's full-replay contract. Cold boot, final
+experiment or proof of saturation on an unmeasured host. The 10,000 execution-budget
+ceiling comes from the evaluator's full-replay contract. Famidash uses bounded
+expansion: the budget charges edge attempts and one unit for an empty task;
+executed edges, failed preparation, tasks and replay work are distinct counters. Cold boot, final
 serialization and verification are included in campaign seconds; search
 seconds and worker busy fractions are reported separately. Busy time includes
 restore, execution and capture; it does not measure guest cycles. Read raw
@@ -65,12 +67,15 @@ paths and their SHA-256 values:
 }
 ```
 
-The qualifier overrides `workers`, `window` and `verification`. In evaluator
-requests `window` means **reservations per worker**, so it writes 512/worker
-count for a fixed window of 512. Every worker count must divide that window.
-Changing the absolute window changes the adaptive search and invalidates a
-fixed-work speedup comparison. A launcher run uses four reservations per worker;
-at 128 workers that is the same absolute window of 512.
+The qualifier overrides `workers`, `window` and `verification`. Normal Famidash
+uses an **absolute outstanding-task window**: it sends `window: 512` unchanged
+at every worker count, including counts that do not divide 512. Each task can
+attempt up to 14 edges, and its ordered admission determines subsequent roots.
+The other current NES routes use reservations per worker; for those routes the
+qualifier sends 512/worker count and requires exact divisibility. No algorithm
+flag selects this behavior. Changing the logical window changes adaptive
+search and invalidates a fixed-work speedup comparison. The native Famidash
+launcher also uses the absolute task window.
 
 On a quiet host, select physical CPUs of one core type (leave room for the
 coordinator, stream encoder, feed and browser/tunnel). For example, on a machine
@@ -95,7 +100,17 @@ averages are retained, but do not prove an idle host. Capacity measurements
 must include the whole campaign's cgroup memory rather than process RSS alone.
 
 `summary.json` reports per-count median/range, speedup, total campaign time,
-worker busy fractions and coordinator/encoder CPU per job when available.
+worker busy fractions and explicitly labelled throughput. For Famidash,
+throughput is admitted tasks per search second, and coordinator CPU, encoder
+CPU and producer wait are reported **per task**, not per executed edge. The
+summary retains executed-edge rates, attempts, consumed budget, failed
+preparation, empty tasks and bootstrap/reconstruction/edge frame work separately.
+It verifies each result counter against the campaign report and derives session
+work by checked final-minus-initial subtraction. Worker `jobs` must equal
+session admitted tasks, including checkpoint-pending tasks executed again;
+newly reserved tasks alone are not that denominator. The qualifier itself
+requires fresh requests; the counter validator also understands resumed reports.
+Linear routes continue to use jobs as their execution and cost unit.
 Missing CPU coverage remains null rather than a zero cost. These costs do not
 automatically establish a worker-count ceiling; apply the capacity model in
 [Performance](../../docs/PERFORMANCE.md) using equivalent-core worker measurements.
@@ -139,5 +154,8 @@ python3 -m unittest discover -s scripts -p test_qualify_nes_scaling.py
 ```
 
 The tests plant a valid-but-different trial stream, corrupt stream identity,
-missing replays, incomplete telemetry and a failed evaluator. They verify that
-those cases fail while preserving the run evidence.
+missing replays, incomplete telemetry and a failed evaluator. Expansion fixtures
+use the current evaluator's cumulative and session fields; planted wrong
+engines, counter underflow, bad frame totals and edge-based worker counts must
+fail. The fixed-window test includes three workers with a window of 512. These
+checks preserve the run evidence on failure.

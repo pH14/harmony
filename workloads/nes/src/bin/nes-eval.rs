@@ -7,7 +7,10 @@ use nes_workload::{
         campaign::{FamidashCampaignRun, FamidashGame},
         levels::{GROUPS, Side, Stage},
     },
-    live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
+    live::{
+        MemoryView, NativeMachine, evaluate_live, evaluate_live_expansion, evaluate_watching,
+        evaluate_watching_expansion,
+    },
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
         target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
@@ -94,13 +97,25 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "metroid" => {
             evaluate_live::<MetroidGame<NativeMachine>>(rom, request, out, started, "metroid")
         }
-        "famidash" => evaluate_live::<LiveFamidash<0>>(rom, request, out, started, "famidash"),
-        "famidash-community" => {
-            evaluate_live::<LiveFamidash<1>>(rom, request, out, started, "famidash-community")
+        "famidash" => {
+            evaluate_live_expansion::<LiveFamidash<0>>(rom, request, out, started, "famidash")
         }
-        "famidash-b" => evaluate_live::<LiveFamidash<2>>(rom, request, out, started, "famidash-b"),
-        "famidash-c" => evaluate_live::<LiveFamidash<3>>(rom, request, out, started, "famidash-c"),
-        "famidash-d" => evaluate_live::<LiveFamidash<4>>(rom, request, out, started, "famidash-d"),
+        "famidash-community" => evaluate_live_expansion::<LiveFamidash<1>>(
+            rom,
+            request,
+            out,
+            started,
+            "famidash-community",
+        ),
+        "famidash-b" => {
+            evaluate_live_expansion::<LiveFamidash<2>>(rom, request, out, started, "famidash-b")
+        }
+        "famidash-c" => {
+            evaluate_live_expansion::<LiveFamidash<3>>(rom, request, out, started, "famidash-c")
+        }
+        "famidash-d" => {
+            evaluate_live_expansion::<LiveFamidash<4>>(rom, request, out, started, "famidash-d")
+        }
         "twin-dragons" => evaluate_live::<
             nes_games::twin_dragons::campaign::TwinDragonsGame<NativeMachine>,
         >(rom, request, out, started, "twin-dragons"),
@@ -272,7 +287,7 @@ fn main() -> Result<()> {
             "famidash" => {
                 let stage = famidash_stage(&rom, request.stage, request.whole_game)?;
                 let (id, view) = famidash_live(stage);
-                evaluate_watching(
+                evaluate_watching_expansion(
                     FamidashGame::new(&rom, p, h, &execution_sha256, stage),
                     FamidashCampaignRun,
                     &rom,
