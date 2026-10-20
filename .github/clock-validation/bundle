@@ -1,0 +1,11 @@
+setup /opt/harmony/setup.sh
+node n1 /bin/sh -c "/opt/harmony/clockprobe n1 >> /tmp/nats/n1.clock 2>&1 & exec /opt/harmony/node.sh n1 1"
+node n2 /bin/sh -c "/opt/harmony/clockprobe n2 >> /tmp/nats/n2.clock 2>&1 & exec /opt/harmony/node.sh n2 2"
+node n3 /bin/sh -c "/opt/harmony/clockprobe n3 >> /tmp/nats/n3.clock 2>&1 & exec /opt/harmony/node.sh n3 3"
+hook 1 /opt/harmony/harness-net partition
+hook 2 /opt/harmony/harness-net isolate
+hook 3 /opt/harmony/harness-net delay
+hook 4 /opt/harmony/harness-net heal
+ready /opt/harmony/nats-kv-harness ready
+workload /opt/harmony/nats-kv-harness drive
+check /opt/harmony/nats-kv-harness check

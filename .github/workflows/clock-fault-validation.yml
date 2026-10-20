@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Scratch validation of clock faults on NATS JetStream key-value. Lives only
+# on the validation branch.
+name: Scratch / Clock Fault Validation
+
+on:
+  push:
+    branches: [claude/clock-fault-validation]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+  HARMONY_GUEST_TOOLCHAIN: nightly-2026-06-16
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  runtime:
+    name: Exact runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare the exact runtime
+        uses: ./.github/actions/exact-platform-runtime
+
+  build:
+    name: Build CLI and images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools podman
+      - name: Build the paired CLI
+        run: bash scripts/build-consonance-cli-pair.sh paired-cli
+      - name: Build the NATS key-value image with clock probes
+        run: |
+          set -euo pipefail
+          runtime=$(HARMONY_CONTAINER_TOOL=podman bash workloads/languages/build-runtime.sh)
+          mkdir -p images
+          podman build --format docker --platform=linux/amd64 \
+            --build-arg HARMONY_RUNTIME_IMAGE="$runtime" \
+            --file workloads/harness/targets/nats-kv/Dockerfile \
+            --tag localhost/nats-kv:base .
+          podman build --format docker --platform=linux/amd64 \
+            --file .github/clock-validation/Dockerfile \
+            --tag localhost/nats-kv:clock .
+          podman save --format oci-archive -o images/nats-kv-clock.oci localhost/nats-kv:clock
+          ls -la images
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clock-build
+          path: |
+            paired-cli
+            images
+          retention-days: 3
+
+  run:
+    name: ${{ matrix.name }}
+    needs: [runtime, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Hand schedule with clock faults
+            id: hand
+          - name: Hand schedule with waits only
+            id: baseline
+          - name: Search from power-on
+            id: search
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the guest runtime
+        uses: ./.github/actions/platform-runtime
+        with:
+          report: evidence
+      - uses: actions/download-artifact@v4
+        with:
+          name: clock-build
+      - name: Enable KVM
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          chmod +x paired-cli/harmony paired-cli/harmony-consonance-host
+      - name: Run
+        env:
+          CASE: ${{ matrix.id }}
+        run: bash .github/clock-validation/run.sh "$CASE"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clock-${{ matrix.id }}
+          path: evidence
+          retention-days: 7
