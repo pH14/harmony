@@ -15,8 +15,8 @@ use super::{
     CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
     CampaignOrigin, CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord,
     CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-    CampaignTypes, CompletedBuffer, CompletedJob, CoordinatorCore, JobSpecRecord,
-    LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, ReservationLookup, SelectedJob,
+    CampaignTypes, CompletedJob, CompletedOutcome, CoordinatorCore, JobSpecRecord,
+    LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, ReservationSlots, SelectedJob,
     StreamWriter, ThreadPlacement, Workload, archive_entry_limit_is_valid, bootstrap_campaign,
     build_report, completed_job_records, continuation_arrival, continuation_attempt,
     derive_selection_seed, execution_work_delta, finish_record, initial_draw_state,
@@ -129,8 +129,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     reserved: u64,
     admitted: usize,
     planned_clock: u64,
-    pending: ReservationLookup<usize, PendingJob<G>>,
-    completed: CompletedBuffer<usize, CompletedJob<G>>,
+    reservations: ReservationSlots<usize, PendingJob<G>, CompletedOutcome<G>>,
     schedule: BTreeSet<(u64, usize)>,
     queued: BTreeMap<(u64, usize), JobSpec<G>>,
     spec_records: BTreeMap<usize, JobSpecRecord<G>>,
@@ -328,8 +327,7 @@ where
             reserved,
             admitted,
             planned_clock,
-            pending: ReservationLookup::with_capacity(reservation_capacity),
-            completed: CompletedBuffer::new(completed_job_records, reservation_capacity),
+            reservations: ReservationSlots::new(completed_job_records, reservation_capacity),
             schedule: BTreeSet::new(),
             queued: BTreeMap::new(),
             spec_records: BTreeMap::new(),
@@ -389,7 +387,9 @@ where
             if coordinator.checkpoints.is_some() {
                 coordinator.spec_records.insert(job.reservation, job.spec);
             }
-            coordinator.pending.insert(job.reservation, job.pending);
+            coordinator
+                .reservations
+                .insert(job.reservation, job.pending);
         }
         Ok(coordinator)
     }
@@ -431,7 +431,7 @@ where
     }
 
     pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {
-        if self.pending.len() >= self.config.window {
+        if self.reservations.pending >= self.config.window {
             return Ok(false);
         }
         let Some(job) = self.reserve()? else {
@@ -445,7 +445,7 @@ where
         &mut self,
         dispatch: &mut JobDispatch<'_, G>,
     ) -> Result<bool, Box<dyn Error>> {
-        if self.pending.len() >= self.config.window {
+        if self.reservations.pending >= self.config.window {
             self.dispatch_queued(dispatch)?;
             return Ok(false);
         }
@@ -475,7 +475,7 @@ where
         self.running = self.running.saturating_add(1);
         self.idle_clock.update(
             self.running,
-            if self.completed.is_empty() {
+            if self.reservations.completed_len() == 0 {
                 IdleReason::NoJob
             } else {
                 IdleReason::AdmissionOrder
@@ -494,7 +494,7 @@ where
         self.running = self.running.saturating_add(jobs.len());
         self.idle_clock.update(
             self.running,
-            if self.completed.is_empty() {
+            if self.reservations.completed_len() == 0 {
                 IdleReason::NoJob
             } else {
                 IdleReason::AdmissionOrder
@@ -555,8 +555,8 @@ where
     }
 
     pub(crate) fn pending_origin(&self, reservation: usize) -> Option<(u64, u64)> {
-        self.pending
-            .get(&reservation)
+        self.reservations
+            .pending(&reservation)
             .map(|job| (job.parent_id, job.snapshot_id))
     }
 
@@ -581,37 +581,36 @@ where
                 IdleReason::NoJob
             },
         );
-        let pending = self
-            .pending
-            .remove(&reservation)
-            .ok_or("campaign worker replied for an unknown reservation")?;
-        if self
-            .queued
-            .contains_key(&(pending.planned_finish, reservation))
-        {
-            return Err("campaign worker replied for a job that was never planned".into());
-        }
-        if self
-            .completed
-            .insert(
-                reservation,
-                CompletedJob {
-                    held_since: held.then(now),
-                    pending,
-                    outcome,
-                },
-            )
-            .is_some()
-        {
-            return Err("campaign worker completed one reservation twice".into());
-        }
+        let queued = &self.queued;
+        self.reservations.complete(
+            reservation,
+            CompletedOutcome {
+                held_since: held.then(now),
+                outcome,
+            },
+            |pending| {
+                if queued.contains_key(&(pending.planned_finish, reservation)) {
+                    Err("campaign worker replied for a job that was never planned")
+                } else {
+                    Ok(())
+                }
+            },
+        )?;
         while let Some(&(finish, reservation)) = self.schedule.first() {
             self.workload.verify_integrity()?;
-            let Some(completed) = self.completed.remove(&reservation) else {
+            let Some((pending, completed)) = self.reservations.take_completed(reservation) else {
                 break;
             };
             self.schedule.pop_first();
-            self.admit_completed(finish, reservation, completed)?;
+            self.admit_completed(
+                finish,
+                reservation,
+                CompletedJob {
+                    pending,
+                    held_since: completed.held_since,
+                    outcome: completed.outcome,
+                },
+            )?;
             let next = self.reserve()?;
             self.write_due_checkpoint()?;
             if let Some(job) = next {
@@ -627,7 +626,7 @@ where
                 self.dispatch_queued(dispatch)?;
             }
         }
-        if self.pending.is_empty() && !self.completed.is_empty() {
+        if self.reservations.pending == 0 && self.reservations.completed_len() != 0 {
             return Err("campaign reorder window ended with an admission gap".into());
         }
         Ok(())
@@ -652,7 +651,7 @@ where
     }
 
     pub fn request_admission(&mut self, reservation: usize) -> bool {
-        if self.pending.get(&reservation).is_none() {
+        if self.reservations.pending(&reservation).is_none() {
             return false;
         }
         let Some(selected) = self
@@ -679,7 +678,7 @@ where
 
     #[must_use]
     pub fn finished(&self) -> bool {
-        self.pending.is_empty() && self.completed.is_empty()
+        self.reservations.is_empty()
     }
 
     #[must_use]
@@ -722,7 +721,7 @@ where
         self.profile.receive_wait_ns = self.profile.receive_wait_ns.saturating_add(waited);
         let waited = u64::try_from(waited).unwrap_or(u64::MAX);
         let admission = &mut self.telemetry.admission;
-        if self.completed.is_empty() {
+        if self.reservations.completed_len() == 0 {
             admission.receive_all_running_ns =
                 admission.receive_all_running_ns.saturating_add(waited);
         } else {
@@ -735,10 +734,10 @@ where
         mut self,
         workers: Vec<WorkerTelemetry>,
     ) -> Result<CampaignOutcome<G>, Box<dyn Error>> {
-        if !self.completed.is_empty() || !self.schedule.is_empty() {
+        if self.reservations.completed_len() != 0 || !self.schedule.is_empty() {
             return Err("campaign reorder window ended with an admission gap".into());
         }
-        self.telemetry.completed_buffer = self.completed.telemetry;
+        self.telemetry.completed_buffer = self.reservations.telemetry;
         if let Some(checkpoints) = self.checkpoints.as_mut() {
             write_search_checkpoint(
                 self.workload,
@@ -756,8 +755,7 @@ where
                 self.admitted,
                 self.planned_clock,
                 &self.schedule,
-                &self.pending,
-                &self.completed,
+                &self.reservations,
                 &self.spec_records,
             )?;
         }
@@ -871,7 +869,7 @@ where
         pending.planned_finish = planned_finish(self.planned_clock, &spec, action_cost);
         spec.planned_finish = pending.planned_finish;
         let key = (pending.planned_finish, reservation);
-        if self.pending.insert(reservation, pending).is_some() {
+        if self.reservations.insert(reservation, pending).is_some() {
             return Err("campaign reserved one job twice".into());
         }
         if self.checkpoints.is_some() {
@@ -906,8 +904,7 @@ where
                 self.admitted,
                 self.planned_clock,
                 &self.schedule,
-                &self.pending,
-                &self.completed,
+                &self.reservations,
                 &self.spec_records,
             )?;
         }
@@ -940,7 +937,7 @@ where
             idle_clock,
             coordinator_schedstat,
             telemetry_started,
-            completed,
+            reservations,
             admissions,
             ..
         } = self;
@@ -1170,12 +1167,12 @@ where
                     core.archive.history_compactions(),
                     core.archive.historical_entries_dropped(),
                     core.archive.input_reconstructions(),
-                    completed.len(),
-                    completed.telemetry.actions_live,
-                    completed.telemetry.candidates_live,
-                    completed.telemetry.results_peak,
-                    completed.telemetry.actions_peak,
-                    completed.telemetry.candidates_peak,
+                    reservations.completed_len(),
+                    reservations.telemetry.actions_live,
+                    reservations.telemetry.candidates_live,
+                    reservations.telemetry.results_peak,
+                    reservations.telemetry.actions_peak,
+                    reservations.telemetry.candidates_peak,
                     counters.job_execution_work,
                     coordinator_profile.replay_jobs,
                     coordinator_profile.replay_actions,

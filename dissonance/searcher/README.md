@@ -169,11 +169,19 @@ queue; stepped or resumed jobs retain the coordinator's ordered pending-dispatch
 queue. Existing queued jobs and a fresh reservation are dispatched together in
 priority order. The coordinator also refills the queue between received
 replies, so draining a ready reply channel does not defer dispatch. The admission
-window alone limits the jobs that are queued, running or finished but not yet
-admitted. Reservation and completed-result lookups use unordered host hash maps;
-no hash-map iteration affects admission, selection, stream records or checkpoint
-order. The ordered schedule chooses admissions, and checkpoint references are
-written in reservation order. The initial allocation request is capped at
+window limits the automatic runner's total jobs that are queued, running or
+finished but not yet admitted. Public stepped callers preserve the pending-only
+`reserve_next` limit: explicitly reserving more after an out-of-order completion
+can exceed that total until admission catches up. One unordered host hash map owns each reservation's metadata from
+selection through admission. Receiving a result attaches its outcome and cached
+record counts to that existing slot; ordered admission removes the slot. Metadata
+does not move between pending and completed maps. A separate pending count
+preserves stepped callers' reservation limit, while completion gauges include
+immediately admitted and held results. No hash-map iteration affects admission,
+selection, stream records or checkpoint order. The ordered schedule chooses
+admissions, and checkpoint references are written in reservation order. Checkpoint
+projection reads the same metadata from either slot state, stores no completed
+outcome, and dispatches every in-flight job again on restore. The initial allocation request is capped at
 4,096 reservations, the admission window and the execution budget; the hash-map
 implementation can round capacity upward, and larger windows can grow as needed. These allocations are host queue memory outside the archive budget. The native pool writes the header inline, then moves owned typed records to one
 ordered background encoder that serializes them and owns the stream hash. The

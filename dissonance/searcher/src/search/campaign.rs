@@ -3003,14 +3003,6 @@ impl<K: Eq + Hash, V> ReservationLookup<K, V> {
         self.map.entry(key)
     }
 
-    fn insert(&mut self, key: K, value: V) -> Option<V> {
-        self.map.insert(key, value)
-    }
-
-    fn remove(&mut self, key: &K) -> Option<V> {
-        self.map.remove(key)
-    }
-
     fn get(&self, key: &K) -> Option<&V> {
         self.map.get(key)
     }
@@ -3024,10 +3016,16 @@ impl<K: Eq + Hash, V> ReservationLookup<K, V> {
     }
 }
 
-struct CompletedBuffer<K: Eq + Hash, V> {
-    entries: ReservationLookup<K, BufferedResult<V>>,
+struct ReservationSlots<K: Eq + Hash, P, V> {
+    entries: ReservationLookup<K, ReservationSlot<P, V>>,
+    pending: usize,
     telemetry: CompletedBufferTelemetry,
     records: fn(&V) -> (u64, u64),
+}
+
+struct ReservationSlot<P, V> {
+    pending: P,
+    completed: Option<BufferedResult<V>>,
 }
 
 struct BufferedResult<V> {
@@ -3036,26 +3034,66 @@ struct BufferedResult<V> {
     candidates: u64,
 }
 
-impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
+struct CompletedOutcome<G: Workload + ?Sized> {
+    held_since: Option<Moment>,
+    outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+}
+
+impl<K: Eq + Hash, P, V> ReservationSlots<K, P, V> {
     fn new(records: fn(&V) -> (u64, u64), capacity: usize) -> Self {
         Self {
             entries: ReservationLookup::with_capacity(capacity),
+            pending: 0,
             telemetry: CompletedBufferTelemetry::default(),
             records,
         }
     }
 
-    fn insert(&mut self, key: K, value: V) -> Option<V> {
+    fn insert(&mut self, key: K, pending: P) -> Option<P> {
         let slot = match self.entries.entry(key) {
-            std::collections::hash_map::Entry::Occupied(_) => return Some(value),
+            std::collections::hash_map::Entry::Occupied(_) => return Some(pending),
             std::collections::hash_map::Entry::Vacant(slot) => slot,
         };
+        slot.insert(ReservationSlot {
+            pending,
+            completed: None,
+        });
+        self.pending += 1;
+        None
+    }
+
+    fn pending(&self, key: &K) -> Option<&P> {
+        self.entries
+            .get(key)
+            .filter(|slot| slot.completed.is_none())
+            .map(|slot| &slot.pending)
+    }
+
+    fn metadata(&self, key: &K) -> Option<&P> {
+        self.entries.get(key).map(|slot| &slot.pending)
+    }
+
+    fn complete(
+        &mut self,
+        key: K,
+        value: V,
+        validate: impl FnOnce(&P) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(key) else {
+            return Err("campaign worker replied for an unknown reservation");
+        };
+        let slot = entry.get_mut();
+        if slot.completed.is_some() {
+            return Err("campaign worker completed one reservation twice");
+        }
+        validate(&slot.pending)?;
         let (actions, candidates) = (self.records)(&value);
-        slot.insert(BufferedResult {
+        slot.completed = Some(BufferedResult {
             value,
             actions,
             candidates,
         });
+        self.pending -= 1;
         let stats = &mut self.telemetry;
         stats.results_live = stats.results_live.saturating_add(1);
         stats.actions_live = stats.actions_live.saturating_add(actions);
@@ -3063,15 +3101,20 @@ impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
         stats.results_peak = stats.results_peak.max(stats.results_live);
         stats.actions_peak = stats.actions_peak.max(stats.actions_live);
         stats.candidates_peak = stats.candidates_peak.max(stats.candidates_live);
-        None
+        Ok(())
     }
 
-    fn remove(&mut self, key: &K) -> Option<V> {
+    fn take_completed(&mut self, key: K) -> Option<(P, V)> {
+        let std::collections::hash_map::Entry::Occupied(entry) = self.entries.entry(key) else {
+            return None;
+        };
+        entry.get().completed.as_ref()?;
+        let ReservationSlot { pending, completed } = entry.remove();
         let BufferedResult {
             value,
             actions,
             candidates,
-        } = self.entries.remove(key)?;
+        } = completed?;
         let stats = &mut self.telemetry;
         stats.results_live = stats
             .results_live
@@ -3085,17 +3128,11 @@ impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
             .candidates_live
             .checked_sub(candidates)
             .expect("completed candidate accounting");
-        Some(value)
-    }
-}
-
-impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
-    fn get(&self, key: &K) -> Option<&V> {
-        self.entries.get(key).map(|entry| &entry.value)
+        Some((pending, value))
     }
 
-    fn len(&self) -> usize {
-        self.entries.len()
+    fn completed_len(&self) -> usize {
+        self.entries.len() - self.pending
     }
 
     fn is_empty(&self) -> bool {
@@ -3103,7 +3140,7 @@ impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
     }
 }
 
-fn completed_job_records<G: Workload + ?Sized>(job: &CompletedJob<G>) -> (u64, u64) {
+fn completed_job_records<G: Workload + ?Sized>(job: &CompletedOutcome<G>) -> (u64, u64) {
     completed_result_records(&job.outcome)
 }
 
@@ -4055,21 +4092,19 @@ fn write_search_checkpoint<G: Workload>(
     admitted: usize,
     planned_clock: u64,
     schedule: &BTreeSet<(u64, usize)>,
-    pending: &ReservationLookup<usize, PendingJob<G>>,
-    completed: &CompletedBuffer<usize, CompletedJob<G>>,
+    reservations: &ReservationSlots<usize, PendingJob<G>, CompletedOutcome<G>>,
     spec_records: &BTreeMap<usize, JobSpecRecord<G>>,
 ) -> Result<(), Box<dyn Error>> {
     workload.verify_integrity()?;
-    let reservations = schedule
+    let scheduled = schedule
         .iter()
         .map(|(_, reservation)| *reservation)
         .collect::<BTreeSet<_>>();
-    let in_flight = reservations
+    let in_flight = scheduled
         .into_iter()
         .map(|reservation| -> Result<_, Box<dyn Error>> {
-            let pending = pending
-                .get(&reservation)
-                .or_else(|| completed.get(&reservation).map(|job| &job.pending))
+            let pending = reservations
+                .metadata(&reservation)
                 .ok_or("search checkpoint lost an in-flight reservation")?;
             let spec = spec_records
                 .get(&reservation)
@@ -8634,7 +8669,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_buffer_counts_owned_records_and_balances_removal() {
+    fn reservation_slots_count_owned_records_and_balance_removal() {
         let result = |flags: &[bool]| {
             Ok((
                 CampaignJobResult::<TestWorkload> {
@@ -8658,87 +8693,128 @@ mod tests {
                 String::new(),
             ))
         };
-        let mut buffer =
-            super::CompletedBuffer::new(super::completed_result_records::<TestWorkload>, 3);
-        assert!(buffer.insert(2, result(&[true, false, true])).is_none());
-        assert!(
-            buffer
-                .insert(3, Err("failed worker result".into()))
-                .is_none()
+        let mut slots =
+            super::ReservationSlots::new(super::completed_result_records::<TestWorkload>, 3);
+        for key in 2..=4 {
+            assert!(slots.insert(key, key * 10).is_none());
+        }
+        assert_eq!(slots.pending, 3);
+        assert!(slots.take_completed(2).is_none());
+        slots
+            .complete(2, result(&[true, false, true]), |_| Ok(()))
+            .unwrap();
+        slots
+            .complete(3, Err("failed worker result".into()), |_| Ok(()))
+            .unwrap();
+        slots.complete(4, result(&[]), |_| Ok(())).unwrap();
+        assert_eq!(slots.pending, 0);
+        assert_eq!(slots.metadata(&2), Some(&20));
+        assert!(slots.pending(&2).is_none());
+        assert_eq!(slots.telemetry.results_live, 3);
+        assert_eq!(slots.telemetry.actions_live, 3);
+        assert_eq!(slots.telemetry.candidates_live, 2);
+        let before = slots.telemetry;
+        assert_eq!(
+            slots.complete(2, result(&[true]), |_| Ok(())),
+            Err("campaign worker completed one reservation twice")
         );
-        assert!(buffer.insert(4, result(&[])).is_none());
-        assert_eq!(buffer.telemetry.results_live, 3);
-        assert_eq!(buffer.telemetry.actions_live, 3);
-        assert_eq!(buffer.telemetry.candidates_live, 2);
-        let before = buffer.telemetry;
-        assert!(buffer.insert(2, result(&[true])).is_some());
-        assert_eq!(buffer.telemetry, before);
-        assert!(buffer.remove(&99).is_none());
-        assert_eq!(buffer.telemetry, before);
-        assert!(buffer.remove(&2).unwrap().is_ok());
-        assert_eq!(buffer.telemetry.results_live, 2);
-        assert_eq!(buffer.telemetry.actions_live, 0);
-        assert_eq!(buffer.telemetry.candidates_live, 0);
-        assert!(buffer.remove(&3).unwrap().is_err());
-        buffer.remove(&4).unwrap().unwrap();
-        assert!(buffer.is_empty());
-        assert_eq!(buffer.telemetry.results_live, 0);
-        assert_eq!(buffer.telemetry.results_peak, 3);
-        assert_eq!(buffer.telemetry.actions_peak, 3);
-        assert_eq!(buffer.telemetry.candidates_peak, 2);
+        assert_eq!(
+            slots.complete(99, result(&[]), |_| Ok(())),
+            Err("campaign worker replied for an unknown reservation")
+        );
+        assert_eq!(slots.insert(2, 999), Some(999));
+        assert_eq!(slots.metadata(&2), Some(&20));
+        assert_eq!(slots.telemetry, before);
+        assert!(slots.take_completed(99).is_none());
+        let (pending, outcome) = slots.take_completed(2).unwrap();
+        assert_eq!(pending, 20);
+        assert!(outcome.is_ok());
+        assert_eq!(slots.telemetry.results_live, 2);
+        assert_eq!(slots.telemetry.actions_live, 0);
+        assert_eq!(slots.telemetry.candidates_live, 0);
+        assert!(slots.take_completed(3).unwrap().1.is_err());
+        slots.take_completed(4).unwrap().1.unwrap();
+        assert!(slots.is_empty());
+        assert_eq!(slots.telemetry.results_live, 0);
+        assert_eq!(slots.telemetry.results_peak, 3);
+        assert_eq!(slots.telemetry.actions_peak, 3);
+        assert_eq!(slots.telemetry.candidates_peak, 2);
     }
 
     #[test]
-    fn completed_buffer_counts_each_accepted_result_once() {
+    fn reservation_slots_validate_before_scanning_and_count_each_result_once() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let scans = Arc::new(AtomicUsize::new(0));
-        let mut buffer = super::CompletedBuffer::new(
+        let mut slots = super::ReservationSlots::new(
             |value: &(Arc<AtomicUsize>, (u64, u64))| {
                 value.0.fetch_add(1, Ordering::Relaxed);
                 value.1
             },
             2,
         );
-        assert!(buffer.insert(7, (Arc::clone(&scans), (5, 2))).is_none());
-        assert!(buffer.insert(9, (Arc::clone(&scans), (3, 1))).is_none());
-        assert!(buffer.insert(7, (Arc::clone(&scans), (8, 4))).is_some());
+        assert!(slots.insert(7, "queued").is_none());
+        assert!(slots.insert(9, "running").is_none());
+        assert_eq!(
+            slots.complete(7, (Arc::clone(&scans), (5, 2)), |_| Err("never planned")),
+            Err("never planned")
+        );
+        assert_eq!(slots.pending, 2);
+        assert_eq!(scans.load(Ordering::Relaxed), 0);
+        slots
+            .complete(7, (Arc::clone(&scans), (5, 2)), |_| Ok(()))
+            .unwrap();
+        slots
+            .complete(9, (Arc::clone(&scans), (3, 1)), |_| Ok(()))
+            .unwrap();
+        assert!(
+            slots
+                .complete(7, (Arc::clone(&scans), (8, 4)), |_| panic!(
+                    "duplicate validation"
+                ))
+                .is_err()
+        );
         assert_eq!(scans.load(Ordering::Relaxed), 2);
-        assert_eq!(buffer.get(&7).unwrap().1, (5, 2));
-        assert_eq!(buffer.remove(&9).unwrap().1, (3, 1));
-        assert_eq!(buffer.remove(&7).unwrap().1, (5, 2));
-        assert!(buffer.remove(&7).is_none());
+        assert_eq!(slots.take_completed(9).unwrap().1.1, (3, 1));
+        assert_eq!(slots.take_completed(7).unwrap().1.1, (5, 2));
+        assert!(slots.take_completed(7).is_none());
         assert_eq!(scans.load(Ordering::Relaxed), 2);
-        assert_eq!(buffer.telemetry.results_live, 0);
-        assert_eq!(buffer.telemetry.actions_live, 0);
-        assert_eq!(buffer.telemetry.candidates_live, 0);
-        assert_eq!(buffer.telemetry.actions_peak, 8);
-        assert_eq!(buffer.telemetry.candidates_peak, 3);
+        assert_eq!(slots.telemetry.results_live, 0);
+        assert_eq!(slots.telemetry.actions_live, 0);
+        assert_eq!(slots.telemetry.candidates_live, 0);
+        assert_eq!(slots.telemetry.actions_peak, 8);
+        assert_eq!(slots.telemetry.candidates_peak, 3);
     }
 
     #[test]
-    fn completed_buffer_reordering_changes_only_occupancy_not_admission_content() {
+    fn reservation_slots_reordering_changes_only_occupancy_not_admission_content() {
         use std::hash::BuildHasher;
         let first = std::collections::hash_map::RandomState::new();
         let second = std::collections::hash_map::RandomState::new();
         assert_ne!(first.hash_one(23_u64), second.hash_one(23_u64));
         let run = |order: &[u64], state: std::collections::hash_map::RandomState| {
-            let mut buffer =
-                super::CompletedBuffer::new(|value: &u64| (*value, u64::from(*value > 0)), 3);
-            buffer.entries = super::ReservationLookup::with_capacity_and_hasher(3, state);
+            let mut slots =
+                super::ReservationSlots::new(|value: &u64| (*value, u64::from(*value > 0)), 3);
+            slots.entries = super::ReservationLookup::with_capacity_and_hasher(3, state);
+            for reservation in 0..3 {
+                slots.insert(reservation, reservation + 10);
+            }
             let mut next = 0;
             let mut admitted = Vec::new();
             for &reservation in order {
-                assert!(buffer.insert(reservation, reservation).is_none());
-                while let Some(value) = buffer.remove(&next) {
-                    admitted.push((next, value));
+                slots
+                    .complete(reservation, reservation, |_| Ok(()))
+                    .unwrap();
+                while let Some((pending, value)) = slots.take_completed(next) {
+                    admitted.push((next, pending, value));
                     next += 1;
                 }
             }
-            assert!(buffer.is_empty());
-            assert_eq!(buffer.telemetry.results_live, 0);
-            assert_eq!(buffer.telemetry.actions_live, 0);
-            assert_eq!(buffer.telemetry.candidates_live, 0);
-            (admitted, buffer.telemetry)
+            assert!(slots.is_empty());
+            assert_eq!(slots.pending, 0);
+            assert_eq!(slots.telemetry.results_live, 0);
+            assert_eq!(slots.telemetry.actions_live, 0);
+            assert_eq!(slots.telemetry.candidates_live, 0);
+            (admitted, slots.telemetry)
         };
         let ordered = run(&[0, 1, 2], first);
         let reordered = run(&[2, 1, 0], second);
@@ -8894,6 +8970,82 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.to_string(), "dispatch witness");
         assert_eq!(coordinator.executions(), before + 1);
+    }
+
+    #[test]
+    fn invalid_worker_replies_fail_before_any_ordered_admission() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut config = three_worker_config();
+        config.window = 6;
+        config.execution_budget = 60;
+        for case in 0..4 {
+            let mut stream = Vec::new();
+            {
+                let mut coordinator = CampaignCoordinator::start(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions::default(),
+                )
+                .unwrap();
+                while coordinator.reserve_next().unwrap() {}
+                let error = match case {
+                    0 => {
+                        coordinator.plan(usize::MAX);
+                        coordinator
+                            .fail(usize::MAX, "unknown worker".into())
+                            .unwrap_err()
+                    }
+                    1 => {
+                        let jobs = coordinator.plan(usize::MAX);
+                        let head = coordinator.next_admission().unwrap();
+                        let held = jobs
+                            .iter()
+                            .find(|job| job.reservation != head)
+                            .unwrap()
+                            .reservation;
+                        coordinator.fail(held, "held failure".into()).unwrap();
+                        assert_eq!(coordinator.executions(), 0);
+                        assert!(coordinator.reserve_next().unwrap());
+                        assert!(!coordinator.reserve_next().unwrap());
+                        coordinator
+                            .fail(held, "duplicate failure".into())
+                            .unwrap_err()
+                    }
+                    2 => {
+                        let planned = coordinator.plan(1).pop().unwrap().reservation;
+                        let queued = (0..config.window)
+                            .find(|&reservation| reservation != planned)
+                            .unwrap();
+                        coordinator
+                            .fail(queued, "unplanned worker".into())
+                            .unwrap_err()
+                    }
+                    _ => coordinator
+                        .fail(0, "worker before plan".into())
+                        .unwrap_err(),
+                };
+                let expected = match case {
+                    0 => "campaign worker replied for an unknown reservation",
+                    1 => "campaign worker completed one reservation twice",
+                    2 => "campaign worker replied for a job that was never planned",
+                    _ => "campaign worker replied without queued work",
+                };
+                assert_eq!(error.to_string(), expected);
+                assert_eq!(coordinator.executions(), 0);
+            }
+            assert!(job_lines(&stream).is_empty());
+            assert!(
+                !std::str::from_utf8(&stream)
+                    .unwrap()
+                    .contains("\"record\":\"end\"")
+            );
+        }
     }
 
     #[test]
