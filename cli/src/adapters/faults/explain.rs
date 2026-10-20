@@ -6,7 +6,7 @@ use faults_workload::{
     FaultAction, FaultOperation, consonance::FaultTarget, package::ReplaySummary,
     target::SUPERVISOR_TICK_MICROS,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
@@ -21,6 +21,7 @@ const NOVEL_LINES: usize = 30;
 const FAMILIAR_LINES: usize = 5;
 const DATA_ENTRIES: usize = 40;
 const HISTORY_LINES: usize = 200;
+const COPY_LIMIT: u64 = 16 << 20;
 
 fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
@@ -52,6 +53,14 @@ pub fn script(settings: &Explain, history: bool) -> String {
         );
     }
     text.push_str("echo \"$m settled $(cat /proc/uptime 2>/dev/null)\"\n");
+    let copies = settings.copies();
+    if history && !copies.is_empty() {
+        let _ = write!(
+            text,
+            "for f in $(find {} -type f 2>/dev/null); do\n  size=$(($(wc -c < \"$f\")))\n  if [ \"$size\" -gt {COPY_LIMIT} ]; then\n    echo \"$m skip $size $f\"\n    continue\n  fi\n  echo \"$m file $size $f\"\n  base64 < \"$f\"\n  echo \"$m end\"\ndone\n",
+            patterns(&copies)
+        );
+    }
     if !settings.logs.is_empty() {
         let _ = write!(
             text,
@@ -83,6 +92,33 @@ pub struct Capture {
     pub logs: BTreeMap<String, LogPart>,
     pub data: BTreeMap<String, Files>,
     pub history: Option<String>,
+    pub history_finished: bool,
+    pub files: BTreeMap<String, Vec<u8>>,
+    pub skipped: Vec<String>,
+}
+
+pub fn decode(text: &str) -> Option<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(text.len() / 4 * 3);
+    let (mut buffer, mut bits) = (0_u32, 0_u32);
+    for byte in text.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\n' | b'\r' | b' ' => continue,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Some(bytes)
 }
 
 pub fn parse(output: &str) -> Capture {
@@ -110,17 +146,40 @@ pub fn parse(output: &str) -> Capture {
             }
             continue;
         }
-        if !matches!(kind, "log" | "data" | "history") {
+        if kind == "skip" {
+            capture.skipped.push(arguments.to_owned());
+            continue;
+        }
+        if !matches!(kind, "log" | "data" | "history" | "file") {
             continue;
         }
         let mut body = Vec::new();
+        let mut finished = false;
         for line in lines.by_ref() {
             if line == end {
+                finished = true;
                 break;
             }
             body.push(line);
         }
+        if !finished && kind != "history" {
+            continue;
+        }
         match kind {
+            "file" => {
+                let copied = arguments.split_once(' ').and_then(|(size, path)| {
+                    let bytes = decode(&body.concat())?;
+                    (size.parse::<usize>().ok()? == bytes.len()).then(|| (path.to_owned(), bytes))
+                });
+                match copied {
+                    Some((path, bytes)) => {
+                        capture.files.insert(path, bytes);
+                    }
+                    None => capture
+                        .skipped
+                        .push(format!("{arguments} (unreadable copy)")),
+                }
+            }
             "log" => {
                 let mut fields = arguments.splitn(3, ' ');
                 if let (Some(size), Some(start), Some(path)) =
@@ -153,6 +212,7 @@ pub fn parse(output: &str) -> Capture {
                 let mut history = body.join("\n");
                 history.truncate(history.trim_end().len());
                 capture.history = Some(history);
+                capture.history_finished = finished;
             }
         }
     }
@@ -228,14 +288,14 @@ pub fn appended<'a>(before: &str, after: &'a str) -> &'a str {
     after
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Line {
     pub text: String,
     pub count: usize,
     pub novel: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Excerpt {
     pub file: String,
     pub new_lines: usize,
@@ -304,21 +364,21 @@ pub fn excerpts(before: &BTreeMap<String, Log>, after: &BTreeMap<String, Log>) -
         .collect()
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Entry {
     pub path: String,
     pub files: usize,
     pub bytes: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Change {
     pub path: String,
     pub before: u64,
     pub after: u64,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 pub struct DataChanges {
     pub root: String,
     pub present_before: bool,
@@ -546,7 +606,7 @@ pub fn fault_indices(actions: &[FaultAction]) -> Vec<usize> {
         .collect()
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Point {
     pub step: usize,
     pub labels: Vec<String>,
@@ -576,7 +636,7 @@ pub fn plan(actions: &[FaultAction], violation: usize) -> Vec<Point> {
     points.into_values().collect()
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Span {
     pub title: String,
     pub from: usize,
@@ -629,10 +689,13 @@ pub struct Observed {
     pub logs: BTreeMap<String, Log>,
     pub data: BTreeMap<String, Files>,
     pub history: Option<String>,
+    pub history_finished: bool,
+    pub copied: Vec<String>,
+    pub skipped: Vec<String>,
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Fault {
     pub number: usize,
     pub step: usize,
@@ -644,7 +707,7 @@ pub struct Fault {
     pub running_after: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Window {
     pub title: String,
     pub from_step: usize,
@@ -656,14 +719,14 @@ pub struct Window {
     pub data: Vec<DataChanges>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Commands {
     pub replay: String,
     pub fix_check: String,
     pub branch: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Explanation {
     pub promise: Vec<String>,
     pub violation_step: usize,
@@ -674,6 +737,11 @@ pub struct Explanation {
     pub guest_clock_offset_seconds: Option<f64>,
     pub capture_seconds: Option<f64>,
     pub history: Option<String>,
+    pub history_error: Option<String>,
+    pub copied: Vec<String>,
+    pub skipped_copies: Vec<String>,
+    #[serde(default)]
+    pub host_history: Option<HostHistory>,
     pub windows: Vec<Window>,
     pub commands: Commands,
     pub probes: usize,
@@ -683,6 +751,13 @@ pub struct Explanation {
     pub shrink_seconds: u64,
     pub probe_seconds: u64,
     pub settings: Explain,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HostHistory {
+    pub command: String,
+    pub status: Option<i32>,
+    pub output: String,
 }
 
 pub struct Inputs<'a> {
@@ -716,6 +791,7 @@ pub fn explanation(inputs: &Inputs<'_>) -> Explanation {
             .get(&step)
             .map_or(0.0, |(moment, _)| *moment as f64 / 1e9)
     };
+    let violation = inputs.observed.get(&inputs.violation);
     let offset = inputs
         .observed
         .values()
@@ -795,10 +871,21 @@ pub fn explanation(inputs: &Inputs<'_>) -> Explanation {
             .values()
             .filter_map(|observed| Some(observed.settled? - observed.uptime?))
             .reduce(f64::max),
-        history: inputs
-            .observed
-            .get(&inputs.violation)
-            .and_then(|observed| observed.history.clone()),
+        history: violation.and_then(|observed| observed.history.clone()),
+        history_error: violation
+            .filter(|observed| {
+                inputs.settings.history.is_some()
+                    && !(observed.history.is_some() && observed.history_finished)
+            })
+            .map(|observed| {
+                observed
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "the probe printed no history".into())
+            }),
+        copied: violation.map_or_else(Vec::new, |observed| observed.copied.clone()),
+        skipped_copies: violation.map_or_else(Vec::new, |observed| observed.skipped.clone()),
+        host_history: None,
         windows,
         commands: Commands {
             replay: run(inputs.image, "replay"),
@@ -1010,18 +1097,62 @@ pub fn render(explanation: &Explanation) -> String {
     for violation in &explanation.promise {
         let _ = writeln!(text, "- Failed check: `{violation}`");
     }
-    match &explanation.history {
-        Some(history) => {
+    let step = explanation.violation_step;
+    let history = explanation
+        .history
+        .as_ref()
+        .filter(|history| !history.trim().is_empty());
+    if let Some(history) = history {
+        let _ = write!(
+            text,
+            "\nOutput of the history command at step {step}:\n\n{}",
+            fence(&pretty_history(history))
+        );
+    }
+    if let Some(error) = &explanation.history_error {
+        let _ = writeln!(
+            text,
+            "\nThe history command at step {step} did not finish: {error}.{}",
+            if history.is_some() {
+                " The output above is partial."
+            } else {
+                ""
+            }
+        );
+    }
+    if !explanation.copied.is_empty() {
+        let _ = writeln!(
+            text,
+            "\nCopied {} guest files at step {step} into `copied/` in the run directory.",
+            explanation.copied.len()
+        );
+    }
+    if !explanation.skipped_copies.is_empty() {
+        let _ = writeln!(
+            text,
+            "\nNot copied (larger than {} MiB or unreadable): {}.",
+            COPY_LIMIT >> 20,
+            explanation.skipped_copies.join(", ")
+        );
+    }
+    match (&explanation.host_history, &explanation.settings.host_history) {
+        (Some(host), _) => {
             let _ = write!(
                 text,
-                "\nOutput of the history command at step {}:\n\n{}",
-                explanation.violation_step,
-                fence(&pretty_history(history))
+                "\nOutput of `{}` on the host{}:\n\n{}",
+                host.command,
+                host.status
+                    .map_or(", ended by a signal".into(), |status| format!(
+                        ", exit status {status}"
+                    )),
+                fence(&pretty_history(&host.output))
             );
         }
-        None => text.push_str(
-            "\nNo history command is configured. Set `history` in `[workload.options.explain]` or pass `--history`.\n",
+        (None, Some(_)) => text.push_str("\nThe host history command has not run.\n"),
+        (None, None) if explanation.settings.history.is_none() => text.push_str(
+            "\nNo history command is configured. Set `history` or `host_history` in `[workload.options.explain]`, or pass `--history` or `--host-history`.\n",
         ),
+        (None, None) => {}
     }
     text.push('\n');
     for window in &explanation.windows {
@@ -1102,7 +1233,7 @@ impl Worker<'_> {
     fn probe(&mut self, point: &Point, target: &mut FaultTarget) {
         let script = script(self.settings, point.history);
         let directory = self.out.join("probes").join(point.step.to_string());
-        let output = (|| -> Result<String> {
+        let ran = (|| -> Result<()> {
             fs::create_dir_all(&directory)?;
             fs::write(directory.join("probe.sh"), &script)?;
             let code =
@@ -1110,25 +1241,103 @@ impl Worker<'_> {
             if code != 0 {
                 return Err(format!("the probe script exited with {code}").into());
             }
-            Ok(String::from_utf8_lossy(&fs::read(directory.join("terminal.log"))?).into_owned())
+            Ok(())
         })();
+        let output = fs::read(directory.join("terminal.log"))
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
+        let capture = parse(&output);
         let mut observed = Observed {
             step: point.step,
+            logs: logs(capture.logs),
+            data: capture.data,
+            uptime: capture.uptime,
+            settled: capture.settled,
+            history: capture.history,
+            history_finished: capture.history_finished,
+            skipped: capture.skipped,
+            error: ran.err().map(|error| error.to_string()),
             ..Observed::default()
         };
-        match output {
-            Ok(output) => {
-                let capture = parse(&output);
-                observed.logs = logs(capture.logs);
-                observed.data = capture.data;
-                observed.uptime = capture.uptime;
-                observed.settled = capture.settled;
-                observed.history = capture.history;
+        for (path, bytes) in capture.files {
+            match store(&self.out.join("copied"), &path, &bytes) {
+                Ok(()) => observed.copied.push(path),
+                Err(error) => observed.skipped.push(format!("{path} ({error})")),
             }
-            Err(error) => observed.error = Some(error.to_string()),
         }
         self.observed.push(observed);
     }
+}
+
+pub fn store(root: &Path, path: &str, bytes: &[u8]) -> Result<()> {
+    let relative = path
+        .strip_prefix('/')
+        .filter(|relative| {
+            !relative.contains('\0')
+                && relative
+                    .split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != "..")
+        })
+        .ok_or("not a plain absolute guest path")?;
+    let target = root.join(relative);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(target, bytes)?;
+    Ok(())
+}
+
+#[cfg(feature = "frontend")]
+pub fn host_history(out: &Path) -> Result<()> {
+    if !out.join("explain.json").is_file() {
+        return Ok(());
+    }
+    let out = out.canonicalize()?;
+    let path = out.join("explain.json");
+    let mut explanation: Explanation = serde_json::from_slice(&fs::read(&path)?)?;
+    let Some(command) = explanation.settings.host_history.clone() else {
+        return Ok(());
+    };
+    let mut local = String::new();
+    let mut last = 0;
+    for range in Explain::guest_paths(&command) {
+        local.push_str(&command[last..range.start - 1]);
+        local.push_str(&quote(
+            &out.join("copied")
+                .join(&command[range.start + 1..range.end])
+                .display()
+                .to_string(),
+        ));
+        last = range.end;
+    }
+    local.push_str(&command[last..]);
+    let command = local;
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .current_dir(&out)
+        .output()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let errors = String::from_utf8_lossy(&output.stderr);
+    if !errors.trim().is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&errors);
+    }
+    text.truncate(text.trim_end().len());
+    explanation.host_history = Some(HostHistory {
+        command,
+        status: output.status.code(),
+        output: text,
+    });
+    fs::write(&path, serde_json::to_vec_pretty(&explanation)?)?;
+    fs::write(out.join("explain.md"), render(&explanation))?;
+    println!(
+        "ran the host history command: {}",
+        out.join("explain.md").display()
+    );
+    Ok(())
 }
 
 struct Replayed {
@@ -1476,8 +1685,14 @@ mod tests {
             logs: vec![format!("{base}/n*.log"), format!("{base}/missing.log")],
             data: vec![format!("{base}/n1")],
             history: Some("echo '{\"lost\":[7]}'; echo $((1 + 1))".into()),
+            host_history: Some(format!("harness-check @{base}/n1/streams")),
         };
         let first = parse(&shell(&script(&settings, true)));
+        assert!(first.history_finished);
+        assert_eq!(
+            first.files,
+            BTreeMap::from([(format!("{base}/n1/streams/S/1.blk"), b"block".to_vec())])
+        );
         assert_eq!(first.logs.len(), 2);
         assert_eq!(
             first.logs[&format!("{base}/n1.log")].text,
@@ -1507,6 +1722,7 @@ mod tests {
         fs::remove_dir_all(root.path().join("n1/streams")).unwrap();
         let second = parse(&shell(&script(&settings, false)));
         assert_eq!(second.history, None);
+        assert!(second.files.is_empty());
         let after = logs(second.logs);
         let n1 = format!("{base}/n1.log");
         assert_eq!(after[&n1].text, "start\nleader elected\nstream S removed\n");
@@ -1800,7 +2016,10 @@ mod tests {
             logs: vec!["/tmp/*.log".into()],
             data: vec!["/tmp/n1".into()],
             history: Some("check".into()),
+            host_history: Some("harness-check -family register @/tmp/harness/journal".into()),
         };
+        observed.get_mut(&5).unwrap().history_finished = true;
+        observed.get_mut(&5).unwrap().copied = vec!["/tmp/harness/journal/a.jsonl".into()];
         let mut explanation = explanation(&Inputs {
             out: Path::new("/runs/x"),
             actions: &actions,
@@ -1837,8 +2056,130 @@ mod tests {
             "harmony debug run app.oci --config /runs/x/resolved.toml --seed 51",
             "probe at step 2 failed: guest refused",
             "Each probe saw the same whole-state certificate as a probe-free reference replay",
+            "Copied 1 guest files at step 5 into `copied/` in the run directory.",
+            "The host history command has not run.",
         ] {
             assert!(text.contains(expected), "missing {expected:?} in\n{text}");
         }
+        assert_eq!(explanation.history_error, None);
+        explanation.host_history = Some(HostHistory {
+            command: "harness-check -family register '/runs/x/copied/tmp/harness/journal'".into(),
+            status: Some(3),
+            output: "{\"violations\":1}".into(),
+        });
+        let text = render(&explanation);
+        assert!(text.contains("on the host, exit status 3:"), "{text}");
+        assert!(text.contains("\"violations\": 1"), "{text}");
+
+        let point = observed.get_mut(&5).unwrap();
+        point.history_finished = false;
+        point.error = Some("host command limit of 300 s reached".into());
+        let explanation = super::explanation(&Inputs {
+            out: Path::new("/runs/x"),
+            actions: &actions,
+            bundle: BUNDLE,
+            image: "app.oci",
+            seed: 51,
+            expected: &expected,
+            violation: 5,
+            observed: &observed,
+            settings: &settings,
+        });
+        assert_eq!(
+            explanation.history_error.as_deref(),
+            Some("host command limit of 300 s reached")
+        );
+        assert!(render(&explanation).contains(
+            "The history command at step 5 did not finish: host command limit of 300 s reached. The output above is partial."
+        ));
+        let mut explanation = explanation;
+        explanation.history = Some("\n".into());
+        let text = render(&explanation);
+        assert!(text.contains("did not finish: host command limit of 300 s reached.\n"));
+        assert!(!text.contains("Output of the history command"));
+    }
+
+    #[test]
+    fn copies_decode_and_land_under_their_guest_path() {
+        assert_eq!(decode("aGVs\nbG8=").unwrap(), b"hello");
+        assert_eq!(decode("YQ==").unwrap(), b"a");
+        assert_eq!(decode("a$b"), None);
+        let root = tempfile::tempdir().unwrap();
+        store(root.path(), "/tmp/j/a.jsonl", b"{}").unwrap();
+        assert_eq!(fs::read(root.path().join("tmp/j/a.jsonl")).unwrap(), b"{}");
+        for bad in ["tmp/a", "/tmp/../a", "/tmp//a", "/./a"] {
+            assert!(store(root.path(), bad, b"x").is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_unterminated_history_is_kept_and_an_unterminated_log_is_dropped() {
+        let capture = parse(&format!(
+            "{MARK} log 4 0 /a.log\nabc\n{MARK} end\n{MARK} history\n{{\"ops\":1}}\n"
+        ));
+        assert_eq!(capture.logs["/a.log"].text, "abc");
+        assert_eq!(capture.history.as_deref(), Some("{\"ops\":1}"));
+        assert!(!capture.history_finished);
+        let capture = parse(&format!("{MARK} log 4 0 /a.log\nabc\n"));
+        assert!(capture.logs.is_empty());
+        let capture = parse(&format!(
+            "{MARK} file 3 /j/a\nYWJj\n{MARK} end\n{MARK} file 9 /j/b\nYWJj\n{MARK} end\n{MARK} skip 99999999 /j/c\n"
+        ));
+        assert_eq!(
+            capture.files,
+            BTreeMap::from([("/j/a".to_owned(), b"abc".to_vec())])
+        );
+        assert_eq!(
+            capture.skipped,
+            vec![
+                "9 /j/b (unreadable copy)".to_owned(),
+                "99999999 /j/c".to_owned()
+            ]
+        );
+    }
+
+    #[cfg(feature = "frontend")]
+    #[test]
+    fn the_host_history_runs_on_the_copied_files() {
+        let root = tempfile::tempdir().unwrap();
+        let actions = schedule();
+        let expected = summary(&actions);
+        let settings = Explain {
+            host_history: Some("wc -c < @/tmp/j/a.jsonl; ls @/tmp/j; exit 3".into()),
+            ..Explain::default()
+        };
+        let explanation = explanation(&Inputs {
+            out: root.path(),
+            actions: &actions,
+            bundle: BUNDLE,
+            image: "app.oci",
+            seed: 51,
+            expected: &expected,
+            violation: 5,
+            observed: &BTreeMap::new(),
+            settings: &settings,
+        });
+        fs::write(
+            root.path().join("explain.json"),
+            serde_json::to_vec(&explanation).unwrap(),
+        )
+        .unwrap();
+        store(&root.path().join("copied"), "/tmp/j/a.jsonl", b"abcd").unwrap();
+        host_history(&root.path().join("missing")).unwrap();
+        host_history(root.path()).unwrap();
+        let saved: Explanation =
+            serde_json::from_slice(&fs::read(root.path().join("explain.json")).unwrap()).unwrap();
+        let host = saved.host_history.unwrap();
+        assert_eq!(host.status, Some(3));
+        assert_eq!(
+            host.output.split_whitespace().collect::<Vec<_>>(),
+            vec!["4", "a.jsonl"]
+        );
+        assert!(!host.command.contains('@'));
+        assert!(
+            fs::read_to_string(root.path().join("explain.md"))
+                .unwrap()
+                .contains("exit status 3")
+        );
     }
 }

@@ -50,9 +50,49 @@ pub struct Explain {
     pub logs: Vec<String>,
     pub data: Vec<String>,
     pub history: Option<String>,
+    pub host_history: Option<String>,
 }
 
 impl Explain {
+    #[must_use]
+    pub fn guest_paths(command: &str) -> Vec<std::ops::Range<usize>> {
+        let path = |byte: u8| byte.is_ascii_alphanumeric() || b"/._-+,:%~".contains(&byte);
+        let bytes = command.as_bytes();
+        let mut ranges = Vec::new();
+        let mut index = 0;
+        while index + 1 < bytes.len() {
+            if bytes[index] == b'@'
+                && bytes[index + 1] == b'/'
+                && (index == 0 || !(path(bytes[index - 1]) || bytes[index - 1] == b'@'))
+            {
+                let end = (index + 1..bytes.len())
+                    .find(|&at| !path(bytes[at]))
+                    .unwrap_or(bytes.len());
+                ranges.push(index + 1..end);
+                index = end;
+            } else {
+                index += 1;
+            }
+        }
+        ranges
+    }
+
+    #[must_use]
+    pub fn copies(&self) -> Vec<String> {
+        let mut paths = self
+            .host_history
+            .iter()
+            .flat_map(|command| {
+                Self::guest_paths(command)
+                    .into_iter()
+                    .map(|range| command[range].to_owned())
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
     pub fn validate(&self) -> Result<()> {
         for path in self.logs.iter().chain(&self.data) {
             if path.is_empty() || path.contains(['\n', '\r', '\0']) {
@@ -68,6 +108,29 @@ impl Explain {
             .is_some_and(|text| text.trim().is_empty() || text.contains('\0'))
         {
             return Err("explain history must be nonempty shell text without NUL".into());
+        }
+        if let Some(command) = &self.host_history {
+            if command.trim().is_empty() || command.contains('\0') {
+                return Err("explain host history must be nonempty shell text without NUL".into());
+            }
+            if self.copies().is_empty() {
+                return Err(
+                    "explain host history names no guest path; write one as @/guest/path".into(),
+                );
+            }
+            for path in self.copies() {
+                if path
+                    .split('/')
+                    .skip(1)
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+                    || path.contains(['\n', '\r'])
+                {
+                    return Err(format!(
+                        "explain host history path {path:?} must be a plain absolute guest path"
+                    )
+                    .into());
+                }
+            }
         }
         Ok(())
     }
@@ -91,6 +154,10 @@ impl Explain {
                 self.data.clone()
             },
             history: self.history.clone().or_else(|| saved.history.clone()),
+            host_history: self
+                .host_history
+                .clone()
+                .or_else(|| saved.host_history.clone()),
         }
     }
 }
@@ -436,5 +503,23 @@ mod tests {
         assert!(shared("[\"wait\"]").is_err());
         assert!(shared("[\"disk-corrupt\"]").is_err());
         assert!(Config::default().exclude_faults.is_empty());
+    }
+
+    #[test]
+    fn host_history_names_guest_paths_with_an_at_sign() {
+        let command = "check @/tmp/j; cat @/var/a.log|wc -l '@/x' user@/y @@/z";
+        let explain = Explain {
+            host_history: Some(command.into()),
+            ..Explain::default()
+        };
+        assert_eq!(explain.copies(), vec!["/tmp/j", "/var/a.log", "/x"]);
+        explain.validate().unwrap();
+        for bad in ["check", "check @/tmp/../etc", "check @/tmp/j/", "  "] {
+            let explain = Explain {
+                host_history: Some(bad.into()),
+                ..Explain::default()
+            };
+            assert!(explain.validate().is_err(), "{bad}");
+        }
     }
 }
