@@ -332,11 +332,11 @@ impl Explorer {
     }
 
     fn release_retired_snapshots(&mut self) {
-        let active = &self.archive.active;
+        let archive = &self.archive;
         let mut freed = 0;
         let mut released = 0;
         self.snapshots.retain(|&id, bytes| {
-            let keep = id == 0 || active.get(id).copied().unwrap_or(false);
+            let keep = id == 0 || archive.is_active(id);
             if !keep {
                 freed += bytes.len();
                 released += 1;

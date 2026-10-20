@@ -25,13 +25,13 @@ fn unset_action_cost<A>() -> fn(&A) -> u64 {
 }
 
 fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
-    let mut kept: Vec<T> = values
+    values
         .into_iter()
         .zip(keep)
         .filter_map(|(value, keep)| (*keep).then_some(value))
-        .collect();
-    kept.shrink_to_fit();
-    kept
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+        .into_vec()
 }
 
 #[cfg(test)]
@@ -688,28 +688,20 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
     id_to_index: BTreeMap<u64, usize>,
     next_entry_id: u64,
-    pub active: Vec<bool>,
+    entry_state: Vec<EntryState>,
     active_count: usize,
     pub slots: BTreeMap<Slot<K>, Vec<usize>>,
     cells: CellArena<K>,
-    cell_handles: Vec<usize>,
     input_index: InputIndex<A>,
     historical_input_actions: usize,
     stored_input_actions: usize,
     pub retained: u64,
     pub rejected: u64,
-    selected: Vec<u64>,
-    productive: Vec<u64>,
-    opened_cell: Vec<bool>,
-    opened_slot: Vec<bool>,
     #[serde(with = "crate::search::checkpoint::json_bytes")]
     selector_accounting: SelectorAccounting,
-    cost_in_group: Vec<u64>,
     replacement_cost_displaced: u64,
     portfolio_replacements: Vec<u64>,
     portfolio_cross_improvements: u64,
-    replacement_preferences: Vec<u8>,
-    in_place_lengths: Vec<u8>,
     lineages: Vec<K::Lineage>,
     deepest_leaf: Vec<(K, usize)>,
     #[serde(skip, default = "unset_action_cost::<A>")]
@@ -724,19 +716,12 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     recent_cells: RefCell<RecentCells<K>>,
     #[serde(skip)]
     entry_memory_bytes_cache: std::cell::Cell<[(usize, usize); 2]>,
-    #[serde(skip)]
-    parent_index: Vec<usize>,
     preserve_inactive_snapshots: bool,
     metadata_pins: BTreeMap<u64, u32>,
     inflight_snapshot_pins: BTreeMap<u64, u32>,
     inflight_snapshot_charges: BTreeMap<u64, usize>,
     inflight_snapshot_bytes: usize,
     resident_snapshots: usize,
-    snapshot_selectable: Vec<bool>,
-    keyframe: Vec<bool>,
-    keyframe_id: Vec<u64>,
-    keyframe_dependents: Vec<usize>,
-    referenced: Vec<bool>,
     drop_hand: usize,
     entry_drops: u64,
     memory_limit: Option<usize>,
@@ -765,6 +750,48 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     continuation_wave: u32,
     continuation_accounting: ContinuationAccounting,
     landed: BTreeSet<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[repr(C)]
+struct EntryState {
+    selected: u64,
+    cell_handle: usize,
+    active: bool,
+    referenced: bool,
+    opened_cell: bool,
+    opened_slot: bool,
+    snapshot_selectable: bool,
+    keyframe: bool,
+    replacement_preferences: u8,
+    in_place_lengths: u8,
+    productive: u64,
+    cost_in_group: u64,
+    keyframe_id: u64,
+    keyframe_dependents: usize,
+    parent: usize,
+}
+
+impl Default for EntryState {
+    fn default() -> Self {
+        Self {
+            selected: 0,
+            cell_handle: usize::MAX,
+            active: false,
+            referenced: false,
+            opened_cell: false,
+            opened_slot: false,
+            snapshot_selectable: false,
+            keyframe: false,
+            replacement_preferences: 0,
+            in_place_lengths: 0,
+            productive: 0,
+            cost_in_group: 0,
+            keyframe_id: 0,
+            keyframe_dependents: 0,
+            parent: usize::MAX,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -1410,30 +1437,22 @@ where
             entries: Vec::new(),
             id_to_index: BTreeMap::new(),
             next_entry_id: 0,
-            active: Vec::new(),
+            entry_state: Vec::new(),
             active_count: 0,
             slots: BTreeMap::new(),
             cells: CellArena::default(),
-            cell_handles: Vec::new(),
             input_index: InputIndex::default(),
             historical_input_actions: 0,
             stored_input_actions: 0,
             retained: 0,
             rejected: 0,
-            selected: Vec::new(),
-            productive: Vec::new(),
-            opened_cell: Vec::new(),
-            opened_slot: Vec::new(),
             selector_accounting: SelectorAccounting {
                 best_holder_draws: vec![0; K::preferences()],
                 ..SelectorAccounting::default()
             },
-            cost_in_group: Vec::new(),
             replacement_cost_displaced: 0,
             portfolio_replacements: vec![0; K::preferences().max(1)],
             portfolio_cross_improvements: 0,
-            replacement_preferences: Vec::new(),
-            in_place_lengths: Vec::new(),
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
             action_cost,
@@ -1444,18 +1463,12 @@ where
             tiers: BTreeMap::new(),
             recent_cells: RefCell::default(),
             entry_memory_bytes_cache: std::cell::Cell::default(),
-            parent_index: Vec::new(),
             preserve_inactive_snapshots: false,
             metadata_pins: BTreeMap::new(),
             inflight_snapshot_pins: BTreeMap::new(),
             inflight_snapshot_charges: BTreeMap::new(),
             inflight_snapshot_bytes: 0,
             resident_snapshots: 0,
-            snapshot_selectable: Vec::new(),
-            keyframe: Vec::new(),
-            keyframe_id: Vec::new(),
-            keyframe_dependents: Vec::new(),
-            referenced: Vec::new(),
             drop_hand: 0,
             entry_drops: 0,
             memory_limit: None,
@@ -1546,10 +1559,9 @@ where
         }
         if self.liveness_anchor.is_some_and(|id| {
             self.index_of_id(id).is_some_and(|index| {
-                self.snapshot_selectable
+                self.entry_state
                     .get(index)
-                    .copied()
-                    .unwrap_or(false)
+                    .is_some_and(|state| state.snapshot_selectable)
                     && self.entries[index].snapshot.is_some()
             })
         }) {
@@ -1561,12 +1573,13 @@ where
             .iter()
             .enumerate()
             .find(|(index, _)| {
-                self.active.get(*index).copied().unwrap_or(false)
+                self.entry_state
+                    .get(*index)
+                    .is_some_and(|state| state.active)
                     && self
-                        .snapshot_selectable
+                        .entry_state
                         .get(*index)
-                        .copied()
-                        .unwrap_or(false)
+                        .is_some_and(|state| state.snapshot_selectable)
                     && self.entries[*index].snapshot.is_some()
             })
             .map(|(_, entry)| entry.id);
@@ -1585,7 +1598,11 @@ where
         let Some(index) = self.index_of_id(anchor) else {
             return false;
         };
-        if !self.active.get(index).copied().unwrap_or(false) {
+        if !self
+            .entry_state
+            .get(index)
+            .is_some_and(|state| state.active)
+        {
             return false;
         }
         self.deactivate(index);
@@ -1598,7 +1615,10 @@ where
     }
 
     fn reclaim_inactive_snapshot(&mut self, id: usize) {
-        if self.snapshot_selectable.get(id).copied().unwrap_or(false)
+        if self
+            .entry_state
+            .get(id)
+            .is_some_and(|state| state.snapshot_selectable)
             || self
                 .inflight_snapshot_pins
                 .contains_key(&self.entries[id].id)
@@ -1622,22 +1642,23 @@ where
     }
 
     fn snapshot_retained(&self, id: usize) -> bool {
-        (self.keyframe[id] && self.keyframe_dependents[id] > 0) || self.is_liveness_anchor(id)
+        (self.entry_state[id].keyframe && self.entry_state[id].keyframe_dependents > 0)
+            || self.is_liveness_anchor(id)
     }
 
     fn origin_resident(&self, id: usize) -> bool {
-        if self.snapshot_selectable[id] {
+        if self.entry_state[id].snapshot_selectable {
             return true;
         }
-        self.index_of_id(self.keyframe_id[id])
-            .is_some_and(|keyframe| self.snapshot_selectable[keyframe])
+        self.index_of_id(self.entry_state[id].keyframe_id)
+            .is_some_and(|keyframe| self.entry_state[keyframe].snapshot_selectable)
     }
 
     fn deactivate(&mut self, id: usize) -> bool {
-        if !self.active.get(id).copied().unwrap_or(false) {
+        if !self.entry_state.get(id).is_some_and(|state| state.active) {
             return false;
         }
-        self.active[id] = false;
+        self.entry_state[id].active = false;
         self.active_count = self.active_count.saturating_sub(1);
         self.release_keep(2);
         let key = self.entries[id].key;
@@ -1659,17 +1680,18 @@ where
             self.input_index
                 .set_owner(self.entries[id].input_node, None);
         }
-        let keyframe = self.index_of_id(self.keyframe_id[id]);
+        let keyframe = self.index_of_id(self.entry_state[id].keyframe_id);
         if let Some(keyframe) = keyframe {
-            self.keyframe_dependents[keyframe] =
-                self.keyframe_dependents[keyframe].saturating_sub(1);
+            self.entry_state[keyframe].keyframe_dependents = self.entry_state[keyframe]
+                .keyframe_dependents
+                .saturating_sub(1);
         }
         if !self.snapshot_retained(id) {
             self.release_snapshot(id);
         }
         if let Some(keyframe) = keyframe
             && keyframe != id
-            && !self.active[keyframe]
+            && !self.entry_state[keyframe].active
             && !self.snapshot_retained(keyframe)
         {
             self.release_snapshot(keyframe);
@@ -1678,7 +1700,11 @@ where
     }
 
     fn release_snapshot(&mut self, id: usize) -> bool {
-        if !self.snapshot_selectable.get(id).copied().unwrap_or(false) {
+        if !self
+            .entry_state
+            .get(id)
+            .is_some_and(|state| state.snapshot_selectable)
+        {
             return false;
         }
         let charge = self.entries[id]
@@ -1693,7 +1719,7 @@ where
                 .checked_add(charge)
                 .expect("snapshot charge imbalance");
         }
-        self.snapshot_selectable[id] = false;
+        self.entry_state[id].snapshot_selectable = false;
         self.resident_snapshots = self.resident_snapshots.saturating_sub(1);
         self.resident_snapshot_bytes = self
             .resident_snapshot_bytes
@@ -1716,11 +1742,11 @@ where
                 break;
             };
             visits = visits.saturating_add(1);
-            if !self.snapshot_selectable[id] || self.snapshot_retained(id) {
+            if !self.entry_state[id].snapshot_selectable || self.snapshot_retained(id) {
                 continue;
             }
-            if self.referenced[id] {
-                self.referenced[id] = false;
+            if self.entry_state[id].referenced {
+                self.entry_state[id].referenced = false;
                 self.resident_snapshot_order.push_back(id);
                 continue;
             }
@@ -1778,11 +1804,11 @@ where
             let id = self.drop_hand % count;
             self.drop_hand = (id + 1) % count;
             examined = examined.saturating_add(1);
-            if !self.active[id] || self.is_liveness_anchor(id) {
+            if !self.entry_state[id].active || self.is_liveness_anchor(id) {
                 continue;
             }
-            if self.referenced[id] {
-                self.referenced[id] = false;
+            if self.entry_state[id].referenced {
+                self.entry_state[id].referenced = false;
                 continue;
             }
             self.deactivate(id);
@@ -1822,10 +1848,9 @@ where
 
     fn maintenance_state(&self) -> (usize, usize, usize, usize, usize) {
         let referenced_active = self
-            .referenced
+            .entry_state
             .iter()
-            .zip(&self.active)
-            .filter(|(referenced, active)| **referenced && **active)
+            .filter(|state| state.referenced && state.active)
             .count();
         (
             self.entries.len(),
@@ -1845,10 +1870,13 @@ where
             .iter()
             .enumerate()
             .map(|(index, entry)| {
-                self.active.get(index).copied().unwrap_or(false)
+                self.entry_state
+                    .get(index)
+                    .is_some_and(|state| state.active)
                     || self.metadata_pins.contains_key(&entry.id)
                     || self.inflight_snapshot_pins.contains_key(&entry.id)
-                    || (self.keyframe[index] && self.keyframe_dependents[index] > 0)
+                    || (self.entry_state[index].keyframe
+                        && self.entry_state[index].keyframe_dependents > 0)
                     || (self.preserve_inactive_snapshots && entry.snapshot.is_some())
                     || (self.liveness_anchor == Some(entry.id) && entry.snapshot.is_some())
                     || entry
@@ -1918,29 +1946,31 @@ where
             }
         }
 
+        let mut parent_remap = node_remap;
+        parent_remap.clear();
+        let mut next = 0;
+        parent_remap.extend(keep.iter().map(|keep| {
+            keep.then(|| {
+                let mapped = next;
+                next += 1;
+                mapped
+            })
+        }));
         for (index, keep) in keep.iter().enumerate() {
             if !keep {
                 self.take_snapshot(index);
             }
         }
         self.entries = retain_marked(std::mem::take(&mut self.entries), &keep);
-        self.active = retain_marked(std::mem::take(&mut self.active), &keep);
-        self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
-        self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
-        self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
-        self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
-        self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
-        self.replacement_preferences =
-            retain_marked(std::mem::take(&mut self.replacement_preferences), &keep);
-        self.in_place_lengths = retain_marked(std::mem::take(&mut self.in_place_lengths), &keep);
+        self.entry_state = retain_marked(std::mem::take(&mut self.entry_state), &keep);
+        for state in &mut self.entry_state {
+            state.parent = parent_remap
+                .get(state.parent)
+                .copied()
+                .flatten()
+                .unwrap_or(usize::MAX);
+        }
         self.lineages = retain_marked(std::mem::take(&mut self.lineages), &keep);
-        self.snapshot_selectable =
-            retain_marked(std::mem::take(&mut self.snapshot_selectable), &keep);
-        self.keyframe = retain_marked(std::mem::take(&mut self.keyframe), &keep);
-        self.keyframe_id = retain_marked(std::mem::take(&mut self.keyframe_id), &keep);
-        self.keyframe_dependents =
-            retain_marked(std::mem::take(&mut self.keyframe_dependents), &keep);
-        self.referenced = retain_marked(std::mem::take(&mut self.referenced), &keep);
         self.drop_hand = 0;
 
         self.id_to_index.clear();
@@ -1958,7 +1988,7 @@ where
             self.stored_input_actions = self
                 .stored_input_actions
                 .saturating_add(entry.input_suffix.len());
-            if self.active[index] {
+            if self.entry_state[index].active {
                 self.active_count = self.active_count.saturating_add(1);
                 self.slots
                     .entry(slot_of_key(entry.key))
@@ -1966,7 +1996,7 @@ where
                     .push(index);
                 self.cells.state_mut(cell_of(entry.key)).active += 1;
             }
-            if self.snapshot_selectable[index] {
+            if self.entry_state[index].snapshot_selectable {
                 self.resident_snapshots = self.resident_snapshots.saturating_add(1);
                 self.resident_snapshot_bytes = self
                     .resident_snapshot_bytes
@@ -1977,17 +2007,15 @@ where
                             .map_or(0, |snapshot| self.snapshot_charge(snapshot)),
                     )
                     .expect("resident snapshot charge overflow");
-                if !self.keyframe[index] {
+                if !self.entry_state[index].keyframe {
                     self.resident_snapshot_order.push_back(index);
                 }
             }
         }
         self.cells.retain(|_, state| state.active > 0);
-        self.cell_handles = self
-            .entries
-            .iter()
-            .map(|entry| self.cells.handle(&cell_of(entry.key)).unwrap_or(usize::MAX))
-            .collect();
+        for (entry, state) in self.entries.iter().zip(&mut self.entry_state) {
+            state.cell_handle = self.cells.handle(&cell_of(entry.key)).unwrap_or(usize::MAX);
+        }
         self.retain_indexed_landings();
 
         if let Some(bank) = &mut self.continuations {
@@ -2014,7 +2042,6 @@ where
         self.active_ids = ActiveIds::default();
         self.recent_cells = RefCell::default();
         self.tiers.clear();
-        self.parent_index = Vec::new();
         if selector_indexed {
             self.rebuild_selector_index();
         }
@@ -2040,7 +2067,7 @@ where
         self.failed_compaction = None;
         if !preserve {
             for id in 0..self.entries.len() {
-                if !self.snapshot_selectable[id] {
+                if !self.entry_state[id].snapshot_selectable {
                     self.reclaim_inactive_snapshot(id);
                 }
             }
@@ -2131,10 +2158,10 @@ where
         id: usize,
     ) -> Result<PinnedJobOriginParts<A, S>, &'static str> {
         let (snapshot, replay, certificates) = self.job_origin(id)?;
-        let snapshot_id = if self.snapshot_selectable[id] {
+        let snapshot_id = if self.entry_state[id].snapshot_selectable {
             self.entries[id].id
         } else {
-            self.keyframe_id[id]
+            self.entry_state[id].keyframe_id
         };
         let pins = self.inflight_snapshot_pins.entry(snapshot_id).or_default();
         *pins = pins
@@ -2167,7 +2194,7 @@ where
 
     pub(crate) fn job_origin(&self, id: usize) -> Result<JobOriginParts<A, S>, &'static str> {
         let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
-        if self.snapshot_selectable[id] {
+        if self.entry_state[id].snapshot_selectable {
             let snapshot = entry
                 .snapshot
                 .clone()
@@ -2175,9 +2202,9 @@ where
             return Ok((snapshot, Vec::new(), Vec::new()));
         }
         let keyframe = self
-            .index_of_id(self.keyframe_id[id])
+            .index_of_id(self.entry_state[id].keyframe_id)
             .ok_or("job origin keyframe is missing")?;
-        if !self.snapshot_selectable[keyframe] {
+        if !self.entry_state[keyframe].snapshot_selectable {
             return Err("job origin keyframe has no resident snapshot");
         }
         let keyframe_entry = &self.entries[keyframe];
@@ -2241,23 +2268,9 @@ where
         }
         [
             column(&self.entries, entries),
-            column(&self.active, entries),
-            column(&self.selected, entries),
-            column(&self.productive, entries),
-            column(&self.opened_cell, entries),
-            column(&self.opened_slot, entries),
-            column(&self.cost_in_group, entries),
-            column(&self.replacement_preferences, entries),
-            column(&self.in_place_lengths, entries),
+            column(&self.entry_state, entries),
             column(&self.lineages, entries),
             column(&self.deepest_leaf, entries),
-            column(&self.parent_index, entries),
-            column(&self.cell_handles, entries),
-            column(&self.snapshot_selectable, entries),
-            column(&self.keyframe, entries),
-            column(&self.keyframe_id, entries),
-            column(&self.keyframe_dependents, entries),
-            column(&self.referenced, entries),
             heap::vec_bytes::<usize>(entries),
             heap::btree_bytes::<u64, usize>(1, entries),
         ]
@@ -2365,11 +2378,9 @@ where
                 )
             })
             .collect();
-        self.cell_handles = self
-            .entries
-            .iter()
-            .map(|entry| self.cells.handle(&cell_of(entry.key)).unwrap_or(usize::MAX))
-            .collect();
+        for (entry, state) in self.entries.iter().zip(&mut self.entry_state) {
+            state.cell_handle = self.cells.handle(&cell_of(entry.key)).unwrap_or(usize::MAX);
+        }
         self.reweight_selector_index();
     }
 
@@ -2392,8 +2403,7 @@ where
         self.slots.entry(slot_of_key(key)).or_default().push(index);
         let handle = self.cells.ensure(cell_of(key));
         self.cells.records[handle].state.active += 1;
-        self.cell_handles.resize(self.entries.len(), usize::MAX);
-        self.cell_handles[index] = handle;
+        self.entry_state[index].cell_handle = handle;
     }
 
     fn reactivate_liveness_anchor(&mut self) -> bool {
@@ -2408,15 +2418,18 @@ where
             return false;
         };
         if !self
-            .snapshot_selectable
+            .entry_state
             .get(index)
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|state| state.snapshot_selectable)
             || self.entries[index].snapshot.is_none()
         {
             return false;
         }
-        if !self.active.get(index).copied().unwrap_or(false) {
+        if !self
+            .entry_state
+            .get(index)
+            .is_some_and(|state| state.active)
+        {
             if self.active_count >= self.max_entries && !self.drop_one_entry() {
                 return false;
             }
@@ -2433,18 +2446,19 @@ where
                     .flatten()
                     .copied()
                     .filter(|id| !self.is_liveness_anchor(*id))
-                    .max_by_key(|id| (self.cost_in_group[*id], self.entries[*id].id));
+                    .max_by_key(|id| (self.entry_state[*id].cost_in_group, self.entries[*id].id));
                 let Some(replaced) = replaced else {
                     return false;
                 };
                 self.deactivate(replaced);
             }
-            self.active[index] = true;
+            self.entry_state[index].active = true;
             self.active_count = self.active_count.saturating_add(1);
-            let keyframe = self.index_of_id(self.keyframe_id[index]);
+            let keyframe = self.index_of_id(self.entry_state[index].keyframe_id);
             if let Some(keyframe) = keyframe {
-                self.keyframe_dependents[keyframe] =
-                    self.keyframe_dependents[keyframe].saturating_add(1);
+                self.entry_state[keyframe].keyframe_dependents = self.entry_state[keyframe]
+                    .keyframe_dependents
+                    .saturating_add(1);
             }
             self.activate_membership(index);
             #[cfg(test)]
@@ -2527,7 +2541,7 @@ where
         let rank = self.holder_rank(0, id);
         let (progress, place) = (rank.key.progress(), rank.key.place());
         let place_weight = self.place_weight(progress, place);
-        let holder_weight = count_decay(self.selected[id]);
+        let holder_weight = count_decay(self.entry_state[id].selected);
         let handle = self.cell_handle(id);
         let tier = self.tiers.entry(progress).or_default();
         tier.weights.insert(place, place_weight);
@@ -2541,15 +2555,13 @@ where
     }
 
     fn cell_handle(&mut self, id: usize) -> usize {
-        let key = cell_of(self.entries[id].key);
-        if let Some(handle) = self.cell_handles.get(id).copied()
+        if let Some(handle) = self.entry_state.get(id).map(|state| state.cell_handle)
             && handle < self.cells.records.len()
         {
             return handle;
         }
-        let handle = self.cells.ensure(key);
-        self.cell_handles.resize(self.entries.len(), usize::MAX);
-        self.cell_handles[id] = handle;
+        let handle = self.cells.ensure(cell_of(self.entries[id].key));
+        self.entry_state[id].cell_handle = handle;
         handle
     }
 
@@ -2566,8 +2578,11 @@ where
             .key
             .preference_cmp(preference, self.entries[right].key)
             .then_with(|| {
-                (self.cost_in_group[right], self.entries[right].id)
-                    .cmp(&(self.cost_in_group[left], self.entries[left].id))
+                (
+                    self.entry_state[right].cost_in_group,
+                    self.entries[right].id,
+                )
+                    .cmp(&(self.entry_state[left].cost_in_group, self.entries[left].id))
             })
     }
 
@@ -2588,7 +2603,7 @@ where
     fn holder_rank(&self, preference: usize, index: usize) -> HolderRank<K> {
         HolderRank {
             key: self.entries[index].key,
-            cost: self.cost_in_group[index],
+            cost: self.entry_state[index].cost_in_group,
             entry: self.entries[index].id,
             index,
             preference,
@@ -2620,7 +2635,7 @@ where
                     members
                         .ids
                         .iter()
-                        .map(|id| (id, count_decay(self.selected[id]))),
+                        .map(|id| (id, count_decay(self.entry_state[id].selected))),
                 );
                 let ranked = self.cell_ranks(&ids);
                 let members = &mut self.cells.records[*handle].members;
@@ -2630,19 +2645,6 @@ where
         }
         self.tiers = tiers;
         self.selector_weighted = true;
-    }
-
-    fn sync_parent_index(&mut self) {
-        if self.parent_index.len() > self.entries.len() {
-            self.parent_index.clear();
-        }
-        for index in self.parent_index.len()..self.entries.len() {
-            let parent = self.entries[index]
-                .parent_id
-                .and_then(|parent| self.id_to_index.get(&parent).copied())
-                .unwrap_or(usize::MAX);
-            self.parent_index.push(parent);
-        }
     }
 
     #[must_use]
@@ -2671,7 +2673,7 @@ where
 
     #[cfg(test)]
     pub(crate) fn entry_cost_in_group(&self, id: usize) -> u64 {
-        self.cost_in_group[id]
+        self.entry_state[id].cost_in_group
     }
 
     #[must_use]
@@ -2722,7 +2724,7 @@ where
         for (index, entry) in self.entries.iter().enumerate() {
             if let Some(snapshot) = entry.snapshot.as_deref() {
                 let charge = self.snapshot_charge(snapshot);
-                if self.snapshot_selectable[index] {
+                if self.entry_state[index].snapshot_selectable {
                     self.resident_snapshot_bytes = self
                         .resident_snapshot_bytes
                         .checked_add(charge)
@@ -2739,7 +2741,30 @@ where
         Ok(())
     }
 
+    fn validate_entry_state(&self) -> Result<(), &'static str> {
+        if self.entry_state.len() != self.entries.len() {
+            return Err("archive state rows disagree with its entries");
+        }
+        if self.id_to_index.len() != self.entries.len() {
+            return Err("archive identity index disagrees with its entries");
+        }
+        for (index, (entry, state)) in self.entries.iter().zip(&self.entry_state).enumerate() {
+            if self.id_to_index.get(&entry.id) != Some(&index) {
+                return Err("archive identity points to another entry");
+            }
+            let expected = entry
+                .parent_id
+                .and_then(|parent| self.id_to_index.get(&parent).copied())
+                .unwrap_or(usize::MAX);
+            if state.parent != expected || (expected != usize::MAX && expected >= index) {
+                return Err("archive state parent points to another entry");
+            }
+        }
+        Ok(())
+    }
+
     fn validate_cell_arena(&self) -> Result<(), &'static str> {
+        self.validate_entry_state()?;
         if self.cells.index.len() != self.cells.records.len() {
             return Err("cell arena index length disagrees with its records");
         }
@@ -2753,12 +2778,18 @@ where
                 return Err("cell arena index points to another cell");
             }
         }
-        if self.cell_handles.len() != self.entries.len() {
-            return Err("archive cell handles disagree with its entries");
-        }
-        for (index, (entry, handle)) in self.entries.iter().zip(&self.cell_handles).enumerate() {
+        for (index, (entry, handle)) in self
+            .entries
+            .iter()
+            .zip(self.entry_state.iter().map(|state| &state.cell_handle))
+            .enumerate()
+        {
             if *handle == usize::MAX {
-                if self.active.get(index).copied().unwrap_or(false) {
+                if self
+                    .entry_state
+                    .get(index)
+                    .is_some_and(|state| state.active)
+                {
                     return Err("active archive entry has no cell handle");
                 }
                 continue;
@@ -2794,7 +2825,7 @@ where
                 self.entries
                     .get(id)
                     .is_none_or(|entry| cell_of(entry.key) != record.key)
-                    || !self.active.get(id).copied().unwrap_or(false)
+                    || !self.entry_state.get(id).is_some_and(|state| state.active)
             }) {
                 return Err("cell holder points to another archive cell");
             }
@@ -2825,7 +2856,7 @@ where
             .map(|id| {
                 (
                     self.entries[*id].key,
-                    self.cost_in_group[*id],
+                    self.entry_state[*id].cost_in_group,
                     self.entries[*id].id,
                 )
             })
@@ -2865,7 +2896,7 @@ where
             && K::preferences().max(1) == 1
             && slot.iter().any(|held| {
                 key.preference_cmp(0, self.entries[*held].key)
-                    .then_with(|| self.cost_in_group[*held].cmp(&cost_in_group))
+                    .then_with(|| self.entry_state[*held].cost_in_group.cmp(&cost_in_group))
                     .then_with(|| self.entries[*held].id.cmp(&self.next_entry_id))
                     != Ordering::Greater
             })
@@ -2889,7 +2920,7 @@ where
                 .max_by(|(_, left), (_, right)| self.holder_order(preference, **left, **right));
             let candidate_wins = best.is_none_or(|(_, held)| {
                 key.preference_cmp(preference, self.entries[*held].key)
-                    .then_with(|| self.cost_in_group[*held].cmp(&cost_in_group))
+                    .then_with(|| self.entry_state[*held].cost_in_group.cmp(&cost_in_group))
                     .then_with(|| self.entries[*held].id.cmp(&self.next_entry_id))
                     == Ordering::Greater
             });
@@ -2913,7 +2944,7 @@ where
         members.extend(slot.iter().map(|id| {
             (
                 self.entries[*id].key,
-                self.cost_in_group[*id],
+                self.entry_state[*id].cost_in_group,
                 self.entries[*id].id,
             )
         }));
@@ -2967,9 +2998,9 @@ where
         };
         let added = cost_of(suffix);
         if parent.key.progress() == key.progress() {
-            self.cost_in_group
+            self.entry_state
                 .get(parent_id.unwrap_or_default())
-                .copied()
+                .map(|state| state.cost_in_group)
                 .unwrap_or(0)
                 .saturating_add(added)
         } else {
@@ -3220,7 +3251,17 @@ where
             snapshot: Some(Arc::new(snapshot)),
         });
         self.id_to_index.insert(stable_id, id);
-        self.snapshot_selectable.push(true);
+        self.entry_state.push(EntryState {
+            active: true,
+            snapshot_selectable: true,
+            referenced: true,
+            cost_in_group: candidate_cost_in_group,
+            replacement_preferences,
+            opened_cell: new_cell,
+            opened_slot: new_slot,
+            parent: parent_id.unwrap_or(usize::MAX),
+            ..EntryState::default()
+        });
         self.resident_snapshots = self.resident_snapshots.saturating_add(1);
         self.resident_snapshot_bytes = self
             .resident_snapshot_bytes
@@ -3231,28 +3272,23 @@ where
                 Self::replay_bucket(self.entries[*parent].input_len)
                     == Self::replay_bucket(input_len)
             })
-            .and_then(|parent| self.index_of_id(self.keyframe_id[parent]))
-            .filter(|keyframe| self.snapshot_selectable[*keyframe]);
+            .and_then(|parent| self.index_of_id(self.entry_state[parent].keyframe_id))
+            .filter(|keyframe| self.entry_state[*keyframe].snapshot_selectable);
         let keyframe_index = inherited_keyframe.unwrap_or(id);
-        self.keyframe.push(inherited_keyframe.is_none());
-        self.keyframe_id.push(if inherited_keyframe.is_none() {
+        self.entry_state[id].keyframe = inherited_keyframe.is_none();
+        self.entry_state[id].keyframe_id = if inherited_keyframe.is_none() {
             stable_id
         } else {
             self.entries[keyframe_index].id
-        });
-        self.keyframe_dependents.push(0);
-        self.keyframe_dependents[keyframe_index] =
-            self.keyframe_dependents[keyframe_index].saturating_add(1);
-        self.referenced.push(true);
+        };
+        self.entry_state[keyframe_index].keyframe_dependents = self.entry_state[keyframe_index]
+            .keyframe_dependents
+            .saturating_add(1);
         if inherited_keyframe.is_some() {
             self.resident_snapshot_order.push_back(id);
         }
-        self.active.push(true);
         self.active_count = self.active_count.saturating_add(1);
         self.lineages.push(lineage);
-        self.cost_in_group.push(candidate_cost_in_group);
-        self.replacement_preferences.push(replacement_preferences);
-        self.in_place_lengths.push(0);
         match &mut self.live_progress {
             Some((deepest, cheapest)) => match key.progress().cmp(&deepest.progress()) {
                 Ordering::Greater => {
@@ -3266,19 +3302,14 @@ where
             },
             None => self.live_progress = Some((key, candidate_cost_in_group)),
         }
-        self.selected.push(0);
-        self.productive.push(0);
-        self.opened_cell.push(new_cell);
-        self.opened_slot.push(new_slot);
         self.deepest_leaf.push((key, id));
-        self.sync_parent_index();
         let mut ancestor = parent_id.unwrap_or(usize::MAX);
         while let Some(previous) = self.deepest_leaf.get(ancestor).copied() {
             if leaf_order(previous, (key, id)) != Ordering::Less {
                 break;
             }
             self.deepest_leaf[ancestor] = (key, id);
-            ancestor = self.parent_index[ancestor];
+            ancestor = self.entry_state[ancestor].parent;
         }
         self.activate_membership(id);
         let carried_in =
@@ -3397,8 +3428,9 @@ where
     }
 
     fn active_ids(&self) -> Vec<usize> {
-        self.active
+        self.entry_state
             .iter()
+            .map(|state| &state.active)
             .enumerate()
             .filter_map(|(id, active)| (*active && self.origin_resident(id)).then_some(id))
             .collect()
@@ -3659,10 +3691,9 @@ where
                 let members = &record.members;
                 tier.weights.weight(place) == Some(self.place_weight(progress, *place))
                     && members.ids.len() == members.ids.iter().count()
-                    && members
-                        .ids
-                        .iter()
-                        .all(|id| members.ids.weight(&id) == Some(count_decay(self.selected[id])))
+                    && members.ids.iter().all(|id| {
+                        members.ids.weight(&id) == Some(count_decay(self.entry_state[id].selected))
+                    })
                     && members.ranked.len() == K::preferences()
                     && members
                         .ranked
@@ -3674,7 +3705,7 @@ where
                                     members.ids.weight(&rank.index).is_some()
                                         && rank.preference == preference
                                         && rank.key == self.entries[rank.index].key
-                                        && rank.cost == self.cost_in_group[rank.index]
+                                        && rank.cost == self.entry_state[rank.index].cost_in_group
                                         && rank.entry == self.entries[rank.index].id
                                 })
                         })
@@ -3748,8 +3779,10 @@ where
                     Ordering::Greater => true,
                     Ordering::Less => false,
                     Ordering::Equal => {
-                        (self.cost_in_group[other], self.entries[other].id)
-                            < (self.cost_in_group[id], self.entries[id].id)
+                        (
+                            self.entry_state[other].cost_in_group,
+                            self.entries[other].id,
+                        ) < (self.entry_state[id].cost_in_group, self.entries[id].id)
                     }
                 }
             })
@@ -3782,12 +3815,16 @@ where
 
     #[must_use]
     pub fn opened_new_cell(&self, id: usize) -> bool {
-        self.opened_cell.get(id).copied().unwrap_or(false)
+        self.entry_state
+            .get(id)
+            .is_some_and(|state| state.opened_cell)
     }
 
     #[must_use]
     pub fn opened_new_slot(&self, id: usize) -> bool {
-        self.opened_slot.get(id).copied().unwrap_or(false)
+        self.entry_state
+            .get(id)
+            .is_some_and(|state| state.opened_slot)
     }
 
     #[must_use]
@@ -3801,6 +3838,11 @@ where
     }
 
     #[must_use]
+    pub fn is_active(&self, id: usize) -> bool {
+        self.entry_state.get(id).is_some_and(|state| state.active)
+    }
+
+    #[must_use]
     pub fn active_count(&self) -> usize {
         self.active_count
     }
@@ -3808,10 +3850,10 @@ where
     pub(crate) fn retained_snapshots(&self) -> impl Iterator<Item = (Option<&S>, u64)> {
         self.entries
             .iter()
-            .zip(&self.active)
+            .zip(self.entry_state.iter().map(|state| &state.active))
             .enumerate()
             .filter_map(|(id, (entry, active))| {
-                active.then_some((entry.snapshot.as_deref(), self.selected[id]))
+                active.then_some((entry.snapshot.as_deref(), self.entry_state[id].selected))
             })
     }
 
@@ -4076,7 +4118,7 @@ where
     }
 
     pub(crate) fn record_isolated_continuation(&mut self, id: usize) {
-        self.referenced[id] = true;
+        self.entry_state[id].referenced = true;
         let count = self
             .selector_accounting
             .continuation_selections
@@ -4085,8 +4127,8 @@ where
     }
 
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
-        self.selected[id] = self.selected[id].saturating_add(1);
-        self.referenced[id] = true;
+        self.entry_state[id].selected = self.entry_state[id].selected.saturating_add(1);
+        self.entry_state[id].referenced = true;
         let key = self.entries[id].key;
         let runs = self.tier_runs_mut(key.progress());
         runs.current = runs.current.saturating_add(1);
@@ -4103,7 +4145,7 @@ where
                 if state.draws < 32 { place_weight } else { 0 },
             );
         }
-        let holder_weight = count_decay(self.selected[id]);
+        let holder_weight = count_decay(self.entry_state[id].selected);
         if let Some(tier) = self.tiers.get_mut(&key.progress()) {
             tier.weights.set_weight(&key.place(), place_weight);
             self.cells.records[handle]
@@ -4149,8 +4191,8 @@ where
 
     #[cfg(test)]
     fn record_selection_reference(&mut self, id: usize, draw: &SelectorDraw) {
-        self.selected[id] = self.selected[id].saturating_add(1);
-        self.referenced[id] = true;
+        self.entry_state[id].selected = self.entry_state[id].selected.saturating_add(1);
+        self.entry_state[id].referenced = true;
         let key = self.entries[id].key;
         let runs = self.tier_runs_mut(key.progress());
         runs.current = runs.current.saturating_add(1);
@@ -4166,7 +4208,7 @@ where
                 if state.draws < 32 { place_weight } else { 0 },
             );
         }
-        let holder_weight = count_decay(self.selected[id]);
+        let holder_weight = count_decay(self.entry_state[id].selected);
         if let Some(tier) = self.tiers.get_mut(&key.progress()) {
             tier.weights.set_weight(&key.place(), place_weight);
             if let Some(handle) = tier.places.get(&key.place()) {
@@ -4216,7 +4258,7 @@ where
         if !retained_descendant {
             return;
         }
-        self.productive[id] = self.productive[id].saturating_add(1);
+        self.entry_state[id].productive = self.entry_state[id].productive.saturating_add(1);
         self.selector_accounting.productive_selections = self
             .selector_accounting
             .productive_selections
@@ -4233,10 +4275,9 @@ where
 
     #[must_use]
     pub(crate) fn suffix_limit(&self, id: usize) -> u8 {
-        self.in_place_lengths
+        self.entry_state
             .get(id)
-            .copied()
-            .unwrap_or(0)
+            .map_or(0, |state| state.in_place_lengths)
             .saturating_mul(2)
             .clamp(1, SUFFIX_DOUBLING_LIMIT)
     }
@@ -4249,7 +4290,11 @@ where
         left_place: bool,
         terminal: bool,
     ) {
-        let Some(length) = self.in_place_lengths.get_mut(id) else {
+        let Some(length) = self
+            .entry_state
+            .get_mut(id)
+            .map(|state| &mut state.in_place_lengths)
+        else {
             return;
         };
         if kept || left_place {
@@ -4265,7 +4310,7 @@ where
         let mut shared = 0_u64;
         for slot in self.slots.values() {
             for id in slot {
-                if !self.active.get(*id).copied().unwrap_or(false)
+                if !self.entry_state.get(*id).is_some_and(|state| state.active)
                     || self.entries.get(*id).is_none()
                 {
                     continue;
@@ -4290,7 +4335,9 @@ where
 
     #[must_use]
     pub fn replacement_preferences(&self, id: usize) -> u8 {
-        self.replacement_preferences.get(id).copied().unwrap_or(0)
+        self.entry_state
+            .get(id)
+            .map_or(0, |state| state.replacement_preferences)
     }
 
     #[must_use]
@@ -4344,8 +4391,8 @@ where
                 milestones: entry.milestones,
                 snapshot_identity_sha256: None,
                 selector: Some(EntrySelectorCounters {
-                    selected: self.selected[id],
-                    productive: self.productive[id],
+                    selected: self.entry_state[id].selected,
+                    productive: self.entry_state[id].productive,
                 }),
             };
             reports.push(report);
@@ -4538,7 +4585,11 @@ where
                     self.entries[*right]
                         .key
                         .preference_cmp(outcome, self.entries[*left].key)
-                        .then_with(|| self.cost_in_group[*left].cmp(&self.cost_in_group[*right]))
+                        .then_with(|| {
+                            self.entry_state[*left]
+                                .cost_in_group
+                                .cmp(&self.entry_state[*right].cost_in_group)
+                        })
                         .then_with(|| self.entries[*left].id.cmp(&self.entries[*right].id))
                 });
                 return Ok((ranked[0], Some(u8::try_from(outcome)?)));
@@ -4546,7 +4597,7 @@ where
         }
         let weights = ids
             .iter()
-            .map(|id| count_decay(self.selected[*id]))
+            .map(|id| count_decay(self.entry_state[*id].selected))
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, weights.iter().copied())?;
         Ok((ids[index], None))
@@ -4567,8 +4618,10 @@ where
                     Ordering::Greater => true,
                     Ordering::Less => false,
                     Ordering::Equal => {
-                        (self.cost_in_group[other], self.entries[other].id)
-                            < (self.cost_in_group[id], self.entries[id].id)
+                        (
+                            self.entry_state[other].cost_in_group,
+                            self.entries[other].id,
+                        ) < (self.entry_state[id].cost_in_group, self.entries[id].id)
                     }
                 }
             })
@@ -4581,7 +4634,7 @@ where
         let mut shared = 0_u64;
         for slot in self.slots.values() {
             for id in slot {
-                if !self.active.get(*id).copied().unwrap_or(false)
+                if !self.entry_state.get(*id).is_some_and(|state| state.active)
                     || self.entries.get(*id).is_none()
                 {
                     continue;
@@ -4952,8 +5005,8 @@ mod tests {
             archive.portfolio_holders(P),
             archive.portfolio_holders_reference(P)
         );
-        for id in (0..archive.active.len()).step_by(3) {
-            archive.active[id] = false;
+        for id in (0..archive.entry_state.len()).step_by(3) {
+            archive.entry_state[id].active = false;
         }
         for slot in archive.slots.values_mut() {
             slot.push(usize::MAX);
@@ -5616,8 +5669,30 @@ mod tests {
         }
         assert!(archive.snapshot_evictions > 0 || archive.active_count < 3);
         assert_eq!(archive.snapshot_evictions, resumed.snapshot_evictions);
-        assert_eq!(archive.snapshot_selectable, resumed.snapshot_selectable);
-        assert_eq!(archive.active, resumed.active);
+        assert_eq!(
+            archive
+                .entry_state
+                .iter()
+                .map(|state| state.snapshot_selectable)
+                .collect::<Vec<_>>(),
+            resumed
+                .entry_state
+                .iter()
+                .map(|state| state.snapshot_selectable)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            archive
+                .entry_state
+                .iter()
+                .map(|state| state.active)
+                .collect::<Vec<_>>(),
+            resumed
+                .entry_state
+                .iter()
+                .map(|state| state.active)
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
             archive.resident_memory_bytes(),
             resumed.resident_memory_bytes()
@@ -5685,7 +5760,7 @@ mod tests {
             .insert(None, 0, candidate(vec![2]), incoming)
             .unwrap()
             .unwrap();
-        assert!(!archive.active[old]);
+        assert!(!archive.entry_state[old].active);
         assert!(archive.entries[old].snapshot.is_none());
         assert_eq!(parent.visits() - visits, 2);
         assert!(Arc::ptr_eq(
@@ -6021,7 +6096,7 @@ mod tests {
         archive
             .enforce_snapshot_memory_budget()
             .expect("budget maintenance");
-        assert!(!archive.snapshot_selectable[0]);
+        assert!(!archive.entry_state[0].snapshot_selectable);
         assert!(archive.entries[0].snapshot.is_some());
         let logical_counters = (
             archive.active_count(),
@@ -6184,8 +6259,11 @@ mod tests {
 
     fn candidate_draw_fixture(count: usize, draws: u64) -> Archive<u8, SpliceKey, (), ()> {
         let mut archive = Archive::new(|_| 1);
-        archive.selected = (0..count * 3 + 1)
-            .map(|id| draws.saturating_add((id % 7) as u64))
+        archive.entry_state = (0..count * 3 + 1)
+            .map(|id| super::EntryState {
+                selected: draws.saturating_add((id % 7) as u64),
+                ..super::EntryState::default()
+            })
             .collect();
         let mut tier = TierCells::default();
         for index in 0..count {
@@ -6587,10 +6665,24 @@ mod tests {
 
         assert_eq!(insert(&mut archive, 1, 2), Some(0));
         assert_eq!(insert(&mut archive, 2, 5), Some(1));
-        assert_eq!(archive.active, vec![false, true]);
+        assert_eq!(
+            archive
+                .entry_state
+                .iter()
+                .map(|state| state.active)
+                .collect::<Vec<_>>(),
+            vec![false, true]
+        );
         assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![1]));
         assert_eq!(insert(&mut archive, 3, 1), None);
-        assert_eq!(archive.active, vec![false, true]);
+        assert_eq!(
+            archive
+                .entry_state
+                .iter()
+                .map(|state| state.active)
+                .collect::<Vec<_>>(),
+            vec![false, true]
+        );
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -6750,7 +6842,14 @@ mod tests {
         assert_eq!(archive.rerank_slot_holders(), 1);
         SECOND_ORDER_FLIPPED.set(false);
         assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0]));
-        assert_eq!(archive.active, vec![true, false]);
+        assert_eq!(
+            archive
+                .entry_state
+                .iter()
+                .map(|state| state.active)
+                .collect::<Vec<_>>(),
+            vec![true, false]
+        );
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -7491,7 +7590,14 @@ mod tests {
         let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
         assert_eq!(insert_portfolio(&mut archive, 1, 10, 20), Some(0));
         assert_eq!(insert_portfolio(&mut archive, 2, 5, 200), Some(1));
-        assert_eq!(archive.active, vec![true, true]);
+        assert_eq!(
+            archive
+                .entry_state
+                .iter()
+                .map(|state| state.active)
+                .collect::<Vec<_>>(),
+            vec![true, true]
+        );
         assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0, 1]));
     }
 
@@ -7511,7 +7617,14 @@ mod tests {
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(insert_portfolio(&mut archive, 3, 60, 240), Some(2));
         assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![2]));
-        assert_eq!(archive.active, vec![false, false, true]);
+        assert_eq!(
+            archive
+                .entry_state
+                .iter()
+                .map(|state| state.active)
+                .collect::<Vec<_>>(),
+            vec![false, false, true]
+        );
     }
 
     #[test]
@@ -7521,7 +7634,14 @@ mod tests {
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(insert_portfolio(&mut archive, 3, 11, 21), Some(2));
         assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![1, 2]));
-        assert_eq!(archive.active, vec![false, true, true]);
+        assert_eq!(
+            archive
+                .entry_state
+                .iter()
+                .map(|state| state.active)
+                .collect::<Vec<_>>(),
+            vec![false, true, true]
+        );
     }
 
     #[test]
@@ -7710,7 +7830,7 @@ mod tests {
             .position(|entry| entry.key.first == 9)
             .expect("the replacement survives compaction");
         assert_eq!(archive.replacement_preferences(surviving), marked);
-        assert_eq!(archive.replacement_preferences.len(), archive.entries.len());
+        assert_eq!(archive.entry_state.len(), archive.entries.len());
     }
 
     #[test]
@@ -7744,7 +7864,7 @@ mod tests {
             archive.entries.len() < before,
             "compaction dropped an entry"
         );
-        assert_eq!(archive.in_place_lengths.len(), archive.entries.len());
+        assert_eq!(archive.entry_state.len(), archive.entries.len());
         let surviving = archive
             .entries
             .iter()
@@ -7848,7 +7968,7 @@ mod tests {
                 .saturating_add(archive.input_index_memory_bytes())
                 .saturating_add(archive.cell_memory_bytes())
         );
-        assert!(!archive.active[0]);
+        assert!(!archive.entry_state[0].active);
         assert!(archive.entries[0].snapshot.is_none());
         assert!(
             archive.slots.values().flatten().all(|entry| *entry != 0),
@@ -8064,7 +8184,10 @@ mod tests {
                 .expect("insert entry")
                 .expect("retain entry");
         }
-        archive.referenced.fill(true);
+        archive
+            .entry_state
+            .iter_mut()
+            .for_each(|state| state.referenced = true);
         archive.drop_hand = 0;
         let limit = archive.resident_memory_bytes() / 4;
         archive.memory_limit = Some(limit);
@@ -8110,7 +8233,10 @@ mod tests {
                 .expect("insert entry")
                 .expect("retain entry");
         }
-        archive.referenced.fill(true);
+        archive
+            .entry_state
+            .iter_mut()
+            .for_each(|state| state.referenced = true);
         archive.drop_hand = 0;
         archive.memory_limit = Some(0);
         archive
@@ -8127,7 +8253,10 @@ mod tests {
             archive.drop_hand
         );
 
-        archive.referenced.fill(true);
+        archive
+            .entry_state
+            .iter_mut()
+            .for_each(|state| state.referenced = true);
         archive.drop_hand = 0;
         let (dropped, examined) = archive.drop_one_entry_within(4);
         assert!(!dropped);
@@ -8168,9 +8297,13 @@ mod tests {
                 .expect("retain child");
         }
         assert_eq!(archive.resident_snapshot_count(), 4);
-        assert!(archive.keyframe[0]);
-        assert!(archive.keyframe[1..4].iter().all(|keyframe| !keyframe));
-        assert_eq!(archive.keyframe_dependents[0], 4);
+        assert!(archive.entry_state[0].keyframe);
+        assert!(
+            archive.entry_state[1..4]
+                .iter()
+                .all(|state| !state.keyframe)
+        );
+        assert_eq!(archive.entry_state[0].keyframe_dependents, 4);
 
         archive.memory_limit = Some(
             archive.history_memory_bytes()
@@ -8346,7 +8479,7 @@ mod tests {
             .expect("retain root");
         archive.rebuild_selector_index();
         archive.establish_liveness_anchor();
-        archive.cost_in_group[0] = 100;
+        archive.entry_state[0].cost_in_group = 100;
         for (id, suffix) in [(1_u64, 1_u8), (2, 2)] {
             archive
                 .insert(
@@ -8362,7 +8495,7 @@ mod tests {
                 .expect("insert same-slot entry")
                 .expect("retain same-slot entry");
         }
-        assert!(!archive.active[0]);
+        assert!(!archive.entry_state[0].active);
         assert!(archive.entries[0].snapshot.is_some());
         archive.active_ids = ActiveIds::default();
 
@@ -8374,7 +8507,7 @@ mod tests {
         archive
             .select_parent(&mut rand)
             .expect("budgeted anchor keeps selection live");
-        assert!(archive.active[0]);
+        assert!(archive.entry_state[0].active);
         assert!(archive.active_ids().contains(&0));
         assert!(
             archive
@@ -8418,7 +8551,7 @@ mod tests {
             .expect("anchor yields to one-entry admission")
             .expect("retain admitted entry");
         assert_eq!(archive.active_count(), 1);
-        assert!(!archive.active[0]);
+        assert!(!archive.entry_state[0].active);
         assert!(archive.entries[0].snapshot.is_some());
         assert!(
             archive
@@ -8686,12 +8819,17 @@ mod tests {
     #[test]
     fn continuation_attempts_do_not_count_as_cell_draws() {
         let mut archive = archive_with_prunable_history();
-        let id = archive.active.iter().position(|active| *active).unwrap();
+        let id = archive
+            .entry_state
+            .iter()
+            .map(|state| &state.active)
+            .position(|active| *active)
+            .unwrap();
         let key = archive.entries[id].key;
         for _ in 0..20 {
             archive.record_isolated_continuation(id);
         }
-        assert_eq!(archive.selected[id], 0);
+        assert_eq!(archive.entry_state[id].selected, 0);
         assert_eq!(archive.cell_draws(key), 0);
         assert_eq!(archive.selector_report().continuation_selections, Some(20));
         archive.record_selection(
@@ -8702,7 +8840,7 @@ mod tests {
                 best_preference: None,
             },
         );
-        assert_eq!(archive.selected[id], 1);
+        assert_eq!(archive.entry_state[id].selected, 1);
         assert_eq!(archive.cell_draws(key), 1);
     }
 
@@ -8735,7 +8873,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(archive.selected[new], 0);
+        assert_eq!(archive.entry_state[new].selected, 0);
         assert!(archive.opened_new_cell(new));
         archive.record_selection(new, &draw);
         assert_eq!(archive.cell_draws(old), 1);
@@ -8876,6 +9014,106 @@ mod tests {
     }
 
     #[test]
+    fn entry_state_layout_keeps_hot_fields_together_and_charges_its_actual_size() {
+        assert_eq!(
+            std::mem::size_of::<super::EntryState>(),
+            if std::mem::size_of::<usize>() == 8 {
+                64
+            } else {
+                56
+            }
+        );
+        assert_eq!(std::mem::offset_of!(super::EntryState, selected), 0);
+        assert_eq!(std::mem::offset_of!(super::EntryState, cell_handle), 8);
+        assert!(std::mem::offset_of!(super::EntryState, in_place_lengths) < 24);
+    }
+
+    #[test]
+    fn restored_entry_state_rejects_forged_parent_and_identity_edges() {
+        let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
+        archive.prepare_selection();
+        let bytes = postcard::to_stdvec(&archive).unwrap();
+        for case in 0..9 {
+            let mut forged: Archive<u8, FlatKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+            match case {
+                0 => forged.entry_state[0].parent = 0,
+                1 => {
+                    forged.entries[0].parent_id = Some(forged.entries[0].id);
+                    forged.entry_state[0].parent = 0;
+                }
+                2 => {
+                    forged.entries[0].parent_id = Some(forged.entries[1].id);
+                    forged.entry_state[0].parent = 1;
+                }
+                3 => {
+                    forged.id_to_index.insert(forged.entries[0].id, usize::MAX);
+                    forged.entries[1].parent_id = Some(forged.entries[0].id);
+                }
+                4 => {
+                    forged.id_to_index.insert(forged.entries[0].id, 1);
+                    forged.entries[1].parent_id = Some(forged.entries[0].id);
+                    forged.entry_state[1].parent = 1;
+                }
+                5 => forged.entries[1].id = forged.entries[0].id,
+                6 => {
+                    forged.id_to_index.insert(999, 0);
+                }
+                7 => {
+                    forged.id_to_index.remove(&forged.entries[0].id);
+                }
+                _ => {
+                    forged.entry_state.pop();
+                }
+            }
+            assert!(
+                forged.restore_runtime(|_| 1, None, Vec::new()).is_err(),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn eager_entry_parents_preserve_missing_compacted_ancestors() {
+        let mut archive = flat_archive(&[[0, 0, 0, 0]]);
+        let stable = archive.entries[0].id;
+        let child = archive
+            .insert(
+                Some(0),
+                1,
+                ArchiveCandidate {
+                    suffix: vec![99; 8],
+                    key: FlatKey([1, 1, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(archive.entry_state[child].parent, 0);
+        assert!(archive.deactivate(0));
+        archive.compact_history(true).unwrap();
+        assert!(archive.index_of_id(stable).is_none());
+        assert_eq!(archive.entries[0].parent_id, Some(stable));
+        assert_eq!(archive.entry_state[0].parent, usize::MAX);
+        archive.validate_entry_state().unwrap();
+        let snapshots = archive
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| (entry.id, **snapshot))
+            })
+            .collect();
+        let mut restored: Archive<u8, FlatKey, (), ()> =
+            postcard::from_bytes(&postcard::to_stdvec(&archive).unwrap()).unwrap();
+        restored.restore_runtime(|_| 1, None, snapshots).unwrap();
+        assert_eq!(restored.entry_state[0].parent, usize::MAX);
+        restored.validate_entry_state().unwrap();
+    }
+
+    #[test]
     fn cell_arena_selection_graph_matches_keyed_reference_after_compaction_and_restore() {
         fn roundtrip(source: &Archive<u8, FlatKey, (), ()>) -> Archive<u8, FlatKey, (), ()> {
             let snapshots = source
@@ -8911,6 +9149,7 @@ mod tests {
                 actual.compact_history(true).unwrap();
                 reference.compact_history(true).unwrap();
                 assert_eq!(actual.cells.records.capacity(), actual.cells.records.len());
+                assert_eq!(actual.entry_state.capacity(), actual.entries.len());
             }
             if round == 256 {
                 actual = roundtrip(&actual);
@@ -8993,7 +9232,7 @@ mod tests {
             postcard::from_bytes(&postcard::to_stdvec(&archive).unwrap()).unwrap();
         restored.restore_runtime(|_| 1, None, snapshots).unwrap();
         let second = restored.index_of_id(stable[1]).unwrap();
-        assert_eq!(restored.cell_handles[second], usize::MAX);
+        assert_eq!(restored.entry_state[second].cell_handle, usize::MAX);
         restored.record_selection(second, &draw);
         let state = restored.cells.get(&((), [0, 0, 0])).unwrap();
         assert_eq!((state.active, state.draws, state.draws_total), (0, 2, 2));
@@ -9010,8 +9249,8 @@ mod tests {
             match case {
                 0 => *forged.cells.index.values_mut().next().unwrap() = usize::MAX,
                 1 => *forged.cells.index.values_mut().next().unwrap() = 1,
-                2 => forged.cell_handles[0] = 1,
-                3 => forged.cell_handles.clear(),
+                2 => forged.entry_state[0].cell_handle = 1,
+                3 => forged.entry_state.clear(),
                 4 => {
                     *forged
                         .tiers
@@ -9032,7 +9271,7 @@ mod tests {
                         .next()
                         .unwrap() = 1
                 }
-                6 => forged.cell_handles[0] = usize::MAX,
+                6 => forged.entry_state[0].cell_handle = usize::MAX,
                 7 => forged.cells.clear(),
                 8 => {
                     forged.cells.records[0].members.ids.insert(usize::MAX, 0);
@@ -9058,7 +9297,7 @@ mod tests {
             } else {
                 assert!(archive.deactivate(1));
             }
-            let handle = archive.cell_handles[1];
+            let handle = archive.entry_state[1].cell_handle;
             assert_eq!(archive.cells.records[handle].state.active > 0, active);
             assert!(archive.cells.records[handle].members.ids.is_empty());
             assert!(!archive.tiers[&()].places.contains_key(&[1, 0, 0]));
@@ -9281,8 +9520,8 @@ mod tests {
         }
         assert_eq!(archive.live_progress(), Some((FlatKey([1, 0, 0, 0]), 2, 4)));
         assert_eq!(archive.active_ids(), vec![0, 1, 2, 3]);
-        archive.active[1] = false;
-        archive.snapshot_selectable[2] = false;
+        archive.entry_state[1].active = false;
+        archive.entry_state[2].snapshot_selectable = false;
         assert_eq!(archive.active_ids(), vec![0, 3]);
     }
     #[test]
@@ -10491,7 +10730,11 @@ mod tests {
             let (id, draw) = archive.select_parent(&mut rand).expect("a tier draw");
             archive.record_selection(id, &draw);
         }
-        archive.selected.clone()
+        archive
+            .entry_state
+            .iter()
+            .map(|state| state.selected)
+            .collect::<Vec<_>>()
     }
 
     #[test]
@@ -10515,7 +10758,7 @@ mod tests {
 
     fn unrecorded_draw_counts(archive: &mut TestArchive, seed: u64, draws: usize) -> Vec<u64> {
         let mut rand = RomuDuoJrRand::with_seed(seed);
-        let mut counts = vec![0_u64; archive.selected.len()];
+        let mut counts = vec![0_u64; archive.entry_state.len()];
         for _ in 0..draws {
             let (id, _) = archive.select_parent(&mut rand).expect("a tier draw");
             counts[id] += 1;
@@ -10933,7 +11176,11 @@ mod tests {
         for _ in 0..1000 {
             archive.record_selection(0, &draw);
         }
-        let before = archive.selected.clone();
+        let before = archive
+            .entry_state
+            .iter()
+            .map(|state| state.selected)
+            .collect::<Vec<_>>();
         let counts = draw_counts(&mut archive, 0x7ea1_0003, 256);
         let fresh = counts[2] - before[2];
         let stale = counts[0] - before[0];
@@ -10951,7 +11198,11 @@ mod tests {
         for _ in 0..1000 {
             archive.record_selection(0, &draw);
         }
-        let before = archive.selected.clone();
+        let before = archive
+            .entry_state
+            .iter()
+            .map(|state| state.selected)
+            .collect::<Vec<_>>();
         let counts = draw_counts(&mut archive, 0x7ea1_0004, 256);
         assert!(counts[1] - before[1] > (counts[0] - before[0]) * 8);
     }

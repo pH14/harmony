@@ -1129,7 +1129,7 @@ fn take_continuation<G: Workload + ?Sized>(
         let Some(parent_index) = core.archive.index_of_id(continuation.parent) else {
             continue;
         };
-        if !core.archive.active[parent_index] {
+        if !core.archive.is_active(parent_index) {
             continue;
         }
         let outranks = core.archive.outranks_slot_holders(

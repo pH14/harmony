@@ -595,7 +595,7 @@ mod tests {
         )
         .expect("on path");
         for id in [fast, faster, on_path] {
-            assert!(archive.active[id]);
+            assert!(archive.is_active(id));
         }
     }
 

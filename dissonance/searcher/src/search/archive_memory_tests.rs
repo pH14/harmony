@@ -286,24 +286,10 @@ fn measured(mut archive: LevelArchive, baseline: isize) -> Usage {
     let continuations = freed(&mut |archive| archive.continuations = None);
     let entries = freed(&mut |archive| {
         archive.entries = Vec::new();
+        archive.entry_state = Vec::new();
         archive.id_to_index.clear();
-        archive.active = Vec::new();
-        archive.selected = Vec::new();
-        archive.productive = Vec::new();
-        archive.opened_cell = Vec::new();
-        archive.opened_slot = Vec::new();
-        archive.cost_in_group = Vec::new();
-        archive.replacement_preferences = Vec::new();
-        archive.in_place_lengths = Vec::new();
         archive.lineages = Vec::new();
         archive.deepest_leaf = Vec::new();
-        archive.parent_index = Vec::new();
-        archive.cell_handles = Vec::new();
-        archive.snapshot_selectable = Vec::new();
-        archive.keyframe = Vec::new();
-        archive.keyframe_id = Vec::new();
-        archive.keyframe_dependents = Vec::new();
-        archive.referenced = Vec::new();
         archive.resident_snapshot_order = VecDeque::new();
         archive.landed.clear();
         archive.metadata_pins.clear();

@@ -249,15 +249,24 @@ and rejects an archive that is still over its limit. Because of that lag, the
 archive's resident bytes are not checked against the whole budget during the
 campaign.
 
+Entry counters, selection flags, cell handles and replay-parent indices occupy
+one named state row per entry, separate from cold snapshot, lineage and
+deepest-leaf data. The row occupies 64 bytes on 64-bit hosts and 56 bytes on
+32-bit WASM; its memory charge uses the target's actual type size. Admission
+assigns the known dense parent directly. Compaction remaps surviving parents,
+using the missing-parent sentinel when ancestor metadata was dropped; restore
+checks identity-index bijection and parent-before-child edges before using any
+row. Call `Archive::is_active` to query activity.
+
 Cells store counters and holder rankings together in a dense arena. Ordered
 cell keys and tier places resolve to stable arena IDs; entries retain their
 cell IDs so admission accounting reaches both structures without repeating
 composite-key lookups. An inactive historical cell retains its counters but
 releases its holder allocations. History compaction rebuilds IDs and entry
 handles and clamps arena capacity to its surviving length. Checkpoint format
-v11 stores this layout and validates every index, entry handle, tier edge and
-holder key before restoring runtime state. The memory charge includes the
-arena, ordered indexes and entry handles. Its changed structural bound can
+v12 stores this layout and validates every index, entry handle, tier edge and
+holder key before restoring runtime state. The memory charge includes entry
+rows, the arena and ordered indexes. Its changed structural bound can
 change eviction timing under a tight memory budget; seed and fixed-window
 reproducibility still applies within this layout.
 
@@ -273,8 +282,8 @@ node but the root holds at least 5, so a set of maps holding n elements uses at
 most n/5 nodes plus one per map. Each prefix node is charged one child-map node.
 The selector's weighted sets keep freed slots until the selector index is
 rebuilt, and compaction rebuilds it, so freed slots are charged as one per
-inactive entry. Compaction shrinks the entry columns to their length so the
-doubling bound holds afterwards. Each resident snapshot also charges its
+inactive entry. Compaction clamps state rows and cold entry columns to their length through
+boxed slices so the doubling bound holds afterwards. Each resident snapshot also charges its
 reference-count block. The `memory_tests` unit tests count the archive's
 allocations and fail when any part exceeds its charge. Allocator fragmentation and heap a
 workload's snapshot charge omits stay outside the archive's limit and show only
@@ -864,7 +873,7 @@ variable. Without it, public phase spans are null and `timing_complete` is false
 resuming any segment without detailed timing also leaves that flag false.
 Job counters, receive/idle waits and the optional coordinator/encoder CPU
 counters remain available independently of detailed profiling.
-Search-checkpoint layout v11 retains the timing-coverage flag with the profile.
+Search-checkpoint layout v12 retains the timing-coverage flag with the profile.
 
 The campaign report carries `telemetry`, the host measurements that explain
 where a run's time went. It records bootstrap, search, and persistence wall
