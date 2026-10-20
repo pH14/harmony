@@ -253,7 +253,12 @@ This introduces three limits to parallelism:
 Short executions leave the coordinator little time per job: with 134 ms
 executions, keeping 24 workers busy needs coordinator time under 6 ms per job.
 When execution times vary, allowing several reserved jobs and finished results
-per worker keeps workers busy while earlier results wait for admission.
+per worker keeps workers busy while earlier results wait for admission. Each
+extra reservation per worker also lengthens the critical path: a new state
+waits that many more admissions before a job can start from it. In a fault
+search, sixteen reservations per worker held the deepest retained state near
+12 guest seconds after an hour; one per worker reached it within the first
+30 jobs.
 
 ## Memory
 

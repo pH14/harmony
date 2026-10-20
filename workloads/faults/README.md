@@ -280,10 +280,12 @@ and `shrinks`, under `snapshot_cache`. It samples the shared index once under
 counts and wait/hold nanoseconds; worker/session totals never sum this shared
 owner. `stats` reads have their own site. These host-time diagnostics do not affect
 budget policy or certificates.
-A fault search keeps sixteen reservations per worker in its admission window.
-Each action draws its own
-duration, so one execution can run a hundred times longer than the median, and
-the other workers keep running the jobs behind it until it is admitted.
+A fault search keeps one reservation per worker in its admission window, the
+same window as every other workload. Each selection sees the archive as of the
+last admission, so a wider window makes each new state wait more admissions
+before a job can start from it, and the deepest chain grows that much slower.
+At the `--for` limit the search stops reserving and finishes the jobs already
+running, so it ends at most one job per worker past its limit.
 Each worker reports its time through the campaign `telemetry`: boot, new
 action runs, prefix rebuilds, and replayed actions, each in host and virtual
 time. It also reports session restore, branch, seal, observation, and drop
