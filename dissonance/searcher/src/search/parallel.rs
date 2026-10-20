@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use crate::search::locality::{LocalityKey, WorkerLocality};
 use crate::search::telemetry::{
     TargetCounters, WorkerTelemetry, nanos_since, now, thread_schedstat,
 };
@@ -42,11 +43,37 @@ impl fmt::Display for WorkerPoolError {
 impl Error for WorkerPoolError {}
 
 struct JobQueue<Key, Job> {
-    jobs: BTreeMap<Key, Job>,
+    jobs: BTreeMap<Key, QueuedJob<Job>>,
+    idle: BTreeMap<u32, WorkerLocality>,
+    assigned: BTreeMap<u32, (Key, Job)>,
     open: bool,
     workers: usize,
-    waiters: usize,
     failed_job: bool,
+}
+
+struct QueuedJob<Job> {
+    job: Job,
+    locality: Option<LocalityKey>,
+}
+
+impl<Key: Ord, Job> JobQueue<Key, Job> {
+    fn assign(&mut self) -> bool {
+        let mut assigned = false;
+        while let Some((_, first)) = self.jobs.first_key_value() {
+            let Some((&worker, _)) = self.idle.iter().max_by_key(|(worker, locality)| {
+                (locality.rank(first.locality), std::cmp::Reverse(**worker))
+            }) else {
+                break;
+            };
+            let Some((key, queued)) = self.jobs.pop_first() else {
+                break;
+            };
+            self.idle.remove(&worker);
+            self.assigned.insert(worker, (key, queued.job));
+            assigned = true;
+        }
+        assigned
+    }
 }
 
 struct SharedJobs<Key, Job> {
@@ -59,27 +86,33 @@ impl<Key: Ord, Job> SharedJobs<Key, Job> {
         Self {
             queue: Mutex::new(JobQueue {
                 jobs: BTreeMap::new(),
+                idle: BTreeMap::new(),
+                assigned: BTreeMap::new(),
                 open: true,
                 workers,
-                waiters: 0,
                 failed_job: false,
             }),
             ready: Condvar::new(),
         }
     }
 
-    fn next(&self) -> Option<(Key, Job)> {
+    fn next(&self, worker: u32, locality: WorkerLocality) -> Option<(Key, Job)> {
         let mut queue = self.queue.lock().ok()?;
+        queue.idle.insert(worker, locality);
+        #[cfg(test)]
+        self.ready.notify_all();
         loop {
-            if let Some(job) = queue.jobs.pop_first() {
+            if queue.assign() {
+                self.ready.notify_all();
+            }
+            if let Some(job) = queue.assigned.remove(&worker) {
                 return Some(job);
             }
             if !queue.open {
+                queue.idle.remove(&worker);
                 return None;
             }
-            queue.waiters += 1;
             queue = self.ready.wait(queue).ok()?;
-            queue.waiters -= 1;
         }
     }
 
@@ -97,19 +130,19 @@ impl<Key: Ord, Job> SharedJobs<Key, Job> {
     }
 }
 
-struct WorkerExit<'a, Key, Job>(&'a SharedJobs<Key, Job>);
+struct WorkerExit<'a, Key, Job> {
+    jobs: &'a SharedJobs<Key, Job>,
+    worker: u32,
+}
 
 impl<Key, Job> Drop for WorkerExit<'_, Key, Job> {
     fn drop(&mut self) {
-        if let Ok(mut queue) = self.0.queue.lock() {
+        if let Ok(mut queue) = self.jobs.queue.lock() {
             queue.workers = queue.workers.saturating_sub(1);
+            queue.idle.remove(&self.worker);
         }
-        self.0.ready.notify_all();
+        self.jobs.ready.notify_all();
     }
-}
-
-fn queued_work_needs_wakeup(queued: usize, waiters: usize) -> bool {
-    queued > 0 && queued <= waiters
 }
 
 pub(crate) struct WorkerPool<Key: Ord, Job, Output, O = ()> {
@@ -119,7 +152,17 @@ pub(crate) struct WorkerPool<Key: Ord, Job, Output, O = ()> {
 }
 
 impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
+    #[cfg(test)]
     pub(crate) fn send(&self, key: Key, job: Job) -> Result<(), WorkerPoolError> {
+        self.send_local(key, job, None)
+    }
+
+    fn send_local(
+        &self,
+        key: Key,
+        job: Job,
+        locality: Option<LocalityKey>,
+    ) -> Result<(), WorkerPoolError> {
         let shared = self.jobs.as_ref().ok_or(WorkerPoolError::QueueClosed)?;
         let mut queue = shared
             .queue
@@ -128,28 +171,67 @@ impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
         if queue.workers == 0 && !queue.failed_job {
             return Err(WorkerPoolError::WorkersExited);
         }
+        if queue
+            .assigned
+            .values()
+            .any(|(assigned, _)| assigned == &key)
+        {
+            return Err(WorkerPoolError::DuplicateJob);
+        }
         match queue.jobs.entry(key) {
             Entry::Occupied(_) => return Err(WorkerPoolError::DuplicateJob),
             Entry::Vacant(entry) => {
-                entry.insert(job);
+                entry.insert(QueuedJob { job, locality });
             }
         }
-        let notify = queued_work_needs_wakeup(queue.jobs.len(), queue.waiters);
+        queue.assign();
         drop(queue);
-        if notify {
-            shared.ready.notify_one();
-        }
+        shared.ready.notify_all();
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn dispatch(&self, key: Key, job: Job) -> Result<(), Box<dyn Error>> {
         self.send(key, job).map_err(Into::into)
+    }
+
+    pub(crate) fn dispatch_local(
+        &self,
+        key: Key,
+        job: Job,
+        locality: Option<LocalityKey>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.send_local(key, job, locality).map_err(Into::into)
     }
 
     pub(crate) fn close(&mut self) {
         if let Some(shared) = self.jobs.take() {
             shared.close();
         }
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::disallowed_methods)]
+    pub(crate) fn wait_idle(&self, workers: &[u32]) -> Result<(), String> {
+        let shared = self.jobs.as_ref().ok_or("test pool is closed")?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut queue = shared.queue.lock().map_err(|_| "test queue poisoned")?;
+        while !workers.iter().all(|worker| queue.idle.contains_key(worker)) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "workers {workers:?} did not become idle; idle={:?}, assigned={:?}",
+                    queue.idle.keys().collect::<Vec<_>>(),
+                    queue.assigned.keys().collect::<Vec<_>>()
+                ));
+            }
+            queue = shared
+                .ready
+                .wait_timeout(queue, remaining)
+                .map_err(|_| "test queue poisoned while waiting")?
+                .0;
+        }
+        Ok(())
     }
 
     pub(crate) fn wait_ready(&self, workers: u32) -> Result<(), String> {
@@ -247,12 +329,49 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn with_worker_pool_observed<O, State, Key, Job, Output, ResultValue, CoordinatorError>(
     workers: u32,
     initialize: impl Fn(u32) -> Result<State, String> + Sync,
     recover: impl Fn(u32) -> Result<State, String> + Sync,
     execute: impl Fn(&mut State, Job) -> Result<Output, String> + Sync,
     finish: impl Fn(&State) -> TargetCounters + Sync,
+    begin: impl Fn() + Sync,
+    drain: impl Fn() -> Option<O> + Sync,
+    diagnostics: Option<crate::search::job_observation::ObservationDiagnostics>,
+    coordinate: impl FnOnce(
+        &mut WorkerPool<Key, Job, Output, O>,
+    ) -> Result<ResultValue, CoordinatorError>,
+) -> Result<(ResultValue, Vec<WorkerTelemetry>), CoordinatorError>
+where
+    Key: Ord + Send,
+    Job: Send,
+    Output: Send,
+    O: Copy + Send + 'static,
+    CoordinatorError: From<String>,
+{
+    with_worker_pool_routed(
+        workers,
+        initialize,
+        recover,
+        execute,
+        finish,
+        |_| WorkerLocality::default(),
+        begin,
+        drain,
+        diagnostics,
+        coordinate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn with_worker_pool_routed<O, State, Key, Job, Output, ResultValue, CoordinatorError>(
+    workers: u32,
+    initialize: impl Fn(u32) -> Result<State, String> + Sync,
+    recover: impl Fn(u32) -> Result<State, String> + Sync,
+    execute: impl Fn(&mut State, Job) -> Result<Output, String> + Sync,
+    finish: impl Fn(&State) -> TargetCounters + Sync,
+    locality: impl Fn(&State) -> WorkerLocality + Sync,
     begin: impl Fn() + Sync,
     drain: impl Fn() -> Option<O> + Sync,
     diagnostics: Option<crate::search::job_observation::ObservationDiagnostics>,
@@ -281,11 +400,15 @@ where
             let recover = &recover;
             let execute = &execute;
             let finish = &finish;
+            let locality = &locality;
             let begin = &begin;
             let drain = &drain;
             let diagnostics = diagnostics.clone();
             handles.push(scope.spawn(move || {
-                let _exit = WorkerExit(&jobs);
+                let _exit = WorkerExit {
+                    jobs: &jobs,
+                    worker,
+                };
                 let schedstat_before = thread_schedstat();
                 let booted = now();
                 let mut telemetry = WorkerTelemetry::default();
@@ -311,7 +434,10 @@ where
                 let mut worker_failure = None;
                 loop {
                     let waiting = now();
-                    let Some((key, job)) = jobs.next() else {
+                    let hints = state
+                        .as_ref()
+                        .map_or_else(WorkerLocality::default, locality);
+                    let Some((key, job)) = jobs.next(worker, hints) else {
                         break;
                     };
                     telemetry.idle_ns = telemetry.idle_ns.saturating_add(nanos_since(waiting));
@@ -526,16 +652,7 @@ mod tests {
             |pool| -> Result<(), Box<dyn std::error::Error>> {
                 pool.wait_ready(3)?;
                 for round in 0..2 {
-                    let waiting = super::now();
-                    loop {
-                        if pool.jobs.as_ref().unwrap().queue.lock().unwrap().waiters == 3 {
-                            break;
-                        }
-                        if waiting.elapsed() > Duration::from_secs(5) {
-                            return Err("workers did not park".into());
-                        }
-                        std::thread::yield_now();
-                    }
+                    pool.wait_idle(&[0, 1, 2])?;
                     let mut release = Vec::new();
                     for value in round * 3..round * 3 + 3 {
                         let (ready, blocked) = mpsc::channel();
@@ -567,6 +684,160 @@ mod tests {
         )
         .expect("parked workers must consume both bursts");
         assert_eq!(workers.iter().map(|worker| worker.jobs).sum::<u64>(), 6);
+    }
+
+    #[test]
+    fn routed_workers_receive_owned_jobs_and_drain_after_close() {
+        use crate::search::locality::{LocalityKey, WorkerLocality};
+
+        let key = LocalityKey([4; 32]);
+        let result = super::with_worker_pool_routed(
+            3,
+            Ok::<_, String>,
+            Ok::<_, String>,
+            |worker, job: u8| Ok::<_, String>((*worker, job)),
+            |_| TargetCounters::new(),
+            |worker| WorkerLocality::new([(key, u8::from(*worker == 2))]),
+            || {},
+            || None::<()>,
+            None,
+            |pool| -> Result<_, Box<dyn std::error::Error>> {
+                pool.wait_ready(3)?;
+                let shared = pool.jobs.as_ref().unwrap();
+                let mut queue = shared.queue.lock().unwrap();
+                while queue.idle.len() != 3 {
+                    queue = shared.ready.wait(queue).unwrap();
+                }
+                drop(queue);
+                pool.dispatch_local(0, 9, Some(key))?;
+                pool.close();
+                let reply = pool.receive()?;
+                assert_eq!(reply.worker, 2);
+                Ok(reply.outcome?)
+            },
+        )
+        .unwrap();
+        assert_eq!(result.0, (2, 9));
+        assert_eq!(result.1.iter().map(|worker| worker.jobs).sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn assignment_chooses_the_best_idle_owner_for_the_earliest_job() {
+        use super::{JobQueue, QueuedJob};
+        use crate::search::locality::{LocalityKey, WorkerLocality};
+        use std::collections::BTreeMap;
+
+        let parent = LocalityKey([1; 32]);
+        let other = LocalityKey([2; 32]);
+        let mut queue = JobQueue {
+            jobs: BTreeMap::from([
+                (
+                    10,
+                    QueuedJob {
+                        job: 10,
+                        locality: Some(parent),
+                    },
+                ),
+                (
+                    20,
+                    QueuedJob {
+                        job: 20,
+                        locality: Some(other),
+                    },
+                ),
+                (
+                    30,
+                    QueuedJob {
+                        job: 30,
+                        locality: Some(other),
+                    },
+                ),
+            ]),
+            idle: BTreeMap::from([
+                (0, WorkerLocality::new([(other, 1)])),
+                (1, WorkerLocality::new([(parent, 0)])),
+                (2, WorkerLocality::new([(parent, 1)])),
+            ]),
+            assigned: BTreeMap::new(),
+            open: true,
+            workers: 3,
+            failed_job: false,
+        };
+        assert!(queue.assign());
+        assert_eq!(
+            queue.assigned,
+            BTreeMap::from([(0, (20, 20)), (1, (30, 30)), (2, (10, 10))])
+        );
+        assert!(queue.jobs.is_empty());
+        assert!(queue.idle.is_empty());
+        assert!(!queue.assign());
+    }
+
+    #[test]
+    fn a_busy_owner_never_blocks_the_head_or_gives_a_later_local_job_priority() {
+        use super::{JobQueue, QueuedJob};
+        use crate::search::locality::{LocalityKey, WorkerLocality};
+        use std::collections::BTreeMap;
+
+        let busy_parent = LocalityKey([1; 32]);
+        let local_parent = LocalityKey([2; 32]);
+        let mut queue = JobQueue {
+            jobs: BTreeMap::from([
+                (
+                    10,
+                    QueuedJob {
+                        job: 10,
+                        locality: Some(busy_parent),
+                    },
+                ),
+                (
+                    20,
+                    QueuedJob {
+                        job: 20,
+                        locality: Some(local_parent),
+                    },
+                ),
+            ]),
+            idle: BTreeMap::from([(1, WorkerLocality::new([(local_parent, 9)]))]),
+            assigned: BTreeMap::new(),
+            open: false,
+            workers: 2,
+            failed_job: false,
+        };
+        assert!(queue.assign());
+        assert_eq!(queue.assigned.remove(&1), Some((10, 10)));
+        assert_eq!(queue.jobs.keys().copied().collect::<Vec<_>>(), [20]);
+        queue.idle.insert(1, WorkerLocality::default());
+        assert!(queue.assign());
+        assert_eq!(queue.assigned.remove(&1), Some((20, 20)));
+    }
+
+    #[test]
+    fn assignment_without_a_match_breaks_idle_worker_ties_by_identifier() {
+        use super::{JobQueue, QueuedJob};
+        use crate::search::locality::WorkerLocality;
+        use std::collections::BTreeMap;
+
+        let mut queue = JobQueue {
+            jobs: BTreeMap::from([(
+                7,
+                QueuedJob {
+                    job: (),
+                    locality: None,
+                },
+            )]),
+            idle: BTreeMap::from([
+                (5, WorkerLocality::default()),
+                (2, WorkerLocality::default()),
+            ]),
+            assigned: BTreeMap::new(),
+            open: true,
+            workers: 2,
+            failed_job: false,
+        };
+        assert!(queue.assign());
+        assert_eq!(queue.assigned.remove(&2), Some((7, ())));
+        assert_eq!(queue.idle.keys().copied().collect::<Vec<_>>(), [5]);
     }
 
     #[test]

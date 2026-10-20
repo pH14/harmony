@@ -40,7 +40,7 @@ use crate::search::duration::{
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const LONGEST_SPLICE_TAIL: usize = 128;
-use crate::search::parallel::{WorkerPoolError, with_worker_pool_observed};
+use crate::search::parallel::{WorkerPoolError, with_worker_pool_routed};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
     CampaignTelemetry, CompletedBufferTelemetry, HostTimes, Moment, TargetCounters, now,
@@ -225,7 +225,14 @@ pub trait CampaignTypes: Sync {
     type Key: ArchiveKey + Debug + Eq + Send + Sync + 'static;
     type Milestones: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Progress: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    type Snapshot: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
+    type Snapshot: Clone
+        + Debug
+        + Eq
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + super::snapshot_codec::CheckpointSnapshot;
     type Observations: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Evidence: Clone + Default;
     type ArchiveReport: Clone;
@@ -465,6 +472,15 @@ pub trait InputPolicy: CampaignTypes {
 }
 
 pub trait TargetExecution: CampaignTypes {
+    fn worker_locality(&self, _target: &Self::Target) -> crate::search::locality::WorkerLocality {
+        crate::search::locality::WorkerLocality::default()
+    }
+    fn snapshot_locality(
+        &self,
+        _snapshot: &Self::Snapshot,
+    ) -> Option<crate::search::locality::LocalityKey> {
+        None
+    }
     fn begin_job_observation(&self) {}
     fn take_job_observation(&self) -> Option<Self::JobObservation> {
         None
@@ -754,8 +770,7 @@ pub struct CampaignCheckpoint<S> {
     pub snapshots: SnapshotCheckpoint<S>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(bound = "S: Serialize + DeserializeOwned")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotCheckpoint<S> {
     pub format: String,
     pub entries: Vec<SnapshotCheckpointEntry<S>>,
@@ -773,17 +788,28 @@ type ArchiveMaterialization<G> = (
     Vec<(u64, <G as CampaignTypes>::Snapshot)>,
 );
 
-impl<S: Serialize + DeserializeOwned> SnapshotCheckpoint<S> {
+impl<S: super::snapshot_codec::CheckpointSnapshot> SnapshotCheckpoint<S> {
     pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(postcard::to_allocvec(self)?)
+        let mut bytes = Vec::new();
+        self.write_to(&mut bytes)?;
+        Ok(bytes)
     }
-
+    pub fn sha256(&self) -> Result<String, Box<dyn Error>> {
+        let mut writer = CheckpointHashWriter(Sha256::new());
+        self.write_to(&mut writer)?;
+        Ok(format!("{:x}", writer.0.finalize()))
+    }
+    pub fn write_to(&self, out: &mut dyn Write) -> Result<(), Box<dyn Error>> {
+        super::snapshot_codec::write_checkpoint(self, out)
+    }
+    pub fn read_from(
+        input: &mut dyn std::io::Read,
+        expected_format: &str,
+    ) -> Result<Self, Box<dyn Error>> {
+        super::snapshot_codec::read_checkpoint(input, expected_format)
+    }
     pub fn from_bytes(bytes: &[u8], expected_format: &str) -> Result<Self, Box<dyn Error>> {
-        let (format, _) = postcard::take_from_bytes::<&str>(bytes)?;
-        if format != expected_format {
-            return Err("snapshot checkpoint format is not recognized".into());
-        }
-        Ok(postcard::from_bytes(bytes)?)
+        Self::read_from(&mut &*bytes, expected_format)
     }
 }
 
@@ -3477,7 +3503,7 @@ fn validate_archive_checkpoint<G: Workload + ?Sized>(
         return Err("archive snapshot checkpoint format is not recognized".into());
     }
     let mut writer = CheckpointHashWriter(Sha256::new());
-    postcard::to_io(&checkpoint.snapshots, &mut writer)?;
+    checkpoint.snapshots.write_to(&mut writer)?;
     let actual_sha256 = format!("{:x}", writer.0.finalize());
     if checkpoint.file_sha256 != actual_sha256 {
         return Err("archive snapshot checkpoint bytes do not match their SHA-256".into());
@@ -3613,7 +3639,7 @@ where
     let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
     let first_worker_start = Mutex::new(first_worker_start);
     let mut coordinator = None;
-    let ((), worker_telemetry) = with_worker_pool_observed(
+    let ((), worker_telemetry) = with_worker_pool_routed(
         config.workers,
         |worker| {
             if worker == 0 {
@@ -3635,6 +3661,7 @@ where
             Ok((reservation, outcome))
         },
         |target| workload.telemetry(target),
+        |target| workload.worker_locality(target),
         || workload.begin_job_observation(),
         || workload.take_job_observation(),
         observer
@@ -3657,11 +3684,17 @@ where
             pool.wait_ready(config.workers)?;
             campaign.begin_dispatch_phase();
             while campaign.reserve_next_dispatch(&mut |job| {
-                pool.dispatch((job.planned_finish, job.reservation), job)
+                #[cfg(test)]
+                tests::before_locality_dispatch(pool, job.reservation, true)?;
+                let locality = workload.snapshot_locality(&job.snapshot);
+                pool.dispatch_local((job.planned_finish, job.reservation), job, locality)
             })? {}
             loop {
                 campaign.dispatch_queued(&mut |job| {
-                    pool.dispatch((job.planned_finish, job.reservation), job)
+                    #[cfg(test)]
+                    tests::before_locality_dispatch(pool, job.reservation, false)?;
+                    let locality = workload.snapshot_locality(&job.snapshot);
+                    pool.dispatch_local((job.planned_finish, job.reservation), job, locality)
                 })?;
                 if campaign.finished() {
                     break;
@@ -3754,14 +3787,24 @@ where
                             }
                             watch.prepare_admission(&note, campaign);
                             campaign.admit_dispatch(outcome, &mut |job| {
-                                pool.dispatch((job.planned_finish, job.reservation), job)
+                                #[cfg(test)]
+                                tests::before_locality_dispatch(pool, job.reservation, false)?;
+                                let locality = workload.snapshot_locality(&job.snapshot);
+                                pool.dispatch_local(
+                                    (job.planned_finish, job.reservation),
+                                    job,
+                                    locality,
+                                )
                             })?;
                             watch.admitted(note, campaign);
                         }
                         Err(error) => campaign.fail(reservation, error)?,
                     }
                     campaign.dispatch_queued(&mut |job| {
-                        pool.dispatch((job.planned_finish, job.reservation), job)
+                        #[cfg(test)]
+                        tests::before_locality_dispatch(pool, job.reservation, false)?;
+                        let locality = workload.snapshot_locality(&job.snapshot);
+                        pool.dispatch_local((job.planned_finish, job.reservation), job, locality)
                     })?;
                     ready_reply = match pool.try_receive() {
                         Ok(reply) => reply,
@@ -5575,6 +5618,9 @@ mod tests {
     }
     #[derive(Default)]
     struct LiveTargets {
+        locality: bool,
+        locality_reads: std::sync::atomic::AtomicUsize,
+        residency: Option<Arc<ResidencyFixture>>,
         bootstrap_readiness: Option<BootstrapReadiness>,
         refuse: bool,
         integrity_invalidated: std::sync::atomic::AtomicBool,
@@ -5593,6 +5639,8 @@ mod tests {
         value: u8,
         execution_work: u64,
         _counted: Option<TargetCount>,
+        locality_worker: Option<u32>,
+        resident_snapshots: std::collections::BTreeMap<u8, Box<u8>>,
     }
 
     struct TargetCount(Arc<LiveTargets>);
@@ -5782,6 +5830,44 @@ mod tests {
     impl Error for TestIntegrityViolation {}
 
     impl TargetExecution for TestWorkload {
+        fn worker_locality(&self, target: &TestTarget) -> crate::search::locality::WorkerLocality {
+            use crate::search::locality::{LocalityKey, WorkerLocality};
+            if let Some(fixture) = self
+                .targets
+                .as_ref()
+                .and_then(|targets| targets.residency.as_ref())
+            {
+                if target.locality_worker == Some(0) && fixture.case == ResidencyCase::Refill {
+                    fixture.wait_for(|state| state.first_admitted);
+                }
+                return if fixture.hints {
+                    WorkerLocality::new(
+                        target
+                            .resident_snapshots
+                            .keys()
+                            .map(|value| (LocalityKey([*value; 32]), 1)),
+                    )
+                } else {
+                    WorkerLocality::default()
+                };
+            }
+            if let Some(targets) = self.targets.as_ref().filter(|targets| targets.locality) {
+                targets
+                    .locality_reads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                WorkerLocality::new([(LocalityKey([target.value; 32]), 1)])
+            } else {
+                WorkerLocality::default()
+            }
+        }
+
+        fn snapshot_locality(&self, snapshot: &u8) -> Option<crate::search::locality::LocalityKey> {
+            self.targets
+                .as_ref()
+                .filter(|targets| targets.locality)
+                .map(|_| crate::search::locality::LocalityKey([*snapshot; 32]))
+        }
+
         fn take_job_observation(&self) -> Option<Self::JobObservation> {
             Some(())
         }
@@ -5850,8 +5936,15 @@ mod tests {
             targets
                 .most
                 .fetch_max(live, std::sync::atomic::Ordering::SeqCst);
+            let locality_worker = LOCALITY_WORKER.with(std::cell::Cell::get);
             Ok(TestTarget {
                 _counted: Some(TargetCount(Arc::clone(targets))),
+                locality_worker,
+                resident_snapshots: if targets.residency.is_some() && locality_worker == Some(1) {
+                    std::collections::BTreeMap::from([(0, Box::new(0))])
+                } else {
+                    std::collections::BTreeMap::new()
+                },
                 ..TestTarget::default()
             })
         }
@@ -5863,6 +5956,30 @@ mod tests {
             target: &mut Self::Target,
             snapshot: &Self::Snapshot,
         ) -> Result<(), Box<dyn Error>> {
+            if let Some(fixture) = self
+                .targets
+                .as_ref()
+                .and_then(|targets| targets.residency.as_ref())
+                && let Some(worker) = target.locality_worker
+            {
+                let reconstructed = if let std::collections::btree_map::Entry::Vacant(entry) =
+                    target.resident_snapshots.entry(*snapshot)
+                {
+                    let decoded = postcard::from_bytes(&postcard::to_stdvec(snapshot)?)?;
+                    entry.insert(Box::new(decoded));
+                    true
+                } else {
+                    false
+                };
+                target.value = **target.resident_snapshots.get(snapshot).unwrap();
+                fixture
+                    .state
+                    .lock()
+                    .unwrap()
+                    .restores
+                    .push((worker, *snapshot, reconstructed));
+                return Ok(());
+            }
             target.value = *snapshot;
             Ok(())
         }
@@ -5919,6 +6036,16 @@ mod tests {
                 let (captured, current, snapshots) = calls.get();
                 calls.set((captured, current, snapshots + 1));
             });
+            if self
+                .targets
+                .as_ref()
+                .is_some_and(|targets| targets.residency.is_some())
+            {
+                target
+                    .resident_snapshots
+                    .entry(target.value)
+                    .or_insert_with(|| Box::new(target.value));
+            }
             target.snapshot()
         }
         fn candidate_replay_certificate(
@@ -7224,7 +7351,19 @@ mod tests {
                 .unwrap()
                 .clone(),
         );
-        reject_entries(source_report.clone(), duplicate, "duplicate entry IDs");
+        assert!(
+            duplicate
+                .to_bytes()
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate")
+        );
+        assert!(
+            super::validate_archive_checkpoint_entries(&workload, &source_report, &duplicate)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate entry IDs")
+        );
         let mut unknown = source_snapshots.clone();
         unknown
             .entries
@@ -8522,7 +8661,6 @@ mod tests {
             ids: vec![7],
         })
         .expect("older layout encodes");
-        assert!(postcard::from_bytes::<SnapshotCheckpoint<u8>>(&older).is_err());
         let error = SnapshotCheckpoint::<u8>::from_bytes(&older, "test-checkpoint-v1")
             .expect_err("an older checkpoint is rejected")
             .to_string();
@@ -8876,6 +9014,286 @@ mod tests {
             serde_json::to_vec(&live.0).unwrap()
         );
         assert_eq!(replayed, live);
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ResidencyCase {
+        Initial,
+        Refill,
+        BusyOwner,
+    }
+
+    #[derive(Debug, Default)]
+    struct ResidencyState {
+        first_admitted: bool,
+        starts: Vec<(usize, u32)>,
+        restores: Vec<(u32, u8, bool)>,
+        dispatches: Vec<(usize, bool, Vec<u32>)>,
+    }
+
+    struct ResidencyFixture {
+        case: ResidencyCase,
+        hints: bool,
+        state: Mutex<ResidencyState>,
+        changed: std::sync::Condvar,
+    }
+
+    impl ResidencyFixture {
+        #[allow(clippy::disallowed_methods)]
+        fn wait_for(&self, ready: impl Fn(&ResidencyState) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut state = self.state.lock().unwrap();
+            while !ready(&state) {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(!remaining.is_zero(), "residency fixture stalled: {state:?}");
+                state = self.changed.wait_timeout(state, remaining).unwrap().0;
+            }
+        }
+    }
+
+    std::thread_local! {
+        static LOCALITY_WORKER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+        static LOCALITY_DISPATCH: std::cell::RefCell<Option<Arc<ResidencyFixture>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    struct ResidencyScope {
+        previous: Option<Arc<ResidencyFixture>>,
+        worker: Option<u32>,
+    }
+
+    impl ResidencyScope {
+        fn install(fixture: Arc<ResidencyFixture>) -> Self {
+            Self {
+                previous: LOCALITY_DISPATCH.with(|slot| slot.replace(Some(fixture))),
+                worker: LOCALITY_WORKER.with(std::cell::Cell::get),
+            }
+        }
+    }
+
+    impl Drop for ResidencyScope {
+        fn drop(&mut self) {
+            LOCALITY_DISPATCH.with(|slot| slot.replace(self.previous.take()));
+            LOCALITY_WORKER.with(|slot| slot.set(self.worker));
+        }
+    }
+
+    pub(super) fn before_locality_dispatch<Key: Ord, Job, Output, O>(
+        pool: &crate::search::parallel::WorkerPool<Key, Job, Output, O>,
+        reservation: usize,
+        initial: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        let fixture = LOCALITY_DISPATCH.with(|slot| slot.borrow().clone());
+        if let Some(fixture) = fixture {
+            if fixture.case == ResidencyCase::Refill && !initial {
+                fixture.state.lock().unwrap().first_admitted = true;
+                fixture.changed.notify_all();
+            }
+            let idle = match (fixture.case, reservation) {
+                (ResidencyCase::Refill, 0) => vec![1],
+                (ResidencyCase::BusyOwner, 1) => {
+                    fixture.wait_for(|state| !state.starts.is_empty());
+                    let first = fixture.state.lock().unwrap().starts[0];
+                    assert_eq!(first.0, 0);
+                    vec![1 - first.1]
+                }
+                _ => vec![0, 1],
+            };
+            pool.wait_idle(&idle)?;
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .dispatches
+                .push((reservation, initial, idle));
+        }
+        Ok(())
+    }
+
+    impl super::CampaignWatch<TestWorkload> for ResidencyFixture {
+        type Note = usize;
+
+        fn run(
+            &self,
+            job: &JobSpec<TestWorkload>,
+            run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+        ) -> super::WatchedJob<TestWorkload, Self::Note> {
+            let worker = LOCALITY_WORKER.with(std::cell::Cell::get).unwrap();
+            self.state
+                .lock()
+                .unwrap()
+                .starts
+                .push((job.reservation, worker));
+            self.changed.notify_all();
+            if self.case == ResidencyCase::BusyOwner && job.reservation == 0 {
+                self.wait_for(|state| {
+                    state
+                        .starts
+                        .iter()
+                        .any(|(reservation, _)| *reservation == 1)
+                });
+            }
+            Ok((run()?, job.reservation))
+        }
+
+        fn admitted(&self, note: usize, _campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+            if note == 0 {
+                self.state.lock().unwrap().first_admitted = true;
+                self.changed.notify_all();
+            }
+        }
+    }
+
+    #[test]
+    fn campaign_locality_avoids_reconstruction_in_both_drains_and_falls_back_when_owner_busy() {
+        let mut reconstructions = Vec::new();
+        let mut assignments = Vec::new();
+        for case in [
+            ResidencyCase::Initial,
+            ResidencyCase::Refill,
+            ResidencyCase::BusyOwner,
+        ] {
+            let mut reference = None;
+            for hints in [false, true] {
+                let fixture = Arc::new(ResidencyFixture {
+                    case,
+                    hints,
+                    state: Mutex::new(ResidencyState::default()),
+                    changed: std::sync::Condvar::new(),
+                });
+                let _scope = ResidencyScope::install(Arc::clone(&fixture));
+                let workload = TestWorkload {
+                    bootstrap_objective: false,
+                    targets: Some(Arc::new(LiveTargets {
+                        locality: true,
+                        residency: Some(Arc::clone(&fixture)),
+                        ..LiveTargets::default()
+                    })),
+                };
+                let mut config = three_worker_config();
+                config.workers = 2;
+                config.window = if case == ResidencyCase::BusyOwner {
+                    2
+                } else {
+                    1
+                };
+                config.execution_budget = if case == ResidencyCase::Initial { 1 } else { 2 };
+                config.materialize_final_artifacts = false;
+                let mut stream = Vec::new();
+                let outcome = super::run_campaign_watched(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions {
+                        placement: Some(ThreadPlacement::new(|thread| {
+                            LOCALITY_WORKER.with(|slot| {
+                                slot.set(match thread {
+                                    PlacedThread::Worker(worker) => Some(worker),
+                                    PlacedThread::Coordinator | PlacedThread::StreamEncoder => None,
+                                })
+                            });
+                            Ok(())
+                        })),
+                        ..CampaignExecutionOptions::default()
+                    },
+                    fixture.as_ref(),
+                )
+                .unwrap();
+                assert!(outcome.1.entries.is_empty());
+                let logical = (
+                    stream,
+                    serde_json::to_vec(&outcome.0).unwrap(),
+                    outcome.1.to_bytes().unwrap(),
+                );
+                if let Some(expected) = &reference {
+                    assert_eq!(&logical, expected, "case={case:?}");
+                } else {
+                    reference = Some(logical);
+                }
+                let state = fixture.state.lock().unwrap();
+                assert_eq!(state.restores.len(), config.execution_budget as usize);
+                assert_eq!(state.dispatches.len(), config.execution_budget as usize);
+                assert!(state.dispatches[0].1);
+                if case == ResidencyCase::Refill {
+                    assert_eq!(state.dispatches[0].2, [1]);
+                    assert!(!state.dispatches[1].1);
+                    assert_eq!(state.dispatches[1].2, [0, 1]);
+                }
+                if case == ResidencyCase::Initial {
+                    assert_eq!(state.dispatches[0].2, [0, 1]);
+                }
+                if case == ResidencyCase::BusyOwner {
+                    assert!(state.dispatches[1].1);
+                    assert_eq!(state.dispatches[1].2.len(), 1);
+                }
+                reconstructions.push(state.restores.iter().filter(|(_, _, cold)| *cold).count());
+                let mut starts = state.starts.clone();
+                starts.sort_unstable();
+                assignments.push(starts);
+            }
+        }
+        assert_eq!(reconstructions, [1, 0, 1, 0, 1, 1]);
+        assert_eq!(
+            assignments,
+            [
+                vec![(0, 0)],
+                vec![(0, 1)],
+                vec![(0, 1), (1, 0)],
+                vec![(0, 1), (1, 1)],
+                vec![(0, 0), (1, 1)],
+                vec![(0, 1), (1, 0)],
+            ]
+        );
+    }
+
+    #[test]
+    fn locality_hints_preserve_complete_logical_campaign_streams_across_worker_counts() {
+        for seed in [5, 11, 19] {
+            let mut reference = None;
+            for workers in [1, 3] {
+                for locality in [false, true] {
+                    let targets = Arc::new(LiveTargets {
+                        locality,
+                        ..LiveTargets::default()
+                    });
+                    let workload = TestWorkload {
+                        bootstrap_objective: false,
+                        targets: Some(Arc::clone(&targets)),
+                    };
+                    let mut config = three_worker_config();
+                    config.campaign_seed = seed;
+                    config.workers = workers;
+                    config.window = 6;
+                    let mut stream = Vec::new();
+                    let outcome = run_campaign_checkpointed(
+                        &workload,
+                        &config,
+                        &CampaignOrigin::Genesis,
+                        &mut stream,
+                        None,
+                    )
+                    .unwrap();
+                    if locality {
+                        assert!(
+                            targets
+                                .locality_reads
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                > 0
+                        );
+                    }
+                    let logical = (stream, serde_json::to_vec(&outcome.0).unwrap());
+                    if let Some(expected) = &reference {
+                        assert_eq!(
+                            &logical, expected,
+                            "seed={seed}, workers={workers}, locality={locality}"
+                        );
+                    } else {
+                        reference = Some(logical);
+                    }
+                }
+            }
+        }
     }
 
     fn job_lines(stream: &[u8]) -> Vec<(usize, CampaignJobRecord<EmpiricalStepCheckpoint>)> {

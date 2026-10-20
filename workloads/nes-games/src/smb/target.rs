@@ -719,6 +719,11 @@ pub fn smb_area_is_loading(wram: &[u8; WRAM_SIZE]) -> bool {
 }
 
 const PLAYER_VERTICAL_PAGE_OFFSET: usize = 0x00b5;
+
+impl<P: SnapshotState> searcher::search::snapshot_codec::CheckpointSnapshot for SmbSnapshot<P> {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

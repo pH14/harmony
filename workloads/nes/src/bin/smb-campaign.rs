@@ -403,13 +403,7 @@ fn load_checkpoint_as_with_source_hook(
         inner: fs::File::open(path)?,
         digest: Sha256::new(),
     });
-    let mut scratch = vec![0_u8; 1024 * 1024];
-    let (snapshots, _) = postcard::from_io((&mut reader, scratch.as_mut_slice()))?;
-    let snapshots: SmbSnapshotCheckpoint = snapshots;
-    if snapshots.format != checkpoint_format {
-        return Err("snapshot checkpoint format is not recognized".into());
-    }
-    std::io::copy(&mut reader, &mut std::io::sink())?;
+    let snapshots = SmbSnapshotCheckpoint::read_from(&mut reader, checkpoint_format)?;
     after_first_access();
     Ok(SmbCampaignCheckpoint {
         path: logical_path,
@@ -441,7 +435,7 @@ fn write_snapshot_file(
     checkpoint: &SmbSnapshotCheckpoint,
 ) -> Result<(), Box<dyn Error>> {
     let mut writer = BufWriter::new(fs::File::create(path)?);
-    postcard::to_io(checkpoint, &mut writer)?;
+    checkpoint.write_to(&mut writer)?;
     writer.flush()?;
     Ok(())
 }
@@ -645,40 +639,40 @@ mod tests {
     }
 
     fn checkpoint_bytes(id: u64) -> Vec<u8> {
-        let snapshot: SmbSnapshotCheckpoint = serde_json::from_value(serde_json::json!({
-            "format": "test",
-            "entries": [{
-                "id": id,
-                "snapshot": {
-                    "emulator_state": [0],
-                    "observation": {
-                        "frame_count": 0,
-                        "decoded": {
-                            "world": 0,
-                            "level": 0,
-                            "progress": 0,
-                            "player_y_bucket": 0,
-                            "player_engine_state": 0,
-                            "dead": false,
-                            "flag_active": false
+        let snapshot: nes_workload::smb::target::SmbSnapshot =
+            serde_json::from_value(serde_json::json!({
+                        "emulator_state": [0],
+                        "observation": {
+                            "frame_count": 0,
+                            "decoded": {
+                                "world": 0,
+                                "level": 0,
+                                "progress": 0,
+                                "player_y_bucket": 0,
+                                "player_engine_state": 0,
+                                "dead": false,
+                                "flag_active": false
+                            },
+                            "milestones": {
+                                "max_1_1_scroll_bucket": 0,
+                                "reached_1_1_flag": false,
+                                "reached_1_2": false,
+                                "reached_onward": false
+                            },
+                            "dead": false
                         },
-                        "milestones": {
-                            "max_1_1_scroll_bucket": 0,
-                            "reached_1_1_flag": false,
-                            "reached_1_2": false,
-                            "reached_onward": false
-                        },
-                        "dead": false
-                    },
-                    "work_ram": null,
-                    "room_area": [0, 0],
-                    "dead": false,
-                    "failed": false
-                }
-            }]
-        }))
-        .unwrap();
-        snapshot.to_bytes().unwrap()
+                        "work_ram": null,
+                        "room_area": [0, 0],
+                        "dead": false,
+                        "failed": false
+            }))
+            .unwrap();
+        SmbSnapshotCheckpoint {
+            format: "test".into(),
+            entries: vec![SmbSnapshotCheckpointEntry { id, snapshot }],
+        }
+        .to_bytes()
+        .unwrap()
     }
 
     #[test]
@@ -722,6 +716,12 @@ mod tests {
         assert!(bytes.len() > 1024 * 1024);
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("whole-tree.bin");
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(
+            load_checkpoint_as_with_source_hook(&path, "whole-tree".to_owned(), "test", || {})
+                .is_err()
+        );
+        bytes.truncate(bytes.len() - b"trailing checkpoint bytes".len());
         std::fs::write(&path, &bytes).unwrap();
         let loaded =
             load_checkpoint_as_with_source_hook(&path, "whole-tree".to_owned(), "test", || {})

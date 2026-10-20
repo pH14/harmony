@@ -435,3 +435,7 @@ parent path to reconstruct that input. A rooted search stores the same typed
 controller input that the package writes, even when the user's JSON contains
 accepted fields outside that type.
 See the [CLI README](../../cli/README.md) for named runs and investigation.
+
+Full campaign exports write `checkpoint.bin` using the generic framed snapshot
+codec. Snapshot artifacts use the same codec through fixture tools, package exports,
+and SMB stream readers/writers; flat JSON checkpoint files are no longer written.

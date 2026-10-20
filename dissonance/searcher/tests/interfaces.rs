@@ -155,3 +155,7 @@ fn exercise_execution<T: TargetExecution>(
 fn target_execution_is_independently_usable() {
     exercise_execution(&TinyExecution, &(), TinyAction(3)).unwrap();
 }
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for TinySnapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}

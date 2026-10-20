@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, VecDeque, btree_map::Entry},
+    collections::{BTreeMap, VecDeque},
     error::Error,
     fs::{self, File, OpenOptions},
-    io::{self, BufWriter, Read, Seek, SeekFrom, Write},
+    io::{self, BufWriter, Write},
     num::NonZeroU64,
     path::{Path, PathBuf},
     time::Instant,
@@ -13,7 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v12";
+pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v13";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PinnedCheckpoint {
@@ -98,14 +98,6 @@ struct CheckpointLogLine<'a> {
     live_snapshot_bytes: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct StoredRange {
-    offset: u64,
-    len: u64,
-    sha256: [u8; 32],
-    listings: u64,
-}
-
 struct HashWriter<W> {
     inner: W,
     digest: Sha256,
@@ -125,10 +117,7 @@ impl<W: Write> Write for HashWriter<W> {
 
 pub(crate) struct CheckpointWriter<P> {
     plan: CheckpointPlan,
-    store: BufWriter<File>,
-    store_len: u64,
-    live_bytes: u64,
-    stored: BTreeMap<u64, StoredRange>,
+    frames: super::snapshot_store::StoreFrames,
     last_marks: usize,
     last_top: Option<P>,
     intervals: VecDeque<(PathBuf, Vec<u64>)>,
@@ -150,10 +139,7 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
             })?;
         Ok(Self {
             plan,
-            store: BufWriter::with_capacity(1 << 22, store),
-            store_len: 0,
-            live_bytes: 0,
-            stored: BTreeMap::new(),
+            frames: super::snapshot_store::StoreFrames::new(store),
             last_marks: marks,
             last_top: top,
             intervals: VecDeque::new(),
@@ -185,7 +171,7 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         reason
     }
 
-    pub(crate) fn write<'a, S: Serialize + 'a>(
+    pub(crate) fn write<'a, S: super::snapshot_codec::CheckpointSnapshot + 'a>(
         &mut self,
         header: &CheckpointHeader,
         snapshots: impl Iterator<Item = (u64, &'a S)>,
@@ -195,43 +181,10 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         header.checkpoint_owner = self.plan.checkpoint_owner.clone();
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
-        let mut index = Vec::new();
-        let mut new_snapshots = 0_usize;
-        let mut new_snapshot_bytes = 0_u64;
-        for (id, snapshot) in snapshots {
-            let stored = match self.stored.entry(id) {
-                Entry::Occupied(entry) => {
-                    let stored = entry.into_mut();
-                    stored.listings = stored.listings.saturating_add(1);
-                    *stored
-                }
-                Entry::Vacant(entry) => {
-                    let bytes = postcard::to_allocvec(snapshot)?;
-                    let len = u64::try_from(bytes.len())?;
-                    let sha256 = Sha256::digest(&bytes).into();
-                    self.store.write_all(&bytes)?;
-                    let stored = StoredRange {
-                        offset: self.store_len,
-                        len,
-                        sha256,
-                        listings: 1,
-                    };
-                    self.store_len = self.store_len.saturating_add(len);
-                    self.live_bytes = self.live_bytes.saturating_add(len);
-                    new_snapshots = new_snapshots.saturating_add(1);
-                    new_snapshot_bytes = new_snapshot_bytes.saturating_add(len);
-                    *entry.insert(stored)
-                }
-            };
-            index.push(StoredSnapshot {
-                id,
-                offset: stored.offset,
-                len: stored.len,
-                sha256: stored.sha256,
-            });
-        }
-        self.store.flush()?;
-        self.store.get_ref().sync_data()?;
+        let stage = self.frames.stage(snapshots)?;
+        let index = stage.index.clone();
+        let new_snapshots = stage.new_snapshot_count();
+        let new_snapshot_bytes = stage.new_bytes;
         let name = format!(
             "{:012}-{}.{CHECKPOINT_EXTENSION}",
             header.executions, header.reason
@@ -261,6 +214,7 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         let checkpoint_bytes = file.metadata()?.len();
         drop(file);
         fs::rename(&partial, &path)?;
+        self.frames.publish(stage);
         let mut freed = (0_usize, 0_u64);
         if header.reason == "interval" {
             self.intervals
@@ -276,7 +230,7 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
                 File::open(&self.plan.directory)?.sync_all()?;
             }
             for ids in pruned {
-                let (snapshots, bytes) = self.release(&ids)?;
+                let (snapshots, bytes) = self.frames.release(&ids)?;
                 freed = (
                     freed.0.saturating_add(snapshots),
                     freed.1.saturating_add(bytes),
@@ -294,10 +248,10 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
             new_snapshots,
             new_snapshot_bytes,
             checkpoint_bytes,
-            store_bytes: self.store_len,
+            store_bytes: self.frames.len,
             freed_snapshots: freed.0,
             freed_snapshot_bytes: freed.1,
-            live_snapshot_bytes: self.live_bytes,
+            live_snapshot_bytes: self.frames.live_bytes,
         })?;
         let mut log = OpenOptions::new()
             .create(true)
@@ -307,44 +261,10 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         log.write_all(b"\n")?;
         Ok(())
     }
-
-    fn release(&mut self, ids: &[u64]) -> Result<(usize, u64), Box<dyn Error>> {
-        let mut freed = Vec::new();
-        for &id in ids {
-            let Entry::Occupied(mut entry) = self.stored.entry(id) else {
-                return Err("a pruned checkpoint lists a snapshot the store does not hold".into());
-            };
-            entry.get_mut().listings -= 1;
-            if entry.get().listings == 0 {
-                freed.push(entry.remove());
-            }
-        }
-        freed.sort_unstable_by_key(|stored| stored.offset);
-        let mut bytes = 0_u64;
-        let mut hole: Option<(u64, u64)> = None;
-        for stored in freed.iter().filter(|stored| stored.len > 0) {
-            bytes = bytes.saturating_add(stored.len);
-            hole = match hole {
-                Some((offset, len)) if offset.saturating_add(len) == stored.offset => {
-                    Some((offset, len.saturating_add(stored.len)))
-                }
-                Some((offset, len)) => {
-                    punch_hole(self.store.get_ref(), offset, len)?;
-                    Some((stored.offset, stored.len))
-                }
-                None => Some((stored.offset, stored.len)),
-            };
-        }
-        if let Some((offset, len)) = hole {
-            punch_hole(self.store.get_ref(), offset, len)?;
-        }
-        self.live_bytes = self.live_bytes.saturating_sub(bytes);
-        Ok((freed.len(), bytes))
-    }
 }
 
 #[cfg(target_os = "linux")]
-fn punch_hole(store: &File, offset: u64, len: u64) -> std::io::Result<()> {
+pub(super) fn punch_hole(store: &File, offset: u64, len: u64) -> std::io::Result<()> {
     use rustix::{
         fs::{FallocateFlags, fallocate},
         io::Errno,
@@ -361,7 +281,7 @@ fn punch_hole(store: &File, offset: u64, len: u64) -> std::io::Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn punch_hole(_: &File, _: u64, _: u64) -> std::io::Result<()> {
+pub(super) fn punch_hole(_: &File, _: u64, _: u64) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -430,25 +350,10 @@ impl CheckpointReader {
         Ok(())
     }
 
-    pub(crate) fn snapshots<S: DeserializeOwned>(&self) -> Result<Vec<(u64, S)>, Box<dyn Error>> {
-        let mut order = self.index.clone();
-        order.sort_by_key(|stored| stored.offset);
-        let mut store = File::open(&self.store)?;
-        let mut snapshots = Vec::with_capacity(order.len());
-        let mut buffer = Vec::new();
-        for stored in order {
-            store.seek(SeekFrom::Start(stored.offset))?;
-            buffer.resize(usize::try_from(stored.len)?, 0);
-            store.read_exact(&mut buffer)?;
-            let actual: [u8; 32] = Sha256::digest(&buffer).into();
-            if actual != stored.sha256 {
-                return Err(
-                    format!("search checkpoint snapshot {} checksum differs", stored.id).into(),
-                );
-            }
-            snapshots.push((stored.id, postcard::from_bytes(&buffer)?));
-        }
-        Ok(snapshots)
+    pub(crate) fn snapshots<S: super::snapshot_codec::CheckpointSnapshot>(
+        &self,
+    ) -> Result<Vec<(u64, S)>, Box<dyn Error>> {
+        super::snapshot_store::read::<S>(&mut File::open(&self.store)?, &self.index)
     }
 }
 
@@ -580,6 +485,49 @@ mod tests {
     }
 
     #[test]
+    fn failed_checkpoint_body_does_not_retain_staged_snapshot_frames() {
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-checkpoint-publish-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut writer = CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).unwrap();
+        writer
+            .write(
+                &header(1, "final"),
+                std::iter::once((1, &vec![1u8, 2])),
+                |_| Ok(()),
+            )
+            .unwrap();
+        let bytes = writer.frames.live_bytes;
+        assert!(
+            writer
+                .write(
+                    &header(2, "interval"),
+                    [(1, &vec![1u8, 2]), (2, &vec![3u8])].into_iter(),
+                    |_| Err("injected checkpoint body failure".into())
+                )
+                .is_err()
+        );
+        assert_eq!(writer.frames.snapshot_ids(), vec![1]);
+        assert_eq!(writer.frames.live_bytes, bytes);
+        let reader = CheckpointReader::open(&directory.join("000000000001-final.ckpt")).unwrap();
+        assert_eq!(
+            reader.snapshots::<Vec<u8>>().unwrap(),
+            vec![(1, vec![1, 2])]
+        );
+        writer
+            .write(
+                &header(3, "final"),
+                std::iter::once((2, &vec![3u8])),
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(writer.frames.snapshot_ids(), vec![1, 2]);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn checkpoint_reader_rejects_changed_body() {
         let directory = std::env::temp_dir().join(format!(
             "dissonance-checkpoint-body-integrity-{}",
@@ -636,17 +584,20 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir(&directory).unwrap();
-        let mut old = header(10, "interval");
-        old.format = "dissonance-search-checkpoint-v4".into();
-        let path = directory.join("old.ckpt");
-        fs::write(&path, postcard::to_allocvec(&old).unwrap()).unwrap();
-        assert!(
-            CheckpointReader::open(&path)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("format is not recognized")
-        );
+        for format in [
+            "dissonance-search-checkpoint-v4",
+            "dissonance-search-checkpoint-v8",
+            "dissonance-search-checkpoint-v9",
+        ] {
+            let mut old = header(10, "interval");
+            old.format = format.into();
+            let path = directory.join("old.ckpt");
+            fs::write(&path, postcard::to_allocvec(&old).unwrap()).unwrap();
+            assert_eq!(
+                CheckpointReader::open(&path).err().unwrap().to_string(),
+                "search checkpoint format is not recognized"
+            );
+        }
         fs::remove_dir_all(&directory).unwrap();
     }
 
@@ -736,16 +687,12 @@ mod tests {
                 "pruning the first interval checkpoint released no store blocks"
             );
         }
-        assert_eq!(writer.stored.keys().copied().collect::<Vec<_>>(), [2, 3, 4]);
+        assert_eq!(writer.frames.snapshot_ids(), [2, 3, 4]);
         write_snapshots(&mut writer, 40, "interval", &[5]);
         write_snapshots(&mut writer, 50, "interval", &[5, 6]);
-        assert_eq!(
-            writer.stored.keys().copied().collect::<Vec<_>>(),
-            [2, 3, 5, 6]
-        );
-        let snapshot_len =
-            u64::try_from(postcard::to_allocvec(&snapshot(1)).expect("encode").len())
-                .expect("length");
+        assert_eq!(writer.frames.snapshot_ids(), [2, 3, 5, 6]);
+        let snapshot_len = writer.frames.snapshot_len(2);
+        let header_len = writer.frames.header_len();
         let log: Vec<serde_json::Value> = fs::read_to_string(directory.join(CHECKPOINT_LOG))
             .expect("read the log")
             .lines()
@@ -763,7 +710,7 @@ mod tests {
         );
         assert_eq!(
             *field("store_bytes").last().expect("line"),
-            6 * snapshot_len
+            header_len + 6 * snapshot_len
         );
         for (executions, reason, ids) in [
             (15, "milestone", vec![2, 3]),
@@ -812,7 +759,7 @@ mod tests {
                 )
                 .expect("write the checkpoint");
         }
-        assert_eq!(writer.stored.keys().copied().collect::<Vec<_>>(), [2, 3]);
+        assert_eq!(writer.frames.snapshot_ids(), [2, 3]);
         let mut reader = CheckpointReader::open(&directory.join("000000000030-interval.ckpt"))
             .expect("open the last checkpoint");
         assert_eq!(reader.next::<u64>().expect("body"), 30);
@@ -830,7 +777,7 @@ mod tests {
         let mut writer =
             CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).expect("create");
         let header = CheckpointHeader {
-            format: "dissonance-search-checkpoint-v2".to_owned(),
+            format: "dissonance-search-checkpoint-v9".to_owned(),
             checkpoint_owner: None,
             reason: "interval".to_owned(),
             workload_identity_sha256: String::new(),

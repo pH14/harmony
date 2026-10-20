@@ -30,7 +30,32 @@ the recorded execution budget. One coordinator
 random generator draws every selection, so a fixed seed and window write the
 same stream at any worker count. Worker ids appear only in run telemetry. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
-for replay. Replay checks the source fields allowed by each origin kind, requires
+for replay.
+
+Physical assignment chooses the earliest queued planned-finish/reservation key
+first, then the best currently idle worker for that job's optional opaque
+locality key. Workloads advertise at most 64 keys per idle worker and assign a
+static rank to each match. A matching worker outranks a nonmatching worker;
+higher ranks win, followed by the smaller worker identifier. The queue never
+waits for a busy owner or bypasses its head for a later local job. Advertisements
+are removed on assignment or worker exit and rebuilt after execution or target
+recovery. They convey no ownership or integrity authority. Selection, seeds,
+planned finishes, checkpoint state, retention and admission remain independent
+of these hints. Workloads without locality keys use the same queue with empty
+advertisements.
+
+A deterministic two-worker campaign fixture exercises initial and refill
+plan drains with an owned decoded-snapshot cache. It waits for actual queue idle
+membership, starts with the parent retained only by worker 1, and compares empty
+and populated advertisements. Cache misses decode and allocate the restored
+value; hits restore from the retained value. It checks avoided reconstruction,
+busy-owner fallback, and byte-identical complete logical streams, reports and
+checkpoint-codec bytes. This fixture disables final materialization and asserts
+that its concrete checkpoint has no entries; nonempty codec round-trip coverage
+is separate. Its scoped readiness hooks are test-only, and the fixture makes no
+host timing claim.
+
+Replay checks the source fields allowed by each origin kind, requires
 an archive checkpoint exactly when the stream names one, and matches the supplied
 checkpoint path, format, serialized bytes, and digest before copying its provenance
 into a completed report. Archive-origin recording and full or prefix replay require
@@ -272,7 +297,7 @@ cell IDs so admission accounting reaches both structures without repeating
 composite-key lookups. An inactive historical cell retains its counters but
 releases its holder allocations. History compaction rebuilds IDs and entry
 handles and clamps arena capacity to its surviving length. Checkpoint format
-v12 stores this layout and validates every index, entry handle, tier edge and
+v13 stores this layout and validates every index, entry handle, tier edge and
 holder key before restoring runtime state. The memory charge includes entry
 rows, the arena and ordered indexes. Its changed structural bound can
 change eviction timing under a tight memory budget; seed and fixed-window
@@ -881,7 +906,7 @@ variable. Without it, public phase spans are null and `timing_complete` is false
 resuming any segment without detailed timing also leaves that flag false.
 Job counters, receive/idle waits and the optional coordinator/encoder CPU
 counters remain available independently of detailed profiling.
-Search-checkpoint layout v12 retains the timing-coverage flag with the profile.
+Search-checkpoint layout v13 retains the timing-coverage flag with the profile.
 
 The campaign report carries `telemetry`, the host measurements that explain
 where a run's time went. It records bootstrap, search, and persistence wall
@@ -1021,9 +1046,10 @@ header or body, so byte changes that remain valid postcard data fail closed
 instead of changing the continuation. These
 checks detect corruption, not deliberate rewriting of a checkpoint and its
 checksum. `checkpoints.jsonl` records each checkpoint's SHA-256, write time and sizes:
-`store_bytes` is the store's length, `live_snapshot_bytes` is the bytes that
-kept checkpoints list, and `freed_snapshots` and `freed_snapshot_bytes` count
-what the write's pruning released. The
+`store_bytes` is the store's length. `live_snapshot_bytes` includes endpoint and
+shared frames reachable from kept checkpoints; `new_snapshot_bytes` and
+`freed_snapshot_bytes` include both kinds. `new_snapshots` and `freed_snapshots`
+count endpoint frames only. The
 header names the body's layout, `SEARCH_CHECKPOINT_FORMAT`. The name changes
 whenever a stored type such as `Archive` changes, and a reader refuses a
 checkpoint of any other layout before it decodes the body. The
@@ -1039,7 +1065,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 9; a checkpoint from another
+match. The search checkpoint format is version 13; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation
@@ -1165,3 +1191,34 @@ execution snapshots outside the archive and use this read accessor for films.
 Weighted draws use `RomuDuoJrRand::below_u64` for 64-bit weight
 totals, so wasm32 does not truncate them through `usize`. This uses the same
 multiply-high draw as native selection and preserves its random sequence.
+
+Snapshot artifacts select a workload-owned `CheckpointSnapshot::Codec`. The common
+`HMSNAP02` envelope streams checksummed shared-record and endpoint frames, validates
+parent-before-child dependencies and the exact referenced closure, and refuses old
+flat envelopes and trailing bytes. Plain snapshots opt into the postcard codec;
+workloads with persistent graphs provide semantic keys and graph validation. All
+artifact writers, readers and source-bound checksum validation use this codec.
+
+Whole-search checkpoint v13 uses the same workload codec in a typed `HMSTORE2`
+append store. Snapshot frames refer to semantic shared keys using checksummed
+physical ranges. Shared frames carry earlier parent locators, so resume validates
+the reachable graph iteratively without a global dictionary in each checkpoint.
+Range overflow, overlap, type/key conflicts, forward references and incompatible
+codec headers fail before archive installation.
+
+The writer stages new metadata until the checkpoint is synced and renamed. Kept
+checkpoint listings retain endpoint frames; each live frame owns its root or parent
+edges once. Removing the last listing cascades through unowned graph records
+iteratively, forgetting their keys before punching file holes. Later reintroduction
+of the same semantic root emits its missing ancestry with new locations. Pinned
+checkpoints preserve the reachable graph. Failed encoding stops that writer;
+failed checkpoint publication cannot change earlier live listing/edge ownership.
+Appended unreferenced tails may remain after a fatal failure. Persistence remains
+synchronous; no background writer or retained-image lease protocol is introduced.
+
+Whole-search checkpoint v13 combines the current coordinator/archive body with
+shared snapshot frames. Both earlier v9 layouts are refused before decoding a
+body: upstream's flat snapshot store and the earlier shared-frame layout used
+by the integration branch. There is no legacy format fallback. The shared
+codec remains workload-owned; assurance metadata is interpreted and validated
+by that workload's codec, never by generic storage or routing.

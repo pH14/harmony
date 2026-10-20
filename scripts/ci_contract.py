@@ -237,12 +237,14 @@ LIB_PARTITIONS = {
         ),
         "Scheduling": (
             "search::duration", "search::empirical_steps", "search::parallel",
+            "search::locality",
         ),
         "Search Coordination": (
             "search::continuation", "search::rand", "search::job_observation",
         ),
         "Campaign Recording and Replay": (
             "search::campaign", "search::checkpoint", "search::telemetry",
+            "search::snapshot_codec", "search::snapshot_store",
             "search::executable_identity",
         ),
     },

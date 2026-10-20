@@ -701,13 +701,49 @@ count and host time of captures, restores, fresh restores and imports.
 `placement::CorePool` finds the host's fastest core type within the process's
 CPU affinity, cut to the whole cores of the tightest cgroup `cpu.max` quota: the `cpu_core` and `cpu_atom` lists on hybrid x86, the part
 number in `MIDR_EL1` on arm64, and `cpu_capacity` or the maximum frequency to
-rank the types. Its cores are ordered fastest first. `CorePool::plan` gives
-each worker its own core and the coordinator the slowest remaining one, and
-refuses more workers than the pool leaves room for. A pool of one core holds
-one worker and the coordinator together. `pin_current_thread` binds
+rank the types. Linux then uses package/core identifiers and sibling lists to
+put one representative of each physical core before SMT siblings, retaining
+speed order within each pass. The quota applies to that order. The coordinator
+is the last included physical representative, reserved before worker assignment;
+it remains the same processor at every worker count. Workers use other physical
+cores before sharing those cores through SMT. A single physical core with
+multiple allowed threads necessarily shares that core with the coordinator.
+Missing topology falls back to package/core identifiers or individual logical
+CPUs; contradictory present sibling/core metadata is refused. `topology()`
+reports that knowledge, packages, highest data/unified shared cache and NUMA
+nodes. It never admits a CPU outside the original affinity and fastest class.
+`CorePool::plan` refuses more workers than the logical pool leaves room for.
+A pool of one logical CPU holds one worker and the coordinator together.
+`pin_current_thread` binds
 the calling thread to one core on Linux. A worker's guest runs on the thread
 that owns its session, so pinning that thread keeps the guest on one core. On
 macOS the pool counts the performance cores and nothing is pinned.
+
+CPU topology metadata has private, fail-closed admission caps: 64 KiB per text
+value, 4 MiB of cumulative census text, 4,096 expanded ID occurrences per list,
+1,024 eligible CPUs and online NUMA nodes, and 8,388,608 cumulative parsed or
+copied ID occurrences. Overlapping ranges count repeatedly before deduplication;
+all range lengths and aggregate charges are checked before expansion or copying.
+Sparse high identifiers remain valid within these cardinality limits. The file
+reader stops at the per-value limit plus one byte and refuses oversize values;
+numeric and cache-kind text share the census budget. Present metadata beyond a
+cap is refused. Present malformed hybrid core-type lists are also refused;
+missing files and valid empty or noneligible pools retain the existing fallback.
+These limits bound host metadata processing, not guest execution or host speed.
+
+The compressed full-LLC census fixture uses the production maximum of 1,024 CPUs
+natively and 16 CPUs under Miri. Both profiles use the actual census, a compressed
+range covering every CPU for the NUMA node and shared cache, and the same complete
+per-CPU assertions. Native tests cover the maximum-scale admission policy; the
+interpreter profile exercises memory safety of those paths without repeating the
+quadratic maximum-host membership workload. Malformed, size, aggregate and refusal
+fixtures remain enabled in Miri. Production caps and CI time budgets are unchanged.
+
+Placement runs before target creation and guest population. Memory policy is
+inherited from the host; affinity alone does not relocate populated pages or
+guarantee a NUMA allocation. Shared snapshot extents retain their existing page
+ownership and allocation policy. Topology metadata does not certify page
+residency or establish an SMT/NUMA throughput improvement.
 
 ```sh
 cargo test -p consonance-client
