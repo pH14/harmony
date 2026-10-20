@@ -45,7 +45,8 @@ use crate::target::{
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
-pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v3";
+pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v4";
+const LOCAL_SERVICES: [u16; 2] = [STANDING_NAMESPACE, process_proto::debug::NAMESPACE];
 pub const SESSION_SERVICE: &str = "faults";
 const SEED: u64 = 0x4661_756c_744c_6162;
 const SETUP_BUDGET: u64 = 120_000_000_000;
@@ -290,7 +291,7 @@ impl StandingHandler {
 
 impl ServiceHandler for StandingHandler {
     fn local_services(&self) -> &[u16] {
-        &[process_proto::debug::NAMESPACE]
+        &LOCAL_SERVICES
     }
     fn identity(&self) -> &[u8] {
         SERVICE_IDENTITY
@@ -376,7 +377,7 @@ pub fn service_factory() -> ServiceFactory {
         if config.identity != SERVICE_IDENTITY {
             return nominal(config);
         }
-        if config.local_services != [process_proto::debug::NAMESPACE] {
+        if config.local_services != LOCAL_SERVICES {
             return Err(ChannelError::Malformed);
         }
         Ok(
@@ -427,7 +428,7 @@ impl ActionPlan {
 
     fn service_config(&self) -> ServiceConfig {
         ServiceConfig {
-            local_services: vec![process_proto::debug::NAMESPACE],
+            local_services: LOCAL_SERVICES.to_vec(),
             identity: SERVICE_IDENTITY.to_vec(),
             configuration: self.handler.0.configuration.clone(),
         }
@@ -7412,7 +7413,7 @@ mod tests {
         }
         (
             ServiceConfig {
-                local_services: vec![process_proto::debug::NAMESPACE],
+                local_services: LOCAL_SERVICES.to_vec(),
                 identity: SERVICE_IDENTITY.to_vec(),
                 configuration,
             },
@@ -7791,15 +7792,12 @@ mod tests {
         let config = test_branch_config(ActionWindows { root_seal: 0 }, &[], &[]).unwrap();
         let factory = service_factory();
         let mut standing = factory(&config).unwrap();
-        assert_eq!(
-            standing.local_services(),
-            &[process_proto::debug::NAMESPACE]
-        );
+        assert_eq!(standing.local_services(), &LOCAL_SERVICES);
         let active = debug_configuration(&config.configuration, None).unwrap();
         let mut debug = factory(&active).unwrap();
         assert!(debug.local_services().is_empty());
         let mut forged_active = active.clone();
-        forged_active.local_services = vec![process_proto::debug::NAMESPACE];
+        forged_active.local_services = LOCAL_SERVICES.to_vec();
         assert!(factory(&forged_active).is_err());
         let status = process_proto::debug::Status {
             acknowledged: 3,
@@ -7841,7 +7839,7 @@ mod tests {
         let handler = factory(&ServiceConfig::default()).expect("nominal service");
         assert_eq!(handler.identity(), ServiceConfig::default().identity);
         let own = factory(&ServiceConfig {
-            local_services: vec![process_proto::debug::NAMESPACE],
+            local_services: LOCAL_SERVICES.to_vec(),
             identity: SERVICE_IDENTITY.to_vec(),
             configuration: encode_configuration(
                 &encode_windows(&[]).expect("an empty standing list encodes"),
