@@ -4101,7 +4101,7 @@ fn finish_record<G: Workload>(
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
 ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-    let mut retained_inputs = Vec::new();
+    let mut retained = Vec::new();
     for decision in decisions {
         let CampaignAdmissionDecision::Retained { id } = decision else {
             continue;
@@ -4115,12 +4115,8 @@ fn finish_record<G: Workload>(
             .entries
             .get(index)
             .ok_or("retained draw-table entry is missing from the run archive")?;
-        retained_inputs.push(entry.input_suffix.clone());
+        retained.push((0, entry.input_suffix.as_slice()));
     }
-    let retained = retained_inputs
-        .iter()
-        .map(|suffix| (0, suffix.as_slice()))
-        .collect::<Vec<_>>();
     workload.finish_stream_record(run, draw_state, &retained, &core.evidence)
 }
 
