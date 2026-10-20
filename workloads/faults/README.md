@@ -330,11 +330,17 @@ prefix in the shared cache, and only the remaining actions run again. Chain
 bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a
 missing prefix is rebuilt from the chain's longest matching link.
 One memory budget covers the shared cache and every worker's local snapshot
-store. It is the free memory left after a 1 GiB reserve and each worker's guest
-RAM plus 512 MiB; the worker count drops until each worker also has room for a
-store as large as its guest RAM. On macOS a search runs at most four workers.
+store. It is the free memory left after a 1 GiB reserve, the coordinator's 512 MiB
+search state, and for each worker
+twice its guest RAM plus 256 MiB: the guest itself and the guest pages a
+snapshot import or export holds while it decompresses or compresses them. The
+worker count drops until each worker also has room for a store as large as its
+guest RAM. On macOS a search runs at most four workers. During the search the
+cache measures free memory again and lowers the budget when memory it does not
+count grows past this plan (see the
+[client README](../../consonance/client/README.md)).
 Before each execution and after each sealed prefix, a worker reports its
-store's resident bytes to the cache, which evicts entries to keep the total in
+store's page, VM-state and index bytes to the cache, which evicts entries to keep the total in
 budget. When eviction cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
 its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and

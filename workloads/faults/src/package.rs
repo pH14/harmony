@@ -349,7 +349,7 @@ mod live {
     };
 
     use consonance_client::{
-        cache::{CacheIndex, LocalIndex, plan_memory, segments},
+        cache::{CacheIndex, LocalIndex, MemoryNeeds, plan_memory, segments},
         placement::{CorePool, Placement, pin_current_thread},
         session::WorkerLauncher,
     };
@@ -373,7 +373,7 @@ mod live {
     };
 
     const MEMORY_BUDGET_MIB: usize = 512;
-    const WORKER_OVERHEAD_MIB: u64 = 512;
+    const WORKER_OVERHEAD_MIB: u64 = 256;
     #[cfg(target_os = "macos")]
     const VM_WORKER_LIMIT: usize = 4;
 
@@ -384,17 +384,23 @@ mod live {
         pub budget: usize,
     }
 
+    fn memory_needs(ram_mib: u32) -> MemoryNeeds {
+        let guest = u64::from(ram_mib) << 20;
+        MemoryNeeds {
+            coordinator: (MEMORY_BUDGET_MIB as u64) << 20,
+            worker: guest
+                .saturating_mul(2)
+                .saturating_add(WORKER_OVERHEAD_MIB << 20),
+            store_floor: guest,
+        }
+    }
+
     pub fn resources(options: &Options) -> Result<Resources, String> {
         let pool = CorePool::detect()?;
         let cores = pool.max_workers();
         #[cfg(target_os = "macos")]
         let cores = cores.min(VM_WORKER_LIMIT);
-        let guest = u64::from(options.ram_mib) << 20;
-        let memory = plan_memory(
-            cores,
-            guest.saturating_add(WORKER_OVERHEAD_MIB << 20),
-            guest,
-        )?;
+        let memory = plan_memory(cores, memory_needs(options.ram_mib))?;
         let workers = u32::try_from(memory.workers).map_err(|error| error.to_string())?;
         let placement = pool.plan(workers)?;
         eprintln!(
@@ -486,7 +492,7 @@ mod live {
         let mut report = Report::new("search", artifacts, identity, options, workers);
         std::fs::create_dir_all(&options.output)?;
         segments::raise_descriptor_limit();
-        let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::new(resources.budget));
+        let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(resources.budget));
         let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
             .with_snapshot_cache(Some(Arc::clone(&cache)))
             .with_session_worker(session_worker);
@@ -774,12 +780,7 @@ mod live {
         ) -> Result<Self, Box<dyn Error>> {
             let config = config(options)?;
             let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config)?;
-            let guest = u64::from(options.ram_mib) << 20;
-            let memory = plan_memory(
-                jobs.max(1),
-                guest.saturating_add(WORKER_OVERHEAD_MIB << 20),
-                guest,
-            )?;
+            let memory = plan_memory(jobs.max(1), memory_needs(options.ram_mib))?;
             segments::raise_descriptor_limit();
             Ok(Self {
                 artifacts: Artifacts {
@@ -787,7 +788,7 @@ mod live {
                     initramfs: artifacts.initramfs.clone(),
                 },
                 config,
-                cache: Arc::new(LocalIndex::new(memory.budget)),
+                cache: Arc::new(LocalIndex::measured(memory.budget)),
                 identity,
                 options: options.clone(),
                 settle,
