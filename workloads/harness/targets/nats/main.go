@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	streamName  = "S"
-	subject     = "s.x"
-	readBatch   = 1024
-	fencePrefix = "fence-"
+	streamName        = "S"
+	subject           = "s.x"
+	readBatch         = 1024
+	fencePrefix       = "fence-"
+	placementAttempts = 16
 )
 
 var servers = []string{
@@ -31,6 +32,8 @@ var servers = []string{
 	"nats://10.77.0.2:4222",
 	"nats://10.77.0.3:4222",
 }
+
+var nodes = []string{"n1", "n2", "n3"}
 
 var streamConfig = jetstream.StreamConfig{
 	Name:     streamName,
@@ -42,6 +45,8 @@ var streamConfig = jetstream.StreamConfig{
 type adapter struct{}
 
 func (adapter) Family() family.Family { return family.Log{} }
+
+func (adapter) Nodes() []string { return nodes }
 
 type client struct {
 	conn *nats.Conn
@@ -94,7 +99,11 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		}
 		return ack.Sequence, nil
 	case family.LogRead:
-		values, err := c.read(ctx)
+		read := c.read
+		if op.Node != "" {
+			read = func(ctx context.Context) ([]string, error) { return c.readOn(ctx, op.Node) }
+		}
+		values, err := read(ctx)
 		if err != nil {
 			return nil, runner.Definite(err)
 		}
@@ -109,18 +118,25 @@ func unsent(err error) bool {
 	return errors.Is(err, nats.ErrReconnectBufExceeded) || errors.Is(err, nats.ErrConnectionDraining)
 }
 
-func (c *client) read(ctx context.Context) ([]string, error) {
+func (c *client) fence(ctx context.Context) (uint64, error) {
 	fence := fmt.Sprintf("%s%016x", fencePrefix, sdk.Random())
 	ack, err := c.js.Publish(ctx, subject, []byte(fence),
 		jetstream.WithRetryAttempts(0),
 		jetstream.WithExpectStream(streamName))
+	if err != nil {
+		return 0, err
+	}
+	return ack.Sequence, nil
+}
+
+func (c *client) read(ctx context.Context) ([]string, error) {
+	last, err := c.fence(ctx)
 	if err != nil {
 		if c.streamAbsent(ctx) {
 			return []string{}, nil
 		}
 		return nil, fmt.Errorf("fence: %w", err)
 	}
-	last := ack.Sequence
 	values := []string{}
 	keep := func(data []byte) {
 		if value := string(data); !strings.HasPrefix(value, fencePrefix) {
@@ -192,6 +208,90 @@ func (c *client) read(ctx context.Context) ([]string, error) {
 		}
 	}
 	return values, nil
+}
+
+// A one-replica consumer serves messages from the store of the server that
+// hosts it, so a read through consumers on one node sees only that node's
+// copy of the stream. Sequences the node lacks are skipped.
+func (c *client) readOn(ctx context.Context, node string) ([]string, error) {
+	last, err := c.fence(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("fence: %w", err)
+	}
+	values := []string{}
+	seen := uint64(0)
+	delivered := uint64(0)
+	var consumer jetstream.Consumer
+	defer func() {
+		if consumer != nil {
+			c.dropConsumer(consumer)
+		}
+	}()
+	for seen < last {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("fetched through %d of %d on %s: %w", seen, last, node, ctx.Err())
+		}
+		if consumer == nil {
+			consumer, err = c.consumerOn(ctx, node, seen+1)
+			if err != nil {
+				return nil, err
+			}
+			delivered = 0
+		}
+		msgs, err := fetch(ctx, consumer, int(min(last-seen, readBatch)))
+		if err != nil {
+			return nil, fmt.Errorf("fetch after %d of %d on %s: %w", seen, last, node, err)
+		}
+		for _, msg := range msgs {
+			meta, err := msg.Metadata()
+			if err != nil {
+				return nil, err
+			}
+			// A jump in the consumer sequence means the client dropped a
+			// delivery that arrived after its fetch expired.
+			if meta.Sequence.Consumer != delivered+1 {
+				c.dropConsumer(consumer)
+				consumer = nil
+				break
+			}
+			delivered++
+			sequence := meta.Sequence.Stream
+			if sequence <= seen {
+				continue
+			}
+			if value := string(msg.Data()); sequence <= last && !strings.HasPrefix(value, fencePrefix) {
+				values = append(values, value)
+			}
+			seen = sequence
+		}
+	}
+	return values, nil
+}
+
+func (c *client) consumerOn(ctx context.Context, node string, start uint64) (jetstream.Consumer, error) {
+	var placed []string
+	for attempt := 0; attempt < placementAttempts; attempt++ {
+		consumer, err := c.js.CreateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+			DeliverPolicy:     jetstream.DeliverByStartSequencePolicy,
+			OptStartSeq:       start,
+			AckPolicy:         jetstream.AckNonePolicy,
+			MemoryStorage:     true,
+			Replicas:          1,
+			InactiveThreshold: 5 * time.Second,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("consumer at %d on %s: %w", start, node, err)
+		}
+		info := consumer.CachedInfo()
+		if info.Cluster != nil && info.Cluster.Leader == node {
+			return consumer, nil
+		}
+		c.dropConsumer(consumer)
+		if info.Cluster != nil {
+			placed = append(placed, info.Cluster.Leader)
+		}
+	}
+	return nil, fmt.Errorf("no consumer placed on %s in %d attempts, placed on %v", node, placementAttempts, placed)
 }
 
 // A server that has not finished recovering can briefly deny the stream, so

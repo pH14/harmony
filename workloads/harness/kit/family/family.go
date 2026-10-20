@@ -9,9 +9,10 @@ import (
 )
 
 type Op struct {
-	F string
-	K string
-	V any
+	F    string
+	K    string
+	Node string
+	V    any
 }
 
 type Draw func(n uint64) uint64
@@ -59,24 +60,44 @@ func ByName(name string) (Family, error) {
 
 const maxEvidence = 3
 
+type evidenceGroup struct{ kind, node string }
+
 type collector struct {
 	violations []Violation
+	groups     []evidenceGroup
 	counts     map[string]int
+	byGroup    map[evidenceGroup]int
 }
 
 func (c *collector) add(kind string, details func() map[string]any) {
+	c.addFor(kind, "", details)
+}
+
+func (c *collector) addFor(kind, node string, details func() map[string]any) {
 	if c.counts == nil {
 		c.counts = map[string]int{}
+		c.byGroup = map[evidenceGroup]int{}
 	}
+	group := evidenceGroup{kind, node}
 	c.counts[kind]++
-	if c.counts[kind] <= maxEvidence {
-		c.violations = append(c.violations, Violation{Kind: kind, Details: details()})
+	c.byGroup[group]++
+	if c.byGroup[group] <= maxEvidence {
+		evidence := details()
+		if node != "" {
+			evidence["node"] = node
+		}
+		c.violations = append(c.violations, Violation{Kind: kind, Details: evidence})
+		c.groups = append(c.groups, group)
 	}
 }
 
 func (c *collector) result() []Violation {
 	for index := range c.violations {
-		c.violations[index].Details["occurrences"] = c.counts[c.violations[index].Kind]
+		group := c.groups[index]
+		c.violations[index].Details["occurrences"] = c.counts[group.kind]
+		if group.node != "" {
+			c.violations[index].Details["node_occurrences"] = c.byGroup[group]
+		}
 	}
 	return c.violations
 }
@@ -98,6 +119,9 @@ func describe(op *history.Op) map[string]any {
 	}
 	if op.K != "" {
 		description["k"] = op.K
+	}
+	if op.Node != "" {
+		description["node"] = op.Node
 	}
 	if op.Complete != history.Forever {
 		description["complete"] = op.Complete
