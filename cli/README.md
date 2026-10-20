@@ -72,6 +72,14 @@ executions = 1000
 wall_seconds = 600
 ```
 
+A fresh search takes its execution budget from `--executions` or `[search]
+executions`, and its wall budget from `--for` or `[search] wall_seconds`. With
+only a wall budget the search has no execution cap and stops at the wall limit.
+With only an execution budget it stops at that count. With both it stops at
+whichever comes first. With neither it stops at 1,000 executions. A value written
+in `harmony.toml` counts as given. The built-in 1,000 applies only when no
+execution or wall budget is set anywhere.
+
 The faults package also accepts `setup`, `ready`, `workload`, `check`, `command`
 and `knobs` in `workload.options`. Lifecycle commands and node/hook commands are
 argument arrays; an explicit shell is required for shell syntax. Nodes, lifecycle

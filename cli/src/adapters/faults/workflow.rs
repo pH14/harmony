@@ -246,13 +246,15 @@ pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Sav
                 .budget
                 .executions
                 .unwrap_or(if request.budget.wall_seconds.is_some() {
-                    i64::MAX as u64 - completed
+                    crate::config::UNBOUNDED_EXECUTIONS - completed
                 } else {
-                    1000
+                    crate::config::DEFAULT_EXECUTIONS
                 });
-        shared.search.executions = completed
-            .checked_add(additional)
-            .ok_or("execution budget overflow")?;
+        shared.search.executions = Some(
+            completed
+                .checked_add(additional)
+                .ok_or("execution budget overflow")?,
+        );
         shared.search.wall_seconds = request.budget.wall_seconds;
         shared.validate()?;
         SearchStart::Checkpoint(checkpoint)
