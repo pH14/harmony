@@ -74,10 +74,12 @@ fn strict_host_identity() -> io::Result<String> {
 #[cfg(feature = "in-process")]
 impl LoadedImageGuard {
     pub(crate) fn capture() -> io::Result<Self> {
-        Self::capture_with_telemetry(std::sync::Arc::new(GuardTelemetry::default()))
+        Ok(Self::capture_with_telemetry(std::sync::Arc::new(GuardTelemetry::default()))?.1)
     }
 
-    fn capture_with_telemetry(telemetry: std::sync::Arc<GuardTelemetry>) -> io::Result<Self> {
+    fn capture_with_telemetry(
+        telemetry: std::sync::Arc<GuardTelemetry>,
+    ) -> io::Result<(String, Self)> {
         let mut work = host_code_identity::GuardMeasurement::default();
         let started = guard_started();
         let captured = reject_loader_overrides()
@@ -90,10 +92,14 @@ impl LoadedImageGuard {
             false,
             guard_elapsed(started),
         );
-        Ok(Self {
-            admitted: AdmittedImage::Strict(captured?.1),
-            telemetry,
-        })
+        let (identity, admitted) = captured?;
+        Ok((
+            identity,
+            Self {
+                admitted: AdmittedImage::Strict(admitted),
+                telemetry,
+            },
+        ))
     }
 
     pub(crate) fn fork(&self) -> Self {
@@ -223,8 +229,7 @@ impl LoadedImageGuard {
     fn identity_with_telemetry(
         telemetry: std::sync::Arc<GuardTelemetry>,
     ) -> io::Result<(String, Self)> {
-        let guard = Self::capture_with_telemetry(telemetry)?;
-        let identity = guard.current_identity()?;
+        let (identity, guard) = Self::capture_with_telemetry(telemetry)?;
         guard.check_at(GuardSite::Admission)?;
         Ok((identity, guard))
     }
@@ -790,7 +795,6 @@ mod sealed_guard_tests {
             file_len
         );
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
-        let mut vdso = 0;
         let mut code = 0;
         for line in maps.lines() {
             let fields = line.split_whitespace().collect::<Vec<_>>();
@@ -798,13 +802,7 @@ mod sealed_guard_tests {
                 continue;
             }
             let (start, end) = fields[0].split_once('-').unwrap();
-            let len =
-                u64::from_str_radix(end, 16).unwrap() - u64::from_str_radix(start, 16).unwrap();
-            if fields.last() == Some(&"[vdso]") {
-                vdso += len;
-            } else {
-                code += len;
-            }
+            code += u64::from_str_radix(end, 16).unwrap() - u64::from_str_radix(start, 16).unwrap();
         }
         // SAFETY: sysconf reads the process page-size setting and accesses no user pointer.
         let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
@@ -815,11 +813,11 @@ mod sealed_guard_tests {
         );
         assert_eq!(
             metrics["guard.session.session_boundary.live_exec_read_bytes"],
-            vdso
+            0
         );
         assert_eq!(
             metrics["guard.session.session_boundary.live_exec_hashed_bytes"],
-            vdso
+            0
         );
         assert_eq!(
             metrics["guard.session.session_boundary.code_page_entries"],
