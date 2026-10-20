@@ -32,6 +32,8 @@ pub enum FaultOperation {
     Wait(NonZeroU16),
     Kill(u16, NonZeroU16),
     KillAll(NonZeroU16),
+    PowerLoss(u16, NonZeroU16),
+    PowerLossAll(NonZeroU16),
     EventKill {
         node: u16,
         rarity: u8,
@@ -57,6 +59,8 @@ impl FaultOperation {
             Self::Wait(ticks)
             | Self::Kill(_, ticks)
             | Self::KillAll(ticks)
+            | Self::PowerLoss(_, ticks)
+            | Self::PowerLossAll(ticks)
             | Self::EventKill { ticks, .. }
             | Self::EventPark { ticks, .. }
             | Self::Pause(_, ticks)
@@ -71,6 +75,8 @@ impl FaultOperation {
             Self::Wait(_) => Self::Wait(ticks),
             Self::Kill(node, _) => Self::Kill(node, ticks),
             Self::KillAll(_) => Self::KillAll(ticks),
+            Self::PowerLoss(node, _) => Self::PowerLoss(node, ticks),
+            Self::PowerLossAll(_) => Self::PowerLossAll(ticks),
             Self::EventKill { node, rarity, .. } => Self::EventKill {
                 node,
                 rarity,
@@ -165,6 +171,15 @@ impl FaultOperation {
             }
             Self::KillAll(ticks) => {
                 put(&[7]);
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::PowerLoss(node, ticks) => {
+                put(&[8]);
+                put(&node.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::PowerLossAll(ticks) => {
+                put(&[9]);
                 put(&ticks.get().to_le_bytes());
             }
         }
@@ -393,6 +408,28 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         FaultOperation::KillAll(_) => ActionDelta {
             standing: Some(standing(
                 process_target(EVERY_NODE, &Fault::ProcKill),
+                (start, end),
+            )),
+        },
+        FaultOperation::PowerLoss(node, _) => ActionDelta {
+            standing: Some(standing(
+                process_target(
+                    node,
+                    &Fault::ProcPowerLoss {
+                        choice: action.choice,
+                    },
+                ),
+                (start, end),
+            )),
+        },
+        FaultOperation::PowerLossAll(_) => ActionDelta {
+            standing: Some(standing(
+                process_target(
+                    EVERY_NODE,
+                    &Fault::ProcPowerLoss {
+                        choice: action.choice,
+                    },
+                ),
                 (start, end),
             )),
         },
@@ -1506,6 +1543,33 @@ mod tests {
         assert_ne!(
             FaultOperation::KillAll(ticks(50)).key_bytes(),
             FaultOperation::Kill(0, ticks(50)).key_bytes()
+        );
+    }
+
+    #[test]
+    fn a_power_loss_carries_its_choice_to_the_supervisor() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        for (operation, node) in [
+            (FaultOperation::PowerLoss(2, ticks(50)), 2),
+            (FaultOperation::PowerLossAll(ticks(50)), EVERY_NODE),
+        ] {
+            let action = FaultAction::from(operation).with_choice(77);
+            let fault = action_delta(action, window)
+                .standing
+                .expect("a power loss installs a standing fault");
+            assert_eq!(
+                decode_process_target(&fault.target),
+                Some((node, Fault::ProcPowerLoss { choice: 77 }))
+            );
+            assert_eq!((fault.start, fault.end), window);
+        }
+        assert_ne!(
+            FaultOperation::PowerLoss(0, ticks(50)).key_bytes(),
+            FaultOperation::Kill(0, ticks(50)).key_bytes()
+        );
+        assert_ne!(
+            FaultOperation::PowerLossAll(ticks(50)).key_bytes(),
+            FaultOperation::KillAll(ticks(50)).key_bytes()
         );
     }
 

@@ -2,13 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v7";
+pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v8";
 pub const MAX_NODES: u16 = 64;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultVocabulary {
     nodes: u16,
     hooks: Vec<u32>,
+    #[serde(default)]
+    disks: Vec<u16>,
     instrumented_events: bool,
 }
 
@@ -31,8 +33,23 @@ impl FaultVocabulary {
         Ok(Self {
             nodes,
             hooks: sorted,
+            disks: Vec::new(),
             instrumented_events: false,
         })
+    }
+
+    pub fn with_disks(mut self, disks: Vec<u16>) -> Result<Self, String> {
+        let mut sorted = disks.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.len() != disks.len() {
+            return Err("a fault bundle declares two disks for one node".to_owned());
+        }
+        if sorted.last().is_some_and(|&node| node >= self.nodes) {
+            return Err("a fault bundle declares a disk for an undeclared node".to_owned());
+        }
+        self.disks = sorted;
+        Ok(self)
     }
 
     #[must_use]
@@ -43,6 +60,8 @@ impl FaultVocabulary {
 
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut nodes = 0_u16;
+        let mut names = Vec::new();
+        let mut disk_names = Vec::new();
         let mut hooks = Vec::new();
         let mut lifecycle = std::collections::BTreeSet::new();
         for (number, line) in text.lines().enumerate() {
@@ -55,9 +74,10 @@ impl FaultVocabulary {
             let line_number = number.saturating_add(1);
             match keyword {
                 "node" => {
-                    if fields.next().is_none() {
+                    let Some(name) = fields.next() else {
                         return Err(format!("bundle line {line_number}: node has no name"));
-                    }
+                    };
+                    names.push(name.to_owned());
                     nodes = nodes
                         .checked_add(1)
                         .ok_or("a fault bundle declares more nodes than a node id holds")?;
@@ -69,6 +89,16 @@ impl FaultVocabulary {
                     hooks.push(id.parse::<u32>().map_err(|error| {
                         format!("bundle line {line_number}: hook id {id:?} is not a u32: {error}")
                     })?);
+                }
+                "disk" => {
+                    let (Some(node), Some(_path), Some(_size), None) =
+                        (fields.next(), fields.next(), fields.next(), fields.next())
+                    else {
+                        return Err(format!(
+                            "bundle line {line_number}: disk needs a node, a path and a size"
+                        ));
+                    };
+                    disk_names.push((line_number, node.to_owned()));
                 }
                 "ready" | "setup" | "workload" | "check" => {
                     if fields.next().is_none() {
@@ -87,7 +117,19 @@ impl FaultVocabulary {
                 }
             }
         }
-        Self::new(nodes, hooks)
+        let disks = disk_names
+            .into_iter()
+            .map(|(line_number, name)| {
+                names
+                    .iter()
+                    .position(|node| *node == name)
+                    .and_then(|index| u16::try_from(index).ok())
+                    .ok_or_else(|| {
+                        format!("bundle line {line_number}: disk names undeclared node {name:?}")
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(nodes, hooks)?.with_disks(disks)
     }
 
     #[must_use]
@@ -98,6 +140,11 @@ impl FaultVocabulary {
     #[must_use]
     pub fn hooks(&self) -> &[u32] {
         &self.hooks
+    }
+
+    #[must_use]
+    pub fn disks(&self) -> &[u16] {
+        &self.disks
     }
 
     #[must_use]
@@ -113,13 +160,19 @@ impl FaultVocabulary {
             .map(u32::to_string)
             .collect::<Vec<_>>()
             .join(",");
+        let disks = self
+            .disks
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         let events = if self.instrumented_events {
             "antithesis"
         } else {
             "none"
         };
         format!(
-            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events}",
+            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};disks={disks};events={events}",
             self.nodes,
         )
     }
@@ -141,6 +194,10 @@ impl FaultVocabulary {
             .next()
             .and_then(|field| field.strip_prefix("hooks="))
             .ok_or("fault vocabulary has no hook list")?;
+        let disks = fields
+            .next()
+            .and_then(|field| field.strip_prefix("disks="))
+            .ok_or("fault vocabulary has no disk list")?;
         let instrumented_events = match fields
             .next()
             .and_then(|field| field.strip_prefix("events="))
@@ -164,7 +221,20 @@ impl FaultVocabulary {
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
-        Ok(Self::new(nodes, hooks)?.with_instrumented_events(instrumented_events))
+        let disks = if disks.is_empty() {
+            Vec::new()
+        } else {
+            disks
+                .split(',')
+                .map(|id| {
+                    id.parse::<u16>()
+                        .map_err(|error| format!("fault vocabulary disk node: {error}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(Self::new(nodes, hooks)?
+            .with_disks(disks)?
+            .with_instrumented_events(instrumented_events))
     }
 }
 
@@ -204,6 +274,33 @@ ready /usr/local/pgsql/bin/pg_isready
             "workload /one\nworkload /two",
         ] {
             assert!(FaultVocabulary::parse(&format!("node a /a\n{extra}\n")).is_err());
+        }
+    }
+
+    #[test]
+    fn a_disk_line_gives_its_node_power_loss_faults() {
+        let vocabulary = FaultVocabulary::parse(
+            "node a /a\nnode b /b\ndisk b /data/b 64M\nnode c /c\ndisk a /data/a 16M\n",
+        )
+        .expect("parse");
+        assert_eq!(vocabulary.nodes(), 3);
+        assert_eq!(vocabulary.disks(), [0, 1]);
+        let identifier = vocabulary.identifier();
+        assert_eq!(
+            identifier,
+            "faultlab_bundle_v8;nodes=3;hooks=;disks=0,1;events=none"
+        );
+        assert_eq!(
+            FaultVocabulary::from_identifier(&identifier).expect("resolve"),
+            vocabulary
+        );
+        for bad in [
+            "node a /a\ndisk z /data 16M\n",
+            "node a /a\ndisk a /data\n",
+            "node a /a\ndisk a /data 16M extra\n",
+            "node a /a\ndisk a /one 16M\ndisk a /two 16M\n",
+        ] {
+            assert!(FaultVocabulary::parse(bad).is_err(), "{bad}");
         }
     }
 
@@ -289,7 +386,7 @@ ready /usr/local/pgsql/bin/pg_isready
         );
         assert_eq!(
             etcd.identifier(),
-            "faultlab_bundle_v7;nodes=1;hooks=1,2;events=none"
+            "faultlab_bundle_v8;nodes=1;hooks=1,2;disks=;events=none"
         );
         assert_ne!(
             etcd.identifier(),
@@ -304,20 +401,24 @@ ready /usr/local/pgsql/bin/pg_isready
             "faultlab_bundle_v1;nodes=1;hooks=1",
             "faultlab_bundle_v2;nodes=1",
             "faultlab_bundle_v5;nodes=1;hooks=1;events=none;interrupts=enabled",
-            "faultlab_bundle_v7;nodes=0;hooks=1;events=none",
-            "faultlab_bundle_v7;nodes=x;hooks=1;events=none",
-            "faultlab_bundle_v7;nodes=1;hooks=1;events=other",
-            "faultlab_bundle_v7;nodes=1;hooks=1;events=none;extra=2",
-            "faultlab_bundle_v7;nodes=1;hooks=one;events=none",
+            "faultlab_bundle_v7;nodes=1;hooks=1;events=none",
+            "faultlab_bundle_v8;nodes=0;hooks=1;disks=;events=none",
+            "faultlab_bundle_v8;nodes=x;hooks=1;disks=;events=none",
+            "faultlab_bundle_v8;nodes=1;hooks=1;disks=;events=other",
+            "faultlab_bundle_v8;nodes=1;hooks=1;disks=;events=none;extra=2",
+            "faultlab_bundle_v8;nodes=1;hooks=one;disks=;events=none",
+            "faultlab_bundle_v8;nodes=1;hooks=1;disks=1;events=none",
+            "faultlab_bundle_v8;nodes=2;hooks=1;disks=0,0;events=none",
         ] {
             assert!(
                 FaultVocabulary::from_identifier(identifier).is_err(),
                 "{identifier} must be refused"
             );
         }
-        let no_hooks =
-            FaultVocabulary::from_identifier("faultlab_bundle_v7;nodes=2;hooks=;events=antithesis")
-                .expect("resolve");
+        let no_hooks = FaultVocabulary::from_identifier(
+            "faultlab_bundle_v8;nodes=2;hooks=;disks=;events=antithesis",
+        )
+        .expect("resolve");
         assert_eq!(no_hooks.nodes(), 2);
         assert!(no_hooks.hooks().is_empty());
         assert!(no_hooks.instrumented_events());
