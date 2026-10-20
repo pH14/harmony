@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pub mod config;
-mod explain;
+pub(crate) mod explain;
 mod investigate;
 #[cfg(feature = "frontend")]
 pub(crate) mod prepare;

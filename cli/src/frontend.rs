@@ -126,6 +126,12 @@ enum Command {
         history: Option<String>,
         #[arg(
             long,
+            value_name = "COMMAND",
+            help = "Host shell text run on guest files copied out at the violation; write each guest path as @/path"
+        )]
+        host_history: Option<String>,
+        #[arg(
+            long,
             conflicts_with = "finding",
             help = "Probe the recorded actions as they are, without shrinking"
         )]
@@ -317,9 +323,12 @@ fn execute(command: Command) -> Result<u8> {
             logs,
             data,
             history,
+            host_history,
             no_shrink,
         } => {
-            return workflow::saved(Request {
+            let destination = destination.pinned()?;
+            let out = destination.path();
+            let result = workflow::saved(Request {
                 operation: Operation::Explain,
                 selection: Some(selection),
                 destination,
@@ -328,10 +337,15 @@ fn execute(command: Command) -> Result<u8> {
                     logs,
                     data,
                     history,
+                    host_history,
                 },
                 skip_shrink: no_shrink,
                 ..Default::default()
             });
+            let host = out.map_or(Ok(()), |out| adapters::faults::explain::host_history(&out));
+            let code = result?;
+            host?;
+            return Ok(code);
         }
         Command::List { json } => return workflow::list(json),
         Command::Show {
@@ -487,6 +501,14 @@ mod tests {
                 "/app/check",
                 "--out",
                 "baseline-explained",
+            ],
+            vec![
+                "harmony",
+                "explain",
+                "baseline",
+                "--no-shrink",
+                "--host-history",
+                "harness-check -family register @/tmp/harness/journal",
             ],
             vec!["harmony", "list"],
             vec!["harmony", "check"],
