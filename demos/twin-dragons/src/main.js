@@ -2849,6 +2849,7 @@ window.addEventListener("keyup", (e) => {
 });
 window.addEventListener("blur", stopControl);
 document.addEventListener("visibilitychange", () => {
+  resetRetreat(camera);
   if (document.hidden) {
     stopControl();
     music.stop();
