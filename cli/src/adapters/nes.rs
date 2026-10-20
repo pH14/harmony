@@ -152,7 +152,7 @@ impl Package for Nes {
         }
         let search = nes_workload::package::SearchOptions {
             seed: m.config.search.seed,
-            executions: m.config.search.executions,
+            executions: m.config.search.execution_limit(),
             workers: consonance_client::placement::CorePool::detect()?
                 .max_workers()
                 .try_into()?,
@@ -327,7 +327,7 @@ fn search_prepared(
     manifest.save(out)?;
     let options = nes_workload::package::SearchOptions {
         seed: manifest.config.search.seed,
-        executions: manifest.config.search.executions,
+        executions: manifest.config.search.execution_limit(),
         workers: consonance_client::placement::CorePool::detect()?
             .max_workers()
             .try_into()?,
@@ -665,9 +665,11 @@ fn continue_resolved_search<R: crate::native::Runner>(
                 } else {
                     1000
                 });
-        config.search.executions = completed
-            .checked_add(additional)
-            .ok_or("execution budget overflow")?;
+        config.search.executions = Some(
+            completed
+                .checked_add(additional)
+                .ok_or("execution budget overflow")?,
+        );
         config.search.wall_seconds = request.budget.wall_seconds;
         config.validate()?;
         SearchStart::Checkpoint {
@@ -690,7 +692,7 @@ fn continue_resolved_search<R: crate::native::Runner>(
     m.save(&out)?;
     let options = SearchOptions {
         seed: m.config.search.seed,
-        executions: m.config.search.executions,
+        executions: m.config.search.execution_limit(),
         workers: consonance_client::placement::CorePool::detect()?
             .max_workers()
             .try_into()?,

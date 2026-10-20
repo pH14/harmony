@@ -50,7 +50,7 @@ pub struct Config {
     pub image: Option<String>,
     pub backend: Backend,
     pub seed: u64,
-    pub executions: u64,
+    pub executions: Option<u64>,
     pub wall_seconds: Option<u64>,
     pub ram_mib: u32,
     pub kernel: Option<PathBuf>,
@@ -74,7 +74,7 @@ impl Default for Config {
             image: None,
             backend: Backend::Auto,
             seed: 0,
-            executions: 1000,
+            executions: None,
             wall_seconds: None,
             ram_mib: 1024,
             kernel: None,
@@ -95,10 +95,13 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn execution_limit(&self) -> u64 {
+        crate::config::execution_limit(self.executions, self.wall_seconds)
+    }
     pub fn validate(&self) -> Result<()> {
         for (name, value) in [
             ("seed", self.seed),
-            ("executions", self.executions),
+            ("executions", self.executions.unwrap_or(0)),
             ("wall_seconds", self.wall_seconds.unwrap_or(0)),
         ] {
             if value > i64::MAX as u64 {
@@ -107,7 +110,7 @@ impl Config {
                 );
             }
         }
-        if self.executions == 0 || self.ram_mib == 0 || self.wall_seconds == Some(0) {
+        if self.executions == Some(0) || self.ram_mib == 0 || self.wall_seconds == Some(0) {
             return Err("executions, ram_mib and wall_seconds must be positive".into());
         }
         if self.uml_profile.is_some() && !matches!(self.backend, Backend::Auto | Backend::Uml) {
@@ -251,10 +254,9 @@ impl Config {
             "seed".into(),
             toml::Value::Integer(shared.search.seed as i64),
         );
-        options.insert(
-            "executions".into(),
-            toml::Value::Integer(shared.search.executions as i64),
-        );
+        if let Some(executions) = shared.search.executions {
+            options.insert("executions".into(), toml::Value::Integer(executions as i64));
+        }
         if let Some(seconds) = shared.search.wall_seconds {
             options.insert("wall_seconds".into(), toml::Value::Integer(seconds as i64));
         }

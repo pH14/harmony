@@ -175,7 +175,7 @@ pub fn init(path: &Path, language: Option<Language>, image: Option<String>) -> R
         .unwrap_or_default();
     let image = image.unwrap_or_else(|| "harmony-app:local".into());
     let text = format!(
-        "image = {}\nexecutions = 1000\nram_mib = 1024\n{language}\n[nodes.app]\ncommand = {app_command}\n",
+        "image = {}\nram_mib = 1024\n{language}\n[nodes.app]\ncommand = {app_command}\n",
         toml::Value::String(image)
     );
     let legacy: Config = toml::from_str(&text)?;
