@@ -191,10 +191,10 @@ search draws one duration per suffix from the adaptive duration policy, and
 every action in the suffix takes it. Half of those draws repeat the parent's
 last duration while jobs from the parent still keep states, so a lineage keeps
 one fault rate across jobs. Job length follows the suffix reach in the
-[searcher README](../../dissonance/searcher/README.md). It doubles from one
-action to 64 within the first seven jobs and stays there while most actions
-open slots no state has held before, which fault actions do because the edge
-bucket is part of the holder identity.
+[searcher README](../../dissonance/searcher/README.md). It starts at 64
+actions and stays there while most actions open slots no state has held
+before, which fault actions do because the edge bucket is part of the holder
+identity.
 Each action also records a coverage
 quantum: the number of coverage callbacks an instrumented thread makes between
 VM exits during the action's window. It is drawn log-uniform over powers of two
