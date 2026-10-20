@@ -49,7 +49,10 @@ use crate::search::telemetry::{
 #[path = "campaign_coordinator.rs"]
 mod coordinator;
 
-pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
+use coordinator::WorkerResult;
+pub use coordinator::{
+    CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, WallDeadline, run_job,
+};
 
 pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
 
@@ -554,7 +557,7 @@ pub trait TargetExecution: CampaignTypes {
         parent_milestones: Self::Milestones,
         suffix: &[Self::Action],
         retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: crate::search::rollout::RolloutStop,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>
     where
         Self: Workload + Sized,
@@ -570,7 +573,7 @@ pub trait TargetExecution: CampaignTypes {
             parent_milestones,
             suffix,
             retention,
-            stop_rollout_on_objective,
+            stop,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -583,7 +586,7 @@ pub trait TargetExecution: CampaignTypes {
         parent_milestones: Self::Milestones,
         suffix: &[Self::Action],
         retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: crate::search::rollout::RolloutStop,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>
     where
         Self: Workload + Sized,
@@ -597,7 +600,7 @@ pub trait TargetExecution: CampaignTypes {
             parent_milestones,
             suffix,
             retention,
-            stop_rollout_on_objective,
+            stop,
         )
     }
 }
@@ -926,6 +929,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub duration_checkpoint_after: Option<DurationCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suffix_limit: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_actions: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -3011,7 +3016,7 @@ struct PendingJob<G: Workload + ?Sized> {
 struct CompletedJob<G: Workload + ?Sized> {
     held_since: Option<Moment>,
     pending: PendingJob<G>,
-    outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+    outcome: WorkerResult<G>,
 }
 
 struct CompletedBuffer<K: Ord, V> {
@@ -3076,10 +3081,8 @@ fn completed_job_records<G: Workload + ?Sized>(job: &CompletedJob<G>) -> (u64, u
     completed_result_records(&job.outcome)
 }
 
-fn completed_result_records<G: CampaignTypes + ?Sized>(
-    outcome: &Result<(CampaignJobResult<G>, u64, String), String>,
-) -> (u64, u64) {
-    outcome.as_ref().map_or((0, 0), |(result, _, _)| {
+fn completed_result_records<G: CampaignTypes + ?Sized>(outcome: &WorkerResult<G>) -> (u64, u64) {
+    outcome.as_ref().map_or((0, 0), |(result, ..)| {
         (
             result.actions.len() as u64,
             result
@@ -3544,6 +3547,7 @@ where
     let placement = placement.as_ref();
     let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
     let first_worker_start = Mutex::new(first_worker_start);
+    let wall_deadline = std::sync::OnceLock::new();
     let mut coordinator = None;
     let pool_outcome = with_worker_pool_routed(
         config.workers,
@@ -3562,7 +3566,15 @@ where
         |target, job: JobSpec<G>| {
             let reservation = job.reservation;
             let outcome = watch
-                .run(&job, || run_job(workload, config, target, &job))
+                .run(&job, || {
+                    run_job(
+                        workload,
+                        config,
+                        target,
+                        &job,
+                        wall_deadline.get().copied().flatten(),
+                    )
+                })
                 .map_err(|error| error.to_string());
             Ok((reservation, outcome))
         },
@@ -3583,6 +3595,9 @@ where
                 progress.map(|sink| -> &mut dyn Write { sink }),
                 options,
             )?);
+            wall_deadline
+                .set(campaign.wall_deadline())
+                .map_err(|_| "the campaign wall deadline was set twice")?;
             watch.start(campaign)?;
             bootstrapped.send(())?;
             drop(bootstrapped);
@@ -5134,6 +5149,17 @@ where
                 }
                 last_admitted = Some((finish, replay_job_slot));
                 replay_planned_clock = finish;
+                if let Some(actions) = job.deadline_actions {
+                    let actions = usize::try_from(actions)?;
+                    if actions == 0 || actions >= suffix.len() {
+                        return Err(format!(
+                            "replayed job {} stopped at its deadline outside its suffix",
+                            job.sequence
+                        )
+                        .into());
+                    }
+                    suffix.truncate(actions);
+                }
                 let job_execution_work_before = workload.execution_work(&target);
                 let result = workload.execute_job_certified(
                     &replay_run,
@@ -5144,7 +5170,7 @@ where
                     parent_milestones,
                     &suffix,
                     replay_retention,
-                    header.stop_rollout_on_objective,
+                    crate::search::rollout::RolloutStop::new(header.stop_rollout_on_objective),
                 )?;
                 let execution_work = execution_work_delta(
                     job_execution_work_before,
@@ -5586,6 +5612,7 @@ mod tests {
         objective_after_work: std::sync::atomic::AtomicU64,
         action_hook: Mutex<Option<Arc<TestActionHook>>>,
         selections: std::sync::atomic::AtomicUsize,
+        suffix_actions: Option<usize>,
     }
 
     #[derive(Default)]
@@ -5844,6 +5871,13 @@ mod tests {
                         std::thread::yield_now();
                     }
                 }
+            }
+            if let Some(length) = self
+                .targets
+                .as_ref()
+                .and_then(|targets| targets.suffix_actions)
+            {
+                return Ok(vec![TestAction::new(mutation_seed as u8 | 1, 1); length]);
             }
             let long = mutation_seed >> 32 & 1 == 1;
             let length = 1 + usize::from(long);
@@ -6447,7 +6481,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("terminal parent is a valid no-op rollout");
         assert!(result.actions.is_empty());
@@ -6462,7 +6496,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("failed parent is a reportable preparation failure");
         assert!(result.actions.is_empty());
@@ -6482,7 +6516,7 @@ mod tests {
                 TestAction::new(4, 1),
             ],
             RetentionPolicy::ProbeAtAdmission,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("rollout");
         assert_eq!(result.actions.len(), 3);
@@ -6517,7 +6551,7 @@ mod tests {
                 TestAction::new(1, 1),
             ],
             RetentionPolicy::Unprobed,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("terminal action rollout");
         assert_eq!(result.actions.len(), 2);
@@ -6533,7 +6567,7 @@ mod tests {
                 (),
                 &[TestAction::new(1, 1)],
                 RetentionPolicy::Unprobed,
-                false,
+                crate::search::rollout::RolloutStop::new(false),
             )
             .is_err()
         );
@@ -6547,7 +6581,7 @@ mod tests {
                 (),
                 &[TestAction::new(1, 1)],
                 RetentionPolicy::ProbeAtAdmission,
-                false,
+                crate::search::rollout::RolloutStop::new(false),
             )
             .is_err()
         );
@@ -6563,7 +6597,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1), TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            true,
+            crate::search::rollout::RolloutStop::new(true),
         )
         .expect("runnable objective rollout");
         assert_eq!(result.actions.len(), 1);
@@ -6588,7 +6622,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            true,
+            crate::search::rollout::RolloutStop::new(true),
         )
         .expect("continuation after a latched objective");
         assert_eq!(result.actions.len(), 1);
@@ -6609,7 +6643,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1), TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("terminal outcome");
         assert_eq!(result.actions.len(), 1);
@@ -6628,7 +6662,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1), TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("failed outcome");
         assert_eq!(result.actions.len(), 1);
@@ -8850,6 +8884,7 @@ mod tests {
                 },
                 0,
                 String::new(),
+                None,
             ))
         };
         let mut buffer =
@@ -9259,6 +9294,85 @@ mod tests {
     }
 
     #[test]
+    fn a_wall_budget_ends_the_running_job_and_replay_follows_the_cut() {
+        let targets = Arc::new(LiveTargets {
+            suffix_actions: Some(64),
+            ..LiveTargets::default()
+        });
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(|_| {
+            std::thread::sleep(Duration::from_millis(40));
+            Ok(())
+        }));
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(Arc::clone(&targets)),
+        };
+        let mut config = three_worker_config();
+        config.workers = 2;
+        config.window = 2;
+        config.execution_budget = 1_000_000;
+        config.wall_budget = Some(Duration::from_secs(1));
+        workload
+            .executable_identity()
+            .expect("the test executable has an identity");
+        let mut stream = Vec::new();
+        #[allow(clippy::disallowed_methods)]
+        let started = Instant::now();
+        run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("the campaign ends at its wall budget");
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_millis(1_500), "{elapsed:?}");
+        let jobs = job_lines(&stream);
+        let (cut_line, cut) = jobs
+            .iter()
+            .find(|(_, job)| job.deadline_actions.is_some())
+            .expect("a job ran past the wall budget");
+        let cut_actions = cut.deadline_actions.expect("cut length");
+        assert!(cut_actions > 0 && cut_actions < 64, "{cut_actions}");
+        let replaying = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(Arc::new(LiveTargets {
+                suffix_actions: Some(64),
+                ..LiveTargets::default()
+            })),
+        };
+        replay_campaign_checkpointed(&replaying, &stream, None, None)
+            .expect("replay follows the recorded cut");
+        let forge = |deadline_actions: serde_json::Value| -> Vec<u8> {
+            let lines = std::str::from_utf8(&stream)
+                .expect("stream is text")
+                .lines()
+                .enumerate()
+                .map(|(index, line)| {
+                    if index != *cut_line {
+                        return line.to_owned();
+                    }
+                    let mut record: serde_json::Value =
+                        serde_json::from_str(line).expect("job record parses");
+                    record["deadline_actions"] = deadline_actions.clone();
+                    serde_json::to_string(&record).expect("job record encodes")
+                })
+                .collect::<Vec<_>>();
+            format!("{}\n", lines.join("\n")).into_bytes()
+        };
+        for forged in [serde_json::json!(0), serde_json::json!(64)] {
+            let error = replay_campaign_checkpointed(&replaying, &forge(forged), None, None)
+                .expect_err("a cut outside the suffix must break replay");
+            assert!(error.to_string().contains("outside its suffix"), "{error}");
+        }
+        assert!(
+            replay_campaign_checkpointed(&replaying, &forge(serde_json::Value::Null), None, None)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn jobs_are_admitted_in_planned_finish_order_and_replay() {
         let mut config = three_worker_config();
         config.window = 6;
@@ -9330,7 +9444,8 @@ mod tests {
                 let job: JobSpec<TestWorkload> =
                     postcard::from_bytes(&postcard::to_allocvec(&job).expect("job bytes"))
                         .expect("job");
-                let outcome = run_job(&workload, &config, &mut target, &job).expect("job runs");
+                let outcome =
+                    run_job(&workload, &config, &mut target, &job, None).expect("job runs");
                 let outcome: JobOutcome<TestWorkload> =
                     postcard::from_bytes(&postcard::to_allocvec(&outcome).expect("outcome bytes"))
                         .expect("outcome");
@@ -10635,7 +10750,7 @@ mod tests {
                 return Err("direct coordinator has no runnable jobs".into());
             }
             for job in jobs.into_iter().rev() {
-                coordinator.admit(run_job(workload, config, &mut target, &job)?)?;
+                coordinator.admit(run_job(workload, config, &mut target, &job, None)?)?;
             }
         }
         coordinator.finish(Vec::new())
@@ -10730,7 +10845,7 @@ mod tests {
                 let mut target = workload.new_target().unwrap();
                 let guard = EvidenceWriteFailureGuard::new(pass);
                 let error = coordinator
-                    .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                    .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
                     .unwrap_err();
                 assert!(
                     error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>()
@@ -10800,7 +10915,7 @@ mod tests {
         let mut target = workload.new_target().unwrap();
         let guard = EvidenceWriteFailureGuard::after_overflow();
         let error = coordinator
-            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
             .unwrap_err();
         assert!(error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>());
         let primary = error.source().unwrap();
@@ -10879,7 +10994,7 @@ mod tests {
                 let job = coordinator.plan(1).pop().unwrap();
                 let mut target = workload.new_target().unwrap();
                 coordinator
-                    .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                    .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
                     .unwrap();
                 entered.recv_timeout(Duration::from_secs(10)).unwrap();
                 let next = receive.then(|| coordinator.plan(1).pop().unwrap().reservation);
@@ -10961,7 +11076,7 @@ mod tests {
         let job = coordinator.plan(1).pop().unwrap();
         let mut target = workload.new_target().unwrap();
         coordinator
-            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
             .unwrap();
         wait_for_checkpoint_worker(&coordinator);
         assert!(
@@ -11033,7 +11148,7 @@ mod tests {
         let job = coordinator.plan(1).pop().unwrap();
         let mut target = workload.new_target().unwrap();
         coordinator
-            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
             .unwrap();
         entered.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(!coordinator.finished());
@@ -11095,7 +11210,7 @@ mod tests {
         let job = coordinator.plan(1).pop().unwrap();
         let mut target = workload.new_target().unwrap();
         coordinator
-            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
             .unwrap();
         drop(coordinator);
         let reader = crate::search::checkpoint::CheckpointReader::open(

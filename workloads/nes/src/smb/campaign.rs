@@ -482,7 +482,7 @@ mod tests {
                 SmbMilestones::default(),
                 &[ButtonChord::new(0x01, 1)],
                 crate::search::archive::RetentionPolicy::Unprobed,
-                true,
+                searcher::search::rollout::RolloutStop::new(true),
             )
             .expect("execute room action");
         let candidate = result.actions[0]
@@ -542,7 +542,7 @@ mod tests {
                 SmbMilestones::default(),
                 &suffix,
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
-                false,
+                searcher::search::rollout::RolloutStop::new(false),
             )
             .expect("execute job on first instance");
         let on_second = game
@@ -554,7 +554,7 @@ mod tests {
                 SmbMilestones::default(),
                 &suffix,
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
-                false,
+                searcher::search::rollout::RolloutStop::new(false),
             )
             .expect("execute job on second instance");
         assert_eq!(on_first, on_second);
@@ -592,7 +592,7 @@ mod tests {
                 SmbMilestones::default(),
                 &[ButtonChord::new(0x01, 4)],
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
-                true,
+                searcher::search::rollout::RolloutStop::new(true),
             )
             .expect("execute job");
         assert!(result.actions.is_empty());

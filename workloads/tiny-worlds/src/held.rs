@@ -435,7 +435,7 @@ impl TargetExecution for HeldWorkload {
         parent_milestones: bool,
         suffix: &[Chord],
         retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: searcher::search::rollout::RolloutStop,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
         let start_work = target.work;
         let mut result = searcher::search::rollout::execute_job(
@@ -447,7 +447,7 @@ impl TargetExecution for HeldWorkload {
             parent_milestones,
             suffix,
             retention,
-            stop_rollout_on_objective,
+            stop,
         )?;
         let work = target.work - start_work;
         for observation in result

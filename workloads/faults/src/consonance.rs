@@ -4547,7 +4547,7 @@ mod tests {
             &[Some([99; 32])],
             crate::archive::FaultMilestones::default(),
             &[],
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         )
         .unwrap_err();
         assert!(
@@ -4596,7 +4596,7 @@ mod tests {
                 &certificates,
                 crate::archive::FaultMilestones::default(),
                 &[],
-                false,
+                searcher::search::rollout::RolloutStop::new(false),
             )
             .unwrap();
             assert_eq!(capture_hash_calls() - before, hashes.len() as u64 + 1);
@@ -4644,7 +4644,7 @@ mod tests {
                 &[wrong, Some(final_certificate)],
                 crate::archive::FaultMilestones::default(),
                 &[],
-                false,
+                searcher::search::rollout::RolloutStop::new(false),
             )
             .unwrap_err();
             assert!(error.to_string().contains("certificate"), "{error}");
@@ -4684,7 +4684,7 @@ mod tests {
             &[certificate, certificate],
             crate::archive::FaultMilestones::default(),
             &[],
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         )
         .unwrap_err();
         assert!(error.to_string().contains("campaign incomplete"), "{error}");
@@ -4711,7 +4711,7 @@ mod tests {
             &[origin.history.receipt().certificate()],
             crate::archive::FaultMilestones::default(),
             &[],
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         )
         .unwrap_err();
         assert!(
@@ -4752,7 +4752,7 @@ mod tests {
                 &[expected],
                 crate::archive::FaultMilestones::default(),
                 &[],
-                false,
+                searcher::search::rollout::RolloutStop::new(false),
             );
             assert_eq!(result.is_ok(), expected.is_none());
             assert_eq!(capture_hash_calls(), before);
@@ -4777,7 +4777,7 @@ mod tests {
             &[],
             crate::archive::FaultMilestones::default(),
             &[action, action],
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         )
         .unwrap();
         assert_eq!(capture_hash_calls() - before, 3);
@@ -5248,7 +5248,7 @@ mod tests {
             &[Some(expected)],
             crate::archive::FaultMilestones::default(),
             &[second_action],
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         )
         .unwrap_err()
         .to_string();
@@ -5282,7 +5282,7 @@ mod tests {
             &[Some([17; 32])],
             crate::archive::FaultMilestones::default(),
             &[],
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         )
         .unwrap_err();
         assert!(
@@ -5351,7 +5351,7 @@ mod tests {
             &[Some([17; 32])],
             crate::archive::FaultMilestones::default(),
             &[],
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         )
         .unwrap_err();
         assert!(
@@ -5417,7 +5417,7 @@ mod tests {
             &[Some([17; 32])],
             crate::archive::FaultMilestones::default(),
             &[],
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         )
         .unwrap_err()
         .to_string();
@@ -5468,7 +5468,7 @@ mod tests {
             &[],
             crate::archive::FaultMilestones::default(),
             &[first, second],
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         );
         let error = result.expect_err("no partial job may be certified or admitted");
         assert!(error.to_string().contains("campaign incomplete"), "{error}");
@@ -6709,7 +6709,7 @@ mod tests {
                 &[],
                 crate::archive::FaultMilestones::default(),
                 &[],
-                false,
+                searcher::search::rollout::RolloutStop::new(false),
             );
             LIVE.with(|slot| slot.borrow_mut().take());
             let error = result.expect_err("the first keyframe prefix must be checked");

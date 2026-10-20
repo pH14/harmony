@@ -732,7 +732,7 @@ mod tests {
             0,
             &[7],
             RetentionPolicy::Unprobed,
-            true,
+            searcher::search::rollout::RolloutStop::new(true),
         )
         .unwrap();
         assert!(result.actions.is_empty());
