@@ -106,6 +106,36 @@ case "$1" in
             step timeline "$harmony" show evidence/explain --timeline
         fi
         ;;
+    history)
+        image=$2
+        actions stopped 0 >evidence/recording-actions.json
+        step recording "$harmony" debug run "$image" --config cfg.toml --seed 7 \
+            --actions evidence/recording-actions.json --out evidence/recording
+        summarize recording 0 evidence/recording/report.json | tee evidence/summary.tsv
+        dump='echo; echo "@@journal $(tar -C /tmp -cz harness | base64 -w0) @@end"; for n in n1 n2 n3; do echo "== $n clock"; cat /tmp/nats/$n.clock; done; ls -la /tmp/nats /tmp/harness/journal'
+        for at in 4 6 7; do
+            step "branch$at" "$harmony" branch evidence/recording --step "$at" --stop \
+                --exec "$dump" --out "evidence/branch$at"
+            find "evidence/branch$at" -type f -newer evidence/recording-actions.json | head -20
+            python3 -I - "evidence/branch$at" "evidence/journal$at" <<'EOF'
+import base64, io, os, re, sys, tarfile
+found = None
+for root, _, files in os.walk(sys.argv[1]):
+    for name in files:
+        text = open(os.path.join(root, name), "rb").read().decode("utf-8", "replace")
+        match = re.search(r"@@journal ([A-Za-z0-9+/=\r\n]+) @@end", text)
+        if match:
+            found = match.group(1)
+if found is None:
+    sys.exit("no journal in the branch output")
+data = base64.b64decode(re.sub(r"\s", "", found))
+tarfile.open(fileobj=io.BytesIO(data)).extractall(sys.argv[2], filter="data")
+print("extracted", sys.argv[2])
+EOF
+            (cd workloads/harness/kit && go build -o "$OLDPWD/harness-check" ./cmd/harness-check) || true
+            step "check$at" ./harness-check -family register "evidence/journal$at/harness/journal"
+        done
+        ;;
     *)
         echo "unknown case $1" >&2
         exit 2

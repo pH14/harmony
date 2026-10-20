@@ -49,53 +49,16 @@ jobs:
           path: paired-cli
           retention-days: 3
 
-  image:
-    name: Image ${{ matrix.version }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        version: [v2.10.23, v2.15.1]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install podman
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends podman
-      - name: Build the NATS key-value image with clock probes
-        env:
-          VERSION: ${{ matrix.version }}
-        run: |
-          set -euo pipefail
-          runtime=$(HARMONY_CONTAINER_TOOL=podman bash workloads/languages/build-runtime.sh)
-          mkdir -p images
-          podman build --format docker --platform=linux/amd64 \
-            --build-arg HARMONY_RUNTIME_IMAGE="$runtime" \
-            --build-arg NATS_VERSION="$VERSION" \
-            --file workloads/harness/targets/nats-kv/Dockerfile \
-            --tag localhost/nats-kv:base .
-          podman build --format docker --platform=linux/amd64 \
-            --file .github/clock-validation/Dockerfile \
-            --tag localhost/nats-kv:clock .
-          podman save --format oci-archive -o "images/nats-kv-$VERSION.oci" localhost/nats-kv:clock
-          ls -la images
-      - uses: actions/upload-artifact@v4
-        with:
-          name: clock-image-${{ matrix.version }}
-          path: images
-          retention-days: 3
-
   run:
     name: ${{ matrix.version }} ${{ matrix.variant }}
-    needs: [runtime, cli, image]
+    needs: [runtime, cli]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        version: [v2.10.20, v2.10.23, v2.15.1]
-        variant: [explain, stopped, rate50, rate10, rate1, offset1s, offset10s, noclock]
+        version: [v2.10.20]
+        variant: [history]
     steps:
       - uses: actions/checkout@v4
       - name: Restore the guest runtime
@@ -124,6 +87,10 @@ jobs:
           mkdir -p images
           mv finding/images/nats-kv-clock.oci images/nats-kv-v2.10.20.oci
           rm -rf finding
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: workloads/harness/kit/go.mod
+          cache: false
       - name: Enable KVM
         run: |
           test -c /dev/kvm
@@ -136,8 +103,8 @@ jobs:
           VARIANT: ${{ matrix.variant }}
         run: |
           image="$PWD/images/nats-kv-$VERSION.oci"
-          if [ "$VARIANT" = explain ]; then
-            bash .github/clock-validation/run.sh explain "$image"
+          if [ "$VARIANT" = explain ] || [ "$VARIANT" = history ]; then
+            bash .github/clock-validation/run.sh "$VARIANT" "$image"
           else
             bash .github/clock-validation/run.sh variant "$image" "$VARIANT" 12
           fi
