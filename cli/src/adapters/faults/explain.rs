@@ -1239,11 +1239,11 @@ pub fn store(root: &Path, path: &str, bytes: &[u8]) -> Result<()> {
 
 #[cfg(feature = "frontend")]
 pub fn host_history(out: &Path) -> Result<()> {
-    let out = out.canonicalize()?;
-    let path = out.join("explain.json");
-    if !path.is_file() {
+    if !out.join("explain.json").is_file() {
         return Ok(());
     }
+    let out = out.canonicalize()?;
+    let path = out.join("explain.json");
     let mut explanation: Explanation = serde_json::from_slice(&fs::read(&path)?)?;
     let Some(command) = explanation.settings.host_history.clone() else {
         return Ok(());
@@ -2094,6 +2094,7 @@ mod tests {
         )
         .unwrap();
         store(&root.path().join("copied"), "/tmp/j/a.jsonl", b"abcd").unwrap();
+        host_history(&root.path().join("missing")).unwrap();
         host_history(root.path()).unwrap();
         let saved: Explanation =
             serde_json::from_slice(&fs::read(root.path().join("explain.json")).unwrap()).unwrap();
