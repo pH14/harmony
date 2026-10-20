@@ -509,14 +509,16 @@ mod tests {
     }
 
     #[test]
-    fn census_admits_1024_cpus_with_compressed_full_llc_membership() {
-        let cpus = (0..MAX_TOPOLOGY_CPUS).collect::<Vec<_>>();
+    fn census_admits_compressed_full_llc_membership() {
+        let count = if cfg!(miri) { 16 } else { MAX_TOPOLOGY_CPUS };
+        let cpus = (0..count).collect::<Vec<_>>();
+        let shared = format!("0-{}", count - 1);
         let topology = census(&cpus, &|path| {
             if path == "/sys/devices/system/node/online" {
                 return Some("0".to_owned());
             }
             if path == "/sys/devices/system/node/node0/cpulist" {
-                return Some("0-1023".to_owned());
+                return Some(shared.clone());
             }
             if let Some(base) = path.strip_suffix("/topology/thread_siblings_list") {
                 return base
@@ -533,12 +535,12 @@ mod tests {
             {
                 "cache/index0/level" => Some("3".to_owned()),
                 "cache/index0/type" => Some("Unified".to_owned()),
-                "cache/index0/shared_cpu_list" => Some("0-1023".to_owned()),
+                "cache/index0/shared_cpu_list" => Some(shared.clone()),
                 _ => None,
             }
         })
         .unwrap();
-        assert_eq!(topology.len(), MAX_TOPOLOGY_CPUS);
+        assert_eq!(topology.len(), count);
         for (cpu, info) in topology.iter().enumerate() {
             assert_eq!(info.cpu, cpu);
             assert_eq!(info.siblings, [cpu]);
