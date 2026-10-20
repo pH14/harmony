@@ -727,7 +727,6 @@ mod live {
         visit: &mut Visit<'_>,
     ) -> Result<ReplaySummary, Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
-        visit(0, &mut target)?;
         let mut timeline = vec![super::ReplayStep {
             step: 0,
             action: None,
@@ -735,6 +734,7 @@ mod live {
             console: target.console_evidence()?,
             settlement: false,
         }];
+        visit(0, &mut target)?;
         for (index, action) in actions.iter().enumerate() {
             target.apply_replayed(*action);
             timeline.push(super::ReplayStep {
