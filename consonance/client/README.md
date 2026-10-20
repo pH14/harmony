@@ -444,11 +444,12 @@ extent allocation and store report it reads the free memory again, outside the
 index lock. Memory the index does not count (guests, worker processes, the
 coordinator, and the kernel) is the usage minus the cache and store bytes, so
 the budget that keeps the reserve free is the counted bytes plus the free
-memory, less the reserve. The index keeps the lowest such budget it has seen,
-never above the planned one, and evicts entries or asks the largest store to
-shrink to fit it. A worker that briefly needs more memory, for example to
-decompress a long chain for an import, lowers the budget for the rest of the
-search. `CacheStats::lowest_budget` reports that value.
+memory, less the reserve, and never above the planned one. The index sets its
+budget to that value at each check and evicts entries or asks the largest store
+to shrink to fit it. A worker that briefly needs more memory, for example to
+decompress a long chain for an import, lowers the budget until that memory is
+free again. `CacheStats::lowest_budget` reports the lowest budget of the
+search.
 
 `WorkerSession` runs a `Session` in a child process, because Hypervisor.framework
 allows one VM per process. `WorkerLauncher` starts the child with one end of a

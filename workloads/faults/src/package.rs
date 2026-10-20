@@ -388,9 +388,7 @@ mod live {
         let guest = u64::from(ram_mib) << 20;
         MemoryNeeds {
             coordinator: (MEMORY_BUDGET_MIB as u64) << 20,
-            worker: guest
-                .saturating_mul(2)
-                .saturating_add(WORKER_OVERHEAD_MIB << 20),
+            worker: guest.saturating_add(WORKER_OVERHEAD_MIB << 20),
             store_floor: guest,
         }
     }

@@ -388,11 +388,11 @@ impl State {
 
     fn measure(&mut self, headroom: Option<u64>) {
         if let Some(headroom) = headroom {
-            self.budget = self.budget.min(measured_budget(
+            self.budget = measured_budget(
                 self.planned,
                 self.segments.charged().saturating_add(self.stored),
                 headroom,
-            ));
+            );
             self.stats.lowest_budget = self.stats.lowest_budget.min(self.budget);
         }
     }
@@ -1471,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn measured_headroom_keeps_the_lowest_budget() {
+    fn measured_headroom_lowers_the_budget_until_memory_returns() {
         use std::sync::atomic::{AtomicU64, Ordering};
         static HEADROOM: AtomicU64 = AtomicU64::new(0);
         fn headroom() -> Option<u64> {
@@ -1495,11 +1495,13 @@ mod tests {
         assert!(stats.evictions > 0);
         HEADROOM.store(RESERVE_BYTES + 64 * page, Ordering::Relaxed);
         let c = put(&index, space, b"c", None, &[(2, 1)], &[]).unwrap();
+        let d = put(&index, space, b"d", None, &[(3, 1)], &[]).unwrap();
         index.release(c);
+        index.release(d);
         let stats = index.stats();
         assert_eq!(stats.budget, 4 * PAGE);
         assert_eq!(stats.lowest_budget as u64, charged - page);
-        assert!(stats.charged as u64 <= charged - page);
+        assert!(stats.charged as u64 > charged - page);
         HEADROOM.store(0, Ordering::Relaxed);
         assert!(index.report_store(1, page));
         assert_eq!(index.stats().charged, 0);

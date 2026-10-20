@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn measured_memory_lowers_the_budget_and_never_raises_it() {
+    fn measured_memory_sets_the_budget_up_to_the_plan() {
         let planned = (6 * GIB) as usize;
         assert_eq!(measured_budget(planned, 0, 20 * GIB), planned);
         assert_eq!(
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn page_cache_left_by_a_build_keeps_every_worker() {
-        let needs = needs(GIB / 2, 2 * GIB + GIB / 4, GIB);
+        let needs = needs(GIB / 2, GIB + GIB / 4, GIB);
         let empty = cgroup_headroom(14 * GIB, 0, "file 0\nshmem 0\n");
         let built = cgroup_headroom(
             14 * GIB,
@@ -204,7 +204,7 @@ mod tests {
         );
         assert_eq!(built, empty);
         let plan = fit(built, 5, needs).expect("plan");
-        assert_eq!(plan.workers, 3);
+        assert_eq!(plan.workers, 5);
         let dirty = cgroup_headroom(
             14 * GIB,
             10 * GIB,
@@ -214,19 +214,19 @@ mod tests {
     }
 
     #[test]
-    fn a_fourteen_gib_cgroup_keeps_guests_and_transients_out_of_the_budget() {
-        let worker = 2 * GIB + GIB / 4;
+    fn fourteen_and_twelve_gib_cgroups_keep_guests_out_of_the_budget() {
+        let worker = GIB + GIB / 4;
         let faults = needs(GIB / 2, worker, GIB);
         let headroom = cgroup_headroom(14 * GIB, 0, "file 0\n");
         let plan = fit(headroom, 5, faults).expect("plan");
-        assert_eq!(plan.workers, 3);
+        assert_eq!(plan.workers, 5);
         let budget = plan.budget as u64;
-        assert_eq!(budget, 14 * GIB - RESERVE_BYTES - GIB / 2 - 3 * worker);
+        assert_eq!(budget, 14 * GIB - RESERVE_BYTES - GIB / 2 - 5 * worker);
         let plan = fit(cgroup_headroom(12 * GIB, 0, ""), 5, faults).expect("plan");
-        assert_eq!(plan.workers, 3);
+        assert_eq!(plan.workers, 4);
         assert_eq!(
             plan.budget as u64,
-            12 * GIB - RESERVE_BYTES - GIB / 2 - 3 * worker
+            12 * GIB - RESERVE_BYTES - GIB / 2 - 4 * worker
         );
     }
 
