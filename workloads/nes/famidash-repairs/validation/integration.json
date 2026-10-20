@@ -1,0 +1,39 @@
+{
+  "status": "verified",
+  "maps": [
+    {
+      "group": "main",
+      "levels": 22,
+      "catalog_sha256": "a988f7abf50e1232547ab2c21a2a3951168475473757f565fa669d1a4e471645"
+    },
+    {
+      "group": "community",
+      "levels": 21,
+      "catalog_sha256": "02b070543c3a4885e29dec938ea58ca101b8deeac53b570cb819af86f75c226c"
+    },
+    {
+      "group": "b",
+      "levels": 31,
+      "catalog_sha256": "be30c6f6e73d9ffa9fe3ab335d8dbb3e14849f430c15345608afab69ba1fbacc"
+    },
+    {
+      "group": "c",
+      "levels": 25,
+      "catalog_sha256": "a808087b427b6cdab28898b23ef80f601d4288a705b4470f744f669fd012c945"
+    },
+    {
+      "group": "d",
+      "levels": 10,
+      "catalog_sha256": "0022824540e0eab715ea71cd8947090e7f4b23df855bbe6550e356f580586d4f"
+    }
+  ],
+  "ordinary_map_build": "All109checked-inroutesreplaywithoutcapturesearch",
+  "browser_integration": "109authenticboots,five-groupsearchandexactreplay,leveladvance,picker,inspection,takeover,branching,credits,andpanchecks passed",
+  "map_build_log_sha256": "87347f3af12851e984dc08b764dc459c773c65dd4a92306072f88cabb2767a07",
+  "browser_log_sha256": "9077183384b55bd81900899b991c30b26cd2be8aa7888c9927f19db897887ed8",
+  "native_famidash_tests": 31,
+  "browser_unit_test_files": 13,
+  "python_audit_tests": 39,
+  "rom_packaging_tests": 8,
+  "limitations": "Repository-wide naming/vocabulary lint findings in older audit artifacts remain separate from gameplay validation; zero clean full campaigns."
+}

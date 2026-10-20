@@ -92,7 +92,10 @@ may adjust duplicate-frame duration while preserving every mechanical
 transition; negative inputs are never retimed.
 
 The workflow runs these regressions against its built ROMs and QuickNES core.
-The static maps are regenerated from the repaired ROMs. Capture routes may use
+All 109 static maps are regenerated from the repaired ROMs and reproduce from
+the checked-in capture routes. Browser integration checks pass for every level
+start, exact search replay in all five groups, level advancement, inspection,
+takeover and branching. Capture routes may use
 the map composer's existing explicit assistance; they are not gameplay or coin
 controls. `build-famidash-maps.mjs --repair` regenerates invalid capture routes
 and persists them; ordinary builds replay the checked-in routes without search.
