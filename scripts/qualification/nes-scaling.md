@@ -38,6 +38,10 @@ QuickNES core and Famidash ROM. Keep assets, builds and evidence outside the
 repository, and retain the source revision, lockfiles and build log beside the
 executable. The existing `benchmarks/search/eval.py build` provides source-bound
 build records; a manual build needs equivalent provenance.
+The NES workspace's release profile uses portable ThinLTO and one codegen unit;
+the Arcade launcher uses this same profile. Retain any environment or Rust flag
+overrides with the build record, since they can change the executable and its
+performance.
 
 ```sh
 scripts/build-quicknes-core.sh /srv/assets/quicknes_libretro.so

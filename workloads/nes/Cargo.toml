@@ -6,6 +6,10 @@ license = "AGPL-3.0-or-later"
 
 [workspace]
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [dependencies]
 guest-image = { path = "../../consonance/guest-image", version = "=0.1.0" }
 oci-support = { path = "../../consonance/oci", version = "=0.1.0" }

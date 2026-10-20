@@ -36,14 +36,16 @@ The Consonance backend uses the `consonance` feature and requires Linux/KVM
 and matching guest artifacts; `harmony search --backend
 kvm ROM` selects it through the shared CLI.
 
-The campaign binaries, `nes-eval` and `harmony search` limit glibc to one
-malloc arena on Linux. They call `mallopt(M_ARENA_MAX, 1)` before NES execution,
-which has the same effect as `MALLOC_ARENA_MAX=1` and does not depend on the
-environment. A search resumed from a checkpoint restores its snapshots on the
-main thread before the workers start. With several arenas, the memory those
-snapshots free stays in an arena the workers never reuse, and resident memory
-grows past the archive's memory budget. A binary exits at startup if the call
-fails.
+The native binaries in this workspace use ThinLTO and one codegen unit in
+release builds, including `nes-eval` built by the Arcade launcher. This allows
+optimization across the searcher and workload crate boundaries at the cost of
+a longer release build. The profile keeps the target's default CPU features,
+so it does not specialize the executable for the build host.
+
+The campaign binaries, `nes-eval` and `harmony search` configure glibc's bounded
+malloc arena count before NES execution; see the snapshot allocation discussion
+below. A binary exits at startup if the arena override is invalid or glibc
+rejects the configuration.
 
 `src/film.rs` renders a recorded tape to an H.264 MP4 with game audio: it
 streams RGB frames into FFmpeg, muxes the raw PCM track back in, and writes a
