@@ -1052,7 +1052,11 @@ pub fn render(explanation: &Explanation) -> String {
         let _ = writeln!(text, "- Failed check: `{violation}`");
     }
     let step = explanation.violation_step;
-    if let Some(history) = &explanation.history {
+    let history = explanation
+        .history
+        .as_ref()
+        .filter(|history| !history.trim().is_empty());
+    if let Some(history) = history {
         let _ = write!(
             text,
             "\nOutput of the history command at step {step}:\n\n{}",
@@ -1063,7 +1067,7 @@ pub fn render(explanation: &Explanation) -> String {
         let _ = writeln!(
             text,
             "\nThe history command at step {step} did not finish: {error}.{}",
-            if explanation.history.is_some() {
+            if history.is_some() {
                 " The output above is partial."
             } else {
                 ""
@@ -2026,6 +2030,11 @@ mod tests {
         assert!(render(&explanation).contains(
             "The history command at step 5 did not finish: host command limit of 300 s reached. The output above is partial."
         ));
+        let mut explanation = explanation;
+        explanation.history = Some("\n".into());
+        let text = render(&explanation);
+        assert!(text.contains("did not finish: host command limit of 300 s reached.\n"));
+        assert!(!text.contains("Output of the history command"));
     }
 
     #[test]
