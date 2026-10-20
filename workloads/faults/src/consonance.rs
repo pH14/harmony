@@ -14,6 +14,10 @@ use std::{
 
 use consonance_client::{
     cache::{CacheError, CacheIndex, Lease, Namespace},
+    endpoint::{
+        EndpointBranch, EndpointProof, EndpointProofRequest, EndpointReceipt, EndpointStops,
+        ExecutionEndpoint, ExecutionRequest, ExecutionStart,
+    },
     session::{
         SearchSession, Session, SessionConfig, SessionError, UmlLaunch, WorkerLauncher,
         WorkerSession, identity_with_config,
@@ -26,7 +30,7 @@ use environment::{
         Answer as ChannelAnswer, ChannelError, CoverageSchedule, Question, ServiceHandler,
         ServiceResponse,
     },
-    input_spec::{ServiceConfig, ServiceFactory, nominal_factory},
+    input_spec::{InputSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
 use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_windows};
 use searcher::target::ExitKind;
@@ -720,6 +724,24 @@ impl Drop for FaultTarget {
 }
 
 impl FaultTarget {
+    pub(crate) fn worker_locality(&self) -> searcher::search::locality::WorkerLocality {
+        use searcher::search::locality::{LocalityKey, WorkerLocality};
+
+        LIVE.with(|slot| {
+            let slot = slot.borrow();
+            let Some(live) = slot.as_ref().filter(|live| {
+                live.key == self.config.key && !live.abandoned && !live.session.abandoned()
+            }) else {
+                return WorkerLocality::default();
+            };
+            WorkerLocality::new((0..live.chain.links()).filter_map(|at| {
+                let receipt = live.chain.provenance(at).ok()?;
+                let rank = u8::from(live.chain.observation_checkpoint(at).is_some());
+                Some((LocalityKey(receipt.root()), rank))
+            }))
+        })
+    }
+
     pub fn new(
         kernel: &[u8],
         initramfs: &[u8],
@@ -1383,6 +1405,78 @@ fn run_with_service_decisions(
     Ok(stop)
 }
 
+struct ExecutedAction {
+    observation: FaultObservations,
+    snapshot: Option<(SnapId, u64)>,
+    proof: EndpointProof,
+}
+
+struct ObservedEndpoint {
+    receipt: EndpointReceipt,
+    decoder: SdkDecoder,
+    events: u64,
+    payload_bytes: u64,
+    decoded: u64,
+}
+
+fn execute_observed_endpoint(
+    session: &mut dyn SearchSession,
+    request: ExecutionRequest,
+    handler: &mut dyn ServiceHandler,
+    mut decoder: SdkDecoder,
+    stopped: &mut Option<StopReason>,
+) -> Result<ObservedEndpoint, Box<dyn Error>> {
+    let deadline = request.until.deadline.ok_or("endpoint deadline missing")?.0;
+    let mut start = ExecutionEndpoint::execute(session, request)?;
+    let mut endpoint = loop {
+        start = match start {
+            ExecutionStart::Decision(decision) => {
+                if stop_moment(decision.stop()) >= deadline {
+                    break decision.finalize(true)?;
+                }
+                let resolution = resolution_for_stop(decision.stop(), handler)?;
+                decision.resume(resolution)?
+            }
+            ExecutionStart::Endpoint(endpoint) => break endpoint,
+        };
+    };
+    *stopped = Some(endpoint.page().binding.stop.clone());
+    let mut events = 0u64;
+    let mut payload_bytes = 0u64;
+    let mut decoded = 0u64;
+    loop {
+        let page = endpoint.page();
+        events += page.events.len() as u64;
+        payload_bytes += page
+            .events
+            .iter()
+            .map(|event| event.2.len() as u64)
+            .sum::<u64>();
+        match decoder.append(&page.events) {
+            Ok(count) => decoded += count as u64,
+            Err(error) => {
+                endpoint.abandon();
+                return Err(error.into());
+            }
+        }
+        if !endpoint.next_page()? {
+            break;
+        }
+    }
+    if let Err(error) = decoder.capture().check_infrastructure_status() {
+        endpoint.abandon();
+        return Err(error.into());
+    }
+    let receipt = endpoint.commit()?;
+    Ok(ObservedEndpoint {
+        receipt,
+        decoder,
+        events,
+        payload_bytes,
+        decoded,
+    })
+}
+
 fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
     let message = format!("{what}: {error}");
     match error.downcast_ref::<SessionError>() {
@@ -1443,7 +1537,7 @@ impl Live {
             config.session.clone(),
             Vec::new(),
         )?;
-        session.set_service_factory(service_factory());
+        session.set_service_factory(service_factory())?;
         Ok(Box::new(session))
     }
 
@@ -1961,6 +2055,23 @@ impl Live {
         action: FaultAction,
         observation: &mut FaultObservations,
     ) -> Result<HistoryReceipt, String> {
+        self.capture_receipt_with_proof(parent, action, observation, None)
+    }
+
+    fn capture_receipt_with_proof(
+        &mut self,
+        parent: &HistoryReceipt,
+        action: FaultAction,
+        observation: &mut FaultObservations,
+        proof: Option<EndpointProof>,
+    ) -> Result<HistoryReceipt, String> {
+        if let Some(EndpointProof::WholeStateAndHistory {
+            assurance_identity, ..
+        }) = &proof
+            && *assurance_identity != parent.assurance_identity()
+        {
+            return Err("execution endpoint assurance differs from parent history".to_owned());
+        }
         self.cursor.begin_action(parent.moment());
         observation
             .parks
@@ -1968,21 +2079,30 @@ impl Live {
         observation
             .park_reads
             .retain(|read| read.moment > parent.moment());
-        let endpoint = match parent.endpoint() {
-            FaultEndpointCertificate::KvmWholeState(_) => {
-                FaultEndpointCertificate::KvmWholeState(self.state_hash_current()?)
-            }
-            FaultEndpointCertificate::UmlWholeStateUnavailable => {
-                FaultEndpointCertificate::UmlWholeStateUnavailable
-            }
-            FaultEndpointCertificate::KvmUnavailableAfterFailure => {
+        let (endpoint, event_history) = match (parent.endpoint(), proof) {
+            (
+                FaultEndpointCertificate::KvmWholeState(_),
+                Some(EndpointProof::WholeStateAndHistory {
+                    state_hash,
+                    history,
+                    ..
+                }),
+            ) => (
+                FaultEndpointCertificate::KvmWholeState(state_hash),
+                Some((history.count, history.digest)),
+            ),
+            (FaultEndpointCertificate::KvmWholeState(_), None) => (
+                FaultEndpointCertificate::KvmWholeState(self.state_hash_current()?),
+                Some(self.ordered_history()?),
+            ),
+            (
+                FaultEndpointCertificate::UmlWholeStateUnavailable,
+                None | Some(EndpointProof::Unavailable),
+            ) => (FaultEndpointCertificate::UmlWholeStateUnavailable, None),
+            (FaultEndpointCertificate::KvmUnavailableAfterFailure, _) => {
                 return Err("uncertified parent endpoint".to_owned());
             }
-        };
-        let event_history = if matches!(endpoint, FaultEndpointCertificate::KvmWholeState(_)) {
-            Some(self.ordered_history()?)
-        } else {
-            None
+            _ => return Err("execution endpoint evidence differs from parent backend".to_owned()),
         };
         parent.extend(action, endpoint, event_history, observation)
     }
@@ -1993,8 +2113,9 @@ impl Live {
         parent: &HistoryReceipt,
         action: FaultAction,
         observation: &mut FaultObservations,
+        proof: EndpointProof,
     ) -> Result<HistoryReceipt, String> {
-        match self.capture_receipt(parent, action, observation) {
+        match self.capture_receipt_with_proof(parent, action, observation, Some(proof)) {
             Ok(receipt) => Ok(receipt),
             Err(error) => {
                 self.cursor.invalidate();
@@ -2072,14 +2193,21 @@ impl Live {
             }
             let plan = ActionPlan::compile(self.windows, &self.inherited, prefix)
                 .map_err(|error| format!("branch configuration: {error}"))?;
-            self.branch(last, &plan)?;
-            let (mut observation, sealed) =
-                self.run_action(&plan, last.moment, RunKind::Rebuild)?;
+            let ExecutedAction {
+                mut observation,
+                snapshot: sealed,
+                proof,
+            } = self.run_action(&plan, last, RunKind::Rebuild)?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
-            let actual =
-                self.capture_sealed_receipt(snap, &receipt, actions[index], &mut observation)?;
+            let actual = self.capture_sealed_receipt(
+                snap,
+                &receipt,
+                actions[index],
+                &mut observation,
+                proof,
+            )?;
             if &actual != expected {
                 let _ = self.session.drop_snapshot(snap);
                 return Err(
@@ -2148,11 +2276,19 @@ impl Live {
         next.push(action);
         let plan = ActionPlan::compile(self.windows, &self.inherited, &next)
             .map_err(|error| format!("branch configuration: {error}"))?;
-        self.branch(parent, &plan)?;
-        let (mut observation, sealed) = self.run_action(&plan, parent.moment, kind)?;
+        let ExecutedAction {
+            mut observation,
+            snapshot: sealed,
+            proof,
+        } = self.run_action(&plan, parent, kind)?;
         let receipt = if let Some((snap, moment)) = sealed {
-            let receipt =
-                self.capture_sealed_receipt(snap, history.receipt(), action, &mut observation)?;
+            let receipt = self.capture_sealed_receipt(
+                snap,
+                history.receipt(),
+                action,
+                &mut observation,
+                proof,
+            )?;
             self.seal_captured_link(parent, snap, moment, receipt.clone())?;
             Some(receipt)
         } else {
@@ -2188,27 +2324,92 @@ impl Live {
     fn run_action(
         &mut self,
         plan: &ActionPlan,
-        from: u64,
+        parent: Point,
         kind: RunKind,
-    ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
+    ) -> Result<ExecutedAction, String> {
         self.horizons_run = self.horizons_run.saturating_add(1);
+        let at = self
+            .chain
+            .at_snapshot(parent.snap)
+            .ok_or("branch observation parent missing")?;
+        let parent_receipt = self.chain.provenance(at)?.clone();
+        let branch = if let Some(checkpoint) = self.chain.observation_checkpoint(at) {
+            checkpoint.validate_binding(&parent_receipt)?;
+            self.cursor.decoder = Some(checkpoint.decoder().clone());
+            self.telemetry.observation_checkpoint_hits += 1;
+            let mut input = InputSpec::seeded(SEED);
+            input.set_config(plan.service_config());
+            input.set_payloads(Some(Vec::new()));
+            input.set_coverage_schedule(Some(plan.coverage_schedule.clone()));
+            Some(
+                EndpointBranch::new(parent.snap, &input)
+                    .map_err(|error| session_failure("endpoint branch input", error.as_ref()))?,
+            )
+        } else {
+            self.branch(parent, plan)?;
+            None
+        };
+        self.cursor.begin_action(parent_receipt.moment());
+        let decoder = self.cursor.decoder.clone().unwrap_or_default();
+        let proof = match parent_receipt.endpoint() {
+            FaultEndpointCertificate::KvmWholeState(_) => {
+                EndpointProofRequest::CapturedWholeStateAndHistory
+            }
+            FaultEndpointCertificate::UmlWholeStateUnavailable => EndpointProofRequest::Omit,
+            FaultEndpointCertificate::KvmUnavailableAfterFailure => {
+                return Err("uncertified parent endpoint".to_owned());
+            }
+        };
+        let request = ExecutionRequest {
+            branch,
+            until: control_proto::StopConditions {
+                deadline: Some(control_proto::Moment(plan.deadline)),
+                on: control_proto::StopMask::NONE.arm(control_proto::class_bit::ASSERTION),
+            },
+            resolve: None,
+            sdk_cursor: decoder.offset(),
+            snapshot_on: EndpointStops::DEADLINE,
+            proof,
+        };
+        let combined_branch = request.branch.is_some();
         let run_started = started();
         let mut handler = plan.handler.clone();
-        let stop =
-            match run_with_service_decisions(self.session.as_mut(), plan.deadline, &mut handler) {
-                Ok(stop) => stop,
-                Err(error) => return Err(self.abandon("run", error.as_ref())),
+        let mut stopped = None;
+        let outcome = execute_observed_endpoint(
+            self.session.as_mut(),
+            request,
+            &mut handler,
+            decoder,
+            &mut stopped,
+        );
+        if let Some(stop) = stopped {
+            if combined_branch {
+                self.telemetry.branches.count += 1;
+            }
+            if matches!(
+                stop,
+                StopReason::Deadline { .. } | StopReason::Decision { .. }
+            ) {
+                self.telemetry.seals.count += 1;
+            }
+            let runs = match kind {
+                RunKind::New => &mut self.telemetry.new,
+                RunKind::Rebuild => &mut self.telemetry.rebuild,
+                RunKind::Replay => &mut self.telemetry.replay,
             };
-        let runs = match kind {
-            RunKind::New => &mut self.telemetry.new,
-            RunKind::Rebuild => &mut self.telemetry.rebuild,
-            RunKind::Replay => &mut self.telemetry.replay,
+            runs.host.since(run_started);
+            runs.virtual_nanos = runs
+                .virtual_nanos
+                .saturating_add(stop_moment(&stop).saturating_sub(parent.moment));
+        }
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.cursor.invalidate();
+                return Err(self.abandon("execution endpoint", error.as_ref()));
+            }
         };
-        runs.host.since(run_started);
-        runs.virtual_nanos = runs
-            .virtual_nanos
-            .saturating_add(stop_moment(&stop).saturating_sub(from));
-        if let StopReason::Crash { vtime, info } = &stop {
+        if let StopReason::Crash { vtime, info } = &outcome.receipt.binding.stop {
             let tail = self.session.console_tail().unwrap_or_default();
             let start = tail.len().saturating_sub(CONSOLE_TAIL);
             eprintln!(
@@ -2218,26 +2419,21 @@ impl Live {
                 String::from_utf8_lossy(&tail[start..])
             );
         }
-        let stop = FaultStop::from_stop_reason(&stop);
-        let snap = if stop.is_continuable() {
-            let seal_started = started();
-            let (snapshot, at) = self
-                .session
-                .snapshot()
-                .map_err(|error| self.abandon("snapshot", error.as_ref()))?;
-            self.telemetry.seals.since(seal_started);
-            Some((snapshot, at))
-        } else {
-            None
+        let stop = match &outcome.receipt.binding.stop {
+            StopReason::Decision { vtime, .. } if vtime.0 >= plan.deadline => FaultStop::Deadline,
+            actual => FaultStop::from_stop_reason(actual),
         };
-        let observation = match self.observe(stop) {
-            Ok(observation) => observation,
-            Err(error) => {
-                self.abandoned = true;
-                return Err(error);
-            }
-        };
-        Ok((observation, snap))
+        self.telemetry.observation_events += outcome.events;
+        self.telemetry.observation_payload_bytes += outcome.payload_bytes;
+        self.telemetry.observation_decoded_events += outcome.decoded;
+        let observation =
+            FaultObservations::new(outcome.decoder.moment(), outcome.decoder.capture(), stop);
+        self.cursor.decoder = Some(outcome.decoder);
+        Ok(ExecutedAction {
+            observation,
+            snapshot: outcome.receipt.snapshot,
+            proof: outcome.receipt.proof,
+        })
     }
 
     fn observe(&mut self, stop: FaultStop) -> Result<FaultObservations, String> {
@@ -2587,6 +2783,27 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn endpoint_assurance_is_checked_before_history_or_observation_changes() {
+        let mut live = hashed_live([17; 32]);
+        let parent = fixture_genesis();
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let mut observation = FaultObservations::default();
+        let before = observation.clone();
+        let proof = EndpointProof::WholeStateAndHistory {
+            assurance_identity: [31; 32],
+            state_hash: [17; 32],
+            history: control_proto::EventHistory::default(),
+        };
+        let error = live
+            .capture_receipt_with_proof(&parent, action, &mut observation, Some(proof))
+            .unwrap_err();
+        assert!(error.contains("assurance differs from parent"));
+        assert_eq!(observation, before);
+        assert_eq!(live.cursor.after, None);
+        parent.validate().unwrap();
+    }
+
     impl Live {
         fn seal_link(
             &mut self,
@@ -2676,6 +2893,8 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct TimedOutRestore {
+        endpoint_state: consonance_client::endpoint::EndpointState,
+        endpoint_abandoned: bool,
         hash: Option<[u8; 32]>,
         hash_calls: u64,
         replay_calls: u64,
@@ -2700,7 +2919,90 @@ mod tests {
         next_snap: u64,
     }
 
+    impl consonance_client::endpoint::EndpointDriver for TimedOutRestore {
+        fn ensure_active(&self) -> Result<(), Box<dyn Error>> {
+            if self.abandoned() {
+                Err(SessionError::Abandoned.into())
+            } else {
+                Ok(())
+            }
+        }
+        fn supports_proof(&self) -> bool {
+            true
+        }
+        fn event_count(&self, parent: Option<SnapId>) -> Result<Option<u32>, Box<dyn Error>> {
+            Ok(Some(u32::try_from(
+                self.events
+                    .get(&parent.map_or(self.current, |snap| snap.0))
+                    .map_or(0, Vec::len),
+            )?))
+        }
+        fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
+            self.branch_with_service(
+                parent,
+                input.config().clone(),
+                input.payloads().unwrap_or_default().to_vec(),
+                Vec::new(),
+                input.coverage_schedule().cloned(),
+            )
+        }
+        fn run(
+            &mut self,
+            until: control_proto::StopConditions,
+            resolve: Option<Resolution>,
+        ) -> Result<StopReason, Box<dyn Error>> {
+            assert_eq!(
+                until.on,
+                control_proto::StopMask::NONE.arm(control_proto::class_bit::ASSERTION)
+            );
+            let deadline = until.deadline.unwrap().0;
+            match resolve {
+                Some(resolution) => self.run_resolving(deadline, resolution),
+                None => self.run_until(deadline),
+            }
+        }
+        fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+            SearchSession::snapshot(self)
+        }
+        fn page(
+            &mut self,
+            cursor: u32,
+            _end: u32,
+        ) -> Result<Vec<consonance_client::endpoint::EndpointEvent>, Box<dyn Error>> {
+            self.sdk_events_since(cursor)
+        }
+        fn proof(&mut self) -> Result<EndpointProof, Box<dyn Error>> {
+            Ok(EndpointProof::WholeStateAndHistory {
+                assurance_identity: execution_contract::Assurance::ordinary().identity(),
+                state_hash: self.state_hash()?,
+                history: self.event_history()?,
+            })
+        }
+        fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+            SearchSession::drop_snapshot(self, snapshot)
+        }
+        fn abandon(&mut self) {
+            self.endpoint_abandoned = true;
+            self.snapshots.clear();
+            self.events.clear();
+            self.histories.clear();
+        }
+    }
+
     impl SearchSession for TimedOutRestore {
+        fn execution_endpoint(
+            &mut self,
+            request: consonance_client::endpoint::EndpointRequest,
+        ) -> Result<consonance_client::endpoint::EndpointReply, Box<dyn Error>> {
+            let mut state = std::mem::take(&mut self.endpoint_state);
+            let result = state.exchange(self, request);
+            self.endpoint_state = state;
+            result
+        }
+        fn abandon_execution_endpoint(&mut self) {
+            consonance_client::endpoint::EndpointDriver::abandon(self);
+        }
+
         fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
             if TRACK_SHUTDOWN_TELEMETRY.with(|track| track.get()) {
                 SHUTDOWN_CLOSED.with(|closed| closed.set(true));
@@ -3052,7 +3354,7 @@ mod tests {
         }
 
         fn abandoned(&self) -> bool {
-            self.abandon_on_hash && self.hash_calls != 0
+            self.endpoint_abandoned || (self.abandon_on_hash && self.hash_calls != 0)
         }
     }
 
@@ -3134,6 +3436,8 @@ mod tests {
             key: [0; 32],
             holder: 0,
             session: Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 histories: BTreeMap::new(),
 
                 history_failure: None,
@@ -3187,6 +3491,8 @@ mod tests {
     ) -> Live {
         let mut live = timed_out_live();
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -3382,6 +3688,8 @@ mod tests {
 
     #[derive(Debug)]
     struct BoundaryDecisionSession {
+        endpoint_state: consonance_client::endpoint::EndpointState,
+        endpoint_abandoned: bool,
         resolutions: Arc<std::sync::Mutex<Vec<(ServiceConfig, Resolution)>>>,
         branch: Option<ServiceConfig>,
         deadline: u64,
@@ -3389,7 +3697,83 @@ mod tests {
         next_snapshot: u64,
     }
 
+    impl consonance_client::endpoint::EndpointDriver for BoundaryDecisionSession {
+        fn ensure_active(&self) -> Result<(), Box<dyn Error>> {
+            if self.endpoint_abandoned {
+                Err(SessionError::Abandoned.into())
+            } else {
+                Ok(())
+            }
+        }
+        fn supports_proof(&self) -> bool {
+            true
+        }
+        fn event_count(&self, _parent: Option<SnapId>) -> Result<Option<u32>, Box<dyn Error>> {
+            Ok(Some(0))
+        }
+        fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
+            self.branch_with_service(
+                parent,
+                input.config().clone(),
+                Vec::new(),
+                Vec::new(),
+                input.coverage_schedule().cloned(),
+            )
+        }
+        fn run(
+            &mut self,
+            until: control_proto::StopConditions,
+            resolve: Option<Resolution>,
+        ) -> Result<StopReason, Box<dyn Error>> {
+            assert_eq!(
+                until.on,
+                control_proto::StopMask::NONE.arm(control_proto::class_bit::ASSERTION)
+            );
+            let deadline = until.deadline.unwrap().0;
+            match resolve {
+                Some(resolution) => self.run_resolving(deadline, resolution),
+                None => self.run_until(deadline),
+            }
+        }
+        fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+            SearchSession::snapshot(self)
+        }
+        fn page(
+            &mut self,
+            _cursor: u32,
+            _end: u32,
+        ) -> Result<Vec<consonance_client::endpoint::EndpointEvent>, Box<dyn Error>> {
+            Ok(Vec::new())
+        }
+        fn proof(&mut self) -> Result<EndpointProof, Box<dyn Error>> {
+            Ok(EndpointProof::WholeStateAndHistory {
+                assurance_identity: execution_contract::Assurance::ordinary().identity(),
+                state_hash: self.state_hash()?,
+                history: self.event_history()?,
+            })
+        }
+        fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+            SearchSession::drop_snapshot(self, snapshot)
+        }
+        fn abandon(&mut self) {
+            self.endpoint_abandoned = true;
+        }
+    }
+
     impl SearchSession for BoundaryDecisionSession {
+        fn execution_endpoint(
+            &mut self,
+            request: consonance_client::endpoint::EndpointRequest,
+        ) -> Result<consonance_client::endpoint::EndpointReply, Box<dyn Error>> {
+            let mut state = std::mem::take(&mut self.endpoint_state);
+            let result = state.exchange(self, request);
+            self.endpoint_state = state;
+            result
+        }
+        fn abandon_execution_endpoint(&mut self) {
+            consonance_client::endpoint::EndpointDriver::abandon(self);
+        }
+
         fn setup_handle(&self) -> (SnapId, u64) {
             (SnapId(1), 0)
         }
@@ -3497,7 +3881,7 @@ mod tests {
         }
 
         fn abandoned(&self) -> bool {
-            false
+            self.endpoint_abandoned
         }
     }
 
@@ -3513,6 +3897,8 @@ mod tests {
         let resolutions = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut live = timed_out_live();
         live.session = Box::new(BoundaryDecisionSession {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             resolutions: Arc::clone(&resolutions),
             branch: None,
             deadline: 0,
@@ -3551,6 +3937,8 @@ mod tests {
     fn hashed_live(hash: [u8; 32]) -> Live {
         let mut live = timed_out_live();
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -3768,6 +4156,8 @@ mod tests {
 
     fn fixture_session() -> TimedOutRestore {
         TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
             history: control_proto::EventHistory::default(),
             history_failure: None,
@@ -3800,6 +4190,8 @@ mod tests {
     ) -> Live {
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history,
@@ -3917,6 +4309,8 @@ mod tests {
                 let workload = capture_fixture_workload(&target);
                 let mut live = hashed_live([17; 32]);
                 live.session = Box::new(TimedOutRestore {
+                    endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                    endpoint_abandoned: false,
                     run_hashes: Some(vec![[17; 32]]),
                     run_hung: failure == "watchdog",
                     terminal_when_exhausted: failure == "terminal",
@@ -3999,6 +4393,8 @@ mod tests {
                 let workload = capture_fixture_workload(&target);
                 let mut live = scripted_capture_live(vec![[17; 32]; depth], false);
                 live.session = Box::new(TimedOutRestore {
+                    endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                    endpoint_abandoned: false,
                     run_hashes: Some(vec![[17; 32]; depth]),
                     history_failure: Some(|| SessionError::Hung(WALL_LIMIT)),
                     ..fixture_session()
@@ -4264,6 +4660,8 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = scripted_capture_live(Vec::new(), false);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             run_hashes: Some(vec![[17; 32]]),
             run_hung: true,
             ..fixture_session()
@@ -4627,6 +5025,8 @@ mod tests {
             )
             .unwrap();
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -4669,6 +5069,8 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 histories: BTreeMap::new(),
 
                 history_failure: None,
@@ -4767,6 +5169,8 @@ mod tests {
         let mut baseline = unbooted_target();
         let mut baseline_live = hashed_live([17; 32]);
         baseline_live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -4808,6 +5212,8 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -4910,6 +5316,8 @@ mod tests {
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -4974,6 +5382,8 @@ mod tests {
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -5022,6 +5432,8 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -5275,6 +5687,8 @@ mod tests {
                 target.history = target.history.push(receipt).unwrap();
             }
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 events: BTreeMap::from([(1, prefix.clone())]),
                 run_events: Some(
                     prefix
@@ -5364,11 +5778,12 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_hash_failure_drops_the_unpublished_snapshot() {
-        let mut target = unbooted_target();
+    fn ordinary_hash_failure_abandons_all_owned_snapshots_before_publication() {
         let index = Arc::new(LocalIndex::new(1 << 20));
         let mut live = scripted_capture_live(vec![[17; 32]], false);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             history: control_proto::EventHistory::default(),
             history_failure: None,
             sdk_failure: None,
@@ -5404,30 +5819,27 @@ mod tests {
             }),
         );
         live.chain.certify(0, fixture_genesis()).unwrap();
-        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
-        assert!(
-            target
-                .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
-                .unwrap()
-                .is_none()
+        let history = FaultHistory::genesis(fixture_genesis()).unwrap();
+        let error = live
+            .advance(
+                &history,
+                FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
+                RunKind::New,
+            )
+            .unwrap_err();
+        assert!(error.contains("ordinary hash failure"), "{error}");
+        assert!(live.abandoned);
+        assert!(live.session.abandoned());
+        assert_eq!(live.chain.links(), 1);
+        assert!(live.cursor.decoder.is_none());
+        assert_eq!(
+            live.session
+                .telemetry_counters()
+                .into_iter()
+                .collect::<BTreeMap<_, _>>()["test.snapshots"],
+            0
         );
-        assert!(target.failed());
-        LIVE.with(|slot| {
-            let slot = slot.borrow();
-            let live = slot.as_ref().unwrap();
-            assert_eq!(live.chain.links(), 1);
-            assert!(live.cursor.decoder.is_none());
-            assert!(!live.session.abandoned());
-            assert_eq!(
-                live.session
-                    .telemetry_counters()
-                    .into_iter()
-                    .collect::<BTreeMap<_, _>>()["test.snapshots"],
-                1
-            );
-        });
         assert_eq!(index.stats().entries, 0);
-        LIVE.with(|slot| slot.borrow_mut().take());
     }
 
     #[test]
@@ -5586,6 +5998,8 @@ mod tests {
         let mut valid = vec![0];
         valid.extend_from_slice(&77_u64.to_le_bytes());
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             events: BTreeMap::from([(
                 1,
                 vec![(1, (2 << 24) | 1, valid), (2, (1 << 24) | 1, vec![9, 0, 0])],
@@ -5608,6 +6022,8 @@ mod tests {
         let suffix = (8, 0, br#"{"harmony_park":{"site":3,"edges":4}}"#.to_vec());
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             events: BTreeMap::from([(1, prefix.clone()), (2, sibling)]),
             run_events: Some(prefix.iter().cloned().chain([suffix]).collect()),
             ..fixture_session()
@@ -5687,6 +6103,8 @@ mod tests {
         let namespace = Namespace::exact(&[b"pending-branch-decoder"]);
         let mut publisher = publishing_live(&index, namespace, SnapId(3), [17; 32]);
         publisher.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             current: 3,
             events: BTreeMap::from([(3, vec![(0, u32::MAX, Vec::new())])]),
             snapshots: BTreeMap::from([(3, [17; 32])]),
@@ -5871,6 +6289,50 @@ mod tests {
             assert_eq!(row.end_generation, None);
             assert!(take_job_observation().is_none());
         }
+    }
+
+    #[test]
+    fn worker_locality_uses_only_matching_live_receipts_and_verified_decoder_hints() {
+        use searcher::search::locality::{LocalityKey, WorkerLocality};
+
+        LIVE.with(|slot| *slot.borrow_mut() = None);
+        let target = unbooted_target();
+        assert_eq!(target.worker_locality(), WorkerLocality::default());
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        let mut live = timed_out_live();
+        let receipt = live.chain.provenance(0).unwrap().clone();
+        let key = LocalityKey(receipt.root());
+        let checkpoint = ObservationCheckpoint::capture(&receipt, SdkDecoder::default()).unwrap();
+        live.chain
+            .set_pending_observation_checkpoint(0, checkpoint.clone())
+            .unwrap();
+        let before = live.session.telemetry_counters();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        assert_eq!(target.worker_locality(), WorkerLocality::new([(key, 0)]));
+        LIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let live = slot.as_mut().unwrap();
+            live.chain
+                .set_observation_checkpoint(0, checkpoint)
+                .unwrap();
+        });
+        assert_eq!(target.worker_locality(), WorkerLocality::new([(key, 1)]));
+        LIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let live = slot.as_mut().unwrap();
+            assert_eq!(live.session.telemetry_counters(), before);
+            live.key = [9; 32];
+        });
+        assert_eq!(target.worker_locality(), WorkerLocality::default());
+        LIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let live = slot.as_mut().unwrap();
+            live.key = target.config.key;
+            live.abandoned = true;
+        });
+        assert_eq!(target.worker_locality(), WorkerLocality::default());
+        LIVE.with(|slot| *slot.borrow_mut() = None);
+        assert_eq!(target.worker_locality(), WorkerLocality::default());
     }
 
     #[test]
@@ -6162,6 +6624,8 @@ mod tests {
         let mut baseline = unbooted_target();
         let mut baseline_live = hashed_live([17; 32]);
         baseline_live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             histories: BTreeMap::new(),
 
             history_failure: None,
@@ -6202,6 +6666,8 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 histories: BTreeMap::new(),
 
                 history_failure: None,
@@ -6571,6 +7037,8 @@ mod tests {
         ] {
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 hash_error: failure,
                 abandon_on_hash: true,
                 ..fixture_session()
@@ -6731,6 +7199,8 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 hash: Some([17; 32]),
                 history_failure: Some(failure),
                 ..TimedOutRestore::default()
@@ -6763,6 +7233,8 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            endpoint_state: consonance_client::endpoint::EndpointState::default(),
+            endpoint_abandoned: false,
             hash: Some([17; 32]),
             history_failure: Some(|| {
                 SessionError::Control(format!("{INFRASTRUCTURE_FAILURE}forged transport cause"))
@@ -6810,6 +7282,8 @@ mod tests {
             ] {
                 let mut live = hashed_live([17; 32]);
                 live.session = Box::new(TimedOutRestore {
+                    endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                    endpoint_abandoned: false,
                     sdk_failure: failure,
                     ..fixture_session()
                 });
@@ -7444,6 +7918,8 @@ mod tests {
         let install = |digest| {
             let mut live = hashed_live(endpoint);
             live.session = Box::new(TimedOutRestore {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
                 histories: BTreeMap::new(),
                 hash_failure: false,
                 hash_error: None,
@@ -7566,6 +8042,8 @@ mod tests {
             let certify = |digest, history_hung: bool| {
                 let mut live = hashed_live([17; 32]);
                 live.session = Box::new(TimedOutRestore {
+                    endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                    endpoint_abandoned: false,
                     histories: BTreeMap::new(),
                     hash_failure: false,
                     hash_error: None,

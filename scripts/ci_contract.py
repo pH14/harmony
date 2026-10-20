@@ -69,11 +69,11 @@ PR_ARTIFACT_BUILD_BUDGETS = {
 }
 PR_EXTENDED_CHECK_BUDGETS = {
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "C Investigation"): 35,
-    (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"): 30,
+    (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"): 45,
 }
 PR_TIMEOUT_EXPRESSIONS = {
     (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"):
-        "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store' || matrix.name == 'consonance-client') && 30 || 15 }}",
+        "${{ matrix.name == 'snapshot-store' && 45 || (matrix.name == 'vmm-backend' || matrix.name == 'consonance-client') && 30 || 15 }}",
 }
 
 
@@ -237,12 +237,14 @@ LIB_PARTITIONS = {
         ),
         "Scheduling": (
             "search::duration", "search::empirical_steps", "search::parallel",
+            "search::locality",
         ),
         "Search Coordination": (
             "search::continuation", "search::rand", "search::job_observation",
         ),
         "Campaign Recording and Replay": (
             "search::campaign", "search::checkpoint", "search::telemetry",
+            "search::snapshot_codec", "search::snapshot_store",
             "search::executable_identity",
         ),
     },
@@ -417,11 +419,11 @@ CONSONANCE_ANALYSIS = Workflow(
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
         Job("Change Selection", "pr", 5, selects=("miri_matrix", "kani")),
-        Job("Miri — <Crate>", "pr", 30, select="miri_matrix",
+        Job("Miri — <Crate>", "pr", 45, select="miri_matrix",
             ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
-            exception="The backend's interpreted snapshot/register inventory and "
-                      "the Store's full resident-verification suite and the client's "
-                      "interpreted cache tests exceed 15 minutes; "
+            exception="The Store's full resident-verification suite exceeds 30 minutes "
+                      "and receives 45 minutes; the backend's interpreted snapshot/register "
+                      "inventory and the client's cache tests retain 30 minutes; "
                       "other targets retain 15 minutes."),
         Job("Miri — <Crate> (Whole Crate)", "full", 320,
             ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
@@ -705,6 +707,7 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
             select="harmony_languages"),
         Job("UML Command Replay", "pr", 15, select="harmony_languages"),
+        Job("Packaged Composition", "pr", 15, select="harmony_languages"),
     ),
 )
 
@@ -788,6 +791,7 @@ RELEASE = Workflow(
         Job("Guest Runtime — <Architecture>", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
         Job("UML Runtime — <Architecture>", "full", 120),
         Job("Language SDK", "full", 15),
+        Job("Packaged Composition — <Architecture>", "full", 15),
         Job("Publish", "full", 30),
     ),
 )
@@ -805,9 +809,9 @@ CONSONANCE_UML = Workflow(
                       "toolchain exceed the pull request check budget.",
             ignored_tests=(
                 "uml profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes",
-                "harmony-cli::bin/harmony adapters::faults::runs::tests::loaded_reviewed_uml_profile_binds_the_recorded_kernel",
-                "harmony-cli::bin/harmony adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch",
-                "harmony-cli::bin/harmony adapters::faults::workflow::tests::native_xstate_preparation_matches_stronger_checker",
+                "harmony-cli adapters::faults::runs::tests::loaded_reviewed_uml_profile_binds_the_recorded_kernel",
+                "harmony-cli adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch",
+                "harmony-cli adapters::faults::workflow::tests::native_xstate_preparation_matches_stronger_checker",
                 "consonance-client session::uml::tests::reviewed_kernel_panic_is_a_public_client_crash",
                 "uml::guest_exitcode guest_cannot_choose_host_reserved_exit_statuses",
                 "uml::host_clone_exhaustion host_clone_quota_exhaustion_is_not_a_guest_fork_result",

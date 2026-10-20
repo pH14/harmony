@@ -306,6 +306,18 @@ different points around response publication. These reads are not atomic or free
 Counter getters do not estimate or subtract their own cost. Host timing, gauges
 and physical request counts do not affect logical selection or certificates.
 
+Physical worker assignment uses opaque captured-history root keys. A matching
+live session advertises its retained chain endpoints, with a better rank when
+the corresponding observation decoder checkpoint has been verified. Missing,
+foreign or abandoned sessions advertise nothing. Extracting these hints does no
+session RPC, hashing, import or restore, and retains no extra snapshot lease.
+Actual restoration still validates the captured receipt, machine state and
+decoder binding. A stale hint can affect host work, never certify an endpoint.
+
+The campaign summary records the requested processor assignment, detected
+topology and inherited host memory policy as diagnostics.
+These fields do not enter the deterministic stream or campaign checkpoints.
+
 Optional job locality observations are fixed-size workload-owned values, separate
 from logical fault observations and endpoint certificates. The origin restore
 records its actual selected source: local exact/ancestor or shared import
@@ -515,16 +527,16 @@ The recorded `host_failure_policy = host_incomplete_v2` binds this behavior;
 streams and checkpoints with an absent or different policy are refused, including
 the earlier watchdog-only policy. The execution and endpoint-certificate identities
 also advance because observations now encode the distinct infrastructure flag. The
-combined replay endpoint uses certificate domain v3, binding ordered event history
-and infrastructure-marked observations under one schema. Reading ordered history
+combined replay endpoint uses certificate domain v4, binding ordinary assurance,
+ordered event history and infrastructure-marked observations under one schema. Reading ordered history
 preserves typed host failures and rejects a known abandoned matching session as
 incomplete; missing or mismatched session identities remain ordinary errors. The
 shared hash helper retains the actual error even when that call retires the
 session: a timeout stays a timeout and a malformed reply stays an ordinary error.
 A successful hash from a session retired during the call cannot certify a
 continuation. These checks also cover receipt reconstruction and imported roots.
-Execution identity v10 separates the combined contract from the earlier receipt-only
-identity. Ordinary
+Execution identity v11 binds this combined contract and its assurance identity;
+earlier identities that omitted either cannot be reused. Ordinary
 guest terminal outcomes retain their existing meaning. An outer CLI timeout is
 also an infrastructure failure. Completed reports still expose
 `execution_failures` and `watchdog_cutoffs`; a host cutoff cannot contribute to
@@ -550,6 +562,13 @@ final endpoint certificate. The v2 result domain also binds versioned ordered-hi
 records (v2 includes completed semantic service exchanges) whenever a KVM whole-state endpoint is available, including terminal and
 zero-action jobs. Failed or unavailable endpoints explicitly carry no history;
 that absence cannot stand in for a whole-state endpoint.
+
+Prepared execution can be admitted independently of image staging through
+`prepare::admit_prepared`. It verifies the actual packed rootfs, the mode's image
+admission and the selected supervisor bundle, then derives the instrumented-event
+vocabulary from that admitted archive. A caller-supplied vocabulary or frontend
+readiness result cannot replace those checks. Generic prepared execution records
+and canonical OCI control validation remain owned by `oci-support`.
 
 Every runnable snapshot carries a persistent, shared action history. Each node
 binds its parent history, action, actual endpoint evidence, action-local
@@ -600,6 +619,30 @@ Expected campaign snapshots and root payloads provide no decoder authority; fres
 root imports start from offset zero. Whole-state and ordered-event certificates
 retain their existing formats and fresh integrity checks.
 
+Action execution uses Consonance's generic owned endpoint transaction. A retained
+validated parent decoder checkpoint supplies the exact SDK cursor, allowing one
+Execute exchange to branch, run, capture and return the first bounded suffix
+page. The request preserves the legacy run's assertion stop mask. Missing or untrusted checkpoints keep the existing selected-parent branch
+and full-history verification before the guest runs. Every returned page retains
+its request/stop/cursor binding; the workload decodes all pages and checks SDK
+infrastructure status before Commit transfers the provisional snapshot and its
+separate whole-state and ordered-history facts. A decode failure abandons the
+owned session. A capture or proof failure releases all session-owned handles,
+including the selected parent, without publishing an uncertified child.
+
+Service decisions remain workload decisions. Before the deadline the adapter
+answers with its current action handler and explicitly resumes. At or after the
+deadline it finalizes the returned stopped question without answering or running
+again. The Consonance receipt keeps the actual Decision; Faults alone projects
+that observation as Deadline and leaves the pending question in the snapshot for
+the next action's service windows. UML explicitly omits whole-state/history
+proofs, and uncaptured terminal cuts carry unavailable evidence. The common
+worker path takes Execute plus Commit, with extra bounded Page exchanges only
+when needed and a FinalizeDecision exchange at that rare boundary. Inner control
+and SDK guards remain active. Run host time now includes the whole endpoint
+exchange and decoding; combined branch/seal counts remain operation counts,
+while their separate host-time buckets cover only unbatched operations.
+
 Optional Link checkpoints have an internal 8 MiB retention cap, including for
 sessions without a shared index. This is a performance policy, not a logical
 retention setting. Under shared-cache pressure they are discarded before certified
@@ -642,8 +685,27 @@ Child publication selects the lease of the actual restored parent point, includi
 when another sibling remains resident. Runnable, terminal and interrupted-rebuild
 observations all exclude park and read evidence at or before the previous endpoint.
 
-Checkpoint histories use a validated flat encoding with explicit versions and
-iterative destruction. Restore canonicalizes validated expected histories into
+Standalone and whole-search checkpoint histories use a parent-indexed DAG with one receipt per
+semantic history root. Encoding follows missing tails iteratively and deduplicates
+independently allocated equivalent prefixes. Decode validates receipt roots, paths,
+depth, domain, moments and backend continuity before constructing shared Arc nodes;
+endpoint records reference those nodes. The generic searcher frames opaque records
+and never interprets fault history. Old flat snapshot envelopes are refused.
+Asynchronous checkpoint capture inventories the complete cloned snapshot graph:
+inline observations, endpoint/event-history metadata and fixed-size park rows;
+the capacities of both park vectors; the optional check's `Vec<String>` slots and
+every point string; and assertion-map nodes plus each key, message and location
+string capacity. History receipts and actions contain only inline fields. Each
+shared history node includes its Arc control block and is charged once by physical
+allocation identity, with conservative B-tree overhead for the private ledger.
+Independent equivalent histories retain separate charges; owned observation
+containers and strings are charged again for every cloned endpoint. The image
+budget covers these capacities and container envelopes, not allocator fragmentation
+or a process RSS ceiling. A failed charge uses the same synchronous codec before
+cloning; it does not bypass persistence. Frozen snapshots own those
+nodes independently of archive outer-Arc pins; capture neither certifies a
+receipt nor exempts a later execution from actual-history or fresh VM checks.
+History destruction remains iterative. Restore canonicalizes validated expected histories into
 actual shared node allocations before rebuilding the memory ledger. Bootstrap
 imports use the admitted live genesis allocation. Before archive installation, a
 typed retention index normalizes a candidate's new tail against currently
@@ -667,7 +729,7 @@ semantic events. Snapshot and schedule IDs never enter that commitment. Missing
 KVM history cannot be replaced by an empty commitment. UML carries no ordered
 normalized-event commitment and remains uncertified for whole state.
 
-The VM stream/snapshot formats are v11/v9 and UML formats v8/v5. The action policy
+The VM stream/snapshot formats are v11/v10 and UML formats v8/v6. The action policy
 is `fault-action-duration-coverage-v5-event-history`; older contracts are refused.
 
 Restoring a source snapshot compares its independently captured receipt and
@@ -861,3 +923,19 @@ observed replay, and cannot be promoted into CPU portability qualification;
 `HistoryReceipt::require_qualified` refuses unsupported finite compositions.
 UML keeps `UmlWholeStateUnavailable` and has no whole-state certificate. See the
 [execution assurance contract](../../consonance/execution-contract/README.md).
+
+Execution-endpoint proofs carry the actual session's admitted assurance identity
+with its measured state and ordered history. The history consumer compares that
+returned identity with the parent receipt before changing observations or
+extending the receipt. A relabelled endpoint proof refuses even when its other
+binding fields are unchanged. The combined worker protocol requires host hello5;
+both incompatible hello4 schemas and all older versions are refused.
+
+The shared history codec is `fault-history-dag-v2`. Every receipt frame retains
+its ordinary-unqualified `assurance_identity`, includes it in the semantic node
+root, and validates it before encoding/deduplication and after decoding.
+Changing assurance is refused even if the receipt root and frame checksum are
+recomputed. The codec does not upgrade an ordinary execution into a qualified
+composition. Older DAG-v1 codecs and flat snapshot envelopes are refused;
+whole-search checkpoints require the distinct v10 envelope. The current
+execution identity remains v11 and ordered event history remains v3.

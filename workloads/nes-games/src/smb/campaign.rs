@@ -62,8 +62,8 @@ pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint>
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v3";
 
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v3";
-pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v4";
+pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v3";
 
 pub const DURATION_IDENTIFIER: &str = "stratified";
 
@@ -435,8 +435,11 @@ where
     M: NesBackend<P>,
     P: SnapshotState,
 {
-    fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
-        evidence.checkpoint()
+    fn write_evidence_checkpoint(
+        evidence: &Self::Evidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        evidence.write_checkpoint(out)
     }
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
         NesCampaignEvidence::from_checkpoint(bytes)

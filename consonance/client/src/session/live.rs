@@ -30,6 +30,8 @@ use vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time;
 use super::*;
 use crate::Client;
 
+mod endpoint;
+
 type Server = Client<ControlServer<Box<dyn Backend<A = HostArch>>>>;
 const CACHE_SIDECAR_MAGIC: [u8; 8] = *b"HMSESS01";
 
@@ -96,6 +98,7 @@ fn collect_sdk_events(
 
 pub struct Session {
     client: Server,
+    endpoint_state: crate::endpoint::EndpointState,
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
     setup: SnapId,
     setup_at: u64,
@@ -280,6 +283,7 @@ impl Session {
             extent_writes: std::cell::Cell::default(),
             snapshot_times: BTreeMap::from([(genesis.id, genesis.at), (setup.id, setup.at)]),
             abandoned,
+            endpoint_state: crate::endpoint::EndpointState::default(),
         })
     }
 
@@ -343,6 +347,7 @@ impl Session {
         &mut self,
         snapshot: &SparseSnapshot,
     ) -> Result<SnapId, Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         self.loaded_image_guard.check()?;
         if snapshot.base != self.setup.0 || snapshot.image_identity != self.image_identity {
             return Err(SessionError::Portable("snapshot identity differs".into()).into());
@@ -516,6 +521,7 @@ impl Session {
         extents: &[&[u8]],
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         self.loaded_image_guard.check()?;
         let mut deltas = extents
             .iter()
@@ -543,12 +549,14 @@ impl Session {
     }
 
     pub fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         let receipt = snapshot_handle(&mut self.client, "snapshot")?;
         self.snapshot_times.insert(receipt.id, receipt.at);
         Ok((receipt.id, receipt.at))
     }
 
     pub fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         self.drop_handle(snapshot)?;
         self.snapshot_times.remove(&snapshot);
         Ok(())
@@ -559,6 +567,7 @@ impl Session {
         snapshot: SnapId,
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         branch_payload(&mut self.client, snapshot, payloads, self.config.seed)
     }
 
@@ -566,8 +575,10 @@ impl Session {
         self.branch_input(snapshot, &InputSpec::seeded(seed))
     }
 
-    pub fn set_service_factory(&mut self, factory: ServiceFactory) {
+    pub fn set_service_factory(&mut self, factory: ServiceFactory) -> Result<(), Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         self.client.transport_mut().set_service_factory(factory);
+        Ok(())
     }
 
     pub fn branch_with_service(
@@ -593,6 +604,7 @@ impl Session {
         snapshot: SnapId,
         spec: &InputSpec,
     ) -> Result<(), Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         branch_spec(&mut self.client, snapshot, spec)
     }
 
@@ -602,6 +614,7 @@ impl Session {
     }
 
     pub fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         let request = Request::Run {
             until: StopConditions {
                 deadline: Some(control_proto::Moment(deadline)),
@@ -637,6 +650,7 @@ impl Session {
         until: StopConditions,
         resolve: Option<control_proto::Resolution>,
     ) -> Result<StopReason, Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         let reply = self.drive(&Request::Run { until, resolve })?;
         match reply {
             Reply::Stop(stop) => Ok(stop),
@@ -668,6 +682,7 @@ impl Session {
     }
 
     pub fn run_to_snapshot(&mut self, floor: u64) -> Result<u64, Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         run_to_snapshot(
             &mut self.client,
             floor,
@@ -677,8 +692,10 @@ impl Session {
         )
     }
 
-    pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
+    pub fn set_max_chain_len(&mut self, max_chain_len: u32) -> Result<(), Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         self.client.transport_mut().set_max_chain_len(max_chain_len);
+        Ok(())
     }
 
     pub fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
@@ -881,6 +898,7 @@ impl Session {
     }
 
     fn import_snapshot(&mut self, snapshot: &PortableSnapshot) -> Result<SnapId, Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         self.loaded_image_guard.check()?;
         let pages = snapshot
             .validated_pages(self.setup.0, self.image_identity, self.setup_at)
@@ -899,6 +917,7 @@ impl Session {
     }
 
     fn replay(&mut self, handle: SnapId) -> Result<(), Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         let reply = self
             .client
             .request(&Request::Replay(handle))
@@ -1151,6 +1170,7 @@ mod tests {
             extent_writes: std::cell::Cell::default(),
             snapshot_times: BTreeMap::from([(setup.id, setup.at)]),
             abandoned: false,
+            endpoint_state: crate::endpoint::EndpointState::default(),
         }
     }
 
@@ -1206,6 +1226,101 @@ mod tests {
         assert_eq!(before, session.state_hash().unwrap());
         assert_eq!(store, session.store_bytes());
         session.restore(&snapshot).unwrap();
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn endpoint_proof_uses_the_admitted_session_assurance_and_actual_cut() {
+        use crate::endpoint::{EndpointDriver, EndpointProof};
+        let image =
+            vmm_core::vendor::arm64::image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let mut session = mock_arm_session(
+            SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0"),
+            &image,
+        );
+        let state_hash = session.state_hash().unwrap();
+        let history = session.event_history().unwrap();
+        let assurance_identity = session
+            .config
+            .qualification
+            .admit(execution_contract::Engine::VirtualMachine)
+            .unwrap()
+            .identity();
+        assert_eq!(
+            EndpointDriver::proof(&mut session).unwrap(),
+            EndpointProof::WholeStateAndHistory {
+                assurance_identity,
+                state_hash,
+                history,
+            }
+        );
+        session.config.qualification = execution_contract::Requirement::Qualified(
+            execution_contract::Composition::RetainedLinuxContinuation9673,
+        );
+        assert!(
+            EndpointDriver::proof(&mut session)
+                .unwrap_err()
+                .to_string()
+                .contains("qualification refused")
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn owned_endpoint_refuses_direct_mutators_before_control_or_policy_changes() {
+        use crate::endpoint::*;
+        let image =
+            vmm_core::vendor::arm64::image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let mut session = mock_arm_session(
+            SessionConfig::new(16 << 20, 7, 19, "console=ttyAMA0"),
+            &image,
+        );
+        let setup = session.setup;
+        let EndpointReply::Page(page) = session
+            .execution_endpoint(EndpointRequest::Execute(ExecutionRequest {
+                branch: None,
+                until: StopConditions {
+                    deadline: Some(control_proto::Moment(0)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+                sdk_cursor: 0,
+                snapshot_on: EndpointStops::NONE,
+                proof: EndpointProofRequest::Omit,
+            }))
+            .unwrap()
+        else {
+            panic!("expected pending endpoint");
+        };
+        let before = session.client.transport().host_telemetry();
+        let handles = session.snapshot_times.clone();
+        for result in [
+            session.set_service_factory(environment::input_spec::nominal_factory()),
+            session.set_max_chain_len(2),
+            session.snapshot().map(|_| ()),
+            session.run_until(0).map(|_| ()),
+            session.replay_snapshot(setup),
+            session.drop_snapshot(setup),
+        ] {
+            assert!(matches!(
+                result.unwrap_err().downcast_ref::<EndpointProtocolError>(),
+                Some(EndpointProtocolError::Pending)
+            ));
+        }
+        assert_eq!(session.client.transport().host_telemetry(), before);
+        assert_eq!(session.snapshot_times, handles);
+        assert_eq!(
+            session
+                .execution_endpoint(EndpointRequest::Abort {
+                    token: page.binding.token
+                })
+                .unwrap(),
+            EndpointReply::Aborted
+        );
+        session
+            .set_service_factory(environment::input_spec::nominal_factory())
+            .unwrap();
+        session.set_max_chain_len(2).unwrap();
     }
 
     #[test]

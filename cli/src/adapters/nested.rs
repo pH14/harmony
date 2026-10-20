@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use super::{Operation, Package, Request};
-use crate::{
-    config::{Config, Result},
-    runs::Manifest,
-};
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
+use super::Operation;
+#[cfg(feature = "frontend")]
+use super::Package;
+use super::Request;
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
+use crate::config::Config;
+use crate::config::Result;
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
+use crate::runs::Manifest;
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
 use std::{fs, path::Path};
+#[cfg(feature = "frontend")]
 pub struct Nested;
 
-#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(test, feature = "frontend"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn verified_replay_stream(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     let expected = source.payload["stream_sha256"]
         .as_str()
@@ -19,7 +29,10 @@ fn verified_replay_stream(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(test, feature = "frontend"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn verified_replay_source(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     if source.status != "complete" {
         return Err("nested replay requires a completed saved campaign".into());
@@ -34,7 +47,10 @@ fn verified_replay_source(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     verified_replay_stream(path, source)
 }
 
-#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(test, feature = "frontend"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn saved_replay_inputs(path: &Path, source: &Manifest) -> Result<(Vec<u8>, Vec<u8>)> {
     let read = |name: &str| -> Result<Vec<u8>> {
         let bytes = fs::read(path.join("artifacts").join(name))?;
@@ -50,7 +66,10 @@ fn saved_replay_inputs(path: &Path, source: &Manifest) -> Result<(Vec<u8>, Vec<u
     Ok((read("kernel")?, read("initramfs")?))
 }
 
-#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(test, feature = "frontend"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn inherit_replay_stream(
     source_path: &Path,
     source: &Manifest,
@@ -79,6 +98,7 @@ fn verified_report(
     Ok(serde_json::from_slice(&run.report)?)
 }
 
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
 fn stable_report(payload: &serde_json::Value) -> serde_json::Value {
     let mut outcome = payload.clone();
     if let Some(archive) = outcome
@@ -90,7 +110,10 @@ fn stable_report(payload: &serde_json::Value) -> serde_json::Value {
     outcome
 }
 
-#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(test, feature = "frontend"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn replay_report_matches(
     source_mode: &str,
     saved: &serde_json::Value,
@@ -108,6 +131,7 @@ fn replay_report_matches(
     }
 }
 
+#[cfg(feature = "frontend")]
 impl Package for Nested {
     fn name(&self) -> &'static str {
         "nested"
@@ -126,19 +150,7 @@ impl Package for Nested {
         Ok(())
     }
     fn validate_runner(&self, c: &mut Config) -> Result<()> {
-        if c.runner.kind.is_empty() {
-            c.runner.kind = "consonance".into();
-        }
-        if c.runner.kind != "consonance"
-            || c.runner
-                .backend
-                .as_deref()
-                .is_some_and(|b| b != "auto" && b != "kvm")
-        {
-            return Err("nested requires the consonance runner with KVM".into());
-        }
-        c.runner.backend = Some("kvm".into());
-        Ok(())
+        validate_runner(c)
     }
     fn supports(&self, op: Operation) -> bool {
         matches!(
@@ -190,10 +202,12 @@ impl Package for Nested {
     }
 }
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(feature = "frontend")]
 fn execute(_: Request) -> Result<u8> {
     Err("nested requires a Linux x86-64 host with nested KVM enabled".into())
 }
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(feature = "frontend")]
 fn require_explicit_nested_pair(runtime: &crate::runtime::Consonance) -> Result<()> {
     if runtime.kernel.is_none() || runtime.base_initramfs.is_none() {
         return Err("nested requires both runner.options.kernel built with nested KVM support and runner.options.base_initramfs for its matching OCI base".into());
@@ -201,30 +215,9 @@ fn require_explicit_nested_pair(runtime: &crate::runtime::Consonance) -> Result<
     Ok(())
 }
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(feature = "frontend")]
 fn execute(mut request: Request) -> Result<u8> {
-    Nested.validate_runner(&mut request.config)?;
-    if request.selection.is_some() && request.operation != Operation::Replay {
-        return Err("nested does not yet support starting a search from saved state".into());
-    }
-    let original = request
-        .selection
-        .as_ref()
-        .map(|s| -> Result<_> {
-            if s.finding.is_some() {
-                return Err(
-                    "nested verification replays the complete search; omit --finding".into(),
-                );
-            }
-            let path = crate::runs::locate(&s.run)?;
-            let m = Manifest::read(&path)?;
-            m.verify(&path)?;
-            let stream = verified_replay_source(&path, &m)?;
-            Ok((path, m, stream))
-        })
-        .transpose()?;
-    let (kernel, initramfs) = if let Some((path, source, _)) = &original {
-        saved_replay_inputs(path, source)?
-    } else {
+    let fresh = if request.selection.is_none() {
         let runtime = crate::runners::consonance(&request.config.runner)?;
         require_explicit_nested_pair(&runtime)?;
         crate::runners::resolve(&mut request.config.runner, request.offline)?;
@@ -239,7 +232,82 @@ fn execute(mut request: Request) -> Result<u8> {
                 .ok_or("provide the nested driver image")?,
             &base,
         )?;
-        (kernel, initramfs)
+        Some((kernel, initramfs))
+    } else {
+        None
+    };
+    let saved = request
+        .selection
+        .as_ref()
+        .map(|selection| crate::runs::Saved::read(&selection.run))
+        .transpose()?;
+    execute_ready(request, fresh, saved)
+}
+
+#[cfg(any(feature = "frontend", all(target_os = "linux", target_arch = "x86_64")))]
+fn validate_runner(c: &mut Config) -> Result<()> {
+    if c.runner.kind.is_empty() {
+        c.runner.kind = "consonance".into();
+    }
+    if c.runner.kind != "consonance"
+        || c.runner
+            .backend
+            .as_deref()
+            .is_some_and(|b| b != "auto" && b != "kvm")
+    {
+        return Err("nested requires the consonance runner with KVM".into());
+    }
+    c.runner.backend = Some("kvm".into());
+    Ok(())
+}
+
+pub fn execute_prepared(request: Request, prepared: crate::handoff::Prepared) -> Result<u8> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        let fresh = prepared
+            .execution
+            .as_ref()
+            .map(|execution| (prepared.kernel.clone(), execution.initramfs(&prepared.base)));
+        execute_ready(request, fresh, prepared.saved)
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        let _ = (request, prepared);
+        Err("nested execution requires Linux x86-64 KVM".into())
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn execute_ready(
+    mut request: Request,
+    fresh: Option<(Vec<u8>, Vec<u8>)>,
+    saved: Option<crate::runs::Saved>,
+) -> Result<u8> {
+    validate_runner(&mut request.config)?;
+    if request.selection.is_some() && request.operation != Operation::Replay {
+        return Err("nested does not yet support starting a search from saved state".into());
+    }
+    let original = request
+        .selection
+        .as_ref()
+        .map(|s| -> Result<_> {
+            if s.finding.is_some() {
+                return Err(
+                    "nested verification replays the complete search; omit --finding".into(),
+                );
+            }
+            let saved = saved.ok_or("missing resolved saved recording")?;
+            let path = saved.path;
+            let m = saved.manifest;
+            m.verify(&path)?;
+            let stream = verified_replay_source(&path, &m)?;
+            Ok((path, m, stream))
+        })
+        .transpose()?;
+    let (kernel, initramfs) = if let Some((path, source, _)) = &original {
+        saved_replay_inputs(path, source)?
+    } else {
+        fresh.ok_or("missing prepared nested execution")?
     };
     if matches!(request.operation, Operation::Check | Operation::Prepare) {
         println!(
@@ -294,7 +362,7 @@ fn execute(mut request: Request) -> Result<u8> {
     Ok(if result? { 1 } else { 0 })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
 

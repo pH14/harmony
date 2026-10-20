@@ -552,6 +552,29 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.retired_observations = observations;
     }
 
+    pub fn abandon_owned_session(&mut self) {
+        if self.vmm.is_some() {
+            self.retire_failed_vmm();
+        }
+        self.set_current_image(None);
+        self.derive_parent = None;
+        for (_, store_id) in std::mem::take(&mut self.snaps) {
+            let _ = self.engine.release(store_id);
+        }
+        self.sdk_snaps.clear();
+        self.snapshot_meta.clear();
+        self.tainted_snaps.clear();
+        self.schedule.clear();
+        self.reseed_schedule.clear();
+        self.engine.gc();
+    }
+
+    pub fn snapshot_sdk_event_count(&self, snapshot: SnapId) -> Option<u64> {
+        self.snapshot_meta
+            .get(&snapshot.0)
+            .map(|meta| meta.sdk_events)
+    }
+
     pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
         self.engine.set_max_chain_len(max_chain_len);
     }
@@ -2906,6 +2929,53 @@ mod tests {
             Ok(v)
         });
         with_test_service(ControlServer::new(live, factory))
+    }
+
+    #[test]
+    fn abandoned_owner_releases_a_snapshot_hidden_by_the_final_control_guard() {
+        let mut server = server(vec![]);
+        hello(&mut server);
+        let original = snap(&mut server);
+        assert!(server.snapshot_stats(original).is_some());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        server.set_host_operation_guard(Arc::new(move |site| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if site == HostOperationSite::ControlAfter {
+                Err("planted post-snapshot guard failure".into())
+            } else {
+                Ok(())
+            }
+        }));
+        assert!(matches!(
+            server.handle(&Request::Snapshot),
+            Err(ServeError::Vmm(VmmError::ContractViolation(message)))
+                if message == "planted post-snapshot guard failure"
+        ));
+        assert_eq!(server.snaps.len(), 2);
+        assert_eq!(server.snapshot_meta.len(), 2);
+        assert_eq!(server.sdk_snaps.len(), 2);
+        let counted_before = calls.load(std::sync::atomic::Ordering::SeqCst);
+        let physical = server.host_telemetry().physical;
+        server.abandon_owned_session();
+        assert!(server.vmm().is_none());
+        assert!(server.snaps.is_empty());
+        assert!(server.snapshot_meta.is_empty());
+        assert!(server.sdk_snaps.is_empty());
+        assert!(server.current_image.is_none());
+        assert!(server.derive_parent.is_none());
+        assert_eq!(server.snapshot_store_stats().snapshots, 0);
+        assert_eq!(server.snapshot_store_stats().stored_unique_pages, 0);
+        assert_eq!(server.snapshot_store_stats().bytes_resident, 0);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            counted_before
+        );
+        assert_eq!(server.host_telemetry().physical, physical);
+        assert!(server.retired_observations.is_some());
+        server.abandon_owned_session();
+        assert!(server.retired_observations.is_some());
+        assert_eq!(server.snapshot_store_stats().snapshots, 0);
     }
 
     #[test]
@@ -9620,6 +9690,14 @@ mod tests {
     impl Backend for UsedRestoreRejectBackend {
         type A = X86;
 
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.inner.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.inner.read_x86_cpuid_state()
+        }
+
         fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
             self.inner.set_policy(policy)
         }
@@ -10030,6 +10108,14 @@ mod tests {
     struct RestoreFailBackend(MockBackend, bool);
     impl Backend for RestoreFailBackend {
         type A = vmm_backend::X86;
+
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.0.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.0.read_x86_cpuid_state()
+        }
 
         fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
             self.0.set_policy(policy)
@@ -10703,6 +10789,14 @@ mod tests {
 
     impl Backend for CompletionChainBackend {
         type A = vmm_backend::X86;
+
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.0.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.0.read_x86_cpuid_state()
+        }
 
         fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
             self.0.set_policy(policy)
@@ -12310,6 +12404,93 @@ mod tests {
             hypercall_proto::decode(&server.vmm().unwrap().guest_memory()[0xf000..0xf020]).unwrap();
         assert_eq!(header.status, hypercall_proto::Status::Ok as u16);
         assert_eq!(payload, &[0x22]);
+    }
+
+    #[test]
+    fn stopped_question_snapshot_preserves_pending_delivery_until_one_exact_resolution() {
+        let frame = local_service_frame();
+        let mut server = deadline_chain_server(&frame, local_service_spec(false, 0x22));
+        let until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        let stop = server
+            .handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            stop,
+            Reply::Stop(StopReason::Decision {
+                vtime: Moment(10_000),
+                id: control_proto::DecisionId(77),
+                ..
+            })
+        ));
+        let pending = server
+            .vmm()
+            .unwrap()
+            .sdk_snapshot()
+            .unwrap()
+            .unwrap()
+            .pending_stop;
+        let before_hash = hash(&mut server);
+        let physical = server.host_telemetry().physical;
+        let snapshot = snap(&mut server);
+        assert_eq!(server.host_telemetry().physical, physical);
+        assert_eq!(hash(&mut server), before_hash);
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .sdk_snapshot()
+                .unwrap()
+                .unwrap()
+                .pending_stop,
+            pending
+        );
+        assert_eq!(server.sdk_snaps[&snapshot.0].channel.pending_stop, pending);
+        assert!(server.recorded.answers().is_empty());
+        let responses = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&responses);
+        server.set_host_operation_guard(Arc::new(move |site| {
+            if site == HostOperationSite::SdkResponse {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(())
+        }));
+        let resolution = Resolution {
+            vtime: Moment(10_000),
+            service: 19,
+            id: control_proto::DecisionId(77),
+            answer: Answer(environment::channel::Answer::Data(vec![0x22]).encode()),
+        };
+        assert!(!matches!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: Some(resolution.clone())
+                })
+                .unwrap()
+                .unwrap(),
+            Reply::Stop(StopReason::Decision { .. })
+        ));
+        assert!(server.vmm().unwrap().pending_service_question().is_none());
+        assert_eq!(server.recorded.answers().len(), 1);
+        assert_eq!(responses.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: Some(resolution)
+                })
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(responses.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(server.sdk_snaps[&snapshot.0].channel.pending_stop, pending);
     }
 
     #[test]
@@ -14028,6 +14209,14 @@ mod tests {
     impl Backend for ExitBoundaryBackend {
         type A = vmm_backend::X86;
 
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.inner.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.inner.read_x86_cpuid_state()
+        }
+
         fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
             self.inner.set_policy(policy)
         }
@@ -14956,6 +15145,14 @@ mod tests {
     struct IdleBackend(MockBackend, bool, bool);
     impl Backend for IdleBackend {
         type A = vmm_backend::X86;
+
+        fn read_x86_regs(&mut self) -> vmm_backend::Result<vmm_backend::VcpuRegs> {
+            self.0.read_x86_regs()
+        }
+
+        fn read_x86_cpuid_state(&mut self) -> vmm_backend::Result<vmm_backend::X86CpuidState> {
+            self.0.read_x86_cpuid_state()
+        }
 
         fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
             self.0.set_policy(policy)

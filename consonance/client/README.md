@@ -21,6 +21,95 @@ Sessions release completed host trace segments after successful branch/replay
 operations, keeping their evidence storage bounded by the active segment.
 Callers that archive normalized exit traces use the control server's trace API.
 
+## Transactional execution endpoints
+
+The endpoint transaction owns one stopped cut and at most one provisional
+snapshot per session. `Execute` carries an optional parent plus bounded opaque
+`InputSpec` reproducer bytes, ordinary `StopConditions`, an optional exact
+`Resolution`, an SDK cursor, a finite snapshot stop mask, and an explicit
+whole-state/history evidence requirement. Branch and resolution are mutually
+exclusive. The request digest binds all these fields. A known parent's retained
+SDK count validates its cursor, rather than the unrelated current live cut; a
+backend without that metadata validates against the actual selected parent
+before guest execution. Unknown masks, malformed input and unsupported evidence
+are refused before changing the machine.
+
+A `Decision` returns the original stop, moment, question and identity under an
+owned token. `ExecutionDecision` borrows the transport while the composition
+consults its service handler. `Resume` supplies an explicit resolution and binds
+its digest to the previous request. `FinalizeDecision` instead captures that
+exact stopped question without any guest resume; the caller explicitly chooses
+whether it needs a snapshot. Its receipt still records `Decision`, even when a
+workload interprets that boundary as its own deadline. Dropping an unresolved
+Decision owner abandons the session. Other stops retain their actual stop kind. The caller's snapshot mask owns seal
+eligibility: a deadline-only workload supplies `EndpointStops::DEADLINE`; the
+execution mechanism assigns no workload meaning to a deadline or terminal stop.
+Required whole-state plus ordered-history evidence is either available or refused
+before mutation. `CapturedWholeStateAndHistory` requests those facts only when a
+snapshot is captured, leaving terminal uncaptured cuts explicitly `Unavailable`.
+Explicitly omitted evidence is also `Unavailable`, including UML; an operational
+hash failure never becomes an absent or fabricated commitment. UML accepts only
+a finite deadline with the assertion stop bit armed, matching its existing run
+semantics; unsupported masks are refused before mutation.
+
+Successful execution performs the existing branch, run and optional snapshot
+operations, then yields bounded SDK pages under a nonreused token. Every page
+repeats its immutable request digest, stop, source count and start/end cursor
+binding. Each request must use the exact next cursor and cannot read beyond the
+captured end. Empty premature pages, count overflow, oversized pages and changed
+bindings fail closed. The legacy final empty SDK read remains. `Commit` requires
+all pages, calls the existing whole-hash and ordered-history methods, and only
+then transfers the optional snapshot handle in its receipt. A snapshot handle,
+whole-state hash and ordered execution history remain separate facts. This first
+implementation does not fuse CPU captures or remove a SHA pass.
+
+`ExecutionEndpoint` safely borrows its transport until commit or abort. Drop
+aborts an uncommitted provisional snapshot; no self-reference or unsafe borrow
+is involved. Low-level mutation methods also reject a pending endpoint, including
+the now-fallible `set_service_factory` and `set_max_chain_len` policy setters, and
+UML shutdown/root import. An initial Page cannot replace Decision handoff; only
+explicit Decision finalization can produce a Page for that actual stop. Tokens
+are session-scoped and never reset by replay, branch, import or abort. SDK cursors
+remain transport offsets: a workload must still validate its decoder's lineage
+and checkpoint binding. Normal abort releases the provisional snapshot and leaves
+a successfully stopped cut; it does not roll guest execution back.
+
+Failure after selecting a parent or starting execution abandons the executable
+continuation, preserving the original typed error. The direct Session marks
+itself abandoned before `ControlServer::abandon_owned_session` retires the VM and
+releases that server's exclusively owned snapshot references and sidecars. This
+includes a snapshot minted before a failing final control guard hid its ID from
+the client. Cleanup runs no control or guest command, preserves failed-VM console
+and SDK observations, and keeps the store's cumulative host counters. It neither
+revokes independently published cache extents nor releases another session's
+references. A commit reply loss or final transport guard failure abandons the
+whole worker/session, so ambiguous transferred ownership cannot remain in a
+reusable session.
+
+The worker extension preserves every existing inner control-before/after and
+SDK request/response guard; it initially amortizes only outer exchanges.
+Execute plus Commit is the common two-exchange path, with bounded page exchanges
+when needed. New frame bounds must be checked after an opcode prefix and before
+allocating an endpoint request body. Page, commit, abort and Decision
+finalization have their own small bounds; Execute and Resume have bounds derived
+from existing input/control payload limits. Both hosts reject descriptors in a
+header remainder or body. INIT/import keep their existing independent contracts. Endpoint replies have a fixed receive bound, forbid descriptors and
+validate every tag, length and trailing byte before acting. Versioned peers must
+agree on worker image protocol v5 rather than using a compatibility fallback.
+Endpoint error details are bounded to 64 KiB at UTF-8 boundaries while Hung,
+Infrastructure and Abandoned retain their typed wire identity. Success and error
+replies also report retirement, so even a successful Decision abort cannot leave
+the parent believing its worker is reusable.
+
+Implementation milestones are one reviewable sequence: pure transaction engine,
+safe direct owner and failure-retirement witness; bounded worker protocol and
+explicit UML adapter with transport/guard/failure tests; then workload adoption
+that preserves external decisions, caller-owned capture eligibility and decoder
+provenance. Legacy-versus-batch comparisons cover exact stop/state/history/event
+facts, partial failures and physical transport counts on one fixed build. Pure
+engine/RAII tests are interpreter-reachable under Miri. Native snapshot/guard
+witnesses and the actual repository pre-push hook qualify the final source.
+
 The image identity always includes the loaded Harmony executable, kernel,
 initramfs, RAM size, seed, setup run budget, command line, and guest contract.
 Sessions booted with setup payloads also bind their ordered, length-delimited
@@ -139,6 +228,12 @@ base must have the same setup and identity, and unchanged pages/chunks are
 retained by reference until a snapshot is serialized. The embedded sidecar
 binds the source setup RAM, so changing only the outer `image_identity` cannot
 import its pages over a setup with different RAM.
+`checkpoint_owned_bytes` bounds the copied page-index capacity and
+`visit_checkpoint_allocations` enumerates immutable page, sidecar-index and
+sidecar-chunk allocations with domain-separated host-local identities. An async
+consumer charges them before cloning, counts each shared allocation once and
+retains the cloned references while encoding. The visitor does not serialize
+pointer identities or grant permission to bypass fresh import verification.
 `SparseSnapshot::logical_identity` returns a copy whose x86 sidecar carries the
 VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
@@ -327,11 +422,14 @@ that acknowledgement. No complete serialized payload buffer or subsequent
 full-extent copy is retained in the child; page payloads still copy once into
 the destination, and metadata and sidecar allocations remain. The loaded-image
 handshake requires matching workers.
-The host image hello is version 4; IMPORT carries a message-local
+The version 5 host image hello identifies qualification-aware INIT, descriptor-table
+IMPORT and transactional execution-endpoint commands. Both incompatible version 4
+schemas are refused alongside versions 1 through 3 before initialization.
+IMPORT carries a message-local
 backing table: U descriptors followed by N ordered (slot, offset, length) rows.
-Versions 1 through 3 are refused; older descriptor-table-only workers lack the
-qualification-aware configuration described under Execution assurance.
-The protocol reference cap is independent of diagnostic sampling limits.
+Versions 1 through 4 are refused because those peers do not share the complete
+current protocol. The protocol reference cap is independent of diagnostic
+sampling limits.
 The parent groups only exact live Segment Arc owners while holding the original
 committed chain clones. File descriptor numbers, allocator-local segment IDs,
 identical bytes and inode metadata do not establish owner identity. Both the
@@ -366,8 +464,9 @@ length mismatch depends on the kernel (observed on macOS 26.6.2). Synthetic
 parser tests force the mismatched bounds independently of kernel behavior. This does not claim to
 recover kernel-installed handles that the OS did not return: observed Darwin
 truncation can leave unreported handles, tracked separately from bounded parsing.
-The accepted worker descriptor cap remains unchanged; the version 4 host hello
-identifies the revised import descriptor-table schema.
+The accepted worker descriptor cap remains unchanged; the version 5 host hello
+identifies both the descriptor-table import schema and the execution-endpoint
+protocol.
 
 On Darwin, every worker frame read uses `recvmsg` with a separate 2048-byte
 control buffer, including header remainders and body bytes. All complete
@@ -608,13 +707,49 @@ count and host time of captures, restores, fresh restores and imports.
 `placement::CorePool` finds the host's fastest core type within the process's
 CPU affinity, cut to the whole cores of the tightest cgroup `cpu.max` quota: the `cpu_core` and `cpu_atom` lists on hybrid x86, the part
 number in `MIDR_EL1` on arm64, and `cpu_capacity` or the maximum frequency to
-rank the types. Its cores are ordered fastest first. `CorePool::plan` gives
-each worker its own core and the coordinator the slowest remaining one, and
-refuses more workers than the pool leaves room for. A pool of one core holds
-one worker and the coordinator together. `pin_current_thread` binds
+rank the types. Linux then uses package/core identifiers and sibling lists to
+put one representative of each physical core before SMT siblings, retaining
+speed order within each pass. The quota applies to that order. The coordinator
+is the last included physical representative, reserved before worker assignment;
+it remains the same processor at every worker count. Workers use other physical
+cores before sharing those cores through SMT. A single physical core with
+multiple allowed threads necessarily shares that core with the coordinator.
+Missing topology falls back to package/core identifiers or individual logical
+CPUs; contradictory present sibling/core metadata is refused. `topology()`
+reports that knowledge, packages, highest data/unified shared cache and NUMA
+nodes. It never admits a CPU outside the original affinity and fastest class.
+`CorePool::plan` refuses more workers than the logical pool leaves room for.
+A pool of one logical CPU holds one worker and the coordinator together.
+`pin_current_thread` binds
 the calling thread to one core on Linux. A worker's guest runs on the thread
 that owns its session, so pinning that thread keeps the guest on one core. On
 macOS the pool counts the performance cores and nothing is pinned.
+
+CPU topology metadata has private, fail-closed admission caps: 64 KiB per text
+value, 4 MiB of cumulative census text, 4,096 expanded ID occurrences per list,
+1,024 eligible CPUs and online NUMA nodes, and 8,388,608 cumulative parsed or
+copied ID occurrences. Overlapping ranges count repeatedly before deduplication;
+all range lengths and aggregate charges are checked before expansion or copying.
+Sparse high identifiers remain valid within these cardinality limits. The file
+reader stops at the per-value limit plus one byte and refuses oversize values;
+numeric and cache-kind text share the census budget. Present metadata beyond a
+cap is refused. Present malformed hybrid core-type lists are also refused;
+missing files and valid empty or noneligible pools retain the existing fallback.
+These limits bound host metadata processing, not guest execution or host speed.
+
+The compressed full-LLC census fixture uses the production maximum of 1,024 CPUs
+natively and 16 CPUs under Miri. Both profiles use the actual census, a compressed
+range covering every CPU for the NUMA node and shared cache, and the same complete
+per-CPU assertions. Native tests cover the maximum-scale admission policy; the
+interpreter profile exercises memory safety of those paths without repeating the
+quadratic maximum-host membership workload. Malformed, size, aggregate and refusal
+fixtures remain enabled in Miri. Production caps and CI time budgets are unchanged.
+
+Placement runs before target creation and guest population. Memory policy is
+inherited from the host; affinity alone does not relocate populated pages or
+guarantee a NUMA allocation. Shared snapshot extents retain their existing page
+ownership and allocation policy. Topology metadata does not certify page
+residency or establish an SMT/NUMA throughput improvement.
 
 ```sh
 cargo test -p consonance-client
@@ -817,8 +952,8 @@ Guest; normal confirmed shutdown remains idempotent.
 
 ## Execution assurance
 
-The version 4 worker host hello also separates qualification-aware configuration
-from prior descriptor-table-only workers.
+The version 5 worker host hello separates the combined qualification-aware INIT,
+descriptor-table IMPORT and execution-endpoint protocol from every prior schema.
 
 Sessions default to ordinary, explicitly unqualified execution. Standard
 libraries remain admitted and CPU portability warnings remain advisory. Set
@@ -836,3 +971,11 @@ identity, portable snapshot metadata, UML root identity and cache namespaces.
 Missing/changed portable assurance metadata is refused. These bindings distinguish
 an observed replay or cache equality from an exact-qualified result; they do not
 claim new architectural equivalence or relax any backend admission restriction.
+
+Endpoint whole-state/history proofs also carry the actual session's admitted
+ordinary assurance identity. Workers return that identity with the measured state
+and history, and decoders and endpoint collectors refuse relabelled proof metadata.
+Fault history compares it with the parent receipt before extending the history.
+The proof request does not supply an expected assurance value to manufacture a
+reply. UML retains unavailable whole-state evidence; endpoint batching does not
+promote any ordinary execution into a qualified finite composition.

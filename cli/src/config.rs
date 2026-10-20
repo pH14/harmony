@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use serde::{Deserialize, Serialize};
-use std::{
-    error::Error,
-    path::{Path, PathBuf},
-};
+use std::error::Error;
+#[cfg(feature = "frontend")]
+use std::path::{Path, PathBuf};
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -71,33 +70,47 @@ impl Config {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Default, clap::Args)]
+#[cfg_attr(feature = "frontend", derive(clap::Args))]
+#[derive(Clone, Debug, Default)]
+#[cfg(feature = "frontend")]
 pub struct Source {
-    #[arg(help = "Workload input; otherwise read harmony.toml")]
+    #[cfg_attr(
+        feature = "frontend",
+        arg(help = "Workload input; otherwise read harmony.toml")
+    )]
     pub input: Option<String>,
-    #[arg(long, conflicts_with = "config_toml")]
+    #[cfg_attr(feature = "frontend", arg(long, conflicts_with = "config_toml"))]
     pub config: Option<PathBuf>,
-    #[arg(long, conflicts_with = "config", help = "Inline TOML recipe")]
+    #[cfg_attr(
+        feature = "frontend",
+        arg(long, conflicts_with = "config", help = "Inline TOML recipe")
+    )]
     pub config_toml: Option<String>,
-    #[arg(long, help = "Override workload package inference")]
+    #[cfg_attr(
+        feature = "frontend",
+        arg(long, help = "Override workload package inference")
+    )]
     pub package: Option<String>,
 }
-#[derive(Clone, Debug, Default, clap::Args)]
+#[cfg_attr(feature = "frontend", derive(clap::Args))]
+#[derive(Clone, Debug, Default)]
+#[cfg(feature = "frontend")]
 pub struct Execution {
-    #[command(flatten)]
+    #[cfg_attr(feature = "frontend", command(flatten))]
     pub source: Source,
-    #[arg(long)]
+    #[cfg_attr(feature = "frontend", arg(long))]
     pub runner: Option<String>,
-    #[arg(long)]
+    #[cfg_attr(feature = "frontend", arg(long))]
     pub backend: Option<String>,
 }
-#[derive(Clone, Debug, Default, clap::Args)]
+#[cfg_attr(feature = "frontend", derive(clap::Args))]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct Budget {
-    #[arg(long)]
+    #[cfg_attr(feature = "frontend", arg(long))]
     pub seed: Option<u64>,
-    #[arg(long)]
+    #[cfg_attr(feature = "frontend", arg(long))]
     pub executions: Option<u64>,
-    #[arg(long = "for", value_parser = duration)]
+    #[cfg_attr(feature = "frontend", arg(long = "for", value_parser = duration))]
     pub wall_seconds: Option<u64>,
 }
 impl Budget {
@@ -114,6 +127,7 @@ impl Budget {
         config.validate()
     }
 }
+#[cfg(feature = "frontend")]
 impl Source {
     pub fn specified(&self) -> bool {
         self.input.is_some()
@@ -164,6 +178,7 @@ impl Source {
         Ok(config)
     }
 }
+#[cfg(feature = "frontend")]
 impl Execution {
     pub fn load(&self) -> Result<Config> {
         self.source
@@ -189,6 +204,7 @@ pub fn duration(text: &str) -> std::result::Result<u64, String> {
         .filter(|n| *n > 0)
         .ok_or_else(|| "duration must be positive and fit in seconds".into())
 }
+#[cfg(feature = "frontend")]
 pub fn resolve_path(path: &mut Option<PathBuf>, base: &Path) {
     if let Some(path) = path
         && path.is_relative()
@@ -196,6 +212,7 @@ pub fn resolve_path(path: &mut Option<PathBuf>, base: &Path) {
         *path = base.join(&*path);
     }
 }
+#[cfg(feature = "frontend")]
 pub fn resolve_input(input: &mut Option<String>, base: &Path, file: bool) {
     if let Some(input) = input
         && Path::new(input).is_relative()
@@ -205,7 +222,7 @@ pub fn resolve_input(input: &mut Option<String>, base: &Path, file: bool) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
     #[test]
@@ -256,7 +273,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod override_tests {
     use super::*;
     #[test]

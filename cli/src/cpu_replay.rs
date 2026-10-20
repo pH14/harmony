@@ -125,6 +125,7 @@ impl CpuIdentity {
         self
     }
 
+    #[cfg(any(feature = "frontend", test))]
     fn hybrid_topology(&self) -> bool {
         self.hybrid
             || self.implementations.iter().any(|fields| {
@@ -135,11 +136,13 @@ impl CpuIdentity {
             })
     }
 
+    #[cfg(any(feature = "frontend", test))]
     fn heterogeneous(&self) -> bool {
         self.implementations.len() > 1 || self.hybrid_topology()
     }
 }
 
+#[cfg(any(feature = "frontend", test))]
 pub fn warning(recorded: &[CpuIdentity], current: &CpuIdentity) -> Option<String> {
     let reason = if current.heterogeneous() || recorded.iter().any(CpuIdentity::heterogeneous) {
         "the observed host has multiple CPU implementation classes"

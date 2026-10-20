@@ -1067,6 +1067,26 @@ impl Backend for KvmBackend {
         self.accepted_irq.pop_front()
     }
 
+    fn read_x86_regs(&mut self) -> Result<crate::VcpuRegs> {
+        self.ensure_host_affinity()?;
+        self.state_mutation_guard.ensure_healthy()?;
+        self.vcpu
+            .get_regs()
+            .map(|regs| from_kvm_regs(&regs))
+            .map_err(kvm_err)
+    }
+
+    fn read_x86_cpuid_state(&mut self) -> Result<crate::X86CpuidState> {
+        self.ensure_host_affinity()?;
+        self.state_mutation_guard.ensure_healthy()?;
+        let sregs = self.read_sregs2_guarded()?;
+        let xcrs = self.vcpu.get_xcrs().map_err(kvm_err)?;
+        Ok(crate::X86CpuidState {
+            cr4: sregs.cr4,
+            xcr0: xcr0_of(&xcrs),
+        })
+    }
+
     fn complete_read(&mut self, value: u64) -> Result<()> {
         self.ensure_host_affinity()?;
         if self.completion_exit.is_some() {

@@ -104,8 +104,11 @@ impl Manifest {
             expected_outcome: None,
         })
     }
+    #[cfg(feature = "frontend")]
     pub fn read(path: &Path) -> Result<Self> {
-        let record = crate::runs::Manifest::read(path)?;
+        Self::from_record(crate::runs::Manifest::read(path)?)
+    }
+    pub fn from_record(record: crate::runs::Manifest) -> Result<Self> {
         let config = Config::from_shared(&record.config)?;
         let state: State = serde_json::from_value(record.payload.clone())?;
         let uml_host =
@@ -243,6 +246,7 @@ impl Manifest {
     }
 }
 
+#[cfg(feature = "frontend")]
 pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
     let mut outcome = payload.clone();
     if let Some(report) = outcome
@@ -254,7 +258,7 @@ pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
     outcome
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
 

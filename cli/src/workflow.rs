@@ -14,10 +14,12 @@ pub fn saved(mut request: Request) -> Result<u8> {
             .run,
     )?;
     let manifest = Manifest::read(&path)?;
-    if !matches!(
-        request.operation,
-        Operation::Inspect | Operation::Timeline | Operation::Logs
-    ) {
+    if manifest.config.runner.kind != "consonance"
+        && !matches!(
+            request.operation,
+            Operation::Inspect | Operation::Timeline | Operation::Logs
+        )
+    {
         manifest.verify(&path)?;
     }
     if request.operation == Operation::Search && manifest.mode != "branch" {

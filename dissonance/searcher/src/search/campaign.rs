@@ -21,7 +21,7 @@ use crate::search::archive::{
     retention_policy_identifier,
 };
 use crate::search::checkpoint::{
-    CheckpointHeader, CheckpointPlan, CheckpointReader, CheckpointWriter, SEARCH_CHECKPOINT_FORMAT,
+    CheckpointHeader, CheckpointPlan, CheckpointReader, SEARCH_CHECKPOINT_FORMAT,
 };
 use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::draw::{
@@ -39,7 +39,7 @@ use crate::search::duration::{
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const LONGEST_SPLICE_TAIL: usize = 128;
-use crate::search::parallel::{WorkerPoolError, with_worker_pool_observed};
+use crate::search::parallel::{WorkerPoolError, with_worker_pool_routed};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
     CampaignTelemetry, CompletedBufferTelemetry, HostTimes, Moment, TargetCounters, now,
@@ -221,7 +221,15 @@ pub trait CampaignTypes: Sync {
     type Key: ArchiveKey + Debug + Eq + Send + Sync;
     type Milestones: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Progress: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    type Snapshot: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
+    type Snapshot: Clone
+        + Debug
+        + Eq
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + super::snapshot_codec::CheckpointSnapshot
+        + 'static;
     type Observations: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Evidence: Clone + Default;
     type ArchiveReport: Clone;
@@ -246,8 +254,16 @@ pub trait Reporting: CampaignTypes {
         _sequence: u64,
     ) {
     }
-    fn evidence_checkpoint(_evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn write_evidence_checkpoint(
+        _evidence: &Self::Evidence,
+        _out: &mut dyn Write,
+    ) -> Result<(), Box<dyn Error>> {
         Err("this workload cannot write its evidence into a search checkpoint".into())
+    }
+    fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut bytes = Vec::new();
+        Self::write_evidence_checkpoint(evidence, &mut bytes)?;
+        Ok(bytes)
     }
     fn evidence_from_checkpoint(_bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
         Err("this workload cannot read its evidence from a search checkpoint".into())
@@ -448,6 +464,15 @@ pub trait InputPolicy: CampaignTypes {
 }
 
 pub trait TargetExecution: CampaignTypes {
+    fn worker_locality(&self, _target: &Self::Target) -> crate::search::locality::WorkerLocality {
+        crate::search::locality::WorkerLocality::default()
+    }
+    fn snapshot_locality(
+        &self,
+        _snapshot: &Self::Snapshot,
+    ) -> Option<crate::search::locality::LocalityKey> {
+        None
+    }
     fn begin_job_observation(&self) {}
     fn take_job_observation(&self) -> Option<Self::JobObservation> {
         None
@@ -737,8 +762,7 @@ pub struct CampaignCheckpoint<S> {
     pub snapshots: SnapshotCheckpoint<S>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(bound = "S: Serialize + DeserializeOwned")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotCheckpoint<S> {
     pub format: String,
     pub entries: Vec<SnapshotCheckpointEntry<S>>,
@@ -756,17 +780,28 @@ type ArchiveMaterialization<G> = (
     Vec<(u64, <G as CampaignTypes>::Snapshot)>,
 );
 
-impl<S: Serialize + DeserializeOwned> SnapshotCheckpoint<S> {
+impl<S: super::snapshot_codec::CheckpointSnapshot> SnapshotCheckpoint<S> {
     pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(postcard::to_allocvec(self)?)
+        let mut bytes = Vec::new();
+        self.write_to(&mut bytes)?;
+        Ok(bytes)
     }
-
+    pub fn sha256(&self) -> Result<String, Box<dyn Error>> {
+        let mut writer = CheckpointHashWriter(Sha256::new());
+        self.write_to(&mut writer)?;
+        Ok(format!("{:x}", writer.0.finalize()))
+    }
+    pub fn write_to(&self, out: &mut dyn Write) -> Result<(), Box<dyn Error>> {
+        super::snapshot_codec::write_checkpoint(self, out)
+    }
+    pub fn read_from(
+        input: &mut dyn std::io::Read,
+        expected_format: &str,
+    ) -> Result<Self, Box<dyn Error>> {
+        super::snapshot_codec::read_checkpoint(input, expected_format)
+    }
     pub fn from_bytes(bytes: &[u8], expected_format: &str) -> Result<Self, Box<dyn Error>> {
-        let (format, _) = postcard::take_from_bytes::<&str>(bytes)?;
-        if format != expected_format {
-            return Err("snapshot checkpoint format is not recognized".into());
-        }
-        Ok(postcard::from_bytes(bytes)?)
+        Self::read_from(&mut &*bytes, expected_format)
     }
 }
 
@@ -1612,21 +1647,29 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         }
     }
 
-    fn checkpoint_state(&self) -> CoreCheckpoint<G> {
-        CoreCheckpoint {
-            curve: self.curve.clone(),
-            curve_interval: self.curve_interval,
-            bounded_progress_curve: self.bounded_progress_curve,
-            record_progress: self.record_progress,
-            terminal_endpoints: self.terminal_endpoints,
-            terminal_objectives: self.terminal_objectives,
-            execution_failures: self.execution_failures,
-            objectives_reached: self.objectives_reached,
-            objective_witness: self.objective_witness.clone(),
-            sequence: self.sequence,
-            probe_refused: self.probe_refused,
-            mixture_energy: self.mixture_energy,
-        }
+    fn write_checkpoint_state(&self, out: &mut dyn Write) -> Result<(), Box<dyn Error>> {
+        use super::checkpoint::image::StreamedBytes;
+        postcard::to_io(
+            &(
+                StreamedBytes(|out: &mut dyn Write| {
+                    serde_json::to_writer(out, &self.curve)?;
+                    Ok(())
+                }),
+                self.curve_interval,
+                self.bounded_progress_curve,
+                self.record_progress,
+                self.terminal_endpoints,
+                self.terminal_objectives,
+                self.execution_failures,
+                self.objectives_reached,
+                &self.objective_witness,
+                self.sequence,
+                self.probe_refused,
+                self.mixture_energy,
+            ),
+            out,
+        )?;
+        Ok(())
     }
 
     fn restore_state(&mut self, state: CoreCheckpoint<G>) -> Result<(), Box<dyn Error>> {
@@ -3340,7 +3383,7 @@ fn validate_archive_checkpoint<G: Workload + ?Sized>(
         return Err("archive snapshot checkpoint format is not recognized".into());
     }
     let mut writer = CheckpointHashWriter(Sha256::new());
-    postcard::to_io(&checkpoint.snapshots, &mut writer)?;
+    checkpoint.snapshots.write_to(&mut writer)?;
     let actual_sha256 = format!("{:x}", writer.0.finalize());
     if checkpoint.file_sha256 != actual_sha256 {
         return Err("archive snapshot checkpoint bytes do not match their SHA-256".into());
@@ -3476,7 +3519,7 @@ where
     let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
     let first_worker_start = Mutex::new(first_worker_start);
     let mut coordinator = None;
-    let ((), worker_telemetry) = with_worker_pool_observed(
+    let pool_outcome = with_worker_pool_routed(
         config.workers,
         |worker| {
             if worker == 0 {
@@ -3498,6 +3541,7 @@ where
             Ok((reservation, outcome))
         },
         |target| workload.telemetry(target),
+        |target| workload.worker_locality(target),
         || workload.begin_job_observation(),
         || workload.take_job_observation(),
         observer
@@ -3519,12 +3563,18 @@ where
             pool.wait_ready(config.workers)?;
             while campaign.reserve_next()? {
                 for job in campaign.plan(usize::MAX) {
-                    pool.dispatch((job.planned_finish, job.reservation), job)?;
+                    #[cfg(test)]
+                    tests::before_locality_dispatch(pool, job.reservation, true)?;
+                    let locality = workload.snapshot_locality(&job.snapshot);
+                    pool.dispatch_local((job.planned_finish, job.reservation), job, locality)?;
                 }
             }
             loop {
                 for job in campaign.plan(usize::MAX) {
-                    pool.dispatch((job.planned_finish, job.reservation), job)?;
+                    #[cfg(test)]
+                    tests::before_locality_dispatch(pool, job.reservation, false)?;
+                    let locality = workload.snapshot_locality(&job.snapshot);
+                    pool.dispatch_local((job.planned_finish, job.reservation), job, locality)?;
                 }
                 if campaign.finished() {
                     break;
@@ -3625,7 +3675,16 @@ where
             pool.close();
             Ok(())
         },
-    )?;
+    );
+    let ((), worker_telemetry) = match pool_outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return match coordinator.as_mut() {
+                Some(campaign) => campaign.finish_persistence(Err(error)),
+                None => Err(error),
+            };
+        }
+    };
     coordinator
         .ok_or("campaign coordinator never started")?
         .finish(worker_telemetry)
@@ -3936,9 +3995,10 @@ fn restore_search_checkpoint<G: Workload>(
 #[allow(clippy::too_many_arguments)]
 fn write_search_checkpoint<G: Workload>(
     workload: &G,
-    config: &CampaignConfig<G>,
-    executable_identity: &str,
-    checkpoints: &mut CheckpointWriter<<G::Key as ArchiveKey>::Progress>,
+    checkpoints: &mut super::checkpoint::publisher::CheckpointPublisher<
+        G::Snapshot,
+        <G::Key as ArchiveKey>::Progress,
+    >,
     reason: &str,
     core: &CoordinatorCore<G>,
     draw_state: &DrawTables<G::Action>,
@@ -3955,51 +4015,79 @@ fn write_search_checkpoint<G: Workload>(
     spec_records: &BTreeMap<usize, JobSpecRecord<G>>,
 ) -> Result<(), Box<dyn Error>> {
     workload.verify_integrity()?;
-    let reservations = schedule
-        .iter()
-        .map(|(_, reservation)| *reservation)
-        .collect::<BTreeSet<_>>();
-    let in_flight = reservations
-        .into_iter()
-        .map(|reservation| -> Result<_, Box<dyn Error>> {
-            let pending = pending
-                .get(&reservation)
-                .or_else(|| completed.get(&reservation).map(|job| &job.pending))
-                .ok_or("search checkpoint lost an in-flight reservation")?;
-            let spec = spec_records
-                .get(&reservation)
-                .ok_or("search checkpoint lost an in-flight job input")?;
-            Ok(InFlightJobRef {
-                reservation,
+    let in_flight = InFlightCheckpointRef {
+        schedule,
+        pending,
+        completed,
+        spec_records,
+    };
+    checkpoints.publish(
+        super::checkpoint::publisher::AdmissionVersion {
+            executions: core.sequence,
+            reserved,
+            admitted,
+            planned_clock,
+        },
+        reason,
+        core.archive.resident_snapshot_entries(),
+        |out| {
+            core.write_checkpoint_state(&mut *out)?;
+            postcard::to_io(&core.archive, &mut *out)?;
+            super::checkpoint::image::write_streamed_bytes(&mut *out, |out| {
+                G::write_evidence_checkpoint(&core.evidence, out)
+            })?;
+            super::checkpoint::image::write_streamed_bytes(&mut *out, |out| {
+                draw_state.write_resume(out)
+            })?;
+            duration_policies.write_checkpoint(&mut *out)?;
+            postcard::to_io(rand, &mut *out)?;
+            postcard::to_io(counters, &mut *out)?;
+            postcard::to_io(profile, &mut *out)?;
+            postcard::to_io(&in_flight, &mut *out)?;
+            Ok(())
+        },
+    )
+}
+
+struct InFlightCheckpointRef<'a, G: Workload> {
+    schedule: &'a BTreeSet<(u64, usize)>,
+    pending: &'a BTreeMap<usize, PendingJob<G>>,
+    completed: &'a BTreeMap<usize, CompletedJob<G>>,
+    spec_records: &'a BTreeMap<usize, JobSpecRecord<G>>,
+}
+impl<G: Workload> Serialize for InFlightCheckpointRef<'_, G> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        if self.spec_records.len() != self.schedule.len() {
+            return Err(serde::ser::Error::custom(
+                "search checkpoint in-flight input count differs",
+            ));
+        }
+        let mut sequence = serializer.serialize_seq(Some(self.schedule.len()))?;
+        for (reservation, spec) in self.spec_records {
+            let pending = self
+                .pending
+                .get(reservation)
+                .or_else(|| self.completed.get(reservation).map(|job| &job.pending))
+                .ok_or_else(|| {
+                    serde::ser::Error::custom("search checkpoint lost an in-flight reservation")
+                })?;
+            if !self
+                .schedule
+                .contains(&(pending.planned_finish, *reservation))
+            {
+                return Err(serde::ser::Error::custom(
+                    "search checkpoint in-flight schedule differs",
+                ));
+            }
+            sequence.serialize_element(&InFlightJobRef {
+                reservation: *reservation,
                 spec,
                 pending,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let header = search_checkpoint_header(
-        workload,
-        config,
-        executable_identity,
-        reason,
-        core.sequence,
-        reserved,
-        admitted,
-        planned_clock,
-    );
-    let evidence = G::evidence_checkpoint(&core.evidence)?;
-    let draw = draw_state.to_resume_bytes()?;
-    checkpoints.write(&header, core.archive.resident_snapshot_entries(), |out| {
-        postcard::to_io(&core.checkpoint_state(), &mut *out)?;
-        postcard::to_io(&core.archive, &mut *out)?;
-        postcard::to_io(&evidence, &mut *out)?;
-        postcard::to_io(&draw, &mut *out)?;
-        postcard::to_io(&duration_policies.checkpoint(), &mut *out)?;
-        postcard::to_io(rand, &mut *out)?;
-        postcard::to_io(counters, &mut *out)?;
-        postcard::to_io(profile, &mut *out)?;
-        postcard::to_io(&in_flight, &mut *out)?;
-        Ok(())
-    })
+            })?;
+        }
+        sequence.end()
+    }
 }
 
 fn finish_record<G: Workload>(
@@ -5380,6 +5468,7 @@ mod tests {
     use std::{
         collections::BTreeSet,
         error::Error,
+        fmt,
         time::{Duration, Instant},
     };
 
@@ -5441,9 +5530,13 @@ mod tests {
     }
     #[derive(Default)]
     struct LiveTargets {
+        locality: bool,
+        locality_reads: std::sync::atomic::AtomicUsize,
+        residency: Option<Arc<ResidencyFixture>>,
         bootstrap_readiness: Option<BootstrapReadiness>,
         refuse: bool,
         integrity_invalidated: std::sync::atomic::AtomicBool,
+        integrity_failure_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         fail_next_target: std::sync::atomic::AtomicBool,
         first_action_started: std::sync::atomic::AtomicBool,
         second_selection_waits_for_first_action: std::sync::atomic::AtomicBool,
@@ -5459,6 +5552,8 @@ mod tests {
         value: u8,
         execution_work: u64,
         _counted: Option<TargetCount>,
+        locality_worker: Option<u32>,
+        resident_snapshots: std::collections::BTreeMap<u8, Box<u8>>,
     }
 
     struct TargetCount(Arc<LiveTargets>);
@@ -5503,7 +5598,67 @@ mod tests {
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static EVIDENCE_WRITE_FAILURE: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
+        static EVIDENCE_PRESSURE_WRITE: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
     }
+
+    struct EvidenceWriteFailureGuard(Option<(usize, usize)>, Option<(usize, usize)>);
+
+    impl EvidenceWriteFailureGuard {
+        fn new(pass: usize) -> Self {
+            Self(
+                EVIDENCE_WRITE_FAILURE.replace(Some((pass, 0))),
+                EVIDENCE_PRESSURE_WRITE.replace(None),
+            )
+        }
+
+        fn after_overflow() -> Self {
+            let guard = Self::new(2);
+            EVIDENCE_PRESSURE_WRITE.set(Some((0, 0)));
+            guard
+        }
+
+        fn calls(&self) -> usize {
+            EVIDENCE_WRITE_FAILURE.get().unwrap().1
+        }
+    }
+
+    impl Drop for EvidenceWriteFailureGuard {
+        fn drop(&mut self) {
+            EVIDENCE_WRITE_FAILURE.set(self.0);
+            EVIDENCE_PRESSURE_WRITE.set(self.1);
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestEvidenceWriteCause;
+
+    impl fmt::Display for TestEvidenceWriteCause {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("typed evidence writer cause")
+        }
+    }
+
+    impl Error for TestEvidenceWriteCause {}
+
+    #[derive(Debug)]
+    struct TestEvidenceWriteError {
+        pass: usize,
+        cause: TestEvidenceWriteCause,
+    }
+
+    impl fmt::Display for TestEvidenceWriteError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "typed evidence writer pass {}", self.pass)
+        }
+    }
+
+    impl Error for TestEvidenceWriteError {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(&self.cause)
+        }
+    }
+
     impl CampaignTypes for TestWorkload {
         type JobObservation = ();
         type Target = TestTarget;
@@ -5519,8 +5674,41 @@ mod tests {
     }
 
     impl Reporting for TestWorkload {
-        fn evidence_checkpoint(evidence: &u8) -> Result<Vec<u8>, Box<dyn Error>> {
-            Ok(vec![*evidence])
+        fn write_evidence_checkpoint(
+            evidence: &u8,
+            out: &mut dyn Write,
+        ) -> Result<(), Box<dyn Error>> {
+            if let Some((pass, calls)) = EVIDENCE_WRITE_FAILURE.get() {
+                EVIDENCE_WRITE_FAILURE.set(Some((pass, calls + 1)));
+                if let Some((attempts, completed)) = EVIDENCE_PRESSURE_WRITE.get() {
+                    let result = (|| -> std::io::Result<()> {
+                        for _ in 0..128 {
+                            out.write_all(&[0; 1024])?;
+                        }
+                        Ok(())
+                    })();
+                    EVIDENCE_PRESSURE_WRITE.set(Some((
+                        attempts + 1,
+                        completed + usize::from(result.is_ok()),
+                    )));
+                    if calls + 1 == pass {
+                        return Err(Box::new(TestEvidenceWriteError {
+                            pass,
+                            cause: TestEvidenceWriteCause,
+                        }));
+                    }
+                    result?;
+                    return Ok(());
+                }
+                if calls + 1 == pass {
+                    return Err(Box::new(TestEvidenceWriteError {
+                        pass,
+                        cause: TestEvidenceWriteCause,
+                    }));
+                }
+            }
+            out.write_all(&[*evidence])?;
+            Ok(())
         }
         fn evidence_from_checkpoint(bytes: &[u8]) -> Result<u8, Box<dyn Error>> {
             Ok(bytes.first().copied().unwrap_or_default())
@@ -5648,6 +5836,44 @@ mod tests {
     impl Error for TestIntegrityViolation {}
 
     impl TargetExecution for TestWorkload {
+        fn worker_locality(&self, target: &TestTarget) -> crate::search::locality::WorkerLocality {
+            use crate::search::locality::{LocalityKey, WorkerLocality};
+            if let Some(fixture) = self
+                .targets
+                .as_ref()
+                .and_then(|targets| targets.residency.as_ref())
+            {
+                if target.locality_worker == Some(0) && fixture.case == ResidencyCase::Refill {
+                    fixture.wait_for(|state| state.first_admitted);
+                }
+                return if fixture.hints {
+                    WorkerLocality::new(
+                        target
+                            .resident_snapshots
+                            .keys()
+                            .map(|value| (LocalityKey([*value; 32]), 1)),
+                    )
+                } else {
+                    WorkerLocality::default()
+                };
+            }
+            if let Some(targets) = self.targets.as_ref().filter(|targets| targets.locality) {
+                targets
+                    .locality_reads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                WorkerLocality::new([(LocalityKey([target.value; 32]), 1)])
+            } else {
+                WorkerLocality::default()
+            }
+        }
+
+        fn snapshot_locality(&self, snapshot: &u8) -> Option<crate::search::locality::LocalityKey> {
+            self.targets
+                .as_ref()
+                .filter(|targets| targets.locality)
+                .map(|_| crate::search::locality::LocalityKey([*snapshot; 32]))
+        }
+
         fn take_job_observation(&self) -> Option<Self::JobObservation> {
             Some(())
         }
@@ -5672,11 +5898,14 @@ mod tests {
             })
         }
         fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
-            if self.targets.as_ref().is_some_and(|targets| {
+            if let Some(targets) = self.targets.as_ref().filter(|targets| {
                 targets
                     .integrity_invalidated
                     .load(std::sync::atomic::Ordering::SeqCst)
             }) {
+                if let Some(hook) = targets.integrity_failure_hook.lock().unwrap().clone() {
+                    hook();
+                }
                 return Err(Box::new(TestIntegrityViolation));
             }
             Ok(())
@@ -5716,8 +5945,15 @@ mod tests {
             targets
                 .most
                 .fetch_max(live, std::sync::atomic::Ordering::SeqCst);
+            let locality_worker = LOCALITY_WORKER.with(std::cell::Cell::get);
             Ok(TestTarget {
                 _counted: Some(TargetCount(Arc::clone(targets))),
+                locality_worker,
+                resident_snapshots: if targets.residency.is_some() && locality_worker == Some(1) {
+                    std::collections::BTreeMap::from([(0, Box::new(0))])
+                } else {
+                    std::collections::BTreeMap::new()
+                },
                 ..TestTarget::default()
             })
         }
@@ -5729,6 +5965,30 @@ mod tests {
             target: &mut Self::Target,
             snapshot: &Self::Snapshot,
         ) -> Result<(), Box<dyn Error>> {
+            if let Some(fixture) = self
+                .targets
+                .as_ref()
+                .and_then(|targets| targets.residency.as_ref())
+                && let Some(worker) = target.locality_worker
+            {
+                let reconstructed = if let std::collections::btree_map::Entry::Vacant(entry) =
+                    target.resident_snapshots.entry(*snapshot)
+                {
+                    let decoded = postcard::from_bytes(&postcard::to_stdvec(snapshot)?)?;
+                    entry.insert(Box::new(decoded));
+                    true
+                } else {
+                    false
+                };
+                target.value = **target.resident_snapshots.get(snapshot).unwrap();
+                fixture
+                    .state
+                    .lock()
+                    .unwrap()
+                    .restores
+                    .push((worker, *snapshot, reconstructed));
+                return Ok(());
+            }
             target.value = *snapshot;
             Ok(())
         }
@@ -5785,6 +6045,16 @@ mod tests {
                 let (captured, current, snapshots) = calls.get();
                 calls.set((captured, current, snapshots + 1));
             });
+            if self
+                .targets
+                .as_ref()
+                .is_some_and(|targets| targets.residency.is_some())
+            {
+                target
+                    .resident_snapshots
+                    .entry(target.value)
+                    .or_insert_with(|| Box::new(target.value));
+            }
             target.snapshot()
         }
         fn candidate_replay_certificate(
@@ -7065,7 +7335,19 @@ mod tests {
                 .unwrap()
                 .clone(),
         );
-        reject_entries(source_report.clone(), duplicate, "duplicate entry IDs");
+        assert!(
+            duplicate
+                .to_bytes()
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate")
+        );
+        assert!(
+            super::validate_archive_checkpoint_entries(&workload, &source_report, &duplicate)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate entry IDs")
+        );
         let mut unknown = source_snapshots.clone();
         unknown
             .entries
@@ -8356,7 +8638,6 @@ mod tests {
             ids: vec![7],
         })
         .expect("older layout encodes");
-        assert!(postcard::from_bytes::<SnapshotCheckpoint<u8>>(&older).is_err());
         let error = SnapshotCheckpoint::<u8>::from_bytes(&older, "test-checkpoint-v1")
             .expect_err("an older checkpoint is rejected")
             .to_string();
@@ -8639,6 +8920,282 @@ mod tests {
         assert_eq!(replayed, live);
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ResidencyCase {
+        Initial,
+        Refill,
+        BusyOwner,
+    }
+
+    #[derive(Debug, Default)]
+    struct ResidencyState {
+        first_admitted: bool,
+        starts: Vec<(usize, u32)>,
+        restores: Vec<(u32, u8, bool)>,
+        dispatches: Vec<(usize, bool, Vec<u32>)>,
+    }
+
+    struct ResidencyFixture {
+        case: ResidencyCase,
+        hints: bool,
+        state: Mutex<ResidencyState>,
+        changed: std::sync::Condvar,
+    }
+
+    impl ResidencyFixture {
+        #[allow(clippy::disallowed_methods)]
+        fn wait_for(&self, ready: impl Fn(&ResidencyState) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut state = self.state.lock().unwrap();
+            while !ready(&state) {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(!remaining.is_zero(), "residency fixture stalled: {state:?}");
+                state = self.changed.wait_timeout(state, remaining).unwrap().0;
+            }
+        }
+    }
+
+    std::thread_local! {
+        static LOCALITY_WORKER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+        static LOCALITY_DISPATCH: std::cell::RefCell<Option<Arc<ResidencyFixture>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    struct ResidencyScope {
+        previous: Option<Arc<ResidencyFixture>>,
+        worker: Option<u32>,
+    }
+
+    impl ResidencyScope {
+        fn install(fixture: Arc<ResidencyFixture>) -> Self {
+            Self {
+                previous: LOCALITY_DISPATCH.with(|slot| slot.replace(Some(fixture))),
+                worker: LOCALITY_WORKER.with(std::cell::Cell::get),
+            }
+        }
+    }
+
+    impl Drop for ResidencyScope {
+        fn drop(&mut self) {
+            LOCALITY_DISPATCH.with(|slot| slot.replace(self.previous.take()));
+            LOCALITY_WORKER.with(|slot| slot.set(self.worker));
+        }
+    }
+
+    pub(super) fn before_locality_dispatch<Key: Ord, Job, Output, O>(
+        pool: &crate::search::parallel::WorkerPool<Key, Job, Output, O>,
+        reservation: usize,
+        initial: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        let fixture = LOCALITY_DISPATCH.with(|slot| slot.borrow().clone());
+        if let Some(fixture) = fixture {
+            let idle = match (fixture.case, reservation) {
+                (ResidencyCase::Refill, 0) => vec![1],
+                (ResidencyCase::BusyOwner, 1) => {
+                    fixture.wait_for(|state| !state.starts.is_empty());
+                    let first = fixture.state.lock().unwrap().starts[0];
+                    assert_eq!(first.0, 0);
+                    vec![1 - first.1]
+                }
+                _ => vec![0, 1],
+            };
+            pool.wait_idle(&idle)?;
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .dispatches
+                .push((reservation, initial, idle));
+        }
+        Ok(())
+    }
+
+    impl super::CampaignWatch<TestWorkload> for ResidencyFixture {
+        type Note = usize;
+
+        fn run(
+            &self,
+            job: &JobSpec<TestWorkload>,
+            run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+        ) -> super::WatchedJob<TestWorkload, Self::Note> {
+            let worker = LOCALITY_WORKER.with(std::cell::Cell::get).unwrap();
+            self.state
+                .lock()
+                .unwrap()
+                .starts
+                .push((job.reservation, worker));
+            self.changed.notify_all();
+            if self.case == ResidencyCase::BusyOwner && job.reservation == 0 {
+                self.wait_for(|state| {
+                    state
+                        .starts
+                        .iter()
+                        .any(|(reservation, _)| *reservation == 1)
+                });
+            }
+            Ok((run()?, job.reservation))
+        }
+
+        fn admitted(&self, note: usize, _campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+            if note == 0 {
+                self.state.lock().unwrap().first_admitted = true;
+                self.changed.notify_all();
+            }
+        }
+    }
+
+    #[test]
+    fn campaign_locality_avoids_reconstruction_in_both_drains_and_falls_back_when_owner_busy() {
+        let mut reconstructions = Vec::new();
+        let mut assignments = Vec::new();
+        for case in [
+            ResidencyCase::Initial,
+            ResidencyCase::Refill,
+            ResidencyCase::BusyOwner,
+        ] {
+            let mut reference = None;
+            for hints in [false, true] {
+                let fixture = Arc::new(ResidencyFixture {
+                    case,
+                    hints,
+                    state: Mutex::new(ResidencyState::default()),
+                    changed: std::sync::Condvar::new(),
+                });
+                let _scope = ResidencyScope::install(Arc::clone(&fixture));
+                let workload = TestWorkload {
+                    bootstrap_objective: false,
+                    targets: Some(Arc::new(LiveTargets {
+                        locality: true,
+                        residency: Some(Arc::clone(&fixture)),
+                        ..LiveTargets::default()
+                    })),
+                };
+                let mut config = three_worker_config();
+                config.workers = 2;
+                config.window = if case == ResidencyCase::BusyOwner {
+                    2
+                } else {
+                    1
+                };
+                config.execution_budget = if case == ResidencyCase::Initial { 1 } else { 2 };
+                config.materialize_final_artifacts = false;
+                let mut stream = Vec::new();
+                let outcome = super::run_campaign_watched(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions {
+                        placement: Some(ThreadPlacement::new(|thread| {
+                            LOCALITY_WORKER.with(|slot| {
+                                slot.set(match thread {
+                                    PlacedThread::Worker(worker) => Some(worker),
+                                    PlacedThread::Coordinator => None,
+                                })
+                            });
+                            Ok(())
+                        })),
+                        ..CampaignExecutionOptions::default()
+                    },
+                    fixture.as_ref(),
+                )
+                .unwrap();
+                assert!(outcome.1.entries.is_empty());
+                let logical = (
+                    stream,
+                    serde_json::to_vec(&outcome.0).unwrap(),
+                    outcome.1.to_bytes().unwrap(),
+                );
+                if let Some(expected) = &reference {
+                    assert_eq!(&logical, expected, "case={case:?}");
+                } else {
+                    reference = Some(logical);
+                }
+                let state = fixture.state.lock().unwrap();
+                assert_eq!(state.restores.len(), config.execution_budget as usize);
+                assert_eq!(state.dispatches.len(), config.execution_budget as usize);
+                assert!(state.dispatches[0].1);
+                if case == ResidencyCase::Refill {
+                    assert_eq!(state.dispatches[0].2, [1]);
+                    assert!(!state.dispatches[1].1);
+                    assert_eq!(state.dispatches[1].2, [0, 1]);
+                }
+                if case == ResidencyCase::Initial {
+                    assert_eq!(state.dispatches[0].2, [0, 1]);
+                }
+                if case == ResidencyCase::BusyOwner {
+                    assert!(state.dispatches[1].1);
+                    assert_eq!(state.dispatches[1].2.len(), 1);
+                }
+                reconstructions.push(state.restores.iter().filter(|(_, _, cold)| *cold).count());
+                let mut starts = state.starts.clone();
+                starts.sort_unstable();
+                assignments.push(starts);
+            }
+        }
+        assert_eq!(reconstructions, [1, 0, 1, 0, 1, 1]);
+        assert_eq!(
+            assignments,
+            [
+                vec![(0, 0)],
+                vec![(0, 1)],
+                vec![(0, 1), (1, 0)],
+                vec![(0, 1), (1, 1)],
+                vec![(0, 0), (1, 1)],
+                vec![(0, 1), (1, 0)],
+            ]
+        );
+    }
+
+    #[test]
+    fn locality_hints_preserve_complete_logical_campaign_streams_across_worker_counts() {
+        for seed in [5, 11, 19] {
+            let mut reference = None;
+            for workers in [1, 3] {
+                for locality in [false, true] {
+                    let targets = Arc::new(LiveTargets {
+                        locality,
+                        ..LiveTargets::default()
+                    });
+                    let workload = TestWorkload {
+                        bootstrap_objective: false,
+                        targets: Some(Arc::clone(&targets)),
+                    };
+                    let mut config = three_worker_config();
+                    config.campaign_seed = seed;
+                    config.workers = workers;
+                    config.window = 6;
+                    let mut stream = Vec::new();
+                    let outcome = run_campaign_checkpointed(
+                        &workload,
+                        &config,
+                        &CampaignOrigin::Genesis,
+                        &mut stream,
+                        None,
+                    )
+                    .unwrap();
+                    if locality {
+                        assert!(
+                            targets
+                                .locality_reads
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                > 0
+                        );
+                    }
+                    let logical = (stream, serde_json::to_vec(&outcome.0).unwrap());
+                    if let Some(expected) = &reference {
+                        assert_eq!(
+                            &logical, expected,
+                            "seed={seed}, workers={workers}, locality={locality}"
+                        );
+                    } else {
+                        reference = Some(logical);
+                    }
+                }
+            }
+        }
+    }
+
     fn job_lines(stream: &[u8]) -> Vec<(usize, CampaignJobRecord<EmpiricalStepCheckpoint>)> {
         std::str::from_utf8(stream)
             .expect("stream is text")
@@ -8907,6 +9464,8 @@ mod tests {
                                 on_marks: false,
                                 on_top_progress: false,
                                 checkpoint_owner: None,
+                                max_image_bytes: 64 << 20,
+                                before_write: None,
                             }),
                             ..CampaignExecutionOptions::default()
                         },
@@ -9217,6 +9776,8 @@ mod tests {
                     on_marks: false,
                     on_top_progress: false,
                     checkpoint_owner: None,
+                    max_image_bytes: 64 << 20,
+                    before_write: None,
                 }),
                 ..CampaignExecutionOptions::default()
             },
@@ -9998,6 +10559,696 @@ mod tests {
             retention: RetentionPolicy::Unprobed,
             objective_witness_path: None,
         }
+    }
+
+    fn run_direct_checkpointed(
+        workload: &TestWorkload,
+        config: &CampaignConfig<TestWorkload>,
+        stream: &mut dyn Write,
+        options: CampaignExecutionOptions,
+    ) -> Result<CampaignOutcome<TestWorkload>, Box<dyn Error>> {
+        let mut coordinator = CampaignCoordinator::start(
+            workload,
+            config,
+            &CampaignOrigin::Genesis,
+            stream,
+            None,
+            options,
+        )?;
+        while coordinator.reserve_next()? {}
+        let mut target = workload.new_target()?;
+        while !coordinator.finished() {
+            let jobs = coordinator.plan(2);
+            if jobs.is_empty() {
+                return Err("direct coordinator has no runnable jobs".into());
+            }
+            for job in jobs.into_iter().rev() {
+                coordinator.admit(run_job(workload, config, &mut target, &job)?)?;
+            }
+        }
+        coordinator.finish(Vec::new())
+    }
+
+    #[test]
+    fn borrowed_core_checkpoint_preserves_current_owned_reference_bytes() {
+        let (_, _, mut core, _) = test_core();
+        core.objective_witness = Some(Input {
+            actions: vec![TestAction::new(13, 2)],
+        });
+        core.sequence = 17;
+        core.probe_refused = 19;
+        core.terminal_endpoints = 23;
+        let reference = super::CoreCheckpoint::<TestWorkload> {
+            curve: core.curve.clone(),
+            curve_interval: core.curve_interval,
+            bounded_progress_curve: core.bounded_progress_curve,
+            record_progress: core.record_progress,
+            terminal_endpoints: core.terminal_endpoints,
+            terminal_objectives: core.terminal_objectives,
+            execution_failures: core.execution_failures,
+            objectives_reached: core.objectives_reached,
+            objective_witness: core.objective_witness.clone(),
+            sequence: core.sequence,
+            probe_refused: core.probe_refused,
+            mixture_energy: core.mixture_energy,
+        };
+        let expected = postcard::to_allocvec(&reference).unwrap();
+        let mut streamed = Vec::new();
+        core.write_checkpoint_state(&mut streamed).unwrap();
+        assert_eq!(streamed, expected);
+        let restored: super::CoreCheckpoint<TestWorkload> =
+            postcard::from_bytes(&streamed).unwrap();
+        assert_eq!(restored.sequence, 17);
+        assert_eq!(restored.probe_refused, 19);
+        assert_eq!(restored.objective_witness, core.objective_witness);
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn wait_for_checkpoint_worker(coordinator: &CampaignCoordinator<'_, TestWorkload>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !coordinator.checkpoint_worker_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "checkpoint worker did not finish"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn coordinator_preserves_typed_evidence_writer_errors_in_both_streaming_passes() {
+        for max_image_bytes in [1, 64 << 20] {
+            for pass in [1, 2] {
+                let directory = std::env::temp_dir().join(format!(
+                    "coordinator-evidence-error-{}-{max_image_bytes}-{pass}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&directory);
+                let mut config = three_worker_config();
+                config.window = 1;
+                config.execution_budget = 1;
+                let workload = TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                };
+                let mut stream = Vec::new();
+                let mut coordinator = CampaignCoordinator::start(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions {
+                        checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                            directory: directory.clone(),
+                            every: std::num::NonZeroU64::new(1),
+                            on_marks: false,
+                            on_top_progress: false,
+                            checkpoint_owner: None,
+                            max_image_bytes,
+                            before_write: None,
+                        }),
+                        ..CampaignExecutionOptions::default()
+                    },
+                )
+                .unwrap();
+                assert!(coordinator.reserve_next().unwrap());
+                let job = coordinator.plan(1).pop().unwrap();
+                let mut target = workload.new_target().unwrap();
+                let guard = EvidenceWriteFailureGuard::new(pass);
+                let error = coordinator
+                    .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                    .unwrap_err();
+                assert!(
+                    error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>()
+                );
+                let primary = error.source().unwrap();
+                assert_eq!(
+                    primary
+                        .downcast_ref::<TestEvidenceWriteError>()
+                        .unwrap()
+                        .pass,
+                    pass
+                );
+                assert!(primary.source().unwrap().is::<TestEvidenceWriteCause>());
+                assert_eq!(guard.calls(), pass);
+                assert!(coordinator.reserve_next().is_err());
+                assert!(coordinator.plan(usize::MAX).is_empty());
+                assert!(coordinator.finish(Vec::new()).is_err());
+                assert_eq!(guard.calls(), pass);
+                assert!(!directory.join("000000000001-interval.ckpt").exists());
+                assert!(!directory.join("000000000001-final.ckpt").exists());
+                assert!(!directory.join("checkpoints.jsonl").exists());
+                assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+                }));
+                std::fs::remove_dir_all(directory).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn coordinator_preserves_a_one_shot_typed_error_after_evidence_capture_overflows() {
+        let directory = std::env::temp_dir().join(format!(
+            "coordinator-evidence-overflow-error-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut config = three_worker_config();
+        config.window = 1;
+        config.execution_budget = 1;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: std::num::NonZeroU64::new(1),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                    max_image_bytes: 64 << 10,
+                    before_write: None,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(coordinator.reserve_next().unwrap());
+        let job = coordinator.plan(1).pop().unwrap();
+        let mut target = workload.new_target().unwrap();
+        let guard = EvidenceWriteFailureGuard::after_overflow();
+        let error = coordinator
+            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .unwrap_err();
+        assert!(error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>());
+        let primary = error.source().unwrap();
+        assert_eq!(
+            primary
+                .downcast_ref::<TestEvidenceWriteError>()
+                .unwrap()
+                .pass,
+            2
+        );
+        assert!(primary.source().unwrap().is::<TestEvidenceWriteCause>());
+        assert_eq!(coordinator.checkpoint_capture_overflows(), 1);
+        assert_eq!(guard.calls(), 2);
+        assert_eq!(EVIDENCE_PRESSURE_WRITE.get(), Some((2, 2)));
+        assert!(coordinator.reserve_next().is_err());
+        assert!(coordinator.plan(usize::MAX).is_empty());
+        assert!(coordinator.finish(Vec::new()).is_err());
+        assert_eq!(guard.calls(), 2);
+        assert!(!directory.join("000000000001-interval.ckpt").exists());
+        assert!(!directory.join("000000000001-final.ckpt").exists());
+        assert!(!directory.join("checkpoints.jsonl").exists());
+        assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+        }));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn typed_integrity_failure_precedes_both_ready_and_pending_persistence_failure() {
+        for ready in [false, true] {
+            for receive in [false, true] {
+                let directory = std::env::temp_dir().join(format!(
+                    "direct-integrity-persistence-{}-{ready}-{receive}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&directory);
+                std::fs::create_dir_all(directory.join("000000000001-interval.ckpt")).unwrap();
+                let (entered_sender, entered) = mpsc::channel();
+                let (released, release) = mpsc::channel();
+                let release = Mutex::new(release);
+                let mut config = three_worker_config();
+                config.window = 1;
+                config.execution_budget = 2;
+                let targets = Arc::new(LiveTargets::default());
+                let workload = TestWorkload {
+                    bootstrap_objective: false,
+                    targets: Some(targets.clone()),
+                };
+                let mut stream = Vec::new();
+                let mut coordinator = CampaignCoordinator::start(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions {
+                        checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                            directory: directory.clone(),
+                            every: std::num::NonZeroU64::new(1),
+                            on_marks: false,
+                            on_top_progress: false,
+                            checkpoint_owner: None,
+                            max_image_bytes: 64 << 20,
+                            before_write: Some(super::super::checkpoint::publisher::TestWriteHook(
+                                Arc::new(move |_| {
+                                    entered_sender.send(()).unwrap();
+                                    release.lock().unwrap().recv().unwrap();
+                                }),
+                            )),
+                        }),
+                        ..CampaignExecutionOptions::default()
+                    },
+                )
+                .unwrap();
+                assert!(coordinator.reserve_next().unwrap());
+                let job = coordinator.plan(1).pop().unwrap();
+                let mut target = workload.new_target().unwrap();
+                coordinator
+                    .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                    .unwrap();
+                entered.recv_timeout(Duration::from_secs(10)).unwrap();
+                let next = receive.then(|| coordinator.plan(1).pop().unwrap().reservation);
+                if ready {
+                    released.send(()).unwrap();
+                    wait_for_checkpoint_worker(&coordinator);
+                } else {
+                    assert!(!coordinator.checkpoint_worker_finished());
+                    let released = Mutex::new(Some(released));
+                    *targets.integrity_failure_hook.lock().unwrap() = Some(Arc::new(move || {
+                        if let Some(released) = released.lock().unwrap().take() {
+                            released.send(()).unwrap();
+                        }
+                    }));
+                }
+                targets
+                    .integrity_invalidated
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let error = match next {
+                    Some(reservation) => coordinator
+                        .fail(reservation, "worker error".into())
+                        .unwrap_err(),
+                    None => coordinator.reserve_next().unwrap_err(),
+                };
+                assert!(
+                    error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>()
+                );
+                assert!(error.source().unwrap().is::<TestIntegrityViolation>());
+                assert!(coordinator.plan(usize::MAX).is_empty());
+                let final_error = coordinator.finish(Vec::new()).unwrap_err();
+                assert!(
+                    final_error
+                        .is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>()
+                );
+                assert!(final_error.source().unwrap().is::<TestIntegrityViolation>());
+                assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+                }));
+                std::fs::remove_dir_all(directory).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn a_direct_coordinator_cannot_complete_after_handing_back_a_publication_failure() {
+        let directory =
+            std::env::temp_dir().join(format!("direct-checkpoint-poison-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("000000000001-interval.ckpt")).unwrap();
+        let mut config = three_worker_config();
+        config.window = 1;
+        config.execution_budget = 1;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: std::num::NonZeroU64::new(1),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                    max_image_bytes: 64 << 20,
+                    before_write: None,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(coordinator.reserve_next().unwrap());
+        let job = coordinator.plan(1).pop().unwrap();
+        let mut target = workload.new_target().unwrap();
+        coordinator
+            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .unwrap();
+        wait_for_checkpoint_worker(&coordinator);
+        assert!(
+            coordinator
+                .reserve_next()
+                .unwrap_err()
+                .is::<super::super::checkpoint::publisher::PersistenceFailure>()
+        );
+        coordinator.watch_admissions();
+        coordinator.unwatch_admissions();
+        assert!(coordinator.plan(usize::MAX).is_empty());
+        assert!(coordinator.reserve_next().is_err());
+        assert!(
+            coordinator
+                .fail(job.reservation, "another worker error".into())
+                .is_err()
+        );
+        assert!(coordinator.finish(Vec::new()).is_err());
+        assert!(!directory.join("000000000001-final.ckpt").exists());
+        assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+        }));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn direct_coordinator_gap_finalization_keeps_primary_and_pending_writer_failure() {
+        let directory =
+            std::env::temp_dir().join(format!("direct-checkpoint-gap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("000000000001-interval.ckpt")).unwrap();
+        let (entered_sender, entered) = mpsc::channel();
+        let (released, release) = mpsc::channel();
+        let release = Mutex::new(release);
+        let mut config = three_worker_config();
+        config.window = 1;
+        config.execution_budget = 3;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: std::num::NonZeroU64::new(1),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                    max_image_bytes: 64 << 20,
+                    before_write: Some(super::super::checkpoint::publisher::TestWriteHook(
+                        Arc::new(move |_| {
+                            entered_sender.send(()).unwrap();
+                            release.lock().unwrap().recv().unwrap();
+                        }),
+                    )),
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(coordinator.reserve_next().unwrap());
+        let job = coordinator.plan(1).pop().unwrap();
+        let mut target = workload.new_target().unwrap();
+        coordinator
+            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .unwrap();
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(!coordinator.finished());
+        released.send(()).unwrap();
+        let error = coordinator.finish(Vec::new()).unwrap_err();
+        assert!(error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>());
+        assert!(
+            error
+                .source()
+                .unwrap()
+                .to_string()
+                .contains("admission gap")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("checkpoint finalization also failed")
+        );
+        assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+        }));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn dropping_direct_coordinator_joins_its_last_admission_image_without_writing_end() {
+        let directory =
+            std::env::temp_dir().join(format!("direct-checkpoint-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut config = three_worker_config();
+        config.window = 1;
+        config.execution_budget = 3;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: std::num::NonZeroU64::new(1),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                    max_image_bytes: 64 << 20,
+                    before_write: None,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(coordinator.reserve_next().unwrap());
+        let job = coordinator.plan(1).pop().unwrap();
+        let mut target = workload.new_target().unwrap();
+        coordinator
+            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .unwrap();
+        drop(coordinator);
+        let reader = crate::search::checkpoint::CheckpointReader::open(
+            &directory.join("000000000001-interval.ckpt"),
+        )
+        .unwrap();
+        assert_eq!(reader.header.executions, 1);
+        assert_eq!(reader.header.admitted, 1);
+        assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+        }));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_delayed_checkpoint_writer_preserves_the_admission_version_replay_and_resume() {
+        for direct in [false, true] {
+            struct ObservedStream {
+                bytes: Vec<u8>,
+                parsed: usize,
+                jobs: usize,
+                later_admission: mpsc::Sender<()>,
+            }
+            impl Write for ObservedStream {
+                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                    self.bytes.extend_from_slice(bytes);
+                    while let Some(end) = self.bytes[self.parsed..]
+                        .iter()
+                        .position(|byte| *byte == b'\n')
+                    {
+                        let end = self.parsed + end;
+                        let record: serde_json::Value =
+                            serde_json::from_slice(&self.bytes[self.parsed..end])?;
+                        if record["event"] == "job" {
+                            self.jobs += 1;
+                            if self.jobs == 6 {
+                                let _ = self.later_admission.send(());
+                            }
+                        }
+                        self.parsed = end + 1;
+                    }
+                    Ok(bytes.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            let asynchronous = std::env::temp_dir().join(format!(
+                "campaign-delayed-checkpoint-{}-{direct}",
+                std::process::id()
+            ));
+            let synchronous = std::env::temp_dir().join(format!(
+                "campaign-sync-checkpoint-{}-{direct}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&asynchronous);
+            let _ = std::fs::remove_dir_all(&synchronous);
+            let mut config = three_worker_config();
+            config.execution_budget = 12;
+            let workload = TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            };
+            let make_plan =
+                |directory, max_image_bytes| crate::search::checkpoint::CheckpointPlan {
+                    directory,
+                    every: std::num::NonZeroU64::new(5),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                    max_image_bytes,
+                    before_write: None,
+                };
+            let mut control_stream = Vec::new();
+            let control = run_campaign_checkpointed_with_options(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut control_stream,
+                None,
+                CampaignExecutionOptions {
+                    checkpoints: Some(make_plan(synchronous.clone(), 1)),
+                    ..CampaignExecutionOptions::default()
+                },
+            )
+            .unwrap();
+            let (entered_sender, entered) = mpsc::channel();
+            let (released, release_receiver) = mpsc::channel();
+            let (later_sender, later) = mpsc::channel();
+            let release_receiver = Mutex::new(release_receiver);
+            let mut delayed_plan = make_plan(asynchronous.clone(), 64 << 20);
+            delayed_plan.before_write = Some(super::super::checkpoint::publisher::TestWriteHook(
+                Arc::new(move |ordinal| {
+                    if ordinal == 1 {
+                        entered_sender.send(()).unwrap();
+                        release_receiver.lock().unwrap().recv().unwrap();
+                    }
+                }),
+            ));
+            let (live, stream) = std::thread::scope(|scope| {
+                let run = scope.spawn(|| {
+                    let mut stream = ObservedStream {
+                        bytes: Vec::new(),
+                        parsed: 0,
+                        jobs: 0,
+                        later_admission: later_sender,
+                    };
+                    let options = CampaignExecutionOptions {
+                        checkpoints: Some(delayed_plan),
+                        ..CampaignExecutionOptions::default()
+                    };
+                    let result = if direct {
+                        run_direct_checkpointed(&workload, &config, &mut stream, options)
+                    } else {
+                        run_campaign_checkpointed_with_options(
+                            &workload,
+                            &config,
+                            &CampaignOrigin::Genesis,
+                            &mut stream,
+                            None,
+                            options,
+                        )
+                    };
+                    (result.map_err(|error| error.to_string()), stream.bytes)
+                });
+                let entered = entered.recv_timeout(Duration::from_secs(10));
+                let later = later.recv_timeout(Duration::from_secs(10));
+                let _ = released.send(());
+                let (result, stream) = run.join().unwrap();
+                entered.expect("the first immutable image reached the writer");
+                later.expect(
+                    "another admission changed live state while its preceding image was held",
+                );
+                (result.unwrap(), stream)
+            });
+            assert_eq!(stream, control_stream);
+            assert_eq!(
+                serde_json::to_vec(&live.0.archive).unwrap(),
+                serde_json::to_vec(&control.0.archive).unwrap()
+            );
+            assert_eq!(live.1.to_bytes().unwrap(), control.1.to_bytes().unwrap());
+            let replayed = replay_campaign_checkpointed(&workload, &stream, None, None).unwrap();
+            assert_eq!(replayed.1.to_bytes().unwrap(), live.1.to_bytes().unwrap());
+            let saved = asynchronous.join("000000000005-interval.ckpt");
+            let mut resumed_stream = Vec::new();
+            let resumed = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::SearchCheckpoint {
+                    path: saved,
+                    expected_sha256: None,
+                },
+                &mut resumed_stream,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_vec(&resumed.0.archive).unwrap(),
+                serde_json::to_vec(&control.0.archive).unwrap()
+            );
+            assert_eq!(resumed.1.to_bytes().unwrap(), control.1.to_bytes().unwrap());
+            std::fs::remove_dir_all(asynchronous).unwrap();
+            std::fs::remove_dir_all(synchronous).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_failed_final_checkpoint_cannot_write_end_or_return_a_completed_campaign() {
+        let directory = std::env::temp_dir().join(format!(
+            "campaign-final-checkpoint-refusal-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("000000000001-final.ckpt")).unwrap();
+        let mut config = three_worker_config();
+        config.execution_budget = 1;
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed_with_options(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: None,
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                    max_image_bytes: 64 << 20,
+                    before_write: None,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.is::<super::super::checkpoint::publisher::PersistenceFailure>());
+        assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+        }));
+        assert_eq!(job_lines(&stream).len(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

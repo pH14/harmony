@@ -9,6 +9,7 @@ fn main() {
         .to_path_buf();
     let inputs = [
         "Cargo.toml",
+        "cli/Cargo.toml",
         "Cargo.lock",
         "flake.nix",
         "flake.lock",
@@ -17,8 +18,17 @@ fn main() {
         "consonance/hypercall-doorbell",
         "consonance/execution-proto",
         "consonance/process-proto",
-        "cli/src/oci/mod.rs",
-        "cli/src/oci/runner.rs",
+        "consonance/oci",
+        "cli/src/oci",
+        "cli/src/handoff.rs",
+        "cli/src/preparation.rs",
+        "cli/src/package.rs",
+        "cli/src/host_identity.rs",
+        "cli/src/host_boundary.rs",
+        "cli/src/lib.rs",
+        "cli/src/guarded.rs",
+        "cli/src/native.rs",
+        "cli/src/bin/harmony-consonance-host.rs",
     ];
     for input in inputs {
         println!("cargo:rerun-if-changed={}", root.join(input).display());

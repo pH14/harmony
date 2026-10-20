@@ -1,80 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-mod faults;
-mod nes;
-mod nested;
-use crate::{
-    config::{Budget, Config, Result, Workload},
-    runs::Destination,
-    selection::{Point, Selection},
-};
-use std::path::{Path, PathBuf};
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Operation {
-    Prepare,
-    Check,
-    Search,
-    Run,
-    Replay,
-    Branch,
-    Resume,
-    Inspect,
-    Timeline,
-    Logs,
-}
-pub struct Request {
-    pub operation: Operation,
-    pub config: Config,
-    pub selection: Option<Selection>,
-    pub point: Point,
-    pub destination: Destination,
-    pub budget: Budget,
-    pub offline: bool,
-    pub json: bool,
-    pub actions: Option<PathBuf>,
-    pub repeat: u32,
-    pub console: bool,
-    pub command: Vec<String>,
-    pub exec: Option<String>,
-    pub exec_file: Option<PathBuf>,
-    pub shell: bool,
-    pub stop: bool,
-    pub contains: Option<String>,
-}
-impl Default for Request {
-    fn default() -> Self {
-        Self {
-            operation: Operation::Inspect,
-            config: Config::default(),
-            selection: None,
-            point: Point::default(),
-            destination: Destination::default(),
-            budget: Budget::default(),
-            offline: false,
-            json: false,
-            actions: None,
-            repeat: 1,
-            console: false,
-            command: Vec::new(),
-            exec: None,
-            exec_file: None,
-            shell: false,
-            stop: false,
-            contains: None,
-        }
-    }
-}
-pub trait Package: Sync {
-    fn name(&self) -> &'static str;
-    fn accepts(&self, input: &str) -> bool;
-    fn normalize(&self, config: &mut Config, base: &Path) -> Result<()>;
-    fn validate_runner(&self, config: &mut Config) -> Result<()>;
-    fn supports(&self, operation: Operation) -> bool;
-    fn semantic_outcome(&self, payload: &serde_json::Value) -> serde_json::Value {
-        payload.clone()
-    }
-    fn execute(&self, request: Request) -> Result<u8>;
-    fn init(&self, path: &Path, language: Option<String>, input: Option<String>) -> Result<()>;
-}
+pub(crate) mod faults;
+pub(crate) mod nes;
+pub(crate) mod nested;
+#[cfg(not(feature = "frontend"))]
+use crate::config::Result;
+#[cfg(feature = "frontend")]
+use crate::config::{Result, Workload};
+#[cfg(feature = "frontend")]
+pub use crate::package::Package;
+pub use crate::package::{Operation, Request};
+#[cfg(feature = "frontend")]
 static PACKAGES: &[&dyn Package] = &[
     &nes::Nes,
     &nested::Nested,
@@ -82,6 +17,7 @@ static PACKAGES: &[&dyn Package] = &[
     #[cfg(test)]
     &tests::Counter,
 ];
+#[cfg(feature = "frontend")]
 pub fn select(workload: &Workload) -> Result<&'static dyn Package> {
     let package = if workload.package.is_empty() {
         PACKAGES
@@ -94,18 +30,17 @@ pub fn select(workload: &Workload) -> Result<&'static dyn Package> {
         .copied()
         .ok_or_else(|| format!("unknown workload package {:?}", workload.package).into())
 }
+#[cfg(feature = "frontend")]
 pub fn dispatch(request: Request) -> Result<u8> {
     dispatch_with_diagnostics(request, &mut std::io::stderr())
 }
 
+#[cfg(feature = "frontend")]
 fn dispatch_with_diagnostics(
     request: Request,
     diagnostics: &mut impl std::io::Write,
 ) -> Result<u8> {
-    if !matches!(
-        request.operation,
-        Operation::Inspect | Operation::Timeline | Operation::Logs
-    ) {
+    if request.config.runner.kind != "consonance" {
         crate::host_boundary::admit_execution(&request.config.runner.kind)?;
     }
     let package = select(&request.config.workload)?;
@@ -131,6 +66,21 @@ fn dispatch_with_diagnostics(
             let _ = writeln!(diagnostics, "warning: {warning}");
         }
     }
+    if request.config.runner.kind == "consonance"
+        && !matches!(
+            request.operation,
+            Operation::Inspect
+                | Operation::Timeline
+                | Operation::Logs
+                | Operation::Prepare
+                | Operation::Check
+        )
+    {
+        return crate::preparation::execute(request);
+    }
+    if request.config.runner.kind == "consonance" && request.operation == Operation::Check {
+        crate::host_boundary::probe_host()?;
+    }
     package.execute(request)
 }
 
@@ -138,10 +88,15 @@ pub fn worker() -> Result<u8> {
     faults::worker()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
-    use crate::runs::Manifest;
+    use crate::{
+        config::Config,
+        runs::{Destination, Manifest},
+        selection::{Point, Selection},
+    };
+    use std::path::Path;
     pub struct Counter;
     impl Package for Counter {
         fn name(&self) -> &'static str {
@@ -205,15 +160,8 @@ mod tests {
         }
     }
     #[test]
-    fn dynamic_dispatch_cannot_execute_a_changed_consonance_recipe() {
-        let mut config = Config::default();
-        config.runner.kind = "consonance".into();
-        let error = dispatch(Request {
-            operation: Operation::Check,
-            config,
-            ..Default::default()
-        })
-        .unwrap_err();
+    fn dynamic_execution_requires_the_strict_host() {
+        let error = crate::host_boundary::admit_execution("consonance").unwrap_err();
         assert!(error.to_string().contains("packaged strict host"));
     }
 

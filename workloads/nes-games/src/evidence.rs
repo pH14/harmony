@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::error::Error;
+use std::{error::Error, io::Write};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -157,8 +157,9 @@ impl<G: NesEvidence> NesCampaignEvidence<G> {
         times != self.first_reached
     }
 
-    pub fn checkpoint(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(postcard::to_allocvec(self)?)
+    pub fn write_checkpoint(&self, out: &mut dyn Write) -> Result<(), Box<dyn Error>> {
+        postcard::to_io(self, out)?;
+        Ok(())
     }
 
     pub fn from_checkpoint(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
@@ -180,6 +181,10 @@ where
     G: NesEvidence + crate::search::campaign::Reporting<Evidence = NesCampaignEvidence<G>>,
 {
     let bytes = G::evidence_checkpoint(evidence).expect("encode evidence");
+    assert_eq!(
+        bytes,
+        postcard::to_allocvec(evidence).expect("encode owned evidence")
+    );
     let empty = G::evidence_checkpoint(&NesCampaignEvidence::default()).expect("encode default");
     assert_ne!(bytes, empty, "the evidence under test is the default");
     let restored = G::evidence_from_checkpoint(&bytes).expect("decode evidence");

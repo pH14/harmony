@@ -45,7 +45,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v2";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v3";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v4";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -570,8 +570,11 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> NesEvidence for Mm2Game<M> {
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for Mm2Game<M> {
-    fn evidence_checkpoint(evidence: &Mm2CampaignEvidence<M>) -> Result<Vec<u8>, Box<dyn Error>> {
-        evidence.checkpoint()
+    fn write_evidence_checkpoint(
+        evidence: &Mm2CampaignEvidence<M>,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        evidence.write_checkpoint(out)
     }
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Mm2CampaignEvidence<M>, Box<dyn Error>> {
         NesCampaignEvidence::from_checkpoint(bytes)

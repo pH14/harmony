@@ -171,6 +171,7 @@ where
                 on_marks: request.checkpoint_on_progress,
                 on_top_progress: request.checkpoint_on_progress,
                 checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
             }
         });
     let config = CampaignConfig {
@@ -250,7 +251,7 @@ where
         write_json(&out.join("deepest-input.json"), &deepest.input)?;
     }
     if full {
-        write_json(&out.join("checkpoint.json"), &checkpoint)?;
+        checkpoint.write_to(&mut fs::File::create(out.join("checkpoint.bin"))?)?;
     }
     if let Some(archive) = value.get_mut("archive").and_then(Value::as_object_mut) {
         archive.remove("entries");

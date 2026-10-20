@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub use crate::config::{Backend, Result};
-use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+#[cfg(feature = "frontend")]
+use std::path::Path;
+use std::{collections::BTreeMap, path::PathBuf};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     C,
@@ -19,6 +17,7 @@ pub enum Language {
 }
 
 impl Language {
+    #[cfg(feature = "frontend")]
     pub fn name(self) -> &'static str {
         match self {
             Self::C => "c",
@@ -130,6 +129,7 @@ impl Config {
         Ok(())
     }
 
+    #[cfg(feature = "frontend")]
     pub fn resolve_paths(&mut self, base: &Path) {
         for path in [
             &mut self.kernel,
@@ -310,6 +310,7 @@ impl Config {
         }
     }
 }
+#[cfg(feature = "frontend")]
 pub fn resolve(config: &mut Config, offline: bool) -> Result<()> {
     let mut runtime = config.runtime();
     crate::runtime::resolve(&mut runtime, offline)?;
@@ -321,7 +322,7 @@ pub fn resolve(config: &mut Config, offline: bool) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "frontend"))]
 mod tests {
     use super::*;
 

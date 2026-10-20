@@ -1566,6 +1566,20 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
     }
 }
 
+impl searcher::search::snapshot_codec::CheckpointSnapshot for Mm2Snapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        budget.reserve(std::mem::size_of::<Self>())?;
+        budget.array::<u8>(self.emulator_state.capacity())
+    }
+    fn freeze_checkpoint(&self) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(self.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

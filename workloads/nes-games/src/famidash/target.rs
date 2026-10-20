@@ -951,6 +951,39 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_image_budget_counts_spare_emulator_capacity_and_freezes_independently() {
+        use searcher::search::{
+            checkpoint::image::ImageBudget, snapshot_codec::CheckpointSnapshot,
+        };
+        let mut emulator_state = Vec::with_capacity(8192);
+        emulator_state.extend_from_slice(&[3, 5, 7]);
+        let mut snapshot = FamidashSnapshot {
+            emulator_state,
+            observation: FamidashObservations {
+                frame_count: 11,
+                decoded: Default::default(),
+                terminal: false,
+            },
+            failed: false,
+        };
+        let exact = std::mem::size_of::<FamidashSnapshot>() + snapshot.emulator_state.capacity();
+        let mut budget = ImageBudget::new(exact);
+        snapshot.checkpoint_image_charge(&mut budget).unwrap();
+        assert_eq!(budget.remaining(), 0);
+        assert!(
+            snapshot
+                .checkpoint_image_charge(&mut ImageBudget::new(exact - 1))
+                .is_err()
+        );
+        let frozen = snapshot.freeze_checkpoint().unwrap();
+        let expected = postcard::to_allocvec(&snapshot).unwrap();
+        snapshot.emulator_state[0] = 99;
+        snapshot.observation.frame_count += 1;
+        assert_eq!(postcard::to_allocvec(&frozen).unwrap(), expected);
+        assert_ne!(frozen, snapshot);
+    }
+
+    #[test]
     fn world_position_adds_the_scroll_to_the_screen_position() {
         let mut wram = playing_wram();
         wram[SCROLL_X..SCROLL_X + 4].copy_from_slice(&1_000_i32.to_le_bytes());
@@ -1096,5 +1129,55 @@ mod tests {
                 .sum()
         };
         assert_eq!(frames(&community), frames(&main) + 1 + MENU_SETTLE_FRAMES);
+    }
+}
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for FamidashSnapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        budget.reserve(std::mem::size_of::<Self>())?;
+        budget.array::<u8>(self.emulator_state.capacity())
+    }
+    fn freeze_checkpoint(&self) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(self.clone())
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    use searcher::search::campaign::{SnapshotCheckpoint, SnapshotCheckpointEntry};
+
+    #[test]
+    fn framed_snapshot_round_trip_refuses_previous_flat_format() {
+        let snapshot = FamidashSnapshot {
+            emulator_state: vec![3, 1, 4, 1, 5],
+            observation: FamidashObservations {
+                frame_count: 17,
+                decoded: Default::default(),
+                terminal: false,
+            },
+            failed: false,
+        };
+        let checkpoint = SnapshotCheckpoint {
+            format: super::super::campaign::SNAPSHOT_CHECKPOINT_FORMAT.into(),
+            entries: vec![SnapshotCheckpointEntry { id: 7, snapshot }],
+        };
+        let bytes = checkpoint.to_bytes().unwrap();
+        assert_eq!(
+            SnapshotCheckpoint::<FamidashSnapshot>::from_bytes(&bytes, &checkpoint.format).unwrap(),
+            checkpoint
+        );
+        let old = postcard::to_allocvec(&(
+            "famidash-quicknes-snapshot-checkpoint-v1",
+            &checkpoint.entries,
+        ))
+        .unwrap();
+        assert!(
+            SnapshotCheckpoint::<FamidashSnapshot>::from_bytes(&old, &checkpoint.format).is_err()
+        );
     }
 }

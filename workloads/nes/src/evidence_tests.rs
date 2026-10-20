@@ -85,6 +85,7 @@ where
                     on_marks: true,
                     on_top_progress: true,
                     checkpoint_owner: None,
+                    max_image_bytes: 64 << 20,
                 }),
                 ..CampaignExecutionOptions::default()
             },

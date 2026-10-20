@@ -41,7 +41,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "twin-dragons-quicknes-campaign-stream-v1";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "twin-dragons-quicknes-snapshot-checkpoint-v1";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "twin-dragons-quicknes-snapshot-checkpoint-v2";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -329,8 +329,11 @@ impl<M: NesBackend<Vec<u8>>> NesEvidence for TwinDragonsGame<M> {
 }
 
 impl<M: NesBackend<Vec<u8>>> Reporting for TwinDragonsGame<M> {
-    fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
-        evidence.checkpoint()
+    fn write_evidence_checkpoint(
+        evidence: &Self::Evidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        evidence.write_checkpoint(out)
     }
 
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {

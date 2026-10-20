@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -54,6 +55,16 @@ def check_pair(frontend, host, platform):
             version = run(str(packaged_host), "--version")
             if version.returncode != 0 or "harmony" not in version.stdout:
                 raise AssertionError(f"signed macOS host was refused: {version}")
+
+        if platform == "linux":
+            strict = (sys.executable, str(Path(__file__).with_name("linux-sealed-test-runner.py")), str(packaged_host))
+        else:
+            strict = (str(packaged_host),)
+        expect(run(*strict, "list"), 2, "accepts --prepared")
+        expect(run(*strict, "--probe", "mismatched", "mismatched"), 2, "matching Harmony release and protocol")
+        malformed = bin_dir / "malformed-prepared"
+        malformed.write_bytes(b"truncated")
+        expect(run(*strict, "--prepared", str(malformed)), 2, "checksum is missing")
 
         missing_image = str(bin_dir / "missing-issue688-image")
         missing_rom = str(bin_dir / "missing-issue688.nes")

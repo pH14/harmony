@@ -209,6 +209,15 @@ class StructureTests(unittest.TestCase):
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, commands)
+        lint = next(step for step in job["steps"]
+                    if step.get("name") == "Lint the isolated Arm64 guarded role")
+        self.assertEqual(lint["run"].replace("\\\n", " ").split(), [
+            "cargo", "clippy", "--locked", "-p", "harmony-cli",
+            "--target", "aarch64-unknown-linux-musl",
+            "--no-default-features", "--features", "consonance-host", "--lib",
+            "--bin", "harmony-consonance-host", "--", "-D", "warnings",
+        ])
+        self.assertIn('--profile minimal --component clippy', commands)
         self.assertIn("Check the paired CLI on Arm64",
                       [step.get("name") for step in job["steps"]])
         fixture = (ROOT / "scripts/test-consonance-host-package.py").read_text()
@@ -313,10 +322,10 @@ class StructureTests(unittest.TestCase):
         workflow = ci_contract.CONSONANCE_ANALYSIS
         job = yaml.safe_load((ROOT / workflow.path).read_text())["jobs"]["miri"]
         registered = next(job for job in workflow.jobs if job.name == "Miri — <Crate>")
-        self.assertEqual(registered.timeout_minutes, 30)
+        self.assertEqual(registered.timeout_minutes, 45)
         self.assertTrue(registered.exception)
-        self.assertEqual(ci_contract.pull_request_budget(workflow.path, registered.name), 30)
-        expression = "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store' || matrix.name == 'consonance-client') && 30 || 15 }}"
+        self.assertEqual(ci_contract.pull_request_budget(workflow.path, registered.name), 45)
+        expression = "${{ matrix.name == 'snapshot-store' && 45 || (matrix.name == 'vmm-backend' || matrix.name == 'consonance-client') && 30 || 15 }}"
         self.assertEqual(job["timeout-minutes"], expression)
         self.assertEqual(ci_contract.PR_TIMEOUT_EXPRESSIONS,
                          {(workflow.path, registered.name): expression})
@@ -396,6 +405,41 @@ class StructureTests(unittest.TestCase):
 
     def test_platform_runtime_key_excludes_workload_sources(self):
         self.assertFalse(any(path.startswith("workloads/") for path in self.runtime_inputs()))
+
+    def test_guarded_preparation_inputs_are_in_the_platform_key(self):
+        required = {"cli/Cargo.toml", "consonance/oci", "cli/src/oci", "cli/src/handoff.rs", "cli/src/preparation.rs",
+                    "cli/src/package.rs", "cli/src/host_identity.rs", "cli/src/lib.rs", "cli/src/guarded.rs", "cli/src/native.rs",
+                    "cli/src/bin/harmony-consonance-host.rs"}
+        self.assertTrue(required.issubset(self.runtime_inputs()))
+        self.assertNotIn("cli/src", self.runtime_inputs())
+
+    def test_uml_native_witness_uses_the_shared_library_and_prepared_boundary(self):
+        import yaml
+        jobs = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]
+        commands = "\n".join(step.get("run", "") for job in jobs.values() for step in job.get("steps", []))
+        self.assertIn("--lib adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch", commands)
+        self.assertIn("--lib loaded_reviewed_uml_profile_binds_the_recorded_kernel", commands)
+        for witness in ("UML_TRANSACTION_REFUSED=XBEGIN", "UML_TRANSACTION_REFUSED=XACQUIRE", "UML_TRANSACTION_CONTROL=completed",
+                        "UML_PREPARED_TRANSACTION_REFUSED=XBEGIN", "UML_PREPARED_TRANSACTION_REFUSED=XACQUIRE", "UML_PREPARED_TRANSACTION_CONTROL=admitted"):
+            self.assertIn(witness, commands)
+        self.assertIn("harmony-cli adapters::faults::workflow::tests::native_uml_transaction_entry_is_refused_before_launch",
+                      tuple(test for job in ci_contract.CONSONANCE_UML.jobs for test in job.ignored_tests))
+
+    def test_frontend_capability_is_positive_and_isolated_host_is_linted(self):
+        manifest = tomllib.loads((ROOT / "cli/Cargo.toml").read_text())
+        self.assertEqual(manifest["features"]["default"], ["frontend"])
+        frontend = next(binary for binary in manifest["bin"] if binary["name"] == "harmony")
+        self.assertEqual(frontend["required-features"], ["frontend"])
+        for dependency in ("clap", "tar", "flate2"):
+            self.assertTrue(manifest["dependencies"][dependency]["optional"])
+            self.assertIn(f"dep:{dependency}", manifest["features"]["frontend"])
+        import yaml
+        jobs = yaml.safe_load((ROOT / ci_contract.HARMONY_CHECKS.path).read_text())["jobs"]
+        commands = "\n".join(step.get("run", "") for step in jobs["cli"]["steps"])
+        self.assertIn("--no-default-features --features consonance-host --bin harmony-consonance-host -- -D warnings", commands)
+        self.assertIn("cargo clippy -p harmony-cli --all-features --all-targets", commands)
+        self.assertIn("--edges normal --prefix none --format", commands)
+        self.assertIn("^(clap|tar) ", commands)
 
     def workspace_root(self, crate):
         for directory in (crate, *crate.parents):

@@ -242,6 +242,7 @@ where
                 on_marks: false,
                 on_top_progress: false,
                 checkpoint_owner: options.checkpoint_owner.clone(),
+                max_image_bytes: 64 << 20,
             }),
             ..Default::default()
         },
@@ -250,10 +251,9 @@ where
         fs::File::create(options.output.join("report.json"))?,
         &report,
     )?;
-    serde_json::to_writer(
-        fs::File::create(options.output.join("checkpoint.json"))?,
-        &checkpoint,
-    )?;
+    checkpoint.write_to(&mut fs::File::create(
+        options.output.join("checkpoint.bin"),
+    )?)?;
     let mut best = match report.objective_witness.clone() {
         Some(input) => input,
         None => serde_json::from_value(

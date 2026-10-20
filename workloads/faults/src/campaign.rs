@@ -54,9 +54,9 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v11";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v9";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v10";
 pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v8";
-pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v5";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v6";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -484,8 +484,12 @@ impl CampaignTypes for FaultWorkload {
 }
 
 impl Reporting for FaultWorkload {
-    fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(serde_json::to_vec(evidence)?)
+    fn write_evidence_checkpoint(
+        evidence: &Self::Evidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        serde_json::to_writer(out, evidence)?;
+        Ok(())
     }
 
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
@@ -796,6 +800,19 @@ fn held_suffix(
 }
 
 impl TargetExecution for FaultWorkload {
+    fn worker_locality(&self, target: &FaultTarget) -> searcher::search::locality::WorkerLocality {
+        target.worker_locality()
+    }
+
+    fn snapshot_locality(
+        &self,
+        snapshot: &FaultSnapshot,
+    ) -> Option<searcher::search::locality::LocalityKey> {
+        Some(searcher::search::locality::LocalityKey(
+            snapshot.history.receipt().root(),
+        ))
+    }
+
     fn begin_job_observation(&self) {
         crate::job_observation::begin();
     }
@@ -1445,6 +1462,27 @@ mod tests {
             &[Some([23; 32]), Some(final_certificate)],
             snapshot.endpoint,
             &snapshot.observation,
+        );
+        let encoded = FaultSnapshotCheckpoint {
+            format: game.checkpoint_format().into(),
+            entries: vec![searcher::search::campaign::SnapshotCheckpointEntry {
+                id: 1,
+                snapshot: changed.clone(),
+            }],
+        }
+        .to_bytes()
+        .unwrap();
+        let restored =
+            FaultSnapshotCheckpoint::from_bytes(&encoded, game.checkpoint_format()).unwrap();
+        assert_eq!(
+            restored.entries[0].snapshot.observation,
+            snapshot.observation
+        );
+        assert_eq!(restored.entries[0].snapshot, changed);
+        assert_ne!(
+            game.snapshot_identity_sha256(&restored.entries[0].snapshot)
+                .unwrap(),
+            identity
         );
         assert_ne!(game.snapshot_identity_sha256(&changed).unwrap(), identity);
         let mut wrong_final = snapshot.clone();

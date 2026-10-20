@@ -80,3 +80,22 @@ policies of each game.
 cargo test --manifest-path workloads/nes-games/Cargo.toml --all-features
 cargo check --manifest-path workloads/nes-games/Cargo.toml --target wasm32-unknown-unknown
 ```
+
+Snapshot checkpoint codecs live with these shared target types so native and
+browser callers use the same checksummed `HMSNAP02` envelope. The standalone
+formats are Famidash v2, Twin Dragons v2, Metroid v13, Mega Man 2 v4, SMB
+QuickNES v4 and SMB Consonance v3; Super Tilt Bro's native campaign selects v5.
+These plain snapshots use the postcard payload codec inside the framed envelope.
+Previous flat envelopes are refused. Native `nes` target modules remain
+re-export shims and do not supply separate checkpoint implementations.
+
+Immutable checkpoint images charge the full capacity of each game's emulator-state
+vector and the fixed snapshot/observation value. SMB also charges its backend's
+portable state and owned work-RAM copy. Shared Consonance pages and sidecar chunks
+use physical allocation identities; equivalent separately allocated states remain
+separate charges. Freeze clones owned buffers and retains immutable shared state.
+Every game streams its `NesCampaignEvidence` into the checkpoint with
+`postcard::to_io`, which serializes borrowed fields without building another
+owned evidence graph. These shared
+implementations also serve native and browser consumers; file publication remains
+a native coordinator facility.

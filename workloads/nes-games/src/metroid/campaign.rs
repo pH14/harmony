@@ -47,7 +47,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v12";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v13";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -579,10 +579,11 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> NesEvidence for MetroidGame<M> {
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
-    fn evidence_checkpoint(
+    fn write_evidence_checkpoint(
         evidence: &MetroidCampaignEvidence<M>,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        evidence.checkpoint()
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        evidence.write_checkpoint(out)
     }
     fn evidence_from_checkpoint(
         bytes: &[u8],
@@ -1198,7 +1199,7 @@ mod tests {
             MetroidSnapshotCheckpoint::from_bytes(&current, SNAPSHOT_CHECKPOINT_FORMAT).unwrap(),
             checkpoint(SNAPSHOT_CHECKPOINT_FORMAT)
         );
-        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v11")
+        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v12")
             .to_bytes()
             .unwrap();
         let error = MetroidSnapshotCheckpoint::from_bytes(&previous, SNAPSHOT_CHECKPOINT_FORMAT)

@@ -63,6 +63,16 @@ segment already chosen for the guest image. Consumers that admit executable
 bytes or read supervisor metadata use that archived view after packing, so a
 later mutation of the staging tree cannot change what they admit.
 
+`PreparedExecution::record` exports a version-one data record with the packed
+rootfs, resolved execution specification, external inputs, explicit KVM choice
+and existing prepared identity. `from_record` validates the specification and
+input bounds, reconstructs canonical control bytes, checks the resulting
+identity, validates the exact archived rootfs and rejects symlinks along mount
+paths. It does not stage an image or accept arbitrary supplied control archives.
+Rootfs inflation has a 1 GiB output limit. Product handoffs must additionally
+bound their input file and metadata and apply their workload's admission rules;
+this generic record does not certify workload-specific instructions or policy.
+
 External destinations are absolute normalized paths with bounded count and
 payload size. Platform-owned paths, duplicate destinations, and file/parent
 conflicts are rejected. Platform and external mount destinations must have
@@ -346,3 +356,18 @@ On native ARM64 Linux and macOS, SHA-256 uses runtime-detected CPU acceleration,
 including when this component is built independently. Other targets and Miri
 retain the existing backend selection. Hash inputs and outputs are unchanged.
 The [host SHA qualification](../../scripts/qualification/README.md) checks independent builds and compares real consumers with software hashing.
+
+Imported prepared rootfs segments accept exactly one fully consumed gzip/DEFLATE
+stream. The newc archive must use the canonical producer headers (sequential
+unique inodes, link count one, zero timestamps/device/check fields and padding),
+canonical unique paths and complete earlier directory parents for every entry.
+Symlinks may be leaves, never parents of another archived path. These checks
+keep the inspected files equal to what the guest kernel unpacks and exclude
+concatenated archives, hardlink aliases and symlink traversal outside the rootfs.
+
+Imported names include their archive prefix and terminating NUL within Linux
+PATH_MAX (4,096 bytes), with components at most NAME_MAX (255 bytes). Symlink
+targets fit within 4,095 bytes. Larger entries are refused before admission, so
+validation never relies on files that the guest unpacker/filesystem would omit.
+The limits follow the pinned [Linux unpacker](https://raw.githubusercontent.com/gregkh/linux/v6.18.35/init/initramfs.c)
+and [Linux path limits](https://raw.githubusercontent.com/gregkh/linux/v6.18.35/include/uapi/linux/limits.h).

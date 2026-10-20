@@ -176,3 +176,12 @@ report. A saved search must have no materialized archive entries; replay ignores
 only the fresh entries materialized while verifying that search. If a different
 source mode reaches report comparison, every field, including its entries, must
 agree. Execution counts, work, evidence and stream identity must always agree.
+
+Host campaign snapshot artifacts use the generic framed checkpoint envelope with
+the plain postcard snapshot codec. The workload snapshot format is
+`nested-consonance-checkpoint-v3`; older flat checkpoint envelopes are refused.
+Async checkpoint capture charges the copied action/failure buffers and portable
+page index, then visits immutable shared pages and sidecar chunks before cloning
+their owning references. It holds a separate image allocation and never pins the
+archive's outer snapshot Arc. Evidence serialization streams from the captured
+boundary; freezing does not relax native import or source-entry identity checks.

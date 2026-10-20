@@ -2050,3 +2050,17 @@ mod boss_status_tests {
         assert_eq!(after.collectibles(), before.collectibles());
     }
 }
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for MetroidSnapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        budget.reserve(std::mem::size_of::<Self>())?;
+        budget.array::<u8>(self.emulator_state.capacity())
+    }
+    fn freeze_checkpoint(&self) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(self.clone())
+    }
+}
