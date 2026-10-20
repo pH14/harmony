@@ -26,7 +26,7 @@ class ScalingTests(unittest.TestCase):
         self.assertIsNone(measured["encoder_cpu_ns_per_job"])
         self.assertEqual(measured["producer_wait_ns_per_job"], 2)
 
-    def write_run(self, directory, changed=False, workers=1):
+    def write_run(self, directory, changed=False, workers=1, checkpoint=b"\x00\xffcheckpoint-v13\x80"):
         directory.mkdir()
         (directory / "stream.jsonl").write_text('complete stream\n' if not changed else 'changed stream\n')
         stream_hash = scaling.digest(directory / "stream.jsonl")
@@ -37,10 +37,48 @@ class ScalingTests(unittest.TestCase):
                        "stream_bytes_generated": (directory / "stream.jsonl").stat().st_size},
             "campaign": {"stream_sha256": stream_hash, "executions_completed": 10},
             "telemetry": {"search_ns": 100, "workers": [{"jobs": 10, "busy_ns": 50}] + [{"jobs": 0, "busy_ns": 0}] * (workers - 1)},
-            "checkpoint": {"endpoint": "fixed"}, "identity": {"source": "fixed"},
+            "identity": {"source": "fixed"},
         }
         for name, value in data.items():
             (directory / f"{name}.json").write_text(json.dumps(value))
+        (directory / "checkpoint.bin").write_bytes(checkpoint)
+
+    def test_checkpoint_identity_hashes_binary_bytes_and_requires_current_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "run"
+            self.write_run(directory)
+            _, _, original = scaling.validate_result(directory)
+            checkpoint = directory / "checkpoint.bin"
+            self.assertEqual(original["checkpoint"], scaling.digest(checkpoint))
+            checkpoint.write_bytes(checkpoint.read_bytes() + b"\xfe")
+            _, _, changed = scaling.validate_result(directory)
+            self.assertNotEqual(original["checkpoint"], changed["checkpoint"])
+            checkpoint.rename(directory / "checkpoint.json")
+            with self.assertRaises(FileNotFoundError):
+                scaling.validate_result(directory)
+
+    def test_changed_binary_checkpoint_fails_trial_comparison(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evaluator = root / "evaluator"
+            evaluator.write_text("immutable executable")
+            request = root / "request.json"
+            request.write_text(json.dumps({"executions": 10}))
+
+            def run(command, directory, timeout):
+                count = json.loads(Path(command[1]).read_text())["workers"]
+                self.write_run(Path(command[2]), workers=count, checkpoint=bytes([0, 255, count]))
+                return 1.0
+
+            output = root / "evidence"
+            args = ["qualify", "--evaluator", str(evaluator), "--request", str(request),
+                    "--out", str(output), "--workers", "1", "2", "--window", "512", "--repeats", "1",
+                    "--allow-oversubscription"]
+            with patch.object(sys, "argv", args), patch.object(scaling, "run_trial", side_effect=run):
+                with self.assertRaisesRegex(ValueError, "logical work differs"):
+                    scaling.main()
+            self.assertEqual(json.loads((output / "summary.json").read_text())["status"], "failed")
+            self.assertEqual((output / "r1-w2/run/checkpoint.bin").read_bytes(), bytes([0, 255, 2]))
 
     def test_validation_rejects_corruption_time_limits_and_missing_work(self):
         with tempfile.TemporaryDirectory() as temporary:

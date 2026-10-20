@@ -51,7 +51,7 @@ def validate_result(directory):
     return result, telemetry, {
         "stream": digest(stream),
         "report": logical_digest(report),
-        "checkpoint": digest(directory / "checkpoint.json"),
+        "checkpoint": digest(directory / "checkpoint.bin"),
     }
 
 
