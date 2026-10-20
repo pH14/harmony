@@ -1313,7 +1313,9 @@ cargo check --locked --manifest-path dissonance/Cargo.toml -p searcher --target 
 ## Browser adapters
 
 `Archive::entry_input` materializes an entry’s complete ancestral action tape
-for inspection or playback and rejects missing indices. A browser adapter can own
+for inspection or playback and rejects missing indices. These observational reads
+leave the serialized archive and its input-reconstruction counter unchanged; that
+counter measures internal search reconstruction work. A browser adapter can own
 execution snapshots outside the archive and use this read accessor for films.
 Weighted draws use `RomuDuoJrRand::below_u64` for 64-bit weight
 totals, so wasm32 does not truncate them through `usize`. This uses the same

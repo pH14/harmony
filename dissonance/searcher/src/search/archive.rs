@@ -2147,12 +2147,7 @@ where
     pub(crate) fn materialize_input(&self, id: usize) -> Result<Input<A>, &'static str> {
         self.input_reconstructions
             .set(self.input_reconstructions.get().saturating_add(1));
-        let entry = self.entries.get(id).ok_or("archive input id is missing")?;
-        let actions = self
-            .input_index
-            .materialize(entry.input_node, entry.input_len)
-            .ok_or("archive input length disagrees with its prefix path")?;
-        Ok(Input { actions })
+        self.entry_input(id)
     }
 
     pub(crate) fn pin_job_origin(
@@ -2655,7 +2650,12 @@ where
     }
 
     pub fn entry_input(&self, id: usize) -> Result<Input<A>, &'static str> {
-        self.materialize_input(id)
+        let entry = self.entries.get(id).ok_or("archive input id is missing")?;
+        let actions = self
+            .input_index
+            .materialize(entry.input_node, entry.input_len)
+            .ok_or("archive input length disagrees with its prefix path")?;
+        Ok(Input { actions })
     }
 
     #[must_use]
@@ -9423,6 +9423,51 @@ mod tests {
         assert_eq!(archive.metadata_pins.get(&stable_id), Some(&1));
         archive.unpin_metadata(stable_id);
         assert!(!archive.metadata_pins.contains_key(&stable_id));
+    }
+
+    #[test]
+    fn observational_input_reads_preserve_serialized_archive_and_search_work() {
+        let mut archive = flat_archive(&[[1, 0, 0, 0]]);
+        let child = archive
+            .insert(
+                Some(0),
+                1,
+                ArchiveCandidate {
+                    suffix: vec![1, 2],
+                    key: FlatKey([2, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        let expected = Input {
+            actions: vec![0, 1, 2],
+        };
+        let before = archive.input_reconstructions();
+        let postcard = postcard::to_allocvec(&archive).unwrap();
+        for _ in 0..3 {
+            assert_eq!(archive.entry_input(child).unwrap(), expected);
+            assert_eq!(archive.entry_input(0).unwrap().actions, [0]);
+            assert_eq!(
+                archive.entry_input(archive.entries.len()),
+                Err("archive input id is missing")
+            );
+            assert_eq!(
+                archive.entry_input(usize::MAX),
+                Err("archive input id is missing")
+            );
+            assert_eq!(archive.input_reconstructions(), before);
+            assert_eq!(postcard::to_allocvec(&archive).unwrap(), postcard);
+        }
+        assert_eq!(archive.materialize_input(child).unwrap(), expected);
+        assert_eq!(archive.input_reconstructions(), before + 1);
+        let after_search = postcard::to_allocvec(&archive).unwrap();
+        assert_ne!(after_search, postcard);
+        assert_eq!(archive.entry_input(child).unwrap(), expected);
+        assert!(archive.entry_input(usize::MAX).is_err());
+        assert_eq!(postcard::to_allocvec(&archive).unwrap(), after_search);
+        assert_eq!(archive.input_reconstructions(), before + 1);
     }
 
     #[test]
