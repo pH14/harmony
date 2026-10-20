@@ -131,7 +131,7 @@ impl FamidashGame<QuickNesMachine> {
 #[derive(Clone, Copy, Debug)]
 pub struct FamidashCampaignRun;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct FamidashCampaignEvidence {
     aggregate: FamidashMilestones,
     watermark: FamidashProgressWatermark,
@@ -425,6 +425,18 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> CampaignTypes for FamidashGame<
 }
 
 impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Reporting for FamidashGame<M, GROUP> {
+    fn write_evidence_checkpoint(
+        evidence: &Self::Evidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        serde_json::to_writer(out, evidence)?;
+        Ok(())
+    }
+
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -846,6 +858,57 @@ mod tests {
     }
 
     #[test]
+    fn evidence_checkpoint_preserves_empty_and_complete_state_and_rejects_corruption() {
+        let input = FamidashInput {
+            actions: vec![ButtonChord::new(1, 3), ButtonChord::new(0, 7)],
+        };
+        let milestones = FamidashMilestones {
+            cleared: 2,
+            percent: 100,
+            complete: true,
+            death: true,
+        };
+        for evidence in [
+            FamidashCampaignEvidence::default(),
+            FamidashCampaignEvidence {
+                aggregate: milestones,
+                watermark: FamidashProgressWatermark {
+                    cleared: 2,
+                    percent: 100,
+                    x: 1234,
+                },
+                first_reached: FamidashMilestoneTimes {
+                    first_complete: Some(29),
+                    first_death: Some(7),
+                },
+                first_inputs: FamidashMilestoneInputs {
+                    first_complete: Some(input.clone()),
+                    first_death: Some(FamidashInput {
+                        actions: vec![ButtonChord::new(0, 2)],
+                    }),
+                },
+                champion_input: input.clone(),
+                champion_milestones: milestones,
+                champion_key: Some((2, 1234)),
+            },
+        ] {
+            let bytes = FamidashGame::<QuickNesMachine>::evidence_checkpoint(&evidence).unwrap();
+            let restored =
+                FamidashGame::<QuickNesMachine>::evidence_from_checkpoint(&bytes).unwrap();
+            assert_eq!(evidence_value(&restored), evidence_value(&evidence));
+            assert!(
+                FamidashGame::<QuickNesMachine>::evidence_from_checkpoint(
+                    &bytes[..bytes.len() - 1]
+                )
+                .is_err()
+            );
+            let mut trailing = bytes;
+            trailing.extend_from_slice(b"{}");
+            assert!(FamidashGame::<QuickNesMachine>::evidence_from_checkpoint(&trailing).is_err());
+        }
+    }
+
+    #[test]
     fn expansion_evidence_matches_borrowed_action_evidence_and_keeps_input_lazy() {
         use crate::famidash::target::{FamidashGameplayState, FamidashMechanicalState};
         use std::cell::Cell;
@@ -909,6 +972,13 @@ mod tests {
             })
             .unwrap();
             assert_eq!(evidence_value(&normal), evidence_value(&expanded));
+            let bytes = FamidashGame::<QuickNesMachine>::evidence_checkpoint(&expanded).unwrap();
+            expanded = FamidashGame::<QuickNesMachine>::evidence_from_checkpoint(&bytes).unwrap();
+            assert_eq!(evidence_value(&normal), evidence_value(&expanded));
+            assert_eq!(
+                FamidashGame::<QuickNesMachine>::evidence_checkpoint(&expanded).unwrap(),
+                bytes
+            );
         }
         assert_eq!(calls.get(), 3);
         assert_eq!(expanded.first_reached.first_death, Some(3));

@@ -45,7 +45,10 @@ fixed width-two, fanout-two, depth-four beam. Its quality is descending
 identity. Runnable actions must match the request exactly; terminal or failed
 actions may shorten its positive hold while preserving buttons. Expansion and
 ordinary action evidence share borrowed observations and the same lazy
-first-milestone/champion input handling. Preparation failures preserve the
+first-milestone/champion input handling. Its evidence checkpoint codec preserves
+aggregate milestones, progress, first-arrival times and inputs, and champion
+state, so interval persistence and resumed evidence merging retain the complete
+search history. Preparation failures preserve the
 ordinary evaluator's no-op evidence behavior. A terminal endpoint without
 gameplay may have no archive key; other key errors remain errors. Observation
 charges use the fixed-size observation value, with vector storage accounted by
