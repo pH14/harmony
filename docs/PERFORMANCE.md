@@ -255,10 +255,11 @@ executions, keeping 24 workers busy needs coordinator time under 6 ms per job.
 When execution times vary, allowing several reserved jobs and finished results
 per worker keeps workers busy while earlier results wait for admission. Each
 extra reservation per worker also lengthens the critical path: a new state
-waits that many more admissions before a job can start from it. In a fault
-search, sixteen reservations per worker held the deepest retained state near
-12 guest seconds after an hour; one per worker reached it within the first
-30 jobs.
+waits that many more admissions before a job can start from it. In 30-minute
+NATS fault searches with 3 workers, one reservation per worker reached a
+deepest retained state 1.5x to 2x that of sixteen per worker. The cost was
+throughput: workers waited on admission order 55% of the time against 13-18%,
+and admitted about 45% fewer jobs.
 
 ## Memory
 
