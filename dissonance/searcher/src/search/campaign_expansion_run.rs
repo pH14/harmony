@@ -159,17 +159,27 @@ where
             running += reserve(campaign)?;
             loop {
                 while let Some(mut admission) = campaign.admit_next()? {
+                    let started = profile_now();
                     watch.admitted(&mut admission, campaign);
+                    record_profile(&mut campaign.profile.watch_ns, started);
+                    let started = profile_now();
                     let record =
                         ExpansionTaskRecord::take(&mut admission, campaign.counters.tasks_reserved);
+                    record_profile(&mut campaign.profile.record_ns, started);
+                    let started = profile_now();
                     writer
                         .write_line_with_cleanup(ExpansionStreamRecord::Task(record), admission)?;
+                    record_profile(&mut campaign.profile.stream_ns, started);
+                    let started = profile_now();
                     if let Some(progress) = progress.as_mut() {
                         serde_json::to_writer(&mut **progress, &campaign.counters)?;
                         progress.write_all(b"\n")?;
                     }
+                    record_profile(&mut campaign.profile.progress_ns, started);
                     running += reserve(campaign)?;
+                    let started = profile_now();
                     campaign.checkpoint_due()?;
+                    record_profile(&mut campaign.profile.checkpoint_ns, started);
                 }
                 if campaign.finished() {
                     break;
@@ -278,6 +288,13 @@ where
         config.materialize_final_artifacts,
     )?;
     telemetry.persistence_ns = nanos_since(persist_started);
+    if profile_clock_enabled() {
+        telemetry.coordinator = serde_json::json!({
+            "kind": "bounded_expansion_spans_v1",
+            "basis": "inclusive_wall_ns_not_cpu",
+            "spans": campaign.profile,
+        });
+    }
     telemetry.sum_targets();
     let report = ExpansionRunReport {
         header,

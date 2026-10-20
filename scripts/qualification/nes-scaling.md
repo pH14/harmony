@@ -15,7 +15,11 @@ This is a bounded throughput and ordering check, not a whole-game effectiveness
 experiment or proof of saturation on an unmeasured host. The 10,000 execution-budget
 ceiling comes from the evaluator's full-replay contract. Famidash uses bounded
 expansion: the budget charges edge attempts and one unit for an empty task;
-executed edges, failed preparation, tasks and replay work are distinct counters. Cold boot, final
+executed edges, failed preparation, tasks and replay work are distinct counters.
+The v2 expansion stream retains observation counts and fresh SHA-256 commitments
+to their postcard encoding. Full replay regenerates the observations and checks
+those commitments alongside every tree decision and the final report/checkpoint.
+Cold boot, final
 serialization and verification are included in campaign seconds; search
 seconds and worker busy fractions are reported separately. Busy time includes
 restore, execution and capture; it does not measure guest cycles. Read raw
@@ -32,6 +36,16 @@ workers are ready, before reservation, and stops before final checkpoint/report
 persistence. Use its optional host CPU counters for the coordination capacity
 bound, and retain encoder CPU and persistence costs separately.
 Do not add nested or concurrent timers to infer elapsed time.
+
+For an expansion coordinator diagnostic, set `HARMONY_COORDINATOR_PROFILE=1`.
+`telemetry.coordinator` then contains inclusive wall-time spans for reservation,
+selection, root preparation, completion, validation, evidence merging, archive
+insertion, maintenance, observation, record construction, output and checkpoints.
+These spans locate expensive operations; nested spans and scheduling waits make
+their sum unsuitable as coordinator CPU. Use `dispatch_phase.host` for that CPU
+cost, and repeat capacity trials with this optional clock instrumentation off.
+Profiling state is local to the session and is not checkpointed or recorded in
+the logical stream.
 
 ## Prepare the host
 

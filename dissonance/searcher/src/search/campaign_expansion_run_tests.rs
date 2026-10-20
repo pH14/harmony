@@ -169,7 +169,7 @@ fn expansion_runtime_stream_report_and_checkpoint_ignore_worker_count_and_physic
 }
 
 #[test]
-fn expansion_runtime_codec_records_every_node_and_keeps_observation_fields_on_roundtrip() {
+fn expansion_runtime_codec_records_every_node_and_keeps_observation_commitments_on_roundtrip() {
     let ((report, _), stream) = {
         let (result, stream, _) = run_case(1, 0, false, None);
         (result.unwrap(), stream)
@@ -225,7 +225,7 @@ fn expansion_runtime_codec_records_every_node_and_keeps_observation_fields_on_ro
                     assert_eq!(node.key, evidence.candidate_key);
                     assert_eq!(node.milestones, Some(evidence.milestones));
                     assert_eq!(evidence.replay_certificate, Some([node.key.unwrap().0; 32]));
-                    assert_eq!(evidence.observations.len(), 1);
+                    assert_eq!(evidence.observations.count(), 1);
                     assert_eq!(evidence.result_sha256.len(), 64);
                 }
             }
@@ -245,7 +245,7 @@ fn expansion_runtime_codec_records_every_node_and_keeps_observation_fields_on_ro
     planted["reservation"]["task_seed"] =
         (planted["reservation"]["task_seed"].as_u64().unwrap() ^ 1).into();
     planted["nodes"][1]["path_cost"] = 999.into();
-    planted["nodes"][1]["evidence"]["observations"][0] = 211.into();
+    planted["nodes"][1]["evidence"]["observations"]["count"] = 211.into();
     planted["nodes"][1]["evidence"]["replay_certificate"][0] = 212.into();
     let decoded: ExpansionStreamRecord<TestWorkload> =
         serde_json::from_value(planted.clone()).unwrap();
@@ -318,7 +318,9 @@ fn expansion_runtime_full_replay_matches_checkpoint_and_rejects_each_forged_tree
         let mut rows = original.clone();
         let record = &mut rows[1];
         match field {
-            "observation" => record["nodes"][1]["evidence"]["observations"][0] = 211.into(),
+            "observation" => {
+                record["nodes"][1]["evidence"]["observations"]["sha256"] = "0".repeat(64).into()
+            }
             "seed" => {
                 record["reservation"]["task_seed"] =
                     (record["reservation"]["task_seed"].as_u64().unwrap() ^ 1).into()
@@ -627,4 +629,206 @@ fn expansion_runtime_checkpoints_each_crossed_interval_bucket_at_task_boundaries
         .count();
     assert_eq!(retained_intervals, actual.len().min(2));
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+struct ObservationMutationWatch {
+    after_admission: bool,
+    changed: AtomicUsize,
+}
+
+impl ExpansionWatch<TestWorkload> for ObservationMutationWatch {
+    type Note = ();
+
+    fn note_memory_charge(&self, _: &()) -> usize {
+        0
+    }
+
+    fn run_edge(
+        &self,
+        _: ExpansionEdgeId,
+        _: &JobSpec<TestWorkload>,
+        execute: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+    ) -> WatchedJob<TestWorkload, ()> {
+        let mut outcome = execute()?;
+        if !self.after_admission {
+            let before = outcome.result_sha256.clone();
+            for action in &mut outcome.result.actions {
+                action.observations[0] ^= 128;
+                self.changed.fetch_add(1, Ordering::Relaxed);
+            }
+            assert_eq!(before, outcome.result_sha256);
+        }
+        Ok((outcome, ()))
+    }
+
+    fn admitted(
+        &self,
+        admission: &mut ExpansionAdmission<TestWorkload, ()>,
+        _: &ExpansionCoordinator<'_, TestWorkload>,
+    ) {
+        if self.after_admission {
+            for node in admission
+                .outcome
+                .trace
+                .as_mut()
+                .unwrap()
+                .nodes
+                .iter_mut()
+                .skip(1)
+            {
+                let evidence = &mut node.evidence.as_mut().unwrap().evidence;
+                let before = evidence.result_sha256.clone();
+                evidence.observations[0] ^= 128;
+                assert_eq!(before, evidence.result_sha256);
+                self.changed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+#[test]
+fn expansion_commitments_reject_post_execution_and_post_admission_mutations_with_stale_result_sha()
+{
+    let workload = TestWorkload::new(Mode::Normal);
+    let mut config = run_config(1);
+    config.execution_budget = 14;
+    config.window = 1;
+    let mut reference_stream = Vec::new();
+    let (reference, reference_snapshot) = run_expansion_watched(
+        &workload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut reference_stream,
+        None,
+        CampaignExecutionOptions::default(),
+        &(),
+    )
+    .unwrap();
+    for after_admission in [false, true] {
+        let watch = ObservationMutationWatch {
+            after_admission,
+            changed: AtomicUsize::new(0),
+        };
+        let mut stream = Vec::new();
+        let (report, snapshot) = run_expansion_watched(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+            &watch,
+        )
+        .unwrap();
+        assert!(watch.changed.load(Ordering::Relaxed) > 0);
+        assert_eq!(
+            serde_json::to_vec(&report.archive).unwrap(),
+            serde_json::to_vec(&reference.archive).unwrap()
+        );
+        assert_eq!(report.counters, reference.counters);
+        assert_eq!(
+            snapshot.to_bytes().unwrap(),
+            reference_snapshot.to_bytes().unwrap()
+        );
+        let original = records(&reference_stream);
+        let changed = records(&stream);
+        assert_eq!(
+            original[1]["nodes"][1]["evidence"]["result_sha256"],
+            changed[1]["nodes"][1]["evidence"]["result_sha256"]
+        );
+        assert_ne!(
+            original[1]["nodes"][1]["evidence"]["observations"],
+            changed[1]["nodes"][1]["evidence"]["observations"]
+        );
+        let error = replay_expansion(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream.as_slice(),
+            &report,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("replay differs in its tree"));
+    }
+}
+
+#[test]
+fn expansion_commitments_preserve_root_and_edge_preparation_failure_evidence() {
+    let workload = TestWorkload::new(Mode::RootPreparation);
+    let root_spec = spec(vec![2]);
+    let failed = run_expansion_task(
+        &workload,
+        &(),
+        &mut workload.new_target().unwrap(),
+        &root_spec,
+        &(),
+    )
+    .unwrap();
+    let mut admission = ExpansionAdmission {
+        spec: root_spec,
+        outcome: failed,
+        decisions: Vec::new(),
+        useful: false,
+    };
+    let raw = ExpansionTaskRecord::take(&mut admission, 4);
+    let wire = serde_json::to_vec(&raw).unwrap();
+    let decoded: ExpansionTaskRecord<TestWorkload> = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(decoded.preparation_failure.as_ref().unwrap().count(), 1);
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), wire);
+    let mut changed = serde_json::to_value(&decoded).unwrap();
+    changed["preparation_failure"]["sha256"] = "0".repeat(64).into();
+    let changed: ExpansionTaskRecord<TestWorkload> = serde_json::from_value(changed).unwrap();
+    assert_ne!(
+        serde_json::to_vec(&raw).unwrap(),
+        serde_json::to_vec(&changed).unwrap()
+    );
+
+    let workload = TestWorkload::new(Mode::EdgePreparation);
+    let mut config = run_config(1);
+    config.execution_budget = 4;
+    config.window = 1;
+    let mut stream = Vec::new();
+    let (report, _) = run_expansion_watched(
+        &workload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+        CampaignExecutionOptions::default(),
+        &(),
+    )
+    .unwrap();
+    replay_expansion(
+        &workload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream.as_slice(),
+        &report,
+    )
+    .unwrap();
+    for field in ["digest", "count", "presence"] {
+        let mut rows = records(&stream);
+        let evidence = &mut rows[1]["nodes"][1]["evidence"];
+        assert_eq!(evidence["preparation_failure"]["count"], 1);
+        match field {
+            "digest" => evidence["preparation_failure"]["sha256"] = "0".repeat(64).into(),
+            "count" => evidence["preparation_failure"]["count"] = 0.into(),
+            "presence" => evidence["preparation_failure"] = serde_json::Value::Null,
+            _ => unreachable!(),
+        }
+        let planted = encoded(&rows);
+        let mut expected: ExpansionRunReport<u8, Report> =
+            serde_json::from_value(serde_json::to_value(&report).unwrap()).unwrap();
+        expected.stream_sha256 = format!("{:x}", Sha256::digest(&planted));
+        assert!(
+            replay_expansion(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut planted.as_slice(),
+                &expected
+            )
+            .is_err()
+        );
+    }
 }

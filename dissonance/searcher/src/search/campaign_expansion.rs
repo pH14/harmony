@@ -23,8 +23,8 @@ mod stream;
 
 pub use stream::{
     EXPANSION_STREAM_FORMAT, ExpansionAccountingRecord, ExpansionDuplicateRecord,
-    ExpansionNodeRecord, ExpansionReservationRecord, ExpansionStreamHeader, ExpansionStreamRecord,
-    ExpansionTaskRecord,
+    ExpansionEvidenceRecord, ExpansionNodeRecord, ExpansionObservations,
+    ExpansionReservationRecord, ExpansionStreamHeader, ExpansionStreamRecord, ExpansionTaskRecord,
 };
 
 pub const EXPANSION_SCHEDULE: &str = "bounded_beam_fifo_tasks_v1";

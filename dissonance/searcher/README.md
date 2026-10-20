@@ -489,11 +489,18 @@ still contributes observations, failures and objective witnesses. This capabilit
 requires lineage-independent archive key completion; it rejects a completed
 frontier key that changes when bound to the reserved root.
 
-The `dissonance-bounded-expansion-v1` stream records task reservation watermarks,
+The `dissonance-bounded-expansion-v2` stream records task reservation watermarks,
 root metadata, replay paths and certificates, every node's requested and recorded
 actions, endpoint facts, costs, evidence, result digests, local filtering and
-global admission decisions. Snapshot payloads and watch notes stay outside this
-logical stream. Observer-dependent byte charges also stay outside it. Encoding,
+global admission decisions. Observation and preparation-failure vectors are
+represented by their count and a SHA-256 commitment to the complete postcard
+value. Option presence distinguishes absent preparation failure from an empty
+failure vector. Encoding freshly hashes the exact vectors after worker and
+admission observers; the worker's independently certified result digest does not
+replace this commitment. Raw observations still reach global evidence merging
+and live feeds before the record moves to the encoder. Decoding retains only
+validated commitments and never allocates from a declared observation count.
+Snapshot payloads and watch notes stay outside this logical stream. Observer-dependent byte charges also stay outside it. Encoding,
 hashing and spent-result disposal use the existing bounded background writer.
 Full replay reconstructs the reserved task windows, reexecutes each complete
 tree and compares the task records, final digest, counters and logical archive

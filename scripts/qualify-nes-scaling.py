@@ -54,7 +54,7 @@ def expansion_deltas(result, report):
     if result.get("window_semantics") != "fixed_outstanding_tasks":
         raise ValueError("expansion window semantics missing")
     header = report["header"]
-    if (header.get("format") != "dissonance-bounded-expansion-v1"
+    if (header.get("format") != "dissonance-bounded-expansion-v2"
             or header.get("schedule") != "bounded_beam_fifo_tasks_v1"
             or counter(header["window"]) == 0):
         raise ValueError("expansion report header missing or invalid")

@@ -60,7 +60,7 @@ class ScalingTests(unittest.TestCase):
         deltas["frames_emulated"] = sum(deltas[name] for name in
                                        ("bootstrap_frames", "reconstruction_frames", "edge_frames"))
         report = json.loads((directory / "campaign.json").read_text())
-        report.update(header={"format": "dissonance-bounded-expansion-v1",
+        report.update(header={"format": "dissonance-bounded-expansion-v2",
                               "schedule": "bounded_beam_fifo_tasks_v1", "window": 512,
                               "execution_budget": 10}, counters=final, initial_counters=initial)
         (directory / "campaign.json").write_text(json.dumps(report))

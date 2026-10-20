@@ -60,11 +60,11 @@ pub use expansion_campaign::{
     EXPANSION_SCHEDULE, EXPANSION_STREAM_FORMAT, ExpansionAccountingRecord, ExpansionAdmission,
     ExpansionCoordinator, ExpansionCounters, ExpansionDecision, ExpansionDuplicateRecord,
     ExpansionEdge, ExpansionEdgeAdmission, ExpansionEdgeId, ExpansionEvidence,
-    ExpansionEvidenceData, ExpansionFacts, ExpansionNodeRecord, ExpansionOutcome,
-    ExpansionReservationRecord, ExpansionRunReport, ExpansionStopReason, ExpansionStreamHeader,
-    ExpansionStreamRecord, ExpansionTaskOutcome, ExpansionTaskRecord, ExpansionTaskSpec,
-    ExpansionTrace, ExpansionWatch, ExpansionWorkload, WorkloadExpansionFacts, replay_expansion,
-    run_expansion_task, run_expansion_watched,
+    ExpansionEvidenceData, ExpansionEvidenceRecord, ExpansionFacts, ExpansionNodeRecord,
+    ExpansionObservations, ExpansionOutcome, ExpansionReservationRecord, ExpansionRunReport,
+    ExpansionStopReason, ExpansionStreamHeader, ExpansionStreamRecord, ExpansionTaskOutcome,
+    ExpansionTaskRecord, ExpansionTaskSpec, ExpansionTrace, ExpansionWatch, ExpansionWorkload,
+    WorkloadExpansionFacts, replay_expansion, run_expansion_task, run_expansion_watched,
 };
 
 #[path = "campaign_view.rs"]

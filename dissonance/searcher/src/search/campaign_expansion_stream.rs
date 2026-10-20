@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub const EXPANSION_STREAM_FORMAT: &str = "dissonance-bounded-expansion-v1";
+pub const EXPANSION_STREAM_FORMAT: &str = "dissonance-bounded-expansion-v2";
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExpansionStreamHeader {
@@ -91,6 +91,89 @@ impl<G: ExpansionWorkload> From<&ExpansionTaskSpec<G>> for ExpansionReservationR
     }
 }
 
+#[derive(Debug)]
+pub struct ExpansionObservations<O>(ObservationStorage<O>);
+
+#[derive(Debug)]
+enum ObservationStorage<O> {
+    Raw(Vec<O>),
+    Digest { count: u64, sha256: String },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservationDigest {
+    count: u64,
+    sha256: String,
+}
+
+impl<O> ExpansionObservations<O> {
+    fn raw(observations: Vec<O>) -> Self {
+        Self(ObservationStorage::Raw(observations))
+    }
+
+    pub fn count(&self) -> u64 {
+        match &self.0 {
+            ObservationStorage::Raw(values) => values.len() as u64,
+            ObservationStorage::Digest { count, .. } => *count,
+        }
+    }
+}
+
+impl<O: Serialize> Serialize for ExpansionObservations<O> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let fresh;
+        let (count, sha256) = match &self.0 {
+            ObservationStorage::Raw(values) => {
+                fresh = postcard_value_sha256(values).map_err(serde::ser::Error::custom)?;
+                (values.len() as u64, fresh.as_str())
+            }
+            ObservationStorage::Digest { count, sha256 } => (*count, sha256.as_str()),
+        };
+        let mut output = serializer.serialize_struct("ObservationDigest", 2)?;
+        output.serialize_field("count", &count)?;
+        output.serialize_field("sha256", sha256)?;
+        output.end()
+    }
+}
+
+impl<'de, O> Deserialize<'de> for ExpansionObservations<O> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let digest = ObservationDigest::deserialize(deserializer)?;
+        if digest.sha256.len() != 64
+            || !digest
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(serde::de::Error::custom(
+                "invalid expansion observation SHA-256",
+            ));
+        }
+        Ok(Self(ObservationStorage::Digest {
+            count: digest.count,
+            sha256: digest.sha256,
+        }))
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(bound = "")]
+pub struct ExpansionEvidenceRecord<G: ExpansionWorkload> {
+    pub requested_action: G::Action,
+    pub action: G::Action,
+    pub preparation_failure: Option<ExpansionObservations<G::Observations>>,
+    pub observations: ExpansionObservations<G::Observations>,
+    pub milestones: G::Milestones,
+    pub outcome: crate::search::rollout::Outcome,
+    pub candidate_key: Option<G::Key>,
+    pub candidate_viable: Option<bool>,
+    pub replay_certificate: Option<[u8; 32]>,
+    pub result_sha256: String,
+    pub execution_work: u64,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(bound = "")]
 pub struct ExpansionNodeRecord<G: ExpansionWorkload> {
@@ -106,7 +189,7 @@ pub struct ExpansionNodeRecord<G: ExpansionWorkload> {
     pub edge_cost: u64,
     pub disposition: crate::search::rollout::ExecutionDisposition,
     pub objective: bool,
-    pub evidence: Option<ExpansionEvidence<G>>,
+    pub evidence: Option<ExpansionEvidenceRecord<G>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -142,7 +225,7 @@ pub struct ExpansionTaskRecord<G: ExpansionWorkload> {
     pub reserved_through: u64,
     pub reservation: ExpansionReservationRecord<G>,
     pub reconstruction_work: u64,
-    pub preparation_failure: Option<Vec<G::Observations>>,
+    pub preparation_failure: Option<ExpansionObservations<G::Observations>>,
     pub nodes: Vec<ExpansionNodeRecord<G>>,
     pub duplicates: Vec<ExpansionDuplicateRecord<G>>,
     pub frontier: Vec<u32>,
@@ -159,7 +242,11 @@ impl<G: ExpansionWorkload> ExpansionTaskRecord<G> {
             reserved_through,
             reservation: ExpansionReservationRecord::from(&admission.spec),
             reconstruction_work: admission.outcome.reconstruction_work,
-            preparation_failure: admission.outcome.preparation_failure.take(),
+            preparation_failure: admission
+                .outcome
+                .preparation_failure
+                .take()
+                .map(ExpansionObservations::raw),
             nodes: Vec::new(),
             duplicates: Vec::new(),
             frontier: Vec::new(),
@@ -187,11 +274,16 @@ impl<G: ExpansionWorkload> ExpansionTaskRecord<G> {
         for node in &mut trace.nodes {
             let evidence = node.evidence.as_mut().map(|edge| {
                 let value = &mut edge.evidence;
-                ExpansionEvidenceData {
+                ExpansionEvidenceRecord::<G> {
                     requested_action: value.requested_action,
                     action: value.action,
-                    preparation_failure: value.preparation_failure.take(),
-                    observations: std::mem::take(&mut value.observations),
+                    preparation_failure: value
+                        .preparation_failure
+                        .take()
+                        .map(ExpansionObservations::raw),
+                    observations: ExpansionObservations::raw(std::mem::take(
+                        &mut value.observations,
+                    )),
                     milestones: value.milestones,
                     outcome: value.outcome,
                     candidate_key: value.candidate_key,
@@ -240,4 +332,130 @@ pub enum ExpansionStreamRecord<G: ExpansionWorkload> {
         counters: ExpansionCounters,
         stop_reason: ExpansionStopReason,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expansion_observation_commitments_roundtrip_exact_values_and_option_presence() {
+        for values in [
+            Vec::<String>::new(),
+            vec!["level λ→終".into(), "\u{0}é".into()],
+        ] {
+            let expected = postcard_value_sha256(&values).unwrap();
+            let raw = ExpansionObservations::raw(values.clone());
+            let bytes = serde_json::to_vec(&raw).unwrap();
+            let decoded: ExpansionObservations<String> = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(decoded.count(), values.len() as u64);
+            assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["sha256"],
+                expected
+            );
+        }
+        let one = ExpansionObservations::raw(vec![vec![1_u8, 2], vec![3]]);
+        let changed = ExpansionObservations::raw(vec![vec![1_u8, 9], vec![3]]);
+        assert_eq!(one.count(), changed.count());
+        assert_ne!(
+            serde_json::to_vec(&one).unwrap(),
+            serde_json::to_vec(&changed).unwrap()
+        );
+        let absent: Option<ExpansionObservations<u8>> = None;
+        let empty = Some(ExpansionObservations::raw(Vec::<u8>::new()));
+        assert_ne!(
+            serde_json::to_vec(&absent).unwrap(),
+            serde_json::to_vec(&empty).unwrap()
+        );
+    }
+
+    #[test]
+    fn expansion_observation_commitments_reject_malformed_wire_without_count_allocation() {
+        let valid = serde_json::json!({"count": 1, "sha256": "0".repeat(64)});
+        for field in [
+            "missing",
+            "short",
+            "uppercase",
+            "nonhex",
+            "negative",
+            "overflow",
+            "boolean",
+            "extra",
+            "array",
+        ] {
+            let mut value = valid.clone();
+            match field {
+                "missing" => {
+                    value.as_object_mut().unwrap().remove("sha256");
+                }
+                "short" => value["sha256"] = "0".repeat(63).into(),
+                "uppercase" => value["sha256"] = "A".repeat(64).into(),
+                "nonhex" => value["sha256"] = "g".repeat(64).into(),
+                "negative" => value["count"] = (-1).into(),
+                "overflow" => value["count"] = "18446744073709551616".into(),
+                "boolean" => value["count"] = true.into(),
+                "extra" => value["observations"] = serde_json::json!([1]),
+                "array" => value = serde_json::json!([1]),
+                _ => unreachable!(),
+            }
+            assert!(
+                serde_json::from_value::<ExpansionObservations<u8>>(value).is_err(),
+                "accepted {field}"
+            );
+        }
+        let bytes = serde_json::to_vec(&valid).unwrap();
+        assert!(
+            serde_json::from_slice::<ExpansionObservations<u8>>(&bytes[..bytes.len() - 1]).is_err()
+        );
+        let huge: ExpansionObservations<u8> = serde_json::from_value(serde_json::json!({
+            "count": u64::MAX, "sha256": "0".repeat(64)
+        }))
+        .unwrap();
+        assert_eq!(huge.count(), u64::MAX);
+        assert!(serde_json::to_vec(&huge).unwrap().len() < 128);
+        assert!(
+            serde_json::from_str::<ExpansionObservations<u8>>(&format!(
+                "{{\"count\":18446744073709551616,\"sha256\":\"{}\"}}",
+                "0".repeat(64)
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn expansion_observation_serialization_failure_preserves_only_the_earlier_stream_prefix() {
+        #[derive(Debug)]
+        struct Observation(bool);
+        impl Serialize for Observation {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                if self.0 {
+                    return Err(serde::ser::Error::custom(
+                        "injected observation encoding failure",
+                    ));
+                }
+                serializer.serialize_u8(7)
+            }
+        }
+        let first = || ExpansionObservations::raw(vec![Observation(false)]);
+        let mut expected = b"0\n".to_vec();
+        serde_json::to_writer(&mut expected, &first()).unwrap();
+        expected.push(b'\n');
+        for background in [false, true] {
+            let mut sink = Vec::new();
+            let mut writer = StreamWriter::<ExpansionObservations<Observation>>::new(&mut sink);
+            writer.write_header(&0).unwrap();
+            if background {
+                writer.enable_background(None).unwrap();
+            }
+            writer.write_line(first()).unwrap();
+            let failed = writer.write_line(ExpansionObservations::raw(vec![Observation(true)]));
+            if !background {
+                assert!(failed.is_err());
+            }
+            let error = writer.finish().unwrap_err();
+            assert!(!error.to_string().is_empty());
+            assert_eq!(sink, expected);
+        }
+    }
 }

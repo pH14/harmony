@@ -3,6 +3,11 @@
 use super::*;
 use crate::search::checkpoint::publisher::CheckpointPublisher;
 
+#[path = "campaign_expansion_profile.rs"]
+mod profile;
+
+use profile::{ExpansionProfile, record_profile};
+
 #[path = "campaign_expansion_checkpoint.rs"]
 mod checkpoint;
 
@@ -89,6 +94,7 @@ pub struct ExpansionCoordinator<'a, G: ExpansionWorkload, N = ()> {
     failed: bool,
     stopped: bool,
     checkpoints: Option<ExpansionPersistence<G>>,
+    profile: ExpansionProfile,
 }
 
 fn expansion_records<G: ExpansionWorkload, N>(
@@ -191,6 +197,7 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
             failed: false,
             stopped: false,
             checkpoints: None,
+            profile: ExpansionProfile::default(),
         })
     }
 
@@ -293,7 +300,9 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
 
     pub fn reserve(&mut self) -> Result<Option<ExpansionTaskSpec<G>>, Box<dyn Error>> {
         self.ensure_active()?;
+        let started = profile_now();
         let result = self.reserve_inner();
+        record_profile(&mut self.profile.reserve_ns, started);
         if result.is_err() {
             self.failed = true;
         }
@@ -316,7 +325,9 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
         }
         let quota = (self.config.execution_budget - used).min(expansion::MAX_EDGES as u64) as u8;
         let edge_budget = NonZeroU8::new(quota).ok_or("expansion has no remaining edge quota")?;
+        let started = profile_now();
         let (index, selection) = self.core.archive.select_parent(&mut self.rand)?;
+        record_profile(&mut self.profile.selection_ns, started);
         let parent_id = self
             .core
             .archive
@@ -326,6 +337,7 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
         let parent_milestones = self.core.archive.entries[index].milestones;
         let root_cost_in_group = self.core.archive.entry_cost_in_group(index);
         let last_action = self.core.archive.last_action(index).copied();
+        let started = profile_now();
         self.core.archive.pin_metadata(parent_id)?;
         let (snapshot, replay, replay_certificates, snapshot_id) =
             match self.core.archive.pin_job_origin(index) {
@@ -335,6 +347,7 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
                     return Err(error.into());
                 }
             };
+        record_profile(&mut self.profile.origin_ns, started);
         let task = self.counters.tasks_reserved;
         let next_task = task
             .checked_add(1)
@@ -370,6 +383,7 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
 
     pub fn complete(&mut self, outcome: ExpansionTaskOutcome<G, N>) -> Result<(), Box<dyn Error>> {
         self.ensure_active()?;
+        let started = profile_now();
         let result = (|| {
             self.workload.verify_integrity()?;
             let task = outcome.task;
@@ -381,6 +395,7 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
                 .complete_token(token, task, Ok(outcome), None, |_| Ok(()))?;
             Ok(())
         })();
+        record_profile(&mut self.profile.complete_ns, started);
         if result.is_err() {
             self.failed = true;
         }
@@ -406,7 +421,9 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
 
     pub fn admit_next(&mut self) -> Result<Option<ExpansionAdmission<G, N>>, Box<dyn Error>> {
         self.ensure_active()?;
+        let started = profile_now();
         let result = self.admit_next_inner();
+        record_profile(&mut self.profile.admit_ns, started);
         if result.is_err() {
             self.failed = true;
         }
@@ -450,6 +467,7 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
             &spec,
             &mut outcome,
             &mut self.counters,
+            &mut self.profile,
         );
         self.core.archive.unpin_job_origin(spec.snapshot_id);
         let (decisions, useful, used) = match merged {
@@ -459,6 +477,7 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
                 return Err(error);
             }
         };
+        let started = profile_now();
         let parent = self
             .core
             .archive
@@ -468,6 +487,7 @@ impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
         self.core.archive.unpin_metadata(spec.parent_id);
         self.core.archive.maintain_memory_budget()?;
         self.core.archive.prepare_selection();
+        record_profile(&mut self.profile.maintenance_ns, started);
         self.claims = self
             .claims
             .checked_sub(u64::from(spec.edge_budget.get()))
@@ -583,7 +603,9 @@ fn merge_task<G: ExpansionWorkload, N>(
     spec: &ExpansionTaskSpec<G>,
     outcome: &mut ExpansionTaskOutcome<G, N>,
     counters: &mut ExpansionCounters,
+    profile: &mut ExpansionProfile,
 ) -> Result<(Vec<ExpansionEdgeAdmission>, bool, u64), Box<dyn Error>> {
+    let started = profile_now();
     if outcome.task != spec.task || outcome.preparation_failure.is_some() == outcome.trace.is_some()
     {
         return Err("expansion outcome has an invalid root result shape".into());
@@ -591,12 +613,15 @@ fn merge_task<G: ExpansionWorkload, N>(
     if let Some(trace) = &outcome.trace {
         validate_trace(workload, spec, trace)?;
     }
+    record_profile(&mut profile.validation_ns, started);
     counters.reconstruction_work = counters
         .reconstruction_work
         .checked_add(outcome.reconstruction_work)
         .ok_or("expansion reconstruction work overflow")?;
     if let Some(observations) = &outcome.preparation_failure {
+        let started = profile_now();
         workload.merge_preparation_failure(&mut core.evidence, observations);
+        record_profile(&mut profile.evidence_ns, started);
         core.execution_failures = core.execution_failures.saturating_add(1);
         counters.preparation_failures += 1;
         counters.empty_tasks += 1;
@@ -645,7 +670,9 @@ fn merge_task<G: ExpansionWorkload, N>(
             .checked_add(evidence.execution_work)
             .ok_or("expansion execution work overflow")?;
         if let Some(observations) = &evidence.preparation_failure {
+            let started = profile_now();
             workload.merge_preparation_failure(&mut core.evidence, observations);
+            record_profile(&mut profile.evidence_ns, started);
             core.execution_failures = core.execution_failures.saturating_add(1);
             counters.preparation_failures += 1;
             decisions.push(ExpansionEdgeAdmission {
@@ -659,11 +686,13 @@ fn merge_task<G: ExpansionWorkload, N>(
             continue;
         }
         counters.executed_edges += 1;
+        let started = profile_now();
         workload.merge_expansion_evidence(&mut core.evidence, evidence, sequence, || {
             let mut input = core.archive.materialize_input(root_index)?;
             input.actions.extend_from_slice(&node.suffix);
             Ok(input)
         })?;
+        record_profile(&mut profile.evidence_ns, started);
         use crate::search::rollout::ExecutionDisposition;
         match evidence.outcome.disposition {
             ExecutionDisposition::Terminal => {
@@ -696,6 +725,7 @@ fn merge_task<G: ExpansionWorkload, N>(
             }
             ExpansionDecision::Objective
         } else if trace.frontier.contains(&node.ordinal) {
+            let started = profile_now();
             let facts = node
                 .facts
                 .as_ref()
@@ -761,7 +791,7 @@ fn merge_task<G: ExpansionWorkload, N>(
                 return Err("expansion archive key differs from the worker key".into());
             }
             node.snapshot = unused.map(Arc::new);
-            match admitted {
+            let decision = match admitted {
                 Some(index) => {
                     let id = core
                         .archive
@@ -774,7 +804,9 @@ fn merge_task<G: ExpansionWorkload, N>(
                     }
                 }
                 None => ExpansionDecision::Rejected,
-            }
+            };
+            record_profile(&mut profile.archive_ns, started);
+            decision
         } else {
             ExpansionDecision::Filtered
         };

@@ -408,5 +408,6 @@ pub(super) fn restore<'a, G: ExpansionWorkload, N>(
         failed: false,
         stopped: false,
         checkpoints: None,
+        profile: ExpansionProfile::default(),
     })
 }
