@@ -31,6 +31,7 @@ const F_BUGGIFY_FIRE: u8 = 16;
 const F_RUN_HOOK: u8 = 17;
 const F_PROC_EVENT_KILL: u8 = 20;
 const F_PROC_EVENT_PARK: u8 = 21;
+const F_PROC_POWER_LOSS: u8 = 22;
 
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
     w.extend_from_slice(&v.to_le_bytes());
@@ -106,6 +107,10 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
                 }
             }
         }
+        Fault::ProcPowerLoss { choice } => {
+            w.push(F_PROC_POWER_LOSS);
+            put_u64(w, *choice);
+        }
         Fault::BuggifyFire => w.push(F_BUGGIFY_FIRE),
         Fault::RunHook(id) => {
             w.push(F_RUN_HOOK);
@@ -154,6 +159,7 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
                 target,
             }
         }
+        F_PROC_POWER_LOSS => Fault::ProcPowerLoss { choice: r.u64()? },
         F_BUGGIFY_FIRE => Fault::BuggifyFire,
         F_RUN_HOOK => Fault::RunHook(r.u32()?),
         _ => return Err(EnvError::Malformed),

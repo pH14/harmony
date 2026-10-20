@@ -45,6 +45,7 @@ const RESTART: u8 = 11;
 const RUN_HOOK: u8 = 17;
 const EVENT_KILL: u8 = 20;
 const EVENT_PARK: u8 = 21;
+const POWER_LOSS: u8 = 22;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum ProcessAction {
@@ -59,6 +60,9 @@ pub enum ProcessAction {
         edges: u32,
         hold_nanos: u64,
         target: Option<events::ParkTarget>,
+    },
+    PowerLoss {
+        choice: u64,
     },
 }
 
@@ -240,6 +244,10 @@ fn write_action(out: &mut Vec<u8>, action: ProcessAction) {
                 }
             }
         }
+        ProcessAction::PowerLoss { choice } => {
+            out.push(POWER_LOSS);
+            put_u64(out, choice);
+        }
     }
 }
 
@@ -276,6 +284,9 @@ fn read_action(reader: &mut Reader<'_>) -> Result<ProcessAction, WireError> {
                 target,
             })
         }
+        POWER_LOSS => Ok(ProcessAction::PowerLoss {
+            choice: reader.u64()?,
+        }),
         _ => Err(WireError::Malformed),
     }
 }
@@ -385,7 +396,7 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
-    fn actions() -> [ProcessAction; 7] {
+    fn actions() -> [ProcessAction; 8] {
         [
             ProcessAction::Pause(1234),
             ProcessAction::Kill,
@@ -402,6 +413,7 @@ mod tests {
                 hold_nanos: 2_000_000,
                 target: events::ParkTarget::new(0x40, 0x41),
             },
+            ProcessAction::PowerLoss { choice: 0x0102 },
         ]
     }
 
@@ -455,6 +467,7 @@ mod tests {
                 21, 1, 0, 0, 0, 0x80, 0x84, 0x1e, 0, 0, 0, 0, 0, 1, 0x40, 0, 0, 0, 0, 0, 0, 0,
                 0x41, 0, 0, 0, 0, 0, 0, 0,
             ],
+            vec![22, 0x02, 0x01, 0, 0, 0, 0, 0, 0],
             vec![
                 19, 0x86, 0x0e, 0x4b, 0, 0, 0, 0, 0, 28, 0, 0, 0, 0x80, 0x84, 0x1e, 0, 0, 0, 0, 0,
             ],
