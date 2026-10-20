@@ -2774,20 +2774,29 @@ where
         }
         for (progress, tier) in &self.tiers {
             for (place, handle) in &tier.places {
-                let record = self
-                    .cells
+                self.cells
                     .records
                     .get(*handle)
                     .filter(|record| record.key == (*progress, *place))
                     .ok_or("tier handle points to another cell")?;
-                if record.members.ids.iter().any(|id| {
-                    self.entries
-                        .get(id)
-                        .is_none_or(|entry| cell_of(entry.key) != record.key)
-                        || !self.active.get(id).copied().unwrap_or(false)
-                }) {
-                    return Err("cell holder points to another archive cell");
-                }
+            }
+        }
+        for (handle, record) in self.cells.records.iter().enumerate() {
+            let indexed = self
+                .tiers
+                .get(&record.key.0)
+                .and_then(|tier| tier.places.get(&record.key.1))
+                == Some(&handle);
+            if !indexed && (!record.members.ids.is_empty() || !record.members.ranked.is_empty()) {
+                return Err("unindexed archive cell has holders");
+            }
+            if record.members.ids.iter().any(|id| {
+                self.entries
+                    .get(id)
+                    .is_none_or(|entry| cell_of(entry.key) != record.key)
+                    || !self.active.get(id).copied().unwrap_or(false)
+            }) {
+                return Err("cell holder points to another archive cell");
             }
         }
         Ok(())
@@ -8996,7 +9005,7 @@ mod tests {
         let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
         archive.prepare_selection();
         let bytes = postcard::to_stdvec(&archive).unwrap();
-        for case in 0..8 {
+        for case in 0..10 {
             let mut forged: Archive<u8, FlatKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
             match case {
                 0 => *forged.cells.index.values_mut().next().unwrap() = usize::MAX,
@@ -9024,12 +9033,50 @@ mod tests {
                         .unwrap() = 1
                 }
                 6 => forged.cell_handles[0] = usize::MAX,
-                _ => forged.cells.clear(),
+                7 => forged.cells.clear(),
+                8 => {
+                    forged.cells.records[0].members.ids.insert(usize::MAX, 0);
+                }
+                _ => {
+                    forged.cells.records[0].members.ids.insert(1, 0);
+                }
             }
             assert!(
                 forged.restore_runtime(|_| 1, None, Vec::new()).is_err(),
                 "case {case}"
             );
+        }
+    }
+
+    #[test]
+    fn restored_cell_arena_rejects_orphan_holders_but_preserves_empty_historical_cells() {
+        for active in [false, true] {
+            let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
+            archive.prepare_selection();
+            if active {
+                archive.index_remove(1);
+            } else {
+                assert!(archive.deactivate(1));
+            }
+            let handle = archive.cell_handles[1];
+            assert_eq!(archive.cells.records[handle].state.active > 0, active);
+            assert!(archive.cells.records[handle].members.ids.is_empty());
+            assert!(!archive.tiers[&()].places.contains_key(&[1, 0, 0]));
+            let bytes = postcard::to_stdvec(&archive).unwrap();
+            let mut restored: Archive<u8, FlatKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+            restored.restore_runtime(|_| 1, None, Vec::new()).unwrap();
+            assert_eq!(postcard::to_stdvec(&restored).unwrap(), bytes);
+            for id in [0, 1, usize::MAX] {
+                let mut forged: Archive<u8, FlatKey, (), ()> =
+                    postcard::from_bytes(&bytes).unwrap();
+                forged.cells.records[handle].members.ids.insert(id, 0);
+                let mut decoded: Archive<u8, FlatKey, (), ()> =
+                    postcard::from_bytes(&postcard::to_stdvec(&forged).unwrap()).unwrap();
+                assert_eq!(
+                    decoded.restore_runtime(|_| 1, None, Vec::new()),
+                    Err("unindexed archive cell has holders")
+                );
+            }
         }
     }
 
