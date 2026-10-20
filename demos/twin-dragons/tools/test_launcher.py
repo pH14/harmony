@@ -121,7 +121,7 @@ class LauncherTest(unittest.TestCase):
                     self.assertEqual(request["game"], game)
                     self.assertEqual(request["live"], "127.0.0.1:0")
                     self.assertEqual(request["workers"], workers)
-                    self.assertEqual(request["window"], 512)
+                    self.assertEqual(request["window"], 256)
                     self.assertNotIn("algorithm", request)
         for game in ("super-mario-bros", "mega-man-2", "metroid", "twin-dragons"):
             settings = launcher.Settings(game, "cloud", 128, 4096, 19, 1)

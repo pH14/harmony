@@ -219,9 +219,9 @@ memory_max_mib = 24576
 ```
 
 The dialog must also select 128 workers to start one 128-worker campaign.
-For Famidash the launcher sets a fixed `window: 512` at every worker count:
-this is 512 outstanding expansion tasks, each with at most 14 edge attempts,
-so up to 7,168 edge attempts can be pending. Other games retain `window: 4`
+For Famidash the launcher sets a fixed `window: 256` at every worker count:
+this is 256 outstanding expansion tasks, each with at most 14 edge attempts,
+so up to 3,584 edge attempts can be pending. Other games retain `window: 4`
 per worker. This is configuration, not a throughput guarantee; memory and
 feedback behavior at this task window still need capacity qualification.
 `memory_mib` is the maximum archive and bounded draw-state budget offered by

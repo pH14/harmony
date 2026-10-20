@@ -18,7 +18,7 @@ roms = "~/arcade-roms"
 # lists directories that hold other `nes-eval` campaigns; the page lists every
 # running campaign under them so it can be watched. Set workers = 128 to offer
 # that choice; select 128 in the dialog to use it. Famidash uses a fixed window
-# of 512 expansion tasks (up to 7168 pending edge attempts), independent of
+# of 256 expansion tasks (up to 3584 pending edge attempts), independent of
 # workers; other games use window = 4 per worker. Memory/feedback capacity at
 # the Famidash task window remains to be qualified. The whole-unit ceiling
 # includes workers, pending tasks/results, stream/live buffers and transients;

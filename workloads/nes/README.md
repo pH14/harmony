@@ -356,7 +356,7 @@ width-two, fanout-two, depth-four beam and can attempt at most 14 edges. The
 request's `window` is the exact number of outstanding tasks, independent of
 `workers`; qualification across worker counts must hold this task window fixed.
 Other games retain the existing per-worker request-window interpretation. The
-Arcade launcher sends a fixed 512-task Famidash window (up to 7,168 pending edge
+Arcade launcher sends a fixed 256-task Famidash window (up to 3,584 pending edge
 attempts); its memory and feedback capacity are not a throughput qualification.
 
 `identity.json` records the expansion policy and task-window semantics. In
