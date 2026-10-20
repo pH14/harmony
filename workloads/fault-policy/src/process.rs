@@ -31,6 +31,7 @@ fn to_process_action(fault: &Fault) -> ProcessAction {
             hold_nanos: hold.0,
             target: *target,
         },
+        Fault::ProcPowerLoss { choice } => ProcessAction::PowerLoss { choice: *choice },
         _ => unreachable!("process_target received a non-process fault"),
     }
 }
@@ -51,6 +52,7 @@ fn from_process_action(action: ProcessAction) -> Option<Fault> {
             hold: Span(hold_nanos),
             target,
         },
+        ProcessAction::PowerLoss { choice } => Fault::ProcPowerLoss { choice },
     })
 }
 
@@ -77,6 +79,7 @@ mod tests {
                 hold: Span(2_000_000),
                 target: crate::ParkTarget::new(0x1000, 0x1004),
             },
+            Fault::ProcPowerLoss { choice: 9 },
         ] {
             let bytes = process_target(3, &f);
             assert_eq!(decode_process_target(&bytes), Some((3, f)));

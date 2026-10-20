@@ -54,6 +54,7 @@ pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
                 target: target
                     .and_then(|(start, width)| ParkTarget::new(start, start.saturating_add(width))),
             },),
+        any::<u64>().prop_map(|choice| Fault::ProcPowerLoss { choice }),
         any::<u32>().prop_map(Fault::RunHook),
     ]
 }

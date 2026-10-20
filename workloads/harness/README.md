@@ -221,6 +221,15 @@ podman build --format docker --platform=linux/amd64 \
 
 Podman needs `--format docker`; the OCI format ignores `SHELL`.
 
+Each node's store directory is a 128 MiB node disk (`disk` lines in the
+bundle), so `PowerLoss` and `PowerLossAll` drop the writes the node had not
+flushed ([node disks](../../consonance/harmony-linux/supervisor/README.md#node-disks)).
+JetStream syncs its files every two minutes by default, so an append it
+acknowledged can be lost to a power cut on every replica. Build with
+`--build-arg NATS_SYNC=always` to add a server config with
+`jetstream { sync_interval: always }`, which syncs every write before the
+acknowledgement. `native.py` ignores `disk` lines.
+
 ## NATS key-value
 
 `targets/nats-kv` drives the `register` family against bucket `B` (three file

@@ -75,6 +75,10 @@ def parse_bundle(text):
             bundle[kind] = rest
         elif kind == "hook":
             bundle["hooks"].append((int(rest[0]), rest[1:]))
+        elif kind == "disk":
+            # Node disks exist for power-loss faults, which a container cannot
+            # inject; the path stays a directory on the container filesystem.
+            continue
         else:
             raise ValueError(f"unknown bundle line {line!r}")
     return bundle

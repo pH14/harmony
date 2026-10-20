@@ -191,6 +191,12 @@ pub fn sample_action(
     if vocabulary.nodes() > 1 {
         alternatives.push(7);
     }
+    if !vocabulary.disks().is_empty() {
+        alternatives.push(8);
+        if vocabulary.nodes() > 1 {
+            alternatives.push(9);
+        }
+    }
     let node_mask = u64::MAX >> (64 - vocabulary.nodes());
     let event_ready = event_ready & node_mask;
     if vocabulary.instrumented_events() && event_ready != 0 {
@@ -214,6 +220,11 @@ pub fn sample_action(
             ticks,
         ),
         7 => FaultOperation::KillAll(ticks),
+        8 => FaultOperation::PowerLoss(
+            vocabulary.disks()[pick(rand, vocabulary.disks().len())?],
+            ticks,
+        ),
+        9 => FaultOperation::PowerLossAll(ticks),
         5 => FaultOperation::EventKill {
             node: event_node(rand)?,
             rarity: u8::try_from(pick(rand, 64)?)?,
@@ -627,6 +638,8 @@ mod tests {
             FaultOperation::EventKill { .. } => 5,
             FaultOperation::EventPark { .. } => 6,
             FaultOperation::KillAll(_) => 7,
+            FaultOperation::PowerLoss(..) => 8,
+            FaultOperation::PowerLossAll(_) => 9,
         };
         for _ in 0..2_000 {
             let action =
@@ -634,7 +647,10 @@ mod tests {
             kinds.insert(kind(&action));
             assert_eq!(action.ticks(), u64::from(TICKS.get()));
             match action.operation {
-                FaultOperation::Wait(_) | FaultOperation::KillAll(_) => {}
+                FaultOperation::Wait(_)
+                | FaultOperation::KillAll(_)
+                | FaultOperation::PowerLossAll(_) => {}
+                FaultOperation::PowerLoss(node, _) => assert!(vocabulary.disks().contains(&node)),
                 FaultOperation::EventKill { node, rarity, .. } => {
                     assert!(vocabulary.instrumented_events());
                     assert!(node < vocabulary.nodes());
@@ -823,6 +839,46 @@ mod tests {
         };
         assert_eq!(count(1), 0);
         assert!(count(3) > 0);
+    }
+
+    #[test]
+    fn only_a_node_with_a_disk_draws_a_power_loss() {
+        let draws = |nodes, disks: Vec<u16>| {
+            let vocabulary = FaultVocabulary::new(nodes, Vec::new())
+                .and_then(|vocabulary| vocabulary.with_disks(disks))
+                .expect("vocabulary");
+            let mut rand = RomuDuoJrRand::with_seed(9);
+            (0..2_000)
+                .map(|_| {
+                    sample_action(&mut rand, &vocabulary, 0, TICKS, None)
+                        .expect("draw")
+                        .operation
+                })
+                .collect::<Vec<_>>()
+        };
+        let none = draws(3, Vec::new());
+        assert!(!none.iter().any(|operation| matches!(
+            operation,
+            FaultOperation::PowerLoss(..) | FaultOperation::PowerLossAll(_)
+        )));
+        let some = draws(3, vec![1, 2]);
+        let nodes = some
+            .iter()
+            .filter_map(|operation| match operation {
+                FaultOperation::PowerLoss(node, _) => Some(*node),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(nodes, BTreeSet::from([1, 2]));
+        assert!(
+            some.iter()
+                .any(|operation| matches!(operation, FaultOperation::PowerLossAll(_)))
+        );
+        assert!(
+            !draws(1, vec![0])
+                .iter()
+                .any(|operation| matches!(operation, FaultOperation::PowerLossAll(_)))
+        );
     }
 
     #[test]
