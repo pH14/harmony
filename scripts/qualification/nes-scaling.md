@@ -29,12 +29,17 @@ in order on a relay thread. Each has separate CPU, scheduler-wait and queue-wait
 telemetry. The borrowed output sink still runs on the coordinator; its cost
 and final drain must remain in the accounting. Campaign records must serialize
 deterministically from their owned values. Serialization and destruction can
-run ahead; output bytes and failure prefixes retain logical order. `coordinator_host` samples coordinator CPU and scheduler wait once at
-the end of search, before final report persistence, even with verbose profiling off.
-It is absent when the operating system cannot supply these counters. This CPU
-measurement includes work outside the individual coordinator span timers.
-It includes live-observer construction, encoder startup, worker readiness and
-final checkpoint writing. Native `dispatch_phase` instead starts after all
+run ahead; output bytes and failure prefixes retain logical order.
+`coordinator_host` samples coordinator CPU and scheduler wait even with verbose
+profiling off. It is absent when the operating system cannot supply these
+counters. For bounded expansion it starts after all workers are ready and ends
+after stream finish, integrity verification, final archive/report and snapshot
+checkpoint construction, immediately before the search returns. It includes
+dispatch and finalization, including final checkpoint persistence, and excludes
+earlier boot and later evaluator witness verification. The linear runner's
+counter also includes live-observer construction, encoder startup and worker
+readiness. These counters include work outside individual coordinator spans.
+Native `dispatch_phase` instead starts after all
 workers are ready, before reservation, and stops before final checkpoint/report
 persistence. Use its optional host CPU counters for the coordination capacity
 bound, and retain encoder CPU and persistence costs separately.
@@ -145,7 +150,12 @@ valid only when all three have measured CPU coverage and each has a separate
 core. It is unavailable when a role is missing or counters overflow. It is a
 necessary service bound, not a measured throughput or placement guarantee.
 The final coordinator stream-drain CPU is reported separately when profiling
-supplies it; include this cost and all other auxiliary work in the model.
+supplies it. It is already included in expansion's whole `coordinator_host`
+counter; add it only when using the narrower dispatch counter. Include all
+other auxiliary work in the model. The qualifier reports this whole counter as
+`coordinator_whole_cpu_ns_per_task`, with scheduler wait separately; unsupported
+coverage remains null. `coordinator_cpu_ns_per_task` retains the narrower dispatch
+cost, and neither it nor stream finish is added to the whole value.
 Missing CPU coverage remains null rather than a zero cost. These costs do not
 automatically establish a worker-count ceiling; apply the capacity model in
 [Performance](../../docs/PERFORMANCE.md) using equivalent-core worker measurements.

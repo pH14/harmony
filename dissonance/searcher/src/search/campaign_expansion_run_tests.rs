@@ -169,6 +169,36 @@ fn expansion_runtime_stream_report_and_checkpoint_ignore_worker_count_and_physic
 }
 
 #[test]
+fn expansion_runtime_whole_coordinator_cpu_encloses_dispatch_and_stream_finish() {
+    let supported = crate::search::telemetry::thread_schedstat().is_some();
+    let (result, _, _) = run_case(1, 0, false, None);
+    let (report, _) = result.unwrap();
+    let telemetry = report.telemetry;
+    if supported {
+        let whole = telemetry.coordinator_host.unwrap();
+        let dispatch = telemetry.dispatch_phase.unwrap().host.unwrap();
+        let finish = if profile_clock_enabled() {
+            telemetry.coordinator["stream_finish_host"]["coordinator_cpu_ns"]
+                .as_u64()
+                .unwrap()
+        } else {
+            0
+        };
+        assert!(
+            whole.coordinator_cpu_ns >= dispatch.coordinator_cpu_ns.checked_add(finish).unwrap()
+        );
+        assert!(whole.coordinator_run_wait_ns >= dispatch.coordinator_run_wait_ns);
+        assert_eq!(
+            whole.idle_admission_order_ns,
+            telemetry.admission.idle_admission_order_ns
+        );
+        assert_eq!(whole.idle_no_job_ns, telemetry.admission.idle_no_job_ns);
+    } else {
+        assert!(telemetry.coordinator_host.is_none());
+    }
+}
+
+#[test]
 fn expansion_runtime_codec_records_every_node_and_keeps_observation_commitments_on_roundtrip() {
     let ((report, _), stream) = {
         let (result, stream, _) = run_case(1, 0, false, None);

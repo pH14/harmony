@@ -195,6 +195,7 @@ def coordination_costs(telemetry, executions, unit="job"):
         raise ValueError("coordination cost denominator must be positive")
     phase = telemetry.get("dispatch_phase") or {}
     host = phase.get("host") or {}
+    whole = telemetry.get("coordinator_host") or {}
     stream = telemetry.get("stream") or {}
     finish = (telemetry.get("coordinator") or {}).get("stream_finish_host") or {}
 
@@ -226,6 +227,8 @@ def coordination_costs(telemetry, executions, unit="job"):
         "dispatch_phase_ns": phase.get("wall_ns"),
         f"worker_execute_cpu_ns_per_{unit}": worker_execute_cost(telemetry, executions),
         f"coordinator_cpu_ns_per_{unit}": per_job(host.get("coordinator_cpu_ns")),
+        f"coordinator_whole_cpu_ns_per_{unit}": per_job(whole.get("coordinator_cpu_ns")),
+        f"coordinator_whole_run_wait_ns_per_{unit}": per_job(whole.get("coordinator_run_wait_ns")),
         f"coordinator_stream_finish_cpu_ns_per_{unit}": per_job(finish.get("coordinator_cpu_ns")),
         f"stream_aux_cpu_ns_per_{unit}": (
             None if overflow else per_job(stream.get("worker_cpu_ns"))

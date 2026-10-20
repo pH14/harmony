@@ -71,6 +71,7 @@ where
     let mut coordinator = None;
     let mut initial_counters = None;
     let mut telemetry = CampaignTelemetry::default();
+    let mut coordinator_schedstat = None;
     let cpu_profile_enabled = profile_clock_enabled();
     let mut cpu_profile = ExpansionCpuProfile::new(cpu_profile_enabled);
     let search_started = now();
@@ -118,6 +119,7 @@ where
             pool.wait_ready(config.workers)?;
             let phase_started = now();
             let cpu_started = thread_schedstat();
+            coordinator_schedstat = cpu_started;
             let dispatch_cpu_started = profile_cpu_now();
             let mut idle = IdleClock::new(config.workers as usize);
             let mut running = 0;
@@ -344,7 +346,7 @@ where
         });
     }
     telemetry.sum_targets();
-    let report = ExpansionRunReport {
+    let mut report = ExpansionRunReport {
         header,
         counters,
         initial_counters: initial_counters
@@ -362,5 +364,12 @@ where
             .map(|(id, snapshot)| SnapshotCheckpointEntry { id, snapshot })
             .collect(),
     };
+    report.telemetry.coordinator_host = HostTimes::try_measure(
+        coordinator_schedstat,
+        (
+            report.telemetry.admission.idle_admission_order_ns,
+            report.telemetry.admission.idle_no_job_ns,
+        ),
+    );
     Ok((report, checkpoint))
 }

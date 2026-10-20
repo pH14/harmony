@@ -26,6 +26,23 @@ class ScalingTests(unittest.TestCase):
         self.assertIsNone(measured["stream_aux_cpu_ns_per_job"])
         self.assertEqual(measured["producer_wait_ns_per_job"], 2)
 
+    def test_whole_coordinator_cpu_keeps_dispatch_and_finish_as_components(self):
+        telemetry = {
+            "coordinator_host": {"coordinator_cpu_ns": 1700, "coordinator_run_wait_ns": 400},
+            "dispatch_phase": {"host": {"coordinator_cpu_ns": 900}},
+            "coordinator": {"stream_finish_host": {"coordinator_cpu_ns": 200}},
+        }
+        costs = scaling.coordination_costs(telemetry, 10, "task")
+        self.assertEqual(costs["coordinator_whole_cpu_ns_per_task"], 170)
+        self.assertEqual(costs["coordinator_whole_run_wait_ns_per_task"], 40)
+        self.assertEqual(costs["coordinator_cpu_ns_per_task"], 90)
+        self.assertEqual(costs["coordinator_stream_finish_cpu_ns_per_task"], 20)
+        telemetry["coordinator_host"] = None
+        costs = scaling.coordination_costs(telemetry, 10, "task")
+        self.assertIsNone(costs["coordinator_whole_cpu_ns_per_task"])
+        self.assertIsNone(costs["coordinator_whole_run_wait_ns_per_task"])
+        self.assertEqual(costs["coordinator_cpu_ns_per_task"], 90)
+
     def test_parallel_stream_bottleneck_uses_every_role_and_complete_cpu_coverage(self):
         stream = {"worker_cpu_ns": 90, "serializers": [{"cpu_ns": 60}, {"cpu_ns": 20}],
                   "relay": {"cpu_ns": 10}, "counter_overflow": False}

@@ -1173,10 +1173,17 @@ where a run's time went. It records bootstrap, search, and persistence wall
 time. Native `dispatch_phase` measures wall time and optional coordinator host
 counters from the worker-readiness barrier, before the first reservation, through
 final admission. It excludes live-observer construction, encoder startup and
-worker readiness, which remain included in `coordinator_host`. Dispatch-phase
-counters stop before final checkpoint and report persistence; `coordinator_host`
-also includes final checkpoint writing. Stream draining during report persistence
-is reported separately. Dispatch-phase idle counters use the same readiness boundary.
+worker readiness. The linear runner's `coordinator_host` includes those startup
+stages. Bounded expansion instead reuses the dispatch host counter's start read,
+immediately after all workers are ready, and measures `coordinator_host` after
+stream finish, integrity verification, final archive/report and snapshot-checkpoint
+construction, immediately before returning. It includes all coordinator dispatch
+and finalization CPU, including final checkpoint persistence, but excludes boot
+before readiness and evaluator witness verification after return. Unsupported
+scheduler statistics remain null. Dispatch and disjoint stream-finish CPU are
+components of this whole counter; never add them to it. Stream draining during
+report persistence is reported separately. Dispatch-phase idle counters use the
+same readiness boundary.
 Stepped coordinators omit this phase. The report also records
 the coordinator phase durations and the coordinator's receive time,
 split into time when every worker was running and time when finished results
