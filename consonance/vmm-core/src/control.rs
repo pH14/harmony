@@ -5683,6 +5683,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable snapshots use mapped storage")]
     fn portable_hashes_charge_partial_memory_before_io_failure() {
         struct LimitedWriter(usize);
         impl std::io::Write for LimitedWriter {
@@ -5735,6 +5736,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable snapshots use mapped storage")]
     fn portable_and_sparse_hashes_count_actual_digest_feeds() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
