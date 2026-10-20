@@ -15,13 +15,13 @@ use super::{
     CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
     CampaignOrigin, CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord,
     CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-    CampaignTypes, CompletedJob, CompletedOutcome, CoordinatorCore, JobSpecRecord,
-    LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, ReservationSlots, SelectedJob,
-    StreamWriter, ThreadPlacement, Workload, archive_entry_limit_is_valid, bootstrap_campaign,
-    build_report, completed_job_records, continuation_arrival, continuation_attempt,
-    derive_selection_seed, execution_work_delta, finish_record, initial_draw_state,
-    memory_is_within_reserve, mixture_weights, planned_finish, profile_clock_enabled,
-    profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
+    CampaignTypes, CompletedJob, CompletedOutcome, CompletedRecords, CoordinatorCore,
+    JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, ReservationSlots,
+    SelectedJob, StreamWriter, ThreadPlacement, Workload, archive_entry_limit_is_valid,
+    bootstrap_campaign, build_report, completed_job_records, continuation_arrival,
+    continuation_attempt, derive_selection_seed, execution_work_delta, finish_record,
+    initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
+    profile_clock_enabled, profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
     record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
     retained_archive_indexes, stop_reservations_after_objective,
     stop_reservations_after_work_budget, stream_header, with_coordinator_session,
@@ -531,12 +531,14 @@ where
             reservation,
             Ok((result, execution_work, result_sha256)),
             None,
+            None,
         )
     }
 
-    pub(crate) fn admit_dispatch(
+    pub(super) fn admit_dispatch(
         &mut self,
         outcome: JobOutcome<G>,
+        records: CompletedRecords,
         dispatch: &mut JobDispatch<'_, G>,
     ) -> Result<(), Box<dyn Error>> {
         let JobOutcome {
@@ -548,12 +550,13 @@ where
         self.receive(
             reservation,
             Ok((result, execution_work, result_sha256)),
+            Some(records),
             Some(dispatch),
         )
     }
 
     pub fn fail(&mut self, reservation: usize, error: String) -> Result<(), Box<dyn Error>> {
-        self.receive(reservation, Err(error), None)
+        self.receive(reservation, Err(error), None, None)
     }
 
     #[must_use]
@@ -571,6 +574,7 @@ where
         &mut self,
         reservation: usize,
         outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+        records: Option<CompletedRecords>,
         mut dispatch: Option<&mut JobDispatch<'_, G>>,
     ) -> Result<(), Box<dyn Error>> {
         self.workload.verify_integrity()?;
@@ -589,12 +593,13 @@ where
             },
         );
         let queued = &self.queued;
-        self.reservations.complete(
+        self.reservations.complete_with_records(
             reservation,
             CompletedOutcome {
                 held_since: held.then(now),
                 outcome,
             },
+            records,
             |pending| {
                 if queued.contains_key(&(pending.planned_finish, reservation)) {
                     Err("campaign worker replied for a job that was never planned")

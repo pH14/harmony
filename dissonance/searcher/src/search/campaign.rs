@@ -3080,6 +3080,34 @@ struct ReservationSlot<P, V> {
     completed: Option<BufferedResult<V>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CompletedRecords {
+    actions: u64,
+    candidates: u64,
+}
+
+impl CompletedRecords {
+    fn of_result<G: CampaignTypes + ?Sized>(result: &CampaignJobResult<G>) -> Self {
+        Self {
+            actions: result.actions.len() as u64,
+            candidates: result
+                .actions
+                .iter()
+                .filter(|action| action.candidate.is_some())
+                .count() as u64,
+        }
+    }
+
+    fn after_watch<G: CampaignTypes + ?Sized, N>(
+        outcome: &Result<(JobOutcome<G>, N), String>,
+    ) -> Self {
+        outcome.as_ref().map_or_else(
+            |_| Self::default(),
+            |(outcome, _)| Self::of_result::<G>(&outcome.result),
+        )
+    }
+}
+
 struct BufferedResult<V> {
     value: V,
     actions: u64,
@@ -3125,10 +3153,21 @@ impl<K: Eq + Hash, P, V> ReservationSlots<K, P, V> {
         self.entries.get(key).map(|slot| &slot.pending)
     }
 
+    #[cfg(test)]
     fn complete(
         &mut self,
         key: K,
         value: V,
+        validate: impl FnOnce(&P) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        self.complete_with_records(key, value, None, validate)
+    }
+
+    fn complete_with_records(
+        &mut self,
+        key: K,
+        value: V,
+        records: Option<CompletedRecords>,
         validate: impl FnOnce(&P) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
         let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(key) else {
@@ -3139,7 +3178,16 @@ impl<K: Eq + Hash, P, V> ReservationSlots<K, P, V> {
             return Err("campaign worker completed one reservation twice");
         }
         validate(&slot.pending)?;
-        let (actions, candidates) = (self.records)(&value);
+        let CompletedRecords {
+            actions,
+            candidates,
+        } = records.unwrap_or_else(|| {
+            let (actions, candidates) = (self.records)(&value);
+            CompletedRecords {
+                actions,
+                candidates,
+            }
+        });
         slot.completed = Some(BufferedResult {
             value,
             actions,
@@ -3199,16 +3247,11 @@ fn completed_job_records<G: Workload + ?Sized>(job: &CompletedOutcome<G>) -> (u6
 fn completed_result_records<G: CampaignTypes + ?Sized>(
     outcome: &Result<(CampaignJobResult<G>, u64, String), String>,
 ) -> (u64, u64) {
-    outcome.as_ref().map_or((0, 0), |(result, _, _)| {
-        (
-            result.actions.len() as u64,
-            result
-                .actions
-                .iter()
-                .filter(|action| action.candidate.is_some())
-                .count() as u64,
-        )
-    })
+    let counts = outcome.as_ref().map_or_else(
+        |_| CompletedRecords::default(),
+        |(result, _, _)| CompletedRecords::of_result::<G>(result),
+    );
+    (counts.actions, counts.candidates)
 }
 
 fn replay_suffix_limit(drawn: bool, recorded: Option<u8>) -> Result<Option<u8>, Box<dyn Error>> {
@@ -3704,7 +3747,8 @@ where
             let outcome = watch
                 .run(&job, || run_job(workload, config, target, &job))
                 .map_err(|error| error.to_string());
-            Ok((reservation, outcome))
+            let records = CompletedRecords::after_watch::<G, W::Note>(&outcome);
+            Ok((reservation, outcome, records))
         },
         |target| workload.telemetry(target),
         |target| workload.worker_locality(target),
@@ -3774,12 +3818,14 @@ where
                         );
                     }
                     let (planned_finish, reservation) = reply.key;
-                    let outcome = match reply.outcome {
-                        Ok((claimed, outcome)) if claimed == reservation => outcome,
+                    let (outcome, records) = match reply.outcome {
+                        Ok((claimed, outcome, records)) if claimed == reservation => {
+                            (outcome, records)
+                        }
                         Ok(_) => {
                             return Err("campaign worker replied for another reservation".into());
                         }
-                        Err(error) => Err(error),
+                        Err(error) => (Err(error), CompletedRecords::default()),
                     };
                     if let Some(observer) = observer.as_mut()
                         && !sink_disabled
@@ -3832,7 +3878,7 @@ where
                                 );
                             }
                             watch.prepare_admission(&note, campaign);
-                            campaign.admit_dispatch(outcome, &mut |job| {
+                            campaign.admit_dispatch(outcome, records, &mut |job| {
                                 #[cfg(test)]
                                 tests::before_locality_dispatch(pool, job.reservation, false)?;
                                 let locality = workload.snapshot_locality(&job.snapshot);
@@ -9119,6 +9165,197 @@ mod tests {
     }
 
     #[test]
+    fn native_campaign_counts_the_actual_post_watch_result() {
+        struct MutatingWatch<'a> {
+            workload: &'a TestWorkload,
+            recorded: Mutex<Option<(super::CompletedRecords, std::thread::ThreadId)>>,
+        }
+        impl super::CampaignWatch<TestWorkload> for MutatingWatch<'_> {
+            type Note = ();
+            fn run(
+                &self,
+                _job: &JobSpec<TestWorkload>,
+                run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+            ) -> super::WatchedJob<TestWorkload, Self::Note> {
+                let mut outcome = run()?;
+                let before = super::CompletedRecords::of_result::<TestWorkload>(&outcome.result);
+                *self.recorded.lock().unwrap() = Some((before, std::thread::current().id()));
+                outcome.result.actions.extend([
+                    CampaignActionResult::<TestWorkload> {
+                        action: TestAction::new(2, 1),
+                        observations: Vec::new(),
+                        milestones: (),
+                        outcome: Outcome::default(),
+                        candidate: Some(CampaignCandidate::<TestWorkload> {
+                            key: TestKey(0),
+                            viable: false,
+                            snapshot: 0,
+                        }),
+                    },
+                    CampaignActionResult::<TestWorkload> {
+                        action: TestAction::new(3, 1),
+                        observations: Vec::new(),
+                        milestones: (),
+                        outcome: Outcome::default(),
+                        candidate: None,
+                    },
+                ]);
+                outcome.result_sha256 = self.workload.result_sha256(&outcome.result)?;
+                Ok((outcome, ()))
+            }
+            fn admitted(&self, _: Self::Note, _: &mut CampaignCoordinator<'_, TestWorkload>) {}
+        }
+        let coordinator = std::thread::current().id();
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let watch = MutatingWatch {
+            workload: &workload,
+            recorded: Mutex::new(None),
+        };
+        let mut stream = Vec::new();
+        let (report, _) = super::run_campaign_watched(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+            &watch,
+        )
+        .unwrap();
+        let (before, worker) = watch.recorded.lock().unwrap().unwrap();
+        assert_ne!(worker, coordinator);
+        let telemetry = report.telemetry.completed_buffer;
+        assert_eq!(telemetry.results_peak, 1);
+        assert_eq!(telemetry.actions_peak, before.actions + 2);
+        assert_eq!(telemetry.candidates_peak, before.candidates + 1);
+        assert_eq!(telemetry.results_live, 0);
+        assert_eq!(telemetry.actions_live, 0);
+        assert_eq!(telemetry.candidates_live, 0);
+        let failure: Result<(JobOutcome<TestWorkload>, ()), String> = Err("worker failed".into());
+        assert_eq!(
+            super::CompletedRecords::after_watch::<TestWorkload, _>(&failure),
+            super::CompletedRecords::default()
+        );
+        let preparation = Ok((
+            JobOutcome::<TestWorkload> {
+                reservation: 0,
+                result: CampaignJobResult::<TestWorkload> {
+                    preparation_failure: Some(vec![()]),
+                    actions: Vec::new(),
+                },
+                execution_work: 0,
+                result_sha256: String::new(),
+            },
+            (),
+        ));
+        assert_eq!(
+            super::CompletedRecords::after_watch::<TestWorkload, _>(&preparation),
+            super::CompletedRecords::default()
+        );
+    }
+
+    #[test]
+    fn counted_completions_validate_and_cache_without_scanning_on_admission_or_removal() {
+        let mut slots = super::ReservationSlots::new(
+            |_: &u64| panic!("coordinator scanned a counted result"),
+            1,
+        );
+        slots.insert(7, "queued");
+        let counts = Some(super::CompletedRecords {
+            actions: 5,
+            candidates: 2,
+        });
+        let before = slots.telemetry;
+        assert_eq!(
+            slots.complete_with_records(8, 1, counts, |_| panic!("unknown validation")),
+            Err("campaign worker replied for an unknown reservation")
+        );
+        assert_eq!(
+            slots.complete_with_records(7, 1, counts, |_| Err("never planned")),
+            Err("never planned")
+        );
+        assert_eq!(slots.telemetry, before);
+        assert_eq!(slots.pending, 1);
+        slots
+            .complete_with_records(7, 1, counts, |_| Ok(()))
+            .unwrap();
+        let completed = slots.telemetry;
+        assert_eq!(completed.actions_live, 5);
+        assert_eq!(completed.candidates_live, 2);
+        assert_eq!(
+            slots.complete_with_records(
+                7,
+                9,
+                Some(super::CompletedRecords::default()),
+                |_| panic!("duplicate validation")
+            ),
+            Err("campaign worker completed one reservation twice")
+        );
+        assert_eq!(slots.telemetry, completed);
+        assert_eq!(slots.pending, 0);
+        assert_eq!(slots.take_completed(7), Some(("queued", 1)));
+        assert_eq!(slots.take_completed(7), None);
+        assert_eq!(slots.telemetry.results_live, 0);
+        assert_eq!(slots.telemetry.actions_live, 0);
+        assert_eq!(slots.telemetry.candidates_live, 0);
+        assert_eq!(slots.telemetry.actions_peak, 5);
+        assert_eq!(slots.telemetry.candidates_peak, 2);
+    }
+
+    #[test]
+    fn worker_and_public_counts_preserve_reordered_results_and_buffer_gauges() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let run = |worker_counted: bool| {
+            let scans = Arc::new(AtomicUsize::new(0));
+            let mut slots = super::ReservationSlots::new(
+                |value: &(Arc<AtomicUsize>, u64)| {
+                    value.0.fetch_add(1, Ordering::Relaxed);
+                    (value.1, u64::from(value.1 > 0))
+                },
+                3,
+            );
+            for reservation in 0..3 {
+                slots.insert(reservation, reservation + 10);
+            }
+            let mut next = 0;
+            let mut admitted = Vec::new();
+            for reservation in [2, 0, 1] {
+                let counts = worker_counted.then_some(super::CompletedRecords {
+                    actions: reservation,
+                    candidates: u64::from(reservation > 0),
+                });
+                slots
+                    .complete_with_records(
+                        reservation,
+                        (Arc::clone(&scans), reservation),
+                        counts,
+                        |_| Ok(()),
+                    )
+                    .unwrap();
+                while let Some((pending, (_, value))) = slots.take_completed(next) {
+                    admitted.push((next, pending, value));
+                    next += 1;
+                }
+            }
+            assert!(slots.is_empty());
+            (admitted, slots.telemetry, scans.load(Ordering::Relaxed))
+        };
+        let counted = run(true);
+        let public = run(false);
+        assert_eq!(counted.0, public.0);
+        assert_eq!(counted.1, public.1);
+        assert_eq!(counted.2, 0);
+        assert_eq!(public.2, 3);
+    }
+
+    #[test]
     fn reservation_slots_validate_before_scanning_and_count_each_result_once() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let scans = Arc::new(AtomicUsize::new(0));
@@ -9622,8 +9859,9 @@ mod tests {
             coordinator.admit(outcome).unwrap();
         }
         assert_eq!(coordinator.executions(), before);
+        let records = super::CompletedRecords::of_result::<TestWorkload>(&head.result);
         let error = coordinator
-            .admit_dispatch(head, &mut |_| Err("dispatch witness".into()))
+            .admit_dispatch(head, records, &mut |_| Err("dispatch witness".into()))
             .unwrap_err();
         assert_eq!(error.to_string(), "dispatch witness");
         assert_eq!(coordinator.executions(), before + 1);

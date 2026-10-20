@@ -999,9 +999,15 @@ bound their own output rows; no internal per-job log is retained.
 starts fresh gauges and peaks. A result enters when the coordinator receives it
 and leaves when ordered admission removes it. Failed worker results count as one result
 with zero action/candidate records; candidates count every present optional
-candidate, including nonviable ones. Each accepted result caches its two record
-counts when received, avoiding another action scan when removed. The two
-64-bit counts are host queue storage outside the archive budget. Successful
+candidate, including nonviable ones. Native workers count the actual result once
+after `CampaignWatch::run` returns, carrying two private 64-bit counts in the
+existing reply message. This adds sixteen bytes of reply metadata and moves the
+candidate scan into worker CPU accounting without changing emulator work or the
+public job result. Public stepped admission counts locally only after reservation,
+duplicate and queued-job validation. Both paths use the same completion validation
+and cache the counts for removal without another scan. Failed outcomes contribute
+zero action/candidate records. Reply metadata and cached counts are host queue
+storage outside the archive budget. Successful
 reports end with zero live counts; peaks include immediately admitted results
 as well as held results.
 Coordinator profile lines expose the same action/candidate live counts and all
