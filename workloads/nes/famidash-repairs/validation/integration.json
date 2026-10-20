@@ -27,13 +27,14 @@
       "catalog_sha256": "0022824540e0eab715ea71cd8947090e7f4b23df855bbe6550e356f580586d4f"
     }
   ],
-  "ordinary_map_build": "All109checked-inroutesreplaywithoutcapturesearch",
-  "browser_integration": "109authenticboots,five-groupsearchandexactreplay,leveladvance,picker,inspection,takeover,branching,credits,andpanchecks passed",
+  "ordinary_map_build": "All 109 checked-in routes replay without capture search.",
+  "browser_integration": "109 authentic boots, five-group search and exact replay, level advancement, picker, inspection, takeover, branching, credits and pan checks passed.",
   "map_build_log_sha256": "87347f3af12851e984dc08b764dc459c773c65dd4a92306072f88cabb2767a07",
   "browser_log_sha256": "9077183384b55bd81900899b991c30b26cd2be8aa7888c9927f19db897887ed8",
   "native_famidash_tests": 31,
   "browser_unit_test_files": 13,
   "python_audit_tests": 39,
   "rom_packaging_tests": 8,
-  "limitations": "Repository-wide naming/vocabulary lint findings in older audit artifacts remain separate from gameplay validation; zero clean full campaigns."
+  "limitations": "Repository-wide naming/vocabulary lint findings in older audit artifacts remain separate from gameplay validation; zero clean full campaigns.",
+  "fofii_control": "Original ordinary winning input is retained independently of renderer routes; verified on original and patched ROMs at 3764 frames."
 }

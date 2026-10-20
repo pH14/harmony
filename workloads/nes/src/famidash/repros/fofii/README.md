@@ -50,7 +50,8 @@ node replay.mjs /path/to/famidash-b-sides-fixed.nes /path/to/arcade/public fixed
 ```
 
 The original mode checks the release ROM SHA-256. Both modes also play the
-checked-in winning route as a control. The runner only needs Node and the
+original winning input retained in `control.json`, independently of mutable map
+capture routes. The runner only needs Node and the
 QuickNES runtime; it does not require building Harmony's Rust crates.
 
 For an independent emulator, build libretro FCEUmm and run:

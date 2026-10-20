@@ -67,17 +67,15 @@ if (mode === "original") {
 }
 
 core.restore(root);
-const routes = JSON.parse(await readFile(new URL("../../../../../../demos/twin-dragons/tools/famidash-routes/b.json", import.meta.url))),
-  patterns = [[[0, 8]], [[1, 8]], [[1, 1], [0, 7]], [[1, 4], [0, 4]], [[0, 4], [1, 4]], [[0, 6], [1, 2]]];
+const control = JSON.parse(await readFile(new URL("control.json", import.meta.url)));
 frames = 0;
-winning: for (const pattern of routes.routes[input.level])
-  for (const [buttons, hold] of patterns[Number(pattern)])
-    for (let i = 0; i < hold; i++) {
-      core.step(buttons, 1);
-      frames++;
-      assert.equal(observation().dead, false, "the clearing route remains alive");
-      if (observation().state === 3) break winning;
-    }
+winning: for (const { buttons, frames: hold } of control.actions)
+  for (let i = 0; i < hold; i++) {
+    core.step(buttons, 1);
+    frames++;
+    assert.equal(observation().dead, false, "the clearing route remains alive");
+    if (observation().state === 3) break winning;
+  }
 assert.equal(observation().state, 3);
-assert.equal(frames, 3764);
+assert.equal(frames, control.frames);
 console.log("Control: the existing winning route still clears at frame 3764.");
