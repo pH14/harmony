@@ -512,20 +512,44 @@ The session records `watchdog_cutoffs` when a guest action or parent
 reconstruction exceeds its host progress bound, including fresh and in-place
 UML restores. Typed session infrastructure errors and abandoned sessions carry
 an independent `infrastructure_failure` flag; they do not increment the timeout
-counter. Neither cause is guest bug evidence. A campaign treats either cause as
-infrastructure incompleteness:
-the affected reservation returns an error before admission, result certification,
-selection accounting, mixture updates or duration feedback. If a suffix already
-completed some actions, none of that job's actions or candidates are admitted.
-Bootstrap, branch-prefix replay and shared-cache imports preserve the same
-infrastructure-failure classification.
-The campaign stops with an explicit incomplete error instead of writing a
+counter. Neither cause is guest bug evidence.
+
+A watchdog cutoff inside a campaign job makes that job a hung job. The job
+result carries the actions it attempted, up to and including the action that
+hung, and no admitted actions. A cutoff during the job's parent reconstruction
+or parent replay records no attempted suffix actions. The searcher counts the
+hung job, writes its stream record with no decisions, and keeps running for the
+rest of the budget. The hung job's end state never enters the archive, and it
+adds no selection, mixture or duration feedback. Result certification accepts a
+hung result only when the target recorded the cutoff, and replay reruns the job
+and must hang again at the same place.
+
+Each hung job's full input, including the branch root's actions, becomes a
+`hang-N.json` file in the run directory (at most 64 per campaign). A hang is a
+separate record rather than a finding: the cutoff is a host-time bound, so one
+cutoff cannot show whether the guest hung or the host was slow, and a confirmed
+finding ends the campaign while a hang should not. The reports'
+`watchdog_cutoffs` field and the summary's `hung_jobs` field count hung jobs.
+
+The searcher stops the campaign when the current run of consecutive hung jobs
+is too long for the hang rate seen before it. With `h` hangs in the `n` jobs
+before the run, the estimated rate is `(h + 1) / (n + 2)`. The campaign stops
+when a run of `k` hangs has a chance below 1 in 1000 under that rate, that is
+when `rate^(k - 1) < 1/1000`. With no earlier jobs this stops after 11 hangs in
+a row. The stop is an incomplete error that names both counts.
+
+Infrastructure failures remain incomplete: the affected reservation returns an
+error before admission, result certification, selection accounting, mixture
+updates or duration feedback. Cutoffs during bootstrap, branch-prefix replay and
+shared-cache imports are incomplete in the same way, since the campaign has no
+job to record them against.
+The campaign then stops with an explicit incomplete error instead of writing a
 completed report. Previously admitted stream records are flushed and existing
 search checkpoints remain available; the incomplete stream has no successful
 completion record. A later search can resume an earlier complete checkpoint.
-The recorded `host_failure_policy = host_incomplete_v2` binds this behavior;
+The recorded `host_failure_policy = host_incomplete_v3` binds this behavior;
 streams and checkpoints with an absent or different policy are refused, including
-the earlier watchdog-only policy. The execution and endpoint-certificate identities
+earlier policies. The execution and endpoint-certificate identities
 also advance because observations now encode the distinct infrastructure flag. The
 combined replay endpoint uses certificate domain v4, binding ordinary assurance,
 ordered event history and infrastructure-marked observations under one schema. Reading ordered history
@@ -538,9 +562,7 @@ continuation. These checks also cover receipt reconstruction and imported roots.
 Execution identity v11 binds this combined contract and its assurance identity;
 earlier identities that omitted either cannot be reused. Ordinary
 guest terminal outcomes retain their existing meaning. An outer CLI timeout is
-also an infrastructure failure. Completed reports still expose
-`execution_failures` and `watchdog_cutoffs`; a host cutoff cannot contribute to
-either counter in a successfully completed campaign. A supervisor
+also an infrastructure failure. A supervisor
 runtime error has a separate SDK status and cannot turn a PID 1 exit into bug
 evidence.
 
@@ -791,7 +813,8 @@ Search also writes
 encoded window list used by the guest, including windows inherited from a
 branch root. At completion, `first-bug-input.json` holds the first confirmed
 finding's actions when one exists; otherwise it holds the first recorded
-candidate's actions.
+candidate's actions. Each `hang-N.json` has the same `actions` and `standing`
+fields, so `harmony debug run --actions` and replay accept it as input.
 
 `FaultArchiveKey` has a place, a progress, and a holder identity. The place is
 the passed assertion set and every lifecycle count except liveness, plus two

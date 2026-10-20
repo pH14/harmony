@@ -161,6 +161,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
                 .disposition
                 .is_failed()
                 .then(|| target.observations()),
+            hang: None,
             actions,
         });
     }
@@ -202,6 +203,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }

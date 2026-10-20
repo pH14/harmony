@@ -307,10 +307,11 @@ fn search_faults(
     };
     let report = package::search(&artifacts, &vocabulary, &options, &resources, worker, start)?;
     println!(
-        "{} executions; {} confirmed findings; {} unmet reachability assertions",
+        "{} executions; {} confirmed findings; {} unmet reachability assertions; {} hung jobs",
         report.executions,
         report.bugs.iter().filter(|b| b.confirmed).count(),
-        report.never_satisfied.len()
+        report.never_satisfied.len(),
+        report.watchdog_cutoffs
     );
     Ok(report)
 }

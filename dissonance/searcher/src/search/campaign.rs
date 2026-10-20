@@ -169,6 +169,25 @@ fn schedule_policy_is_supported(policy: &str) -> bool {
 
 const CONSECUTIVE_SKIP_LIMIT: u64 = 1_024;
 
+const HANG_STREAK_ODDS: u32 = 1_000;
+
+#[allow(clippy::cast_precision_loss)]
+fn hang_streak_is_implausible(jobs: u64, hung_jobs: u64, streak: u64) -> bool {
+    if streak > hung_jobs || hung_jobs > jobs {
+        return false;
+    }
+    let rate = ((hung_jobs - streak) as f64 + 1.0) / ((jobs - streak) as f64 + 2.0);
+    let limit = 1.0 / f64::from(HANG_STREAK_ODDS);
+    let mut chance = 1.0;
+    for _ in 1..streak {
+        chance *= rate;
+        if chance < limit {
+            return true;
+        }
+    }
+    false
+}
+
 const CURVE_INTERVAL: u64 = 100;
 
 const PROGRESS_CHECKPOINT_INTERVAL: u64 = 100;
@@ -628,6 +647,17 @@ pub trait Evaluation: CampaignTypes {
         _observations: &[Self::Observations],
     ) {
     }
+    fn merge_hang_evidence<F>(
+        &self,
+        _evidence: &mut Self::Evidence,
+        _sequence: u64,
+        _input: F,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>,
+    {
+        Ok(())
+    }
     fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>>;
     fn rollout_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
         self.current_key(target)
@@ -688,6 +718,7 @@ pub struct ArchiveReportState<G: CampaignTypes + ?Sized> {
     pub terminal_endpoints: u64,
     pub terminal_objectives: u64,
     pub execution_failures: u64,
+    pub hung_jobs: u64,
     pub selector: SelectorAccounting,
 }
 
@@ -1057,6 +1088,8 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub terminal_endpoints: u64,
     pub terminal_objectives: u64,
     pub execution_failures: u64,
+    #[serde(default)]
+    pub hung_jobs: u64,
     pub objectives_reached: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub objective_witness: Option<Input<A>>,
@@ -1460,12 +1493,15 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
 #[serde(bound = "")]
 pub struct CampaignJobResult<G: CampaignTypes + ?Sized> {
     pub preparation_failure: Option<Vec<G::Observations>>,
+    pub hang: Option<Vec<G::Action>>,
     pub actions: Vec<CampaignActionResult<G>>,
 }
 
 impl<G: CampaignTypes + ?Sized> PartialEq for CampaignJobResult<G> {
     fn eq(&self, other: &Self) -> bool {
-        self.preparation_failure == other.preparation_failure && self.actions == other.actions
+        self.preparation_failure == other.preparation_failure
+            && self.hang == other.hang
+            && self.actions == other.actions
     }
 }
 impl<G: CampaignTypes + ?Sized> Eq for CampaignJobResult<G> {}
@@ -1474,6 +1510,7 @@ impl<G: CampaignTypes + ?Sized> Clone for CampaignJobResult<G> {
     fn clone(&self) -> Self {
         Self {
             preparation_failure: self.preparation_failure.clone(),
+            hang: self.hang.clone(),
             actions: self.actions.clone(),
         }
     }
@@ -1484,6 +1521,7 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
         formatter
             .debug_struct("CampaignJobResult")
             .field("preparation_failure", &self.preparation_failure)
+            .field("hang", &self.hang)
             .field("actions", &self.actions)
             .finish()
     }
@@ -1552,6 +1590,8 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     terminal_endpoints: u64,
     terminal_objectives: u64,
     execution_failures: u64,
+    hung_jobs: u64,
+    hang_streak: u64,
     pub(crate) objectives_reached: u64,
     pub(crate) objective_witness: Option<Input<G::Action>>,
     sequence: u64,
@@ -1590,6 +1630,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             terminal_endpoints: 0,
             terminal_objectives: 0,
             execution_failures: 0,
+            hung_jobs: 0,
+            hang_streak: 0,
             objectives_reached: 0,
             objective_witness: None,
             sequence: 0,
@@ -1661,6 +1703,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 self.terminal_endpoints,
                 self.terminal_objectives,
                 self.execution_failures,
+                self.hung_jobs,
+                self.hang_streak,
                 self.objectives_reached,
                 &self.objective_witness,
                 self.sequence,
@@ -1673,6 +1717,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     }
 
     fn restore_state(&mut self, state: CoreCheckpoint<G>) -> Result<(), Box<dyn Error>> {
+        if state.hang_streak > state.hung_jobs || state.hung_jobs > state.sequence {
+            return Err("search checkpoint hung-job counts exceed its executions".into());
+        }
         self.curve = state.curve;
         self.curve_interval = state.curve_interval;
         self.bounded_progress_curve = state.bounded_progress_curve;
@@ -1680,6 +1727,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         self.terminal_endpoints = state.terminal_endpoints;
         self.terminal_objectives = state.terminal_objectives;
         self.execution_failures = state.execution_failures;
+        self.hung_jobs = state.hung_jobs;
+        self.hang_streak = state.hang_streak;
         self.objectives_reached = state.objectives_reached;
         self.objective_witness = state.objective_witness;
         self.sequence = state.sequence;
@@ -2020,10 +2069,14 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         workload.verify_integrity()?;
         let CampaignJobResult {
             preparation_failure,
+            hang,
             actions,
         } = result;
         if preparation_failure.is_some() && !actions.is_empty() {
             return Err("preparation failure result also carries actions".into());
+        }
+        if hang.is_some() && (preparation_failure.is_some() || !actions.is_empty()) {
+            return Err("hung job result also carries other outcomes".into());
         }
         self.sequence = self.sequence.saturating_add(1);
         let sequence = self.sequence;
@@ -2031,6 +2084,20 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             .archive
             .index_of_id(parent_id)
             .ok_or("campaign job parent is no longer resident")?;
+        if let Some(attempted) = hang {
+            self.hung_jobs = self.hung_jobs.saturating_add(1);
+            self.hang_streak = self.hang_streak.saturating_add(1);
+            workload.merge_hang_evidence(&mut self.evidence, sequence, || {
+                let mut input = self
+                    .archive
+                    .materialize_input(parent_index)
+                    .map_err(|error| -> Box<dyn Error> { error.into() })?;
+                input.actions.extend_from_slice(&attempted);
+                Ok(input)
+            })?;
+            return Ok((sequence, Vec::new(), DurationAdmission::default()));
+        }
+        self.hang_streak = 0;
         if let Some(observations) = preparation_failure {
             self.execution_failures = self.execution_failures.saturating_add(1);
             workload.merge_preparation_failure(&mut self.evidence, &observations);
@@ -2198,6 +2265,27 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         G::aggregate_milestones(&self.evidence)
     }
 
+    pub(crate) const fn hung_jobs(&self) -> u64 {
+        self.hung_jobs
+    }
+
+    pub(crate) const fn hang_streak(&self) -> u64 {
+        self.hang_streak
+    }
+
+    pub(crate) fn hang_streak_failure(&self) -> Option<String> {
+        hang_streak_is_implausible(self.sequence, self.hung_jobs, self.hang_streak).then(|| {
+            format!(
+                "campaign stopped after {} hung jobs in a row: {} of the {} earlier jobs hung, \
+                 so a run this long has less than a 1 in {} chance on a working host",
+                self.hang_streak,
+                self.hung_jobs - self.hang_streak,
+                self.sequence - self.hang_streak,
+                HANG_STREAK_ODDS,
+            )
+        })
+    }
+
     fn finish_curve(&mut self) {
         if self.sequence > 0
             && self.curve.last().map(|point| point.executions) != Some(self.sequence)
@@ -2252,6 +2340,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 terminal_endpoints: self.terminal_endpoints,
                 terminal_objectives: self.terminal_objectives,
                 execution_failures: self.execution_failures,
+                hung_jobs: self.hung_jobs,
                 selector,
             },
         );
@@ -2709,6 +2798,7 @@ fn build_report<G: Workload>(
     let terminal_endpoints = core.terminal_endpoints;
     let terminal_objectives = core.terminal_objectives;
     let execution_failures = core.execution_failures;
+    let hung_jobs = core.hung_jobs;
     let objectives_reached = core.objectives_reached;
     let objective_witness = core.objective_witness.clone();
     let replacement_cost_displaced = core.archive.replacement_cost_displaced();
@@ -2778,6 +2868,7 @@ fn build_report<G: Workload>(
         terminal_endpoints,
         terminal_objectives,
         execution_failures,
+        hung_jobs,
         objectives_reached,
         objective_witness,
         replacement_cost_displaced,
@@ -2845,6 +2936,7 @@ struct SemanticAction<'a, A, O, M, K> {
 #[derive(Serialize)]
 struct SemanticResult<'a, A, O, M, K> {
     preparation_failure: &'a Option<Vec<O>>,
+    hang: &'a Option<Vec<A>>,
     actions: Vec<SemanticAction<'a, A, O, M, K>>,
 }
 
@@ -2853,6 +2945,7 @@ pub fn postcard_semantic_result_sha256<G: CampaignTypes + ?Sized>(
 ) -> Result<String, Box<dyn Error>> {
     postcard_value_sha256(&SemanticResult {
         preparation_failure: &result.preparation_failure,
+        hang: &result.hang,
         actions: result
             .actions
             .iter()
@@ -2942,6 +3035,8 @@ struct CoreCheckpoint<G: Workload + ?Sized> {
     terminal_endpoints: u64,
     terminal_objectives: u64,
     execution_failures: u64,
+    hung_jobs: u64,
+    hang_streak: u64,
     objectives_reached: u64,
     objective_witness: Option<Input<G::Action>>,
     sequence: u64,
@@ -3155,6 +3250,8 @@ pub struct CampaignProgressRecord<K> {
     pub terminal_objectives: u64,
     #[serde(default)]
     pub execution_failures: u64,
+    #[serde(default)]
+    pub hung_jobs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_elapsed_millis: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3262,6 +3359,7 @@ fn progress_record<G: Workload>(
         terminal_endpoints: core.terminal_endpoints,
         terminal_objectives: core.terminal_objectives,
         execution_failures: core.execution_failures,
+        hung_jobs: core.hung_jobs,
         search_elapsed_millis: Some(telemetry_started)
             .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX)),
         unix_time,
@@ -5538,6 +5636,7 @@ mod tests {
         objective_after_work: std::sync::atomic::AtomicU64,
         action_hook: Mutex<Option<Arc<TestActionHook>>>,
         selections: std::sync::atomic::AtomicUsize,
+        hang_divisor: std::sync::atomic::AtomicU8,
     }
 
     #[derive(Default)]
@@ -6077,6 +6176,45 @@ mod tests {
         fn snapshot_memory_charge(_snapshot: &Self::Snapshot) -> usize {
             1
         }
+
+        fn execute_job(
+            &self,
+            run: &Self::Run,
+            target: &mut Self::Target,
+            origin_snapshot: &Self::Snapshot,
+            replay: &[Self::Action],
+            parent_milestones: Self::Milestones,
+            suffix: &[Self::Action],
+            retention: RetentionPolicy,
+            stop_rollout_on_objective: bool,
+        ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
+            let result = crate::search::rollout::execute_job(
+                self,
+                run,
+                target,
+                origin_snapshot,
+                replay,
+                parent_milestones,
+                suffix,
+                retention,
+                stop_rollout_on_objective,
+            )?;
+            let divisor = self.targets.as_ref().map_or(0, |targets| {
+                targets
+                    .hang_divisor
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            });
+            if divisor != 0
+                && let Some(first) = suffix.first().filter(|first| first.input % divisor == 0)
+            {
+                return Ok(CampaignJobResult {
+                    preparation_failure: None,
+                    hang: Some(vec![*first]),
+                    actions: Vec::new(),
+                });
+            }
+            Ok(result)
+        }
     }
 
     impl Evaluation for TestWorkload {
@@ -6145,6 +6283,21 @@ mod tests {
         where
             F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>,
         {
+            Ok(())
+        }
+        fn merge_hang_evidence<F>(
+            &self,
+            evidence: &mut Self::Evidence,
+            _sequence: u64,
+            input: F,
+        ) -> Result<(), Box<dyn Error>>
+        where
+            F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>,
+        {
+            if input()?.actions.is_empty() {
+                return Err("a hung job input names no actions".into());
+            }
+            *evidence = evidence.wrapping_add(1);
             Ok(())
         }
         fn source_entries<'a>(
@@ -6601,6 +6754,7 @@ mod tests {
             0,
             CampaignJobResult {
                 preparation_failure: None,
+                hang: None,
                 actions: vec![CampaignActionResult {
                     action: terminal_objective,
                     observations: Vec::new(),
@@ -6624,6 +6778,7 @@ mod tests {
             0,
             CampaignJobResult {
                 preparation_failure: None,
+                hang: None,
                 actions: vec![CampaignActionResult {
                     action: failed,
                     observations: vec![()],
@@ -6651,6 +6806,7 @@ mod tests {
                 0,
                 CampaignJobResult {
                     preparation_failure: Some(vec![()]),
+                    hang: None,
                     actions: Vec::new(),
                 },
             )
@@ -6667,6 +6823,7 @@ mod tests {
                 0,
                 CampaignJobResult {
                     preparation_failure: Some(vec![()]),
+                    hang: None,
                     actions: vec![CampaignActionResult {
                         action,
                         observations: Vec::new(),
@@ -6682,6 +6839,186 @@ mod tests {
             "preparation failure result also carries actions"
         );
         assert_eq!(core.execution_failures, 1);
+    }
+
+    #[test]
+    fn coordinator_counts_hung_jobs_without_archiving_them() {
+        let (workload, _run, mut core, _target) = test_core();
+        let action = TestAction::new(5, 1);
+        let hung = |attempted: Vec<TestAction>| CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            hang: Some(attempted),
+            actions: Vec::new(),
+        };
+        for expected in 1..=2 {
+            let (sequence, decisions) = core
+                .admit_job(&workload, 0, hung(vec![action]))
+                .expect("admit hung job");
+            assert_eq!(sequence, expected);
+            assert!(decisions.is_empty());
+        }
+        assert_eq!((core.hung_jobs, core.hang_streak), (2, 2));
+        assert_eq!(core.archive.retained, 1);
+        assert_eq!(core.evidence, 2);
+        assert_eq!(core.execution_failures, 0);
+        core.admit_job(
+            &workload,
+            0,
+            CampaignJobResult {
+                preparation_failure: None,
+                hang: None,
+                actions: vec![CampaignActionResult {
+                    action,
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: Outcome::default(),
+                    candidate: None,
+                }],
+            },
+        )
+        .expect("admit completed job");
+        assert_eq!((core.hung_jobs, core.hang_streak), (2, 0));
+        let error = core
+            .admit_job(
+                &workload,
+                0,
+                CampaignJobResult {
+                    preparation_failure: Some(vec![()]),
+                    hang: Some(vec![action]),
+                    actions: Vec::new(),
+                },
+            )
+            .expect_err("a hang cannot also be a preparation failure");
+        assert_eq!(
+            error.to_string(),
+            "hung job result also carries other outcomes"
+        );
+        assert_eq!(core.hung_jobs, 2);
+    }
+
+    #[test]
+    fn hang_streak_stops_only_when_unlikely_at_the_earlier_hang_rate() {
+        use super::hang_streak_is_implausible as implausible;
+        assert!(!implausible(0, 0, 0));
+        assert!(!implausible(1, 1, 1));
+        assert!(!implausible(10, 10, 10));
+        assert!(implausible(11, 11, 11));
+        assert!(!implausible(1_301, 1, 1));
+        assert!(implausible(1_302, 2, 2));
+        assert!(!implausible(15, 7, 5));
+        assert!(implausible(16, 8, 6));
+        assert!(!implausible(1_000, 900, 2));
+        assert!(!implausible(3, 4, 2));
+        assert!(!implausible(3, 1, 2));
+    }
+
+    fn hanging_campaign(
+        divisor: u8,
+        execution_budget: u64,
+    ) -> (TestWorkload, CampaignConfig<TestWorkload>) {
+        let targets = LiveTargets::default();
+        targets
+            .hang_divisor
+            .store(divisor, std::sync::atomic::Ordering::SeqCst);
+        (
+            TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::new(targets)),
+            },
+            CampaignConfig {
+                campaign_seed: 29,
+                workers: 2,
+                execution_budget,
+                host: "test".to_owned(),
+                wall_budget: None,
+                stop_rollout_on_objective: true,
+                stop_campaign_on_objective: true,
+                archive_entry_limit: 64,
+                window: 4,
+                memory_budget_mib: None,
+                materialize_final_artifacts: true,
+                run: (),
+                mixture: DrawMixture::AlphabetOnly,
+                retention: RetentionPolicy::Unprobed,
+                objective_witness_path: None,
+            },
+        )
+    }
+
+    fn stream_records(
+        stream: &[u8],
+    ) -> Vec<CampaignStreamRecord<EmpiricalStepCheckpoint, TestKey>> {
+        std::str::from_utf8(stream)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn campaign_records_hung_jobs_and_finishes_its_budget() {
+        let (workload, config) = hanging_campaign(3, 60);
+        let mut stream = Vec::new();
+        let mut progress = Vec::new();
+        let (live, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            Some(&mut progress),
+        )
+        .expect("a hung job does not end the campaign");
+        assert_eq!(live.executions_completed, 60);
+        assert!(
+            live.hung_jobs > 0 && live.hung_jobs < 60,
+            "{}",
+            live.hung_jobs
+        );
+        assert_eq!(u64::from(live.archive.marker), live.hung_jobs);
+        assert_eq!(live.execution_failures, 0);
+        let records = stream_records(&stream);
+        let jobs = records
+            .iter()
+            .filter(|record| matches!(record, CampaignStreamRecord::Job(_)))
+            .count();
+        assert_eq!(jobs, 60);
+        let last: CampaignProgressRecord<TestKey> = serde_json::from_str(
+            std::str::from_utf8(&progress)
+                .unwrap()
+                .lines()
+                .last()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(last.hung_jobs, live.hung_jobs);
+        let replayed = replay_campaign_checkpointed(&workload, &stream, None, None)
+            .expect("a stream with hung jobs replays");
+        assert_eq!(replayed.0, live);
+    }
+
+    #[test]
+    fn campaign_stops_when_every_job_hangs() {
+        let (workload, config) = hanging_campaign(1, 1_000);
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect_err("a host that hangs every job stops the campaign");
+        assert_eq!(
+            error.to_string(),
+            "campaign stopped after 11 hung jobs in a row: 0 of the 0 earlier jobs hung, \
+             so a run this long has less than a 1 in 1000 chance on a working host"
+        );
+        let records = stream_records(&stream);
+        assert_eq!(records.len(), 11);
+        assert!(records.iter().all(
+            |record| matches!(record, CampaignStreamRecord::Job(job) if job.decisions.is_empty())
+        ));
     }
 
     #[test]
@@ -7719,6 +8056,7 @@ mod tests {
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action,
                 observations: Vec::new(),
@@ -7754,6 +8092,7 @@ mod tests {
         let tracked = TestAction::new(0x01, 4);
         let seed = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action: tracked,
                 observations: Vec::new(),
@@ -7772,6 +8111,7 @@ mod tests {
         let untracked = TestAction::new(0x01, 7);
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![
                 CampaignActionResult {
                     action: tracked,
@@ -7822,6 +8162,7 @@ mod tests {
         let home = core.archive.entries[0].key.0;
         let refused = |value: u8| CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action: TestAction::new(0x01, 1),
                 observations: Vec::new(),
@@ -7877,6 +8218,7 @@ mod tests {
         let winning = TestAction::new(0x81, 7);
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action: winning,
                 observations: Vec::new(),
@@ -7914,6 +8256,7 @@ mod tests {
 
         let later = CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action: TestAction::new(0x01, 9),
                 ..winning_action
@@ -8268,6 +8611,7 @@ mod tests {
         let second = TestAction::new(2, 1);
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![
                 CampaignActionResult {
                     action: first,
@@ -8380,6 +8724,7 @@ mod tests {
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action,
                 observations: Vec::new(),
@@ -8782,6 +9127,7 @@ mod tests {
             Ok((
                 CampaignJobResult::<TestWorkload> {
                     preparation_failure: None,
+                    hang: None,
                     actions: flags
                         .iter()
                         .map(|&candidate| CampaignActionResult {
@@ -10591,6 +10937,8 @@ mod tests {
         core.sequence = 17;
         core.probe_refused = 19;
         core.terminal_endpoints = 23;
+        core.hung_jobs = 3;
+        core.hang_streak = 2;
         let reference = super::CoreCheckpoint::<TestWorkload> {
             curve: core.curve.clone(),
             curve_interval: core.curve_interval,
@@ -10599,6 +10947,8 @@ mod tests {
             terminal_endpoints: core.terminal_endpoints,
             terminal_objectives: core.terminal_objectives,
             execution_failures: core.execution_failures,
+            hung_jobs: core.hung_jobs,
+            hang_streak: core.hang_streak,
             objectives_reached: core.objectives_reached,
             objective_witness: core.objective_witness.clone(),
             sequence: core.sequence,
@@ -10612,6 +10962,7 @@ mod tests {
         let restored: super::CoreCheckpoint<TestWorkload> =
             postcard::from_bytes(&streamed).unwrap();
         assert_eq!(restored.sequence, 17);
+        assert_eq!((restored.hung_jobs, restored.hang_streak), (3, 2));
         assert_eq!(restored.probe_refused, 19);
         assert_eq!(restored.objective_witness, core.objective_witness);
     }

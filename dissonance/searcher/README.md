@@ -191,6 +191,18 @@ recreation failure is an external failure, so its timing can change which
 outstanding jobs complete before the failure is reported.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
+A workload reports a job that hung by returning a result whose `hang` field
+holds the actions it attempted. The coordinator counts it in `hung_jobs`,
+writes a stream record with no decisions, passes the parent input plus those
+actions to `Evaluation::merge_hang_evidence`, and continues. A hung job admits
+nothing to the archive and adds no feedback. Replay reruns hung jobs like any
+other, so a hang that does not recur is a replay mismatch. The coordinator
+stops the campaign when the current run of consecutive hung jobs is unlikely
+at the hang rate seen before it: with `h` hangs in the `n` earlier jobs it uses
+the rate `(h + 1) / (n + 2)` and stops when `rate^(run - 1)` falls below
+1/1000. The report, progress records and search checkpoint carry `hung_jobs`;
+the checkpoint also carries the current run length.
+
 `memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
 and the adaptive duration reserve are subtracted, and the archive gets the rest
 as its own limit. The draw state and the duration histories are checked against

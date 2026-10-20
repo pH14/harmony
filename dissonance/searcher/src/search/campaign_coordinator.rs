@@ -1005,6 +1005,15 @@ where
         if objectives_before == 0 && core.objectives_reached > 0 {
             counters.note_first_objective(sequence);
         }
+        if core.hang_streak() > 0 {
+            if let Some(failure) = core.hang_streak_failure() {
+                return Err(failure.into());
+            }
+            eprintln!(
+                "campaign reservation {reservation} hung; recorded as hung job {} and continuing",
+                core.hung_jobs()
+            );
+        }
         if let Some(sink) = progress.as_deref_mut()
             && progress_checkpoint_due(sequence)
         {

@@ -321,10 +321,12 @@ harmony show "${RUN:?}" --json
 
 Retain stdout, stderr and each command's exit status. A faults search report
 returns `0` without confirmed bugs, unmet reachability assertions, execution
-failures or watchdog cutoffs; unconfirmed hits can still appear. `1` means a
-confirmed bug or unmet reachability assertion. Failures or watchdog cutoffs
-take precedence with `2`; CLI, admission and setup errors also exit `2`,
-sometimes without a run directory. Inspect the report and manifest as well as
+failures or hung jobs; unconfirmed hits can still appear. `1` means a
+confirmed bug or unmet reachability assertion. Failures or hung jobs take
+precedence with `2`. A hung job is a job that tripped the guest progress
+watchdog. The search records it as `hang-N.json` in the run directory and keeps
+running. CLI, admission and setup errors also exit `2`, sometimes without a run
+directory. Inspect the report and manifest as well as
 the exit status: a completed manifest can accompany any of these codes. `show`
 displays saved evidence; it does not verify artifacts or perform a fresh
 replay. A search wall budget is not a hard process-cleanup deadline. Use the

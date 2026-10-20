@@ -191,6 +191,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>, const GROUP: usize>(
     if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions,
         });
     }
@@ -264,6 +265,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>, const GROUP: usize>(
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }

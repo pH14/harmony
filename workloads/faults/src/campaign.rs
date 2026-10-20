@@ -36,11 +36,11 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     archive::{
-        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultInput,
-        FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS,
-        ParkThresholds, REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome,
-        merge_milestones, merge_progress_watermark, milestone_key, milestones,
-        park_threshold_bucket, sample_action,
+        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultHangRecord,
+        FaultInput, FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER,
+        MAX_RECORDED_BUGS, MAX_RECORDED_HANGS, ParkThresholds, REPLACEMENT_IDENTIFIER, action_cost,
+        archive_key, bug_outcome, merge_milestones, merge_progress_watermark, milestone_key,
+        milestones, park_threshold_bucket, sample_action,
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
@@ -53,9 +53,9 @@ use crate::{
     },
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v11";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v12";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v10";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v8";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v9";
 pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v6";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
@@ -66,7 +66,7 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const HOST_FAILURE_POLICY_FIELD: &str = "host_failure_policy";
-const HOST_FAILURE_POLICY: &str = "host_incomplete_v2";
+const HOST_FAILURE_POLICY: &str = "host_incomplete_v3";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
 const ACTION_FORMAT: &str = "fault-action-duration-coverage-v5-event-history";
@@ -135,6 +135,7 @@ pub struct FaultCampaignEvidence {
     champion_input: FaultInput,
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
+    hangs: Vec<FaultHangRecord>,
     assertions: Assertions,
     park_sites: BTreeMap<u64, u64>,
     park_reads: BTreeMap<u64, u64>,
@@ -188,8 +189,9 @@ fn fault_result_sha256(result: &FaultCampaignJobResult) -> Result<String, Box<dy
         })
         .collect::<Result<Vec<_>, _>>()?;
     postcard_value_sha256(&(
-        "fault-result-history-v1",
+        "fault-result-history-v2",
         &result.preparation_failure,
+        &result.hang,
         actions,
     ))
 }
@@ -367,6 +369,24 @@ pub(crate) fn require_completed_attempt(
     Ok(())
 }
 
+fn job_hung(target: &FaultTarget, phase: &'static str) -> Result<bool, Box<dyn Error>> {
+    if target.infrastructure_failure() {
+        return Err(Box::new(AttemptIncomplete {
+            phase,
+            cause: "host infrastructure failure",
+        }));
+    }
+    Ok(target.watchdog_cutoffs() != 0)
+}
+
+fn hung_job(attempted: &[FaultAction]) -> FaultCampaignJobResult {
+    CampaignJobResult {
+        preparation_failure: None,
+        hang: Some(attempted.to_vec()),
+        actions: Vec::new(),
+    }
+}
+
 pub(crate) fn capture_replayed_prefix(
     target: &mut FaultTarget,
     actions: &[FaultAction],
@@ -409,7 +429,9 @@ pub(crate) fn execute_job(
         return Err("fault replay certificate count does not match its action path".into());
     }
     target.restore(origin_snapshot)?;
-    require_completed_attempt(target, "parent reconstruction")?;
+    if job_hung(target, "parent reconstruction")? {
+        return Ok(hung_job(&[]));
+    }
     for (action, certificate) in replay.iter().zip(replay_certificates) {
         if outcome(target).disposition.is_terminal() {
             return Err("fault replay stopped before its archived parent endpoint".into());
@@ -417,7 +439,9 @@ pub(crate) fn execute_job(
         crate::job_observation::tail(false);
         let checked = target.apply_replayed_certified(*action, *certificate);
         target.verify_integrity()?;
-        require_completed_attempt(target, "parent replay")?;
+        if job_hung(target, "parent replay")? {
+            return Ok(hung_job(&[]));
+        }
         checked?;
         crate::job_observation::tail(true);
     }
@@ -428,10 +452,12 @@ pub(crate) fn execute_job(
     if parent_outcome.disposition.is_terminal() {
         return Err("fault parent reconstruction stopped before its archived endpoint".into());
     }
-    for action in suffix {
+    for (index, action) in suffix.iter().enumerate() {
         let captured = target.apply_and_snapshot(*action);
         target.verify_integrity()?;
-        require_completed_attempt(target, "suffix execution")?;
+        if job_hung(target, "suffix execution")? {
+            return Ok(hung_job(&suffix[..=index]));
+        }
         let captured = captured?;
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
@@ -465,6 +491,7 @@ pub(crate) fn execute_job(
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }
@@ -539,7 +566,13 @@ impl Reporting for FaultWorkload {
         result: &FaultCampaignJobResult,
         target: &Self::Target,
     ) -> Result<String, Box<dyn Error>> {
-        require_completed_attempt(target, "result certification")?;
+        match result.hang {
+            Some(_) if !job_hung(target, "result certification")? => {
+                return Err("a hung job result names a target that did not hang".into());
+            }
+            Some(_) => {}
+            None => require_completed_attempt(target, "result certification")?,
+        }
         let endpoint = if self.config.uml().is_some() {
             FaultEndpointCertificate::UmlWholeStateUnavailable
         } else if target.failed() {
@@ -584,8 +617,9 @@ impl Reporting for FaultWorkload {
             deaths: state
                 .terminal_endpoints
                 .saturating_sub(state.terminal_objectives),
-            watchdog_cutoffs: 0,
+            watchdog_cutoffs: state.hung_jobs,
             bugs: evidence.bugs.clone(),
+            hangs: evidence.hangs.clone(),
             selector: state.selector,
             assertions: evidence.assertions.clone(),
             park_sites: evidence.park_sites.clone(),
@@ -1159,6 +1193,29 @@ impl Evaluation for FaultWorkload {
         Ok(())
     }
 
+    fn merge_hang_evidence<F>(
+        &self,
+        evidence: &mut FaultCampaignEvidence,
+        sequence: u64,
+        input: F,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        F: FnOnce() -> Result<FaultInput, Box<dyn Error>>,
+    {
+        if evidence.hangs.len() >= MAX_RECORDED_HANGS {
+            return Ok(());
+        }
+        let mut input = input()?;
+        input
+            .actions
+            .splice(0..0, evidence.root_actions.iter().copied());
+        evidence.hangs.push(FaultHangRecord {
+            execution: sequence,
+            input,
+        });
+        Ok(())
+    }
+
     fn source_entries<'a>(
         &self,
         source: &'a FaultArchiveReport,
@@ -1268,6 +1325,7 @@ mod tests {
     fn endpoint_certificate_distinguishes_state_and_unavailability() {
         let result = FaultCampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions: Vec::new(),
         };
         let first = endpoint_result_sha256(
@@ -1360,6 +1418,7 @@ mod tests {
         };
         let result = FaultCampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions: vec![FaultCampaignActionResult {
                 action,
                 observations: vec![FaultObservations::default()],
@@ -1385,6 +1444,7 @@ mod tests {
         let fresh = kvm_result_endpoint(
             &FaultCampaignJobResult {
                 preparation_failure: None,
+                hang: None,
                 actions: Vec::new(),
             },
             &[action],
@@ -1646,6 +1706,40 @@ mod tests {
         };
         assert_eq!(park_feedback(&unlanded), BTreeMap::from([(4, 1126)]));
         assert!(park_feedback(&FaultCampaignEvidence::default()).is_empty());
+    }
+
+    #[test]
+    fn hang_evidence_records_the_rooted_input_and_stops_at_its_bound() {
+        let game = game();
+        let root = FaultAction::from(FaultOperation::Kill(0, std::num::NonZeroU16::MIN));
+        let attempted = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
+        let mut evidence = FaultCampaignEvidence {
+            root_actions: vec![root],
+            ..FaultCampaignEvidence::default()
+        };
+        game.merge_hang_evidence(&mut evidence, 7, || {
+            Ok(FaultInput {
+                actions: vec![attempted],
+            })
+        })
+        .unwrap();
+        assert_eq!(
+            evidence.hangs,
+            vec![FaultHangRecord {
+                execution: 7,
+                input: FaultInput {
+                    actions: vec![root, attempted],
+                },
+            }]
+        );
+        assert!(evidence.bugs.is_empty());
+        for sequence in 8..u64::try_from(MAX_RECORDED_HANGS).unwrap() + 20 {
+            game.merge_hang_evidence(&mut evidence, sequence, || Ok(FaultInput::default()))
+                .unwrap();
+        }
+        assert_eq!(evidence.hangs.len(), MAX_RECORDED_HANGS);
+        game.merge_hang_evidence(&mut evidence, 0, || Err("not materialized".into()))
+            .unwrap();
     }
 
     #[test]
