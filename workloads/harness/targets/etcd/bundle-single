@@ -1,0 +1,5 @@
+setup /opt/harmony/setup.sh 1
+node m1 /opt/harmony/node.sh 1 1
+ready /usr/bin/env HARNESS_ETCD_MEMBERS=1 /opt/harmony/etcd-harness ready
+workload /usr/bin/env HARNESS_ETCD_MEMBERS=1 /opt/harmony/etcd-harness drive
+check /usr/bin/env HARNESS_ETCD_MEMBERS=1 /opt/harmony/etcd-harness check

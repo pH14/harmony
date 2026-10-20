@@ -69,6 +69,7 @@ PR_ARTIFACT_BUILD_BUDGETS = {
 }
 PR_EXTENDED_CHECK_BUDGETS = {
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "C Investigation"): 35,
+    (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Harness Kit"): 30,
     (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"): 45,
 }
 PR_TIMEOUT_EXPRESSIONS = {
@@ -707,7 +708,9 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
             select="harmony_languages"),
         Job("UML Command Replay", "pr", 15, select="harmony_languages"),
-        Job("Harness Kit", "pr", 15, select="harmony_harness"),
+        Job("Harness Kit", "pr", 30,
+            exception="The job builds the etcd target from pinned source through the Go instrumentation and runs its checker natively.",
+            select="harmony_harness"),
         Job("Packaged Composition", "pr", 15, select="harmony_languages"),
     ),
 )
