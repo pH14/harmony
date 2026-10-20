@@ -331,6 +331,12 @@ more compress and decompress on one thread per available CPU. Every 32 entries a
 the next entry stores its full page list over setup and becomes an anchor, so
 an import reads at most 32 extents.
 
+Extents cross a process boundary. The reader checks the extent checksum, and
+the VMM checks every imported page against its BLAKE3 hash before the snapshot
+store accepts it. The store hashes a page once, when it is written or
+imported, and later exports and restores read the stored hash without
+hashing the page again.
+
 `PageSegments::free` consumes a writable extent; callers cannot reclaim raw
 coordinates while retaining a slice of that range. Abandonment transfers a
 private, non-cloneable reclamation capability when the writer relinquishes ownership.
@@ -466,7 +472,7 @@ registration, mapping or additional pin survives the import. Namespace, pinned
 object commitment, actual pages/sidecar/state and post-reply lease checks remain
 mandatory on every call. Grouping uses bounded O(N*U) comparisons. Numeric wire
 metadata grows by `8 + 8*N` bytes per import versus the former envelope, even if U=N;
-U=N saves no descriptors. Store intern copies, per-use integrity verification,
+U=N saves no descriptors. Store intern copies,
 guest materialization and SDK guard work are unchanged. Existing physical I/O
 counters report actual U handles and copy counters retain actual N mappings;
 backing-reuse counters retain their original N/U per accepted operation meaning.

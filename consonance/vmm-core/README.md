@@ -236,29 +236,16 @@ The leaves attribute each feed once; wrapper requests do not add another
 charge. Retiring or replaying a VMM never rewinds these host totals. Backend physical
 entry telemetry is merged on the same retirement and failed-restore boundaries,
 independently of normalized exit service counts. Snapshot
-store verification appears under `snapshot.verify.*`, with distinct BLAKE3
-resident-page and VM-state work. Timings are nested diagnostic envelopes across
-hashing and storage, not additive elapsed time. Standalone codec/comparison
+store VM-state digest checks appear under `snapshot.verify.*`. Standalone codec/comparison
 helpers outside a ControlServer do not report into a server's telemetry. These
 fields do not enter event history, portable records, cache identities, hashes,
 retention charges or search policy. Existing snapshot page metrics keep their
 original meanings.
 
-Sparse delta export holds one snapshot-store read transaction across full
-setup/parent/target integrity verification, delta planning, target comparison,
-and the first base-RAM commitment calculation. Each distinct resident page is
-integrity-hashed once within that export; subsequent exports start fresh
-verification even when the base-RAM digest is cached. BLAKE3 resident integrity
-checks and the flat SHA-256 base/target commitments retain their separate
-purposes and existing encodings. Sparse delta import shares one immutable read
-transaction across target comparison and setup/base verification, including a
-cached base digest. Metadata and RAM validation still precede service preflight.
-That transaction ends before any user service callback. Rebase analysis then
-starts fresh resident verification after preflight; the subsequent mutable derive
-also retains its own resident/incoming-page checks. No verified-slot set crosses
-those boundaries. Thus a retained page can still be checked again after the
-callback or during derive; import does not promise one check per page over the
-whole operation.
+Sparse delta export and import read page bytes and BLAKE3 hashes from the
+snapshot store without hashing resident pages again; the store hashed each page
+when it was written. Import hashes every incoming page and checks it against
+its row before the target commitment, base-RAM digest and service preflight.
 
 Guest RAM is owned by `Vmm` for the lifetime of the backend. The canonical state
 fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
@@ -277,7 +264,7 @@ Snapshots can be restored into a copy-on-write memory mapping. In-place restore
 combines the snapshot difference and the guest dirty set before loading page
 contents. The control server holds a store reference on the image the VM last
 sealed or restored, so dropping that snapshot's handle keeps the difference
-small instead of forcing a full-image copy. The resulting sorted plan borrows integrity-checked store pages and
+small instead of forcing a full-image copy. The resulting sorted plan borrows store pages and
 copies each selected page directly into guest RAM. Page-write validation sorts
 small address/reference records, rejects duplicates and invalid ranges before
 any write, then coalesces instruction-cache invalidation ranges in the same pass
@@ -330,22 +317,10 @@ with its sidecar before deriving pages or minting a handle. Both imports verify
 that the installed service factory can instantiate the recorded policy and
 restore the captured handler state before committing the snapshot. Sparse
 sidecars also carry the source base snapshot's RAM digest. Export and import
-compute that digest once per base snapshot and cache it, verifying every
-distinct resident base page before reusing the cached digest. Sparse exports
-also verify every distinct resident target page, including inherited pages
-omitted from a delta. Pages shared by the base and target are hashed once per
-export when the base digest is cached; delta export performs this check before
-encoding its sidecar and does not repeat it there. The base digest is BLAKE3
-over the domain `consonance-sparse-base-ram-pages-v2`, the RAM length and the
-ordered BLAKE3 page digests the snapshot store keeps, so after page
-verification it costs 32 bytes per page. Version 13 sidecars carried a SHA-256
-over the full base RAM instead. A
-release microbenchmark on Apple silicon measured 30.11 ms per
-base-only check for 8,192 distinct 4 KiB pages (32 MiB) and 0.45 ms when
-those frames shared one interned page. Checking that base together with a
-target that replaced one quarter of its pages measured 35.90 ms with distinct
-content and 1.07 ms with interned content. These checks hash each distinct
-resident page once. Cache deltas use setup
+compute that digest once per base snapshot and cache it. The base digest is
+BLAKE3 over the domain `consonance-sparse-base-ram-pages-v2`, the RAM length
+and the ordered BLAKE3 page digests the snapshot store keeps, so it costs 32
+bytes per page. Cache deltas use setup
 as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does

@@ -34,7 +34,7 @@ use crate::portable_snapshot::{
     decode_sparse_sidecar, encode_sparse_sidecar_with_target_pages,
 };
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
-use crate::snapshot::{SnapshotEngine, SnapshotError, SnapshotReadTransaction};
+use crate::snapshot::{SnapshotEngine, SnapshotError};
 use crate::vmm::{
     HostOperationGuard, HostOperationSite, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm,
     VmmError,
@@ -130,7 +130,7 @@ fn sparse_target_pages_digest(
 const SPARSE_DELTA_TARGET_PAGES_DOMAIN: &[u8] = b"consonance-sparse-delta-target-pages-v2\0";
 
 fn sparse_delta_target_pages_digest<'a>(
-    transaction: &mut SnapshotReadTransaction<'_>,
+    engine: &SnapshotEngine,
     setup: snapshot_store::SnapshotId,
     pages: impl IntoIterator<Item = (u64, &'a [u8; 32])>,
     telemetry: &std::cell::Cell<HashTelemetry>,
@@ -138,7 +138,7 @@ fn sparse_delta_target_pages_digest<'a>(
 ) -> Result<[u8; 32], PortableSnapshotError> {
     let mut changed = Vec::new();
     for (gfn, hash) in pages {
-        if transaction.page_hash(setup, gfn)? != hash {
+        if engine.page_hash(setup, gfn)? != hash {
             changed.push((gfn, hash));
         }
     }
@@ -649,17 +649,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let setup_id = self.store_id(setup)?;
         let parent_id = parent.map(|parent| self.store_id(parent)).transpose()?;
         let target_id = self.store_id(target)?;
-        let mut transaction = self.engine.read_transaction();
-        let delta = transaction.page_delta(setup_id, parent_id, target_id)?;
-        let target_pages = transaction.diff_hashed_pages(Some(setup_id), target_id)?;
+        let delta = self.engine.page_delta(setup_id, parent_id, target_id)?;
+        let target_pages = self.engine.diff_hashed_pages(Some(setup_id), target_id)?;
         let target_pages_digest = sparse_delta_target_pages_digest(
-            &mut transaction,
+            &self.engine,
             setup_id,
             target_pages.iter().map(|&(gfn, hash, _)| (gfn, hash)),
             &self.hash_telemetry,
             HashSite::PortableExport,
         )?;
-        let base_ram_digest = self.sparse_base_ram_digest_in(setup, &mut transaction)?;
+        let base_ram_digest = self.sparse_base_ram_digest(setup)?;
         let sidecar = self.sparse_sidecar_with_base_digest(
             target,
             target_id,
@@ -684,24 +683,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .ok_or(PortableSnapshotError::UnknownSnapshot(snap.0))
     }
 
-    fn sparse_base_ram_digest(
-        &self,
-        base: SnapId,
-        target_id: SnapshotId,
-    ) -> Result<[u8; 32], PortableSnapshotError> {
+    fn sparse_base_ram_digest(&self, base: SnapId) -> Result<[u8; 32], PortableSnapshotError> {
         let base_id = self.store_id(base)?;
-        let mut transaction = self.engine.read_transaction();
-        transaction.verify_snapshots(&[base_id, target_id])?;
-        self.sparse_base_ram_digest_in(base, &mut transaction)
-    }
-
-    fn sparse_base_ram_digest_in(
-        &self,
-        base: SnapId,
-        transaction: &mut SnapshotReadTransaction<'_>,
-    ) -> Result<[u8; 32], PortableSnapshotError> {
-        let base_id = self.store_id(base)?;
-        transaction.verify_snapshots(&[base_id])?;
         let meta = self
             .snapshot_meta
             .get(&base.0)
@@ -723,7 +706,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             hasher.update(&memory_len.to_le_bytes());
             work.metadata(b"consonance-sparse-base-ram-pages-v2\0".len() + 8);
             for gfn in 0..self.engine.mem_pages() {
-                hasher.update(transaction.page_hash(base_id, gfn)?);
+                hasher.update(self.engine.page_hash(base_id, gfn)?);
                 work.metadata(32);
             }
             Ok::<[u8; 32], PortableSnapshotError>(*hasher.finalize().as_bytes())
@@ -741,7 +724,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         target_id: snapshot_store::SnapshotId,
         target_pages_digest: Option<[u8; 32]>,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
-        let base_ram_digest = self.sparse_base_ram_digest(base, target_id)?;
+        let base_ram_digest = self.sparse_base_ram_digest(base)?;
         self.sparse_sidecar_with_base_digest(
             target,
             target_id,
@@ -807,7 +790,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             base,
             pages.iter().map(|(gfn, _)| *gfn),
             sidecar,
-            |_transaction, telemetry| {
+            |_engine, telemetry| {
                 Ok(Some(sparse_target_pages_digest(
                     pages,
                     telemetry,
@@ -849,7 +832,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             near,
             pages.iter().map(|(gfn, _, _)| *gfn),
             sidecar,
-            |transaction, telemetry| {
+            |engine, telemetry| {
                 let mut work = HashWork::new();
                 for &(_, hash, page) in pages {
                     work.ram(page.len());
@@ -862,7 +845,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
                 work.finish(telemetry, HashSite::PortableImport, false);
                 Ok(Some(sparse_delta_target_pages_digest(
-                    transaction,
+                    engine,
                     setup_id,
                     pages.iter().map(|&(gfn, hash, _)| (gfn, hash)),
                     telemetry,
@@ -908,7 +891,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         gfns: impl Iterator<Item = u64>,
         sidecar: &[u8],
         target_pages_digest: impl FnOnce(
-            &mut SnapshotReadTransaction<'_>,
+            &SnapshotEngine,
             &std::cell::Cell<HashTelemetry>,
         ) -> Result<Option<[u8; 32]>, PortableSnapshotError>,
         derive: impl FnOnce(
@@ -917,7 +900,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             &[u8],
         ) -> Result<snapshot_store::SnapshotId, PortableSnapshotError>,
     ) -> Result<SparsePortableSnapshotReceipt, PortableSnapshotError> {
-        let mut transaction = self.engine.read_transaction();
         let base_id = self.store_id(base)?;
         let mut previous = None;
         for gfn in gfns {
@@ -936,7 +918,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
 
         let portable = decode_sparse_sidecar(sidecar)?;
-        let target_pages_digest = target_pages_digest(&mut transaction, &self.hash_telemetry)?;
+        let target_pages_digest = target_pages_digest(&self.engine, &self.hash_telemetry)?;
         if portable.target_pages_digest != target_pages_digest {
             return Err(PortableSnapshotError::Malformed(
                 "sparse target pages differ",
@@ -982,10 +964,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "sparse state hash preimage",
             ));
         }
-        if self.sparse_base_ram_digest_in(setup, &mut transaction)? != portable.base_ram_digest {
+        if self.sparse_base_ram_digest(setup)? != portable.base_ram_digest {
             return Err(PortableSnapshotError::Malformed("sparse base RAM differs"));
         }
-        drop(transaction);
         self.preflight_imported_service(sdk, &portable.policy)?;
         let id = self.next_snap;
         let next_snap = self
@@ -5351,49 +5332,6 @@ mod tests {
         miri,
         ignore = "snapshot materialization and page hashing use mmap-backed production paths"
     )]
-    fn in_place_restore_read_failure_leaves_guest_memory_untouched() {
-        let mut s = server_tracked();
-        hello(&mut s);
-        s.vmm
-            .as_mut()
-            .unwrap()
-            .apply_effect(&EnvHostEffect::WriteMemory {
-                gpa: 2 * 4096,
-                bytes: vec![0x11],
-            })
-            .unwrap();
-        let target = snap(&mut s);
-        let store_id = s.snaps[&target.0];
-        let vm_state = s.engine.vm_state::<vm_state::VmState>(store_id).unwrap();
-
-        s.vmm
-            .as_mut()
-            .unwrap()
-            .apply_effect(&EnvHostEffect::XorMemory {
-                gpa: 4096,
-                bytes: vec![0x5A],
-            })
-            .unwrap();
-        s.vmm
-            .as_mut()
-            .unwrap()
-            .apply_effect(&EnvHostEffect::XorMemory {
-                gpa: 2 * 4096,
-                bytes: vec![0xA5],
-            })
-            .unwrap();
-        let before = s.vmm.as_ref().unwrap().guest_memory().to_vec();
-        s.engine.remove_page_for_test(store_id, 2).unwrap();
-
-        assert!(s.restore_in_place(store_id, &vm_state).is_err());
-        assert_eq!(s.vmm.as_ref().unwrap().guest_memory(), before);
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "snapshot materialization and page hashing use mmap-backed production paths"
-    )]
     fn in_place_restore_preflight_rejects_before_page_write() {
         let mut s = server_tracked();
         hello(&mut s);
@@ -8321,7 +8259,7 @@ mod tests {
     }
 
     #[test]
-    fn sparse_delta_export_verifies_each_slot_once_with_cold_and_cached_base_digest() {
+    fn sparse_delta_export_matches_reference_digests_with_cold_and_cached_base_digest() {
         use super::decode_sparse_sidecar;
         use sha2::{Digest, Sha256};
         let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -8344,15 +8282,7 @@ mod tests {
             .unwrap();
         let target = snap(&mut source);
         let setup_id = source.store_id(setup).unwrap();
-        let parent_id = source.store_id(parent).unwrap();
         let target_id = source.store_id(target).unwrap();
-        let store = source.engine.store();
-        let before = store.page_verifications_for_test();
-        store
-            .verify_snapshots(&[setup_id, parent_id, target_id])
-            .unwrap();
-        let distinct = store.page_verifications_for_test() - before;
-        assert!(distinct > 0);
         assert!(
             source.snapshot_meta[&setup.0]
                 .base_ram_digest
@@ -8361,11 +8291,9 @@ mod tests {
         );
         let mut exported = Vec::new();
         for _ in 0..2 {
-            let before = store.page_verifications_for_test();
             let delta = source
                 .export_sparse_delta(setup, Some(parent), target)
                 .unwrap();
-            assert_eq!(store.page_verifications_for_test() - before, distinct);
             exported.push((
                 delta
                     .pages
@@ -8407,132 +8335,7 @@ mod tests {
     }
 
     #[test]
-    fn sparse_base_digest_rechecks_resident_pages_after_first_export() {
-        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
-        hello(&mut source);
-        let base = snap(&mut source);
-        source.export_sparse_snapshot(base, base).unwrap();
-        let base_id = source.store_id(base).unwrap();
-        source
-            .engine
-            .corrupt_page_for_test(base_id, 0, 0, 1)
-            .unwrap();
-        assert!(matches!(
-            source.export_sparse_snapshot(base, base),
-            Err(PortableSnapshotError::Snapshot(
-                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
-                    gfn: 0
-                })
-            ))
-        ));
-        assert!(matches!(
-            source.export_sparse_delta(base, None, base),
-            Err(PortableSnapshotError::Snapshot(
-                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
-                    gfn: 0
-                })
-            ))
-        ));
-    }
-
-    #[test]
-    fn sparse_delta_rechecks_base_pages_replaced_in_target() {
-        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
-        hello(&mut source);
-        let setup = snap(&mut source);
-        source.export_sparse_snapshot(setup, setup).unwrap();
-        let mut image = source.vmm().unwrap().guest_memory().to_vec();
-        image[..4096].fill(0xA5);
-        source
-            .vmm
-            .as_mut()
-            .unwrap()
-            .restore_guest_memory(&image)
-            .unwrap();
-        let parent = snap(&mut source);
-        let target = snap(&mut source);
-        let setup_id = source.store_id(setup).unwrap();
-        source
-            .engine
-            .corrupt_page_for_test(setup_id, 0, 0, 1)
-            .unwrap();
-        assert!(matches!(
-            source.export_sparse_delta(setup, Some(parent), target),
-            Err(PortableSnapshotError::Snapshot(
-                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
-                    gfn: 0
-                })
-            ))
-        ));
-    }
-
-    #[test]
-    fn sparse_base_digest_rechecks_resident_pages_before_second_import() {
-        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
-        hello(&mut source);
-        let base = snap(&mut source);
-        let portable = source.export_sparse_snapshot(base, base).unwrap();
-
-        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
-        hello(&mut destination);
-        let destination_base = snap(&mut destination);
-        destination
-            .import_sparse_snapshot(destination_base, portable.clone())
-            .unwrap();
-        let destination_base_id = destination.store_id(destination_base).unwrap();
-        destination
-            .engine
-            .corrupt_page_for_test(destination_base_id, 0, 0, 1)
-            .unwrap();
-        let before = destination.snapshot_store_stats();
-        assert!(matches!(
-            destination.import_sparse_snapshot(destination_base, portable),
-            Err(PortableSnapshotError::Snapshot(
-                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
-                    gfn: 0
-                })
-            ))
-        ));
-        assert_eq!(destination.snapshot_store_stats(), before);
-    }
-
-    #[test]
-    fn sparse_delta_rechecks_target_pages_omitted_from_delta() {
-        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
-        hello(&mut source);
-        let setup = snap(&mut source);
-        let mut image = source.vmm().unwrap().guest_memory().to_vec();
-        image[4096..8192].fill(0xA5);
-        source
-            .vmm
-            .as_mut()
-            .unwrap()
-            .restore_guest_memory(&image)
-            .unwrap();
-        let parent = snap(&mut source);
-        let target = snap(&mut source);
-        let anchor = source.export_sparse_delta(setup, None, parent).unwrap();
-        assert_eq!(
-            anchor.pages.iter().map(|page| page.0).collect::<Vec<_>>(),
-            vec![1]
-        );
-        let parent_id = source.store_id(parent).unwrap();
-        source
-            .engine
-            .corrupt_page_for_test(parent_id, 1, 0, 1)
-            .unwrap();
-        assert!(matches!(
-            source.export_sparse_delta(setup, Some(parent), target),
-            Err(PortableSnapshotError::Snapshot(
-                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
-                    gfn: 1
-                })
-            ))
-        ));
-    }
-
-    #[test]
-    fn sparse_import_shares_resident_verification_only_before_service_preflight() {
+    fn sparse_import_validates_pages_and_base_before_service_preflight() {
         use std::sync::{
             Arc,
             atomic::{AtomicU64, Ordering},
@@ -8575,15 +8378,6 @@ mod tests {
                 .unwrap();
             let after = server.host_telemetry();
             assert_eq!(
-                after.verification.resident_hashes - before.verification.resident_hashes,
-                4
-            );
-            assert_eq!(
-                after.verification.resident_bytes - before.verification.resident_bytes,
-                4 * 4096
-            );
-            assert_eq!(after.verification.errors, before.verification.errors);
-            assert_eq!(
                 after.hashes.cost(HashSite::SparseBase).calls
                     - before.hashes.cost(HashSite::SparseBase).calls,
                 u64::from(cold)
@@ -8606,23 +8400,13 @@ mod tests {
             .restore_guest_memory(&near_image)
             .unwrap();
         let near = snap(&mut server);
-        let before_near = server.host_telemetry().verification;
         server
             .import_sparse_delta(setup, near, &rows, &sidecar)
             .unwrap();
-        let after_near = server.host_telemetry().verification;
-        assert_eq!(after_near.resident_hashes - before_near.resident_hashes, 6);
-        assert_eq!(
-            after_near.resident_bytes - before_near.resident_bytes,
-            6 * 4096
-        );
         server.set_max_chain_len(2);
-        let before_cap = server.host_telemetry().verification;
         server
             .import_sparse_delta(setup, imported_for_cap, &rows, &sidecar)
             .unwrap();
-        let after_cap = server.host_telemetry().verification;
-        assert_eq!(after_cap.resident_hashes - before_cap.resident_hashes, 4);
         let successful_calls = calls.load(Ordering::SeqCst);
         assert_eq!(successful_calls, 5);
         let before = server.snapshot_store_stats();
@@ -8652,43 +8436,6 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), successful_calls);
         assert_eq!(server.next_snap, next);
         assert_eq!(server.snapshot_store_stats(), before);
-        assert_eq!(server.latest_snapshot(), latest);
-        let near_id = server.store_id(near).unwrap();
-        server
-            .engine
-            .corrupt_page_for_test(near_id, 3, 0, 1)
-            .unwrap();
-        let before_near_error = server.host_telemetry().verification;
-        assert!(
-            server
-                .import_sparse_delta(setup, near, &rows, &sidecar)
-                .is_err()
-        );
-        let after_near_error = server.host_telemetry().verification;
-        assert_eq!(
-            after_near_error.resident_hashes - before_near_error.resident_hashes,
-            6
-        );
-        assert_eq!(after_near_error.errors - before_near_error.errors, 1);
-        assert_eq!(calls.load(Ordering::SeqCst), successful_calls + 1);
-        assert_eq!(server.next_snap, next);
-        assert_eq!(server.latest_snapshot(), latest);
-        let setup_id = server.store_id(setup).unwrap();
-        server
-            .engine
-            .corrupt_page_for_test(setup_id, 2, 0, 1)
-            .unwrap();
-        let verification = server.host_telemetry().verification;
-        assert!(
-            server
-                .import_sparse_delta(setup, setup, &rows, &sidecar)
-                .is_err()
-        );
-        let after = server.host_telemetry().verification;
-        assert_eq!(after.resident_hashes - verification.resident_hashes, 2);
-        assert_eq!(after.errors - verification.errors, 1);
-        assert_eq!(calls.load(Ordering::SeqCst), successful_calls + 1);
-        assert_eq!(server.next_snap, next);
         assert_eq!(server.latest_snapshot(), latest);
     }
 

@@ -42,50 +42,9 @@ pub struct SnapshotEngine {
     max_chain_len: u32,
 }
 
-pub(crate) struct SnapshotReadTransaction<'store> {
-    transaction: snapshot_store::ReadTransaction<'store>,
-}
-
-impl<'store> SnapshotReadTransaction<'store> {
-    pub(crate) fn page_hash(
-        &mut self,
-        snap: SnapshotId,
-        gfn: u64,
-    ) -> Result<&'store snapshot_store::PageHash, SnapshotError> {
-        Ok(self.transaction.page_hash(snap, gfn)?)
-    }
-
-    pub(crate) fn verify_snapshots(&mut self, snaps: &[SnapshotId]) -> Result<(), SnapshotError> {
-        Ok(self.transaction.verify_snapshots(snaps)?)
-    }
-
-    pub(crate) fn page_delta(
-        &mut self,
-        base: SnapshotId,
-        parent: Option<SnapshotId>,
-        target: SnapshotId,
-    ) -> Result<PageDelta<'store>, SnapshotError> {
-        Ok(self.transaction.page_delta(base, parent, target)?)
-    }
-
-    pub(crate) fn diff_hashed_pages(
-        &mut self,
-        from: Option<SnapshotId>,
-        to: SnapshotId,
-    ) -> Result<Vec<snapshot_store::HashedPage<'store>>, SnapshotError> {
-        Ok(self.transaction.diff_hashed_pages(from, to)?)
-    }
-}
-
 pub const DEFAULT_MAX_CHAIN_LEN: u32 = 32;
 
 impl SnapshotEngine {
-    pub(crate) fn read_transaction(&self) -> SnapshotReadTransaction<'_> {
-        SnapshotReadTransaction {
-            transaction: self.store.read_transaction(),
-        }
-    }
-
     pub fn new(mem_bytes: usize) -> SnapshotEngine {
         let mem_pages = (mem_bytes / PAGE_SIZE) as u64;
         SnapshotEngine {
@@ -234,6 +193,18 @@ impl SnapshotEngine {
         Ok(self.store.page_delta(base, parent, target)?)
     }
 
+    pub(crate) fn page_hash(&self, snap: SnapshotId, gfn: u64) -> Result<&PageHash, SnapshotError> {
+        Ok(self.store.page_hash(snap, gfn)?)
+    }
+
+    pub(crate) fn diff_hashed_pages(
+        &self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+    ) -> Result<Vec<snapshot_store::HashedPage<'_>>, SnapshotError> {
+        Ok(self.store.diff_hashed_pages(from, to)?)
+    }
+
     pub fn rebase(
         &self,
         origin: SnapshotId,
@@ -326,26 +297,6 @@ impl SnapshotEngine {
 
     pub fn gc(&mut self) -> u64 {
         self.store.gc()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn remove_page_for_test(
-        &mut self,
-        snap: SnapshotId,
-        gfn: u64,
-    ) -> Result<(), SnapshotError> {
-        Ok(self.store.remove_page_for_test(snap, gfn)?)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn corrupt_page_for_test(
-        &mut self,
-        snap: SnapshotId,
-        gfn: u64,
-        byte: usize,
-        mask: u8,
-    ) -> Result<(), SnapshotError> {
-        Ok(self.store.corrupt_page_for_test(snap, gfn, byte, mask)?)
     }
 
     #[cfg(test)]
@@ -638,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn ram_vcpu_and_gic_corruption_each_fail_before_restore() {
+    fn vcpu_and_gic_corruption_each_fail_before_restore() {
         let mut gic = gicv3::Gicv3::new(gicv3::GicConfig {
             impl_spis: 32,
             timer_hz: 0x0f1e_2d3c_4b5a_6978,
@@ -674,14 +625,6 @@ mod tests {
 
         let mut memory = vec![0_u8; 2 * PG];
         memory[PG..2 * PG].fill(0x5a);
-        let mut ram_engine = SnapshotEngine::new(memory.len());
-        let ram = ram_engine.snapshot_base(&memory, &blob).unwrap();
-        ram_engine.corrupt_page_for_test(ram, 1, 17, 0x80).unwrap();
-        assert!(matches!(
-            ram_engine.materialize(ram),
-            Err(SnapshotError::Store(StoreError::PageIntegrity { gfn: 1 }))
-        ));
-
         let mut vcpu_engine = SnapshotEngine::new(memory.len());
         let vcpu = vcpu_engine.snapshot_base(&memory, &blob).unwrap();
         vcpu_engine
