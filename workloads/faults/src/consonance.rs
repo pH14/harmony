@@ -7749,8 +7749,11 @@ mod tests {
         let actions = [
             FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()))
                 .with_choice(1),
-            FaultAction::from(FaultOperation::Kill(3, std::num::NonZeroU16::new(3).unwrap()))
-                .with_choice(2),
+            FaultAction::from(FaultOperation::Kill(
+                3,
+                std::num::NonZeroU16::new(3).unwrap(),
+            ))
+            .with_choice(2),
             FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN)).with_choice(3),
         ];
         let inherited = vec![StandingWindow {
