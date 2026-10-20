@@ -45,6 +45,8 @@ const RESTART: u8 = 11;
 const RUN_HOOK: u8 = 17;
 const EVENT_KILL: u8 = 20;
 const EVENT_PARK: u8 = 21;
+const CLOCK: u8 = 23;
+pub const CLOCK_RATE_STOPPED_PPM: i32 = -1_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum ProcessAction {
@@ -59,6 +61,11 @@ pub enum ProcessAction {
         edges: u32,
         hold_nanos: u64,
         target: Option<events::ParkTarget>,
+    },
+    Clock {
+        offset_nanos: i64,
+        rate_ppm: i32,
+        spread: u64,
     },
 }
 
@@ -240,6 +247,16 @@ fn write_action(out: &mut Vec<u8>, action: ProcessAction) {
                 }
             }
         }
+        ProcessAction::Clock {
+            offset_nanos,
+            rate_ppm,
+            spread,
+        } => {
+            out.push(CLOCK);
+            out.extend_from_slice(&offset_nanos.to_le_bytes());
+            out.extend_from_slice(&rate_ppm.to_le_bytes());
+            put_u64(out, spread);
+        }
     }
 }
 
@@ -274,6 +291,19 @@ fn read_action(reader: &mut Reader<'_>) -> Result<ProcessAction, WireError> {
                 edges,
                 hold_nanos,
                 target,
+            })
+        }
+        CLOCK => {
+            let offset_nanos = i64::from_le_bytes(reader.u64()?.to_le_bytes());
+            let rate_ppm = i32::from_le_bytes(reader.u32()?.to_le_bytes());
+            let spread = reader.u64()?;
+            if rate_ppm < CLOCK_RATE_STOPPED_PPM {
+                return Err(WireError::Malformed);
+            }
+            Ok(ProcessAction::Clock {
+                offset_nanos,
+                rate_ppm,
+                spread,
             })
         }
         _ => Err(WireError::Malformed),
@@ -385,7 +415,7 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
-    fn actions() -> [ProcessAction; 7] {
+    fn actions() -> [ProcessAction; 8] {
         [
             ProcessAction::Pause(1234),
             ProcessAction::Kill,
@@ -401,6 +431,11 @@ mod tests {
                 edges: 1,
                 hold_nanos: 2_000_000,
                 target: events::ParkTarget::new(0x40, 0x41),
+            },
+            ProcessAction::Clock {
+                offset_nanos: -2,
+                rate_ppm: 500,
+                spread: 0x0102,
             },
         ]
     }
@@ -456,6 +491,10 @@ mod tests {
                 0x41, 0, 0, 0, 0, 0, 0, 0,
             ],
             vec![
+                23, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf4, 0x01, 0, 0, 0x02, 0x01,
+                0, 0, 0, 0, 0, 0,
+            ],
+            vec![
                 19, 0x86, 0x0e, 0x4b, 0, 0, 0, 0, 0, 28, 0, 0, 0, 0x80, 0x84, 0x1e, 0, 0, 0, 0, 0,
             ],
         ];
@@ -506,6 +545,22 @@ mod tests {
         let mut unknown = longest.encode();
         *unknown.last_mut().expect("presence byte") = 2;
         assert_eq!(ProcessAction::decode(&unknown), None);
+    }
+
+    #[test]
+    fn a_clock_rate_below_a_stopped_clock_is_rejected() {
+        let stopped = ProcessAction::Clock {
+            offset_nanos: i64::MIN,
+            rate_ppm: CLOCK_RATE_STOPPED_PPM,
+            spread: u64::MAX,
+        };
+        assert_eq!(ProcessAction::decode(&stopped.encode()), Some(stopped));
+        let backward = ProcessAction::Clock {
+            offset_nanos: 0,
+            rate_ppm: CLOCK_RATE_STOPPED_PPM - 1,
+            spread: 0,
+        };
+        assert_eq!(ProcessAction::decode(&backward.encode()), None);
     }
 
     #[test]
