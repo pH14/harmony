@@ -42,7 +42,11 @@ are removed on assignment or worker exit and rebuilt after execution or target
 recovery. They convey no ownership or integrity authority. Selection, seeds,
 planned finishes, checkpoint state, retention and admission remain independent
 of these hints. Workloads without locality keys use the same queue with empty
-advertisements.
+advertisements. Without a locality key, assignment takes the first idle worker
+directly instead of scanning its advertisements. Each worker has one fixed
+assignment slot and its own condition variable. A separate ordered key index
+rejects duplicate assigned jobs without scanning the worker slots. These host
+structures scale with the worker count and sit outside the archive budget.
 
 A deterministic two-worker campaign fixture exercises initial and refill
 plan drains with an owned decoded-snapshot cache. It waits for actual queue idle
@@ -171,20 +175,19 @@ worker reports its startup result before the coordinator selects or dispatches
 a job. If several workers fail to start, the lowest worker number determines
 the reported error regardless of host timing.
 
-Workers pull jobs from one shared queue ordered by planned finish, so an idle
-worker takes the queued job that admission reaches first while another worker
-is still busy. Enqueueing wakes a worker only when the number of queued jobs
-is no greater than the number of registered condition-variable waiters. Both
-counts are protected by the queue mutex. A burst's first N queued jobs can wake
-N waiters; further queued jobs need no additional wakeup while those workers
-are already being notified. If queued jobs outnumber waiters, those earlier
-enqueue thresholds have already requested enough wakeups. Workers register as waiters only after observing an
-empty queue, and waiting atomically releases the same mutex, so an empty-to-
-nonempty enqueue cannot miss a parked worker. A worker cannot newly park while
-queued work exists. Workers that are already awake can drain that backlog;
-queue close and worker exit still wake all waiters. This suppresses redundant
-burst notifications without changing queue priority or delaying an idle
-worker's first available job.
+Workers share a queue ordered by planned finish, so an idle worker takes the
+queued job that admission reaches first while another worker is still busy.
+Each new assignment notifies only its chosen worker's condition variable;
+an awake worker taking its own assignment needs no notification. Adding backlog
+when no worker is idle sends no notification. Assignment and
+the worker's check before waiting use the same queue mutex, and waiting
+atomically releases it, so an assigned job cannot miss its parked worker.
+Other workers never wait on that condition variable. Already assigned workers
+are absent from the idle set, so a burst cannot overwrite their slots or
+notify them twice. Queue close wakes every worker; an unexpected worker exit
+also wakes the remaining workers. Normal exits after close avoid repeated
+broadcasts. The queue keeps the same priority and locality rules without
+broadcasting on dispatch.
 A short job reserved after longer ones runs before them,
 because admission needs its result first. The coordinator dispatches each job
 when it reserves it, including between individual admissions unlocked by a

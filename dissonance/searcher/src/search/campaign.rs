@@ -9077,7 +9077,7 @@ mod tests {
         }
     }
 
-    pub(super) fn before_locality_dispatch<Key: Ord, Job, Output, O>(
+    pub(super) fn before_locality_dispatch<Key: Ord + Clone, Job, Output, O>(
         pool: &crate::search::parallel::WorkerPool<Key, Job, Output, O>,
         reservation: usize,
         initial: bool,
