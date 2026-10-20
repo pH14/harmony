@@ -198,12 +198,13 @@ class EvaluationTests(unittest.TestCase):
         return eval.run_one(job, job['request'], args, [], {}, {'hostname': 'test'})
 
     def test_failure_keeps_observed_progress(self):
-        result = self.fake_run('(p/"progress.jsonl").write_text(\'{"executions":7,"execution_work":123}\\n\')\nsys.exit(9)\n')
+        result = self.fake_run('import os\nassert os.environ["HARMONY_COORDINATOR_PROFILE"] == "1"\nassert os.environ["HARMONY_WORKER_CPU_PROFILE"] == "1"\n(p/"progress.jsonl").write_text(\'{"executions":7,"execution_work":123}\\n\')\nsys.exit(9)\n')
         self.assertEqual(result['status'], 'error')
         self.assertEqual(result['exit_code'], 9)
         self.assertEqual(result['last_progress']['execution_work'], 123)
         self.assertIsNone(result['result'])
         self.assertTrue(result['runner']['coordinator_profile'])
+        self.assertTrue(result['runner']['worker_cpu_profile'])
 
     def test_unavailable_rss_samples_stay_unavailable_in_summaries(self):
         with patch.object(eval.ProcessMetrics, 'sample', return_value={

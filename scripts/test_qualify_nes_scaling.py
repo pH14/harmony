@@ -14,11 +14,30 @@ scaling = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(scaling)
 
 
+def expansion_detail(**values):
+    return {"kind": "bounded_expansion_spans_v1", "basis": "inclusive_wall_ns_not_cpu",
+            "spans": {}, "cpu": {}, "stream_finish_host": None, **values}
+
+
+def off_telemetry(**values):
+    return {"workers": [{"jobs": 10, "profile_mode": "off"}], **values}
+
+
 class ScalingTests(unittest.TestCase):
+    def setUp(self):
+        environment = {key: value for key, value in scaling.os.environ.items()
+                       if key not in ("HARMONY_COORDINATOR_PROFILE", "HARMONY_WORKER_CPU_PROFILE")}
+        context = patch.dict(scaling.os.environ, environment, clear=True)
+        context.start()
+        self.addCleanup(context.stop)
+
     def test_missing_cpu_coverage_is_not_reported_as_zero_cost(self):
-        unknown = scaling.coordination_costs({}, 10)
-        self.assertTrue(all(value is None for value in unknown.values()))
+        unknown = scaling.coordination_costs(off_telemetry(), 10)
+        self.assertEqual(unknown["profiling_mode"], "off")
+        self.assertTrue(all(value is None for key, value in unknown.items()
+                            if key.endswith("_ns_per_job") or key == "dispatch_phase_ns"))
         measured = scaling.coordination_costs({
+            "workers": [{"jobs": 10, "profile_mode": "off"}],
             "dispatch_phase": {"wall_ns": 100, "host": {"coordinator_cpu_ns": 0}},
             "stream": {"worker_cpu_ns": None, "producer_wait_ns": 20},
         }, 10)
@@ -28,9 +47,10 @@ class ScalingTests(unittest.TestCase):
 
     def test_whole_coordinator_cpu_keeps_dispatch_and_finish_as_components(self):
         telemetry = {
+            "workers": [{"jobs": 10, "profile_mode": "coordinator_only"}],
             "coordinator_host": {"coordinator_cpu_ns": 1700, "coordinator_run_wait_ns": 400},
             "dispatch_phase": {"host": {"coordinator_cpu_ns": 900}},
-            "coordinator": {"stream_finish_host": {"coordinator_cpu_ns": 200}},
+            "coordinator": expansion_detail(stream_finish_host={"coordinator_cpu_ns": 200}),
         }
         costs = scaling.coordination_costs(telemetry, 10, "task")
         self.assertEqual(costs["coordinator_whole_cpu_ns_per_task"], 170)
@@ -47,7 +67,7 @@ class ScalingTests(unittest.TestCase):
         stream = {"worker_cpu_ns": 90, "serializers": [{"cpu_ns": 60}, {"cpu_ns": 20}],
                   "relay": {"cpu_ns": 10}, "counter_overflow": False}
         def measure():
-            return scaling.coordination_costs({"stream": stream}, 10, "task")
+            return scaling.coordination_costs(off_telemetry(stream=stream), 10, "task")
         costs = measure()
         self.assertEqual(costs["stream_aux_cpu_ns_per_task"], 9)
         self.assertEqual(costs["serializer_cpu_ns_per_task"], [6, 2])
@@ -82,11 +102,11 @@ class ScalingTests(unittest.TestCase):
                      "actual_worker_execute_including_unwind_excluding_queue_reply_and_post_job_telemetry",
                      supported=True, total_cpu_ns=900, calls=3, samples=3, errors=0, panics=0,
                      counter_overflow=False, complete=True)
-        telemetry = {"workers": [{"jobs": 3, "execute_cpu": value}]}
+        telemetry = {"workers": [{"jobs": 3, "execute_cpu": value, "profile_mode": "worker_only"}]}
         self.assertEqual(scaling.worker_execute_cost(telemetry, 3), 300)
-        self.assertIsNone(scaling.worker_execute_cost({"workers": [{"jobs": 3}]}, 3))
+        self.assertIsNone(scaling.worker_execute_cost({"workers": [{"jobs": 3, "profile_mode": "off"}]}, 3))
         idle = dict(value, calls=0, samples=0, total_cpu_ns=0)
-        telemetry["workers"].append({"jobs": 0, "execute_cpu": idle})
+        telemetry["workers"].append({"jobs": 0, "execute_cpu": idle, "profile_mode": "worker_only"})
         self.assertEqual(scaling.worker_execute_cost(telemetry, 3), 300)
         for patch in ({"samples": 2, "complete": False}, {"supported": False, "complete": False},
                       {"counter_overflow": True, "complete": False}, {"total_cpu_ns": None, "complete": False},
@@ -103,6 +123,63 @@ class ScalingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             scaling.worker_execute_cost(telemetry, 4)
 
+    def test_profiling_roles_are_explicit_and_independent(self):
+        for mode, roles in scaling.PROFILE_ROLES.items():
+            environment = {}
+            if roles[0]:
+                environment["HARMONY_COORDINATOR_PROFILE"] = "0"
+            if roles[1]:
+                environment["HARMONY_WORKER_CPU_PROFILE"] = "0"
+            self.assertEqual(scaling.requested_profiling(environment), mode)
+            telemetry = {"workers": [{"profile_mode": mode, "execute_cpu": {} if roles[1] else None}],
+                         "coordinator": expansion_detail() if roles[0] else None}
+            provenance = scaling.profile_provenance(telemetry)
+            self.assertEqual(provenance, {"profiling_mode": mode,
+                                         "coordinator_verbose_enabled": roles[0],
+                                         "worker_execute_cpu_enabled": roles[1]})
+
+    def test_missing_mixed_unknown_or_contradictory_modes_fail_closed(self):
+        for workers in (None, [], [{}], [None], [17], [{"profile_mode": "unknown"}],
+                        [{"profile_mode": "off"}, {"profile_mode": "coordinator_only"}],
+                        [{"profile_mode": "off", "execute_cpu": {}}],
+                        [{"profile_mode": "worker_only", "execute_cpu": 17}],
+                        [{"profile_mode": "worker_only", "execute_cpu": "clock"}],
+                        [{"profile_mode": "worker_only", "execute_cpu": []}],
+                        [{"profile_mode": "worker_only", "execute_cpu": True}],
+                        [{"profile_mode": "worker_only"}],
+                        [{"profile_mode": "coordinator_and_worker"}]):
+            with self.subTest(workers=workers), self.assertRaises(ValueError):
+                scaling.profile_provenance({"workers": workers})
+
+    def test_enabled_unsupported_worker_cost_stays_null_with_mode_visible(self):
+        value = dict(clock="thread_cpu_time", scope=
+                     "actual_worker_execute_including_unwind_excluding_queue_reply_and_post_job_telemetry",
+                     supported=False, total_cpu_ns=None, calls=3, samples=0, errors=0, panics=0,
+                     counter_overflow=False, complete=False)
+        for mode in ("worker_only", "coordinator_and_worker"):
+            telemetry = {"workers": [{"profile_mode": mode, "jobs": 3, "execute_cpu": value}],
+                         "coordinator": expansion_detail() if mode == "coordinator_and_worker" else None}
+            costs = scaling.coordination_costs(telemetry, 3, "task")
+            self.assertEqual(costs["profiling_mode"], mode)
+            self.assertTrue(costs["worker_execute_cpu_enabled"])
+            self.assertIsNone(costs["worker_execute_cpu_ns_per_task"])
+
+    def test_coordinator_details_match_mode_without_rejecting_linear_partial_coverage(self):
+        fields = ("admission_ns", "bookkeeping_ns", "history_compaction_ns", "stream_write_ns", "selection_ns")
+        linear = {"timing_complete": False, **dict.fromkeys(fields)}
+        for mode in ("off", "coordinator_only"):
+            telemetry = {"workers": [{"profile_mode": mode}], "coordinator": linear}
+            self.assertEqual(scaling.profile_provenance(telemetry)["profiling_mode"], mode)
+        for mode, detail in [("off", expansion_detail()), ("worker_only", expansion_detail()),
+                             ("coordinator_only", None), ("coordinator_and_worker", None),
+                             ("off", {"timing_complete": True, **dict.fromkeys(fields, 1)}),
+                             ("off", dict(linear, selection_ns=1)),
+                             ("off", {}), ("off", {"kind": "unknown"}), ("off", 17)]:
+            probe = {} if scaling.PROFILE_ROLES[mode][1] else None
+            with self.subTest(mode=mode, detail=detail), self.assertRaises(ValueError):
+                scaling.profile_provenance({"workers": [{"profile_mode": mode, "execute_cpu": probe}],
+                                           "coordinator": detail})
+
     def write_run(self, directory, changed=False, workers=1, checkpoint=b"\x00\xffcheckpoint-v13\x80"):
         directory.mkdir()
         (directory / "stream.jsonl").write_text('complete stream\n' if not changed else 'changed stream\n')
@@ -113,7 +190,7 @@ class ScalingTests(unittest.TestCase):
                        "executions_per_second": 10, "stop_reason": "execution_limit", "stream_sha256": stream_hash,
                        "stream_bytes_generated": (directory / "stream.jsonl").stat().st_size},
             "campaign": {"stream_sha256": stream_hash, "executions_completed": 10},
-            "telemetry": {"search_ns": 100, "workers": [{"jobs": 10, "busy_ns": 50}] + [{"jobs": 0, "busy_ns": 0}] * (workers - 1)},
+            "telemetry": {"search_ns": 100, "workers": [{"jobs": 10, "busy_ns": 50, "profile_mode": "off"}] + [{"jobs": 0, "busy_ns": 0, "profile_mode": "off"}] * (workers - 1)},
             "identity": {"source": "fixed"},
         }
         for name, value in data.items():
@@ -167,7 +244,7 @@ class ScalingTests(unittest.TestCase):
                 self.assertEqual(deltas["executed_edges"], 4 if resumed else 7)
                 self.assertEqual(deltas["reconstruction_frames"], 6 if resumed else 8)
                 self.assertEqual(result["frames_emulated"], 42)
-                costs = scaling.coordination_costs({"stream": {"worker_cpu_ns": 12}}, 3, "task")
+                costs = scaling.coordination_costs(off_telemetry(stream={"worker_cpu_ns": 12}), 3, "task")
                 self.assertEqual(costs["stream_aux_cpu_ns_per_task"], 4)
 
     def test_expansion_rejects_wrong_shape_bad_deltas_and_edge_based_worker_counts(self):
@@ -215,7 +292,9 @@ class ScalingTests(unittest.TestCase):
             request = root / "request.json"
             request.write_text(json.dumps({"game": "famidash", "executions": 10}))
             observed = []
-            def run(command, directory, timeout):
+            def run(command, directory, timeout, environment):
+                self.assertNotIn("HARMONY_COORDINATOR_PROFILE", environment)
+                self.assertNotIn("HARMONY_WORKER_CPU_PROFILE", environment)
                 configured = scaling.read_json(Path(command[1]))
                 observed.append((configured["workers"], configured["window"]))
                 self.write_expansion(Path(command[2]), workers=configured["workers"])
@@ -229,10 +308,44 @@ class ScalingTests(unittest.TestCase):
             self.assertEqual(observed, [(1, 512), (3, 512)])
             summary = scaling.read_json(output / "summary.json")
             self.assertEqual(summary["status"], "verified")
+            self.assertEqual(summary["requested_profiling_mode"], "off")
+            self.assertEqual(summary["trials"][0]["coordination"]["profiling_mode"], "off")
             self.assertEqual(summary["throughput_unit"], "tasks_per_second")
             self.assertEqual(summary["trials"][0]["throughput_per_second"], 3)
             self.assertEqual(summary["trials"][0]["executed_edges_per_second"], 7)
             self.assertEqual(summary["trials"][0]["coordination"]["unit"], "task")
+
+    def test_requested_worker_only_rejects_full_mode_and_preserves_raw_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evaluator = root / "evaluator"; evaluator.write_text("immutable executable")
+            request = root / "request.json"; request.write_text(json.dumps({"executions": 10}))
+            def run(command, directory, timeout, environment):
+                self.assertNotIn("HARMONY_COORDINATOR_PROFILE", environment)
+                self.assertIn("HARMONY_WORKER_CPU_PROFILE", environment)
+                output = Path(command[2])
+                self.write_run(output)
+                telemetry = scaling.read_json(output / "telemetry.json")
+                telemetry["workers"][0].update(profile_mode="coordinator_and_worker", execute_cpu={
+                    "clock": "thread_cpu_time", "scope": "actual_worker_execute_including_unwind_excluding_queue_reply_and_post_job_telemetry",
+                    "supported": True, "total_cpu_ns": 900, "calls": 10, "samples": 10,
+                    "errors": 0, "panics": 0, "counter_overflow": False, "complete": True})
+                telemetry["coordinator"] = expansion_detail()
+                (output / "telemetry.json").write_text(json.dumps(telemetry))
+                return 1.0
+            output = root / "evidence"
+            args = ["qualify", "--evaluator", str(evaluator), "--request", str(request),
+                    "--out", str(output), "--workers", "1", "--repeats", "1"]
+            with patch.dict(scaling.os.environ, {"HARMONY_WORKER_CPU_PROFILE": "0"}), \
+                    patch.object(sys, "argv", args), patch.object(scaling, "run_trial", side_effect=run):
+                with self.assertRaisesRegex(ValueError, "actual profiling mode"):
+                    scaling.main()
+            summary = scaling.read_json(output / "summary.json")
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(summary["requested_profiling_mode"], "worker_only")
+            raw = scaling.read_json(output / "r1-w1/run/telemetry.json")
+            self.assertEqual(raw["workers"][0]["profile_mode"], "coordinator_and_worker")
+            self.assertTrue((output / "r1-w1/run/stream.jsonl").is_file())
 
     def test_checkpoint_identity_hashes_binary_bytes_and_requires_current_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -256,7 +369,7 @@ class ScalingTests(unittest.TestCase):
             request = root / "request.json"
             request.write_text(json.dumps({"executions": 10}))
 
-            def run(command, directory, timeout):
+            def run(command, directory, timeout, environment):
                 count = json.loads(Path(command[1]).read_text())["workers"]
                 self.write_run(Path(command[2]), workers=count, checkpoint=bytes([0, 255, count]))
                 return 1.0
@@ -295,7 +408,7 @@ class ScalingTests(unittest.TestCase):
             request.write_text(json.dumps({"executions": 10}))
             observed = []
 
-            def run(command, directory, timeout):
+            def run(command, directory, timeout, environment):
                 configured = json.loads(Path(command[1]).read_text())
                 observed.append(configured["workers"] * configured["window"])
                 self.write_run(Path(command[2]), changed=configured["workers"] == 2, workers=configured["workers"])
@@ -321,7 +434,7 @@ class ScalingTests(unittest.TestCase):
             request.write_text(json.dumps({"executions": 10}))
             observed = []
 
-            def run(command, directory, timeout):
+            def run(command, directory, timeout, environment):
                 configured = json.loads(Path(command[1]).read_text())
                 observed.append(configured["workers"])
                 self.write_run(Path(command[2]), workers=configured["workers"])
@@ -342,7 +455,7 @@ class ScalingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             with self.assertRaisesRegex(ValueError, "exited 3"):
-                scaling.run_trial([sys.executable, "-c", "print('failure evidence'); raise SystemExit(3)"], directory, 5)
+                scaling.run_trial([sys.executable, "-c", "print('failure evidence'); raise SystemExit(3)"], directory, 5, scaling.os.environ.copy())
             self.assertIn("failure evidence", (directory / "execution.log").read_text())
 
 

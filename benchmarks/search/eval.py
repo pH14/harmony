@@ -191,7 +191,7 @@ def run_one(job,request,args,cpus,build,host):
     phase_peaks = {}
     timed_out=False;disk_exceeded=False
     with (root/'stdout.log').open('wb') as stdout,(root/'stderr.log').open('wb') as stderr,(root/'resources.jsonl').open('w') as telemetry:
-        environment = {**os.environ, 'HARMONY_COORDINATOR_PROFILE': '1'}
+        environment = {**os.environ, 'HARMONY_COORDINATOR_PROFILE': '1', 'HARMONY_WORKER_CPU_PROFILE': '1'}
         process=subprocess.Popen(command,stdout=stdout,stderr=stderr,start_new_session=True,env=environment)
         metrics=ProcessMetrics(process.pid);tail=Tail(campaign/'progress.jsonl')
         deadline=request['wall_seconds']+args.finish_seconds
@@ -230,7 +230,8 @@ def run_one(job,request,args,cpus,build,host):
     if status=='complete' and job['case'].get('require_solved',False) and not result['solved']: status='regression'
     rss_scale=1 if platform.system()=='Darwin' else 1024
     summary={'format':SCHEMA,'suite':args.suite_id,'suite_sha256':args.suite_sha256,'cell':job['id'],'case':job['case']['id'],'origin':job['case']['origin'],'status':status,'exit_code':process.returncode,'host':host,'cpu_set':cpus,'build':build,'search_request':{k:v for k,v in request.items() if k not in {'rom','core'}},'identity':read_json(campaign/'identity.json'),'result':result,'elapsed_seconds':time.monotonic()-started,'peak_process_tree_rss_bytes_sampled':peak_rss,'max_process_rss_bytes':int(usage.ru_maxrss)*rss_scale,'cpu_seconds':usage.ru_utime+usage.ru_stime,'peak_disk_logical_bytes_sampled':peak_disk,'peak_disk_allocated_bytes_sampled':peak_allocated,'final_disk':disk_usage(root),'io_bytes_last_sample':current,'last_progress':tail.read()}
-    summary['runner'] = {'coordinator_profile': environment['HARMONY_COORDINATOR_PROFILE'] == '1'}
+    summary['runner'] = {'coordinator_profile': 'HARMONY_COORDINATOR_PROFILE' in environment,
+                         'worker_cpu_profile': 'HARMONY_WORKER_CPU_PROFILE' in environment}
     summary['rss_by_phase_bytes_sampled'] = phase_peaks
     summary['rusage'] = {'input_block_operations': usage.ru_inblock, 'output_block_operations': usage.ru_oublock,
                          'voluntary_context_switches': usage.ru_nvcsw, 'involuntary_context_switches': usage.ru_nivcsw}
@@ -266,7 +267,7 @@ def run_matrix(args):
         raise ValueError('build identity does not match the executable')
     build={'binary_sha256':binary_hash,'source':supplied_build,'attestation':'supplied' if supplied_build else 'unavailable'}
     host=host_identity();write_json(args.out/'suite.json',suite);write_json(args.out/'matrix.json',{'format':SCHEMA,'build':build,'host':host,'cells':[j['id'] for j,_ in resolved],
-        'runner':{'coordinator_profile':True,'jobs':args.jobs,'cpu_capacity':capacity,'memory_capacity_mib':args.memory_capacity_mib,'overhead_mib':args.overhead_mib,'sample_seconds':args.sample_seconds,'disk_limit_gib':args.disk_limit_gib,'finish_seconds':args.finish_seconds}})
+        'runner':{'coordinator_profile':True,'worker_cpu_profile':True,'jobs':args.jobs,'cpu_capacity':capacity,'memory_capacity_mib':args.memory_capacity_mib,'overhead_mib':args.overhead_mib,'sample_seconds':args.sample_seconds,'disk_limit_gib':args.disk_limit_gib,'finish_seconds':args.finish_seconds}})
     available=cpus.copy();memory=args.memory_capacity_mib;running={};results=[]
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         while resolved or running:

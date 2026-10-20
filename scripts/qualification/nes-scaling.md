@@ -54,18 +54,29 @@ insertion, maintenance, observation, record construction, output and checkpoints
 These spans locate expensive operations; nested spans and scheduling waits make
 their sum unsuitable as coordinator CPU. Use `coordinator_host` for the whole
 CPU cost, and repeat capacity trials with this optional clock instrumentation off.
-The same profile setting also measures each worker's actual execute closure with
-Linux thread CPU time, including required restore, reconstruction, snapshot
-capture and observation work. It excludes queue waits, reply delivery and
+The independent `HARMONY_WORKER_CPU_PROFILE` presence switch measures each
+worker's actual execute closure with Linux thread CPU time, including required
+restore, reconstruction, snapshot capture and observation work. It excludes queue waits, reply delivery and
 post-job target telemetry. Its `execute_cpu` coverage reports calls, samples,
 ordinary errors, panics and overflow; unsupported or incomplete coverage cannot
 supply a worker service cost. The boundary includes clock and unwind-probe
 overhead and is not a guest-instruction-only floor. The qualifier reports
 `worker_execute_cpu_ns_per_task` only for complete, successful job coverage with
-the matching admitted-task denominator. Repeat with profiling off to retain the
-observer effect, and compare full logical artifacts within the same executable.
-Profiling state is local to the session and is not checkpointed or recorded in
-the logical stream.
+the matching admitted-task denominator. For capacity, compare fresh default
+arms with both switches unset against worker-only arms with only `HARMONY_WORKER_CPU_PROFILE` present. Require own full
+replay and witnesses and equal logical artifacts in the same executable. Use
+whole C and S0/S1/H maxima over both arms, and only complete worker-only CPU for
+T; never substitute zero for default or unsupported worker CPU. Set both switches
+only for a separately labeled full diagnostic. Presence enables either switch,
+even with a value of `0`. Worker `profile_mode` is explicit host-only provenance:
+`off`, `coordinator_only`, `worker_only` or `coordinator_and_worker`. The qualifier
+records requested switch presence, requires actual consistent mode agreement,
+and reports both enabled roles. Missing, unknown, mixed or contradictory modes
+fail validation; no old full-profile measurement silently becomes a worker-only
+capacity arm. Retain earlier full-profile failures in their original scope.
+Measurement counters are session-local; switch selection is cached for the
+process lifetime and cannot be toggled within a process. Switches are neither
+checkpointed nor recorded in the logical stream.
 
 ## Prepare the host
 

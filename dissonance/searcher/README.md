@@ -1159,9 +1159,18 @@ from it. Receive CPU is a subset of dispatch CPU, while receive wall time also
 includes sleeping and scheduling delays. These measurements are ephemeral
 telemetry only, excluded from logical reports, streams, and checkpoints.
 
-With the same profiling flag, each native worker's `execute_cpu` brackets the
-actual execute call and its panic catcher. It includes task restore,
-reconstruction, required snapshot capture, observations and execution callbacks;
+The independent process-start `HARMONY_WORKER_CPU_PROFILE` presence switch
+measures each native worker's `execute_cpu` around the actual execute call and
+its panic catcher. `HARMONY_COORDINATOR_PROFILE` alone enables only coordinator
+diagnostics; set both switches for full diagnostics. Neither set is the normal
+default, and a present value such as `0` still enables its switch. Each actual
+worker reports host-only `profile_mode`: `off`, `coordinator_only`, `worker_only`
+or `coordinator_and_worker`. These cached-role labels describe requested
+observability, not successful CPU coverage, and never enter logical reports,
+streams or checkpoints. Worker-only collection leaves verbose coordinator clocks
+disabled while retaining the existing whole coordinator and stream-role counters.
+The execute boundary includes task restore, reconstruction, required snapshot
+capture, observations and execution callbacks;
 it excludes startup, idle/queue waits, reply transport and post-job target
 telemetry. Calls, valid samples, errors and panics are separate, and coverage
 must match worker jobs. Missing, backwards, overflowing or unsupported samples
@@ -1169,8 +1178,8 @@ invalidate completeness rather than standing in for zero. This is worker CPU
 per submitted task, not guest-only cycles or an independently qualified native
 service floor.
 
-Detailed phase clocks are opt-in through this process-start environment
-variable. Without it, public phase spans are null and `timing_complete` is false;
+Detailed coordinator phase clocks are opt-in through the process-start
+`HARMONY_COORDINATOR_PROFILE` variable. Without it, public phase spans are null and `timing_complete` is false;
 resuming any segment without detailed timing also leaves that flag false.
 Job counters, receive/idle waits and the optional coordinator/encoder CPU
 counters remain available independently of detailed profiling.

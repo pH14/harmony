@@ -124,6 +124,7 @@ def validate_result(directory, expected_engine=None):
         work = expansion_deltas(result, report)["tasks_admitted"]
     else:
         work = counter(result["executions"])
+    profile_provenance(telemetry)
     if checked_sum(worker["jobs"] for worker in telemetry["workers"]) != work:
         raise ValueError("worker telemetry does not cover completed work")
     return result, telemetry, {
@@ -133,10 +134,10 @@ def validate_result(directory, expected_engine=None):
     }
 
 
-def run_trial(command, directory, timeout):
+def run_trial(command, directory, timeout, environment):
     started = time.monotonic()
     with (directory / "execution.log").open("wb") as log:
-        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=environment)
         try:
             code = process.wait(timeout=timeout)
         except BaseException:
@@ -152,11 +153,74 @@ def run_trial(command, directory, timeout):
     return time.monotonic() - started
 
 
+PROFILE_ROLES = {
+    "off": (False, False),
+    "coordinator_only": (True, False),
+    "worker_only": (False, True),
+    "coordinator_and_worker": (True, True),
+}
+
+
+def requested_profiling(environment):
+    roles = ("HARMONY_COORDINATOR_PROFILE" in environment,
+             "HARMONY_WORKER_CPU_PROFILE" in environment)
+    return next(mode for mode, enabled in PROFILE_ROLES.items() if enabled == roles)
+
+
+def profile_provenance(telemetry):
+    workers = telemetry.get("workers")
+    if not isinstance(workers, list) or not workers:
+        raise ValueError("worker profiling provenance is missing")
+    modes = []
+    for worker in workers:
+        if not isinstance(worker, dict):
+            raise ValueError("worker profiling provenance must be an object")
+        mode = worker.get("profile_mode")
+        if not isinstance(mode, str) or mode not in PROFILE_ROLES:
+            raise ValueError("worker profiling mode is missing or unknown")
+        if worker.get("execute_cpu") is not None and not isinstance(worker["execute_cpu"], dict):
+            raise ValueError("worker execute CPU must be an object")
+        if (worker.get("execute_cpu") is not None) != PROFILE_ROLES[mode][1]:
+            raise ValueError("worker profiling mode contradicts execute CPU presence")
+        modes.append(mode)
+    if len(set(modes)) != 1:
+        raise ValueError("worker profiling modes differ")
+    coordinator, worker = PROFILE_ROLES[modes[0]]
+    detail = telemetry.get("coordinator")
+    if detail is None:
+        if coordinator:
+            raise ValueError("coordinator profiling mode lacks diagnostics")
+    elif not isinstance(detail, dict):
+        raise ValueError("coordinator diagnostics must be an object")
+    elif detail.get("kind") == "bounded_expansion_spans_v1":
+        if (not coordinator or detail.get("basis") != "inclusive_wall_ns_not_cpu"
+                or not isinstance(detail.get("spans"), dict)
+                or not isinstance(detail.get("cpu"), dict)):
+            raise ValueError("expansion diagnostics contradict coordinator profiling mode")
+    elif "kind" in detail:
+        raise ValueError("unknown coordinator diagnostics kind")
+    else:
+        fields = ("admission_ns", "bookkeeping_ns", "history_compaction_ns",
+                  "stream_write_ns", "selection_ns")
+        complete = detail.get("timing_complete")
+        if type(complete) is not bool or any(field not in detail for field in fields):
+            raise ValueError("unrecognized linear coordinator diagnostics")
+        if not complete:
+            if any(detail[field] is not None for field in fields):
+                raise ValueError("incomplete linear timing contains verbose durations")
+        elif (not coordinator or any(type(detail[field]) is not int or not 0 <= detail[field] < 1 << 128
+                                     for field in fields)):
+            raise ValueError("linear timing contradicts coordinator profiling mode")
+    return {"profiling_mode": modes[0], "coordinator_verbose_enabled": coordinator,
+            "worker_execute_cpu_enabled": worker}
+
+
 def worker_execute_cost(telemetry, jobs):
     if counter(jobs) == 0:
         raise ValueError("worker execute CPU denominator must be positive")
-    workers = telemetry.get("workers") or []
-    if not workers or any(worker.get("execute_cpu") is None for worker in workers):
+    provenance = profile_provenance(telemetry)
+    workers = telemetry["workers"]
+    if not provenance["worker_execute_cpu_enabled"]:
         return None
     total_cpu = 0
     total_calls = 0
@@ -224,6 +288,7 @@ def coordination_costs(telemetry, executions, unit="job"):
         if all(value is not None for value in serializer_costs):
             bottleneck = max(*serializer_costs, relay_cost)
     return {
+        **profile_provenance(telemetry),
         "dispatch_phase_ns": phase.get("wall_ns"),
         f"worker_execute_cpu_ns_per_{unit}": worker_execute_cost(telemetry, executions),
         f"coordinator_cpu_ns_per_{unit}": per_job(host.get("coordinator_cpu_ns")),
@@ -273,11 +338,16 @@ def main():
             request[asset] = str(Path(request[asset]).resolve(strict=True))
     evaluator = args.evaluator.resolve(strict=True)
     evaluator_sha256 = digest(evaluator)
+    environment = os.environ.copy()
+    requested_mode = requested_profiling(environment)
     args.out.mkdir(parents=True, exist_ok=False)
     summary = {
         "format": "nes-scaling-v2", "status": "running",
         "executable": str(evaluator), "executable_sha256": evaluator_sha256,
         "qualifier_sha256": digest(Path(__file__)),
+        "requested_profiling_mode": requested_mode,
+        "profile_flags_present": {name: name in environment for name in
+                                  ("HARMONY_COORDINATOR_PROFILE", "HARMONY_WORKER_CPU_PROFILE")},
         "host": platform.uname()._asdict(), "affinity": affinity,
         "cpu_count": os.cpu_count(), "absolute_window": args.window,
         "engine": "bounded_expansion" if expansion else "linear",
@@ -309,9 +379,12 @@ def main():
                 request_path = directory / "request.json"
                 request_path.write_text(json.dumps(configured, indent=2) + "\n")
                 output = directory / "run"
-                campaign_seconds = run_trial([str(evaluator), str(request_path), str(output)], directory, args.timeout)
+                campaign_seconds = run_trial([str(evaluator), str(request_path), str(output)], directory, args.timeout, environment)
                 result, telemetry, identity = validate_result(
                     output, "bounded_expansion" if expansion else None)
+                provenance = profile_provenance(telemetry)
+                if provenance["profiling_mode"] != requested_mode:
+                    raise ValueError("actual profiling mode differs from requested environment")
                 if not expansion and result.get("engine") is not None:
                     raise ValueError("linear request returned expansion engine")
                 deltas = expansion_deltas(result, read_json(output / "campaign.json")) if expansion else None

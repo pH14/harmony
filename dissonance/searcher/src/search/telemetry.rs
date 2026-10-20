@@ -6,8 +6,30 @@ use serde::{Deserialize, Serialize};
 
 pub type TargetCounters = BTreeMap<String, u64>;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileMode {
+    #[default]
+    Off,
+    CoordinatorOnly,
+    WorkerOnly,
+    CoordinatorAndWorker,
+}
+
+impl ProfileMode {
+    pub(crate) fn from_flags(coordinator: bool, worker: bool) -> Self {
+        match (coordinator, worker) {
+            (false, false) => Self::Off,
+            (true, false) => Self::CoordinatorOnly,
+            (false, true) => Self::WorkerOnly,
+            (true, true) => Self::CoordinatorAndWorker,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WorkerTelemetry {
+    pub profile_mode: ProfileMode,
     pub boot_ns: u64,
     pub jobs: u64,
     pub busy_ns: u64,
@@ -375,6 +397,21 @@ impl IdleClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_modes_keep_coordinator_and_worker_switches_independent() {
+        for (coordinator, worker, expected) in [
+            (false, false, "off"),
+            (true, false, "coordinator_only"),
+            (false, true, "worker_only"),
+            (true, true, "coordinator_and_worker"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(super::ProfileMode::from_flags(coordinator, worker)).unwrap(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn unavailable_coordinator_cpu_is_distinct_from_a_measured_zero() {

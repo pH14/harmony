@@ -682,7 +682,11 @@ where
                 let schedstat_before = thread_schedstat();
                 let booted = now();
                 let mut telemetry = WorkerTelemetry {
-                    execute_cpu: super::campaign::profile_clock_enabled()
+                    profile_mode: crate::search::telemetry::ProfileMode::from_flags(
+                        super::campaign::profile_clock_enabled(),
+                        super::campaign::worker_cpu_profile_enabled(),
+                    ),
+                    execute_cpu: super::campaign::worker_cpu_profile_enabled()
                         .then(crate::search::telemetry::WorkerExecuteCpuTelemetry::new),
                     ..WorkerTelemetry::default()
                 };
@@ -988,7 +992,7 @@ mod tests {
         .expect("worker pool");
         assert_eq!(values, vec![11, 12]);
         assert_eq!(workers[0].jobs, 2);
-        if super::super::campaign::profile_clock_enabled() {
+        if super::super::campaign::worker_cpu_profile_enabled() {
             let value = workers[0]
                 .execute_cpu
                 .as_ref()

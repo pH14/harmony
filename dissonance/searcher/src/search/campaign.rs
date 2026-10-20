@@ -2739,6 +2739,11 @@ pub(super) fn profile_clock_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some())
 }
 
+pub(super) fn worker_cpu_profile_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("HARMONY_WORKER_CPU_PROFILE").is_some())
+}
+
 fn profile_now() -> Option<Moment> {
     profile_clock_enabled().then(now)
 }
@@ -9129,6 +9134,77 @@ mod tests {
             .is_err()
         );
         assert!(replay_splice::<TestWorkload>(EnergyStrategy::Splice, None).is_err());
+    }
+
+    #[test]
+    fn worker_cpu_profile_switches_are_independent_in_fresh_processes() {
+        let module = module_path!().split_once("::").unwrap().1;
+        let child = format!("{module}::worker_cpu_profile_switch_child");
+        for (coordinator, worker) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", &child])
+                .env_remove("HARMONY_COORDINATOR_PROFILE")
+                .env_remove("HARMONY_WORKER_CPU_PROFILE");
+            if coordinator {
+                command.env("HARMONY_COORDINATOR_PROFILE", "0");
+            }
+            if worker {
+                command.env("HARMONY_WORKER_CPU_PROFILE", "0");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "coordinator={coordinator} worker={worker}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+    }
+
+    #[test]
+    fn worker_cpu_profile_switch_child() {
+        let coordinator = std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some();
+        let worker = std::env::var_os("HARMONY_WORKER_CPU_PROFILE").is_some();
+        assert_eq!(super::profile_clock_enabled(), coordinator);
+        assert_eq!(super::worker_cpu_profile_enabled(), worker);
+        assert_eq!(super::profile_now().is_some(), coordinator);
+        let (values, workers) = crate::search::parallel::with_worker_pool(
+            1,
+            |_| Ok::<_, String>(10_u64),
+            |_| Ok::<_, String>(10_u64),
+            |state, job: u64| Ok::<_, String>(std::hint::black_box(*state + job)),
+            |_| crate::search::telemetry::TargetCounters::new(),
+            |pool| -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+                pool.send(0, 1)?;
+                pool.send(1, 2)?;
+                let values = (0..2)
+                    .map(|_| Ok(pool.receive()?.outcome?))
+                    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                pool.close();
+                Ok(values)
+            },
+        )
+        .unwrap();
+        assert_eq!(values, [11, 12]);
+        assert_eq!(workers[0].jobs, 2);
+        assert_eq!(
+            workers[0].profile_mode,
+            crate::search::telemetry::ProfileMode::from_flags(coordinator, worker)
+        );
+        assert_eq!(workers[0].execute_cpu.is_some(), worker);
+        if let Some(cpu) = &workers[0].execute_cpu {
+            assert_eq!((cpu.calls, cpu.errors, cpu.panics), (2, 0, 0));
+            if cfg!(target_os = "linux") {
+                assert!(cpu.supported && cpu.complete);
+                assert_eq!(cpu.samples, 2);
+                assert!(cpu.total_cpu_ns.unwrap() > 0);
+            } else {
+                assert!(!cpu.supported && !cpu.complete);
+                assert_eq!(cpu.total_cpu_ns, None);
+            }
+        }
     }
 
     #[test]

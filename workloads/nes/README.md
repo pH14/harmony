@@ -337,7 +337,16 @@ These spans can overlap and are not CPU costs. The private
 thread CPU and scheduler wait only around stream finish, including its final
 flush and the measurement overhead. This tail lies after the dispatch CPU
 boundary; qualification must account for it rather than crediting buffered
-output as free work. Profiling disabled performs no additional timing reads.
+output as free work. The independent
+`HARMONY_WORKER_CPU_PROFILE` presence switch measures actual worker execute CPU
+without enabling these verbose coordinator probes. Set both switches for full
+diagnostics; set neither for default execution. A present value such as `0` still
+enables its switch. Worker host telemetry records the actual cached role mode;
+unsupported CPU measurements remain unavailable even when requested. Capacity
+comparisons use fresh default and worker-only arms with the same binary and own
+oracles, keeping C and stream-role maxima across both and complete worker-only
+service costs. Full verbose runs are separately labeled diagnostics. Disabling a
+role performs no additional timing reads for that role.
 
 ## Famidash expansion evaluation
 
