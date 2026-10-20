@@ -34,7 +34,7 @@ fn patterns(paths: &[String]) -> String {
         .join(" ")
 }
 
-pub fn script(settings: &Explain, offsets: &BTreeMap<String, u64>, history: bool) -> String {
+pub fn script(settings: &Explain, history: bool) -> String {
     let mut text =
         format!("IFS='\n'\nm={MARK}\nsizes=\necho \"$m clock $(cat /proc/uptime 2>/dev/null)\"\n");
     if !settings.logs.is_empty() {
@@ -53,13 +53,9 @@ pub fn script(settings: &Explain, offsets: &BTreeMap<String, u64>, history: bool
     }
     text.push_str("echo \"$m settled $(cat /proc/uptime 2>/dev/null)\"\n");
     if !settings.logs.is_empty() {
-        let cases = offsets
-            .iter()
-            .map(|(path, offset)| format!("    {}) start={offset} ;;\n", quote(path)))
-            .collect::<String>();
         let _ = write!(
             text,
-            "for e in $sizes; do\n  size=${{e%% *}}\n  f=${{e#* }}\n  case \"$f\" in\n{cases}    *) start=0 ;;\n  esac\n  [ \"$size\" -lt \"$start\" ] && start=0\n  [ $((size - start)) -gt {LOG_LIMIT} ] && start=$((size - {LOG_LIMIT}))\n  echo \"$m log $size $start $f\"\n  tail -c +$((start + 1)) \"$f\" | head -c $((size - start))\n  echo\n  echo \"$m end\"\ndone\n"
+            "for e in $sizes; do\n  size=${{e%% *}}\n  f=${{e#* }}\n  start=0\n  [ \"$size\" -gt {LOG_LIMIT} ] && start=$((size - {LOG_LIMIT}))\n  echo \"$m log $size $start $f\"\n  tail -c +$((start + 1)) \"$f\" | head -c $((size - start))\n  echo\n  echo \"$m end\"\ndone\n"
         );
     }
     if let Some(command) = settings.history.as_ref().filter(|_| history) {
@@ -170,24 +166,14 @@ pub struct Log {
     pub partial: bool,
 }
 
-pub fn absorb(
-    previous: &BTreeMap<String, Log>,
-    parts: BTreeMap<String, LogPart>,
-) -> BTreeMap<String, Log> {
+pub fn logs(parts: BTreeMap<String, LogPart>) -> BTreeMap<String, Log> {
     parts
         .into_iter()
         .map(|(path, part)| {
-            let log = match previous.get(&path) {
-                Some(prior) if part.start != 0 && prior.size == part.start => Log {
-                    size: part.size,
-                    text: prior.text.clone() + &part.text,
-                    partial: prior.partial,
-                },
-                _ => Log {
-                    size: part.size,
-                    partial: part.start != 0,
-                    text: part.text,
-                },
+            let log = Log {
+                size: part.size,
+                partial: part.start != 0,
+                text: part.text,
             };
             (path, log)
         })
@@ -1063,18 +1049,12 @@ pub fn render(explanation: &Explanation) -> String {
 struct Worker<'a> {
     out: &'a Path,
     settings: &'a Explain,
-    logs: BTreeMap<String, Log>,
     observed: Vec<Observed>,
 }
 
 impl Worker<'_> {
     fn probe(&mut self, point: &Point, target: &mut FaultTarget) {
-        let offsets = self
-            .logs
-            .iter()
-            .map(|(path, log)| (path.clone(), log.size))
-            .collect();
-        let script = script(self.settings, &offsets, point.history);
+        let script = script(self.settings, point.history);
         let directory = self.out.join("probes").join(point.step.to_string());
         let output = (|| -> Result<String> {
             fs::create_dir_all(&directory)?;
@@ -1093,8 +1073,7 @@ impl Worker<'_> {
         match output {
             Ok(output) => {
                 let capture = parse(&output);
-                self.logs = absorb(&self.logs, capture.logs);
-                observed.logs = self.logs.clone();
+                observed.logs = logs(capture.logs);
                 observed.data = capture.data;
                 observed.uptime = capture.uptime;
                 observed.settled = capture.settled;
@@ -1131,7 +1110,6 @@ fn replay_one(
     let mut worker = Worker {
         out,
         settings,
-        logs: BTreeMap::new(),
         observed: Vec::new(),
     };
     let mut certificates = BTreeMap::new();
@@ -1453,7 +1431,7 @@ mod tests {
             data: vec![format!("{base}/n1")],
             history: Some("echo '{\"lost\":[7]}'; echo $((1 + 1))".into()),
         };
-        let first = parse(&shell(&script(&settings, &BTreeMap::new(), true)));
+        let first = parse(&shell(&script(&settings, true)));
         assert_eq!(first.logs.len(), 2);
         assert_eq!(
             first.logs[&format!("{base}/n1.log")].text,
@@ -1473,7 +1451,7 @@ mod tests {
         );
         assert_eq!(files[&format!("{base}/n1/meta.inf")].1, 4);
 
-        let logs = absorb(&BTreeMap::new(), first.logs);
+        let before = logs(first.logs);
         fs::write(
             root.path().join("n1.log"),
             "start\nleader elected\nstream S removed\n",
@@ -1481,21 +1459,14 @@ mod tests {
         .unwrap();
         fs::write(root.path().join("n2.log"), "new").unwrap();
         fs::remove_dir_all(root.path().join("n1/streams")).unwrap();
-        let offsets = logs
-            .iter()
-            .map(|(path, log)| (path.clone(), log.size))
-            .collect();
-        let second = parse(&shell(&script(&settings, &offsets, false)));
-        assert_eq!(
-            second.logs[&format!("{base}/n1.log")].text,
-            "stream S removed\n"
-        );
-        assert_eq!(second.logs[&format!("{base}/n1.log")].start, 21);
+        let second = parse(&shell(&script(&settings, false)));
         assert_eq!(second.history, None);
-        let after = absorb(&logs, second.logs);
+        let after = logs(second.logs);
+        let n1 = format!("{base}/n1.log");
+        assert_eq!(after[&n1].text, "start\nleader elected\nstream S removed\n");
         assert_eq!(
-            after[&format!("{base}/n1.log")].text,
-            "start\nleader elected\nstream S removed\n"
+            appended(&before[&n1].text, &after[&n1].text),
+            "stream S removed\n"
         );
         assert_eq!(after[&format!("{base}/n2.log")].text, "new");
         let changes = data_changes(
@@ -1515,7 +1486,6 @@ mod tests {
 
     #[test]
     fn a_capped_capture_is_marked_partial() {
-        let previous = BTreeMap::from([("a".to_owned(), log("old\n"))]);
         let parts = BTreeMap::from([(
             "a".to_owned(),
             LogPart {
@@ -1524,7 +1494,7 @@ mod tests {
                 text: "tail\n".into(),
             },
         )]);
-        let logs = absorb(&previous, parts);
+        let logs = logs(parts);
         assert!(logs["a"].partial);
         assert_eq!(logs["a"].text, "tail\n");
     }

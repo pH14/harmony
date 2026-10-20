@@ -266,9 +266,10 @@ given, or `--no-shrink` is given for a recorded run. A recording of a reduced
 repeated shrink after a rebuild. It then replays the reduced actions and runs a guest script at the
 boundary before and after each remaining fault and at the violation. The script
 records the size of each configured log, checksums every file under each
-configured data directory, then prints the log bytes added since the previous
-probe up to the recorded size (at most 1 MiB per file per boundary), and runs
-the history command once, at the violation. The guest keeps running while the
+configured data directory, then prints each log up to its recorded size (the
+last 1 MiB of a larger file), and runs the history command once, at the
+violation. A window's new log lines are the lines after the longest common
+prefix of its two boundary captures. The guest keeps running while the
 script runs, without the next fault, so the report states how much guest time
 each probe took to record sizes and checksums. `--jobs N` runs N replays at once:
 one probe-free reference replay, and N - 1 replays that share the boundaries
