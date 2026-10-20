@@ -731,6 +731,14 @@ cap is refused. Present malformed hybrid core-type lists are also refused;
 missing files and valid empty or noneligible pools retain the existing fallback.
 These limits bound host metadata processing, not guest execution or host speed.
 
+The compressed full-LLC census fixture uses the production maximum of 1,024 CPUs
+natively and 16 CPUs under Miri. Both profiles use the actual census, a compressed
+range covering every CPU for the NUMA node and shared cache, and the same complete
+per-CPU assertions. Native tests cover the maximum-scale admission policy; the
+interpreter profile exercises memory safety of those paths without repeating the
+quadratic maximum-host membership workload. Malformed, size, aggregate and refusal
+fixtures remain enabled in Miri. Production caps and CI time budgets are unchanged.
+
 Placement runs before target creation and guest population. Memory policy is
 inherited from the host; affinity alone does not relocate populated pages or
 guarantee a NUMA allocation. Shared snapshot extents retain their existing page
