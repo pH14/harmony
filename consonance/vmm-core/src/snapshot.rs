@@ -160,26 +160,47 @@ impl SnapshotEngine {
         dirty: Option<&[u64]>,
         vm_state: &[u8],
     ) -> Result<SnapshotId, SnapshotError> {
+        match dirty {
+            Some(gfns) => self
+                .snapshot_derive_hashed(parent, memory, gfns, vm_state)
+                .map(|(id, _)| id),
+            None => self.snapshot_derive_all(parent, memory, vm_state),
+        }
+    }
+
+    pub(crate) fn snapshot_derive_hashed(
+        &mut self,
+        parent: SnapshotId,
+        memory: &[u8],
+        gfns: &[u64],
+        vm_state: &[u8],
+    ) -> Result<(SnapshotId, Vec<PageHash>), SnapshotError> {
         self.check_image_len(memory)?;
         let mut builder = self.store.derive(parent)?;
-        match dirty {
-            Some(gfns) => {
-                for &gfn in gfns {
-                    if gfn >= self.mem_pages {
-                        return Err(SnapshotError::DirtyGfnOutOfRange {
-                            gfn,
-                            pages: self.mem_pages,
-                        });
-                    }
-                    let off = gfn as usize * PAGE_SIZE;
-                    builder.write_page(gfn, &memory[off..off + PAGE_SIZE])?;
-                }
+        let mut hashes = Vec::with_capacity(gfns.len());
+        for &gfn in gfns {
+            if gfn >= self.mem_pages {
+                return Err(SnapshotError::DirtyGfnOutOfRange {
+                    gfn,
+                    pages: self.mem_pages,
+                });
             }
-            None => {
-                for (gfn, frame) in memory.as_chunks::<PAGE_SIZE>().0.iter().enumerate() {
-                    builder.write_page(gfn as u64, frame)?;
-                }
-            }
+            let off = gfn as usize * PAGE_SIZE;
+            hashes.push(builder.write_page(gfn, &memory[off..off + PAGE_SIZE])?);
+        }
+        Ok((builder.seal(vm_state.to_vec()), hashes))
+    }
+
+    fn snapshot_derive_all(
+        &mut self,
+        parent: SnapshotId,
+        memory: &[u8],
+        vm_state: &[u8],
+    ) -> Result<SnapshotId, SnapshotError> {
+        self.check_image_len(memory)?;
+        let mut builder = self.store.derive(parent)?;
+        for (gfn, frame) in memory.as_chunks::<PAGE_SIZE>().0.iter().enumerate() {
+            builder.write_page(gfn as u64, frame)?;
         }
         Ok(builder.seal(vm_state.to_vec()))
     }
@@ -275,8 +296,8 @@ impl SnapshotEngine {
         from: Option<SnapshotId>,
         to: SnapshotId,
         dirty: &[u64],
-    ) -> Result<Vec<(u64, &[u8; PAGE_SIZE])>, SnapshotError> {
-        Ok(self.store.restore_pages(from, to, dirty)?)
+    ) -> Result<Vec<snapshot_store::HashedPage<'_>>, SnapshotError> {
+        Ok(self.store.restore_hashed_pages(from, to, dirty)?)
     }
 
     pub fn read_page(&self, snap: SnapshotId, gfn: u64) -> Result<[u8; PAGE_SIZE], SnapshotError> {

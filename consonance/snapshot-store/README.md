@@ -43,6 +43,10 @@ meet, collecting the frames changed along either path. Identical snapshots need
 no ancestry traversal; other diffs stop at the shared ancestor without building
 temporary ancestor or visited sets. Unrelated bases meet at the end of their
 paths. Returned frames remain sorted and borrow the target snapshot's contents.
+`restore_hashed_pages` returns the same plan with each frame's stored BLAKE3
+hash, and `BaseBuilder::write_page` and `DeltaBuilder::write_page` return the
+hash they store, so a caller that keeps per-page BLAKE3 digests can reuse them
+without hashing the bytes again.
 `restore_pages(from, to, dirty)` includes the current guest's dirty frames in
 that same sorted, deduplicated plan; with no known source snapshot it includes
 the complete image. Restore plans and diffs verify each distinct resident page

@@ -750,11 +750,24 @@ where
         self.write_guest_page_iter(pages.iter().map(|(gfn, page)| (*gfn, page)))
     }
 
-    pub(crate) fn write_guest_page_refs(
+    pub(crate) fn write_guest_hashed_page_refs(
         &mut self,
-        pages: &[(u64, &[u8; 4096])],
+        pages: &[(u64, &[u8; 32], &[u8; 4096])],
     ) -> Result<(), VmmError> {
-        self.write_guest_page_iter(pages.iter().copied())
+        self.write_guest_page_iter(pages.iter().map(|&(gfn, _, page)| (gfn, page)))?;
+        self.note_page_digests(pages.iter().map(|&(gfn, hash, _)| (gfn, *hash)));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forget_page_digests(&mut self) {
+        self.page_digests.mark_all();
+    }
+
+    pub(crate) fn note_page_digests(&mut self, pages: impl IntoIterator<Item = (u64, [u8; 32])>) {
+        for (page, digest) in pages {
+            self.page_digests.set(page, digest);
+        }
     }
 
     fn write_guest_page_iter<'a>(
@@ -4075,6 +4088,18 @@ mod tests {
         let mut work = crate::host_telemetry::HashWork::new();
         assert!(vmm.memory_digest(&mut work).is_err());
         check(&mut vmm);
+        let page = [9_u8; 4096];
+        let hash = *blake3::hash(&page).as_bytes();
+        vmm.write_guest_hashed_page_refs(&[(2, &hash, &page)])
+            .unwrap();
+        assert_eq!(check(&mut vmm), 0);
+        assert!(vmm.reset_dirty_tracking().unwrap());
+        vmm.ram.as_mut_bytes()[3 * 4096..4 * 4096].fill(0);
+        vmm.backend.push_dirty_gfns(vec![3]);
+        let gfns = vmm.drain_dirty_pages().unwrap().unwrap();
+        assert_eq!(gfns, vec![3]);
+        vmm.note_page_digests([(3, *blake3::hash(&[0; 4096]).as_bytes())]);
+        assert_eq!(check(&mut vmm), 0);
     }
 
     #[test]
@@ -4808,18 +4833,21 @@ mod tests {
         let before = vmm.guest_memory().to_vec();
         let a = [0x13; 4096];
         let b = [0x27; 4096];
+        let ha = *blake3::hash(&a).as_bytes();
+        let hb = *blake3::hash(&b).as_bytes();
         assert!(
-            vmm.write_guest_page_refs(&[(3, &a), (1, &b), (3, &b)])
+            vmm.write_guest_hashed_page_refs(&[(3, &ha, &a), (1, &hb, &b), (3, &hb, &b)])
                 .is_err()
         );
         assert_eq!(vmm.guest_memory(), before);
         assert!(!vmm.host_dirty_wholesale);
         assert!(
-            vmm.write_guest_page_refs(&[(1, &a), ((TEST_RAM / 4096) as u64, &b)])
+            vmm.write_guest_hashed_page_refs(&[(1, &ha, &a), ((TEST_RAM / 4096) as u64, &hb, &b)])
                 .is_err()
         );
         assert_eq!(vmm.guest_memory(), before);
-        vmm.write_guest_page_refs(&[(3, &a), (1, &b)]).unwrap();
+        vmm.write_guest_hashed_page_refs(&[(3, &ha, &a), (1, &hb, &b)])
+            .unwrap();
         assert_eq!(&vmm.guest_memory()[4096..8192], &b);
         assert_eq!(&vmm.guest_memory()[3 * 4096..4 * 4096], &a);
         assert!(vmm.host_dirty_wholesale);

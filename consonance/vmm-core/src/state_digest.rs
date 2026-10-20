@@ -25,19 +25,13 @@ fn page_digest(page: &[u8], work: &mut HashWork) -> [u8; 32] {
     *blake3::hash(page).as_bytes()
 }
 
-fn combine<'a>(
-    memory_len: usize,
-    digests: impl IntoIterator<Item = &'a [u8; 32]>,
-    work: &mut HashWork,
-) -> [u8; 32] {
+fn combine(memory_len: usize, digests: &[[u8; 32]], work: &mut HashWork) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(MEMORY_DOMAIN);
     hasher.update(&(memory_len as u64).to_le_bytes());
     work.metadata(MEMORY_DOMAIN.len() + 8);
-    for digest in digests {
-        hasher.update(digest);
-        work.metadata(digest.len());
-    }
+    hasher.update(digests.as_flattened());
+    work.metadata(digests.as_flattened().len());
     *hasher.finalize().as_bytes()
 }
 
@@ -102,6 +96,15 @@ impl PageDigests {
             && page < self.digests.len()
         {
             self.stale[page / 64] |= 1 << (page % 64);
+        }
+    }
+
+    pub(crate) fn set(&mut self, page: u64, digest: [u8; 32]) {
+        if let Ok(page) = usize::try_from(page)
+            && let Some(slot) = self.digests.get_mut(page)
+        {
+            *slot = digest;
+            self.stale[page / 64] &= !(1 << (page % 64));
         }
     }
 

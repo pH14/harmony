@@ -179,6 +179,8 @@ struct VerificationWork {
     rows: usize,
 }
 
+pub type HashedPage<'a> = (u64, &'a PageHash, &'a [u8; PAGE_SIZE]);
+
 pub struct Store {
     cfg: StoreConfig,
     #[cfg(test)]
@@ -637,6 +639,19 @@ impl Store {
         to: SnapshotId,
         dirty: &[u64],
     ) -> Result<Vec<(u64, &[u8; PAGE_SIZE])>, StoreError> {
+        Ok(self
+            .restore_hashed_pages(from, to, dirty)?
+            .into_iter()
+            .map(|(gfn, _, page)| (gfn, page))
+            .collect())
+    }
+
+    pub fn restore_hashed_pages(
+        &self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+        dirty: &[u64],
+    ) -> Result<Vec<HashedPage<'_>>, StoreError> {
         self.read_transaction().restore_pages(from, to, dirty)
     }
 
@@ -1133,7 +1148,7 @@ struct BuilderCore<'a> {
 }
 
 impl BuilderCore<'_> {
-    fn write_page(&mut self, gfn: u64, data: &[u8]) -> Result<(), StoreError> {
+    fn write_page(&mut self, gfn: u64, data: &[u8]) -> Result<PageHash, StoreError> {
         if data.len() != PAGE_SIZE {
             return Err(StoreError::BadPageLength { len: data.len() });
         }
@@ -1148,22 +1163,25 @@ impl BuilderCore<'_> {
             if let Some(PageRef::Data(old)) = self.pages.remove(&gfn) {
                 self.store.release_page_ref(old);
             }
-            return Ok(());
+            return Ok(self.store.zero_hash);
         }
-        let pref = if is_zero {
-            PageRef::Zero
+        let (pref, hash) = if is_zero {
+            (PageRef::Zero, self.store.zero_hash)
         } else {
             let hash = *blake3::hash(data).as_bytes();
             debug_assert_ne!(
                 hash, self.store.zero_hash,
                 "non-zero page hashed to zero_hash"
             );
-            PageRef::Data(self.store.intern_page(hash, data, gfn)?)
+            (
+                PageRef::Data(self.store.intern_page(hash, data, gfn)?),
+                hash,
+            )
         };
         if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
             self.store.release_page_ref(old);
         }
-        Ok(())
+        Ok(hash)
     }
 
     fn write_changed_page(&mut self, gfn: u64, data: &[u8]) -> Result<(), StoreError> {
@@ -1187,7 +1205,7 @@ impl BuilderCore<'_> {
             self.store.checked_page_ref(inherited, gfn)?;
             return Ok(());
         }
-        self.write_page(gfn, data)
+        self.write_page(gfn, data).map(|_| ())
     }
 
     fn write_hashed_page(
@@ -1245,7 +1263,7 @@ impl BuilderCore<'_> {
         if unchanged {
             Ok(())
         } else {
-            self.write_page(gfn, data)
+            self.write_page(gfn, data).map(|_| ())
         }
     }
 
@@ -1389,7 +1407,11 @@ impl<'store> ReadTransaction<'store> {
         from: Option<SnapshotId>,
         to: SnapshotId,
     ) -> Result<Vec<(u64, &'store [u8; PAGE_SIZE])>, StoreError> {
-        self.restore_pages(from, to, &[])
+        Ok(self
+            .restore_pages(from, to, &[])?
+            .into_iter()
+            .map(|(gfn, _, page)| (gfn, page))
+            .collect())
     }
 
     fn restore_pages(
@@ -1397,7 +1419,7 @@ impl<'store> ReadTransaction<'store> {
         from: Option<SnapshotId>,
         to: SnapshotId,
         dirty: &[u64],
-    ) -> Result<Vec<(u64, &'store [u8; PAGE_SIZE])>, StoreError> {
+    ) -> Result<Vec<HashedPage<'store>>, StoreError> {
         let store = self.store;
         store.live_layer(to)?;
         if from == Some(to) && dirty.is_empty() {
@@ -1416,12 +1438,12 @@ impl<'store> ReadTransaction<'store> {
             let _timing = store.verification_batch();
             return (0..store.cfg.mem_pages)
                 .map(|gfn| {
-                    let (_, page) = store.page_entry(
+                    let (hash, page) = store.page_entry(
                         store.resolve(to.0, gfn),
                         gfn,
                         &mut self.verified_pages,
                     )?;
-                    Ok((gfn, page))
+                    Ok((gfn, hash, page))
                 })
                 .collect();
         };
@@ -1429,9 +1451,9 @@ impl<'store> ReadTransaction<'store> {
         store.live_layer(from)?;
         let mut pages = Vec::new();
         for gfn in store.changed_gfns(from, to, dirty)? {
-            let (_, page) =
+            let (hash, page) =
                 store.page_entry(store.resolve(to.0, gfn), gfn, &mut self.verified_pages)?;
-            pages.push((gfn, page));
+            pages.push((gfn, hash, page));
         }
         Ok(pages)
     }
@@ -1476,7 +1498,7 @@ pub struct BaseBuilder<'a> {
 }
 
 impl BaseBuilder<'_> {
-    pub fn write_page(&mut self, gfn: u64, data: &[u8]) -> Result<(), StoreError> {
+    pub fn write_page(&mut self, gfn: u64, data: &[u8]) -> Result<PageHash, StoreError> {
         self.core.write_page(gfn, data)
     }
 
@@ -1490,7 +1512,7 @@ pub struct DeltaBuilder<'a> {
 }
 
 impl DeltaBuilder<'_> {
-    pub fn write_page(&mut self, gfn: u64, data: &[u8]) -> Result<(), StoreError> {
+    pub fn write_page(&mut self, gfn: u64, data: &[u8]) -> Result<PageHash, StoreError> {
         self.core.write_page(gfn, data)
     }
 

@@ -1507,8 +1507,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .stats(parent)
                 .is_ok_and(|s| s.chain_len < engine.max_chain_len());
             if chain_ok && let Some(gfns) = vmm.drain_dirty_pages()? {
-                return match engine.snapshot_derive(parent, vmm.guest_memory(), Some(&gfns), blob) {
-                    Ok(id) => Ok((id, true, Some(gfns))),
+                return match engine.snapshot_derive_hashed(parent, vmm.guest_memory(), &gfns, blob) {
+                    Ok((id, hashes)) => {
+                        vmm.note_page_digests(gfns.iter().copied().zip(hashes));
+                        Ok((id, true, Some(gfns)))
+                    }
                     Err(_) => engine
                         .snapshot_base(vmm.guest_memory(), blob)
                         .map(|id| (id, true, Some(gfns))),
@@ -1717,7 +1720,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .and_then(|count| count.checked_mul(4096))
             .ok_or(())?;
         let vmm = self.vmm.as_mut().ok_or(())?;
-        vmm.write_guest_page_refs(&pages).map_err(|_| ())?;
+        vmm.write_guest_hashed_page_refs(&pages).map_err(|_| ())?;
         vmm.restore_vm_state(vm_state).map_err(|_| ())?;
         vmm.prepare_snapshot().map_err(|_| ())?;
         Ok(bytes)
@@ -5202,6 +5205,52 @@ mod tests {
             .unwrap(),
             expected_hash
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot materialization and page hashing use mmap-backed production paths"
+    )]
+    fn page_digests_taken_from_seal_and_restore_match_a_full_rehash() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        let whole = |s: &mut ControlServer<MockBackend>| {
+            s.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap()
+        };
+        let rehashed = |s: &mut ControlServer<MockBackend>| {
+            s.vmm.as_mut().unwrap().forget_page_digests();
+            whole(s)
+        };
+        let target = snap(&mut s);
+        let target_hash = whole(&mut s);
+        for gpa in [3 * 4096, 4096] {
+            s.vmm
+                .as_mut()
+                .unwrap()
+                .apply_effect(&EnvHostEffect::XorMemory {
+                    gpa,
+                    bytes: (0xA5A5_5A5A_u64).to_le_bytes().to_vec(),
+                })
+                .unwrap();
+        }
+        let changed = snap(&mut s);
+        let changed_hash = whole(&mut s);
+        assert_ne!(changed_hash, target_hash);
+        assert_eq!(rehashed(&mut s), changed_hash);
+        s.set_restore_mode(super::RestoreMode::InPlace);
+        for (snapshot, expected) in [(target, &target_hash), (changed, &changed_hash)] {
+            assert_eq!(
+                s.handle(&Request::Replay(snapshot)).unwrap(),
+                Ok(Reply::Unit)
+            );
+            assert_eq!(&whole(&mut s), expected);
+            assert_eq!(&rehashed(&mut s), expected);
+        }
+        assert_eq!(s.in_place_fallbacks(), 0);
     }
 
     #[test]
