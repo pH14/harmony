@@ -188,7 +188,14 @@ instrumented target.
 Every action records its own duration in 10 ms guest ticks, from 10 ms through
 10.24 seconds, and its window lasts that long ([`target`](src/target.rs)). The
 search draws one duration per suffix from the adaptive duration policy, and
-every action in the suffix takes it. Each action also records a coverage
+every action in the suffix takes it. Half of those draws repeat the parent's
+last duration while jobs from the parent still keep states, so a lineage keeps
+one fault rate across jobs. Job length follows the suffix reach in the
+[searcher README](../../dissonance/searcher/README.md). It starts at 64
+actions and stays there while most actions open slots no state has held
+before, which fault actions do because the edge bucket is part of the holder
+identity.
+Each action also records a coverage
 quantum: the number of coverage callbacks an instrumented thread makes between
 VM exits during the action's window. It is drawn log-uniform over powers of two
 from 1 through 32768, and it is part of the action's archive key. Replay serves

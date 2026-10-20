@@ -591,6 +591,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     active_count: usize,
     pub slots: BTreeMap<Slot<K>, Vec<usize>>,
     cells: BTreeMap<Cell<K>, CellState>,
+    seen_slots: BTreeSet<Slot<K>>,
     input_index: InputIndex<A>,
     historical_input_actions: usize,
     stored_input_actions: usize,
@@ -600,6 +601,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     productive: Vec<u64>,
     opened_cell: Vec<bool>,
     opened_slot: Vec<bool>,
+    opened_novel_slot: Vec<bool>,
     #[serde(with = "crate::search::checkpoint::json_bytes")]
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
@@ -1196,6 +1198,7 @@ where
             active_count: 0,
             slots: BTreeMap::new(),
             cells: BTreeMap::new(),
+            seen_slots: BTreeSet::new(),
             input_index: InputIndex::default(),
             historical_input_actions: 0,
             stored_input_actions: 0,
@@ -1205,6 +1208,7 @@ where
             productive: Vec::new(),
             opened_cell: Vec::new(),
             opened_slot: Vec::new(),
+            opened_novel_slot: Vec::new(),
             selector_accounting: SelectorAccounting {
                 best_holder_draws: vec![0; K::preferences()],
                 ..SelectorAccounting::default()
@@ -1708,6 +1712,7 @@ where
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
         self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
+        self.opened_novel_slot = retain_marked(std::mem::take(&mut self.opened_novel_slot), &keep);
         self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
         self.replacement_preferences =
             retain_marked(std::mem::take(&mut self.replacement_preferences), &keep);
@@ -2024,6 +2029,7 @@ where
             column(&self.productive, entries),
             column(&self.opened_cell, entries),
             column(&self.opened_slot, entries),
+            column(&self.opened_novel_slot, entries),
             column(&self.cost_in_group, entries),
             column(&self.replacement_preferences, entries),
             column(&self.in_place_lengths, entries),
@@ -2683,6 +2689,7 @@ where
                 ))
                 .any(|(_, tier)| tier.places.contains_key(&key.place()));
         let new_slot = slot.is_empty();
+        let novel_slot = self.seen_slots.insert(slot_of_key(key));
         let displaced: Vec<usize> = slot
             .iter()
             .copied()
@@ -2875,6 +2882,7 @@ where
         self.productive.push(0);
         self.opened_cell.push(new_cell);
         self.opened_slot.push(new_slot);
+        self.opened_novel_slot.push(novel_slot);
         self.deepest_leaf.push((key, id));
         self.sync_parent_index();
         let mut ancestor = parent_id.unwrap_or(usize::MAX);
@@ -3315,6 +3323,11 @@ where
     }
 
     #[must_use]
+    pub fn opened_novel_slot(&self, id: usize) -> bool {
+        self.opened_novel_slot.get(id).copied().unwrap_or(false)
+    }
+
+    #[must_use]
     pub fn occupied_cell_count(&self) -> usize {
         self.cells.values().filter(|state| state.active > 0).count()
     }
@@ -3577,6 +3590,7 @@ where
         let slots = self.slots.len();
         heap::btree_bytes::<Cell<K>, CellState>(1, self.cells.len())
             .saturating_add(heap::btree_bytes::<Slot<K>, Vec<usize>>(1, slots))
+            .saturating_add(heap::btree_bytes::<Slot<K>, ()>(1, self.seen_slots.len()))
             .saturating_add(slots.saturating_mul(heap::vec_bytes::<usize>(K::capacity().max(1))))
             .saturating_add(self.selector_memory_bytes())
     }
@@ -6215,6 +6229,8 @@ mod tests {
         assert!(!archive.opened_new_cell(beside));
         let richer = insert_region_at(&mut archive, Some(origin), 3, (1, 4, 9));
         assert!(!archive.opened_new_slot(richer));
+        assert!(archive.opened_novel_slot(origin) && archive.opened_novel_slot(beside));
+        assert!(!archive.opened_novel_slot(richer));
     }
 
     #[test]
@@ -6985,6 +7001,22 @@ mod tests {
                 .expect("select from budgeted residents");
             assert_ne!(selected, 0);
         }
+
+        let refilled = archive
+            .insert(
+                None,
+                3,
+                ArchiveCandidate {
+                    suffix: vec![7],
+                    key: FlatKey([0, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert into the emptied slot")
+            .expect("the emptied slot admits a holder");
+        assert!(archive.opened_new_slot(refilled));
+        assert!(!archive.opened_novel_slot(refilled));
     }
 
     #[test]
