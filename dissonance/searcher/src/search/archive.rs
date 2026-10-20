@@ -149,6 +149,8 @@ impl<S> SnapshotRetention<S> for PointerSnapshotRetention<S> {
     }
 }
 
+type AdmissionWithUnusedSnapshot<K, S> = (Option<usize>, K, Option<S>);
+
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     type Place: Copy + Ord + Debug + Serialize + DeserializeOwned;
     type Progress: Copy + Ord + Debug + Serialize + DeserializeOwned;
@@ -3050,9 +3052,30 @@ where
         previous: Option<K>,
         execution: u64,
         candidate: ArchiveCandidate<T, K, M>,
-        mut snapshot: S,
+        snapshot: S,
         certificates: Option<&[Option<[u8; 32]>]>,
     ) -> Result<(Option<usize>, K), Box<dyn Error>> {
+        let (admitted, key, unused) = self.insert_after_certified_returning_unused(
+            parent_id,
+            previous,
+            execution,
+            candidate,
+            snapshot,
+            certificates,
+        )?;
+        drop(unused);
+        Ok((admitted, key))
+    }
+
+    pub(crate) fn insert_after_certified_returning_unused<T: AsRef<[A]> + Into<Vec<A>>>(
+        &mut self,
+        parent_id: Option<usize>,
+        previous: Option<K>,
+        execution: u64,
+        candidate: ArchiveCandidate<T, K, M>,
+        mut snapshot: S,
+        certificates: Option<&[Option<[u8; 32]>]>,
+    ) -> Result<AdmissionWithUnusedSnapshot<K, S>, Box<dyn Error>> {
         let ArchiveCandidate {
             suffix,
             key,
@@ -3072,7 +3095,7 @@ where
                 self.input_index
                     .bind_certificates(ancestor, suffix.as_ref(), certificates)?;
             }
-            return Ok((Some(existing), self.entries[existing].key));
+            return Ok((Some(existing), self.entries[existing].key, Some(snapshot)));
         }
         let key = self.complete_after(parent_id, previous, key)?;
         let candidate_cost_in_group = self.cost_in_group_of(parent_id, suffix.as_ref(), key);
@@ -3083,14 +3106,14 @@ where
             .unwrap_or_default();
         if self.single_preference_rejects(slot, key, candidate_cost_in_group) {
             self.rejected = self.rejected.saturating_add(1);
-            return Ok((None, key));
+            return Ok((None, key, Some(snapshot)));
         }
         let (ranked, won_preferences) =
             self.rank_slot_preferences(slot, key, candidate_cost_in_group);
         let admitted = ranked.last().copied().unwrap_or(true);
         if !admitted {
             self.rejected = self.rejected.saturating_add(1);
-            return Ok((None, key));
+            return Ok((None, key, Some(snapshot)));
         }
         let slot = slot.to_vec();
         let mut lineage =
@@ -3348,7 +3371,7 @@ where
         self.retained = self.retained.saturating_add(1);
         self.index_insert(id);
         self.enforce_snapshot_memory_budget()?;
-        Ok((Some(id), key))
+        Ok((Some(id), key, None))
     }
 
     pub(crate) fn splice_tail_for_campaign(

@@ -314,7 +314,7 @@ where
         let note = Note {
             reservation: outcome.reservation,
             steps: if progress {
-                feed::steps(&outcome.result)?
+                feed::steps::<G>(&outcome.result)?
             } else {
                 Vec::new()
             },
@@ -1063,7 +1063,9 @@ pub fn evaluate_live<G>(
 where
     G: ArcadeGame<Machine = NativeMachine>,
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-    G::Snapshot: EndpointIdentity,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: EndpointIdentity + 'static,
 {
     let address = request
         .live
@@ -1110,7 +1112,9 @@ pub fn evaluate_watching<G>(
 where
     G: ArcadeGame,
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-    G::Snapshot: EndpointIdentity,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: EndpointIdentity + 'static,
 {
     let watched = Watched {
         rom,
@@ -1141,7 +1145,9 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
     where
         G: ArcadeGame<View = V>,
         G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-        G::Snapshot: EndpointIdentity,
+        G::Milestones: 'static,
+        G::Observations: 'static,
+        G::Snapshot: EndpointIdentity + 'static,
     {
         let listener = TcpListener::bind(self.address)?;
         let local = listener.local_addr()?;

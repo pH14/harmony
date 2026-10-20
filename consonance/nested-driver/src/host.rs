@@ -520,7 +520,7 @@ impl Reporting for NestedWorkload {
                 candidate.snapshot.state = candidate.snapshot.state.logical_identity()?;
             }
         }
-        campaign::postcard_result_sha256(&canonical)
+        campaign::postcard_result_sha256::<Self>(&canonical)
     }
     fn snapshot_identity_sha256(
         &self,

@@ -459,7 +459,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     };
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult {
+        return Ok(CampaignJobResult::<MetroidGame<M>> {
             preparation_failure: None,
             actions,
         });
@@ -491,7 +491,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot Metroid suffix")?;
-            Some(CampaignCandidate {
+            Some(CampaignCandidate::<MetroidGame<M>> {
                 key: archive_key(target.mechanical_state())
                     .with_boss_health_seen(target.boss_health_seen()),
                 viable: true,
@@ -500,7 +500,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
         } else {
             None
         };
-        actions.push(CampaignActionResult {
+        actions.push(CampaignActionResult::<MetroidGame<M>> {
             action: *action,
             observations,
             milestones: aggregate,
@@ -511,7 +511,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
             break;
         }
     }
-    Ok(CampaignJobResult {
+    Ok(CampaignJobResult::<MetroidGame<M>> {
         preparation_failure: None,
         actions,
     })
@@ -691,7 +691,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
         &self,
         result: &MetroidCampaignJobResult<M>,
     ) -> Result<String, Box<dyn Error>> {
-        postcard_semantic_result_sha256(result)
+        postcard_semantic_result_sha256::<Self>(result)
     }
 
     fn snapshot_identity_sha256(
@@ -1090,7 +1090,7 @@ mod tests {
             tourian_events: TourianEvents::default(),
             dead: false,
         };
-        let action = MetroidCampaignActionResult {
+        let action = MetroidCampaignActionResult::<QuickNesMachine> {
             action: ButtonChord::new(0, 1),
             observations: vec![observation],
             milestones: MetroidMilestones::default(),
@@ -1154,7 +1154,7 @@ mod tests {
         };
         let action_with = |observation: MetroidObservations, actions: usize| {
             (
-                MetroidCampaignActionResult {
+                MetroidCampaignActionResult::<QuickNesMachine> {
                     action: ButtonChord::new(0, 1),
                     observations: vec![observation],
                     milestones: MetroidMilestones::default(),

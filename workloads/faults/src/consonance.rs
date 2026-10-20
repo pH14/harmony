@@ -3658,7 +3658,7 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
         let error = game.restore(&mut target, &snapshot).unwrap_err();
         assert!(error.to_string().contains("campaign incomplete"), "{error}");
-        let result = CampaignJobResult {
+        let result = CampaignJobResult::<crate::campaign::FaultWorkload> {
             preparation_failure: None,
             actions: Vec::new(),
         };
@@ -7399,7 +7399,7 @@ mod tests {
         assert!(target.actions().is_empty());
         assert!(!target.found_bug());
         assert!(target.snapshot().unwrap().is_none());
-        let result = CampaignJobResult {
+        let result = CampaignJobResult::<crate::campaign::FaultWorkload> {
             preparation_failure: None,
             actions: Vec::new(),
         };
@@ -8028,16 +8028,18 @@ mod tests {
                 );
                 target.actions = std::sync::OnceLock::from(vec![action]);
                 target.observation.stop = FaultStop::Crash;
-                result.actions.push(CampaignActionResult {
-                    action,
-                    observations: vec![target.observation.clone()],
-                    milestones: Default::default(),
-                    outcome: Outcome {
-                        objective_reached: true,
-                        disposition: ExecutionDisposition::Terminal,
-                    },
-                    candidate: None,
-                });
+                result
+                    .actions
+                    .push(CampaignActionResult::<crate::campaign::FaultWorkload> {
+                        action,
+                        observations: vec![target.observation.clone()],
+                        milestones: Default::default(),
+                        outcome: Outcome {
+                            objective_reached: true,
+                            disposition: ExecutionDisposition::Terminal,
+                        },
+                        candidate: None,
+                    });
             }
             let certify = |digest, history_hung: bool| {
                 let mut live = hashed_live([17; 32]);

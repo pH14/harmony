@@ -190,7 +190,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>, const GROUP: usize>(
     };
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult {
+        return Ok(CampaignJobResult::<FamidashGame<M, GROUP>> {
             preparation_failure: None,
             actions,
         });
@@ -245,14 +245,14 @@ fn execute_suffix<M: NesBackend<Vec<u8>>, const GROUP: usize>(
                         );
                     }
                 };
-                Some(CampaignCandidate {
+                Some(CampaignCandidate::<FamidashGame<M, GROUP>> {
                     key: archive_key(target.mechanical_state())
                         .ok_or("Famidash attempted to archive a state outside gameplay")?,
                     viable,
                     snapshot,
                 })
             };
-        actions.push(CampaignActionResult {
+        actions.push(CampaignActionResult::<FamidashGame<M, GROUP>> {
             action: recorded_action,
             observations,
             milestones: aggregate,
@@ -263,7 +263,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>, const GROUP: usize>(
             break;
         }
     }
-    Ok(CampaignJobResult {
+    Ok(CampaignJobResult::<FamidashGame<M, GROUP>> {
         preparation_failure: None,
         actions,
     })
@@ -334,7 +334,7 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Reporting for FamidashGame<M, G
         &self,
         result: &FamidashCampaignJobResult<M, GROUP>,
     ) -> Result<String, Box<dyn Error>> {
-        postcard_semantic_result_sha256(result)
+        postcard_semantic_result_sha256::<Self>(result)
     }
 
     fn snapshot_identity_sha256(
@@ -500,7 +500,7 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> TargetExecution for FamidashGam
         for action in replay {
             target.apply(action);
         }
-        execute_suffix(
+        execute_suffix::<M, GROUP>(
             target,
             parent_milestones,
             suffix,

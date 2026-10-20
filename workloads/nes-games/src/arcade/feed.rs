@@ -239,7 +239,7 @@ pub fn run_noted<G: ArcadeGame>(
     });
     let note = Note {
         reservation: outcome.reservation,
-        steps: steps(&outcome.result)?,
+        steps: steps::<G>(&outcome.result)?,
         trail: (trail.samples.len() >= MIN_TRAIL_SAMPLES).then_some(trail.samples),
         next_level,
         execution_work: outcome.execution_work,

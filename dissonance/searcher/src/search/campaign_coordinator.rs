@@ -118,7 +118,11 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     work_budget: Option<u64>,
     header: CampaignStreamHeader<DrawTableHeader>,
     origin_record: CampaignOriginRecord,
-    writer: StreamWriter<'a, CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key>>,
+    writer: StreamWriter<
+        'a,
+        CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key>,
+        CampaignJobResult<G>,
+    >,
     progress: Option<&'a mut dyn Write>,
     core: CoordinatorCore<G>,
     counters: CampaignCounters,
@@ -234,7 +238,7 @@ where
             &executable_identity,
         );
         header.work_budget = work_budget;
-        let mut writer = StreamWriter::new(stream);
+        let mut writer = StreamWriter::new_with_cleanup(stream);
         writer.write_header(&header)?;
 
         let mut core = CoordinatorCore::new(
@@ -397,7 +401,10 @@ where
     pub(crate) fn enable_background_stream(
         &mut self,
         placement: Option<ThreadPlacement>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error>>
+    where
+        CampaignJobResult<G>: Send + 'static,
+    {
         self.writer.enable_background(placement)
     }
 
@@ -945,7 +952,7 @@ where
         *planned_clock = finish;
         spec_records.remove(&reservation);
         let pending_job = completed_job.pending;
-        let (result, execution_work, result_sha256) =
+        let (mut result, execution_work, result_sha256) =
             completed_job.outcome.map_err(|error| -> Box<dyn Error> {
                 format!("campaign reservation {reservation} failed: {error}").into()
             })?;
@@ -970,7 +977,7 @@ where
         let (sequence, decisions, duration_admission) = core.admit_job_tracking(
             workload,
             pending_job.parent_id,
-            result,
+            &mut result,
             pending_job.suffix_limit.is_some(),
             |action| {
                 tracked_duration.is_some_and(|duration| {
@@ -1088,29 +1095,33 @@ where
             });
         }
         let stream_started = profile_now();
-        writer.write_line(CampaignStreamRecord::Job(CampaignJobRecord {
-            continuation_energy: pending_job.continuation_energy,
-            sequence,
-            reservation: u64::try_from(reservation)?,
-            parent_id: pending_job.parent_id,
-            mutation_seed: pending_job.mutation_seed,
-            execution_work,
-            result_sha256,
-            decisions,
-            mixture_weight: pending_job.mixture_weight,
-            splice_weight: pending_job.splice_weight,
-            splice: pending_job.splice,
-            selector: pending_job.selector,
-            draw_checkpoint_before: pending_job.draw_checkpoint_before,
-            draw_checkpoint_after,
-            duration_draw: pending_job.duration_draw,
-            duration_admission_sequence_at_draw: pending_job.duration_admission_sequence_at_draw,
-            duration_remaining_work: pending_job.duration_remaining_work,
-            duration_checkpoint_at_draw: pending_job.duration_checkpoint_at_draw,
-            duration_checkpoint_before,
-            duration_checkpoint_after,
-            suffix_limit: pending_job.suffix_limit,
-        }))?;
+        writer.write_line_with_cleanup(
+            CampaignStreamRecord::Job(CampaignJobRecord {
+                continuation_energy: pending_job.continuation_energy,
+                sequence,
+                reservation: u64::try_from(reservation)?,
+                parent_id: pending_job.parent_id,
+                mutation_seed: pending_job.mutation_seed,
+                execution_work,
+                result_sha256,
+                decisions,
+                mixture_weight: pending_job.mixture_weight,
+                splice_weight: pending_job.splice_weight,
+                splice: pending_job.splice,
+                selector: pending_job.selector,
+                draw_checkpoint_before: pending_job.draw_checkpoint_before,
+                draw_checkpoint_after,
+                duration_draw: pending_job.duration_draw,
+                duration_admission_sequence_at_draw: pending_job
+                    .duration_admission_sequence_at_draw,
+                duration_remaining_work: pending_job.duration_remaining_work,
+                duration_checkpoint_at_draw: pending_job.duration_checkpoint_at_draw,
+                duration_checkpoint_before,
+                duration_checkpoint_after,
+                suffix_limit: pending_job.suffix_limit,
+            }),
+            result,
+        )?;
         coordinator_profile.stream_write_ns = coordinator_profile
             .stream_write_ns
             .saturating_add(profile_elapsed(stream_started));

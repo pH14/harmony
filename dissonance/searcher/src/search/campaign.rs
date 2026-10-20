@@ -1379,22 +1379,33 @@ fn stop_reservations_after_work_budget(
         .is_some_and(|budget| bootstrap_execution_work.saturating_add(job_execution_work) >= budget)
 }
 
+pub type CampaignCandidate<G> =
+    CampaignCandidateData<<G as CampaignTypes>::Key, <G as CampaignTypes>::Snapshot>;
+pub type CampaignActionResult<G> = CampaignActionResultData<
+    <G as CampaignTypes>::Action,
+    <G as CampaignTypes>::Observations,
+    <G as CampaignTypes>::Milestones,
+    CampaignCandidate<G>,
+>;
+pub type CampaignJobResult<G> =
+    CampaignJobResultData<<G as CampaignTypes>::Observations, CampaignActionResult<G>>;
+
 #[derive(Deserialize, Serialize)]
-#[serde(bound = "")]
-pub struct CampaignCandidate<G: CampaignTypes + ?Sized> {
-    pub key: G::Key,
+#[serde(rename = "CampaignCandidate")]
+pub struct CampaignCandidateData<K, S> {
+    pub key: K,
     pub viable: bool,
-    pub snapshot: G::Snapshot,
+    pub snapshot: S,
 }
 
-impl<G: CampaignTypes + ?Sized> PartialEq for CampaignCandidate<G> {
+impl<K: PartialEq, S: PartialEq> PartialEq for CampaignCandidateData<K, S> {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key && self.viable == other.viable && self.snapshot == other.snapshot
     }
 }
-impl<G: CampaignTypes + ?Sized> Eq for CampaignCandidate<G> {}
+impl<K: Eq, S: Eq> Eq for CampaignCandidateData<K, S> {}
 
-impl<G: CampaignTypes + ?Sized> Clone for CampaignCandidate<G> {
+impl<K: Copy, S: Clone> Clone for CampaignCandidateData<K, S> {
     fn clone(&self) -> Self {
         Self {
             key: self.key,
@@ -1404,7 +1415,7 @@ impl<G: CampaignTypes + ?Sized> Clone for CampaignCandidate<G> {
     }
 }
 
-impl<G: CampaignTypes + ?Sized> Debug for CampaignCandidate<G> {
+impl<K: Debug, S: Debug> Debug for CampaignCandidateData<K, S> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignCandidate")
@@ -1416,16 +1427,18 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignCandidate<G> {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(bound = "")]
-pub struct CampaignActionResult<G: CampaignTypes + ?Sized> {
-    pub action: G::Action,
-    pub observations: Vec<G::Observations>,
-    pub milestones: G::Milestones,
+#[serde(rename = "CampaignActionResult")]
+pub struct CampaignActionResultData<A, O, M, C> {
+    pub action: A,
+    pub observations: Vec<O>,
+    pub milestones: M,
     pub outcome: crate::search::rollout::Outcome,
-    pub candidate: Option<CampaignCandidate<G>>,
+    pub candidate: Option<C>,
 }
 
-impl<G: CampaignTypes + ?Sized> PartialEq for CampaignActionResult<G> {
+impl<A: PartialEq, O: PartialEq, M: PartialEq, C: PartialEq> PartialEq
+    for CampaignActionResultData<A, O, M, C>
+{
     fn eq(&self, other: &Self) -> bool {
         self.action == other.action
             && self.observations == other.observations
@@ -1434,9 +1447,9 @@ impl<G: CampaignTypes + ?Sized> PartialEq for CampaignActionResult<G> {
             && self.candidate == other.candidate
     }
 }
-impl<G: CampaignTypes + ?Sized> Eq for CampaignActionResult<G> {}
+impl<A: Eq, O: Eq, M: Eq, C: Eq> Eq for CampaignActionResultData<A, O, M, C> {}
 
-impl<G: CampaignTypes + ?Sized> Clone for CampaignActionResult<G> {
+impl<A: Copy, O: Clone, M: Copy, C: Clone> Clone for CampaignActionResultData<A, O, M, C> {
     fn clone(&self) -> Self {
         Self {
             action: self.action,
@@ -1448,7 +1461,7 @@ impl<G: CampaignTypes + ?Sized> Clone for CampaignActionResult<G> {
     }
 }
 
-impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
+impl<A: Debug, O: Debug, M: Debug, C: Debug> Debug for CampaignActionResultData<A, O, M, C> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignActionResult")
@@ -1462,20 +1475,20 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(bound = "")]
-pub struct CampaignJobResult<G: CampaignTypes + ?Sized> {
-    pub preparation_failure: Option<Vec<G::Observations>>,
-    pub actions: Vec<CampaignActionResult<G>>,
+#[serde(rename = "CampaignJobResult")]
+pub struct CampaignJobResultData<O, R> {
+    pub preparation_failure: Option<Vec<O>>,
+    pub actions: Vec<R>,
 }
 
-impl<G: CampaignTypes + ?Sized> PartialEq for CampaignJobResult<G> {
+impl<O: PartialEq, R: PartialEq> PartialEq for CampaignJobResultData<O, R> {
     fn eq(&self, other: &Self) -> bool {
         self.preparation_failure == other.preparation_failure && self.actions == other.actions
     }
 }
-impl<G: CampaignTypes + ?Sized> Eq for CampaignJobResult<G> {}
+impl<O: Eq, R: Eq> Eq for CampaignJobResultData<O, R> {}
 
-impl<G: CampaignTypes + ?Sized> Clone for CampaignJobResult<G> {
+impl<O: Clone, R: Clone> Clone for CampaignJobResultData<O, R> {
     fn clone(&self) -> Self {
         Self {
             preparation_failure: self.preparation_failure.clone(),
@@ -1484,7 +1497,7 @@ impl<G: CampaignTypes + ?Sized> Clone for CampaignJobResult<G> {
     }
 }
 
-impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
+impl<O: Debug, R: Debug> Debug for CampaignJobResultData<O, R> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignJobResult")
@@ -2001,10 +2014,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         &mut self,
         workload: &G,
         parent_id: u64,
-        result: CampaignJobResult<G>,
+        mut result: CampaignJobResult<G>,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>), Box<dyn Error>> {
         let (sequence, decisions, _) =
-            self.admit_job_tracking(workload, parent_id, result, false, |_| false)?;
+            self.admit_job_tracking(workload, parent_id, &mut result, false, |_| false)?;
         Ok((sequence, decisions))
     }
 
@@ -2012,12 +2025,12 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         &mut self,
         workload: &G,
         parent_id: u64,
-        result: CampaignJobResult<G>,
+        result: &mut CampaignJobResult<G>,
         limited: bool,
         mut tracked_action: impl FnMut(&G::Action) -> bool,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>, DurationAdmission), Box<dyn Error>> {
         workload.verify_integrity()?;
-        let CampaignJobResult {
+        let CampaignJobResult::<G> {
             preparation_failure,
             actions,
         } = result;
@@ -2032,7 +2045,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             .ok_or("campaign job parent is no longer resident")?;
         if let Some(observations) = preparation_failure {
             self.execution_failures = self.execution_failures.saturating_add(1);
-            workload.merge_preparation_failure(&mut self.evidence, &observations);
+            workload.merge_preparation_failure(&mut self.evidence, observations);
             return Ok((sequence, Vec::new(), DurationAdmission::default()));
         }
         let mut current_parent = parent_index;
@@ -2062,7 +2075,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 pending_certificates.resize(pending_suffix.len() - 1, None);
                 pending_certificates.push(certificate);
             }
-            workload.merge_action_evidence(&mut self.evidence, &action, sequence, || {
+            workload.merge_action_evidence(&mut self.evidence, action, sequence, || {
                 let mut input = self
                     .archive
                     .materialize_input(current_parent)
@@ -2095,7 +2108,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 }
                 decisions.push(CampaignAdmissionDecision::Objective);
             }
-            if let Some(candidate) = action.candidate {
+            if let Some(candidate) = action.candidate.as_ref() {
                 let completed =
                     workload.complete_candidate_key(candidate.key, &candidate.snapshot)?;
                 if !candidate.viable {
@@ -2112,19 +2125,32 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 if certificate.is_some() && pending_certificates.iter().any(Option::is_none) {
                     return Err("certified campaign path lacks an action-prefix certificate".into());
                 }
+                let candidate = action
+                    .candidate
+                    .take()
+                    .expect("validated candidate is present");
                 let retained_before = self.archive.retained;
-                let (admitted, key) = self.archive.insert_after_certified(
-                    Some(current_parent),
-                    previous_key,
-                    sequence,
-                    ArchiveCandidate {
-                        suffix: pending_suffix.as_slice(),
-                        key: completed,
-                        milestones: action.milestones,
-                    },
-                    candidate.snapshot,
-                    (!pending_certificates.is_empty()).then_some(pending_certificates.as_slice()),
-                )?;
+                let (admitted, key, unused) =
+                    self.archive.insert_after_certified_returning_unused(
+                        Some(current_parent),
+                        previous_key,
+                        sequence,
+                        ArchiveCandidate {
+                            suffix: pending_suffix.as_slice(),
+                            key: completed,
+                            milestones: action.milestones,
+                        },
+                        candidate.snapshot,
+                        (!pending_certificates.is_empty())
+                            .then_some(pending_certificates.as_slice()),
+                    )?;
+                if let Some(snapshot) = unused {
+                    action.candidate = Some(CampaignCandidate::<G> {
+                        key: candidate.key,
+                        viable: candidate.viable,
+                        snapshot,
+                    });
+                }
                 left_place |= key.place() != parent_place;
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
@@ -3167,7 +3193,7 @@ impl<K: Eq + Hash, P, V> ReservationSlots<K, P, V> {
 }
 
 fn completed_job_records<G: Workload + ?Sized>(job: &CompletedOutcome<G>) -> (u64, u64) {
-    completed_result_records(&job.outcome)
+    completed_result_records::<G>(&job.outcome)
 }
 
 fn completed_result_records<G: CampaignTypes + ?Sized>(
@@ -3551,6 +3577,10 @@ pub fn run_campaign_checkpointed<G: Workload>(
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     run_campaign_checkpointed_with_options(
         workload,
@@ -3572,6 +3602,10 @@ pub fn run_campaign_checkpointed_with_options<G: Workload>(
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     run_campaign_checkpointed_observed(workload, config, origin, stream, progress, options, None)
 }
@@ -3587,6 +3621,10 @@ pub fn run_campaign_checkpointed_observed<G: Workload>(
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     run_campaign(
         workload,
@@ -3611,6 +3649,10 @@ pub fn run_campaign_watched<G: Workload, W: CampaignWatch<G>>(
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     run_campaign(
         workload, config, origin, stream, progress, options, watch, None,
@@ -3630,6 +3672,10 @@ fn run_campaign<G: Workload, W: CampaignWatch<G>>(
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     crate::search::job_observation::bounded::<G::JobObservation>();
     let mut sink_disabled = false;
@@ -5233,7 +5279,7 @@ where
                 let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                     workload,
                     job.parent_id,
-                    result,
+                    &mut { result },
                     suffix_limit.is_some(),
                     |action| {
                         tracked_duration.is_some_and(|duration| {
@@ -6622,9 +6668,9 @@ mod tests {
         core.admit_job(
             &workload,
             0,
-            CampaignJobResult {
+            CampaignJobResult::<TestWorkload> {
                 preparation_failure: None,
-                actions: vec![CampaignActionResult {
+                actions: vec![CampaignActionResult::<TestWorkload> {
                     action: terminal_objective,
                     observations: Vec::new(),
                     milestones: (),
@@ -6645,9 +6691,9 @@ mod tests {
         core.admit_job(
             &workload,
             0,
-            CampaignJobResult {
+            CampaignJobResult::<TestWorkload> {
                 preparation_failure: None,
-                actions: vec![CampaignActionResult {
+                actions: vec![CampaignActionResult::<TestWorkload> {
                     action: failed,
                     observations: vec![()],
                     milestones: (),
@@ -6672,7 +6718,7 @@ mod tests {
             .admit_job(
                 &workload,
                 0,
-                CampaignJobResult {
+                CampaignJobResult::<TestWorkload> {
                     preparation_failure: Some(vec![()]),
                     actions: Vec::new(),
                 },
@@ -6688,9 +6734,9 @@ mod tests {
             .admit_job(
                 &workload,
                 0,
-                CampaignJobResult {
+                CampaignJobResult::<TestWorkload> {
                     preparation_failure: Some(vec![()]),
-                    actions: vec![CampaignActionResult {
+                    actions: vec![CampaignActionResult::<TestWorkload> {
                         action,
                         observations: Vec::new(),
                         milestones: (),
@@ -7742,12 +7788,12 @@ mod tests {
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action,
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome::default(),
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<TestWorkload> {
                     key: TestKey(target.value),
                     viable: true,
                     snapshot,
@@ -7777,12 +7823,12 @@ mod tests {
         let tracked = TestAction::new(0x01, 4);
         let seed = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action: tracked,
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome::default(),
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<TestWorkload> {
                     key: TestKey(1),
                     viable: true,
                     snapshot: 1,
@@ -7796,23 +7842,23 @@ mod tests {
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
             actions: vec![
-                CampaignActionResult {
+                CampaignActionResult::<TestWorkload> {
                     action: tracked,
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome::default(),
-                    candidate: Some(CampaignCandidate {
+                    candidate: Some(CampaignCandidate::<TestWorkload> {
                         key: TestKey(1),
                         viable: true,
                         snapshot: 1,
                     }),
                 },
-                CampaignActionResult {
+                CampaignActionResult::<TestWorkload> {
                     action: untracked,
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome::default(),
-                    candidate: Some(CampaignCandidate {
+                    candidate: Some(CampaignCandidate::<TestWorkload> {
                         key: TestKey(2),
                         viable: true,
                         snapshot: 2,
@@ -7821,7 +7867,9 @@ mod tests {
             ],
         };
         let (_, decisions, duration) = core
-            .admit_job_tracking(&workload, 0, result, false, |action| *action == tracked)
+            .admit_job_tracking(&workload, 0, &mut { result }, false, |action| {
+                *action == tracked
+            })
             .expect("admit mixed novelty");
         assert_eq!(
             decisions,
@@ -7840,33 +7888,224 @@ mod tests {
     }
 
     #[test]
+    fn field_generic_result_storage_matches_original_json_and_postcard_shapes() {
+        #[derive(Deserialize, Serialize)]
+        struct OriginalCandidate {
+            key: TestKey,
+            viable: bool,
+            snapshot: u8,
+        }
+        #[derive(Deserialize, Serialize)]
+        struct OriginalAction {
+            action: TestAction,
+            observations: Vec<()>,
+            milestones: (),
+            outcome: Outcome,
+            candidate: Option<OriginalCandidate>,
+        }
+        #[derive(Deserialize, Serialize)]
+        struct OriginalResult {
+            preparation_failure: Option<Vec<()>>,
+            actions: Vec<OriginalAction>,
+        }
+        for preparation in [None, Some(vec![]), Some(vec![()])] {
+            for candidate in [None, Some(false), Some(true)] {
+                let original = OriginalResult {
+                    preparation_failure: preparation.clone(),
+                    actions: vec![OriginalAction {
+                        action: TestAction::new(1, 2),
+                        observations: vec![()],
+                        milestones: (),
+                        outcome: Outcome::default(),
+                        candidate: candidate.map(|viable| OriginalCandidate {
+                            key: TestKey(3),
+                            viable,
+                            snapshot: 4,
+                        }),
+                    }],
+                };
+                let json = serde_json::to_vec(&original).unwrap();
+                let result: CampaignJobResult<TestWorkload> =
+                    serde_json::from_slice(&json).unwrap();
+                assert_eq!(serde_json::to_vec(&result).unwrap(), json);
+                let postcard = postcard::to_allocvec(&original).unwrap();
+                assert_eq!(postcard::to_allocvec(&result).unwrap(), postcard);
+                assert_eq!(
+                    postcard::from_bytes::<CampaignJobResult<TestWorkload>>(&postcard).unwrap(),
+                    result
+                );
+                assert_eq!(
+                    serde_json::to_vec(
+                        &serde_json::from_slice::<OriginalResult>(
+                            &serde_json::to_vec(&result).unwrap()
+                        )
+                        .unwrap()
+                    )
+                    .unwrap(),
+                    json
+                );
+                assert!(format!("{result:?}").starts_with("CampaignJobResult {"));
+                assert!(format!("{:?}", result.actions[0]).starts_with("CampaignActionResult {"));
+                if let Some(candidate) = result.actions[0].candidate.as_ref() {
+                    assert!(format!("{candidate:?}").starts_with("CampaignCandidate {"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_encoder_accepts_owned_payloads_from_a_borrowed_type_carrier() {
+        struct BorrowedTypes<'a>(&'a str);
+        impl CampaignTypes for BorrowedTypes<'_> {
+            type JobObservation = ();
+            type Target = ();
+            type Action = TestAction;
+            type Key = TestKey;
+            type Milestones = ();
+            type Progress = ();
+            type Snapshot = u8;
+            type Observations = ();
+            type Evidence = ();
+            type ArchiveReport = ();
+            type Run = ();
+        }
+        fn encode<'a>(carrier: &BorrowedTypes<'a>) -> Vec<u8> {
+            assert!(!carrier.0.is_empty());
+            let result = CampaignJobResult::<BorrowedTypes<'a>> {
+                preparation_failure: Some(vec![()]),
+                actions: Vec::new(),
+            };
+            let mut sink = Vec::new();
+            let mut writer =
+                super::StreamWriter::<u8, CampaignJobResult<BorrowedTypes<'a>>>::new_with_cleanup(
+                    &mut sink,
+                );
+            writer.enable_background(None).unwrap();
+            writer.write_line_with_cleanup(1, result).unwrap();
+            writer.finish().unwrap();
+            sink
+        }
+        let local = String::from("borrowed type carrier");
+        assert_eq!(encode(&BorrowedTypes(&local)), b"1\n");
+    }
+
+    #[test]
+    fn borrowed_admission_keeps_unused_candidates_and_result_storage_for_cleanup() {
+        let (workload, _, mut core, _) = test_core();
+        let make = |input, work_units, viable| CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            actions: vec![CampaignActionResult::<TestWorkload> {
+                action: TestAction::new(input, work_units),
+                observations: vec![()],
+                milestones: (),
+                outcome: Outcome::default(),
+                candidate: Some(CampaignCandidate::<TestWorkload> {
+                    key: TestKey(1),
+                    viable,
+                    snapshot: 1,
+                }),
+            }],
+        };
+        let mut retained = make(1, 1, true);
+        let actions = retained.actions.as_ptr();
+        let observations = retained.actions[0].observations.as_ptr();
+        let (_, decisions, _) = core
+            .admit_job_tracking(&workload, 0, &mut retained, false, |_| false)
+            .unwrap();
+        assert!(matches!(
+            decisions.as_slice(),
+            [CampaignAdmissionDecision::Retained { .. }]
+        ));
+        assert!(retained.actions[0].candidate.is_none());
+        assert_eq!(retained.actions.as_ptr(), actions);
+        assert_eq!(retained.actions[0].observations.as_ptr(), observations);
+        for offset in 1..TestKey::capacity().max(1) {
+            let mut filler = make(u8::try_from(10 + offset).unwrap(), 1, true);
+            let (_, decisions, _) = core
+                .admit_job_tracking(&workload, 0, &mut filler, false, |_| false)
+                .unwrap();
+            assert!(matches!(
+                decisions.as_slice(),
+                [CampaignAdmissionDecision::Retained { .. }]
+            ));
+        }
+        for (mut result, expected) in [
+            (make(1, 1, true), "duplicate"),
+            (make(2, 10, true), "rejected"),
+            (make(3, 1, false), "refused"),
+        ] {
+            let candidate = result.actions[0].candidate.clone();
+            let actions = result.actions.as_ptr();
+            let observations = result.actions[0].observations.as_ptr();
+            let (_, decisions, _) = core
+                .admit_job_tracking(&workload, 0, &mut result, false, |_| false)
+                .unwrap();
+            assert!(matches!(
+                (expected, decisions.as_slice()),
+                ("duplicate", [CampaignAdmissionDecision::Duplicate { .. }])
+                    | ("rejected", [CampaignAdmissionDecision::Rejected])
+                    | ("refused", [CampaignAdmissionDecision::ProbeRefused])
+            ));
+            assert_eq!(result.actions[0].candidate, candidate);
+            assert_eq!(result.actions.as_ptr(), actions);
+            assert_eq!(result.actions[0].observations.as_ptr(), observations);
+            assert_eq!(result.actions[0].observations, vec![()]);
+        }
+        let mut preparation = CampaignJobResult::<TestWorkload> {
+            preparation_failure: Some(vec![()]),
+            actions: Vec::new(),
+        };
+        let observations = preparation.preparation_failure.as_ref().unwrap().as_ptr();
+        let failures = core.execution_failures;
+        let (_, decisions, _) = core
+            .admit_job_tracking(&workload, 0, &mut preparation, false, |_| false)
+            .unwrap();
+        assert!(decisions.is_empty());
+        assert_eq!(core.execution_failures, failures + 1);
+        assert_eq!(
+            preparation.preparation_failure.as_ref().unwrap().as_ptr(),
+            observations
+        );
+    }
+
+    #[test]
     fn a_probe_refused_state_in_another_place_resets_the_suffix_limit() {
         let (workload, _run, mut core, _target) = test_core();
         let home = core.archive.entries[0].key.0;
         let refused = |value: u8| CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action: TestAction::new(0x01, 1),
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome::default(),
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<TestWorkload> {
                     key: TestKey(value),
                     viable: false,
                     snapshot: value,
                 }),
             }],
         };
-        core.admit_job_tracking(&workload, 0, refused(home), true, |_| false)
+        core.admit_job_tracking(&workload, 0, &mut refused(home), true, |_| false)
             .expect("admit a refused state in the parent's place");
         assert_eq!(core.archive.suffix_limit(0), 2);
-        core.admit_job_tracking(&workload, 0, refused(INHERITS_PARENT_PLACE), true, |_| {
-            false
-        })
+        core.admit_job_tracking(
+            &workload,
+            0,
+            &mut refused(INHERITS_PARENT_PLACE),
+            true,
+            |_| false,
+        )
         .expect("admit a refused state whose completed key keeps the parent's place");
         assert_eq!(core.archive.suffix_limit(0), 2);
-        core.admit_job_tracking(&workload, 0, refused(home.wrapping_add(1)), true, |_| false)
-            .expect("admit a refused state in another place");
+        core.admit_job_tracking(
+            &workload,
+            0,
+            &mut refused(home.wrapping_add(1)),
+            true,
+            |_| false,
+        )
+        .expect("admit a refused state in another place");
         assert_eq!(core.archive.suffix_limit(0), 1);
     }
 
@@ -7900,7 +8139,7 @@ mod tests {
         let winning = TestAction::new(0x81, 7);
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action: winning,
                 observations: Vec::new(),
                 milestones: (),
@@ -7908,7 +8147,7 @@ mod tests {
                     objective_reached: true,
                     disposition: ExecutionDisposition::Runnable,
                 },
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<TestWorkload> {
                     key: TestKey(winning.input),
                     viable: true,
                     snapshot: winning.input,
@@ -7935,9 +8174,9 @@ mod tests {
             })
         );
 
-        let later = CampaignJobResult {
+        let later = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action: TestAction::new(0x01, 9),
                 ..winning_action
             }],
@@ -8292,19 +8531,19 @@ mod tests {
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
             actions: vec![
-                CampaignActionResult {
+                CampaignActionResult::<TestWorkload> {
                     action: first,
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome::default(),
                     candidate: None,
                 },
-                CampaignActionResult {
+                CampaignActionResult::<TestWorkload> {
                     action: second,
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome::default(),
-                    candidate: Some(CampaignCandidate {
+                    candidate: Some(CampaignCandidate::<TestWorkload> {
                         key: TestKey(3),
                         viable: true,
                         snapshot: 3,
@@ -8407,12 +8646,12 @@ mod tests {
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action,
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome::default(),
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<TestWorkload> {
                     key: TestKey(target.value),
                     viable: true,
                     snapshot,
@@ -8814,12 +9053,12 @@ mod tests {
                     preparation_failure: None,
                     actions: flags
                         .iter()
-                        .map(|&candidate| CampaignActionResult {
+                        .map(|&candidate| CampaignActionResult::<TestWorkload> {
                             action: TestAction::new(1, 1),
                             observations: Vec::new(),
                             milestones: (),
                             outcome: Outcome::default(),
-                            candidate: candidate.then_some(CampaignCandidate {
+                            candidate: candidate.then_some(CampaignCandidate::<TestWorkload> {
                                 key: TestKey(1),
                                 viable: false,
                                 snapshot: 1,

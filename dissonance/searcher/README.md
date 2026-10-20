@@ -231,6 +231,38 @@ accepted records without appending an end record; sink and encoding failures
 stop certification and close both channel directions before joining. Browser and
 stepped coordinators retain inline encoding.
 
+The public result aliases resolve to storage parameterized by their actual field
+types, so owned static payloads do not require the workload type itself to be
+static. Their serde shapes and diagnostic names remain unchanged. Result literals
+and result-only generic hash helpers require an explicit workload carrier such
+as `CampaignJobResult::<G>` or `postcard_result_sha256::<G>`. Each job record
+carries the original spent job-result vectors as encoder-owned cleanup data. Admission mutably borrows those vectors, copies actions and
+milestones, and takes only accepted snapshots. Duplicate or rejected incoming
+snapshots return to their original candidate; nonviable candidates remain there.
+No snapshot is cloned for cleanup, and snapshot retirement, retention accounting
+and pin release remain on the coordinator. The encoder disposes this payload
+before serializing its record; cleanup data never enters JSON or the stream hash.
+Inline coordinators perform the same disposal before writing the line without
+requiring their cleanup data to be static or creating a thread. Only native
+background entry points require the payload's associated types to be static.
+
+Observations and incoming snapshots are owned data. Workloads must not use their
+destruction thread or timing to affect evidence, search decisions or other
+observable campaign behavior; both are unspecified. Evidence and certificate
+callbacks finish before candidate ownership changes. The existing record-count
+bounds also bound the number of retained job-result payloads, whose observation,
+action and unused snapshot allocations have variable size. This host pipeline
+storage is outside the archive memory budget, so that budget does not bound
+process RSS or bytes retained by a stalled encoder.
+
+Cleanup, serialization and record destruction have separate panic boundaries.
+A cleanup failure prevents serialization of the current record, and any current
+serialization or destruction failure preserves only earlier complete lines.
+Unprocessed staged, queued and in-batch envelopes guard their cleanup and record
+destruction separately, preserving the first failure or an existing unwind and
+closing channels before joining. This does not guarantee recovery from multiple
+panics inside one aggregate payload destructor.
+
 `PlacedThread::StreamEncoder` lets launchers place this additional host thread
 separately from the coordinator. Encoder placement failure or panic fails startup
 before dispatch. `telemetry.stream` reports encoder records/bytes and encode time,

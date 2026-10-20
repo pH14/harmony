@@ -444,7 +444,7 @@ pub(crate) fn execute_job(
         };
         let candidate = match captured {
             Some(snapshot) if matches!(outcome.disposition, ExecutionDisposition::Runnable) => {
-                Some(CampaignCandidate {
+                Some(CampaignCandidate::<crate::campaign::FaultWorkload> {
                     key: archive_key(target.observation()),
                     viable: true,
                     snapshot,
@@ -452,7 +452,7 @@ pub(crate) fn execute_job(
             }
             _ => None,
         };
-        actions.push(CampaignActionResult {
+        actions.push(CampaignActionResult::<crate::campaign::FaultWorkload> {
             action: *action,
             observations,
             milestones: aggregate,
@@ -463,7 +463,7 @@ pub(crate) fn execute_job(
             break;
         }
     }
-    Ok(CampaignJobResult {
+    Ok(CampaignJobResult::<crate::campaign::FaultWorkload> {
         preparation_failure: None,
         actions,
     })
@@ -1364,7 +1364,7 @@ mod tests {
                     objective_reached: false,
                     disposition: ExecutionDisposition::Runnable,
                 },
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<crate::campaign::FaultWorkload> {
                     key: archive_key(&FaultObservations::default()),
                     viable: true,
                     snapshot,

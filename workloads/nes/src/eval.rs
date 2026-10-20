@@ -123,7 +123,10 @@ pub fn evaluate<G: Workload>(
 ) -> Result<()>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-    G::Snapshot: crate::witness::EndpointIdentity,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: crate::witness::EndpointIdentity + 'static,
 {
     if request.live.is_some() {
         return Err("this game has no live view".into());
@@ -142,7 +145,10 @@ pub fn evaluate_watched<G: Workload, W: CampaignWatch<G>>(
 ) -> Result<()>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-    G::Snapshot: crate::witness::EndpointIdentity,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: crate::witness::EndpointIdentity + 'static,
 {
     let full = request.verification == "campaign";
     if request.verification != "witness" && !full {

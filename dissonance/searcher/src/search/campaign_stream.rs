@@ -18,15 +18,46 @@ const OUTPUT_CAPACITY: usize = 1;
 const BATCH_RECORD_LIMIT: usize = 16;
 const PARTIAL_BATCH_AGE_NS: u64 = 1_000_000;
 
-struct Command<R> {
-    records: Vec<R>,
+struct Envelope<R, D> {
+    record: Option<R>,
+    cleanup: Option<D>,
+}
+
+fn guarded_drop<T>(value: T) -> Result<(), String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(value)))
+        .map_err(|_| "campaign stream payload destruction panicked".to_owned())
+}
+
+impl<R, D> Drop for Envelope<R, D> {
+    fn drop(&mut self) {
+        let _ = guarded_drop(self.cleanup.take());
+        let _ = guarded_drop(self.record.take());
+    }
+}
+
+fn encode_envelope<R: Serialize, D>(
+    mut envelope: Envelope<R, D>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), String> {
+    guarded_drop(envelope.cleanup.take())?;
+    let record = envelope.record.take();
+    let serialized = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        serde_json::to_writer(buffer, &record).map_err(|error| error.to_string())
+    }))
+    .unwrap_or_else(|_| Err("campaign stream encoder panicked".to_owned()));
+    let disposed = guarded_drop(record);
+    serialized.and(disposed)
+}
+
+struct Command<R, D> {
+    records: Vec<Envelope<R, D>>,
     buffer: Vec<u8>,
 }
 
-struct Chunk<R> {
+struct Chunk<R, D> {
     buffer: Vec<u8>,
     records: u64,
-    recycled_records: Vec<R>,
+    recycled_records: Vec<Envelope<R, D>>,
 }
 
 struct Encoded {
@@ -34,22 +65,23 @@ struct Encoded {
     telemetry: StreamTelemetry,
 }
 
-struct Background<R> {
-    commands: Option<SyncSender<Command<R>>>,
-    output: Option<Receiver<Chunk<R>>>,
+struct Background<R, D> {
+    commands: Option<SyncSender<Command<R, D>>>,
+    output: Option<Receiver<Chunk<R, D>>>,
     worker: Option<JoinHandle<Result<Encoded, String>>>,
     recycled: Vec<Vec<u8>>,
-    recycled_records: Vec<Vec<R>>,
+    recycled_records: Vec<Vec<Envelope<R, D>>>,
     pending: u64,
     telemetry: StreamTelemetry,
 }
 
-impl<R: Serialize + Send + 'static> Background<R> {
-    fn start(
-        mut hasher: Sha256,
-        placement: Option<ThreadPlacement>,
-    ) -> Result<Self, Box<dyn Error>> {
-        let (commands, pending) = mpsc::sync_channel::<Command<R>>(COMMAND_CAPACITY);
+impl<R, D> Background<R, D> {
+    fn start(mut hasher: Sha256, placement: Option<ThreadPlacement>) -> Result<Self, Box<dyn Error>>
+    where
+        R: Serialize + Send + 'static,
+        D: Send + 'static,
+    {
+        let (commands, pending) = mpsc::sync_channel::<Command<R, D>>(COMMAND_CAPACITY);
         let (completed, output) = mpsc::sync_channel(OUTPUT_CAPACITY);
         let (ready, startup) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
@@ -68,24 +100,14 @@ impl<R: Serialize + Send + 'static> Background<R> {
                     let mut failure = None;
                     for record in command.records.drain(..) {
                         let offset = command.buffer.len();
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let result = serde_json::to_writer(&mut command.buffer, &record)
-                                .map_err(|error| error.to_string());
-                            drop(record);
-                            result
-                        }));
-                        match result {
-                            Ok(Ok(())) => {
+                        match encode_envelope(record, &mut command.buffer) {
+                            Ok(()) => {
                                 command.buffer.push(b'\n');
                                 records += 1;
                             }
-                            other => {
+                            Err(error) => {
                                 command.buffer.truncate(offset);
-                                failure = Some(match other {
-                                    Ok(Err(error)) => error,
-                                    Err(_) => "campaign stream encoder panicked".to_owned(),
-                                    Ok(Ok(())) => unreachable!(),
-                                });
+                                failure = Some(error);
                                 break;
                             }
                         }
@@ -161,7 +183,7 @@ impl<R: Serialize + Send + 'static> Background<R> {
         }
     }
 
-    fn consume(&mut self, chunk: Chunk<R>, sink: &mut dyn Write) -> Result<(), Box<dyn Error>> {
+    fn consume(&mut self, chunk: Chunk<R, D>, sink: &mut dyn Write) -> Result<(), Box<dyn Error>> {
         self.pending -= chunk.records;
         let buffer = chunk.buffer;
         self.recycled_records.push(chunk.recycled_records);
@@ -188,7 +210,11 @@ impl<R: Serialize + Send + 'static> Background<R> {
         }
     }
 
-    fn enqueue(&mut self, records: Vec<R>, sink: &mut dyn Write) -> Result<(), Box<dyn Error>> {
+    fn enqueue(
+        &mut self,
+        records: Vec<Envelope<R, D>>,
+        sink: &mut dyn Write,
+    ) -> Result<(), Box<dyn Error>> {
         let count = records.len() as u64;
         let mut command = Command {
             records,
@@ -262,7 +288,7 @@ impl<R: Serialize + Send + 'static> Background<R> {
     }
 }
 
-impl<R> Drop for Background<R> {
+impl<R, D> Drop for Background<R, D> {
     fn drop(&mut self) {
         self.commands.take();
         self.output.take();
@@ -272,18 +298,25 @@ impl<R> Drop for Background<R> {
     }
 }
 
-pub(super) struct StreamWriter<'a, R: Serialize + Send + 'static> {
+pub(super) struct StreamWriter<'a, R: Serialize + Send + 'static, D = ()> {
     sink: &'a mut dyn Write,
     hasher: Option<Sha256>,
     line: Vec<u8>,
-    background: Option<Background<R>>,
+    background: Option<Background<R, D>>,
     failed: bool,
-    staged: Vec<R>,
+    staged: Vec<Envelope<R, D>>,
     staged_since: Option<Moment>,
 }
 
 impl<'a, R: Serialize + Send + 'static> StreamWriter<'a, R> {
+    #[cfg(test)]
     pub(super) fn new(sink: &'a mut dyn Write) -> Self {
+        Self::new_with_cleanup(sink)
+    }
+}
+
+impl<'a, R: Serialize + Send + 'static, D> StreamWriter<'a, R, D> {
+    pub(super) fn new_with_cleanup(sink: &'a mut dyn Write) -> Self {
         Self {
             sink,
             hasher: Some(Sha256::new()),
@@ -298,7 +331,11 @@ impl<'a, R: Serialize + Send + 'static> StreamWriter<'a, R> {
     pub(super) fn enable_background(
         &mut self,
         placement: Option<ThreadPlacement>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error>>
+    where
+        D: Send + 'static,
+    {
+        self.require_healthy()?;
         if self.background.is_none() {
             let hasher = self
                 .hasher
@@ -311,24 +348,66 @@ impl<'a, R: Serialize + Send + 'static> StreamWriter<'a, R> {
     }
 
     pub(super) fn write_header<T: Serialize>(&mut self, value: &T) -> Result<(), Box<dyn Error>> {
+        self.require_healthy()?;
         if self.background.is_some() {
             return Err("campaign stream header must precede background encoding".into());
         }
-        self.write_inline(value)
+        let result = self.write_inline(value);
+        self.failed |= result.is_err();
+        result
     }
 
     pub(super) fn write_line(&mut self, value: R) -> Result<(), Box<dyn Error>> {
+        self.write_envelope(Envelope {
+            record: Some(value),
+            cleanup: None,
+        })
+    }
+
+    pub(super) fn write_line_with_cleanup(
+        &mut self,
+        value: R,
+        cleanup: D,
+    ) -> Result<(), Box<dyn Error>> {
+        self.write_envelope(Envelope {
+            record: Some(value),
+            cleanup: Some(cleanup),
+        })
+    }
+
+    fn write_envelope(&mut self, envelope: Envelope<R, D>) -> Result<(), Box<dyn Error>> {
+        self.require_healthy()?;
         if self.background.is_some() {
             if self.staged.is_empty() {
                 self.staged_since = Some(now());
             }
-            self.staged.push(value);
+            self.staged.push(envelope);
             if self.staged.len() == BATCH_RECORD_LIMIT {
                 return self.flush_staged();
             }
             return Ok(());
         }
-        self.write_inline(&value)
+        self.line.clear();
+        if let Err(error) = encode_envelope(envelope, &mut self.line) {
+            self.failed = true;
+            return Err(error.into());
+        }
+        self.line.push(b'\n');
+        let result = self.sink.write_all(&self.line);
+        self.failed |= result.is_err();
+        result?;
+        self.hasher
+            .as_mut()
+            .ok_or("campaign stream has no hash state")?
+            .update(&self.line);
+        Ok(())
+    }
+
+    fn require_healthy(&self) -> Result<(), Box<dyn Error>> {
+        if self.failed {
+            return Err("campaign stream previously failed".into());
+        }
+        Ok(())
     }
 
     fn write_inline<T: Serialize>(&mut self, value: &T) -> Result<(), Box<dyn Error>> {
@@ -363,6 +442,7 @@ impl<'a, R: Serialize + Send + 'static> StreamWriter<'a, R> {
     }
 
     pub(super) fn drain_ready(&mut self) -> Result<(), Box<dyn Error>> {
+        self.require_healthy()?;
         if self
             .staged_since
             .is_some_and(|started| nanos_since(started) >= PARTIAL_BATCH_AGE_NS)
@@ -378,6 +458,7 @@ impl<'a, R: Serialize + Send + 'static> StreamWriter<'a, R> {
     }
 
     pub(super) fn finish(mut self) -> Result<(String, Option<StreamTelemetry>), Box<dyn Error>> {
+        self.require_healthy()?;
         self.flush_staged()?;
         let mut result = if let Some(background) = self.background.take() {
             let encoded = background.finish(self.sink)?;
@@ -403,7 +484,7 @@ impl<'a, R: Serialize + Send + 'static> StreamWriter<'a, R> {
     }
 }
 
-impl<R: Serialize + Send + 'static> Drop for StreamWriter<'_, R> {
+impl<R: Serialize + Send + 'static, D> Drop for StreamWriter<'_, R, D> {
     fn drop(&mut self) {
         if !self.failed {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
@@ -518,9 +599,12 @@ mod tests {
     #[test]
     fn typed_record_storage_returns_empty_with_its_original_allocation() {
         let mut sink = Vec::new();
-        let mut background = Background::start(Sha256::new(), None).unwrap();
+        let mut background = Background::<u64, ()>::start(Sha256::new(), None).unwrap();
         let mut records = Vec::with_capacity(BATCH_RECORD_LIMIT);
-        records.extend(0_u64..BATCH_RECORD_LIMIT as u64);
+        records.extend((0_u64..BATCH_RECORD_LIMIT as u64).map(|record| Envelope {
+            record: Some(record),
+            cleanup: None,
+        }));
         let allocation = records.as_ptr();
         let capacity = records.capacity();
         background.enqueue(records, &mut sink).unwrap();
@@ -532,7 +616,12 @@ mod tests {
         assert!(recycled.is_empty());
         assert_eq!(recycled.as_ptr(), allocation);
         assert_eq!(recycled.capacity(), capacity);
-        recycled.extend(100_u64..100 + BATCH_RECORD_LIMIT as u64);
+        recycled.extend(
+            (100_u64..100 + BATCH_RECORD_LIMIT as u64).map(|record| Envelope {
+                record: Some(record),
+                cleanup: None,
+            }),
+        );
         assert_eq!(recycled.as_ptr(), allocation);
         background.enqueue(recycled, &mut sink).unwrap();
         let encoded = background.finish(&mut sink).unwrap();
@@ -823,9 +912,12 @@ mod tests {
             .as_ref()
             .unwrap()
             .send(Command {
-                records: vec![WaitingRecord {
-                    value: 0,
-                    wait: Some(blocked),
+                records: vec![Envelope {
+                    record: Some(WaitingRecord {
+                        value: 0,
+                        wait: Some(blocked),
+                    }),
+                    cleanup: None,
                 }],
                 buffer: Vec::new(),
             })
@@ -837,9 +929,12 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .send(Command {
-                    records: vec![WaitingRecord {
-                        value: index,
-                        wait: None,
+                    records: vec![Envelope {
+                        record: Some(WaitingRecord {
+                            value: index,
+                            wait: None,
+                        }),
+                        cleanup: None,
                     }],
                     buffer: Vec::new(),
                 })
@@ -848,9 +943,12 @@ mod tests {
         }
         assert!(matches!(
             background.commands.as_ref().unwrap().try_send(Command {
-                records: vec![WaitingRecord {
-                    value: usize::MAX,
-                    wait: None
+                records: vec![Envelope {
+                    record: Some(WaitingRecord {
+                        value: usize::MAX,
+                        wait: None
+                    }),
+                    cleanup: None
                 }],
                 buffer: Vec::new()
             }),
@@ -874,5 +972,278 @@ mod tests {
             .map(|line| serde_json::from_slice(line).unwrap())
             .collect();
         assert_eq!(actual, (0..=COMMAND_CAPACITY + 1).collect::<Vec<_>>());
+    }
+    #[test]
+    fn inline_cleanup_can_borrow_non_send_non_static_data() {
+        struct BorrowedCleanup<'a>(&'a std::cell::Cell<usize>);
+        impl Drop for BorrowedCleanup<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let count = std::cell::Cell::new(0);
+        let mut sink = Vec::new();
+        let mut writer = StreamWriter::<u8, BorrowedCleanup<'_>>::new_with_cleanup(&mut sink);
+        writer
+            .write_line_with_cleanup(7, BorrowedCleanup(&count))
+            .unwrap();
+        writer.finish().unwrap();
+        assert_eq!(count.get(), 1);
+        assert_eq!(sink, b"7\n");
+    }
+
+    struct Cleanup {
+        count: Arc<AtomicUsize>,
+        threads: Arc<std::sync::Mutex<Vec<String>>>,
+        panic: bool,
+        wait: Option<Receiver<()>>,
+    }
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if let Some(wait) = &self.wait {
+                wait.recv().unwrap();
+            }
+            self.count.fetch_add(1, Ordering::SeqCst);
+            self.threads.lock().unwrap().push(
+                std::thread::current()
+                    .name()
+                    .unwrap_or("unnamed")
+                    .to_owned(),
+            );
+            assert!(!self.panic, "cleanup panic fixture");
+        }
+    }
+
+    fn cleanup(count: &Arc<AtomicUsize>, panic: bool) -> Cleanup {
+        Cleanup {
+            count: Arc::clone(count),
+            threads: Arc::new(std::sync::Mutex::new(Vec::new())),
+            panic,
+            wait: None,
+        }
+    }
+
+    #[test]
+    fn cleanup_precedes_serialization_and_runs_once_on_the_encoding_thread() {
+        struct CheckedRecord {
+            value: usize,
+            count: Arc<AtomicUsize>,
+        }
+        impl Serialize for CheckedRecord {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                assert_eq!(self.count.load(Ordering::SeqCst), self.value + 1);
+                self.value.serialize(serializer)
+            }
+        }
+        let mut reference = None;
+        for background in [false, true] {
+            let count = Arc::new(AtomicUsize::new(0));
+            let threads = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut sink = Vec::new();
+            let mut writer = StreamWriter::<CheckedRecord, Cleanup>::new_with_cleanup(&mut sink);
+            writer.write_header(&"header").unwrap();
+            if background {
+                writer.enable_background(None).unwrap();
+            }
+            for value in 0..100 {
+                writer
+                    .write_line_with_cleanup(
+                        CheckedRecord {
+                            value,
+                            count: Arc::clone(&count),
+                        },
+                        Cleanup {
+                            count: Arc::clone(&count),
+                            threads: Arc::clone(&threads),
+                            panic: false,
+                            wait: None,
+                        },
+                    )
+                    .unwrap();
+            }
+            let (digest, _) = writer.finish().unwrap();
+            assert_eq!(count.load(Ordering::SeqCst), 100);
+            let threads = threads.lock().unwrap();
+            assert_eq!(threads.len(), 100);
+            if background {
+                assert!(threads.iter().all(|name| name == "campaign-stream"));
+            } else {
+                assert!(threads.iter().all(|name| name != "campaign-stream"));
+            }
+            if let Some((bytes, expected_digest)) = &reference {
+                assert_eq!(&sink, bytes);
+                assert_eq!(&digest, expected_digest);
+            } else {
+                reference = Some((sink, digest));
+            }
+        }
+    }
+
+    #[test]
+    fn cleanup_failure_preserves_prefix_and_guards_current_queued_and_staged_tails() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut sink = Vec::new();
+        let mut writer = StreamWriter::<usize, Cleanup>::new_with_cleanup(&mut sink);
+        writer.enable_background(None).unwrap();
+        let (release, blocked) = mpsc::channel();
+        writer
+            .write_line_with_cleanup(0, cleanup(&count, false))
+            .unwrap();
+        let mut disposal = cleanup(&count, true);
+        disposal.wait = Some(blocked);
+        writer.write_line_with_cleanup(1, disposal).unwrap();
+        for value in 2..BATCH_RECORD_LIMIT * 3 + 3 {
+            writer
+                .write_line_with_cleanup(value, cleanup(&count, true))
+                .unwrap();
+        }
+        release.send(()).unwrap();
+        assert!(
+            writer
+                .finish()
+                .unwrap_err()
+                .to_string()
+                .contains("destruction panicked")
+        );
+        assert_eq!(count.load(Ordering::SeqCst), BATCH_RECORD_LIMIT * 3 + 3);
+        assert_eq!(sink, b"0\n");
+    }
+
+    #[test]
+    fn cleanup_failure_inline_never_serializes_the_current_record() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut sink = Vec::new();
+        let mut writer = StreamWriter::<Record<Panicking>, Cleanup>::new_with_cleanup(&mut sink);
+        writer
+            .write_line_with_cleanup(Record::Number(1), cleanup(&count, false))
+            .unwrap();
+        assert!(
+            writer
+                .write_line_with_cleanup(Record::Value(Panicking), cleanup(&count, true))
+                .unwrap_err()
+                .to_string()
+                .contains("destruction panicked")
+        );
+        drop(writer);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(sink, b"1\n");
+    }
+
+    #[test]
+    fn failed_inline_cleanup_rejects_later_records_header_drain_and_digest() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut sink = Vec::new();
+        let mut writer = StreamWriter::<u8, Cleanup>::new_with_cleanup(&mut sink);
+        writer
+            .write_line_with_cleanup(1, cleanup(&count, false))
+            .unwrap();
+        assert!(
+            writer
+                .write_line_with_cleanup(2, cleanup(&count, true))
+                .unwrap_err()
+                .to_string()
+                .contains("destruction panicked")
+        );
+        assert!(
+            writer
+                .write_line_with_cleanup(3, cleanup(&count, true))
+                .is_err()
+        );
+        assert!(writer.write_line(4).is_err());
+        assert!(writer.write_header(&"later header").is_err());
+        assert!(writer.drain_ready().is_err());
+        assert!(writer.enable_background(None).is_err());
+        assert!(writer.finish().is_err());
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+        assert_eq!(sink, b"1\n");
+    }
+
+    struct InvalidAndPanicDrop;
+    impl Serialize for InvalidAndPanicDrop {
+        fn serialize<S: Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            Err(S::Error::custom("first serialization failure"))
+        }
+    }
+    impl Drop for InvalidAndPanicDrop {
+        fn drop(&mut self) {
+            panic!("secondary record destruction failure");
+        }
+    }
+
+    #[test]
+    fn serialization_error_wins_over_record_drop_and_tail_cleanup_failures() {
+        for background in [false, true] {
+            let count = Arc::new(AtomicUsize::new(0));
+            let mut sink = Vec::new();
+            let mut writer =
+                StreamWriter::<Record<InvalidAndPanicDrop>, Cleanup>::new_with_cleanup(&mut sink);
+            if background {
+                writer.enable_background(None).unwrap();
+            }
+            writer
+                .write_line_with_cleanup(Record::Number(1), cleanup(&count, false))
+                .unwrap();
+            let failed = writer.write_line_with_cleanup(
+                Record::Value(InvalidAndPanicDrop),
+                cleanup(&count, false),
+            );
+            let error = if let Err(error) = failed {
+                drop(writer);
+                error
+            } else {
+                writer
+                    .write_line_with_cleanup(
+                        Record::Value(InvalidAndPanicDrop),
+                        cleanup(&count, true),
+                    )
+                    .unwrap();
+                writer.finish().unwrap_err()
+            };
+            assert!(error.to_string().contains("first serialization failure"));
+            assert_eq!(count.load(Ordering::SeqCst), if background { 3 } else { 2 });
+            assert_eq!(sink, b"1\n");
+        }
+    }
+
+    #[test]
+    fn cleanup_panics_and_sink_failure_preserve_primary_unwind_and_release_all_payloads() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let caught = std::panic::catch_unwind({
+            let count = Arc::clone(&count);
+            move || {
+                let mut sink = PanicFlush;
+                let mut writer = StreamWriter::<u8, Cleanup>::new_with_cleanup(&mut sink);
+                writer.enable_background(None).unwrap();
+                for value in 0..3 {
+                    writer
+                        .write_line_with_cleanup(value, cleanup(&count, true))
+                        .unwrap();
+                }
+                panic!("primary failure with staged cleanup");
+            }
+        });
+        assert_eq!(
+            caught.unwrap_err().downcast_ref::<&str>(),
+            Some(&"primary failure with staged cleanup")
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut sink = BrokenSink { fail_flush: false };
+        let mut writer = StreamWriter::<usize, Cleanup>::new_with_cleanup(&mut sink);
+        writer.enable_background(None).unwrap();
+        for value in 0..3 {
+            writer
+                .write_line_with_cleanup(value, cleanup(&count, false))
+                .unwrap();
+        }
+        assert!(
+            writer
+                .finish()
+                .unwrap_err()
+                .to_string()
+                .contains("broken stream sink")
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 }

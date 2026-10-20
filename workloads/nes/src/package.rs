@@ -151,6 +151,10 @@ fn search<G: Endpointed>(
 ) -> Result<SearchEvidence, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     fs::create_dir_all(&options.output)?;
     let mut stream = BufWriter::new(fs::File::create(options.output.join("stream.jsonl"))?);
