@@ -19,6 +19,12 @@ in the platform supervisor's bundle format:
 | `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |
 | `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
+| `disk <node> <path> <size>` | gives that node an ext4 filesystem at `path`, sized `16M` through `1G` in whole 4 KiB pages, which power-loss actions can cut |
+
+A `disk` line names a node declared by a `node` line, and each node has at most
+one disk. The image must contain `mkfs.ext4`. The
+[supervisor README](../../consonance/harmony-linux/supervisor/README.md#node-disks)
+describes how the disk is built and replayed.
 
 [`prepare`](src/prepare.rs) stages that image, packs its rootfs, reads the packed
 bundle for the action alphabet, and selects `/etc/harmony/bundle` for structured
@@ -201,6 +207,8 @@ the same quantum, so busy-loop scheduling replays along with fault timing:
 | `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
 | `Kill(node, ticks)` | the node stays down until a later `Restart` window for it |
 | `KillAll(ticks)` | every node goes down, as in a host crash, and each stays down until a later `Restart` window for it; drawn only for bundles with more than one node |
+| `PowerLoss(node, ticks)` | the node goes down as in `Kill`, and its disk keeps only the writes that reached it before its last cache flush, plus a prefix of the later writes chosen by the action's `choice`; drawn only for a node with a `disk` line |
+| `PowerLossAll(ticks)` | every node goes down as in `KillAll`, and every disk loses its unflushed writes the same way, each with its own prefix; drawn only for bundles with a `disk` line and more than one node |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once |
@@ -213,7 +221,8 @@ seed mixed with that choice. A workload driver that takes its decisions from
 that stream therefore makes different decisions in each continuation of a
 snapshot, and replay installs the same choices. The choice is part of the
 action's key, so two choices never share a cached snapshot. A choice of zero
-keeps the unmixed seed. The guest kernel's `getrandom` state is restored with
+keeps the unmixed seed. A power-loss action also uses its choice to pick how
+many unflushed writes each disk keeps; a choice of zero keeps none. The guest kernel's `getrandom` state is restored with
 the snapshot and is not reseeded, so decisions drawn from it repeat across
 continuations.
 
