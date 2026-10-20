@@ -49,7 +49,7 @@ try {
     await page.waitForFunction(() => +document.querySelector('#map').dataset.centerX > 1400);
     await page.waitForTimeout(4000);
     const before = +await page.locator('#map').getAttribute('data-center-x');
-    assert.ok(+await page.locator('#map').getAttribute('data-swarm-count') >= 4, 'A results gap holds visible positions');
+    assert.equal(+await page.locator('#map').getAttribute('data-swarm-count'), 0, 'Expired attempts disappear during a results gap');
     await page.evaluate(() => window.sendTrail(200, 12));
     await page.waitForTimeout(400);
     assert.ok(+await page.locator('#map').getAttribute('data-center-x') > before - 100, 'A short burst after a gap cannot pull the camera backward');
@@ -75,5 +75,5 @@ try {
     await page.close();
   }
   assert.deepEqual(errors, []);
-  console.log('Famidash camera: gaps hold visible positions, sparse bursts and pointer holds do not cause retreats, and selecting a new level clears manual holds on desktop, phone and reduced motion.');
+  console.log('Famidash camera: empty gaps, sparse bursts and pointer holds do not cause retreats, and selecting a new level clears manual holds on desktop, phone and reduced motion.');
 } finally { await browser.close(); }
