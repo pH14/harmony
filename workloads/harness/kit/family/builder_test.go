@@ -39,9 +39,13 @@ func (b *builder) line(file string, record history.Record, v any) {
 }
 
 func (b *builder) op(file string, p int, f, k string, input any, invoke int64, outcome history.Type, output any, complete int64) int64 {
+	return b.opOn(file, p, f, k, "", input, invoke, outcome, output, complete)
+}
+
+func (b *builder) opOn(file string, p int, f, k, node string, input any, invoke int64, outcome history.Type, output any, complete int64) int64 {
 	index := b.next[file]
 	b.next[file]++
-	b.line(file, history.Record{P: p, T: history.Invoke, F: f, K: k, TS: invoke, I: index}, input)
+	b.line(file, history.Record{P: p, T: history.Invoke, F: f, K: k, N: node, TS: invoke, I: index}, input)
 	if outcome != "" {
 		b.line(file, history.Record{P: p, T: outcome, F: f, K: k, TS: complete, I: index}, output)
 	}

@@ -23,10 +23,10 @@ func TestJournalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	write, _ := first.Invoke(0, "append", "", "v-0-1")
-	read, _ := first.Invoke(1, "read", "", nil)
-	lost, _ := first.Invoke(2, "append", "", "v-2-1")
-	failed, _ := first.Invoke(3, "append", "", "v-3-1")
+	write, _ := first.Invoke(0, "append", "", "", "v-0-1")
+	read, _ := first.Invoke(1, "read", "", "", nil)
+	lost, _ := first.Invoke(2, "append", "", "", "v-2-1")
+	failed, _ := first.Invoke(3, "append", "", "", "v-3-1")
 	if err := first.Complete(0, OK, "append", "", write, 7); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestJournalRoundTrip(t *testing.T) {
 	if second.Name() == first.Name() {
 		t.Fatal("journal names must differ")
 	}
-	checkRead, _ := second.Invoke(0, "read", "", nil)
+	checkRead, _ := second.Invoke(0, "read", "", "n2", nil)
 	second.Close()
 	appendTorn(t, filepath.Join(dir, second.Name()), `{"p":0,"t":"ok","f":"read","k":"","v":[],"ts":9`)
 
@@ -59,6 +59,9 @@ func TestJournalRoundTrip(t *testing.T) {
 	types := map[Ref]Type{}
 	for _, op := range h.Ops {
 		types[Ref{op.Journal, op.Index}] = op.Type
+		if pinned := op.Journal == second.Name(); (op.Node == "n2") != pinned {
+			t.Errorf("op %s/%d has node %q", op.Journal, op.Index, op.Node)
+		}
 		if op.Type == Info && op.Complete != Forever {
 			t.Errorf("indeterminate op %d completes at %d", op.Index, op.Complete)
 		}

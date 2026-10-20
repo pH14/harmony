@@ -209,6 +209,95 @@ func TestCorrectRegisterIsClean(t *testing.T) {
 	}
 }
 
+type replicatedLog struct {
+	memoryLog
+	behind string
+}
+
+func (r *replicatedLog) Nodes() []string { return []string{"n1", "n2", "n3"} }
+
+func (r *replicatedLog) Connect(context.Context, int) (Client, error) { return r, nil }
+
+func (r *replicatedLog) Invoke(ctx context.Context, op family.Op) (any, error) {
+	values, err := r.memoryLog.Invoke(ctx, op)
+	if err != nil || op.F != family.LogRead || op.Node == "" || op.Node != r.behind {
+		return values, err
+	}
+	var kept []string
+	for index, value := range values.([]string) {
+		if index%5 != 2 {
+			kept = append(kept, value)
+		}
+	}
+	return kept, nil
+}
+
+func TestCheckReadsEveryNode(t *testing.T) {
+	config := testConfig(t)
+	adapter := &replicatedLog{}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Violations) != 0 || result.Ops != 4*200+4 || len(result.Nodes) != 3 {
+		t.Fatalf("result %s", result)
+	}
+	for node, outcome := range result.Nodes {
+		if outcome != history.OK {
+			t.Fatalf("node %s read %s", node, outcome)
+		}
+	}
+	if failed := failing(t); len(failed) != 0 {
+		t.Fatalf("failing %v", failed)
+	}
+	if !passed(t)[CheckNodeReadSucceeded] {
+		t.Fatal("no pinned read succeeded")
+	}
+}
+
+func TestNodeThatSkipsValuesIsNamed(t *testing.T) {
+	config := testConfig(t)
+	adapter := &replicatedLog{behind: "n2"}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := failing(t)
+	if !failed[family.LogNodeLost] || len(failed) != 1 {
+		t.Fatalf("failing %v; result %s", failed, result)
+	}
+	for _, violation := range result.Violations {
+		if violation.Details["node"] != "n2" {
+			t.Fatalf("violation %+v", violation)
+		}
+	}
+}
+
+func passed(t *testing.T) map[string]bool {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(os.Getenv("ANTITHESIS_OUTPUT_DIR"), "sdk.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var record sdkRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.Assert.Hit && record.Assert.Condition {
+			held[record.Assert.ID] = true
+		}
+	}
+	return held
+}
+
 type hanging struct{ memoryLog }
 
 func (h *hanging) Connect(context.Context, int) (Client, error) { return h, nil }

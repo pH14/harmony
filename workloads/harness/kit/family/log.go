@@ -19,6 +19,8 @@ const (
 	LogPhantom     = "log: every value read was appended"
 	LogFailedRead  = "log: no append that failed is in a read"
 	LogPosition    = "log: acknowledged appends have distinct positions"
+	LogNodeLost    = "log: every node's read includes every acknowledged append"
+	LogNodeOrder   = "log: each node's reads agree on one order of values"
 	LogAppendAcked = "log: an append was acknowledged"
 )
 
@@ -27,14 +29,17 @@ const (
 	LogRead   = "read"
 )
 
-const maxArenas = 64
+const (
+	maxArenas  = 64
+	maxMissing = 32
+)
 
 type Log struct{}
 
 func (Log) Name() string { return "log" }
 
 func (Log) Kinds() []string {
-	return []string{LogLost, LogOrder, LogDuplicate, LogPhantom, LogFailedRead, LogPosition}
+	return []string{LogLost, LogOrder, LogDuplicate, LogPhantom, LogFailedRead, LogPosition, LogNodeLost, LogNodeOrder}
 }
 
 func (Log) Observations() []string { return []string{LogAppendAcked} }
@@ -61,28 +66,34 @@ type ReadOutput struct {
 	N    int          `json:"n"`
 }
 
-type logRecorder struct {
-	mu     sync.Mutex
+type logChain struct {
 	base   *history.Ref
 	values []string
 }
 
+type logRecorder struct {
+	mu     sync.Mutex
+	chains map[string]*logChain
+}
+
 func (Log) Recorder(prior *history.History) Recorder {
-	recorder := &logRecorder{}
+	recorder := &logRecorder{chains: map[string]*logChain{}}
 	if prior == nil {
 		return recorder
 	}
 	state := resolveLog(prior)
-	var latest *logRead
+	latest := map[string]*logRead{}
 	for index := range state.reads {
 		read := &state.reads[index]
-		if latest == nil || read.op.Complete > latest.op.Complete {
-			latest = read
+		if current := latest[read.op.Node]; current == nil || read.op.Complete > current.op.Complete {
+			latest[read.op.Node] = read
 		}
 	}
-	if latest != nil {
-		recorder.base = &history.Ref{Journal: latest.op.Journal, Index: latest.op.Index}
-		recorder.values = append([]string(nil), latest.values()...)
+	for node, read := range latest {
+		recorder.chains[node] = &logChain{
+			base:   &history.Ref{Journal: read.op.Journal, Index: read.op.Index},
+			values: append([]string(nil), read.values()...),
+		}
 	}
 	return recorder
 }
@@ -97,9 +108,17 @@ func (r *logRecorder) Record(journal *history.Journal, p int, op Op, index int64
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	output := ReadOutput{Base: r.base, N: len(values)}
-	if r.base != nil {
-		for output.Keep < len(values) && output.Keep < len(r.values) && values[output.Keep] == r.values[output.Keep] {
+	chain := r.chains[op.Node]
+	if chain == nil {
+		chain = &logChain{}
+		if unpinned := r.chains[""]; unpinned != nil {
+			*chain = *unpinned
+		}
+		r.chains[op.Node] = chain
+	}
+	output := ReadOutput{Base: chain.base, N: len(values)}
+	if chain.base != nil {
+		for output.Keep < len(values) && output.Keep < len(chain.values) && values[output.Keep] == chain.values[output.Keep] {
 			output.Keep++
 		}
 	}
@@ -107,8 +126,8 @@ func (r *logRecorder) Record(journal *history.Journal, p int, op Op, index int64
 	if err := journal.Complete(p, history.OK, op.F, op.K, index, output); err != nil {
 		return err
 	}
-	r.base = &history.Ref{Journal: journal.Name(), Index: index}
-	r.values = append(r.values[:0:0], values...)
+	chain.base = &history.Ref{Journal: journal.Name(), Index: index}
+	chain.values = append(chain.values[:0:0], values...)
 	return nil
 }
 
@@ -119,7 +138,7 @@ type arena struct {
 	dup     int
 	phantom int
 	failed  int
-	longest *logRead
+	longest map[string]*logRead
 }
 
 func (a *arena) index(value string) (int, bool) {
@@ -182,8 +201,11 @@ func resolveLog(h *history.History) *logState {
 	}
 	for index := range state.reads {
 		read := &state.reads[index]
-		if read.arena != nil && (read.arena.longest == nil || read.n > read.arena.longest.n) {
-			read.arena.longest = read
+		if read.arena == nil {
+			continue
+		}
+		if current := read.arena.longest[read.op.Node]; current == nil || read.n > current.n {
+			read.arena.longest[read.op.Node] = read
 		}
 	}
 	return state
@@ -242,7 +264,7 @@ func (s *logState) extend(a *arena, keep int, add []string) *sequence {
 	if len(s.arenas) >= maxArenas {
 		return nil
 	}
-	fresh := &arena{}
+	fresh := &arena{longest: map[string]*logRead{}}
 	if a != nil {
 		fresh.values = append(fresh.values, a.values[:keep]...)
 	}
@@ -315,6 +337,16 @@ func (Log) Check(h *history.History) Report {
 		a.prepare(appended)
 	}
 	report.Decided = len(state.reads) > 0
+	report.Undecided = map[string]bool{LogLost: true, LogOrder: true, LogNodeLost: true, LogNodeOrder: true}
+	for index := range state.reads {
+		if state.reads[index].op.Node == "" {
+			delete(report.Undecided, LogLost)
+			delete(report.Undecided, LogOrder)
+		} else {
+			delete(report.Undecided, LogNodeLost)
+			delete(report.Undecided, LogNodeOrder)
+		}
+	}
 	var found collector
 	checkPositions(acks, &found)
 	checkReadContents(state, appended, &found)
@@ -350,8 +382,9 @@ func checkReadContents(state *logState, appended map[string]*history.Op, found *
 	for index := range state.reads {
 		read := &state.reads[index]
 		a := read.arena
+		node := read.op.Node
 		if a.dup < read.n {
-			found.add(LogDuplicate, func() map[string]any {
+			found.addFor(LogDuplicate, node, func() map[string]any {
 				value := a.values[a.dup]
 				return map[string]any{
 					"value":     value,
@@ -361,7 +394,7 @@ func checkReadContents(state *logState, appended map[string]*history.Op, found *
 			})
 		}
 		if a.phantom < read.n {
-			found.add(LogPhantom, func() map[string]any {
+			found.addFor(LogPhantom, node, func() map[string]any {
 				return map[string]any{
 					"value":    a.values[a.phantom],
 					"position": a.phantom,
@@ -370,7 +403,7 @@ func checkReadContents(state *logState, appended map[string]*history.Op, found *
 			})
 		}
 		if a.failed < read.n {
-			found.add(LogFailedRead, func() map[string]any {
+			found.addFor(LogFailedRead, node, func() map[string]any {
 				value := a.values[a.failed]
 				return map[string]any{
 					"value":    value,
@@ -406,9 +439,14 @@ func checkLost(state *logState, acks []ack, found *collector) {
 		if before == 0 || reach[read.arena][before-1] < read.n {
 			continue
 		}
-		found.add(LogLost, func() map[string]any {
+		kind := LogLost
+		if read.op.Node != "" {
+			kind = LogNodeLost
+		}
+		found.addFor(kind, read.op.Node, func() map[string]any {
 			missing := 0
 			var first *ack
+			var values []string
 			for at := 0; at < before; at++ {
 				position, ok := read.arena.index(acks[at].value)
 				if !ok || position >= read.n {
@@ -416,13 +454,17 @@ func checkLost(state *logState, acks []ack, found *collector) {
 					if first == nil {
 						first = &acks[at]
 					}
+					if len(values) < maxMissing {
+						values = append(values, acks[at].value)
+					}
 				}
 			}
 			details := map[string]any{
-				"value":   first.value,
-				"ack":     describe(first.op),
-				"read":    describeRead(read),
-				"missing": missing,
+				"value":          first.value,
+				"ack":            describe(first.op),
+				"read":           describeRead(read),
+				"missing":        missing,
+				"missing_values": values,
 			}
 			if first.position != nil {
 				details["position"] = *first.position
@@ -450,56 +492,108 @@ func checkOrder(state *logState, found *collector) {
 	}
 }
 
+type orderReport struct {
+	found    *collector
+	reported map[string]bool
+}
+
+func (r *orderReport) add(first, second *logRead, details func() map[string]any) {
+	evidence := func() map[string]any {
+		values := details()
+		values["first_read"] = describeRead(first)
+		values["second_read"] = describeRead(second)
+		return values
+	}
+	node := first.op.Node
+	if second.op.Node != node || r.reported[node] {
+		return
+	}
+	r.reported[node] = true
+	if node == "" {
+		r.found.add(LogOrder, evidence)
+	} else {
+		r.found.addFor(LogNodeOrder, node, evidence)
+	}
+}
+
 func checkCommonOrder(left, right *arena, found *collector) {
-	highest, highestAt := -1, -1
-	for at, value := range right.values {
-		if right.repeats[value] || left.repeats[value] {
-			continue
+	var nodes []string
+	for node := range left.longest {
+		if right.longest[node] != nil {
+			nodes = append(nodes, node)
 		}
-		position, ok := left.index(value)
-		if !ok {
-			continue
+	}
+	sort.Strings(nodes)
+	report := orderReport{found: found, reported: map[string]bool{}}
+	for _, node := range nodes {
+		first, second := left.longest[node], right.longest[node]
+		highest, highestAt := -1, -1
+		for at, value := range right.values[:second.n] {
+			if right.repeats[value] || left.repeats[value] {
+				continue
+			}
+			position, ok := left.index(value)
+			if !ok || position >= first.n {
+				continue
+			}
+			if position < highest {
+				before, beforeAt := left.values[highest], highestAt
+				report.add(first, second, func() map[string]any {
+					return map[string]any{
+						"values":                []string{before, value},
+						"first_read_positions":  []int{highest, position},
+						"second_read_positions": []int{beforeAt, at},
+					}
+				})
+				break
+			}
+			highest, highestAt = position, at
 		}
-		if position < highest {
-			before := left.values[highest]
-			beforeAt := highestAt
-			found.add(LogOrder, func() map[string]any {
-				return map[string]any{
-					"first_read":            describeRead(left.longest),
-					"second_read":           describeRead(right.longest),
-					"values":                []string{before, value},
-					"first_read_positions":  []int{highest, position},
-					"second_read_positions": []int{beforeAt, at},
-				}
-			})
-			return
-		}
-		highest, highestAt = position, at
 	}
 }
 
 type insertion struct{ inserted, observed int }
 
+type witnesses struct {
+	reads   []*logRead
+	longest []*logRead
+}
+
 func checkInsertion(earlier *arena, earlierReads []*logRead, later *arena, laterReads []*logRead, found *collector) {
 	if len(earlierReads) == 0 || len(laterReads) == 0 {
 		return
 	}
-	earlierReads = append([]*logRead(nil), earlierReads...)
-	sort.Slice(earlierReads, func(i, j int) bool { return earlierReads[i].op.Complete < earlierReads[j].op.Complete })
-	longest := make([]*logRead, len(earlierReads))
-	for index, read := range earlierReads {
-		longest[index] = read
-		if index > 0 && longest[index-1].n >= read.n {
-			longest[index] = longest[index-1]
+	byNode := map[string]*witnesses{}
+	for _, read := range earlierReads {
+		group := byNode[read.op.Node]
+		if group == nil {
+			group = &witnesses{}
+			byNode[read.op.Node] = group
+		}
+		group.reads = append(group.reads, read)
+	}
+	for _, group := range byNode {
+		sort.Slice(group.reads, func(i, j int) bool { return group.reads[i].op.Complete < group.reads[j].op.Complete })
+		group.longest = make([]*logRead, len(group.reads))
+		for index, read := range group.reads {
+			group.longest[index] = read
+			if index > 0 && group.longest[index-1].n >= read.n {
+				group.longest[index] = group.longest[index-1]
+			}
 		}
 	}
 	thresholds := map[int]insertion{}
+	report := orderReport{found: found, reported: map[string]bool{}}
 	for _, read := range laterReads {
-		before := sort.Search(len(earlierReads), func(i int) bool { return earlierReads[i].op.Complete >= read.op.Invoke })
+		group := byNode[read.op.Node]
+		if group == nil || report.reported[read.op.Node] {
+			continue
+		}
+		before := sort.Search(len(group.reads), func(i int) bool { return group.reads[i].op.Complete >= read.op.Invoke })
 		if before == 0 {
 			continue
 		}
-		witness := longest[before-1]
+		witness := group.longest[before-1]
 		limit, ok := thresholds[witness.n]
 		if !ok {
 			limit = insertionThreshold(earlier, witness.n, later)
@@ -508,16 +602,13 @@ func checkInsertion(earlier *arena, earlierReads []*logRead, later *arena, later
 		if limit.observed >= read.n {
 			continue
 		}
-		found.add(LogOrder, func() map[string]any {
+		report.add(witness, read, func() map[string]any {
 			return map[string]any{
-				"first_read":            describeRead(witness),
-				"second_read":           describeRead(read),
 				"inserted_value":        later.values[limit.inserted],
 				"observed_value":        later.values[limit.observed],
 				"second_read_positions": []int{limit.inserted, limit.observed},
 			}
 		})
-		return
 	}
 }
 

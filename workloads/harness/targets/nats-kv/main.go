@@ -19,9 +19,11 @@ import (
 )
 
 const (
-	bucket   = "B"
-	stream   = "KV_" + bucket
-	replicas = 3
+	bucket            = "B"
+	stream            = "KV_" + bucket
+	keySubject        = "$KV." + bucket + "."
+	replicas          = 3
+	placementAttempts = 16
 )
 
 var servers = []string{
@@ -30,9 +32,13 @@ var servers = []string{
 	"nats://10.77.0.3:4222",
 }
 
+var nodes = []string{"n1", "n2", "n3"}
+
 type adapter struct{}
 
 func (adapter) Family() family.Family { return family.Register{} }
+
+func (adapter) Nodes() []string { return nodes }
 
 type client struct {
 	conn      *nats.Conn
@@ -121,6 +127,13 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		c.remember(value, revision)
 		return nil, nil
 	case family.RegisterReadF:
+		if op.Node != "" {
+			value, err := c.readOn(ctx, kv, op.K, op.Node)
+			if err != nil {
+				return nil, runner.Definite(err)
+			}
+			return value, nil
+		}
 		entry, err := kv.Get(ctx, op.K)
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
@@ -157,6 +170,101 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		return nil, nil
 	}
 	return nil, runner.Definite(fmt.Errorf("unknown operation %q", op.F))
+}
+
+// A one-replica consumer serves messages from the store of the server that
+// hosts it. The read first waits for that store to hold a fence written after
+// the read started, then takes the key's last message from it.
+func (c *client) readOn(ctx context.Context, kv jetstream.KeyValue, key, node string) (any, error) {
+	fenceKey := "fence-" + node
+	revision, err := kv.Put(ctx, fenceKey, []byte(fmt.Sprintf("%016x", sdk.Random())))
+	if err != nil {
+		return nil, fmt.Errorf("fence: %w", err)
+	}
+	fence, err := c.consumerOn(ctx, node, jetstream.ConsumerConfig{
+		FilterSubject: keySubject + fenceKey,
+		DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
+		OptStartSeq:   revision,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer c.dropConsumer(fence)
+	if _, err := next(ctx, fence); err != nil {
+		return nil, fmt.Errorf("fence %d on %s: %w", revision, node, err)
+	}
+	last, err := c.consumerOn(ctx, node, jetstream.ConsumerConfig{
+		FilterSubject: keySubject + key,
+		DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer c.dropConsumer(last)
+	if last.CachedInfo().NumPending == 0 {
+		return nil, nil
+	}
+	msg, err := next(ctx, last)
+	if err != nil {
+		return nil, fmt.Errorf("key %s on %s: %w", key, node, err)
+	}
+	switch msg.Headers().Get("KV-Operation") {
+	case "DEL", "PURGE":
+		return nil, nil
+	}
+	return string(msg.Data()), nil
+}
+
+func (c *client) consumerOn(ctx context.Context, node string, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	config.AckPolicy = jetstream.AckNonePolicy
+	config.MemoryStorage = true
+	config.Replicas = 1
+	config.InactiveThreshold = 5 * time.Second
+	var placed []string
+	for attempt := 0; attempt < placementAttempts; attempt++ {
+		consumer, err := c.js.CreateConsumer(ctx, stream, config)
+		if err != nil {
+			return nil, fmt.Errorf("consumer on %s: %w", node, err)
+		}
+		info := consumer.CachedInfo()
+		if info.Cluster != nil && info.Cluster.Leader == node {
+			return consumer, nil
+		}
+		c.dropConsumer(consumer)
+		if info.Cluster != nil {
+			placed = append(placed, info.Cluster.Leader)
+		}
+	}
+	return nil, fmt.Errorf("no consumer placed on %s in %d attempts, placed on %v", node, placementAttempts, placed)
+}
+
+func (c *client) dropConsumer(consumer jetstream.Consumer) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = c.js.DeleteConsumer(ctx, stream, consumer.CachedInfo().Name)
+	}()
+}
+
+func next(ctx context.Context, consumer jetstream.Consumer) (jetstream.Msg, error) {
+	for ctx.Err() == nil {
+		fetchCtx, cancel := context.WithTimeout(ctx, time.Second)
+		batch, err := consumer.Fetch(1, jetstream.FetchContext(fetchCtx))
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		for msg := range batch.Messages() {
+			cancel()
+			return msg, nil
+		}
+		err = batch.Error()
+		cancel()
+		if err != nil && !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+	}
+	return nil, ctx.Err()
 }
 
 // nats.go returns these from publish before the message is buffered, so the

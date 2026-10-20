@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"harmony.local/harness/kit/family"
@@ -21,6 +22,7 @@ import (
 const (
 	CheckReadSucceeded      = "harness: a check read succeeded"
 	CheckReadAfterDisturbed = "harness: a check read succeeded after a fault"
+	CheckNodeReadSucceeded  = "harness: a check read pinned to a node succeeded"
 )
 
 const generationEnv = "HARMONY_DISTURBANCE_GENERATION"
@@ -30,11 +32,12 @@ const baselineFile = "disturbance-baseline"
 const checkProcess = 0
 
 type CheckResult struct {
-	Read       history.Type       `json:"read"`
-	Ops        int                `json:"ops"`
-	Decided    bool               `json:"decided"`
-	Violations []family.Violation `json:"violations"`
-	Facts      map[string]bool    `json:"facts"`
+	Read       history.Type            `json:"read"`
+	Nodes      map[string]history.Type `json:"nodes,omitempty"`
+	Ops        int                     `json:"ops"`
+	Decided    bool                    `json:"decided"`
+	Violations []family.Violation      `json:"violations"`
+	Facts      map[string]bool         `json:"facts"`
 }
 
 func (r CheckResult) String() string {
@@ -56,9 +59,20 @@ func Declare(fam family.Family) {
 	sdk.Declare(sdk.KindSometimes, CheckReadAfterDisturbed)
 }
 
+func pinnedNodes(adapter Adapter) []string {
+	if pinner, ok := adapter.(Pinner); ok {
+		return pinner.Nodes()
+	}
+	return nil
+}
+
 func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, error) {
 	fam := adapter.Family()
 	Declare(fam)
+	nodes := pinnedNodes(adapter)
+	if len(nodes) > 0 {
+		sdk.Declare(sdk.KindSometimes, CheckNodeReadSucceeded)
+	}
 	prior, err := history.Load(config.Dir)
 	if err != nil {
 		return CheckResult{}, err
@@ -67,9 +81,24 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 	if err != nil {
 		return CheckResult{}, err
 	}
-	outcome, err := checkRead(ctx, adapter, fam, fam.Recorder(prior), journal, config.CheckTimeout)
+	recorder := fam.Recorder(prior)
+	outcomes := make([]history.Type, len(nodes)+1)
+	errs := make([]error, len(nodes)+1)
+	var wg sync.WaitGroup
+	for index := range outcomes {
+		op := fam.Read()
+		if index > 0 {
+			op.Node = nodes[index-1]
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			outcomes[index], errs[index] = checkRead(ctx, adapter, recorder, journal, checkProcess+index, op, config.CheckTimeout)
+		}()
+	}
+	wg.Wait()
 	closeErr := journal.Close()
-	if err != nil {
+	if err := errors.Join(errs...); err != nil {
 		return CheckResult{}, err
 	}
 	if closeErr != nil {
@@ -81,39 +110,48 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 	}
 	report := fam.Check(h)
 	Emit(fam, report)
-	readOK := outcome == history.OK
+	readOK := outcomes[0] == history.OK
 	sdk.Sometimes(readOK, CheckReadSucceeded, nil)
 	if disturbed, known := disturbedSinceFirstCheck(config.Dir); known {
 		sdk.Sometimes(readOK && disturbed, CheckReadAfterDisturbed, nil)
 	}
-	return CheckResult{
-		Read:       outcome,
+	result := CheckResult{
+		Read:       outcomes[0],
 		Ops:        len(h.Ops),
 		Decided:    report.Decided,
 		Violations: report.Violations,
 		Facts:      report.Facts,
-	}, nil
+	}
+	if len(nodes) > 0 {
+		result.Nodes = map[string]history.Type{}
+		nodeOK := false
+		for index, node := range nodes {
+			result.Nodes[node] = outcomes[index+1]
+			nodeOK = nodeOK || outcomes[index+1] == history.OK
+		}
+		sdk.Sometimes(nodeOK, CheckNodeReadSucceeded, nil)
+	}
+	return result, nil
 }
 
-func checkRead(ctx context.Context, adapter Adapter, fam family.Family, recorder family.Recorder, journal *history.Journal, timeout time.Duration) (history.Type, error) {
-	client, err := connect(ctx, adapter, checkProcess, timeout)
+func checkRead(ctx context.Context, adapter Adapter, recorder family.Recorder, journal *history.Journal, p int, op family.Op, timeout time.Duration) (history.Type, error) {
+	client, err := connect(ctx, adapter, p, timeout)
 	if err != nil {
 		return "", nil
 	}
 	defer client.Close()
-	op := fam.Read()
-	index, err := journal.Invoke(checkProcess, op.F, op.K, op.V)
+	index, err := journal.Invoke(p, op.F, op.K, op.Node, op.V)
 	if err != nil {
 		return "", err
 	}
 	result, err := invoke(ctx, client, op, timeout)
 	switch {
 	case err == nil:
-		return history.OK, recorder.Record(journal, checkProcess, op, index, result)
+		return history.OK, recorder.Record(journal, p, op, index, result)
 	case IsDefinite(err):
-		return history.Fail, journal.Complete(checkProcess, history.Fail, op.F, op.K, index, errorValue(err))
+		return history.Fail, journal.Complete(p, history.Fail, op.F, op.K, index, errorValue(err))
 	default:
-		return history.Info, journal.Complete(checkProcess, history.Info, op.F, op.K, index, errorValue(err))
+		return history.Info, journal.Complete(p, history.Info, op.F, op.K, index, errorValue(err))
 	}
 }
 
