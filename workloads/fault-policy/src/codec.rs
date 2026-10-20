@@ -31,6 +31,7 @@ const F_BUGGIFY_FIRE: u8 = 16;
 const F_RUN_HOOK: u8 = 17;
 const F_PROC_EVENT_KILL: u8 = 20;
 const F_PROC_EVENT_PARK: u8 = 21;
+const F_PROC_CLOCK: u8 = 23;
 
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
     w.extend_from_slice(&v.to_le_bytes());
@@ -106,6 +107,16 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
                 }
             }
         }
+        Fault::ProcClock {
+            offset,
+            rate_ppm,
+            spread,
+        } => {
+            w.push(F_PROC_CLOCK);
+            w.extend_from_slice(&offset.to_le_bytes());
+            w.extend_from_slice(&rate_ppm.to_le_bytes());
+            put_u64(w, *spread);
+        }
         Fault::BuggifyFire => w.push(F_BUGGIFY_FIRE),
         Fault::RunHook(id) => {
             w.push(F_RUN_HOOK);
@@ -152,6 +163,19 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
                 edges,
                 hold: Span(hold),
                 target,
+            }
+        }
+        F_PROC_CLOCK => {
+            let offset = i64::from_le_bytes(r.u64()?.to_le_bytes());
+            let rate_ppm = i32::from_le_bytes(r.u32()?.to_le_bytes());
+            let spread = r.u64()?;
+            if rate_ppm < crate::CLOCK_RATE_STOPPED_PPM {
+                return Err(EnvError::Malformed);
+            }
+            Fault::ProcClock {
+                offset,
+                rate_ppm,
+                spread,
             }
         }
         F_BUGGIFY_FIRE => Fault::BuggifyFire,

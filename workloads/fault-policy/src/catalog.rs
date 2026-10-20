@@ -165,6 +165,11 @@ pub enum Fault {
         hold: Span,
         target: Option<crate::ParkTarget>,
     },
+    ProcClock {
+        offset: i64,
+        rate_ppm: i32,
+        spread: u64,
+    },
     BuggifyFire,
     RunHook(u32),
 }
@@ -184,6 +189,7 @@ impl Fault {
             | Self::ProcRestart
             | Self::ProcEventKill { .. }
             | Self::ProcEventPark { .. }
+            | Self::ProcClock { .. }
             | Self::RunHook(_) => DecisionClass::Process,
             Self::BuggifyFire => DecisionClass::Buggify,
         }

@@ -54,6 +54,16 @@ pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
                 target: target
                     .and_then(|(start, width)| ParkTarget::new(start, start.saturating_add(width))),
             },),
+        (
+            any::<i64>(),
+            fault_policy::CLOCK_RATE_STOPPED_PPM..=i32::MAX,
+            any::<u64>(),
+        )
+            .prop_map(|(offset, rate_ppm, spread)| Fault::ProcClock {
+                offset,
+                rate_ppm,
+                spread,
+            }),
         any::<u32>().prop_map(Fault::RunHook),
     ]
 }

@@ -31,6 +31,7 @@ pub const MAX_SUPPLY_LEN: u32 = 1 << 20;
 
 pub const EVENT_RARITY_LIMIT: u8 = 64;
 pub const EVENT_PARK_EDGE_LIMIT: u32 = process_proto::events::EVENT_PARK_EDGE_LIMIT;
+pub const CLOCK_RATE_STOPPED_PPM: i32 = process_proto::CLOCK_RATE_STOPPED_PPM;
 
 pub use process_proto::events::ParkTarget;
 
