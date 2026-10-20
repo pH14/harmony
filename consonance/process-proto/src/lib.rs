@@ -46,6 +46,9 @@ const RUN_HOOK: u8 = 17;
 const EVENT_KILL: u8 = 20;
 const EVENT_PARK: u8 = 21;
 const POWER_LOSS: u8 = 22;
+const DISK_ERROR: u8 = 23;
+const DISK_STALL: u8 = 24;
+const DISK_CORRUPT: u8 = 25;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum ProcessAction {
@@ -62,6 +65,13 @@ pub enum ProcessAction {
         target: Option<events::ParkTarget>,
     },
     PowerLoss {
+        choice: u64,
+    },
+    DiskError,
+    DiskStall {
+        hold_nanos: u64,
+    },
+    DiskCorrupt {
         choice: u64,
     },
 }
@@ -248,6 +258,15 @@ fn write_action(out: &mut Vec<u8>, action: ProcessAction) {
             out.push(POWER_LOSS);
             put_u64(out, choice);
         }
+        ProcessAction::DiskError => out.push(DISK_ERROR),
+        ProcessAction::DiskStall { hold_nanos } => {
+            out.push(DISK_STALL);
+            put_u64(out, hold_nanos);
+        }
+        ProcessAction::DiskCorrupt { choice } => {
+            out.push(DISK_CORRUPT);
+            put_u64(out, choice);
+        }
     }
 }
 
@@ -285,6 +304,17 @@ fn read_action(reader: &mut Reader<'_>) -> Result<ProcessAction, WireError> {
             })
         }
         POWER_LOSS => Ok(ProcessAction::PowerLoss {
+            choice: reader.u64()?,
+        }),
+        DISK_ERROR => Ok(ProcessAction::DiskError),
+        DISK_STALL => {
+            let hold_nanos = reader.u64()?;
+            if hold_nanos == 0 {
+                return Err(WireError::Malformed);
+            }
+            Ok(ProcessAction::DiskStall { hold_nanos })
+        }
+        DISK_CORRUPT => Ok(ProcessAction::DiskCorrupt {
             choice: reader.u64()?,
         }),
         _ => Err(WireError::Malformed),
@@ -396,7 +426,7 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
-    fn actions() -> [ProcessAction; 8] {
+    fn actions() -> [ProcessAction; 11] {
         [
             ProcessAction::Pause(1234),
             ProcessAction::Kill,
@@ -414,6 +444,11 @@ mod tests {
                 target: events::ParkTarget::new(0x40, 0x41),
             },
             ProcessAction::PowerLoss { choice: 0x0102 },
+            ProcessAction::DiskError,
+            ProcessAction::DiskStall {
+                hold_nanos: 2_000_000,
+            },
+            ProcessAction::DiskCorrupt { choice: 0x0304 },
         ]
     }
 
@@ -468,6 +503,9 @@ mod tests {
                 0x41, 0, 0, 0, 0, 0, 0, 0,
             ],
             vec![22, 0x02, 0x01, 0, 0, 0, 0, 0, 0],
+            vec![23],
+            vec![24, 0x80, 0x84, 0x1e, 0, 0, 0, 0, 0],
+            vec![25, 0x04, 0x03, 0, 0, 0, 0, 0, 0],
             vec![
                 19, 0x86, 0x0e, 0x4b, 0, 0, 0, 0, 0, 28, 0, 0, 0, 0x80, 0x84, 0x1e, 0, 0, 0, 0, 0,
             ],
@@ -519,6 +557,15 @@ mod tests {
         let mut unknown = longest.encode();
         *unknown.last_mut().expect("presence byte") = 2;
         assert_eq!(ProcessAction::decode(&unknown), None);
+    }
+
+    #[test]
+    fn a_disk_stall_requires_a_positive_hold() {
+        assert_eq!(
+            ProcessAction::decode(&ProcessAction::DiskStall { hold_nanos: 0 }.encode()),
+            None
+        );
+        assert_eq!(ProcessAction::decode(&[23, 0]), None);
     }
 
     #[test]
