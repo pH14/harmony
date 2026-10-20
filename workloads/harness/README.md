@@ -239,6 +239,23 @@ is unknown, it first reads the key and fails definitely unless the key holds
 are definite failures; other write and `cas` errors are indeterminate, and
 read errors are definite.
 
+A check against a cluster that a fault left without a leader can wait out the
+debug terminal's five-minute limit. `harness-check` checks a copied journal on
+the host instead, with no live read. Build it with
+`go build -C workloads/harness/kit -o "$PWD/harness-check" ./cmd/harness-check`,
+put it on `PATH` and set:
+
+```toml
+[workload.options.explain]
+logs = ["/tmp/nats/*.log"]
+data = ["/tmp/nats/n1", "/tmp/nats/n2", "/tmp/nats/n3"]
+host_history = "harness-check -family register @/tmp/harness/journal"
+```
+
+`harness-check` checks the clients' operations without the check's final read.
+It prints the journal files, the operation count, the facts and the violations
+as JSON, and exits 3 when it finds violations.
+
 ## rqlite
 
 `targets/rqlite` runs three `rqlited` nodes at 10.77.0.1-3 in `harness-net`

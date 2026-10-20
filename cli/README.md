@@ -291,6 +291,7 @@ accept. It also holds:
 - `explain.json`: the same content as data;
 - `actions.json`: the reduced actions for `debug run --actions`;
 - `probes/STEP/`: each probe script and its raw terminal output;
+- `copied/`: the guest files `host_history` names, under their guest paths;
 - `probes/reference/replay.json` and `probes/replay-N/replay.json`: each
   replay's probed steps, the certificate at each recorded boundary and its
   summary;
@@ -312,10 +313,23 @@ recipe field:
 logs = ["/tmp/app/*.log"]
 data = ["/tmp/app/data/*"]
 history = "/app/check --json"
+host_history = "app-check --json @/var/app/journal"
 ```
 
 Paths are guest paths, and globs are expanded by the guest shell. The history
-command runs with `/bin/sh` in the workload's working directory.
+command runs with `/bin/sh` in the workload's working directory. It counts
+against the five-minute host command limit of the debug terminal, and the
+report states when it did not finish and marks its output partial.
+
+`host_history` (`--host-history`) checks the client history on the host. Each
+`@/path` word names a guest file or directory. At the violation, before the
+logs and the history command, the probe copies every file under those paths
+(each up to 16 MiB) through the terminal with `find`, `wc` and `base64`. After
+the replays, `explain` replaces each `@/path` with the quoted path of its copy
+under `copied/` and runs the text with `sh -c` in the output directory. The
+report holds the command, its exit status, and its combined stdout and stderr.
+Use it when the system under test's history checker reads a journal it can
+check offline, or when a live read from the guest can outlast the limit.
 
 `search --from` starts fresh exploration from a branch endpoint. `search --resume`
 restores the existing corpus, snapshots, scheduler and evidence from the latest
