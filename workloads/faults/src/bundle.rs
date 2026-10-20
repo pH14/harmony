@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v9";
+pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v10";
 pub const MAX_NODES: u16 = 64;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -316,7 +316,7 @@ ready /usr/local/pgsql/bin/pg_isready
         let identifier = vocabulary.identifier();
         assert_eq!(
             identifier,
-            "faultlab_bundle_v9;nodes=3;hooks=;disks=0,1;events=none;clock=none"
+            "faultlab_bundle_v10;nodes=3;hooks=;disks=0,1;events=none;clock=none"
         );
         assert_eq!(
             FaultVocabulary::from_identifier(&identifier).expect("resolve"),
@@ -414,7 +414,7 @@ ready /usr/local/pgsql/bin/pg_isready
         );
         assert_eq!(
             etcd.identifier(),
-            "faultlab_bundle_v9;nodes=1;hooks=1,2;disks=;events=none;clock=none"
+            "faultlab_bundle_v10;nodes=1;hooks=1,2;disks=;events=none;clock=none"
         );
         assert_ne!(
             etcd.identifier(),
@@ -423,7 +423,7 @@ ready /usr/local/pgsql/bin/pg_isready
         let clocked = etcd.clone().with_clock_faults(true);
         assert_eq!(
             clocked.identifier(),
-            "faultlab_bundle_v9;nodes=1;hooks=1,2;disks=;events=none;clock=time_namespace"
+            "faultlab_bundle_v10;nodes=1;hooks=1,2;disks=;events=none;clock=time_namespace"
         );
         assert_eq!(
             FaultVocabulary::from_identifier(&clocked.identifier()).expect("resolve"),
@@ -432,7 +432,7 @@ ready /usr/local/pgsql/bin/pg_isready
         let both = clocked.with_disks(vec![0]).expect("disks");
         assert_eq!(
             both.identifier(),
-            "faultlab_bundle_v9;nodes=1;hooks=1,2;disks=0;events=none;clock=time_namespace"
+            "faultlab_bundle_v10;nodes=1;hooks=1,2;disks=0;events=none;clock=time_namespace"
         );
         assert_eq!(
             FaultVocabulary::from_identifier(&both.identifier()).expect("resolve"),
@@ -449,15 +449,17 @@ ready /usr/local/pgsql/bin/pg_isready
             "faultlab_bundle_v5;nodes=1;hooks=1;events=none;interrupts=enabled",
             "faultlab_bundle_v7;nodes=1;hooks=1;events=none",
             "faultlab_bundle_v8;nodes=1;hooks=1;disks=;events=none",
+            "faultlab_bundle_v8;nodes=1;hooks=1;events=none;clock=none",
             "faultlab_bundle_v9;nodes=1;hooks=1;disks=;events=none",
-            "faultlab_bundle_v9;nodes=0;hooks=1;disks=;events=none;clock=none",
-            "faultlab_bundle_v9;nodes=x;hooks=1;disks=;events=none;clock=none",
-            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;events=other;clock=none",
-            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;events=none;clock=other",
-            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;events=none;clock=none;extra=2",
-            "faultlab_bundle_v9;nodes=1;hooks=one;disks=;events=none;clock=none",
-            "faultlab_bundle_v9;nodes=1;hooks=1;disks=1;events=none;clock=none",
-            "faultlab_bundle_v9;nodes=2;hooks=1;disks=0,0;events=none;clock=none",
+            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;events=none",
+            "faultlab_bundle_v10;nodes=0;hooks=1;disks=;events=none;clock=none",
+            "faultlab_bundle_v10;nodes=x;hooks=1;disks=;events=none;clock=none",
+            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;events=other;clock=none",
+            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;events=none;clock=other",
+            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;events=none;clock=none;extra=2",
+            "faultlab_bundle_v10;nodes=1;hooks=one;disks=;events=none;clock=none",
+            "faultlab_bundle_v10;nodes=1;hooks=1;disks=1;events=none;clock=none",
+            "faultlab_bundle_v10;nodes=2;hooks=1;disks=0,0;events=none;clock=none",
         ] {
             assert!(
                 FaultVocabulary::from_identifier(identifier).is_err(),
@@ -465,7 +467,7 @@ ready /usr/local/pgsql/bin/pg_isready
             );
         }
         let no_hooks = FaultVocabulary::from_identifier(
-            "faultlab_bundle_v9;nodes=2;hooks=;disks=;events=antithesis;clock=none",
+            "faultlab_bundle_v10;nodes=2;hooks=;disks=;events=antithesis;clock=none",
         )
         .expect("resolve");
         assert_eq!(no_hooks.nodes(), 2);
