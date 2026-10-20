@@ -112,13 +112,34 @@ impl LoadedImageGuard {
     }
 
     pub(crate) fn check_at(&self, site: GuardSite) -> io::Result<()> {
+        self.check_measured_at(
+            site,
+            host_code_identity::StrictExecutableGuard::check_measured,
+        )
+    }
+
+    pub(crate) fn check_code_at(&self, site: GuardSite) -> io::Result<()> {
+        self.check_measured_at(
+            site,
+            host_code_identity::StrictExecutableGuard::check_code_measured,
+        )
+    }
+
+    fn check_measured_at(
+        &self,
+        site: GuardSite,
+        check: fn(
+            host_code_identity::StrictExecutableGuard,
+            &mut host_code_identity::GuardMeasurement,
+        ) -> io::Result<()>,
+    ) -> io::Result<()> {
         let started = guard_started();
         let mut work = host_code_identity::GuardMeasurement::default();
         #[cfg(test)]
         let fixture = matches!(self.admitted, AdmittedImage::TestFixture);
         #[cfg(not(test))]
         let fixture = false;
-        let result = self.check_inner(&mut work);
+        let result = self.check_inner(&mut work, check);
         self.telemetry.record(
             site,
             GuardDispatch::Check,
@@ -130,7 +151,14 @@ impl LoadedImageGuard {
         result
     }
 
-    fn check_inner(&self, work: &mut host_code_identity::GuardMeasurement) -> io::Result<()> {
+    fn check_inner(
+        &self,
+        work: &mut host_code_identity::GuardMeasurement,
+        check: fn(
+            host_code_identity::StrictExecutableGuard,
+            &mut host_code_identity::GuardMeasurement,
+        ) -> io::Result<()>,
+    ) -> io::Result<()> {
         #[cfg(test)]
         CHECK_TRACE.with(|trace| {
             let (entries, strict, fail_at) = trace.get();
@@ -155,7 +183,7 @@ impl LoadedImageGuard {
             let (entries, strict, fail_at) = trace.get();
             trace.set((entries, strict + 1, fail_at));
         });
-        admitted.check_measured(work)
+        check(admitted, work)
     }
 
     pub(crate) fn current_identity(&self) -> io::Result<String> {
