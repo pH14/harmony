@@ -527,13 +527,13 @@ fn page_unwritten(entry: u64) -> bool {
 
 fn check_code_pages(
     pagemap: &File,
-    map: &ExecutableMap,
+    (start, end): (u64, u64),
     page_size: u64,
     work: &mut GuardBytes,
 ) -> io::Result<()> {
     let mut entries = [0u8; 65536];
-    let mut page = map.start / page_size;
-    let end = map.end / page_size;
+    let mut page = start / page_size;
+    let end = end / page_size;
     while page < end {
         let count = usize::try_from((end - page).min(entries.len() as u64 / 8))
             .map_err(|_| denied("executable mapping length overflows"))?;
@@ -558,19 +558,22 @@ fn check_code_pages(
 }
 
 fn hash_vdso(
-    digest: &mut Sha256,
+    mut identity: Option<&mut Sha256>,
     memory: &File,
-    map: &ExecutableMap,
+    (start, end): (u64, u64),
     work: &mut GuardBytes,
 ) -> io::Result<[u8; 32]> {
     let mut alone = Sha256::new();
-    for digest in [&mut *digest, &mut alone] {
-        digest.update((map.end - map.start).to_le_bytes());
+    for digest in [Some(&mut alone), identity.as_deref_mut()]
+        .into_iter()
+        .flatten()
+    {
+        digest.update((end - start).to_le_bytes());
     }
     let mut bytes = [0u8; 65536];
-    let mut position = map.start;
-    while position < map.end {
-        let count = usize::try_from((map.end - position).min(bytes.len() as u64))
+    let mut position = start;
+    while position < end {
+        let count = usize::try_from((end - position).min(bytes.len() as u64))
             .map_err(|_| denied("vDSO mapping length overflows"))?;
         read_exact_counted_at(
             |bytes, offset| memory.read_at(bytes, offset),
@@ -578,7 +581,10 @@ fn hash_vdso(
             position,
             &mut work.live_exec_read_bytes,
         )?;
-        for digest in [&mut *digest, &mut alone] {
+        for digest in [Some(&mut alone), identity.as_deref_mut()]
+            .into_iter()
+            .flatten()
+        {
             digest.update(&bytes[..count]);
             work.live_exec_hashed_bytes = work.live_exec_hashed_bytes.saturating_add(count as u64);
         }
@@ -648,7 +654,7 @@ fn measure(work: &mut GuardMeasurement) -> io::Result<SealedStaticExecutableGuar
     let maps_before = census(&path, &metadata, segment, work)?;
     check_code_pages(
         &File::open("/proc/self/pagemap")?,
-        &maps_before.main,
+        (maps_before.main.start, maps_before.main.end),
         page_size,
         work.bytes.as_mut().unwrap(),
     )?;
@@ -666,9 +672,9 @@ fn measure(work: &mut GuardMeasurement) -> io::Result<SealedStaticExecutableGuar
         work.bytes.as_mut().unwrap(),
     )?;
     let vdso_digest = hash_vdso(
-        &mut digest,
+        Some(&mut digest),
         &memory,
-        &maps_before.vdso,
+        (maps_before.vdso.start, maps_before.vdso.end),
         work.bytes.as_mut().unwrap(),
     )?;
     digest.update([u8::from(maps_before.vsyscall)]);
@@ -691,6 +697,24 @@ fn measure(work: &mut GuardMeasurement) -> io::Result<SealedStaticExecutableGuar
         vdso_digest,
         vsyscall: maps_before.vsyscall,
     })
+}
+
+fn check_code(
+    admitted: &SealedStaticExecutableGuard,
+    work: &mut GuardMeasurement,
+) -> io::Result<()> {
+    let work = work.bytes.get_or_insert_default();
+    check_code_pages(
+        &File::open("/proc/self/pagemap")?,
+        admitted.main,
+        page_size()?,
+        work,
+    )?;
+    if hash_vdso(None, &File::open("/proc/self/mem")?, admitted.vdso, work)? != admitted.vdso_digest
+    {
+        return Err(denied("vDSO changed after admission"));
+    }
+    Ok(())
 }
 
 fn recheck_census(
@@ -729,21 +753,7 @@ fn recheck_census(
 fn recheck(admitted: &SealedStaticExecutableGuard, work: &mut GuardMeasurement) -> io::Result<()> {
     let (path, _, metadata) = open_sealed_executable(Some(admitted))?;
     let maps_before = recheck_census(&path, &metadata, admitted, work)?;
-    check_code_pages(
-        &File::open("/proc/self/pagemap")?,
-        &maps_before.main,
-        page_size()?,
-        work.bytes.as_mut().unwrap(),
-    )?;
-    if hash_vdso(
-        &mut Sha256::new(),
-        &File::open("/proc/self/mem")?,
-        &maps_before.vdso,
-        work.bytes.as_mut().unwrap(),
-    )? != admitted.vdso_digest
-    {
-        return Err(denied("vDSO changed after admission"));
-    }
+    check_code(admitted, work)?;
     if maps_before.all != recheck_census(&path, &metadata, admitted, work)?.all {
         return Err(denied(
             "executable mappings changed during identity measurement",
@@ -782,6 +792,14 @@ impl SealedStaticExecutableGuard {
             work.bytes.get_or_insert_default();
             recheck(&self, work)
         })
+    }
+
+    pub fn check_code(self) -> io::Result<()> {
+        self.check_code_measured(&mut GuardMeasurement::default())
+    }
+
+    pub fn check_code_measured(self, work: &mut GuardMeasurement) -> io::Result<()> {
+        crate::guard_work::measured(work, |work| check_code(&self, work))
     }
 }
 
@@ -989,10 +1007,15 @@ mod tests {
             ),
             (8, 4)
         );
-        hash_vdso(&mut Sha256::new(), &memory, &map, &mut work).unwrap();
+        hash_vdso(Some(&mut Sha256::new()), &memory, (0, 4), &mut work).unwrap();
         assert_eq!(
             (work.live_exec_read_bytes, work.live_exec_hashed_bytes),
             (12, 12)
+        );
+        hash_vdso(None, &memory, (0, 4), &mut work).unwrap();
+        assert_eq!(
+            (work.live_exec_read_bytes, work.live_exec_hashed_bytes),
+            (16, 16)
         );
     }
 
@@ -1026,7 +1049,7 @@ mod tests {
         assert!(
             queried_map(
                 &ProcmapQuery {
-                    vma_name_size: 4097,
+                    vma_name_size: 4098,
                     ..query
                 },
                 &name
@@ -1082,30 +1105,18 @@ mod tests {
         pagemap
             .write_at(&0_u64.to_ne_bytes(), (base + 3) * 8)
             .unwrap();
-        let map = ExecutableMap {
-            start: base * 4096,
-            end: (base + pages) * 4096,
-            permissions: "r-xp".into(),
-            offset: 0,
-            device_major: 0,
-            device_minor: 0,
-            inode: 1,
-            path: "fixture".into(),
-        };
+        let range = (base * 4096, (base + pages) * 4096);
         let mut work = GuardBytes::default();
-        check_code_pages(&pagemap, &map, 4096, &mut work).unwrap();
+        check_code_pages(&pagemap, range, 4096, &mut work).unwrap();
         assert_eq!(work.code_page_entries, pages);
         pagemap
             .write_at(&PAGE_PRESENT.to_ne_bytes(), (base + pages - 1) * 8)
             .unwrap();
-        let error = check_code_pages(&pagemap, &map, 4096, &mut work).unwrap_err();
+        let error = check_code_pages(&pagemap, range, 4096, &mut work).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
         assert_eq!(work.code_page_entries, 2 * pages);
-        let short = ExecutableMap {
-            end: (base + pages + 1) * 4096,
-            ..map
-        };
-        assert!(check_code_pages(&pagemap, &short, 4096, &mut GuardBytes::default()).is_err());
+        let short = (base * 4096, (base + pages + 1) * 4096);
+        assert!(check_code_pages(&pagemap, short, 4096, &mut GuardBytes::default()).is_err());
     }
 
     #[cfg(target_env = "musl")]
@@ -1183,22 +1194,22 @@ mod tests {
         let mut byte = [0_u8; 1];
         memory.read_exact_at(&mut byte, code).unwrap();
         if memory.write_at(&byte, code).is_err() {
-            let address = usize::try_from(code).unwrap() as *mut libc::c_void;
-            let length = usize::try_from(page).unwrap();
-            // SAFETY: address and length name one whole page inside this process's own private code mapping; adding write permission keeps it readable and executable, and no Rust reference aliases it.
+            let start = usize::try_from(guard.main.0).unwrap() as *mut libc::c_void;
+            let length = usize::try_from(guard.main.1 - guard.main.0).unwrap();
+            // SAFETY: start and length name exactly this process's own private code mapping; adding write permission keeps it readable and executable, and no Rust reference aliases it.
             let unprotected = unsafe {
                 libc::mprotect(
-                    address,
+                    start,
                     length,
                     libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
                 )
             };
             assert_eq!(unprotected, 0);
-            // SAFETY: the page is writable and mapped for the rest of this process; writing back the byte just read leaves every instruction unchanged.
-            unsafe { std::ptr::write_volatile(address.cast::<u8>(), byte[0]) };
-            // SAFETY: the same whole page returns to the read and execute permissions it was loaded with.
+            // SAFETY: code lies inside the now-writable mapping, and writing back the byte just read leaves every instruction unchanged.
+            unsafe { std::ptr::write_volatile(usize::try_from(code).unwrap() as *mut u8, byte[0]) };
+            // SAFETY: the same whole mapping returns to the read and execute permissions it was loaded with.
             let restored =
-                unsafe { libc::mprotect(address, length, libc::PROT_READ | libc::PROT_EXEC) };
+                unsafe { libc::mprotect(start, length, libc::PROT_READ | libc::PROT_EXEC) };
             assert_eq!(restored, 0);
         }
         let mut after = [0_u8; 1];
