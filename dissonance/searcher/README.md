@@ -264,11 +264,9 @@ static. Their serde shapes and diagnostic names remain unchanged. Result literal
 and result-only generic hash helpers require an explicit workload carrier such
 as `CampaignJobResult::<G>` or `postcard_result_sha256::<G>`.
 
-Postcard SHA-256 hashing uses one fixed 64-byte scratch block to batch scalar
-writes and forwards complete slices directly to the hash. Each call hashes the
-freshly serialized bytes, including the final partial block; it retains no
-digest or input cache and changes neither the postcard representation nor
-integrity-check boundaries.
+Postcard SHA-256 hashing streams freshly serialized bytes directly into the
+hash. Each call retains no digest or input cache and changes neither the
+postcard representation nor integrity-check boundaries.
 
 Each job record carries the original spent job-result vectors as encoder-owned
 cleanup data. Admission mutably borrows those vectors, copies actions and
@@ -1094,6 +1092,29 @@ the start of the search in this process. Phase durations are wall time and
 include time the coordinator thread waits for a CPU, so coordinator work per
 job is `coordinator_cpu_ns` over admissions. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
+
+Bounded expansion additionally exposes a separate `coordinator.cpu` object when
+profiling is enabled. On Linux, `clock=thread_cpu_time` samples the current
+coordinator thread around the readiness-to-dispatch-completion interval and
+around each `receive_timeout`, before reply validation or completion handling.
+The dispatch samples sit immediately after the initial scheduler-statistics
+read and before its final read; stream finalization and worker readiness are
+excluded. Compare this independent CPU total with `dispatch_phase.host` rather
+than treating the inclusive wall spans as additive CPU. Receive calls, replies,
+timeouts, errors, and valid CPU sample counts describe coverage. Checked counter increments flag
+`counter_overflow` and make receive coverage incomplete. Missing,
+backwards, or overflowing samples leave CPU totals null and coverage incomplete;
+non-Linux builds expose unsupported/null measurements. Profile-off execution
+performs no thread-CPU clock reads.
+
+The original receive wall bracket is unchanged; its CPU bracket also includes
+the existing wall-clock probes. Each profiled receive adds two thread-CPU clock
+reads, potentially system calls,
+including calls that time out. This overhead is part of the profiled run and its
+dispatch CPU; do not subtract an assumed clock cost or infer unprofiled capacity
+from it. Receive CPU is a subset of dispatch CPU, while receive wall time also
+includes sleeping and scheduling delays. These measurements are ephemeral
+telemetry only, excluded from logical reports, streams, and checkpoints.
 
 Detailed phase clocks are opt-in through this process-start environment
 variable. Without it, public phase spans are null and `timing_complete` is false;

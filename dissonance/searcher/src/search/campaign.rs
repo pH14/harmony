@@ -2877,65 +2877,23 @@ fn build_report<G: Workload>(
     Ok((report, checkpoint))
 }
 
-struct PostcardSha256 {
-    hash: Sha256,
-    buffer: [u8; 64],
-    used: usize,
-}
-
-impl PostcardSha256 {
-    fn new() -> Self {
-        Self {
-            hash: Sha256::new(),
-            buffer: [0; 64],
-            used: 0,
-        }
-    }
-
-    fn flush(&mut self) {
-        if self.used != 0 {
-            self.hash.update(&self.buffer[..self.used]);
-            self.used = 0;
-        }
-    }
-}
+struct PostcardSha256(Sha256);
 
 impl postcard::ser_flavors::Flavor for PostcardSha256 {
     type Output = sha2::digest::Output<Sha256>;
 
-    fn try_extend(&mut self, mut data: &[u8]) -> postcard::Result<()> {
-        if self.used != 0 {
-            let count = (self.buffer.len() - self.used).min(data.len());
-            self.buffer[self.used..self.used + count].copy_from_slice(&data[..count]);
-            self.used += count;
-            data = &data[count..];
-            if self.used < self.buffer.len() {
-                return Ok(());
-            }
-            self.flush();
-        }
-        let blocks = data.len() / self.buffer.len() * self.buffer.len();
-        if blocks != 0 {
-            self.hash.update(&data[..blocks]);
-        }
-        let tail = &data[blocks..];
-        self.buffer[..tail.len()].copy_from_slice(tail);
-        self.used = tail.len();
+    fn try_extend(&mut self, data: &[u8]) -> postcard::Result<()> {
+        self.0.update(data);
         Ok(())
     }
 
     fn try_push(&mut self, data: u8) -> postcard::Result<()> {
-        self.buffer[self.used] = data;
-        self.used += 1;
-        if self.used == self.buffer.len() {
-            self.flush();
-        }
+        self.0.update([data]);
         Ok(())
     }
 
-    fn finalize(mut self) -> postcard::Result<Self::Output> {
-        self.flush();
-        Ok(self.hash.finalize())
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(self.0.finalize())
     }
 }
 
@@ -2994,7 +2952,7 @@ pub fn postcard_semantic_result_sha256<G: CampaignTypes + ?Sized>(
 pub fn postcard_value_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn Error>> {
     let digest = postcard::serialize_with_flavor::<_, PostcardSha256, sha2::digest::Output<Sha256>>(
         value,
-        PostcardSha256::new(),
+        PostcardSha256(Sha256::new()),
     )?;
     Ok(format!("{digest:x}"))
 }
@@ -8095,7 +8053,7 @@ mod tests {
     }
 
     #[test]
-    fn buffered_postcard_digest_matches_bytes_across_blocks_and_nested_values() {
+    fn postcard_digest_matches_bytes_across_blocks_and_nested_values() {
         struct Bytes<'a>(&'a [u8]);
         impl Serialize for Bytes<'_> {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -8128,13 +8086,13 @@ mod tests {
     }
 
     #[test]
-    fn buffered_postcard_sha_flavor_preserves_mixed_chunk_order_and_final_tails() {
+    fn postcard_sha_flavor_preserves_mixed_chunk_order_and_final_tails() {
         use postcard::ser_flavors::Flavor;
         let bytes = (0..4097).map(|i| (i * 17 + 3) as u8).collect::<Vec<_>>();
         let expected = Sha256::digest(&bytes);
         for prefix in [0, 1, 63, 64, 65, 127] {
             for chunk in [1, 2, 63, 64, 65, 256, 1024] {
-                let mut flavor = super::PostcardSha256::new();
+                let mut flavor = super::PostcardSha256(Sha256::new());
                 flavor.try_extend(&bytes[..prefix]).unwrap();
                 for part in bytes[prefix..].chunks(chunk) {
                     flavor.try_push(part[0]).unwrap();
@@ -8149,7 +8107,7 @@ mod tests {
             }
         }
         for length in [0, 1, 63, 64, 65, 128] {
-            let mut flavor = super::PostcardSha256::new();
+            let mut flavor = super::PostcardSha256(Sha256::new());
             for byte in &bytes[..length] {
                 flavor.try_push(*byte).unwrap();
             }
@@ -8158,7 +8116,7 @@ mod tests {
     }
 
     #[test]
-    fn buffered_postcard_digest_propagates_serialization_error_and_hashes_fresh_values() {
+    fn postcard_digest_propagates_serialization_error_and_hashes_fresh_values() {
         struct Fails;
         impl Serialize for Fails {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

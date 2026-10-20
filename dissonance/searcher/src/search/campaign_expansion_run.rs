@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use super::profile::{ExpansionCpuProfile, ReceiveStatus, profile_cpu_now};
 use super::*;
 use crate::search::telemetry::{
     CoordinatorPhaseTelemetry, IdleClock, IdleReason, nanos_since, thread_schedstat,
@@ -70,6 +71,8 @@ where
     let mut coordinator = None;
     let mut initial_counters = None;
     let mut telemetry = CampaignTelemetry::default();
+    let cpu_profile_enabled = profile_clock_enabled();
+    let mut cpu_profile = ExpansionCpuProfile::new(cpu_profile_enabled);
     let search_started = now();
     let result = with_worker_pool_routed(
         config.workers,
@@ -115,6 +118,7 @@ where
             pool.wait_ready(config.workers)?;
             let phase_started = now();
             let cpu_started = thread_schedstat();
+            let dispatch_cpu_started = profile_cpu_now();
             let mut idle = IdleClock::new(config.workers as usize);
             let mut running = 0;
             let dispatch = |campaign: &mut ExpansionCoordinator<'_, G, W::Note>,
@@ -205,9 +209,22 @@ where
                         IdleReason::NoJob
                     },
                 );
+                let receive_cpu_started = profile_cpu_now();
                 let before = now();
                 let received = pool.receive_timeout(Duration::from_millis(5));
                 let waited = nanos_since(before);
+                let receive_cpu_finished = profile_cpu_now();
+                if cpu_profile_enabled {
+                    cpu_profile.record_receive(
+                        receive_cpu_started,
+                        receive_cpu_finished,
+                        match &received {
+                            Ok(Some(_)) => ReceiveStatus::Reply,
+                            Ok(None) => ReceiveStatus::Timeout,
+                            Err(_) => ReceiveStatus::Error,
+                        },
+                    );
+                }
                 if campaign.reservations.completed_len() > 0 {
                     telemetry.admission.receive_head_of_line_ns = telemetry
                         .admission
@@ -237,9 +254,13 @@ where
                 }
             }
             idle.update(0, IdleReason::NoJob);
+            let dispatch_cpu_finished = profile_cpu_now();
+            let phase_wall_ns = nanos_since(phase_started);
+            let phase_host = HostTimes::try_measure(cpu_started, idle.totals());
+            cpu_profile.record_dispatch(dispatch_cpu_started, dispatch_cpu_finished);
             telemetry.dispatch_phase = Some(CoordinatorPhaseTelemetry {
-                wall_ns: nanos_since(phase_started),
-                host: HostTimes::try_measure(cpu_started, idle.totals()),
+                wall_ns: phase_wall_ns,
+                host: phase_host,
             });
             idle.finish(&mut telemetry.admission);
             telemetry.completed_buffer = campaign.reservations.telemetry;
@@ -311,6 +332,15 @@ where
             "basis": "inclusive_wall_ns_not_cpu",
             "spans": campaign.profile,
             "stream_finish_host": stream_finish_host,
+            "cpu": {
+                "clock": "thread_cpu_time",
+                "scope": "profile_enabled_linux_current_coordinator_thread_dispatch_and_receive",
+                "supported": cfg!(target_os = "linux"),
+                "receive_cpu_complete": !cpu_profile.counter_overflow
+                    && cpu_profile.receive_cpu_ns.is_some()
+                    && cpu_profile.receive_cpu_samples == cpu_profile.receive_calls,
+                "measurements": cpu_profile,
+            },
         });
     }
     telemetry.sum_targets();
