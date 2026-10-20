@@ -112,6 +112,16 @@ release target length/progress model; only adapter observations and the normal
 level-select setup translate that alias. Recorded gameplay uses the actual level.
 `trace-collision.py` uses export-only FCEUmm CPU hooks to observe the original
 ROM's collision samples without modifying the game.
+`trace-mesen-collision.py CASE CORE ROM DBG OUTPUT --start N --end N`
+provides the same schema through the retained read-only Mesen opcode hook,
+including HUGE ROMs that FCEUmm maps incorrectly. Build the core with
+[the opcode hook](findings/shared-engine/wave66-shared-tile-reads/mesen-opcode-hook.patch).
+It snapshots probe RAM before a collision load, records the actual accumulator
+result at the following instruction, and tracks mapped JSR return addresses
+for caller classification. Unknown callers, unsupported instructions and
+unresolved reads fail the check. It independently verifies the ordinary-input
+prefix and retains ROM, core, case and symbol hashes. Use short intervals for
+instruction callbacks; source geometry and route intent remain separate checks.
 `review-centre-entries.py INDEX CASE CPU OUTPUT` binds a schema-2 bank-aware
 trace to its exact case, ROM and source index. It groups actual raw centre reads
 by source region, separates live entries from contacts on a committed death
