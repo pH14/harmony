@@ -9,7 +9,7 @@
     "test": "node --test tests/*.test.js",
     "test:browser": "npm run test:browser:games && npm run test:browser:interface",
     "test:browser:games": "node tests/levels.mjs && node tests/search.mjs && node tests/tobu.mjs && node tests/famidash.mjs && node tests/smb.mjs && node tests/mega-man.mjs && node tests/metroid.mjs && node tests/parallel.mjs && node tests/swarm.mjs",
-    "test:browser:interface": "node tests/tour.mjs && node tests/tour-mobile.mjs && node tests/interactions.mjs && node tests/replay-pause.mjs && node tests/levels-browser.mjs && node tests/room-cameras.mjs && node tests/arrow-pan.mjs && node tests/level-finish.mjs && node tests/browser.mjs && node tests/recording.mjs && node tests/point-finish.mjs && node tests/route-pins.mjs",
+    "test:browser:interface": "node tests/tour.mjs && node tests/tour-mobile.mjs && node tests/interactions.mjs && node tests/replay-pause.mjs && node tests/levels-browser.mjs && node tests/room-cameras.mjs && node tests/camera-gaps.mjs && node tests/arrow-pan.mjs && node tests/level-finish.mjs && node tests/browser.mjs && node tests/recording.mjs && node tests/point-finish.mjs && node tests/route-pins.mjs",
     "test:search": "node tests/search.mjs",
     "test:tour-webkit": "node tests/tour-webkit.mjs"
   },

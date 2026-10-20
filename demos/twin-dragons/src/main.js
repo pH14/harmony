@@ -9,6 +9,7 @@ import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { Swarm, ghosts, trailRoom, MOTION_STRIDE } from "./swarm.js";
+import { resumeFollowing, resetRetreat, trackingGoal } from "./camera.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, GRID_CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
@@ -680,12 +681,7 @@ function moveCameraByHand() {
   if (camera.follow) camera.manual = performance.now() + 10000;
 }
 function followSearch() {
-  camera.overview = false;
-  camera.manual = 0;
-  camera.only = null;
-  camera.targets = new Map();
-    camera.follow = true;
-  camera.focus = null;
+  resumeFollowing(camera);
 }
 function levelIndex(room) {
   return catalog.levels.findIndex((level) => level.rooms.includes(room));
@@ -782,6 +778,7 @@ function followStalledPath(now) {
   if (onPath) showPathLevel(deepest);
 }
 function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
+  resumeFollowing(camera);
   const introRoom = intro ? mapLevel : null;
   Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
   for (const room of drivenRooms()) {
@@ -793,6 +790,8 @@ function updateCamera(now) {
   const dt = Math.min(0.1, camera.last ? (now - camera.last) / 1000 : 0);
   camera.last = now;
   document.querySelector(".map-wrap").dataset.camera = camera.focus ? "focus" : camera.follow ? "follow" : "idle";
+  resetRetreat(camera, mapLevel);
+  if (!ready || branchPreview || camera.focus || !camera.follow || paused || camera.held > now || camera.manual > now) resetRetreat(camera);
   if (!ready || branchPreview) return;
   const smooth = (seconds) => (reducedMotion.matches ? 1 : 1 - Math.exp(-dt / seconds));
   if (camera.focus) {
@@ -813,9 +812,9 @@ function updateCamera(now) {
   const t = now - camera.introStart;
   const scale = camera.introDone ? 1 : t < 1500 ? INTRO_SCALE : INTRO_SCALE + (1 - INTRO_SCALE) * ease(Math.min(1, (t - 1500) / 800));
   if (!camera.introDone && t >= 2300) camera.introDone = true;
-  if (reducedMotion.matches && now - camera.jumped < 2000) return;
-  camera.jumped = now;
-  if (camera.pinned == null) {
+  const steer = !reducedMotion.matches || now - camera.jumped >= 2000;
+  if (steer) camera.jumped = now;
+  if (steer && camera.pinned == null) {
     const room = followRoom(now);
     if (room != null) {
       setRoom(room, true);
@@ -826,15 +825,9 @@ function updateCamera(now) {
   }
   for (const room of drivenRooms()) {
     const held = camera.targets.get(room);
-    let point = frontier(room);
-    if (held?.goal && (!point || cameraProgress(room, point) < cameraProgress(room, held.goal) - 32)) {
-      const goal = held.goal, ahead = cameraProgress(room, goal);
-      const near = (swarmRooms.get(room) || []).filter((p) => Math.hypot(p.x + 8 - goal.x, p.y - goal.y) < 192 || cameraProgress(room, { x: p.x + 8, y: p.y }) > ahead).length;
-      if (near >= 2) held.behind = 0;
-      else held.behind ||= now;
-      if (!point || !held.behind || now - held.behind < CAMERA_RETREAT_MS) point = goal;
-    } else if (held) held.behind = 0;
-    if (!point) continue;
+    const point = trackingGoal(held, frontier(room), swarmRooms.get(room) || [], now,
+      (point) => cameraProgress(room, point), CAMERA_RETREAT_MS);
+    if (!point || !steer) continue;
     const c = mapCanvas(room, point);
     if (!c) continue;
     const view = roomView(room, c);
@@ -2990,6 +2983,7 @@ window.addEventListener("keyup", (e) => {
 });
 window.addEventListener("blur", stopControl);
 document.addEventListener("visibilitychange", () => {
+  resetRetreat(camera);
   if (document.hidden) {
     stopControl();
     music.stop();
