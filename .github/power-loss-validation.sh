@@ -81,6 +81,15 @@ case "$case_id" in
         corrupt_all 2654435769 5368709 12648430
         hand images/nats-always.oci ca
         ;;
+    corrupt-always-shrink)
+        corrupt_all 2654435769 5368709 12648430
+        step cas-run "$harmony" debug run images/nats-always.oci --config cfg.toml --seed 1 \
+            --actions evidence/schedule.json --out evidence/cas
+        step cas-show "$harmony" show evidence/cas
+        step cas-shrink "$harmony" shrink evidence/cas --out evidence/cas-shrink --jobs 3
+        step cas-shrink-show "$harmony" show evidence/cas-shrink
+        step cas-shrink-timeline "$harmony" show evidence/cas-shrink --timeline
+        ;;
     corrupt-default-b)
         corrupt_all 1111 2222 3333
         hand images/nats-default.oci cdb
