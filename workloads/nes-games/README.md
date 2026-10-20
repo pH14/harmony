@@ -93,3 +93,13 @@ QuickNES v4 and SMB Consonance v3; Super Tilt Bro's native campaign selects v5.
 These plain snapshots use the postcard payload codec inside the framed envelope.
 Previous flat envelopes are refused. Native `nes` target modules remain
 re-export shims and do not supply separate checkpoint implementations.
+
+Immutable checkpoint images charge the full capacity of each game's emulator-state
+vector and the fixed snapshot/observation value. SMB also charges its backend's
+portable state and owned work-RAM copy. Shared Consonance pages and sidecar chunks
+use physical allocation identities; equivalent separately allocated states remain
+separate charges. Freeze clones owned buffers and retains immutable shared state.
+Metroid, Mega Man 2 and SMB stream evidence from borrowed fields, preserving the
+existing resume bytes without building another owned evidence graph. These shared
+implementations also serve native and browser consumers; file publication remains
+a native coordinator facility.

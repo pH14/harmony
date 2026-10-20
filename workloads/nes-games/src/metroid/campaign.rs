@@ -298,12 +298,6 @@ fn named_progress_name(name: &str) -> Result<&'static str, Box<dyn Error>> {
         .ok_or_else(|| format!("search checkpoint names an unknown milestone {name}").into())
 }
 
-fn owned_names<V: Copy>(map: &BTreeMap<&'static str, V>) -> Vec<(String, V)> {
-    map.iter()
-        .map(|(name, value)| ((*name).to_owned(), *value))
-        .collect()
-}
-
 fn interned_names<V>(
     entries: Vec<(String, V)>,
 ) -> Result<BTreeMap<&'static str, V>, Box<dyn Error>> {
@@ -314,32 +308,6 @@ fn interned_names<V>(
 }
 
 impl MetroidCampaignEvidence {
-    fn to_checkpoint(&self) -> MetroidEvidenceCheckpoint {
-        MetroidEvidenceCheckpoint {
-            observed_map: self.observed_map.0.to_vec(),
-            first_seen: owned_names(&self.named_progress.first_seen),
-            max_missile_capacity: self.named_progress.max_missile_capacity,
-            max_energy_tanks: self.named_progress.max_energy_tanks,
-            aggregate: self.aggregate,
-            watermark: self.watermark,
-            first_reached: self.first_reached,
-            first_inputs: self.first_inputs.clone(),
-            champion_input: self.champion_input.clone(),
-            champion_milestones: self.champion_milestones,
-            champion_key: self.champion_key,
-            genesis_area: self.genesis_area,
-            best_energy: owned_names(&self.best_energy),
-            best_missiles: owned_names(&self.best_missiles),
-            best_boss: self
-                .best_boss
-                .iter()
-                .map(|(name, (Reverse(health), missiles, energy))| {
-                    ((*name).to_owned(), (*health, *missiles, *energy))
-                })
-                .collect(),
-        }
-    }
-
     fn from_checkpoint(checkpoint: MetroidEvidenceCheckpoint) -> Result<Self, Box<dyn Error>> {
         let observed_map: Box<[u64; 4096]> = checkpoint
             .observed_map
@@ -561,8 +529,36 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for MetroidGame<M> {
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
-    fn evidence_checkpoint(evidence: &MetroidCampaignEvidence) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(postcard::to_allocvec(&evidence.to_checkpoint())?)
+    fn write_evidence_checkpoint(
+        evidence: &MetroidCampaignEvidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        use searcher::search::checkpoint::image::Sequence;
+        postcard::to_io(
+            &(
+                &evidence.observed_map.0[..],
+                Sequence(evidence.named_progress.first_seen.iter()),
+                evidence.named_progress.max_missile_capacity,
+                evidence.named_progress.max_energy_tanks,
+                evidence.aggregate,
+                evidence.watermark,
+                evidence.first_reached,
+                &evidence.first_inputs,
+                &evidence.champion_input,
+                evidence.champion_milestones,
+                evidence.champion_key,
+                evidence.genesis_area,
+                Sequence(evidence.best_energy.iter()),
+                Sequence(evidence.best_missiles.iter()),
+                Sequence(evidence.best_boss.iter().map(
+                    |(name, (Reverse(health), missiles, energy))| {
+                        (name, (health, missiles, energy))
+                    },
+                )),
+            ),
+            out,
+        )?;
+        Ok(())
     }
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<MetroidCampaignEvidence, Box<dyn Error>> {
         MetroidCampaignEvidence::from_checkpoint(postcard::from_bytes(bytes)?)
@@ -1068,6 +1064,66 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn streamed_evidence_preserves_the_owned_reference_bytes_and_resume_fields() {
+        let mut evidence = MetroidCampaignEvidence::default();
+        evidence.observed_map.0[17] = 19;
+        evidence.champion_input.actions.push(ButtonChord {
+            buttons: 3,
+            hold_frames: 7,
+        });
+        evidence.best_energy.insert("ridley_area", (3, 5));
+        evidence.best_missiles.insert("ridley_area", (9, 11));
+        evidence
+            .best_boss
+            .insert("ridley_area", (Reverse(13), 15, 17));
+        evidence.genesis_area = Some(4);
+        let names = |values: &BTreeMap<&'static str, _>| {
+            values
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value))
+                .collect()
+        };
+        let reference = MetroidEvidenceCheckpoint {
+            observed_map: evidence.observed_map.0.to_vec(),
+            first_seen: names(&evidence.named_progress.first_seen),
+            max_missile_capacity: evidence.named_progress.max_missile_capacity,
+            max_energy_tanks: evidence.named_progress.max_energy_tanks,
+            aggregate: evidence.aggregate,
+            watermark: evidence.watermark,
+            first_reached: evidence.first_reached,
+            first_inputs: evidence.first_inputs.clone(),
+            champion_input: evidence.champion_input.clone(),
+            champion_milestones: evidence.champion_milestones,
+            champion_key: evidence.champion_key,
+            genesis_area: evidence.genesis_area,
+            best_energy: evidence
+                .best_energy
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value))
+                .collect(),
+            best_missiles: evidence
+                .best_missiles
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value))
+                .collect(),
+            best_boss: evidence
+                .best_boss
+                .iter()
+                .map(|(name, (Reverse(health), missiles, energy))| {
+                    ((*name).to_owned(), (*health, *missiles, *energy))
+                })
+                .collect(),
+        };
+        let bytes = MetroidGame::<QuickNesMachine>::evidence_checkpoint(&evidence).unwrap();
+        assert_eq!(bytes, postcard::to_allocvec(&reference).unwrap());
+        let restored = MetroidGame::<QuickNesMachine>::evidence_from_checkpoint(&bytes).unwrap();
+        assert_eq!(
+            MetroidGame::<QuickNesMachine>::evidence_checkpoint(&restored).unwrap(),
+            bytes
+        );
+    }
 
     #[test]
     fn named_discovery_reconstructs_input_independently_of_output_configuration() {

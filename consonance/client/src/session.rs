@@ -368,6 +368,43 @@ impl SparseSnapshot {
         self.sidecar.materialize()
     }
 
+    pub fn checkpoint_owned_bytes(&self) -> Option<usize> {
+        self.pages
+            .capacity()
+            .checked_mul(std::mem::size_of::<(u64, Arc<[u8; 4096]>)>())
+    }
+
+    pub fn visit_checkpoint_allocations<E>(
+        &self,
+        mut visit: impl FnMut(&'static str, usize, usize) -> Result<bool, E>,
+    ) -> Result<(), E> {
+        for (_, page) in &self.pages {
+            visit(
+                "sparse-snapshot-page",
+                Arc::as_ptr(page) as usize,
+                4096 + 2 * std::mem::size_of::<usize>(),
+            )?;
+        }
+        let inner = &self.sidecar.inner;
+        if visit(
+            "sparse-snapshot-sidecar",
+            Arc::as_ptr(inner) as usize,
+            std::mem::size_of::<SharedStateInner>()
+                + 2 * std::mem::size_of::<usize>()
+                + inner.chunks.capacity()
+                    * std::mem::size_of::<Arc<[u8; SHARED_STATE_CHUNK_SIZE]>>(),
+        )? {
+            for chunk in &inner.chunks {
+                visit(
+                    "sparse-snapshot-sidecar-chunk",
+                    Arc::as_ptr(chunk) as usize,
+                    SHARED_STATE_CHUNK_SIZE + 2 * std::mem::size_of::<usize>(),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn memory_charge(&self) -> usize {
         self.pages
@@ -1737,6 +1774,65 @@ mod tests {
             valid.validated_pages(1, identity, 5).unwrap_err(),
             "portable V-time predates setup"
         );
+    }
+
+    #[test]
+    fn checkpoint_allocation_visits_share_aliased_pages_and_immutable_sidecars() {
+        let page = Arc::new([7_u8; PAGE_SIZE]);
+        let snapshot = SparseSnapshot::from_parts(
+            3,
+            [9; 32],
+            (0..65).map(|gfn| (gfn, page.clone())).collect(),
+            &[8; SHARED_STATE_CHUNK_SIZE + 1],
+            None,
+        )
+        .unwrap();
+        let frozen = snapshot.clone();
+        assert_eq!(frozen.assurance_identity(), snapshot.assurance_identity());
+        let mut allocations = std::collections::BTreeMap::new();
+        let mut visit = |domain, identity, bytes| -> Result<bool, ()> {
+            match allocations.entry((domain, identity)) {
+                std::collections::btree_map::Entry::Occupied(old) => {
+                    assert_eq!(*old.get(), bytes);
+                    Ok(false)
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(bytes);
+                    Ok(true)
+                }
+            }
+        };
+        snapshot.visit_checkpoint_allocations(&mut visit).unwrap();
+        frozen.visit_checkpoint_allocations(&mut visit).unwrap();
+        assert_eq!(
+            allocations
+                .keys()
+                .filter(|(domain, _)| *domain == "sparse-snapshot-page")
+                .count(),
+            1
+        );
+        assert_eq!(
+            allocations
+                .keys()
+                .filter(|(domain, _)| *domain == "sparse-snapshot-sidecar")
+                .count(),
+            1
+        );
+        assert_eq!(
+            allocations
+                .keys()
+                .filter(|(domain, _)| *domain == "sparse-snapshot-sidecar-chunk")
+                .count(),
+            2
+        );
+        assert_eq!(
+            snapshot.checkpoint_owned_bytes(),
+            Some(snapshot.pages.capacity() * std::mem::size_of::<(u64, Arc<[u8; PAGE_SIZE]>)>())
+        );
+        drop(snapshot);
+        drop(page);
+        assert_eq!(frozen.pages()[64].1.as_ref(), &[7; PAGE_SIZE]);
+        assert_eq!(frozen.sidecar(), vec![8; SHARED_STATE_CHUNK_SIZE + 1]);
     }
 
     #[test]

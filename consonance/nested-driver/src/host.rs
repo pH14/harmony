@@ -77,6 +77,31 @@ pub struct Snapshot {
 
 impl searcher::search::snapshot_codec::CheckpointSnapshot for Snapshot {
     type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn Error>> {
+        budget.reserve(std::mem::size_of::<Self>())?;
+        budget.array::<u64>(self.actions.capacity())?;
+        budget.reserve(
+            self.state
+                .checkpoint_owned_bytes()
+                .ok_or(searcher::search::checkpoint::image::ImageLimit)?,
+        )?;
+        self.state
+            .visit_checkpoint_allocations(|domain, identity, bytes| {
+                budget.shared(domain, identity, bytes)
+            })?;
+        if let Some(failure) = &self.observation.failure {
+            budget.array::<u8>(failure.layer.capacity())?;
+            budget.array::<u8>(failure.detail.capacity())?;
+            budget.array::<u64>(failure.actions.capacity())?;
+        }
+        Ok(())
+    }
+    fn freeze_checkpoint(&self) -> Result<Self, Box<dyn Error>> {
+        Ok(self.clone())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -530,8 +555,12 @@ impl Reporting for NestedWorkload {
         logical.state = logical.state.logical_identity()?;
         campaign::postcard_value_sha256(&logical)
     }
-    fn evidence_checkpoint(evidence: &Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(serde_json::to_vec(evidence)?)
+    fn write_evidence_checkpoint(
+        evidence: &Evidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        serde_json::to_writer(out, evidence)?;
+        Ok(())
     }
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Evidence, Box<dyn Error>> {
         Ok(serde_json::from_slice(bytes)?)

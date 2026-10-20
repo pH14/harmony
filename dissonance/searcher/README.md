@@ -244,7 +244,8 @@ and pin release remain on the coordinator. The encoder disposes this payload
 before serializing its record; cleanup data never enters JSON or the stream hash.
 Inline coordinators perform the same disposal before writing the line without
 requiring their cleanup data to be static or creating a thread. Only native
-background entry points require the payload's associated types to be static.
+background entry points require static action, milestone and observation types;
+snapshots also satisfy the immutable publisher's owned static contract.
 
 Observations and incoming snapshots are owned data. Workloads must not use their
 destruction thread or timing to affect evidence, search decisions or other
@@ -1068,6 +1069,79 @@ archive tier. A final checkpoint is also written after the reservation queue dra
 including for runs shorter than the periodic interval. Milestone and tier
 checkpoints are kept; only the last two interval checkpoints are kept.
 
+Scheduling stays on the coordinator. At a due admission boundary it joins the
+preceding publication, captures the header/body and freezes owned workload
+snapshots, then hands the image and exclusive store writer to one thread.
+Body, evidence and draw serialization remain synchronous capture work; snapshot
+DAG encoding and durable filesystem work run on that thread. An image never
+reads the live archive, counters, random state, pending jobs or draw tables.
+The final publication is joined before `End`, the stream digest or a completed
+report. The direct coordinator owns the same publisher as the native pool wrapper.
+Its existing fallible reserve, admission, failure and finish operations hand back
+persistence errors; native direct reservation and admission dispatch use the same
+integrity-first polling and error-retirement boundary. `plan` and admission
+watching keep their public signatures.
+An admission-gap refusal also joins the last image before returning. Errors from
+these state-mutating operations or the native pool wrapper join the writer and
+retain any primary execution error alongside a typed persistence failure.
+Unwinding also joins without detaching.
+A failed publication permanently retires its writer and latches the persistence
+error, including failures after checkpoint rename or journal writing. Charge,
+freeze and synchronous body-capture errors retain their original type on first
+handback and remain the typed primary/source during finalization; the latched
+summary only rejects later operations.
+Evidence writers retain their original boxed errors from both the streamed
+byte-count and byte-emission passes, including the actual coordinator capture
+path. Successful streaming preserves the existing vector codec bytes, and a
+serializer or sink failure without a writer error keeps its Postcard error.
+Once an error is handed back, the direct coordinator refuses further reservation,
+admission and completion; `plan` yields no additional jobs. Workload integrity
+is checked before persistence polling, so an already latched typed contradiction
+remains primary whether the writer is ready or still pending. Finalization keeps
+its typed persistence secondary and never emits `End` after either failure.
+
+`CheckpointPlan::max_image_bytes` bounds one immutable image and its private
+allocation ledger. Package entry points use 64 MiB. This is a staging resource
+bound, separate from archive retention and from RSS: existing codec working
+memory, writer DAG indexes and the fixed output buffer remain separate costs.
+`CheckpointSnapshot` implementations explicitly charge frozen owned capacities,
+container overhead and immutable shared allocations before cloning. Shared
+allocations use domain-separated host-local keys and are charged once per
+image; these keys never enter checkpoint bytes. Sparse portable snapshots own
+their page/chunk references, and a workload needing other external resources
+must acquire immutable leases in its freeze implementation. Freezing grants no
+execution certificate or page-verification exemption. Default browser coordinators
+have no file publisher; explicit file-checkpoint plans on wasm32 are refused at
+publisher creation before any file or thread operation.
+Container charges reserve twelve key/value slots plus 256 bytes for each owned
+B-tree entry, including the private allocation ledger. This deliberately covers
+an entire node for even a one-entry root under the pinned Rust toolchain rather
+than assuming a densely occupied tree. Vector/string charges use owning
+capacities; allocator fragmentation is outside this structural byte budget.
+
+The image uses a separate outer allocation; it never clones the archive's outer
+snapshot `Arc`, whose strong count affects reclamation. A coordinator keeper
+holds the image until the next scheduled checkpoint boundary even when the
+writer finishes early. Completion timing cannot change snapshot residency or
+parent selection. There is no queue, coalescing or completion-driven checkpoint
+cadence. If a snapshot charge or bounded body capture exceeds the image limit,
+the coordinator performs that boundary synchronously through the same codec
+and publication engine before freezing an oversized image. Evidence, draw,
+JSON-backed fields and in-flight records stream from borrowed boundary data on
+this path, so pressure does not first allocate an oversized intermediate Vec.
+Rejected header and policy buffers are also borrowed on the pressure path. The
+synchronous writer serializes a private borrowed view with the publication owner
+override, preserving the owned header's field order and bytes. An owned image
+header is cloned only after its complete allocation charge has been accepted.
+The capture sink retains at most its accepted capacity; after confirmed image
+overflow it discards further bytes while reporting successful writes. Capture
+still completes synchronously, so an independent body or workload writer error
+remains primary and retires publication without retrying the callback. Only a
+successful overflowing capture falls back to synchronous publication. This can
+add a complete synchronous body traversal before that fallback, rather than
+stopping at the first over-limit write. It adds no oversized body allocation or
+snapshot freeze, and does not change successful codec bytes or checkpoint cadence.
+
 Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
 list it by entry id, offset, length, and SHA-256. Resume checks each referenced
@@ -1090,7 +1164,19 @@ checksum. `checkpoints.jsonl` records each checkpoint's SHA-256, write time and 
 `store_bytes` is the store's length. `live_snapshot_bytes` includes endpoint and
 shared frames reachable from kept checkpoints; `new_snapshot_bytes` and
 `freed_snapshot_bytes` include both kinds. `new_snapshots` and `freed_snapshots`
-count endpoint frames only. The
+count endpoint frames only. The writer syncs dependency frames before publishing
+references, syncs each completed checkpoint, renames it and syncs its directory
+on every publication, including milestone, tier and final checkpoints. It then
+syncs the appended journal record and its directory before acknowledging.
+Checkpoint files and their referenced frames are authoritative for resume; the
+synced journal binds their checksums and records diagnostics, but is not a
+replacement for byte validation. New checkpoint directories and their
+containing entries are synced when created. Pruning still syncs deletions before
+releasing frame ownership or punching. An error after a rename can leave a
+complete additional checkpoint, but cannot acknowledge success or damage an
+earlier kept checkpoint.
+
+The
 header names the body's layout, `SEARCH_CHECKPOINT_FORMAT`. The name changes
 whenever a stored type such as `Archive` changes, and a reader refuses a
 checkpoint of any other layout before it decodes the body. The
@@ -1240,6 +1326,12 @@ flat envelopes and trailing bytes. Plain snapshots opt into the postcard codec;
 workloads with persistent graphs provide semantic keys and graph validation. All
 artifact writers, readers and source-bound checksum validation use this codec.
 
+`CheckpointSnapshot` also supplies explicit immutable freeze and allocation-charge
+contracts. `Reporting::write_evidence_checkpoint` and borrowed draw/JSON writers
+preserve existing body bytes without first materializing unbounded temporary
+vectors. These contracts prepare bounded publication images; frozen state does
+not grant execution or import trust.
+
 Whole-search checkpoint v13 uses the same workload codec in a typed `HMSTORE2`
 append store. Snapshot frames refer to semantic shared keys using checksummed
 physical ranges. Shared frames carry earlier parent locators, so resume validates
@@ -1254,8 +1346,9 @@ iteratively, forgetting their keys before punching file holes. Later reintroduct
 of the same semantic root emits its missing ancestry with new locations. Pinned
 checkpoints preserve the reachable graph. Failed encoding stops that writer;
 failed checkpoint publication cannot change earlier live listing/edge ownership.
-Appended unreferenced tails may remain after a fatal failure. Persistence remains
-synchronous; no background writer or retained-image lease protocol is introduced.
+Appended unreferenced tails may remain after a fatal failure. The bounded immutable
+image and publication worker described above own persistence; synchronous pressure
+handback uses this same codec and publication order.
 
 Whole-search checkpoint v13 combines the current coordinator/archive body with
 shared snapshot frames. Both earlier v9 layouts are refused before decoding a

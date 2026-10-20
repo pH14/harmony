@@ -731,6 +731,15 @@ pub fn run(request: &Request) -> Result<serde_json::Value, Box<dyn Error>> {
 
 impl searcher::search::snapshot_codec::CheckpointSnapshot for State {
     type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+    fn checkpoint_image_charge(
+        &self,
+        budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        budget.reserve(std::mem::size_of::<Self>())
+    }
+    fn freeze_checkpoint(&self) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(*self)
+    }
 }
 
 #[cfg(test)]

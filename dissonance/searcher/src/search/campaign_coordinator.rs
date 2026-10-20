@@ -23,14 +23,14 @@ use super::{
     initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
     profile_clock_enabled, profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
     record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
-    retained_archive_indexes, stop_reservations_after_objective,
+    retained_archive_indexes, search_checkpoint_header, stop_reservations_after_objective,
     stop_reservations_after_work_budget, stream_header, with_coordinator_session,
     write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
 };
-use crate::search::checkpoint::{CheckpointReader, CheckpointWriter};
+use crate::search::checkpoint::{CheckpointReader, publisher::CheckpointPublisher};
 use crate::search::draw::{EnergyStrategy, MixtureDraw, SUFFIX_DOUBLING_LIMIT, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
 use crate::search::duration::DurationPolicies;
@@ -114,7 +114,6 @@ struct DispatchPhaseStart {
 pub struct CampaignCoordinator<'a, G: Workload> {
     workload: &'a G,
     config: &'a CampaignConfig<G>,
-    executable_identity: String,
     work_budget: Option<u64>,
     header: CampaignStreamHeader<DrawTableHeader>,
     origin_record: CampaignOriginRecord,
@@ -129,7 +128,8 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     rand: RomuDuoJrRand,
     draw_state: DrawTables<G::Action>,
     duration_policies: DurationPolicies<G::Key>,
-    checkpoints: Option<CheckpointWriter<<G::Key as ArchiveKey>::Progress>>,
+    checkpoints: Option<CheckpointPublisher<G::Snapshot, <G::Key as ArchiveKey>::Progress>>,
+    failed: bool,
     reserved: u64,
     admitted: usize,
     planned_clock: u64,
@@ -302,8 +302,18 @@ where
         let checkpoints = options
             .checkpoints
             .map(|plan| {
-                CheckpointWriter::create(
+                CheckpointPublisher::create(
                     plan,
+                    search_checkpoint_header(
+                        workload,
+                        config,
+                        &executable_identity,
+                        "",
+                        0,
+                        0,
+                        0,
+                        0,
+                    ),
                     G::checkpoint_marks(&core.evidence),
                     core.archive.top_progress(),
                 )
@@ -316,7 +326,6 @@ where
         let mut coordinator = Self {
             workload,
             config,
-            executable_identity,
             work_budget,
             header,
             origin_record,
@@ -328,6 +337,7 @@ where
             draw_state,
             duration_policies,
             checkpoints,
+            failed: false,
             reserved,
             admitted,
             planned_clock,
@@ -409,7 +419,12 @@ where
     }
 
     pub(crate) fn drain_background_stream(&mut self) -> Result<(), Box<dyn Error>> {
-        self.writer.drain_ready()
+        let result = (|| {
+            self.ensure_active()?;
+            self.poll_persistence()?;
+            self.writer.drain_ready()
+        })();
+        self.handback_on_error(result)
     }
 
     pub(crate) fn begin_dispatch_phase(&mut self) {
@@ -438,35 +453,45 @@ where
     }
 
     pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {
-        if self.reservations.pending >= self.config.window {
-            return Ok(false);
-        }
-        let Some(job) = self.reserve()? else {
-            return Ok(false);
-        };
-        self.queue_job(job);
-        Ok(true)
+        let result = (|| {
+            self.ensure_active()?;
+            self.poll_persistence()?;
+            if self.reservations.pending >= self.config.window {
+                return Ok(false);
+            }
+            let Some(job) = self.reserve()? else {
+                return Ok(false);
+            };
+            self.queue_job(job);
+            Ok(true)
+        })();
+        self.handback_on_error(result)
     }
 
     pub(crate) fn reserve_next_dispatch(
         &mut self,
         dispatch: &mut JobDispatch<'_, G>,
     ) -> Result<bool, Box<dyn Error>> {
-        if self.reservations.pending >= self.config.window {
-            self.dispatch_queued(dispatch)?;
-            return Ok(false);
-        }
-        let Some(job) = self.reserve()? else {
-            self.dispatch_queued(dispatch)?;
-            return Ok(false);
-        };
-        if self.queued.is_empty() {
-            self.dispatch_job(job, dispatch)?;
-        } else {
-            self.queue_job(job);
-            self.dispatch_queued(dispatch)?;
-        }
-        Ok(true)
+        let result = (|| {
+            self.ensure_active()?;
+            self.poll_persistence()?;
+            if self.reservations.pending >= self.config.window {
+                self.dispatch_queued_inner(dispatch)?;
+                return Ok(false);
+            }
+            let Some(job) = self.reserve()? else {
+                self.dispatch_queued_inner(dispatch)?;
+                return Ok(false);
+            };
+            if self.queued.is_empty() {
+                self.dispatch_job(job, dispatch)?;
+            } else {
+                self.queue_job(job);
+                self.dispatch_queued_inner(dispatch)?;
+            }
+            Ok(true)
+        })();
+        self.handback_on_error(result)
     }
 
     fn queue_job(&mut self, job: JobSpec<G>) {
@@ -492,6 +517,9 @@ where
     }
 
     pub fn plan(&mut self, limit: usize) -> Vec<JobSpec<G>> {
+        if self.failed {
+            return Vec::new();
+        }
         let mut jobs = Vec::new();
         while jobs.len() < limit
             && let Some((_, job)) = self.queued.pop_first()
@@ -511,6 +539,18 @@ where
     }
 
     pub(crate) fn dispatch_queued(
+        &mut self,
+        dispatch: &mut JobDispatch<'_, G>,
+    ) -> Result<(), Box<dyn Error>> {
+        let result = (|| {
+            self.ensure_active()?;
+            self.poll_persistence()?;
+            self.dispatch_queued_inner(dispatch)
+        })();
+        self.handback_on_error(result)
+    }
+
+    fn dispatch_queued_inner(
         &mut self,
         dispatch: &mut JobDispatch<'_, G>,
     ) -> Result<(), Box<dyn Error>> {
@@ -577,71 +617,130 @@ where
         records: Option<CompletedRecords>,
         mut dispatch: Option<&mut JobDispatch<'_, G>>,
     ) -> Result<(), Box<dyn Error>> {
-        self.workload.verify_integrity()?;
-        self.profile.receives = self.profile.receives.saturating_add(1);
-        self.running = self
-            .running
-            .checked_sub(1)
-            .ok_or("campaign worker replied without queued work")?;
-        let held = self.schedule.first().map(|(_, next)| *next) != Some(reservation);
-        self.idle_clock.update(
-            self.running,
-            if held {
-                IdleReason::AdmissionOrder
-            } else {
-                IdleReason::NoJob
-            },
-        );
-        let queued = &self.queued;
-        self.reservations.complete_with_records(
-            reservation,
-            CompletedOutcome {
-                held_since: held.then(now),
-                outcome,
-            },
-            records,
-            |pending| {
-                if queued.contains_key(&(pending.planned_finish, reservation)) {
-                    Err("campaign worker replied for a job that was never planned")
+        let result = (|| {
+            self.ensure_active()?;
+            self.poll_persistence()?;
+            self.profile.receives = self.profile.receives.saturating_add(1);
+            self.running = self
+                .running
+                .checked_sub(1)
+                .ok_or("campaign worker replied without queued work")?;
+            let held = self.schedule.first().map(|(_, next)| *next) != Some(reservation);
+            self.idle_clock.update(
+                self.running,
+                if held {
+                    IdleReason::AdmissionOrder
                 } else {
-                    Ok(())
-                }
-            },
-        )?;
-        while let Some(&(finish, reservation)) = self.schedule.first() {
-            self.workload.verify_integrity()?;
-            let Some((pending, completed)) = self.reservations.take_completed(reservation) else {
-                break;
-            };
-            self.schedule.pop_first();
-            self.admit_completed(
-                finish,
+                    IdleReason::NoJob
+                },
+            );
+            let queued = &self.queued;
+            self.reservations.complete_with_records(
                 reservation,
-                CompletedJob {
-                    pending,
-                    held_since: completed.held_since,
-                    outcome: completed.outcome,
+                CompletedOutcome {
+                    held_since: held.then(now),
+                    outcome,
+                },
+                records,
+                |pending| {
+                    if queued.contains_key(&(pending.planned_finish, reservation)) {
+                        Err("campaign worker replied for a job that was never planned")
+                    } else {
+                        Ok(())
+                    }
                 },
             )?;
-            let next = self.reserve()?;
-            self.write_due_checkpoint()?;
-            if let Some(job) = next {
-                if self.queued.is_empty()
-                    && let Some(dispatch) = dispatch.as_deref_mut()
-                {
-                    self.dispatch_job(job, dispatch)?;
-                } else {
-                    self.queue_job(job);
+            while let Some(&(finish, reservation)) = self.schedule.first() {
+                self.workload.verify_integrity()?;
+                let Some((pending, completed)) = self.reservations.take_completed(reservation)
+                else {
+                    break;
+                };
+                self.schedule.pop_first();
+                self.admit_completed(
+                    finish,
+                    reservation,
+                    CompletedJob {
+                        pending,
+                        held_since: completed.held_since,
+                        outcome: completed.outcome,
+                    },
+                )?;
+                let next = self.reserve()?;
+                self.write_due_checkpoint()?;
+                if let Some(job) = next {
+                    if self.queued.is_empty()
+                        && let Some(dispatch) = dispatch.as_deref_mut()
+                    {
+                        self.dispatch_job(job, dispatch)?;
+                    } else {
+                        self.queue_job(job);
+                    }
+                }
+                if let Some(dispatch) = dispatch.as_deref_mut() {
+                    self.dispatch_queued_inner(dispatch)?;
                 }
             }
-            if let Some(dispatch) = dispatch.as_deref_mut() {
-                self.dispatch_queued(dispatch)?;
+            if self.reservations.pending == 0 && self.reservations.completed_len() != 0 {
+                return Err("campaign reorder window ended with an admission gap".into());
             }
-        }
-        if self.reservations.pending == 0 && self.reservations.completed_len() != 0 {
-            return Err("campaign reorder window ended with an admission gap".into());
+            Ok(())
+        })();
+        self.handback_on_error(result)
+    }
+
+    fn ensure_active(&self) -> Result<(), Box<dyn Error>> {
+        self.workload.verify_integrity()?;
+        if self.failed {
+            return Err("campaign coordinator has already failed".into());
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn checkpoint_worker_finished(&self) -> bool {
+        self.checkpoints
+            .as_ref()
+            .is_some_and(CheckpointPublisher::worker_finished)
+    }
+
+    #[cfg(test)]
+    pub(super) fn checkpoint_capture_overflows(&self) -> usize {
+        self.checkpoints
+            .as_ref()
+            .map_or(0, CheckpointPublisher::capture_overflows)
+    }
+
+    fn poll_persistence(&mut self) -> Result<(), Box<dyn Error>> {
+        if let Some(checkpoints) = self.checkpoints.as_mut() {
+            checkpoints.poll()?;
+        }
+        Ok(())
+    }
+
+    fn handback_on_error<T>(
+        &mut self,
+        result: Result<T, Box<dyn Error>>,
+    ) -> Result<T, Box<dyn Error>> {
+        if result.is_err() {
+            self.finish_persistence(result)
+        } else {
+            result
+        }
+    }
+
+    pub(crate) fn finish_persistence<T>(
+        &mut self,
+        result: Result<T, Box<dyn Error>>,
+    ) -> Result<T, Box<dyn Error>> {
+        let result = match self.checkpoints.as_mut() {
+            Some(checkpoints) => checkpoints.finish(result),
+            None => result,
+        };
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
     }
 
     pub fn watch_admissions(&mut self) {
@@ -746,31 +845,34 @@ where
         mut self,
         workers: Vec<WorkerTelemetry>,
     ) -> Result<CampaignOutcome<G>, Box<dyn Error>> {
-        if self.reservations.completed_len() != 0 || !self.schedule.is_empty() {
-            return Err("campaign reorder window ended with an admission gap".into());
-        }
-        self.telemetry.completed_buffer = self.reservations.telemetry;
-        if let Some(checkpoints) = self.checkpoints.as_mut() {
-            write_search_checkpoint(
-                self.workload,
-                self.config,
-                &self.executable_identity,
-                checkpoints,
-                "final",
-                &self.core,
-                &self.draw_state,
-                &self.duration_policies,
-                &self.rand,
-                &self.counters,
-                &self.profile,
-                self.reserved,
-                self.admitted,
-                self.planned_clock,
-                &self.schedule,
-                &self.reservations,
-                &self.spec_records,
-            )?;
-        }
+        let result = (|| {
+            self.ensure_active()?;
+            if self.reservations.completed_len() != 0 || !self.schedule.is_empty() {
+                return Err("campaign reorder window ended with an admission gap".into());
+            }
+            self.telemetry.completed_buffer = self.reservations.telemetry;
+            if let Some(checkpoints) = self.checkpoints.as_mut() {
+                write_search_checkpoint(
+                    self.workload,
+                    checkpoints,
+                    "final",
+                    &self.core,
+                    &self.draw_state,
+                    &self.duration_policies,
+                    &self.rand,
+                    &self.counters,
+                    &self.profile,
+                    self.reserved,
+                    self.admitted,
+                    self.planned_clock,
+                    &self.schedule,
+                    &self.reservations,
+                    &self.spec_records,
+                )?;
+            }
+            Ok(())
+        })();
+        self.finish_persistence(result)?;
         let Self {
             workload,
             config,
@@ -902,8 +1004,6 @@ where
         {
             write_search_checkpoint(
                 self.workload,
-                self.config,
-                &self.executable_identity,
                 checkpoints,
                 reason,
                 &self.core,

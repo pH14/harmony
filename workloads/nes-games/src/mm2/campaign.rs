@@ -329,22 +329,6 @@ struct Mm2EvidenceCheckpoint {
 }
 
 impl Mm2CampaignEvidence {
-    fn to_checkpoint(&self) -> Mm2EvidenceCheckpoint {
-        Mm2EvidenceCheckpoint {
-            first_seen: self.named_progress.first_seen.clone().into_iter().collect(),
-            aggregate: self.aggregate,
-            watermark: self.watermark,
-            first_reached: self.first_reached,
-            first_inputs: self.first_inputs.clone(),
-            champion_input: self.champion_input.clone(),
-            champion_milestones: self.champion_milestones,
-            champion_key: self.champion_key,
-            genesis_screen: self.genesis_screen,
-            best_health: self.best_health.clone().into_iter().collect(),
-            best_energy: self.best_energy.clone().into_iter().collect(),
-        }
-    }
-
     fn from_checkpoint(checkpoint: Mm2EvidenceCheckpoint) -> Result<Self, Box<dyn Error>> {
         let mut named_progress = NamedProgress::default();
         named_progress.restore(checkpoint.first_seen)?;
@@ -572,8 +556,28 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for Mm2Game<M> {
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for Mm2Game<M> {
-    fn evidence_checkpoint(evidence: &Mm2CampaignEvidence) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(postcard::to_allocvec(&evidence.to_checkpoint())?)
+    fn write_evidence_checkpoint(
+        evidence: &Mm2CampaignEvidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        use searcher::search::checkpoint::image::Sequence;
+        postcard::to_io(
+            &(
+                Sequence(evidence.named_progress.first_seen.iter()),
+                evidence.aggregate,
+                evidence.watermark,
+                evidence.first_reached,
+                &evidence.first_inputs,
+                &evidence.champion_input,
+                evidence.champion_milestones,
+                evidence.champion_key,
+                evidence.genesis_screen,
+                Sequence(evidence.best_health.iter()),
+                Sequence(evidence.best_energy.iter()),
+            ),
+            out,
+        )?;
+        Ok(())
     }
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Mm2CampaignEvidence, Box<dyn Error>> {
         Mm2CampaignEvidence::from_checkpoint(postcard::from_bytes(bytes)?)
@@ -1000,5 +1004,46 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for Mm2Game<M> {
             })
             .map(|entry| entry.input.clone())
             .ok_or_else(|| "Mega Man 2 source archive has no retained entries".into())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    #[test]
+    fn streamed_evidence_preserves_the_owned_reference_bytes_and_resume_fields() {
+        let mut evidence = Mm2CampaignEvidence::default();
+        evidence.champion_input.actions.push(ButtonChord {
+            buttons: 3,
+            hold_frames: 7,
+        });
+        evidence.best_health.insert("health λ".into(), (3, 5));
+        evidence.best_energy.insert("energy".into(), (9, 11));
+        evidence.genesis_screen = Some(4);
+        let reference = Mm2EvidenceCheckpoint {
+            first_seen: evidence
+                .named_progress
+                .first_seen
+                .clone()
+                .into_iter()
+                .collect(),
+            aggregate: evidence.aggregate,
+            watermark: evidence.watermark,
+            first_reached: evidence.first_reached,
+            first_inputs: evidence.first_inputs.clone(),
+            champion_input: evidence.champion_input.clone(),
+            champion_milestones: evidence.champion_milestones,
+            champion_key: evidence.champion_key,
+            genesis_screen: evidence.genesis_screen,
+            best_health: evidence.best_health.clone().into_iter().collect(),
+            best_energy: evidence.best_energy.clone().into_iter().collect(),
+        };
+        let bytes = Mm2Game::<QuickNesMachine>::evidence_checkpoint(&evidence).unwrap();
+        assert_eq!(bytes, postcard::to_allocvec(&reference).unwrap());
+        let restored = Mm2Game::<QuickNesMachine>::evidence_from_checkpoint(&bytes).unwrap();
+        assert_eq!(
+            Mm2Game::<QuickNesMachine>::evidence_checkpoint(&restored).unwrap(),
+            bytes
+        );
     }
 }

@@ -150,6 +150,12 @@ run. `SnapshotState::WorkRam` is the copy of work RAM that a snapshot of that
 state keeps: none for QuickNES and 2 KiB for Consonance. SMB stores its work
 RAM there. Observations carry no list of changed RAM
 addresses and no log line, because nothing reads them.
+Checkpoint freezing accounts for owned emulator/work-RAM capacities before
+cloning. Portable Consonance state exposes its immutable shared page/sidecar
+allocations for the image's private ledger; retaining them does not keep an
+archive entry active or exempt imports from verification. Evidence checkpoint
+writers stream borrowed fields and preserve the existing postcard/JSON bytes,
+including on the synchronous staging-pressure path.
 
 Campaign recordings use the current Dissonance schedule policy version 6 and
 bounded progress policy. Replay rejects recordings from superseded policy
