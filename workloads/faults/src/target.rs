@@ -5,6 +5,7 @@ use std::num::NonZeroU16;
 
 use control_proto::StopReason;
 use fault_policy::{DecisionClass, Fault, ParkTarget, Span, StandingWindow, process_target};
+use process_proto::EVERY_NODE;
 use process_proto::registers as reg;
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,7 @@ const STATE_PAYLOAD_LEN: usize = 9;
 pub enum FaultOperation {
     Wait(NonZeroU16),
     Kill(u16, NonZeroU16),
+    KillAll(NonZeroU16),
     EventKill {
         node: u16,
         rarity: u8,
@@ -54,6 +56,7 @@ impl FaultOperation {
         match *self {
             Self::Wait(ticks)
             | Self::Kill(_, ticks)
+            | Self::KillAll(ticks)
             | Self::EventKill { ticks, .. }
             | Self::EventPark { ticks, .. }
             | Self::Pause(_, ticks)
@@ -67,6 +70,7 @@ impl FaultOperation {
         match self {
             Self::Wait(_) => Self::Wait(ticks),
             Self::Kill(node, _) => Self::Kill(node, ticks),
+            Self::KillAll(_) => Self::KillAll(ticks),
             Self::EventKill { node, rarity, .. } => Self::EventKill {
                 node,
                 rarity,
@@ -159,17 +163,23 @@ impl FaultOperation {
                 put(&id.to_le_bytes());
                 put(&ticks.get().to_le_bytes());
             }
+            Self::KillAll(ticks) => {
+                put(&[7]);
+                put(&ticks.get().to_le_bytes());
+            }
         }
         out
     }
 }
 
-pub const ACTION_KEY_WIDTH: usize = OPERATION_KEY_WIDTH + 2;
+pub const ACTION_KEY_WIDTH: usize = OPERATION_KEY_WIDTH + 2 + 8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultAction {
     pub operation: FaultOperation,
     pub coverage_quantum: NonZeroU16,
+    #[serde(default)]
+    pub choice: u64,
 }
 
 impl FaultAction {
@@ -177,7 +187,24 @@ impl FaultAction {
         Self {
             operation,
             coverage_quantum,
+            choice: 0,
         }
+    }
+
+    #[must_use]
+    pub fn with_choice(self, choice: u64) -> Self {
+        Self { choice, ..self }
+    }
+
+    #[must_use]
+    pub fn entropy_seed(&self, base: u64) -> u64 {
+        if self.choice == 0 {
+            return base;
+        }
+        let mut z = (base ^ self.choice).wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
     }
 
     pub fn ticks(&self) -> u64 {
@@ -194,7 +221,9 @@ impl FaultAction {
     pub fn key_bytes(&self) -> [u8; ACTION_KEY_WIDTH] {
         let mut bytes = [0; ACTION_KEY_WIDTH];
         bytes[..OPERATION_KEY_WIDTH].copy_from_slice(&self.operation.key_bytes());
-        bytes[OPERATION_KEY_WIDTH..].copy_from_slice(&self.coverage_quantum.get().to_le_bytes());
+        bytes[OPERATION_KEY_WIDTH..OPERATION_KEY_WIDTH + 2]
+            .copy_from_slice(&self.coverage_quantum.get().to_le_bytes());
+        bytes[OPERATION_KEY_WIDTH + 2..].copy_from_slice(&self.choice.to_le_bytes());
         bytes
     }
 }
@@ -358,6 +387,12 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         FaultOperation::Kill(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcKill),
+                (start, end),
+            )),
+        },
+        FaultOperation::KillAll(_) => ActionDelta {
+            standing: Some(standing(
+                process_target(EVERY_NODE, &Fault::ProcKill),
                 (start, end),
             )),
         },
@@ -1343,11 +1378,27 @@ mod tests {
     }
 
     #[test]
+    fn a_choice_changes_the_action_key_and_entropy_seed() {
+        let action = FaultAction::from(FaultOperation::Wait(ticks(4)));
+        assert_eq!(action.entropy_seed(11), 11);
+        let first = action.with_choice(1);
+        let second = action.with_choice(2);
+        assert_ne!(first.entropy_seed(11), 11);
+        assert_ne!(first.entropy_seed(11), second.entropy_seed(11));
+        assert_eq!(
+            first.entropy_seed(11),
+            action.with_choice(1).entropy_seed(11)
+        );
+        assert_ne!(first.key_bytes(), second.key_bytes());
+        assert_eq!(first.with_ticks(ticks(9)).choice, 1);
+    }
+
+    #[test]
     fn an_event_park_target_is_a_nonempty_range_in_json() {
-        let untargeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":null}},"coverage_quantum":1}"#;
+        let untargeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":null}},"coverage_quantum":1,"choice":7}"#;
         let action: FaultAction = serde_json::from_str(untargeted).unwrap();
         assert_eq!(serde_json::to_string(&action).unwrap(), untargeted);
-        let targeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}},"coverage_quantum":1}"#;
+        let targeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}},"coverage_quantum":1,"choice":0}"#;
         let action: FaultAction = serde_json::from_str(targeted).unwrap();
         assert!(matches!(
             action.operation,
@@ -1438,6 +1489,24 @@ mod tests {
             Some((2, Fault::ProcKill))
         );
         assert_eq!((fault.start, fault.end), window);
+    }
+
+    #[test]
+    fn a_whole_cluster_kill_holds_every_node_for_its_window() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        let delta = action_delta(FaultOperation::KillAll(ticks(50)).into(), window);
+        let fault = delta
+            .standing
+            .expect("a cluster kill installs a standing fault");
+        assert_eq!(
+            decode_process_target(&fault.target),
+            Some((EVERY_NODE, Fault::ProcKill))
+        );
+        assert_eq!((fault.start, fault.end), window);
+        assert_ne!(
+            FaultOperation::KillAll(ticks(50)).key_bytes(),
+            FaultOperation::Kill(0, ticks(50)).key_bytes()
+        );
     }
 
     #[test]

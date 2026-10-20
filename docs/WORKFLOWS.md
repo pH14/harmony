@@ -578,6 +578,12 @@ planted divergence. Current Bookworm historical case images have the same
 reviewed sites, so the manually dispatched UML campaign refuses them at image
 admission until they are rebuilt without those instructions.
 
+The language workflow's `Harness Kit` job runs when a change reaches
+`workloads/harness/`, under the `harmony_harness` selection kind. It runs
+`go vet` and `go test` on the harness kit module and `go vet` and `go build`
+on every target module under `workloads/harness/targets/`, with a pinned Go
+release and `GOTOOLCHAIN=local`. It builds no image.
+
 ## Repository maintenance
 
 `Maintenance / Repository` runs `scripts/prune-branches.py` every day. It

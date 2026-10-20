@@ -4,6 +4,7 @@ mod investigate;
 #[cfg(feature = "frontend")]
 pub(crate) mod prepare;
 mod runs;
+mod shrink;
 mod terminal;
 pub(crate) mod workflow;
 #[cfg(feature = "frontend")]
@@ -107,6 +108,7 @@ impl Package for Faults {
                 request.repeat,
             ),
             Operation::Branch => investigate::branch(request),
+            Operation::Shrink => shrink::shrink(request),
             Operation::Inspect => investigate::inspect(
                 request.selection.ok_or("select a search or branch")?,
                 request.json,
@@ -172,6 +174,13 @@ pub fn execute_prepared(request: Request, mut prepared: crate::handoff::Prepared
                 .ok_or("missing resolved saved recording")?,
         ),
         Operation::Branch => investigate::branch_saved(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        ),
+        Operation::Shrink => shrink::shrink_saved(
             request,
             prepared
                 .saved

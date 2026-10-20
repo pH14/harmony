@@ -87,6 +87,15 @@ enum Command {
         #[arg(long, help = "Save the branch without executing the original suffix")]
         stop: bool,
     },
+    #[command(about = "Replace faults with waits until only those the finding needs remain")]
+    Shrink {
+        #[command(flatten)]
+        selection: Selection,
+        #[command(flatten)]
+        destination: Destination,
+        #[arg(long, default_value_t = 1, help = "Replays to run at once")]
+        jobs: usize,
+    },
     #[command(about = "List saved searches and branches")]
     List {
         #[arg(long)]
@@ -253,6 +262,19 @@ fn execute(command: Command) -> Result<u8> {
                 ..Default::default()
             });
         }
+        Command::Shrink {
+            selection,
+            destination,
+            jobs,
+        } => {
+            return workflow::saved(Request {
+                operation: Operation::Shrink,
+                selection: Some(selection),
+                destination,
+                jobs,
+                ..Default::default()
+            });
+        }
         Command::List { json } => return workflow::list(json),
         Command::Show {
             selection,
@@ -382,6 +404,15 @@ mod tests {
                 "5000",
             ],
             vec!["harmony", "search", "--from", "debugging"],
+            vec![
+                "harmony",
+                "shrink",
+                "baseline",
+                "--finding",
+                "1",
+                "--jobs",
+                "4",
+            ],
             vec!["harmony", "list"],
             vec!["harmony", "check"],
         ] {

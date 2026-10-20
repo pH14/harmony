@@ -114,6 +114,8 @@ impl ProcessAction {
     }
 }
 
+pub const EVERY_NODE: u16 = u16::MAX;
+
 #[must_use]
 pub fn encode_target(node: u16, action: &ProcessAction) -> Vec<u8> {
     let mut out = node.to_le_bytes().to_vec();

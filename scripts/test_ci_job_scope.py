@@ -70,11 +70,12 @@ class InlineSelectionTests(unittest.TestCase):
             self.assertIn("?" + legacy_blob, missing.splitlines())
 
     def test_scheduled_and_manual_language_runs_select_the_tracked_source_tree(self):
-        for event in ("schedule", "workflow_dispatch"):
-            with self.subTest(event=event):
-                with mock.patch.object(SCOPE.subprocess, "check_output", return_value="README.md\0") as run:
-                    paths = SCOPE.changed_paths("harmony_languages", event, "", "")
-                    run.assert_called_once_with(["git", "ls-files", "-z"], text=True)
+        for kind in ("harmony_languages", "harmony_harness"):
+            for event in ("schedule", "workflow_dispatch"):
+                with self.subTest(kind=kind, event=event):
+                    with mock.patch.object(SCOPE.subprocess, "check_output", return_value="README.md\0") as run:
+                        paths = SCOPE.changed_paths(kind, event, "", "")
+                        run.assert_called_once_with(["git", "ls-files", "-z"], text=True)
         with self.assertRaises(ValueError):
             SCOPE.changed_paths("harmony_languages", "merge_group", "", "")
 

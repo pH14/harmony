@@ -391,6 +391,7 @@ struct ActionPlan {
     handler: StandingHandler,
     coverage_schedule: CoverageSchedule,
     deadline: u64,
+    entropy_seed: u64,
 }
 
 impl ActionPlan {
@@ -423,6 +424,7 @@ impl ActionPlan {
             })),
             coverage_schedule,
             deadline,
+            entropy_seed: action_entropy_seed(actions),
         })
     }
 
@@ -433,6 +435,12 @@ impl ActionPlan {
             configuration: self.handler.0.configuration.clone(),
         }
     }
+}
+
+fn action_entropy_seed(actions: &[FaultAction]) -> u64 {
+    actions
+        .last()
+        .map_or(SEED, |action| action.entropy_seed(SEED))
 }
 
 #[derive(Debug)]
@@ -939,6 +947,7 @@ impl FaultTarget {
             live.session
                 .branch_with_service(
                     snapshot,
+                    action_entropy_seed(self.actions()),
                     service,
                     Vec::new(),
                     Vec::new(),
@@ -2310,6 +2319,7 @@ impl Live {
         self.cursor.invalidate();
         let result = self.session.branch_with_service(
             parent.snap,
+            plan.entropy_seed,
             config,
             Vec::new(),
             Vec::new(),
@@ -3282,6 +3292,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             snapshot: SnapId,
+            _: u64,
             config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
@@ -3846,6 +3857,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             _: SnapId,
+            _: u64,
             config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,

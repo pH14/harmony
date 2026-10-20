@@ -188,6 +188,9 @@ pub fn sample_action(
     if !vocabulary.hooks().is_empty() {
         alternatives.push(4);
     }
+    if vocabulary.nodes() > 1 {
+        alternatives.push(7);
+    }
     let node_mask = u64::MAX >> (64 - vocabulary.nodes());
     let event_ready = event_ready & node_mask;
     if vocabulary.instrumented_events() && event_ready != 0 {
@@ -210,6 +213,7 @@ pub fn sample_action(
             vocabulary.hooks()[pick(rand, vocabulary.hooks().len())?],
             ticks,
         ),
+        7 => FaultOperation::KillAll(ticks),
         5 => FaultOperation::EventKill {
             node: event_node(rand)?,
             rarity: u8::try_from(pick(rand, 64)?)?,
@@ -238,10 +242,10 @@ pub fn sample_action(
         rand,
         std::num::NonZeroU64::new(u64::from(u16::MAX)).unwrap(),
     );
-    Ok(FaultAction::new(
-        action,
-        NonZeroU16::new(u16::try_from(quantum)?).unwrap(),
-    ))
+    Ok(
+        FaultAction::new(action, NonZeroU16::new(u16::try_from(quantum)?).unwrap())
+            .with_choice(rand.next_u64()),
+    )
 }
 
 const PARK_EDGE_EXPONENTS: u32 = 14;
@@ -622,6 +626,7 @@ mod tests {
             FaultOperation::Hook(..) => 4,
             FaultOperation::EventKill { .. } => 5,
             FaultOperation::EventPark { .. } => 6,
+            FaultOperation::KillAll(_) => 7,
         };
         for _ in 0..2_000 {
             let action =
@@ -629,7 +634,7 @@ mod tests {
             kinds.insert(kind(&action));
             assert_eq!(action.ticks(), u64::from(TICKS.get()));
             match action.operation {
-                FaultOperation::Wait(_) => {}
+                FaultOperation::Wait(_) | FaultOperation::KillAll(_) => {}
                 FaultOperation::EventKill { node, rarity, .. } => {
                     assert!(vocabulary.instrumented_events());
                     assert!(node < vocabulary.nodes());
@@ -798,6 +803,26 @@ mod tests {
             }
         }
         assert_eq!(seen, BTreeSet::from([0, 1, 2]));
+    }
+
+    #[test]
+    fn only_a_bundle_with_several_nodes_draws_a_whole_cluster_kill() {
+        let count = |nodes| {
+            let vocabulary = FaultVocabulary::new(nodes, Vec::new()).expect("vocabulary");
+            let mut rand = RomuDuoJrRand::with_seed(8);
+            (0..2_000)
+                .filter(|_| {
+                    matches!(
+                        sample_action(&mut rand, &vocabulary, 0, TICKS, None)
+                            .expect("draw")
+                            .operation,
+                        FaultOperation::KillAll(_)
+                    )
+                })
+                .count()
+        };
+        assert_eq!(count(1), 0);
+        assert!(count(3) > 0);
     }
 
     #[test]

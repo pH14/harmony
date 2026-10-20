@@ -42,7 +42,7 @@ impl Package for Nes {
         outcome
     }
     fn supports(&self, operation: Operation) -> bool {
-        !matches!(operation, Operation::Logs)
+        !matches!(operation, Operation::Logs | Operation::Shrink)
     }
     fn init(&self, path: &Path, language: Option<String>, input: Option<String>) -> Result<()> {
         if language.is_some() {

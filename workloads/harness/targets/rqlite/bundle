@@ -1,0 +1,11 @@
+setup /opt/harmony/setup.sh
+node n1 /opt/harmony/node.sh n1 4001 4002
+node n2 /opt/harmony/node.sh n2 4003 4004
+node n3 /opt/harmony/node.sh n3 4005 4006
+hook 1 /opt/harmony/harness-net partition
+hook 2 /opt/harmony/harness-net isolate
+hook 3 /opt/harmony/harness-net delay
+hook 4 /opt/harmony/harness-net heal
+ready /opt/harmony/rqlite-harness ready
+workload /opt/harmony/rqlite-harness drive
+check /opt/harmony/rqlite-harness check

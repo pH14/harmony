@@ -201,10 +201,23 @@ the same quantum, so busy-loop scheduling replays along with fault timing:
 | `Wait(ticks)` | the workload runs undisturbed |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
 | `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
-| `Kill(node, ticks)` | the node stays down for the window |
+| `Kill(node, ticks)` | the node stays down until a later `Restart` window for it |
+| `KillAll(ticks)` | every node goes down, as in a host crash, and each stays down until a later `Restart` window for it; drawn only for bundles with more than one node |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once |
+
+Every action also records a 64-bit `choice`, drawn when the search draws the
+action and kept when a retained action is reused. Each action starts with a
+branch, and the branch reseeds the host-served SDK entropy stream
+(`fuzz_get_random`, read through `/dev/harmony`) from the campaign's guest
+seed mixed with that choice. A workload driver that takes its decisions from
+that stream therefore makes different decisions in each continuation of a
+snapshot, and replay installs the same choices. The choice is part of the
+action's key, so two choices never share a cached snapshot. A choice of zero
+keeps the unmixed seed. The guest kernel's `getrandom` state is restored with
+the snapshot and is not reseeded, so decisions drawn from it repeat across
+continuations.
 
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a

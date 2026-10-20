@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v6";
+pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v7";
 pub const MAX_NODES: u16 = 64;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -289,7 +289,7 @@ ready /usr/local/pgsql/bin/pg_isready
         );
         assert_eq!(
             etcd.identifier(),
-            "faultlab_bundle_v6;nodes=1;hooks=1,2;events=none"
+            "faultlab_bundle_v7;nodes=1;hooks=1,2;events=none"
         );
         assert_ne!(
             etcd.identifier(),
@@ -304,11 +304,11 @@ ready /usr/local/pgsql/bin/pg_isready
             "faultlab_bundle_v1;nodes=1;hooks=1",
             "faultlab_bundle_v2;nodes=1",
             "faultlab_bundle_v5;nodes=1;hooks=1;events=none;interrupts=enabled",
-            "faultlab_bundle_v6;nodes=0;hooks=1;events=none",
-            "faultlab_bundle_v6;nodes=x;hooks=1;events=none",
-            "faultlab_bundle_v6;nodes=1;hooks=1;events=other",
-            "faultlab_bundle_v6;nodes=1;hooks=1;events=none;extra=2",
-            "faultlab_bundle_v6;nodes=1;hooks=one;events=none",
+            "faultlab_bundle_v7;nodes=0;hooks=1;events=none",
+            "faultlab_bundle_v7;nodes=x;hooks=1;events=none",
+            "faultlab_bundle_v7;nodes=1;hooks=1;events=other",
+            "faultlab_bundle_v7;nodes=1;hooks=1;events=none;extra=2",
+            "faultlab_bundle_v7;nodes=1;hooks=one;events=none",
         ] {
             assert!(
                 FaultVocabulary::from_identifier(identifier).is_err(),
@@ -316,7 +316,7 @@ ready /usr/local/pgsql/bin/pg_isready
             );
         }
         let no_hooks =
-            FaultVocabulary::from_identifier("faultlab_bundle_v6;nodes=2;hooks=;events=antithesis")
+            FaultVocabulary::from_identifier("faultlab_bundle_v7;nodes=2;hooks=;events=antithesis")
                 .expect("resolve");
         assert_eq!(no_hooks.nodes(), 2);
         assert!(no_hooks.hooks().is_empty());

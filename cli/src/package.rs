@@ -21,6 +21,7 @@ pub enum Operation {
     Inspect,
     Timeline,
     Logs,
+    Shrink,
 }
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +36,7 @@ pub struct Request {
     pub json: bool,
     pub actions: Option<PathBuf>,
     pub repeat: u32,
+    pub jobs: usize,
     pub console: bool,
     pub command: Vec<String>,
     pub exec: Option<String>,
@@ -56,6 +58,7 @@ impl Default for Request {
             json: false,
             actions: None,
             repeat: 1,
+            jobs: 1,
             console: false,
             command: Vec::new(),
             exec: None,
