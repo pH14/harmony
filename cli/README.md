@@ -316,7 +316,9 @@ history = "/app/check --json"
 host_history = "app-check --json @/var/app/journal"
 ```
 
-Paths are guest paths, and globs are expanded by the guest shell. The history
+Paths are guest paths, and globs are expanded by the guest shell. The probe
+script needs `find -exec`, `cksum`, `wc`, and `head -c` and `tail -c` in the
+guest; a minimal BusyBox build needs those applets and options. The history
 command runs with `/bin/sh` in the workload's working directory. It counts
 against the five-minute host command limit of the debug terminal, and the
 report states when it did not finish and marks its output partial.
@@ -551,7 +553,9 @@ Consonance execution and readiness checks. `harmony prepare` performs its build
 outside the guarded host. The frontend checks companion admission before implicit
 preparation, then unlinks the captured request file and execs the host with its
 held read-only descriptor. The execution keeps the command's original PID,
-process group and terminal, including for guest shells. The captured backing
+process group and terminal, including for guest shells. `explain` instead runs
+the host as a child in the same process group and waits for it, so the frontend
+can run `host_history` outside the guarded host afterwards. The captured backing
 remains held for the host's lifetime; no request pathname survives the handoff.
 
 The `harmony-prepared-execution-v1` handoff is a self-contained postcard file
