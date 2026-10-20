@@ -169,6 +169,7 @@ impl FaultVocabulary {
         let mut nodes = 0_u16;
         let mut names = Vec::new();
         let mut disk_names = Vec::new();
+        let mut log_names = Vec::new();
         let mut hooks = Vec::new();
         let mut lifecycle = std::collections::BTreeSet::new();
         for (number, line) in text.lines().enumerate() {
@@ -220,6 +221,16 @@ impl FaultVocabulary {
                     };
                     disk_names.push((line_number, node.to_owned(), checksummed));
                 }
+                "log" => {
+                    let (Some(node), Some(_path), None) =
+                        (fields.next(), fields.next(), fields.next())
+                    else {
+                        return Err(format!(
+                            "bundle line {line_number}: log needs a node and a path"
+                        ));
+                    };
+                    log_names.push((line_number, node.to_owned()));
+                }
                 "ready" | "setup" | "workload" | "check" => {
                     if fields.next().is_none() {
                         return Err(format!(
@@ -250,6 +261,14 @@ impl FaultVocabulary {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        if let Some((line_number, name)) = log_names
+            .into_iter()
+            .find(|(_, name)| !names.contains(name))
+        {
+            return Err(format!(
+                "bundle line {line_number}: log names undeclared node {name:?}"
+            ));
+        }
         let checksummed = disks
             .iter()
             .filter(|(_, checksummed)| *checksummed)
@@ -553,6 +572,21 @@ ready /usr/local/pgsql/bin/pg_isready
             );
         }
         assert!(FaultKind::from_name("wait").is_err());
+    }
+
+    #[test]
+    fn log_lines_leave_the_alphabet_unchanged() {
+        let plain = FaultVocabulary::parse("node a /a\nnode b /b\n").expect("parse");
+        let logged =
+            FaultVocabulary::parse("log b /tmp/b.log\nnode a /a\nnode b /b\n").expect("parse");
+        assert_eq!(logged, plain);
+        for bad in [
+            "node a /a\nlog z /z.log\n",
+            "node a /a\nlog a\n",
+            "node a /a\nlog a /a.log extra\n",
+        ] {
+            assert!(FaultVocabulary::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

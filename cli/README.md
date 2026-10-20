@@ -8,9 +8,9 @@ search budgets, named searches and branches and command dispatch.
 ## Start an application
 
 ```sh
-harmony init
-harmony prepare
+harmony init path/to/Dockerfile
 harmony check
+harmony prepare
 harmony search --name baseline --for 10m
 harmony list
 harmony show baseline
@@ -24,10 +24,25 @@ harmony search --from debugging --name neighborhood
 
 `init` infers a language from recognized project files when unambiguous. Use
 `--language c|rust|go|python|java` when needed. It never overwrites a recipe.
-`init IMAGE` sets the application image name. `search` prepares configured builds
-automatically. `prepare` builds and validates without executing; `check` checks
-runner availability, provisions runtime artifacts and reports admission.
-Neither command infers application readiness or correctness.
+`init IMAGE` sets the application image name and uses the image's bundle.
+`init DOCKERFILE` (a file named `Dockerfile`, `Containerfile`, `Dockerfile.*`,
+`*.Dockerfile` or `*.Containerfile`, in any case) writes a recipe that builds the image
+`harmony-DIRECTORY:local`, where DIRECTORY is the Dockerfile's directory. The
+build context is the root of the Git repository that holds the Dockerfile, or
+the Dockerfile's directory outside a repository. With no input and no
+recognized language, `init` uses a `Dockerfile` or `Containerfile` in the
+configuration directory. `search` prepares configured builds automatically.
+`prepare` builds and validates without executing; `check` checks runner
+availability, provisions runtime artifacts and reports admission. When a
+configured build has not run yet, `check` says so and skips admission. Neither
+command infers application readiness or correctness.
+
+A Dockerfile build runs `docker build`, or `podman build --format docker`
+because the OCI format ignores `SHELL`. When the Dockerfile declares
+`ARG HARMONY_RUNTIME_IMAGE`, `prepare` first builds the language runtime image
+with `workloads/languages/build-runtime.sh` and passes its tag as that build
+argument. `workload.options.build.args` adds build arguments to a Dockerfile
+build, for example `args = { NATS_VERSION = "v2.10.23" }`.
 
 An OCI image selects the faults workload. A `.nes` input selects the NES workload.
 Use `--package` to override inference. This is convenience dispatch owned by the
@@ -123,6 +138,11 @@ Harmony release downloads, not container-builder network access. See the
 
 Consonance chooses KVM, then HVF, then UML according to host availability.
 `--runner` selects an execution implementation; `--backend` constrains its backend.
+On a Linux host with two core types (Intel P-cores and E-cores, or Arm big and
+little cores), every command first limits itself to the fastest core type among
+its allowed CPUs and prints the CPUs it kept. KVM refuses a thread affinity that
+mixes core types, and child processes inherit the limit. A command started on
+CPUs of one type keeps them all.
 UML runs on Linux without hardware virtualization, including ordinary containers.
 An explicit UML profile selects UML when the backend is automatic.
 Preparation applies an explicit UML backend or profile's policy even when the
@@ -133,9 +153,22 @@ selected backend's policy. A saved UML run from before this policy cannot be
 replayed or branched because its guest image was not admitted under this rule.
 
 Consonance artifact overrides are `kernel`, `base_initramfs` and `uml_profile`
-inside `runner.options`. `check` provisions checksummed versioned artifacts.
-Development artifacts are discovered under `consonance/harmony-linux/build/ARCH`,
-and installed artifacts under `share/harmony/guest/ARCH`. The cache uses
+inside `runner.options`; a recipe needs none of them. `check` provisions
+checksummed versioned artifacts.
+Development artifacts are discovered under `consonance/harmony-linux/build/ARCH`
+of the source checkout: the one the CLI was built from, else the one holding
+the executable, else the one holding the current directory. Installed artifacts
+live under `share/harmony/guest/ARCH`. When a CLI from a source checkout on
+Linux finds no current artifacts, `check` (or any command that needs them)
+builds them with `consonance/harmony-linux/scripts/fetch.sh` and
+`scripts/build-platform-runtime.sh`, holding a lock in the build directory so
+concurrent commands build once. The build tree is `GUEST_BUILD_ROOT`, otherwise
+a per-checkout directory under the cache directory below
+(`guest-build/KEY`). The first build takes several minutes and needs the
+Debian build packages listed in the
+[guest Linux README](../consonance/harmony-linux/linux/README.md). With
+`--offline` the command reports the missing artifacts instead. Other CLIs
+download release artifacts. The cache uses
 `HARMONY_DATA_DIR`, otherwise `XDG_DATA_HOME/harmony`, macOS
 `~/Library/Application Support/Harmony`, or Linux `~/.local/share/harmony`.
 Fault runs keep booted setup snapshots in `HARMONY_CACHE_DIR/boot`, otherwise
@@ -345,9 +378,13 @@ history = "/app/check --json"
 host_history = "app-check --json @/var/app/journal"
 ```
 
-Paths are guest paths, and globs are expanded by the guest shell. The probe
-script needs `find -exec`, `cksum`, `wc`, and `head -c` and `tail -c` in the
-guest; a minimal BusyBox build needs those applets and options. The history
+Paths are guest paths, and globs are expanded by the guest shell. When neither
+a flag nor the recipe sets `logs` or `data`, explain uses the paths the
+recorded bundle declares: every `log NODE PATH` line for logs and every
+`disk NODE PATH SIZE [checksummed]` line for data
+([supervisor bundle](../consonance/harmony-linux/supervisor/README.md)). The
+probe script needs `find -exec`, `cksum`, `wc`, and `head -c` and `tail -c` in
+the guest; a minimal BusyBox build needs those applets and options. The history
 command runs with `/bin/sh` in the workload's working directory. It counts
 against the five-minute host command limit of the debug terminal, and the
 report states when it did not finish and marks its output partial.
@@ -718,6 +755,12 @@ failure or replay divergence. Search budgets and seeds must fit TOML's signed
 Run the CLI tests, package tests, Clippy and registered CI checks. The test-only
 counter package exercises preparation, search, replay and branching through the
 same dispatch and storage interfaces without application or NES types.
+On Linux, run the CLI tests with `cargo nextest run -p harmony-cli`. The CLI
+refuses to start with the `LD_LIBRARY_PATH` that Cargo sets, and the root
+Nextest configuration removes it through `scripts/linux-clean-loader-test.sh`.
+Plain `cargo test` fails those tests unless
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER` (or the Arm64 equivalent) names
+that script, as CI does.
 
 - `bash cli/tests/investigation.sh DIRECTORY` exercises preparation, guest commands,
   local scripts, interactive shells, snapshot restoration, continuation and tamper refusal.

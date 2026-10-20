@@ -35,6 +35,7 @@ pub struct Build {
     pub language: Option<Language>,
     pub context: Option<PathBuf>,
     pub dockerfile: Option<PathBuf>,
+    pub args: BTreeMap<String, String>,
     pub command: Vec<String>,
 }
 
@@ -249,6 +250,17 @@ impl Config {
                 )
                 .into());
             }
+        }
+        if !self.build.args.is_empty() && self.build.dockerfile.is_none() {
+            return Err("build.args applies to build.dockerfile".into());
+        }
+        if self
+            .build
+            .args
+            .keys()
+            .any(|name| name.is_empty() || name.contains(['=', '\n', '\0']))
+        {
+            return Err("build.args names must be nonempty without '=', newlines or NUL".into());
         }
         self.explain.validate()?;
         self.bundle()?;

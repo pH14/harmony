@@ -266,6 +266,13 @@ from about 200 ms to a few seconds of guest time, growing with the log. Windows
 that open and close in that time take effect in order when it ends, as the
 standing poll description above explains.
 
+## Node logs
+
+A bundle line `log <node> <path>` names a log file the named node writes. The
+path is absolute and may be a glob. The supervisor checks the node and the path
+and otherwise ignores the line. `harmony explain` reads these paths, and the
+`disk` paths as data directories, when its own settings name none.
+
 ## Investigation terminal
 
 The supervisor polls the process-proto debug namespace alongside standing policy.

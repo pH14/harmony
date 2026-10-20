@@ -80,6 +80,8 @@ def parse_bundle(text):
             # Node disks exist for power-loss faults, which a container cannot
             # inject; the path stays a directory on the container filesystem.
             continue
+        elif kind == "log":
+            continue
         else:
             raise ValueError(f"unknown bundle line {line!r}")
     return bundle

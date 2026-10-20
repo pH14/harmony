@@ -45,7 +45,12 @@ case "$runtime_arch" in
     *) echo "FAIL: unsupported platform architecture: $runtime_arch" >&2; exit 1 ;;
 esac
 
-runtime_sysroot=$(rustc +"$runtime_toolchain" --print sysroot)
+runtime_sysroot=$(rustc +"$runtime_toolchain" --print sysroot 2>/dev/null || true)
+if [ -z "$runtime_sysroot" ] || [ ! -d "$runtime_sysroot/lib/rustlib/$runtime_target/lib" ]; then
+    rustup toolchain install "$runtime_toolchain" --profile minimal \
+        --target "$runtime_target" --component rust-src
+    runtime_sysroot=$(rustc +"$runtime_toolchain" --print sysroot)
+fi
 [ -d "$runtime_sysroot/lib/rustlib/$runtime_target/lib" ] || {
     echo "FAIL: install $runtime_target for $runtime_toolchain" >&2; exit 1;
 }
