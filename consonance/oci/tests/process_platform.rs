@@ -16,7 +16,10 @@ mod platform {
         input_spec::{ServiceConfig, ServiceFactory},
     };
     use oci_support::{ExternalInput, LaunchRequest, bundle, image};
-    use process_proto::{ProcessAction, ProcessWindow, STANDING_NAMESPACE, encode_process_windows};
+    use process_proto::{
+        ProcessAction, ProcessWindow, STANDING_NAMESPACE, decode_standing_question,
+        encode_process_windows,
+    };
     use std::{
         error::Error,
         fs,
@@ -43,7 +46,7 @@ mod platform {
     }
 
     impl StandingService {
-        fn windows(poll: u64) -> Vec<ProcessWindow> {
+        fn windows(poll: u64, moment: u64) -> Vec<ProcessWindow> {
             let action = match poll {
                 1 => ProcessAction::RunHook(7),
                 2 | 3 => ProcessAction::Pause(40_000_000),
@@ -54,8 +57,8 @@ mod platform {
             vec![ProcessWindow {
                 node: 0,
                 action,
-                start: poll,
-                end: poll + 1,
+                start: moment,
+                end: moment.saturating_add(1),
             }]
         }
     }
@@ -79,7 +82,9 @@ mod platform {
                     .map_err(|_| ChannelError::Malformed)?;
                 return Ok(ServiceResponse::Answered(Answer::Data(Vec::new())));
             }
-            if question.service() != STANDING_NAMESPACE || !question.payload().is_empty() {
+            if question.service() != STANDING_NAMESPACE
+                || decode_standing_question(question.payload()).is_err()
+            {
                 return Err(ChannelError::Handler(
                     "process smoke received an unexpected service question".into(),
                 ));
@@ -89,7 +94,7 @@ mod platform {
                 .poll
                 .checked_add(1)
                 .ok_or_else(|| ChannelError::Handler("process poll counter overflow".into()))?;
-            let bytes = encode_process_windows(moment, &Self::windows(poll))
+            let bytes = encode_process_windows(moment, &Self::windows(poll, moment))
                 .map_err(|error| ChannelError::Handler(error.to_string()))?;
             Ok(ServiceResponse::Answered(Answer::data(bytes)?))
         }

@@ -15,8 +15,9 @@ the one target encoding a host package and the platform supervisor both read.
 
 A **standing fault** is a class, an opaque target, and a half-open V-time window.
 The `standing` module carries both wire forms: the answer to a guest poll (the
-current moment plus the windows containing it) and the window list a package
-hands its service handler as configuration. The poll travels over the generic
+current moment plus the windows containing it or closed since the previous poll
+moment the guest sends) and the window list a package hands its service handler
+as configuration. The poll travels over the generic
 SDK opaque service request under `STANDING_NAMESPACE`.
 
 The `consonance` adapter maps supported policy questions and answers onto the
