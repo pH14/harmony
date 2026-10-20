@@ -94,7 +94,15 @@ bound to the source file bytes, not evidence produced by that reconstruction.
 Snapshot-root origins use their separate checkpoint contract.
 The coordinator requests the retained suffix prefix through `InputPolicy::expand_suffix_prefix`. Its default expands the complete suffix before truncating, retaining workload side effects and errors. A workload may override it only when discarded local draws have no observable effect.
 
-Admission keeps an uncertified action prefix without allocating a certificate vector. The first certificate materializes the full prefix, including missing earlier certificates, so mixed paths retain the same fail-closed validation. A single-preference slot rejects a losing candidate before allocating its preference mask.
+Admission keeps an uncertified action prefix without allocating a certificate
+vector. The first certificate materializes the full prefix, including missing
+earlier certificates, so mixed paths retain the same fail-closed validation.
+A single-preference slot rejects a losing candidate before allocating its
+preference mask. Accepted single-capacity, single-preference slots with at most
+one existing holder use a scalar temporary plan for the holder, displacement
+and winning preference. Other shapes retain generic ranked planning. Comparisons,
+population retirement, replacement counters, continuation effects and archive
+memory accounting keep the same order; the temporary plan is not retained state.
 
 For a workload with endpoint certificates, whole-tree import reconstructs each
 action between a parent and its imported candidate, including candidates loaded

@@ -41,8 +41,10 @@ counter also includes live-observer construction, encoder startup and worker
 readiness. These counters include work outside individual coordinator spans.
 Native `dispatch_phase` instead starts after all
 workers are ready, before reservation, and stops before final checkpoint/report
-persistence. Use its optional host CPU counters for the coordination capacity
-bound, and retain encoder CPU and persistence costs separately.
+persistence. Use `coordinator_host` for the coordination capacity bound; retain
+`dispatch_phase.host` as a narrower diagnostic. Measure encoder CPU and
+end-to-end persistence separately, without adding dispatch or finish to the
+whole coordinator counter.
 Do not add nested or concurrent timers to infer elapsed time.
 
 For an expansion coordinator diagnostic, set `HARMONY_COORDINATOR_PROFILE=1`.
@@ -50,8 +52,8 @@ For an expansion coordinator diagnostic, set `HARMONY_COORDINATOR_PROFILE=1`.
 selection, root preparation, completion, validation, evidence merging, archive
 insertion, maintenance, observation, record construction, output and checkpoints.
 These spans locate expensive operations; nested spans and scheduling waits make
-their sum unsuitable as coordinator CPU. Use `dispatch_phase.host` for that CPU
-cost, and repeat capacity trials with this optional clock instrumentation off.
+their sum unsuitable as coordinator CPU. Use `coordinator_host` for the whole
+CPU cost, and repeat capacity trials with this optional clock instrumentation off.
 The same profile setting also measures each worker's actual execute closure with
 Linux thread CPU time, including required restore, reconstruction, snapshot
 capture and observation work. It excludes queue waits, reply delivery and

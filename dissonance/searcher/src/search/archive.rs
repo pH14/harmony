@@ -151,6 +151,40 @@ impl<S> SnapshotRetention<S> for PointerSnapshotRetention<S> {
 
 type AdmissionWithUnusedSnapshot<K, S> = (Option<usize>, K, Option<S>);
 
+enum SlotAdmissionPlan {
+    Single {
+        held: Option<usize>,
+    },
+    Ranked {
+        slot: Vec<usize>,
+        won: Vec<usize>,
+        displaced: Vec<usize>,
+    },
+}
+
+impl SlotAdmissionPlan {
+    fn slot(&self) -> &[usize] {
+        match self {
+            Self::Single { held } => held.as_slice(),
+            Self::Ranked { slot, .. } => slot,
+        }
+    }
+
+    fn won(&self) -> &[usize] {
+        match self {
+            Self::Single { .. } => &[0],
+            Self::Ranked { won, .. } => won,
+        }
+    }
+
+    fn displaced(&self) -> &[usize] {
+        match self {
+            Self::Single { held } => held.as_slice(),
+            Self::Ranked { displaced, .. } => displaced,
+        }
+    }
+}
+
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     type Place: Copy + Ord + Debug + Serialize + DeserializeOwned;
     type Progress: Copy + Ord + Debug + Serialize + DeserializeOwned;
@@ -3007,6 +3041,35 @@ where
             })
     }
 
+    fn accepted_slot_plan(
+        &self,
+        slot: &[usize],
+        key: K,
+        cost_in_group: u64,
+    ) -> Option<SlotAdmissionPlan> {
+        if K::capacity().max(1) == 1 && K::preferences().max(1) == 1 && slot.len() <= 1 {
+            return Some(SlotAdmissionPlan::Single {
+                held: slot.first().copied(),
+            });
+        }
+        let (ranked, won) = self.rank_slot_preferences(slot, key, cost_in_group);
+        if !ranked.last().copied().unwrap_or(true) {
+            return None;
+        }
+        let slot = slot.to_vec();
+        let displaced = slot
+            .iter()
+            .copied()
+            .zip(&ranked)
+            .filter_map(|(id, retained)| (!retained).then_some(id))
+            .collect();
+        Some(SlotAdmissionPlan::Ranked {
+            slot,
+            won,
+            displaced,
+        })
+    }
+
     fn rank_slot_preferences(
         &self,
         slot: &[usize],
@@ -3211,14 +3274,10 @@ where
             self.rejected = self.rejected.saturating_add(1);
             return Ok((None, key, Some(snapshot)));
         }
-        let (ranked, won_preferences) =
-            self.rank_slot_preferences(slot, key, candidate_cost_in_group);
-        let admitted = ranked.last().copied().unwrap_or(true);
-        if !admitted {
+        let Some(plan) = self.accepted_slot_plan(slot, key, candidate_cost_in_group) else {
             self.rejected = self.rejected.saturating_add(1);
             return Ok((None, key, Some(snapshot)));
-        }
-        let slot = slot.to_vec();
+        };
         let mut lineage =
             parent_id.map_or_else(K::Lineage::default, |id| self.lineages[id].clone());
         K::record(&mut lineage, key);
@@ -3234,13 +3293,7 @@ where
                     std::ops::Bound::Unbounded,
                 ))
                 .any(|(_, tier)| tier.places.contains_key(&key.place()));
-        let new_slot = slot.is_empty();
-        let displaced: Vec<usize> = slot
-            .iter()
-            .copied()
-            .zip(&ranked)
-            .filter_map(|(id, retained)| (!retained).then_some(id))
-            .collect();
+        let new_slot = plan.slot().is_empty();
         let id = self.entries.len();
         let stable_id = self.next_entry_id;
         let next_entry_id = self
@@ -3291,16 +3344,16 @@ where
         }
         let input_node =
             self.commit_retained_input(ancestor, suffix.as_ref(), stable_id, certificates);
-        if won_preferences.len() > 1 {
+        if plan.won().len() > 1 {
             self.portfolio_cross_improvements = self.portfolio_cross_improvements.saturating_add(1);
         }
         let mut replacement_preferences = 0_u8;
-        if !displaced.is_empty() {
-            for preference in &won_preferences {
+        if !plan.displaced().is_empty() {
+            for preference in plan.won() {
                 if let Some(count) = self.portfolio_replacements.get_mut(*preference) {
                     *count = count.saturating_add(1);
                 }
-                let strictly_preferred = displaced.iter().any(|replaced| {
+                let strictly_preferred = plan.displaced().iter().any(|replaced| {
                     key.preference_cmp(*preference, self.entries[*replaced].key)
                         == Ordering::Greater
                 });
@@ -3309,16 +3362,17 @@ where
                 }
             }
         }
-        let improved_preference = !slot.is_empty()
-            && won_preferences.iter().any(|preference| {
-                slot.iter().all(|held| {
+        let improved_preference = !plan.slot().is_empty()
+            && plan.won().iter().any(|preference| {
+                plan.slot().iter().all(|held| {
                     key.preference_cmp(*preference, self.entries[*held].key) == Ordering::Greater
                 })
             });
-        let queue_tier = won_preferences
+        let queue_tier = plan
+            .won()
             .iter()
             .filter(|preference| {
-                slot.iter().any(|held| {
+                plan.slot().iter().any(|held| {
                     key.preference_cmp(**preference, self.entries[*held].key) == Ordering::Greater
                 })
             })
@@ -3356,7 +3410,7 @@ where
                 );
             }
         }
-        for replaced in displaced {
+        for replaced in plan.displaced().iter().copied() {
             self.replacement_cost_displaced = self.replacement_cost_displaced.saturating_add(1);
             self.deactivate(replaced);
         }
@@ -7565,6 +7619,137 @@ mod tests {
             archive.tiers[&LabelProgress(2)].label.as_deref().unwrap(),
             format!("{:?}", LabelProgress(2))
         );
+    }
+
+    #[test]
+    fn accepted_slot_plan_matches_sorted_ranking() {
+        fn compare<const P: usize, const C: usize>() {
+            let mut archive = Archive::<u64, ReportKey<P, C>, (), ()>::new(|cost| *cost);
+            for index in 0..4 {
+                archive
+                    .insert(
+                        None,
+                        index,
+                        ArchiveCandidate {
+                            suffix: vec![index + 1],
+                            key: ReportKey {
+                                slot: index,
+                                scores: std::array::from_fn(|preference| {
+                                    (index + preference as u64) % 4
+                                }),
+                            },
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap()
+                    .unwrap();
+            }
+            for count in 0..=4 {
+                for reversed in [false, true] {
+                    let mut slot = (0..count).collect::<Vec<_>>();
+                    if reversed {
+                        slot.reverse();
+                    }
+                    for score in 0..5 {
+                        let key = ReportKey {
+                            slot: 0,
+                            scores: std::array::from_fn(|preference| {
+                                (score + preference as u64) % 5
+                            }),
+                        };
+                        for cost in [0, 1, 2, 3, 4, 9] {
+                            let (ranked, won) =
+                                archive.rank_slot_preferences_sorted(&slot, key, cost);
+                            let expected = ranked.last().copied().unwrap();
+                            let plan = if archive.single_preference_rejects(&slot, key, cost) {
+                                None
+                            } else {
+                                archive.accepted_slot_plan(&slot, key, cost)
+                            };
+                            assert_eq!(plan.is_some(), expected);
+                            if let Some(plan) = plan {
+                                let displaced = slot
+                                    .iter()
+                                    .copied()
+                                    .zip(&ranked)
+                                    .filter_map(|(id, retained)| (!retained).then_some(id))
+                                    .collect::<Vec<_>>();
+                                assert_eq!(plan.slot(), slot);
+                                assert_eq!(plan.won(), won);
+                                assert_eq!(plan.displaced(), displaced);
+                                assert_eq!(
+                                    matches!(plan, super::SlotAdmissionPlan::Single { .. }),
+                                    C.max(1) == 1 && P.max(1) == 1 && count <= 1
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        compare::<0, 0>();
+        compare::<0, 1>();
+        compare::<1, 1>();
+        compare::<1, 2>();
+        compare::<2, 1>();
+        compare::<3, 2>();
+    }
+
+    #[test]
+    fn accepted_slot_plan_preserves_cost_ties_and_population_retirement_counters() {
+        let mut archive = Archive::<u64, ReportKey<1, 1>, (), ()>::new(|cost| *cost);
+        archive.max_entries = 1;
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive.enable_continuations(4);
+        let insert =
+            |archive: &mut Archive<u64, ReportKey<1, 1>, (), ()>, suffix: Vec<u64>, quality| {
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix,
+                            key: ReportKey {
+                                slot: 0,
+                                scores: [quality; 8],
+                            },
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap()
+            };
+        assert_eq!(insert(&mut archive, vec![10], 5), Some(0));
+        assert_eq!(insert(&mut archive, vec![4], 5), Some(1));
+        assert_eq!(archive.entry_cost_in_group(1), 4);
+        assert_eq!(archive.replacement_preferences(1), 0);
+        assert_eq!(archive.portfolio_replacements, [1]);
+        assert_eq!(archive.replacement_cost_displaced(), 1);
+        assert_eq!(archive.entry_drops, 1);
+        assert_eq!(insert(&mut archive, vec![1, 3], 5), None);
+        assert_eq!(archive.entries.len(), 2);
+        assert_eq!(insert(&mut archive, vec![7], 6), Some(2));
+        assert_eq!(archive.replacement_preferences(2), 1);
+        assert_eq!(archive.portfolio_replacements, [2]);
+        assert_eq!(archive.portfolio_cross_improvements, 0);
+        assert_eq!(archive.replacement_cost_displaced(), 2);
+        assert_eq!(archive.entry_drops, 2);
+        assert_eq!(
+            archive
+                .entry_state
+                .iter()
+                .map(|state| state.active)
+                .collect::<Vec<_>>(),
+            [false, false, true]
+        );
+        assert_eq!(archive.active_count(), 1);
+        assert_eq!(archive.slots.values().next().unwrap(), &[2]);
+        assert_eq!(archive.resident_snapshot_count(), 1);
+        assert_eq!(archive.resident_snapshot_bytes(), 1);
+        assert_eq!(insert(&mut archive, vec![3], 4), None);
+        assert_eq!(archive.rejected, 2);
+        assert_eq!(archive.retained, 3);
     }
 
     #[test]
