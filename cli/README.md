@@ -254,13 +254,27 @@ fault actions with waits of the same length, halving the groups until no single
 fault can be replaced (delta debugging). A replacement keeps the action's
 recorded `choice`, which seeds guest randomness for that step, so the rest of
 the execution keeps its timing. A candidate counts when its replay reports one
-of the finding's violations. `--jobs N` runs N replays at once; the result is the
-same for every N because the lowest-numbered reproducing candidate of each round
-wins. Each replay starts a fresh guest, so a shrink costs about one finding
-replay per attempt. The output is a replay of the reduced actions that `show`,
-`show --timeline` and `branch` accept. `shrink.json` lists every attempt with the
-replaced steps and the violations it produced, and the reduced actions in a form
-`debug run --actions` accepts. NES findings are not supported.
+of the finding's violations.
+
+Each round accepts its lowest-numbered reproducing candidate. `--jobs N` runs up
+to N replays at once, fewer when free memory cannot hold N guests. The replays
+share one snapshot cache, the same cache a search uses. A candidate matches the
+accepted actions up to its first replaced fault, so its replay restores the
+snapshot an earlier replay recorded at that step and runs only the steps after
+it. A candidate counts as soon as the violation appears: the next round starts
+then, and the candidate's replay continues to the end for its report. Idle
+workers start every candidate of the current round. When a candidate reports
+the violation while lower-numbered candidates still run, idle workers also
+start the round that would follow its acceptance. A replay stops as soon as
+other results make it unnecessary. A candidate checked before is not replayed
+again. The accepted candidates, the
+attempt list and the final replay are the same for every N, because the attempt
+list holds the candidates in the order one job checks them.
+
+The output is a replay of the reduced actions that `show`, `show --timeline` and
+`branch` accept. `shrink.json` lists every attempt with the replaced steps and
+the violations it produced, the number of replays started, and the reduced
+actions in a form `debug run --actions` accepts. NES findings are not supported.
 
 `explain` writes a report a maintainer can start a diagnosis from. It shrinks the
 finding first, unless NAME is already a shrink output and no `--finding` is
