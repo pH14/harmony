@@ -600,9 +600,12 @@ mod tests {
         for workers in 1..=pool.max_workers() {
             let plan = pool.plan(workers as u32).unwrap();
             assert_eq!(plan.coordinator, Some(2));
-            assert!(!plan.workers.contains(&Some(2)));
+            assert!(!plan.workers.iter().flatten().any(|&cpu| cpu == 2));
             if workers <= 2 {
-                assert_eq!(plan.workers, (0..workers).map(Some).collect::<Vec<_>>());
+                assert_eq!(
+                    plan.workers.iter().map(|set| set[0]).collect::<Vec<_>>(),
+                    (0..workers).collect::<Vec<_>>()
+                );
             }
         }
     }

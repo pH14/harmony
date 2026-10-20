@@ -4088,6 +4088,7 @@ mod tests {
         legacy
             .branch_with_service(
                 SnapId(1),
+                7,
                 ServiceConfig::default(),
                 Vec::new(),
                 Vec::new(),
