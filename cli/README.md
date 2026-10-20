@@ -138,6 +138,11 @@ Harmony release downloads, not container-builder network access. See the
 
 Consonance chooses KVM, then HVF, then UML according to host availability.
 `--runner` selects an execution implementation; `--backend` constrains its backend.
+On a Linux host with two core types (Intel P-cores and E-cores, or Arm big and
+little cores), every command first limits itself to the fastest core type among
+its allowed CPUs and prints the CPUs it kept. KVM refuses a thread affinity that
+mixes core types, and child processes inherit the limit. A command started on
+CPUs of one type keeps them all.
 UML runs on Linux without hardware virtualization, including ordinary containers.
 An explicit UML profile selects UML when the backend is automatic.
 Preparation applies an explicit UML backend or profile's policy even when the

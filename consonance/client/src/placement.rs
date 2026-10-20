@@ -124,6 +124,28 @@ impl CorePool {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub fn keep_one_core_type() -> Result<Option<Vec<usize>>, String> {
+    let allowed = allowed_cpus()?;
+    let read = |path: &str| {
+        std::fs::File::open(path)
+            .ok()
+            .and_then(|file| bounded_cpu_text(file).ok().flatten())
+    };
+    let mut pool = fastest_pool(&allowed, read)?;
+    if pool.is_empty() || pool.len() == allowed.len() {
+        return Ok(None);
+    }
+    pool.sort_unstable();
+    pin_current_thread(&pool)?;
+    Ok(Some(pool))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn keep_one_core_type() -> Result<Option<Vec<usize>>, String> {
+    Ok(None)
+}
+
 #[cfg(any(target_os = "linux", test))]
 const MAX_CPU_LIST_BYTES: usize = 64 * 1024;
 #[cfg(any(target_os = "linux", test))]

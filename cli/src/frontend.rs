@@ -414,8 +414,40 @@ fn execute_debug(command: DebugCommand) -> Result<u8> {
     };
     adapters::dispatch(request)
 }
+fn cpu_list(cpus: &[usize]) -> String {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for &cpu in cpus {
+        match ranges.last_mut() {
+            Some((_, last)) if *last + 1 == cpu => *last = cpu,
+            _ => ranges.push((cpu, cpu)),
+        }
+    }
+    ranges
+        .iter()
+        .map(|&(first, last)| {
+            if first == last {
+                first.to_string()
+            } else {
+                format!("{first}-{last}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 pub fn main() -> ExitCode {
-    let result = execute(Cli::parse().command);
+    let cli = Cli::parse();
+    if !matches!(cli.command, Command::SessionWorker) {
+        match consonance_client::placement::keep_one_core_type() {
+            Ok(Some(cpus)) => eprintln!(
+                "hybrid CPU: running on one core type, CPUs {}",
+                cpu_list(&cpus)
+            ),
+            Ok(None) => {}
+            Err(error) => eprintln!("warning: could not select one core type: {error}"),
+        }
+    }
+    let result = execute(cli.command);
     match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
@@ -428,6 +460,11 @@ pub fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cpu_lists_collapse_contiguous_runs() {
+        assert_eq!(cpu_list(&[0, 1, 2, 3, 8, 10, 11]), "0-3,8,10-11");
+        assert_eq!(cpu_list(&[]), "");
+    }
     #[test]
     fn surface_exposes_search_show_and_branch_without_old_aliases() {
         for args in [
