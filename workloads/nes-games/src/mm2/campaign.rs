@@ -451,6 +451,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions,
         });
     }
@@ -505,6 +506,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }

@@ -185,6 +185,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
     if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions,
         });
     }
@@ -258,6 +259,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }

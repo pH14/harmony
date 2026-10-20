@@ -537,6 +537,7 @@ fn replay_rejects_hidden_endpoint_drift_with_matching_results() {
     };
     let logical_result = CampaignJobResult::<TimingWorkload> {
         preparation_failure: None,
+        hang: None,
         actions: Vec::new(),
     };
     assert_eq!(
@@ -796,10 +797,12 @@ fn preparation_failure_continues_campaign_and_is_hashed_once() {
 
     let without_failure = CampaignJobResult::<TimingWorkload> {
         preparation_failure: None,
+        hang: None,
         actions: Vec::new(),
     };
     let with_failure = CampaignJobResult::<TimingWorkload> {
         preparation_failure: Some(vec![(1,)]),
+        hang: None,
         actions: Vec::new(),
     };
     assert_ne!(

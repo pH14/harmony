@@ -386,6 +386,14 @@ pub struct FaultBugRecord {
     pub observations: FaultObservations,
 }
 
+pub const MAX_RECORDED_HANGS: usize = 64;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultHangRecord {
+    pub execution: u64,
+    pub input: FaultInput,
+}
+
 #[must_use]
 pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
     (
@@ -411,6 +419,8 @@ pub struct FaultArchiveReport {
     #[serde(default)]
     pub watchdog_cutoffs: u64,
     pub bugs: Vec<FaultBugRecord>,
+    #[serde(default)]
+    pub hangs: Vec<FaultHangRecord>,
     #[serde(default)]
     pub selector: SelectorAccounting,
     #[serde(default)]
