@@ -154,10 +154,18 @@ A short job reserved after longer ones runs before them,
 because admission needs its result first. The coordinator dispatches each job
 when it reserves it, including between individual admissions unlocked by a
 buffered-result burst. Workers can start the replacement while the coordinator
-admits the next result. The coordinator also refills the queue between received
+admits the next result. A fresh native reservation goes directly to the worker
+queue; stepped or resumed jobs retain the coordinator's ordered pending-dispatch
+queue. Existing queued jobs and a fresh reservation are dispatched together in
+priority order. The coordinator also refills the queue between received
 replies, so draining a ready reply channel does not defer dispatch. The admission
 window alone limits the jobs that are queued, running or finished but not yet
-admitted. The native pool writes the header inline, then moves owned typed records to one
+admitted. Reservation and completed-result lookups use unordered host hash maps;
+no hash-map iteration affects admission, selection, stream records or checkpoint
+order. The ordered schedule chooses admissions, and checkpoint references are
+written in reservation order. The initial allocation request is capped at
+4,096 reservations, the admission window and the execution budget; the hash-map
+implementation can round capacity upward, and larger windows can grow as needed. These allocations are host queue memory outside the archive budget. The native pool writes the header inline, then moves owned typed records to one
 ordered background encoder that serializes them and owns the stream hash. The
 coordinator retains the borrowed output sink, which need not be `Send`. Sixteen
 queued commands and one queued encoded batch bound the pipeline. Each batch
@@ -626,6 +634,9 @@ shrinks with its count.
 Tier accounting borrows existing run counters and formats progress labels into
 128 bytes of stack storage, growing a temporary string only for longer labels.
 Stored labels and checkpoint/report bytes keep the same debug representation.
+Entry-column heap bounds memoize their pure count-to-bytes formula separately
+for the liveness anchor and current population. The two inline scalar pairs add
+no heap allocation or checkpoint state and leave the logical heap formula unchanged.
 
 A cell's draw count resets to zero when an arrival from another cell
 displaces a holder it strictly outranks under a preference, so a place

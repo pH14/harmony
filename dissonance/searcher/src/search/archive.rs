@@ -722,6 +722,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     #[serde(skip)]
     recent_cells: RefCell<RecentCells<K>>,
     #[serde(skip)]
+    entry_memory_bytes_cache: std::cell::Cell<[(usize, usize); 2]>,
+    #[serde(skip)]
     parent_index: Vec<usize>,
     preserve_inactive_snapshots: bool,
     metadata_pins: BTreeMap<u64, u32>,
@@ -1327,6 +1329,7 @@ where
             active_ids: ActiveIds::default(),
             tiers: BTreeMap::new(),
             recent_cells: RefCell::default(),
+            entry_memory_bytes_cache: std::cell::Cell::default(),
             parent_index: Vec::new(),
             preserve_inactive_snapshots: false,
             metadata_pins: BTreeMap::new(),
@@ -2102,6 +2105,18 @@ where
     }
 
     fn entry_memory_bytes(&self, entries: usize) -> usize {
+        let mut cached = self.entry_memory_bytes_cache.get();
+        let slot = usize::from(entries == 1);
+        if cached[slot].0 == entries {
+            return cached[slot].1;
+        }
+        let bytes = self.entry_memory_bytes_uncached(entries);
+        cached[slot] = (entries, bytes);
+        self.entry_memory_bytes_cache.set(cached);
+        bytes
+    }
+
+    fn entry_memory_bytes_uncached(&self, entries: usize) -> usize {
         fn column<T>(_: &[T], entries: usize) -> usize {
             heap::vec_bytes::<T>(entries)
         }
@@ -8565,6 +8580,34 @@ mod tests {
             .compact_history(true)
             .expect("a preservation flag without a snapshot retains nothing");
         assert_eq!(empty.live_entry_count(), 0);
+    }
+
+    #[test]
+    fn entry_memory_bounds_cache_exact_formulas_across_counts_compaction_and_restore() {
+        fn compare(archive: &Archive<u8, FlatKey, (), ()>) {
+            assert_eq!(archive.entry_memory_bytes_uncached(0), 0);
+            let before = postcard::to_stdvec(archive).unwrap();
+            for entries in [0, 1, 2, 7, 64, 1_024, usize::MAX / 2, usize::MAX] {
+                for count in [entries, 1, entries, 0] {
+                    assert_eq!(
+                        archive.entry_memory_bytes(count),
+                        archive.entry_memory_bytes_uncached(count)
+                    );
+                }
+            }
+            assert_eq!(before, postcard::to_stdvec(archive).unwrap());
+        }
+        let keys = (0..64).map(|id| [id, id, 0, 0]).collect::<Vec<_>>();
+        let mut archive = flat_archive(&keys);
+        compare(&archive);
+        for index in (0..archive.entries.len()).step_by(2) {
+            archive.deactivate(index);
+        }
+        archive.compact_history(true).unwrap();
+        compare(&archive);
+        let bytes = postcard::to_stdvec(&archive).unwrap();
+        let restored = postcard::from_bytes(&bytes).unwrap();
+        compare(&restored);
     }
 
     #[test]

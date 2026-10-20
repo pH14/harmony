@@ -16,15 +16,15 @@ use super::{
     CampaignOrigin, CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord,
     CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
     CampaignTypes, CompletedBuffer, CompletedJob, CoordinatorCore, JobSpecRecord,
-    LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob, StreamWriter,
-    ThreadPlacement, Workload, archive_entry_limit_is_valid, bootstrap_campaign, build_report,
-    completed_job_records, continuation_arrival, continuation_attempt, derive_selection_seed,
-    execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
-    mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
-    progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
-    restore_search_checkpoint, retained_archive_indexes, stop_reservations_after_objective,
-    stop_reservations_after_work_budget, stream_header, with_coordinator_session,
-    write_live_progress, write_search_checkpoint,
+    LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, ReservationLookup, SelectedJob,
+    StreamWriter, ThreadPlacement, Workload, archive_entry_limit_is_valid, bootstrap_campaign,
+    build_report, completed_job_records, continuation_arrival, continuation_attempt,
+    derive_selection_seed, execution_work_delta, finish_record, initial_draw_state,
+    memory_is_within_reserve, mixture_weights, planned_finish, profile_elapsed, profile_now,
+    progress_checkpoint_due, progress_record, record_compaction_elapsed, record_mixture_outcome,
+    resolve_origin, restore_search_checkpoint, retained_archive_indexes,
+    stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
+    with_coordinator_session, write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
@@ -123,7 +123,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     reserved: u64,
     admitted: usize,
     planned_clock: u64,
-    pending: BTreeMap<usize, PendingJob<G>>,
+    pending: ReservationLookup<usize, PendingJob<G>>,
     completed: CompletedBuffer<usize, CompletedJob<G>>,
     schedule: BTreeSet<(u64, usize)>,
     queued: BTreeMap<(u64, usize), JobSpec<G>>,
@@ -299,6 +299,10 @@ where
                 )
             })
             .transpose()?;
+        let reservation_capacity = config
+            .window
+            .min(usize::try_from(config.execution_budget).unwrap_or(usize::MAX))
+            .min(4_096);
         let mut coordinator = Self {
             workload,
             config,
@@ -317,8 +321,8 @@ where
             reserved,
             admitted,
             planned_clock,
-            pending: BTreeMap::new(),
-            completed: CompletedBuffer::new(completed_job_records),
+            pending: ReservationLookup::with_capacity(reservation_capacity),
+            completed: CompletedBuffer::new(completed_job_records, reservation_capacity),
             schedule: BTreeSet::new(),
             queued: BTreeMap::new(),
             spec_records: BTreeMap::new(),
@@ -423,7 +427,54 @@ where
         if self.pending.len() >= self.config.window {
             return Ok(false);
         }
-        self.reserve()
+        let Some(job) = self.reserve()? else {
+            return Ok(false);
+        };
+        self.queue_job(job);
+        Ok(true)
+    }
+
+    pub(crate) fn reserve_next_dispatch(
+        &mut self,
+        dispatch: &mut JobDispatch<'_, G>,
+    ) -> Result<bool, Box<dyn Error>> {
+        if self.pending.len() >= self.config.window {
+            self.dispatch_queued(dispatch)?;
+            return Ok(false);
+        }
+        let Some(job) = self.reserve()? else {
+            self.dispatch_queued(dispatch)?;
+            return Ok(false);
+        };
+        if self.queued.is_empty() {
+            self.dispatch_job(job, dispatch)?;
+        } else {
+            self.queue_job(job);
+            self.dispatch_queued(dispatch)?;
+        }
+        Ok(true)
+    }
+
+    fn queue_job(&mut self, job: JobSpec<G>) {
+        self.queued
+            .insert((job.planned_finish, job.reservation), job);
+    }
+
+    fn dispatch_job(
+        &mut self,
+        job: JobSpec<G>,
+        dispatch: &mut JobDispatch<'_, G>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.running = self.running.saturating_add(1);
+        self.idle_clock.update(
+            self.running,
+            if self.completed.is_empty() {
+                IdleReason::NoJob
+            } else {
+                IdleReason::AdmissionOrder
+            },
+        );
+        dispatch(job)
     }
 
     pub fn plan(&mut self, limit: usize) -> Vec<JobSpec<G>> {
@@ -450,16 +501,7 @@ where
         dispatch: &mut JobDispatch<'_, G>,
     ) -> Result<(), Box<dyn Error>> {
         while let Some((_, job)) = self.queued.pop_first() {
-            self.running = self.running.saturating_add(1);
-            self.idle_clock.update(
-                self.running,
-                if self.completed.is_empty() {
-                    IdleReason::NoJob
-                } else {
-                    IdleReason::AdmissionOrder
-                },
-            );
-            dispatch(job)?;
+            self.dispatch_job(job, dispatch)?;
         }
         Ok(())
     }
@@ -563,8 +605,17 @@ where
             };
             self.schedule.pop_first();
             self.admit_completed(finish, reservation, completed)?;
-            self.reserve()?;
+            let next = self.reserve()?;
             self.write_due_checkpoint()?;
+            if let Some(job) = next {
+                if self.queued.is_empty()
+                    && let Some(dispatch) = dispatch.as_deref_mut()
+                {
+                    self.dispatch_job(job, dispatch)?;
+                } else {
+                    self.queue_job(job);
+                }
+            }
             if let Some(dispatch) = dispatch.as_deref_mut() {
                 self.dispatch_queued(dispatch)?;
             }
@@ -762,7 +813,7 @@ where
         Ok((report, checkpoint))
     }
 
-    fn reserve(&mut self) -> Result<bool, Box<dyn Error>> {
+    fn reserve(&mut self) -> Result<Option<JobSpec<G>>, Box<dyn Error>> {
         let selection_started = profile_now();
         let selected = self.select()?;
         self.profile.selection_ns = self
@@ -771,7 +822,7 @@ where
             .saturating_add(profile_elapsed(selection_started));
         self.profile.selections = self.profile.selections.saturating_add(1);
         let Some((mut spec, mut pending)) = selected else {
-            return Ok(false);
+            return Ok(None);
         };
         let action_cost = self.workload.action_cost_fn();
         self.profile.note_dispatch(
@@ -792,8 +843,7 @@ where
                 .insert(reservation, JobSpecRecord::of(&spec));
         }
         self.schedule.insert(key);
-        self.queued.insert(key, spec);
-        Ok(true)
+        Ok(Some(spec))
     }
 
     fn write_due_checkpoint(&mut self) -> Result<(), Box<dyn Error>> {

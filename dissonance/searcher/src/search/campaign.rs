@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
+    hash::Hash,
     io::{BufReader, Read, Write},
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
@@ -2942,27 +2943,77 @@ struct CompletedJob<G: Workload + ?Sized> {
     outcome: Result<(CampaignJobResult<G>, u64, String), String>,
 }
 
-struct CompletedBuffer<K: Ord, V> {
-    entries: BTreeMap<K, V>,
+#[allow(clippy::disallowed_types)]
+type HostLookupMap<K, V> = std::collections::HashMap<K, V>;
+
+struct ReservationLookup<K, V> {
+    map: HostLookupMap<K, V>,
+}
+
+impl<K: Eq + Hash, V> ReservationLookup<K, V> {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            map: HostLookupMap::with_capacity(capacity),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_capacity_and_hasher(
+        capacity: usize,
+        state: std::collections::hash_map::RandomState,
+    ) -> Self {
+        Self {
+            map: HostLookupMap::with_capacity_and_hasher(capacity, state),
+        }
+    }
+
+    fn entry(&mut self, key: K) -> std::collections::hash_map::Entry<'_, K, V> {
+        self.map.entry(key)
+    }
+
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self.map.insert(key, value)
+    }
+
+    fn remove(&mut self, key: &K) -> Option<V> {
+        self.map.remove(key)
+    }
+
+    fn get(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+struct CompletedBuffer<K: Eq + Hash, V> {
+    entries: ReservationLookup<K, V>,
     telemetry: CompletedBufferTelemetry,
     records: fn(&V) -> (u64, u64),
 }
 
-impl<K: Ord, V> CompletedBuffer<K, V> {
-    fn new(records: fn(&V) -> (u64, u64)) -> Self {
+impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
+    fn new(records: fn(&V) -> (u64, u64), capacity: usize) -> Self {
         Self {
-            entries: BTreeMap::new(),
+            entries: ReservationLookup::with_capacity(capacity),
             telemetry: CompletedBufferTelemetry::default(),
             records,
         }
     }
 
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        if self.entries.contains_key(&key) {
-            return Some(value);
-        }
+        let slot = match self.entries.entry(key) {
+            std::collections::hash_map::Entry::Occupied(_) => return Some(value),
+            std::collections::hash_map::Entry::Vacant(slot) => slot,
+        };
         let (actions, candidates) = (self.records)(&value);
-        self.entries.insert(key, value);
+        slot.insert(value);
         let stats = &mut self.telemetry;
         stats.results_live = stats.results_live.saturating_add(1);
         stats.actions_live = stats.actions_live.saturating_add(actions);
@@ -2993,10 +3044,17 @@ impl<K: Ord, V> CompletedBuffer<K, V> {
     }
 }
 
-impl<K: Ord, V> std::ops::Deref for CompletedBuffer<K, V> {
-    type Target = BTreeMap<K, V>;
-    fn deref(&self) -> &Self::Target {
-        &self.entries
+impl<K: Eq + Hash, V> CompletedBuffer<K, V> {
+    fn get(&self, key: &K) -> Option<&V> {
+        self.entries.get(key)
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 
@@ -3516,11 +3574,9 @@ where
             drop(bootstrapped);
             pool.wait_ready(config.workers)?;
             campaign.begin_dispatch_phase();
-            while campaign.reserve_next()? {
-                campaign.dispatch_queued(&mut |job| {
-                    pool.dispatch((job.planned_finish, job.reservation), job)
-                })?;
-            }
+            while campaign.reserve_next_dispatch(&mut |job| {
+                pool.dispatch((job.planned_finish, job.reservation), job)
+            })? {}
             loop {
                 campaign.dispatch_queued(&mut |job| {
                     pool.dispatch((job.planned_finish, job.reservation), job)
@@ -3953,8 +4009,8 @@ fn write_search_checkpoint<G: Workload>(
     admitted: usize,
     planned_clock: u64,
     schedule: &BTreeSet<(u64, usize)>,
-    pending: &BTreeMap<usize, PendingJob<G>>,
-    completed: &BTreeMap<usize, CompletedJob<G>>,
+    pending: &ReservationLookup<usize, PendingJob<G>>,
+    completed: &CompletedBuffer<usize, CompletedJob<G>>,
     spec_records: &BTreeMap<usize, JobSpecRecord<G>>,
 ) -> Result<(), Box<dyn Error>> {
     workload.verify_integrity()?;
@@ -8557,7 +8613,7 @@ mod tests {
             ))
         };
         let mut buffer =
-            super::CompletedBuffer::new(super::completed_result_records::<TestWorkload>);
+            super::CompletedBuffer::new(super::completed_result_records::<TestWorkload>, 3);
         assert!(buffer.insert(2, result(&[true, false, true])).is_none());
         assert!(
             buffer
@@ -8588,9 +8644,14 @@ mod tests {
 
     #[test]
     fn completed_buffer_reordering_changes_only_occupancy_not_admission_content() {
-        let run = |order: &[u64]| {
+        use std::hash::BuildHasher;
+        let first = std::collections::hash_map::RandomState::new();
+        let second = std::collections::hash_map::RandomState::new();
+        assert_ne!(first.hash_one(23_u64), second.hash_one(23_u64));
+        let run = |order: &[u64], state: std::collections::hash_map::RandomState| {
             let mut buffer =
-                super::CompletedBuffer::new(|value: &u64| (*value, u64::from(*value > 0)));
+                super::CompletedBuffer::new(|value: &u64| (*value, u64::from(*value > 0)), 3);
+            buffer.entries = super::ReservationLookup::with_capacity_and_hasher(3, state);
             let mut next = 0;
             let mut admitted = Vec::new();
             for &reservation in order {
@@ -8606,8 +8667,8 @@ mod tests {
             assert_eq!(buffer.telemetry.candidates_live, 0);
             (admitted, buffer.telemetry)
         };
-        let ordered = run(&[0, 1, 2]);
-        let reordered = run(&[2, 1, 0]);
+        let ordered = run(&[0, 1, 2], first);
+        let reordered = run(&[2, 1, 0], second);
         assert_eq!(ordered.0, reordered.0);
         assert_eq!(ordered.1.results_peak, 1);
         assert_eq!(reordered.1.results_peak, 3);
@@ -9858,7 +9919,7 @@ mod tests {
     #[test]
     fn a_watched_campaign_writes_the_unwatched_stream_and_sees_every_admission() {
         let mut plain = Vec::new();
-        run_campaign_checkpointed(
+        let plain_outcome = run_campaign_checkpointed(
             &TestWorkload {
                 bootstrap_objective: false,
                 targets: None,
@@ -9874,7 +9935,23 @@ mod tests {
                 offset,
                 ..StaggeredWatch::default()
             };
-            assert_eq!(watched_stream(&watch).expect("watched campaign"), plain);
+            let watched = watched_stream(&watch).expect("watched campaign");
+            assert_eq!(watched, plain);
+            let replayed = super::replay_campaign_checkpointed(
+                &TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                },
+                &watched,
+                None,
+                None,
+            )
+            .expect("reordered campaign replay");
+            assert_eq!(
+                serde_json::to_value(&replayed.0).unwrap(),
+                serde_json::to_value(&plain_outcome.0).unwrap(),
+            );
+            assert_eq!(replayed.1, plain_outcome.1);
             let mut notes = watch.notes.into_inner().unwrap();
             let mut admitted = watch.admitted.into_inner().unwrap();
             notes.sort_unstable();
