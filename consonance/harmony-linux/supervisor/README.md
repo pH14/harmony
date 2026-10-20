@@ -161,21 +161,24 @@ supervisor builds each disk before the setup command runs:
 1. Three guest RAM disks (`brd`, 1 GiB each, pages allocated on write) hold the
    data, the write log, and the replay base. The guest kernels set
    `CONFIG_BLK_DEV_RAM_COUNT=16` and `CONFIG_BLK_DEV_RAM_SIZE=1048576`.
-2. A `dm-log-writes` device named `harmony-disk-<node>-<generation>` writes
+2. A `dm-log-writes` device named `harmony-log-<node>-<generation>` writes
    through to the data disk and logs every completed write, flush, FUA write and
-   discard.
-3. The image's `mkfs.ext4` formats it with the execution uid and gid as root
+   discard, with the flags of each.
+3. A linear device named `harmony-disk-<node>-<generation>` maps the whole log
+   device. The filesystem lives on this device, and disk fault windows swap its
+   table.
+4. The image's `mkfs.ext4` formats it with the execution uid and gid as root
    owner. The supervisor mounts it with shared propagation, removes
-   `lost+found`, and syncs.
+   `lost+found`, syncs, and adds a `harmony-formatted` mark to the log.
 
 A power-loss window (`PowerLoss { choice }` in `process-proto`) kills its node
 as a kill window does and keeps it down until a later restart window. It then
 cuts the disk:
 
-1. It suspends the device-mapper device without flushing or freezing the
-   filesystem and swaps in an `error` table. Unwritten page cache never reaches
-   the data disk, and the old `dm-log-writes` target writes its end mark.
-2. It detaches the mount and requests a deferred device removal, so other
+1. It suspends both devices without flushing or freezing the filesystem and
+   swaps in `error` tables. Unwritten page cache never reaches the data disk,
+   and the old `dm-log-writes` target writes its end mark.
+2. It detaches the mount and requests deferred device removals, so other
    nodes' mount namespaces can let go of the old filesystem later.
 3. It reads the log ([`disk`](src/disk.rs)). Every write before the last flush
    and every FUA write is kept. Of the other writes after that flush, a prefix
@@ -184,8 +187,8 @@ cuts the disk:
 4. It applies the kept writes to the replay base, which then holds the disk as
    it would be after the power cut, and copies the base back over every range a
    dropped write touched. The data disk then equals the base.
-5. It zeroes and discards the log, attaches a new log device under the next
-   generation's name, and remounts. ext4 replays its journal on mount.
+5. It zeroes and discards the log, attaches new devices under the next
+   generation's names, and remounts. ext4 replays its journal on mount.
 
 A log that fills its RAM disk stops logging and has no end mark; the supervisor
 reports that as an infrastructure error. A power-loss window for a node without
@@ -194,6 +197,40 @@ disk can cost up to twice its size plus the writes since the last power loss;
 raise the guest RAM (`ram_mib`) to match. The OCI runtime allows the container
 every block device and `/dev/mapper/control`; the supervisor creates the device
 nodes itself.
+
+### Disk faults
+
+Three more windows act on a node's disk:
+
+- A disk error window (`DiskError`) loads an `error` table. Every read, write
+  and flush fails with `EIO` until the window closes and the linear table
+  returns. When a journal write fails, ext4 aborts the journal and refuses
+  writes until a later power loss or corruption remounts the disk.
+- A disk stall window (`DiskStall { hold_nanos }`) loads a `dm-delay` table
+  that holds every request for the window's length, at least 50 ms. dm-delay
+  serves shorter delays from a polling kernel thread instead of a timer. When the window closes, the
+  linear table returns and dm-delay submits the held requests at once. Before
+  the supervisor starts a node again, it releases the held requests so the
+  old process can exit.
+- A disk corruption window (`DiskCorrupt { choice }`) acts as a restart window:
+  the node is killed when it opens and started when it closes. In between, the
+  supervisor syncs the filesystem, cuts the disk as a power loss does but keeps
+  every logged write, and flips one bit in the data disk and the replay base.
+  The bit lies in a plain write logged after the format mark or the last cut: a
+  write with no flush, FUA, discard or metadata flag. ext4 tags its journal
+  writes as metadata, so the bit lands in file data or in metadata written back
+  in place. The choice, mixed with the node index, picks the write, the sector
+  within it, the byte and the bit. If the disk then fails to mount, the
+  supervisor formats a new filesystem on it and logs the mount error.
+
+When an error and a stall window overlap, the disk returns errors. A power loss
+or corruption remounts the disk with the linear table and then loads the table
+of any open disk window. After any of these windows, the supervisor does not
+report the node exiting on its own for the rest of the execution, because a
+node may stop on purpose when its disk fails. A node that exits during an
+error or stall window stays down until the window closes, then restarts after
+a fault. For a node without a disk, error and stall windows do nothing and a
+corruption window only restarts the node.
 
 ## Investigation terminal
 
