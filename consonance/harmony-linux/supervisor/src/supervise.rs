@@ -15,6 +15,7 @@ pub enum Action {
     DisarmEventKill(u16),
     ArmEventPark(u16, EventPark),
     DisarmEventPark(u16),
+    SetClock { node: u16, offset_nanos: i64 },
 }
 
 impl Action {
@@ -41,6 +42,9 @@ impl Action {
                 text
             }
             Action::DisarmEventPark(node) => format!("disarm event park node {node}"),
+            Action::SetClock { node, offset_nanos } => {
+                format!("shift clock node {node} by {offset_nanos} ns")
+            }
         }
     }
 }
@@ -92,6 +96,7 @@ pub struct ProcessSupervisor {
     event_kill_fired: Vec<EventKillWindow>,
     natural_deaths: Vec<u16>,
     recovery_pending: bool,
+    clocks: Vec<i64>,
 }
 
 pub type Supervisor = ProcessSupervisor;
@@ -118,6 +123,7 @@ impl ProcessSupervisor {
             event_kill_fired: Vec::new(),
             natural_deaths: Vec::new(),
             recovery_pending: false,
+            clocks: vec![0; node_count],
         }
     }
 
@@ -262,9 +268,29 @@ impl ProcessSupervisor {
             }
         }
 
+        for index in 0..self.nodes.len() {
+            let node = index as u16;
+            if self.previous.node(node).clock.is_some() != active.node(node).clock.is_some() {
+                self.bump_disturbance(1);
+            }
+            let offset_nanos = active.clock_offset(node);
+            if offset_nanos == self.clocks[index] {
+                continue;
+            }
+            self.clocks[index] = offset_nanos;
+            if self.nodes[index].alive {
+                actions.push(Action::SetClock { node, offset_nanos });
+            }
+        }
+
         self.counters.pending_faults = active.pending_process_faults(&self.event_kill_fired);
         self.previous = active.clone();
         actions
+    }
+
+    #[must_use]
+    pub fn clock_offset(&self, node: u16) -> i64 {
+        self.clocks.get(usize::from(node)).copied().unwrap_or(0)
     }
 
     pub fn note_hook_started(&mut self) {
@@ -1321,5 +1347,103 @@ mod tests {
             Action::DisarmEventPark(0).describe(),
             "disarm event park node 0"
         );
+        assert_eq!(
+            Action::SetClock {
+                node: 2,
+                offset_nanos: -5
+            }
+            .describe(),
+            "shift clock node 2 by -5 ns"
+        );
+    }
+
+    fn clocked(node: u16, offset_nanos: i64, rate_ppm: i32, moment: u64) -> ActiveWindows {
+        let mut set = active(&[(
+            node,
+            ProcessAction::Clock {
+                offset_nanos,
+                rate_ppm,
+                spread: 0,
+            },
+        )]);
+        set.set_moment(moment);
+        set
+    }
+
+    #[test]
+    fn a_clock_window_shifts_its_node_and_restores_it_on_exit() {
+        let mut sup = Supervisor::new(2);
+        let generation = sup.disturbance_generation();
+        let shifted = clocked(1, 3_000, 0, 10);
+        assert_eq!(
+            sup.tick(&shifted, &[]),
+            [Action::SetClock {
+                node: 1,
+                offset_nanos: 3_000
+            }]
+        );
+        assert_eq!(sup.disturbance_generation(), generation + 1);
+        assert_eq!(sup.pending_faults(), 1);
+        assert_eq!(sup.tick(&shifted, &[]), []);
+        assert_eq!(sup.clock_offset(1), 3_000);
+        assert_eq!(sup.clock_offset(0), 0);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::SetClock {
+                node: 1,
+                offset_nanos: 0
+            }]
+        );
+        assert_eq!(sup.disturbance_generation(), generation + 2);
+        assert_eq!(sup.pending_faults(), 0);
+        assert_eq!(sup.alive_bitmap(), 0b11);
+    }
+
+    #[test]
+    fn a_clock_rate_moves_the_offset_every_tick() {
+        let mut sup = Supervisor::new(1);
+        let tick = crate::TICK_NANOS;
+        let mut offsets = Vec::new();
+        for step in 0..4 {
+            for action in sup.tick(&clocked(0, 0, -500_000, step * tick), &[]) {
+                let Action::SetClock { offset_nanos, .. } = action else {
+                    panic!("a clock window only shifts the clock");
+                };
+                offsets.push(offset_nanos);
+            }
+        }
+        let half = i64::try_from(tick / 2).unwrap();
+        assert_eq!(offsets, [-half, -2 * half, -3 * half]);
+    }
+
+    #[test]
+    fn a_node_down_during_a_clock_change_starts_with_the_current_offset() {
+        let mut sup = Supervisor::new(1);
+        let mut down = active(&[
+            (0, ProcessAction::Kill),
+            (
+                0,
+                ProcessAction::Clock {
+                    offset_nanos: 9,
+                    rate_ppm: 0,
+                    spread: 0,
+                },
+            ),
+        ]);
+        down.set_moment(0);
+        assert_eq!(sup.tick(&down, &[]), [Action::Kill(0)]);
+        assert_eq!(sup.clock_offset(0), 9);
+        let restart = clocked(0, 9, 0, 0);
+        let mut restarting = restart.clone();
+        restarting.insert(0, &ProcessAction::Restart, 0);
+        assert_eq!(sup.tick(&restarting, &[0]), []);
+        assert_eq!(
+            sup.tick(&restart, &[]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
+        assert_eq!(sup.clock_offset(0), 9);
     }
 }

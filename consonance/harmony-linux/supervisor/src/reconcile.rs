@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use process_proto::events::ParkTarget;
-use process_proto::{EVERY_NODE, ProcessAction, ProcessWindow, WireError, decode_process_windows};
+use process_proto::{
+    CLOCK_RATE_STOPPED_PPM, EVERY_NODE, ProcessAction, ProcessWindow, WireError,
+    decode_process_windows,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EventPark {
@@ -18,12 +21,54 @@ pub struct EventKillWindow {
     pub start: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ClockShift {
+    pub start: u64,
+    pub offset_nanos: i64,
+    pub rate_ppm: i32,
+    pub spread: u64,
+}
+
+const SPREAD_SCALE: i64 = 1 << 10;
+
+impl ClockShift {
+    #[must_use]
+    pub fn offset_at(self, moment: u64) -> i64 {
+        let elapsed = i128::from(moment.saturating_sub(self.start));
+        let drift = elapsed * i128::from(self.rate_ppm) / 1_000_000;
+        let total = i128::from(self.offset_nanos) + drift;
+        i64::try_from(total).unwrap_or(if total < 0 { i64::MIN } else { i64::MAX })
+    }
+
+    #[must_use]
+    fn for_node(self, node: u16) -> Self {
+        if self.spread == 0 {
+            return self;
+        }
+        let mut mix = self.spread ^ u64::from(node).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        mix = (mix ^ (mix >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        mix = (mix ^ (mix >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        mix ^= mix >> 31;
+        let span = u64::try_from(2 * SPREAD_SCALE + 1).unwrap_or(1);
+        let factor = i64::try_from(mix % span).unwrap_or(0) - SPREAD_SCALE;
+        let rate = i64::from(self.rate_ppm) * factor / SPREAD_SCALE;
+        Self {
+            start: self.start,
+            offset_nanos: self.offset_nanos / SPREAD_SCALE * factor,
+            rate_ppm: i32::try_from(rate.max(i64::from(CLOCK_RATE_STOPPED_PPM)))
+                .unwrap_or(CLOCK_RATE_STOPPED_PPM),
+            spread: 0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NodeActions {
     pub kill: bool,
     pub pause: bool,
     pub restart: bool,
     pub event_park: Option<EventPark>,
+    pub clock: Option<ClockShift>,
 }
 
 impl NodeActions {
@@ -41,6 +86,7 @@ pub struct HookWindow {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ActiveWindows {
+    moment: u64,
     nodes: Vec<(u16, NodeActions)>,
     hooks: Vec<HookWindow>,
     event_kills: Vec<EventKillWindow>,
@@ -75,7 +121,8 @@ impl ActiveWindows {
             ProcessAction::Kill
             | ProcessAction::Pause(_)
             | ProcessAction::Restart
-            | ProcessAction::EventPark { .. } => {}
+            | ProcessAction::EventPark { .. }
+            | ProcessAction::Clock { .. } => {}
         }
         let index = match self.nodes.binary_search_by_key(&node, |entry| entry.0) {
             Ok(index) => index,
@@ -101,13 +148,44 @@ impl ActiveWindows {
                     start,
                 });
             }
+            ProcessAction::Clock {
+                offset_nanos,
+                rate_ppm,
+                spread,
+            } => {
+                let shift = ClockShift {
+                    start,
+                    offset_nanos: *offset_nanos,
+                    rate_ppm: (*rate_ppm).max(CLOCK_RATE_STOPPED_PPM),
+                    spread: *spread,
+                };
+                flags.clock = flags.clock.max(Some(shift));
+            }
             ProcessAction::EventKill { .. } | ProcessAction::RunHook(_) => {}
         }
     }
 
     pub fn from_answer(body: &[u8]) -> Result<Self, WireError> {
-        let (_moment, windows) = decode_process_windows(body)?;
-        Ok(Self::from_windows(windows.iter()))
+        let (moment, windows) = decode_process_windows(body)?;
+        let mut active = Self::from_windows(windows.iter());
+        active.moment = moment;
+        Ok(active)
+    }
+
+    pub fn set_moment(&mut self, moment: u64) {
+        self.moment = moment;
+    }
+
+    #[must_use]
+    pub fn moment(&self) -> u64 {
+        self.moment
+    }
+
+    #[must_use]
+    pub fn clock_offset(&self, node: u16) -> i64 {
+        self.node(node)
+            .clock
+            .map_or(0, |shift| shift.offset_at(self.moment))
     }
 
     pub fn from_windows<'a>(windows: impl Iterator<Item = &'a ProcessWindow>) -> Self {
@@ -127,6 +205,9 @@ impl ActiveWindows {
             pause: own.pause || every.pause,
             restart: own.restart || every.restart,
             event_park: own.event_park,
+            clock: own
+                .clock
+                .or_else(|| every.clock.map(|shift| shift.for_node(node))),
         }
     }
 
@@ -168,6 +249,7 @@ impl ActiveWindows {
             pending = pending.saturating_add(u64::from(actions.pause));
             pending = pending.saturating_add(u64::from(actions.restart));
             pending = pending.saturating_add(u64::from(actions.event_park.is_some()));
+            pending = pending.saturating_add(u64::from(actions.clock.is_some()));
         }
         let mut last_pending_node = None;
         for window in &self.event_kills {
@@ -246,6 +328,7 @@ mod tests {
                 restart: true,
                 kill: false,
                 event_park: None,
+                clock: None,
             }
         );
         assert_eq!(active.node(2), NodeActions::default());
@@ -369,5 +452,77 @@ mod tests {
             start: 20,
         };
         assert_eq!(active.pending_process_faults(&[canonical, later]), 1);
+    }
+
+    fn clock(offset_nanos: i64, rate_ppm: i32, spread: u64) -> ProcessAction {
+        ProcessAction::Clock {
+            offset_nanos,
+            rate_ppm,
+            spread,
+        }
+    }
+
+    #[test]
+    fn a_clock_shift_steps_by_its_offset_and_drifts_by_its_rate() {
+        let mut active = ActiveWindows::new();
+        active.insert(1, &clock(5_000, 0, 0), 100);
+        active.insert(2, &clock(0, 250_000, 0), 100);
+        active.insert(3, &clock(0, CLOCK_RATE_STOPPED_PPM - 7, 0), 100);
+        active.set_moment(4_100);
+        assert_eq!(active.clock_offset(0), 0);
+        assert_eq!(active.clock_offset(1), 5_000);
+        assert_eq!(active.clock_offset(2), 1_000);
+        assert_eq!(active.clock_offset(3), -4_000);
+        active.set_moment(50);
+        assert_eq!(active.clock_offset(2), 0);
+        assert!(!active.node(1).any());
+        assert_eq!(active.pending_process_faults(&[]), 3);
+    }
+
+    #[test]
+    fn a_clock_shift_for_every_node_spreads_by_node_when_asked() {
+        let mut even = ActiveWindows::new();
+        even.insert(EVERY_NODE, &clock(-1_000_000, 0, 0), 0);
+        assert!((0..4).all(|node| even.clock_offset(node) == -1_000_000));
+
+        let mut spread = ActiveWindows::new();
+        spread.insert(EVERY_NODE, &clock(1 << 30, 1 << 20, 0x5eed), 0);
+        spread.insert(2, &clock(7, 0, 0), 0);
+        spread.set_moment(1_000_000);
+        let offsets = (0..16)
+            .map(|node| spread.clock_offset(node))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets[2], 7);
+        assert!(
+            offsets
+                .iter()
+                .all(|offset| offset.unsigned_abs() <= 2 << 30)
+        );
+        assert!(offsets.iter().any(|&offset| offset < 0));
+        assert!(offsets.iter().any(|&offset| offset > 7));
+        assert_eq!(
+            offsets,
+            (0..16)
+                .map(|node| spread.clock_offset(node))
+                .collect::<Vec<_>>()
+        );
+        assert!((0..16).all(|node| {
+            spread
+                .node(node)
+                .clock
+                .is_some_and(|shift| shift.rate_ppm >= CLOCK_RATE_STOPPED_PPM)
+        }));
+    }
+
+    #[test]
+    fn overlapping_clock_shifts_on_one_node_resolve_independently_of_order() {
+        let mut forward = ActiveWindows::new();
+        forward.insert(0, &clock(1, 0, 0), 10);
+        forward.insert(0, &clock(2, 0, 0), 20);
+        let mut backward = ActiveWindows::new();
+        backward.insert(0, &clock(2, 0, 0), 20);
+        backward.insert(0, &clock(1, 0, 0), 10);
+        assert_eq!(forward, backward);
+        assert_eq!(forward.clock_offset(0), 2);
     }
 }
