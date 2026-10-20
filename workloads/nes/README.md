@@ -319,6 +319,17 @@ writes encoded chunks into this buffer. Successful completion explicitly flushes
 the buffer before verification and result publication, so delayed file errors
 remain run failures. Buffering does not change the stream's bytes or ordering.
 
+The evaluator's progress sidecar uses a fixed 8 KiB buffer, 7 KiB more than the
+previous 1 KiB line writer, outside the archive memory budget. Every cumulative
+JSON record and its newline is preserved, but expansion task admissions no longer
+force individual file writes. Successful completion explicitly flushes progress
+before export and verification; flush errors fail the run. Search-error cleanup
+also flushes progress, preserving the primary error and reporting a secondary
+flush failure. Linear progress producers still explicitly flush every update.
+Sidecar readers can lag until the buffer fills or completion flushes it; there
+is no wall-time freshness guarantee, and a hard kill can lose the buffered tail.
+The live viewer uses its independent 100 ms feed and does not read this file.
+
 Expansion's opt-in `HARMONY_COORDINATOR_PROFILE` telemetry records inclusive wall
 spans, including dispatch, stream drain, persistence polling and stream finish.
 These spans can overlap and are not CPU costs. The private

@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     fs,
-    io::{self, BufWriter, LineWriter, Write},
+    io::{self, BufWriter, Write},
     num::NonZeroU64,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -161,6 +161,24 @@ impl Write for StreamSink {
             file.flush()?;
         }
         Ok(())
+    }
+}
+
+const PROGRESS_BUFFER_BYTES: usize = 8 * 1024;
+
+fn finish_progress<T>(
+    result: Result<T>,
+    progress: &mut dyn Write,
+    diagnostics: &mut dyn Write,
+) -> Result<T> {
+    match (result, progress.flush()) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(error.into()),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(flush)) => {
+            let _ = writeln!(diagnostics, "progress finalization also failed: {flush}");
+            Err(error)
+        }
     }
 }
 
@@ -340,11 +358,14 @@ where
         },
         bytes: 0,
     };
-    let mut progress = LineWriter::new(fs::File::create(out.join("progress.jsonl"))?);
+    let mut progress = BufWriter::with_capacity(
+        PROGRESS_BUFFER_BYTES,
+        fs::File::create(out.join("progress.jsonl"))?,
+    );
     let preparation_seconds = started.elapsed().as_secs_f64();
     phase(out, "search", started)?;
     let search_started = telemetry_now();
-    let (report, checkpoint) = search(
+    let searched = search(
         game,
         &config,
         &origin,
@@ -355,9 +376,12 @@ where
             checkpoints,
             placement: None,
         },
-    )?;
-    stream.flush()?;
-    progress.flush()?;
+    )
+    .and_then(|outcome| {
+        stream.flush()?;
+        Ok(outcome)
+    });
+    let (report, checkpoint) = finish_progress(searched, &mut progress, &mut io::stderr())?;
     let search_seconds = search_started.elapsed().as_secs_f64();
     phase(out, "export", started)?;
     let export_started = telemetry_now();
@@ -486,7 +510,115 @@ pub fn run_cli(
 
 #[cfg(test)]
 mod tests {
-    use super::objective_within_budget;
+    use super::{PROGRESS_BUFFER_BYTES, Result, finish_progress, objective_within_budget};
+    use std::io::{self, BufWriter, LineWriter, Write};
+
+    #[derive(Default)]
+    struct CountingSink {
+        bytes: Vec<u8>,
+        writes: usize,
+        flushes: usize,
+        fail_flush: bool,
+    }
+
+    impl Write for CountingSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            if self.fail_flush {
+                Err(io::Error::other("injected progress flush failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn progress_records(writer: &mut dyn Write) {
+        for task in 0..1000 {
+            serde_json::to_writer(
+                &mut *writer,
+                &serde_json::json!({"tasks_admitted": task, "executed_edges": task * 14}),
+            )
+            .unwrap();
+            writer.write_all(b"\n").unwrap();
+        }
+    }
+
+    #[test]
+    fn progress_buffer_preserves_every_record_with_fewer_underlying_writes() {
+        let mut buffered = BufWriter::with_capacity(PROGRESS_BUFFER_BYTES, CountingSink::default());
+        let mut lines = LineWriter::new(CountingSink::default());
+        progress_records(&mut buffered);
+        progress_records(&mut lines);
+        assert!(buffered.get_ref().bytes.len() < lines.get_ref().bytes.len());
+        finish_progress(Ok(()), &mut buffered, &mut Vec::new()).unwrap();
+        lines.flush().unwrap();
+        assert_eq!(buffered.get_ref().bytes, lines.get_ref().bytes);
+        assert!(buffered.get_ref().writes < lines.get_ref().writes);
+        assert_eq!(buffered.get_ref().bytes.last(), Some(&b'\n'));
+        assert_eq!(
+            buffered
+                .get_ref()
+                .bytes
+                .iter()
+                .filter(|byte| **byte == b'\n')
+                .count(),
+            1000
+        );
+        assert_eq!(buffered.get_ref().flushes, 1);
+    }
+
+    #[test]
+    fn progress_final_flush_failure_rejects_success() {
+        let mut progress = BufWriter::with_capacity(
+            PROGRESS_BUFFER_BYTES,
+            CountingSink {
+                fail_flush: true,
+                ..CountingSink::default()
+            },
+        );
+        progress.write_all(b"{\"tasks_admitted\":1}\n").unwrap();
+        let error = finish_progress(Ok(()), &mut progress, &mut Vec::new()).unwrap_err();
+        assert_eq!(error.to_string(), "injected progress flush failure");
+        assert_eq!(progress.get_ref().bytes, b"{\"tasks_admitted\":1}\n");
+        assert_eq!(progress.get_ref().flushes, 1);
+    }
+
+    #[test]
+    fn progress_search_error_flushes_prefix_and_preserves_primary_error() {
+        for fail_flush in [false, true] {
+            let mut progress = BufWriter::with_capacity(
+                PROGRESS_BUFFER_BYTES,
+                CountingSink {
+                    fail_flush,
+                    ..CountingSink::default()
+                },
+            );
+            progress.write_all(b"{\"tasks_admitted\":1}\n").unwrap();
+            let result: Result<()> =
+                Err(io::Error::new(io::ErrorKind::NotFound, "primary search error").into());
+            let mut diagnostics = Vec::new();
+            let error = finish_progress(result, &mut progress, &mut diagnostics).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<io::Error>().unwrap().kind(),
+                io::ErrorKind::NotFound
+            );
+            assert_eq!(error.to_string(), "primary search error");
+            assert_eq!(progress.get_ref().bytes, b"{\"tasks_admitted\":1}\n");
+            assert_eq!(progress.get_ref().flushes, 1);
+            assert_eq!(!diagnostics.is_empty(), fail_flush);
+            if fail_flush {
+                assert!(String::from_utf8(diagnostics).unwrap().contains(
+                    "progress finalization also failed: injected progress flush failure"
+                ));
+            }
+        }
+    }
 
     #[test]
     fn a_victory_in_the_drained_window_does_not_pass_the_frame_check() {
