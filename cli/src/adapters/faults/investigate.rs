@@ -768,7 +768,7 @@ mod tests {
             violations: vec!["2".into()],
             sometimes: Vec::new(),
             state_hash: String::new(),
-            state_hash_encoding: StateHashEncoding::EngineDigest,
+            state_hash_encoding: StateHashEncoding::EnginePageDigest,
             confirmed: false,
             replay: Some(ReplaySummary::from_observation(
                 &FaultObservations::default(),
@@ -845,7 +845,7 @@ mod tests {
             violations: vec!["2".into()],
             sometimes: Vec::new(),
             state_hash: String::new(),
-            state_hash_encoding: StateHashEncoding::EngineDigest,
+            state_hash_encoding: StateHashEncoding::EnginePageDigest,
             confirmed: false,
             replay: Some(ReplaySummary::from_observation(
                 &FaultObservations::default(),

@@ -62,6 +62,7 @@ pub struct BugSummary {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateHashEncoding {
+    EnginePageDigest,
     EngineDigest,
     Unavailable,
     #[default]
@@ -153,7 +154,7 @@ impl ReplaySummary {
                 .map(state_digest_hex)
                 .unwrap_or_default(),
             state_hash_encoding: if state_digest.is_some() {
-                StateHashEncoding::EngineDigest
+                StateHashEncoding::EnginePageDigest
             } else {
                 StateHashEncoding::Unavailable
             },
@@ -1398,7 +1399,7 @@ mod tests {
         assert_eq!(report.replays[0].state_hash, expected);
         assert_eq!(
             report.replays[0].state_hash_encoding,
-            StateHashEncoding::EngineDigest
+            StateHashEncoding::EnginePageDigest
         );
         assert_ne!(report.replays[0].state_hash, sha256_hex(&state_digest));
 
@@ -1409,7 +1410,7 @@ mod tests {
         assert_eq!(decoded.replays[0].state_hash, expected);
         assert_eq!(
             decoded.replays[0].state_hash_encoding,
-            StateHashEncoding::EngineDigest
+            StateHashEncoding::EnginePageDigest
         );
     }
 

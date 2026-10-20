@@ -131,7 +131,7 @@ pub struct CheckpointHashPreimage {
     pub event_index: u64,
     pub state_hash: [u8; 32],
     pub state_blob_suffix: Vec<u8>,
-    pub memory_prefix_hash: [u8; 32],
+    pub memory_digest: [u8; 32],
     pub memory_length: usize,
 }
 
@@ -355,6 +355,7 @@ where
     pub(crate) devices: <B::A as Vendor>::Devices,
     pub(crate) host_dirty: std::collections::BTreeSet<u64>,
     pub(crate) host_dirty_wholesale: bool,
+    page_digests: crate::state_digest::PageDigests,
     pub(crate) report_stream: Vec<u32>,
     pub(crate) idle_landings: Vec<u64>,
     pub(crate) terminal: Option<TerminalReason>,
@@ -427,6 +428,7 @@ where
     pub fn with_backing(backend: B, ram: RamBacking) -> Self {
         Self {
             backend,
+            page_digests: crate::state_digest::PageDigests::new(ram.len()),
             ram,
             ram_base_gpa: 0,
             doorbell_pages: None,
@@ -834,6 +836,9 @@ where
             ram[offset..end].copy_from_slice(page);
             extend_written(&mut written, offset, PAGE_SIZE);
         }
+        for &(offset, len) in &written {
+            self.page_digests.mark_range(offset, len);
+        }
         self.invalidate_written_instructions(base, &written);
         self.host_dirty_wholesale = true;
         Ok(())
@@ -895,6 +900,9 @@ where
             }
             target.copy_from_slice(source);
             extend_written(&mut written, index * PAGE_SIZE, source.len());
+        }
+        for &(offset, len) in &written {
+            self.page_digests.mark_range(offset, len);
         }
         self.invalidate_written_instructions(base, &written);
         self.host_dirty_wholesale = true;
@@ -1363,14 +1371,14 @@ where
                 *checkpoint_due && next.is_none(),
                 self.deferred_virtual_time_checkpoints,
             ) {
-                let (hash, suffix, memory_prefix_hash) =
+                let (hash, suffix, memory_digest) =
                     self.state_hash_preimage(crate::host_telemetry::HashSite::Checkpoint)?;
                 if self.checkpoint_hash_preimage_armed {
                     self.checkpoint_hash_preimage = Some(CheckpointHashPreimage {
                         event_index,
                         state_hash: hash,
                         state_blob_suffix: suffix,
-                        memory_prefix_hash,
+                        memory_digest,
                         memory_length: self.ram.as_bytes().len(),
                     });
                 }
@@ -1596,17 +1604,10 @@ where
     ) -> Result<StateHashPreimage, VmmError> {
         let mut work = crate::host_telemetry::HashWork::new();
         let result = (|| {
-            let mut hasher = Sha256::new();
-            hasher.update(b"MEM\0");
-            hasher.update((self.ram.as_bytes().len() as u64).to_le_bytes());
-            work.metadata(12);
-            hasher.update(self.ram.as_bytes());
-            work.ram(self.ram.as_bytes().len());
-            let memory_prefix_hash = hasher.clone().finalize().into();
+            let memory_digest = self.memory_digest(&mut work)?;
             let suffix = self.state_blob_suffix()?;
-            hasher.update(&suffix);
-            work.suffix(suffix.len());
-            Ok((hasher.finalize().into(), suffix, memory_prefix_hash))
+            let hash = crate::state_digest::state_hash(&memory_digest, &suffix, &mut work);
+            Ok((hash, suffix, memory_digest))
         })();
         work.finish(&self.hash_telemetry, site, result.is_err());
         result
@@ -3109,16 +3110,51 @@ where
         let first = gpa / 4096;
         let last = (gpa + len - 1) / 4096;
         self.host_dirty.extend(first..=last);
+        self.mark_page_digests(first..=last);
+    }
+
+    fn mark_page_digests(&mut self, gfns: impl IntoIterator<Item = u64>) {
+        let base = self.ram_base_gpa / 4096;
+        for gfn in gfns {
+            if let Some(page) = gfn.checked_sub(base) {
+                self.page_digests.mark(page);
+            }
+        }
+    }
+
+    fn drain_backend_dirty_pages(&mut self) -> Result<Option<Vec<u64>>, VmmError> {
+        match self.backend.drain_dirty_pages() {
+            Ok(gfns) => {
+                self.mark_page_digests(gfns.iter().copied());
+                Ok(Some(gfns))
+            }
+            Err(vmm_backend::BackendError::Unsupported { .. }) => {
+                self.page_digests.mark_all();
+                Ok(None)
+            }
+            Err(error) => {
+                self.page_digests.mark_all();
+                Err(error.into())
+            }
+        }
+    }
+
+    pub(crate) fn memory_digest(
+        &mut self,
+        work: &mut crate::host_telemetry::HashWork,
+    ) -> Result<[u8; 32], VmmError> {
+        if let Some(gfns) = self.drain_backend_dirty_pages()? {
+            self.host_dirty.extend(gfns);
+        }
+        Ok(self.page_digests.digest(self.ram.as_bytes(), work))
     }
 
     pub fn drain_dirty_pages(&mut self) -> Result<Option<Vec<u64>>, VmmError> {
         if self.host_dirty_wholesale {
             return Ok(None);
         }
-        let mut gfns = match self.backend.drain_dirty_pages() {
-            Ok(gfns) => gfns,
-            Err(vmm_backend::BackendError::Unsupported { .. }) => return Ok(None),
-            Err(error) => return Err(error.into()),
+        let Some(mut gfns) = self.drain_backend_dirty_pages()? else {
+            return Ok(None);
         };
         gfns.extend(self.host_dirty.iter().copied());
         self.host_dirty.clear();
@@ -3134,11 +3170,7 @@ where
     }
 
     pub fn reset_dirty_tracking(&mut self) -> Result<bool, VmmError> {
-        let tracked = match self.backend.drain_dirty_pages() {
-            Ok(_) => true,
-            Err(vmm_backend::BackendError::Unsupported { .. }) => false,
-            Err(error) => return Err(error.into()),
-        };
+        let tracked = self.drain_backend_dirty_pages()?.is_some();
         self.host_dirty.clear();
         self.host_dirty_wholesale = false;
         Ok(tracked)
@@ -4009,22 +4041,90 @@ mod tests {
     }
 
     #[test]
+    fn incremental_memory_digest_sees_every_write_whichever_consumer_drains_it() {
+        let mut backend = configured_mock(Vec::new());
+        backend.enable_dirty_tracking();
+        let mut vmm = Vmm::new(backend, GuestRam::new(8 * 4096).unwrap());
+        let check = |vmm: &mut Vmm<MockBackend>| {
+            let mut work = crate::host_telemetry::HashWork::new();
+            assert_eq!(
+                vmm.memory_digest(&mut work).unwrap(),
+                crate::state_digest::memory_digest_of(vmm.guest_memory())
+            );
+            work.ram_bytes()
+        };
+        check(&mut vmm);
+        vmm.ram.as_mut_bytes()[4096] = 1;
+        vmm.backend.push_dirty_gfns(vec![1]);
+        assert_eq!(check(&mut vmm), 4096);
+        vmm.ram.as_mut_bytes()[2 * 4096] = 2;
+        vmm.backend.push_dirty_gfns(vec![2]);
+        assert_eq!(vmm.drain_dirty_pages().unwrap(), Some(vec![1, 2]));
+        assert_eq!(check(&mut vmm), 4096);
+        vmm.ram.as_mut_bytes()[3 * 4096] = 3;
+        vmm.backend.push_dirty_gfns(vec![3]);
+        check(&mut vmm);
+        assert_eq!(vmm.drain_dirty_pages().unwrap(), Some(vec![3]));
+        vmm.ram.as_mut_bytes()[4 * 4096] = 4;
+        vmm.backend.push_dirty_gfns(vec![4]);
+        assert!(vmm.reset_dirty_tracking().unwrap());
+        assert_eq!(check(&mut vmm), 4096);
+        vmm.guest_slice_mut(5 * 4096 + 9, 2)
+            .unwrap()
+            .copy_from_slice(&[5, 5]);
+        vmm.mark_host_dirty(5 * 4096 + 9, 2);
+        check(&mut vmm);
+        vmm.write_guest_pages(&[(6, [6; 4096])]).unwrap();
+        check(&mut vmm);
+        let mut image = vmm.guest_memory().to_vec();
+        image[7 * 4096] = 7;
+        image[4096] = 0;
+        vmm.restore_guest_memory(&image).unwrap();
+        assert_eq!(check(&mut vmm), 4096);
+        vmm.ram.as_mut_bytes()[0] = 8;
+        vmm.backend.fail_next_dirty_drain();
+        let mut work = crate::host_telemetry::HashWork::new();
+        assert!(vmm.memory_digest(&mut work).is_err());
+        check(&mut vmm);
+    }
+
+    #[test]
+    fn untracked_backend_rehashes_every_page_for_each_digest() {
+        let mut vmm = Vmm::new(
+            configured_mock(Vec::new()),
+            GuestRam::new(2 * 4096).unwrap(),
+        );
+        let mut work = crate::host_telemetry::HashWork::new();
+        vmm.memory_digest(&mut work).unwrap();
+        vmm.ram.as_mut_bytes()[4096] = 1;
+        let mut work = crate::host_telemetry::HashWork::new();
+        assert_eq!(
+            vmm.memory_digest(&mut work).unwrap(),
+            crate::state_digest::memory_digest_of(vmm.guest_memory())
+        );
+        assert_eq!(work.ram_bytes(), 4096);
+    }
+
+    #[test]
     fn state_hash_streaming_keeps_the_frozen_blob_digest() {
         let mut vmm = vtime_vmm(Vec::new(), 0x5eed);
-        let mut expected = Sha256::new();
-        expected.update(vmm.state_blob().unwrap());
-        let expected: [u8; 32] = expected.finalize().into();
+        vmm.ram.as_mut_bytes()[7] = 1;
+        let suffix = vmm.state_blob_suffix().unwrap();
+        let expected = crate::state_digest::state_hash_of(
+            &crate::state_digest::memory_digest_of(vmm.guest_memory()),
+            &suffix,
+        );
         assert_eq!(vmm.state_hash().unwrap(), expected);
         let cost = vmm
             .hash_telemetry()
             .cost(crate::host_telemetry::HashSite::WholeRequest);
         assert_eq!(cost.calls, 1);
         assert_eq!(cost.ram_bytes, 0x1000);
+        assert_eq!(cost.suffix_bytes, suffix.len() as u64);
         assert_eq!(
-            cost.suffix_bytes,
-            vmm.state_blob_suffix().unwrap().len() as u64
+            cost.metadata_bytes,
+            crate::state_digest::metadata_bytes(vmm.guest_memory().len())
         );
-        assert_eq!(cost.metadata_bytes, 12);
         assert_eq!(cost.errors, 0);
         assert_eq!(vmm.state_hash().unwrap(), expected);
         assert_eq!(
@@ -4159,9 +4259,9 @@ mod tests {
                 assert_eq!(
                     none_hash,
                     [
-                        0x8b, 0x9f, 0x95, 0x0f, 0xc3, 0xa4, 0x96, 0x4c, 0x8f, 0x14, 0x6e, 0xcf,
-                        0xd4, 0x1d, 0x52, 0xea, 0x4d, 0x20, 0xcc, 0xad, 0xec, 0x2c, 0xf9, 0x57,
-                        0xef, 0x5f, 0x51, 0x85, 0x62, 0x95, 0x93, 0x85
+                        0x7c, 0x6a, 0x67, 0x39, 0xe2, 0x2b, 0x71, 0xd0, 0x05, 0x07, 0x81, 0xc9,
+                        0x26, 0xee, 0xfd, 0x6f, 0xa3, 0xaf, 0x19, 0x0c, 0x0c, 0x4b, 0x72, 0x42,
+                        0x29, 0x34, 0xc5, 0x2f, 0x1a, 0xd1, 0xb3, 0x6d
                     ],
                     "absent XSAVE provenance must preserve the vCPU hash"
                 );
@@ -8350,7 +8450,10 @@ mod tests {
             .cost(crate::host_telemetry::HashSite::WholeRequest);
         assert_eq!(failed.calls, 1);
         assert_eq!(failed.errors, 1);
-        assert_eq!(failed.ram_bytes, vmm.guest_memory().len() as u64);
+        assert_eq!(
+            failed.ram_bytes,
+            crate::state_digest::hashed_page_bytes(vmm.guest_memory())
+        );
         assert_eq!(failed.suffix_bytes, 0);
         vmm.backend.complete_hypercall(0).unwrap();
         vmm.backend.retire_pending_completion().unwrap();
@@ -8506,7 +8609,10 @@ mod tests {
             .hash_telemetry()
             .cost(crate::host_telemetry::HashSite::Checkpoint);
         assert_eq!(cost.calls, 1);
-        assert_eq!(cost.ram_bytes, 0x2000);
+        assert_eq!(
+            cost.ram_bytes,
+            crate::state_digest::hashed_page_bytes(armed.guest_memory())
+        );
         assert_eq!(cost.errors, 0);
         assert_eq!(
             armed
@@ -8519,18 +8625,13 @@ mod tests {
             .take_checkpoint_hash_preimage()
             .expect("the completed 256th event retains its synchronous hash input");
         assert_eq!(retained.event_index, 255);
-        let mut expected = Sha256::new();
-        expected.update(b"MEM\0");
-        expected.update((armed.guest_memory().len() as u64).to_le_bytes());
-        expected.update(armed.guest_memory());
+        let memory = crate::state_digest::memory_digest_of(armed.guest_memory());
         assert_eq!(retained.memory_length, armed.guest_memory().len());
+        assert_eq!(retained.memory_digest, memory);
         assert_eq!(
-            retained.memory_prefix_hash,
-            <[u8; 32]>::from(expected.clone().finalize())
+            retained.state_hash,
+            crate::state_digest::state_hash_of(&memory, &retained.state_blob_suffix)
         );
-        expected.update(&retained.state_blob_suffix);
-        let expected: [u8; 32] = expected.finalize().into();
-        assert_eq!(retained.state_hash, expected);
         assert_eq!(
             armed.virtual_time_trace().unwrap().normalized_log().events[255].state_hash,
             Some(retained.state_hash)
@@ -8574,13 +8675,9 @@ mod tests {
             .expect("terminal checkpoint retained");
         assert_eq!(retained.event_index, 255);
         assert_eq!(retained.memory_length, vmm.guest_memory().len());
-        let mut prefix = Sha256::new();
-        prefix.update(b"MEM\0");
-        prefix.update((vmm.guest_memory().len() as u64).to_le_bytes());
-        prefix.update(vmm.guest_memory());
         assert_eq!(
-            retained.memory_prefix_hash,
-            <[u8; 32]>::from(prefix.finalize())
+            retained.memory_digest,
+            crate::state_digest::memory_digest_of(vmm.guest_memory())
         );
     }
 

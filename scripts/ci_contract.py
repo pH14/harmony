@@ -222,7 +222,7 @@ LIB_PARTITIONS = {
         ),
         "Virtual Time": ("virtual_time",),
         "Snapshot and Restore": (
-            "snapshot", "portable_snapshot", "engine_state",
+            "snapshot", "portable_snapshot", "engine_state", "state_digest",
             "vendor::x86::logical_identity_live_tests",
         ),
         "Execution Protocol": (

@@ -484,7 +484,13 @@ image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
-lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
+lowercase hex and mark it with `state_hash_encoding: "engine_page_digest"`.
+That digest is the page-digest state hash that `vmm-core` describes: BLAKE3
+over per-page BLAKE3 digests of guest RAM, then the VM-state suffix.
+`"engine_digest"` marks reports from earlier versions, whose engine digest was
+SHA-256 over all of guest RAM and the same suffix. The two encodings never
+compare equal, so replay checks refuse to match a report against one written
+with the other encoding.
 UML outcomes instead have an empty `state_hash` and
 `state_hash_encoding: "unavailable"`: their guest memory has no canonical
 cross-process state digest. Search still confirms a bug when the fresh replay
