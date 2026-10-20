@@ -20,6 +20,7 @@ generic operations onto the target's client API.
 | `targets/nats` | NATS JetStream image and adapter |
 | `targets/nats-kv` | NATS JetStream key-value image and adapter |
 | `targets/rqlite` | rqlite image and adapter |
+| `targets/etcd` | etcd image and adapter, three members or one |
 | `native.py` | runs an image in a container without Harmony |
 
 ## Writing a target
@@ -256,6 +257,31 @@ definite failure only on a dial error. Other write errors are indeterminate,
 and read errors are definite. The Dockerfile knows the source SHA-256 of
 `v10.6.2` (default); pass `RQLITE_SOURCE_SHA256` for other versions.
 
+## etcd
+
+`targets/etcd` drives the `register` family through the etcd v3 JSON gateway
+(`/v3/kv/put`, `/v3/kv/range`, `/v3/kv/txn`) with Go's HTTP client, so no
+client library retries a request. The default `bundle` runs three members at
+10.77.0.1-3 (client port 2379, peer port 2380) in `harness-net` namespaces
+with the four network hooks. `bundle-single` sets `HARNESS_ETCD_MEMBERS=1` and
+runs one member on 127.0.0.1 without `harness-net`, which needs two nodes.
+Data lives under `/tmp/etcd/<member>`. Members use etcd's default flags.
+
+`write` is a put, `read` is a range on one key with etcd's default
+linearizable consistency, and `cas` is a transaction that compares the value
+and puts on success. Each operation goes to one member drawn from the SDK
+stream, so reads and writes reach followers as well as the leader. The gateway
+omits `succeeded` from a transaction whose compare failed, which is a definite
+failure. A write is a definite failure only when the dial fails; every other
+write error is indeterminate. Read errors are definite. `ready` passes once a
+put succeeds through any member.
+
+The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
+(default), `v3.5.5`, `v3.5.27` and `v3.5.28`; pass `ETCD_SOURCE_SHA256` for
+other versions. It instruments `go.etcd.io/etcd` (server and raft) and
+`go.etcd.io/bbolt`. Build the single-member image with
+`--build-arg HARNESS_BUNDLE=bundle-single`.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
@@ -283,7 +309,8 @@ container. Opt-in options:
   `--kill-all-hold SECONDS` (default 1).
 - `--kill-all-probability P` makes each random fault kill every node with
   probability `P`, with a hold drawn like other holds, when no node is busy.
-- `--cpuset-cpus CPUS` pins the container.
+- `--cpuset-cpus CPUS` pins the container and `--memory LIMIT` caps its
+  memory, as in `docker run`.
 - `--final-probe COMMAND` runs a command in the container after the run and
   puts its last stdout line in the result. For NATS,
   `/opt/harmony/nats-harness stream` reports whether stream `S` exists, with
