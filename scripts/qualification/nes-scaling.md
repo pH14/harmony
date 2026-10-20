@@ -107,20 +107,22 @@ paths and their SHA-256 values:
   "rom_sha256": "REPLACE_WITH_ROM_SHA256",
   "core_sha256": "REPLACE_WITH_CORE_SHA256",
   "seed": 27, "workers": 1, "executions": 8000,
-  "memory_mib": 8192, "window": 512, "wall_seconds": 3600,
+  "memory_mib": 8192, "window": 256, "wall_seconds": 3600,
   "mixture": "alphabet_only", "verification": "campaign"
 }
 ```
 
 The qualifier overrides `workers`, `window` and `verification`. Normal Famidash
-uses an **absolute outstanding-task window**: it sends `window: 512` unchanged
-at every worker count, including counts that do not divide 512. Each task can
-attempt up to 14 edges, and its ordered admission determines subsequent roots.
+uses an **absolute outstanding-task window**: this example sends `window: 256`
+unchanged at every worker count, including counts that do not divide 256. Each
+task can attempt up to 14 edges, and its ordered admission determines subsequent
+roots.
 The other current NES routes use reservations per worker; for those routes the
-qualifier sends 512/worker count and requires exact divisibility. No algorithm
-flag selects this behavior. Changing the logical window changes adaptive
+qualifier divides the configured absolute window by the worker count and
+requires exact divisibility. No algorithm flag selects this behavior. Changing the logical window changes adaptive
 search and invalidates a fixed-work speedup comparison. The native Famidash
-launcher also uses the absolute task window.
+launcher uses an absolute task window of 256. The qualifier’s generic default
+is 512; pass `--window 256` explicitly to qualify the launcher configuration.
 
 On a quiet host, select physical CPUs of one core type. In addition to the
 workers, budget CPU for one coordinator, two stream serializers and one ordered
@@ -132,7 +134,7 @@ use 134 usable CPUs, allowing two more for monitoring and host work:
 taskset -c 0-133 python3 scripts/qualify-nes-scaling.py \
   --evaluator workloads/nes/target/release/nes-eval \
   --request /srv/runs/famidash-scaling-request.json \
-  --workers 1 2 4 8 16 32 64 128 --window 512 --repeats 3 \
+  --workers 1 2 4 8 16 32 64 128 --window 256 --repeats 3 \
   --out /srv/runs/famidash-scaling-001
 ```
 
