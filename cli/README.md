@@ -197,7 +197,8 @@ harmony
 │   ├── --jobs N                         replays to run at once
 │   ├── --log GUEST_PATH                 log file or glob to compare
 │   ├── --data GUEST_DIR                 directory or glob to compare
-│   └── --history 'COMMAND'              guest command that prints client history
+│   ├── --history 'COMMAND'              guest command that prints client history
+│   └── --no-shrink                      probe the recorded actions as they are
 └── diff NAME NAME                       compare configuration and outcomes
 ```
 
@@ -260,14 +261,25 @@ replaced steps and the violations it produced, and the reduced actions in a form
 
 `explain` writes a report a maintainer can start a diagnosis from. It shrinks the
 finding first, unless NAME is already a shrink output and no `--finding` is
-given. It then replays the reduced actions and runs a guest script at the
+given, or `--no-shrink` is given for a recorded run. A recording of a reduced
+`actions.json` made with `debug run --actions` plus `--no-shrink` skips a
+repeated shrink after a rebuild. It then replays the reduced actions and runs a guest script at the
 boundary before and after each remaining fault and at the violation. The script
-reads the new bytes of each configured log (at most 1 MiB per file per
-boundary), checksums every file under each configured data directory, and runs
-the history command once, at the violation. `--jobs N` splits the boundaries
-across N replays. The scripts run in a copy of the boundary state, so they do not
-change the replay. Every probe replay must reach the same state hashes as the
-reduced replay; a mismatch is reported as an error after the report is written.
+records the size of each configured log, checksums every file under each
+configured data directory, then prints the log bytes added since the previous
+probe up to the recorded size (at most 1 MiB per file per boundary), and runs
+the history command once, at the violation. The guest keeps running while the
+script runs, without the next fault, so the report states how much guest time
+each probe took to record sizes and checksums. `--jobs N` runs N replays at once:
+one probe-free reference replay, and N - 1 replays that share the boundaries
+(with `--jobs 1`, the two run one after the other). Each action of a replay
+starts from the sealed snapshot of the previous boundary, so a probe does not
+change later actions. A replay summary also reads the live guest, such as its
+console and its final state, and a probe can change those. The check is
+therefore per boundary: the reference replay must match the reduced replay,
+and each probe must see the same whole-state certificate as the reference at
+its boundary. A failed check is reported as an
+error after the report is written.
 
 The output directory is a replay of the reduced actions that `show` and `branch`
 accept. It also holds:
@@ -278,6 +290,9 @@ accept. It also holds:
 - `explain.json`: the same content as data;
 - `actions.json`: the reduced actions for `debug run --actions`;
 - `probes/STEP/`: each probe script and its raw terminal output;
+- `probes/reference/replay.json` and `probes/replay-N/replay.json`: each
+  replay's probed steps, the certificate at each recorded boundary and its
+  summary;
 - `shrink.json` and `attempts/` when explain ran the shrink.
 
 Each section lists the log lines that first appeared in that window. A line
