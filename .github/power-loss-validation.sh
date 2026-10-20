@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Scratch validation of power-loss faults on NATS JetStream; see the workflow.
+# Scratch validation of disk faults on NATS JetStream; see the workflow.
 set -uo pipefail
 case_id=$1
 harmony=$PWD/paired-cli/harmony
@@ -12,19 +12,17 @@ backend = "kvm"
 [runner.options]
 ram_mib = 2048
 EOF
-cat >evidence/schedule.json <<'EOF'
-[
-  {"operation":{"Wait":1000},"coverage_quantum":1024,"choice":0},
-  {"operation":{"Wait":1000},"coverage_quantum":1024,"choice":0},
-  {"operation":{"PowerLossAll":10},"coverage_quantum":1024,"choice":0},
-  {"operation":{"Restart":[0,100]},"coverage_quantum":1024,"choice":0},
-  {"operation":{"Restart":[1,100]},"coverage_quantum":1024,"choice":0},
-  {"operation":{"Restart":[2,100]},"coverage_quantum":1024,"choice":0},
-  {"operation":{"Wait":1000},"coverage_quantum":1024,"choice":0},
-  {"operation":{"Wait":1000},"coverage_quantum":1024,"choice":0},
-  {"operation":{"Wait":1000},"coverage_quantum":1024,"choice":0}
-]
-EOF
+
+wait_step='{"operation":{"Wait":1000},"coverage_quantum":1024,"choice":0}'
+schedule() {
+    local faults=$1
+    printf '[\n  %s,\n  %s,\n%s,\n  %s,\n  %s,\n  %s\n]\n' \
+        "$wait_step" "$wait_step" "$faults" "$wait_step" "$wait_step" "$wait_step" >evidence/schedule.json
+    cat evidence/schedule.json
+}
+op() {
+    printf '  {"operation":{"%s":[%s,%s]},"coverage_quantum":1024,"choice":%s}' "$1" "$2" "$3" "$4"
+}
 
 step() {
     local name=$1
@@ -34,7 +32,7 @@ step() {
     "$@" >"evidence/$name.log" 2>&1
     local status=$?
     echo "== $name: exit $status after $((SECONDS - started)) s"
-    tail -n 40 "evidence/$name.log"
+    tail -n 60 "evidence/$name.log"
     return 0
 }
 
@@ -47,50 +45,42 @@ hand() {
     step "$tag-show" "$harmony" show "evidence/$tag"
     step "$tag-logs" "$harmony" show "evidence/$tag" --logs
     step "$tag-timeline" "$harmony" show "evidence/$tag" --timeline
+    step "$tag-repeat-show" "$harmony" show "evidence/$tag-repeat"
+    step "$tag-hashes" grep -h -o '"state_hash": "[0-9a-f]*"' "evidence/$tag/report.json" \
+        "evidence/$tag-repeat/report.json"
 }
 
-branch_search() {
-    local image=$1 tag=$2
-    step "$tag-run" "$harmony" debug run "$image" --config cfg.toml --seed 1 \
-        --actions evidence/schedule.json --out "evidence/$tag"
-    step "$tag-branch" "$harmony" branch "evidence/$tag" --step 2 --stop --out "evidence/$tag-branch"
-    step "$tag-search" "$harmony" search --from "evidence/$tag-branch" --seed 11 \
-        --for 75m --executions 100000000 --out "evidence/$tag-search"
-    step "$tag-search-show" "$harmony" show "evidence/$tag-search"
-    step "$tag-search-report" cat "evidence/$tag-search/report.json"
-    if grep -q '"bug_found": true' "evidence/$tag-search/report.json"; then
-        step "$tag-search-timeline" "$harmony" show "evidence/$tag-search" --finding 1 --timeline
-        step "$tag-search-shrink" "$harmony" shrink "evidence/$tag-search" --finding 1 \
-            --out "evidence/$tag-search-shrink" --jobs 3
-        step "$tag-search-shrink-show" "$harmony" show "evidence/$tag-search-shrink"
-    fi
+corrupt_all() {
+    schedule "$(op DiskCorrupt 0 100 4660),
+$(op DiskCorrupt 1 100 4661),
+$(op DiskCorrupt 2 100 4662)"
 }
 
 case "$case_id" in
-    branch-default)
-        branch_search images/nats-default.oci bd
+    corrupt-default)
+        corrupt_all
+        hand images/nats-default.oci cd
         ;;
-    branch-always)
-        branch_search images/nats-always.oci ba
+    corrupt-always)
+        corrupt_all
+        hand images/nats-always.oci ca
         ;;
-    hand-default)
-        hand images/nats-default.oci hd
-        step hd-shrink "$harmony" shrink evidence/hd --out evidence/hd-shrink --jobs 3
-        step hd-shrink-show "$harmony" show evidence/hd-shrink
+    error-always)
+        schedule "$(op DiskError 0 300 0),
+$(op Restart 0 100 0)"
+        hand images/nats-always.oci ea
         ;;
-    hand-always)
-        hand images/nats-always.oci ha
+    error-all-always)
+        schedule "$(op DiskError 0 300 0),
+$(op DiskError 1 300 0),
+$(op DiskError 2 300 0)"
+        hand images/nats-always.oci eaa
         ;;
-    search-default)
-        step search "$harmony" search images/nats-default.oci --config cfg.toml --seed 7 \
-            --for 2h --out evidence/sd
-        step search-show "$harmony" show evidence/sd
-        step search-report cat evidence/sd/report.json
-        if grep -q '"bug_found": true' evidence/sd/report.json; then
-            step search-shrink "$harmony" shrink evidence/sd --finding 1 \
-                --out evidence/sd-shrink --jobs 3
-            step search-shrink-show "$harmony" show evidence/sd-shrink
-        fi
+    stall-always)
+        schedule "$(op DiskStall 0 200 0),
+$(op DiskStall 1 200 0),
+$(op DiskStall 2 200 0)"
+        hand images/nats-always.oci sa
         ;;
     *)
         echo "unknown case $case_id" >&2

@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Scratch validation of power-loss faults on NATS JetStream 2.15.1. Lives only
+# Scratch validation of disk faults on NATS JetStream 2.15.1. Lives only
 # on the validation branch.
-name: Scratch / Power Loss Validation
+name: Scratch / Disk Fault Validation
 
 on:
   push:
-    branches: [claude/power-loss-validation]
+    branches: [claude/disk-faults-validation]
 
 permissions:
   contents: read
@@ -13,12 +13,22 @@ permissions:
 
 env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
+  HARMONY_GUEST_TOOLCHAIN: nightly-2026-06-16
 
 defaults:
   run:
     shell: bash
 
 jobs:
+  runtime:
+    name: Exact runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare the exact runtime
+        uses: ./.github/actions/exact-platform-runtime
+
   build:
     name: Build CLI and images
     runs-on: ubuntu-24.04
@@ -44,13 +54,13 @@ jobs:
               --build-arg NATS_VERSION=v2.15.1 \
               --build-arg NATS_SYNC="$sync" \
               --file workloads/harness/targets/nats/Dockerfile \
-              --tag "localhost/nats-pl:$sync" .
-            podman save --format oci-archive -o "images/nats-$sync.oci" "localhost/nats-pl:$sync"
+              --tag "localhost/nats-df:$sync" .
+            podman save --format oci-archive -o "images/nats-$sync.oci" "localhost/nats-df:$sync"
           done
           ls -la images
       - uses: actions/upload-artifact@v4
         with:
-          name: power-loss-build
+          name: disk-fault-build
           path: |
             paired-cli
             images
@@ -58,17 +68,23 @@ jobs:
 
   run:
     name: ${{ matrix.name }}
-    needs: build
+    needs: [runtime, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Branch search default sync
-            id: branch-default
-          - name: Branch search sync always
-            id: branch-always
+          - name: Corrupt every disk, default sync
+            id: corrupt-default
+          - name: Corrupt every disk, sync always
+            id: corrupt-always
+          - name: Disk errors on node 0, sync always
+            id: error-always
+          - name: Disk errors on every node, sync always
+            id: error-all-always
+          - name: Disk stalls on every node, sync always
+            id: stall-always
     steps:
       - uses: actions/checkout@v4
       - name: Restore the guest runtime
@@ -77,7 +93,7 @@ jobs:
           report: evidence
       - uses: actions/download-artifact@v4
         with:
-          name: power-loss-build
+          name: disk-fault-build
       - name: Enable KVM
         run: |
           test -c /dev/kvm
@@ -90,6 +106,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: power-loss-${{ matrix.id }}
+          name: disk-fault-${{ matrix.id }}
           path: evidence
           retention-days: 7
