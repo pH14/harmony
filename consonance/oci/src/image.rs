@@ -6936,7 +6936,7 @@ mod tests {
         assert_eq!(metadata["harmony-oci/rootfs/overlaid"].0, 0o2775);
         assert_eq!(
             prepared.identity_hex(),
-            "24e2ec5f193edc67f64cb5cfd447cbd3ff60af3a6a3f3f6b17c2f2519ca855cd"
+            "4e07829aa07be1adc04f14bd75da45714a0526350d1470f610398db6b99d614f"
         );
     }
 }

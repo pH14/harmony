@@ -118,8 +118,15 @@ assert_y BINFMT_SCRIPT PROC_FS PROC_CHILDREN FUTEX MMU SHMEM TMPFS FILE_LOCKING 
     INET CGROUPS CGROUP_SCHED CGROUP_PIDS CGROUP_DEVICE CGROUP_BPF BPF_SYSCALL \
     EPOLL EVENTFD SIGNALFD \
     TIMERFD INOTIFY_USER SECCOMP SECCOMP_FILTER HARMONY_DEVICE PERF_EVENTS \
-    HAVE_HW_BREAKPOINT DEVMEM
+    HAVE_HW_BREAKPOINT DEVMEM BLOCK BLK_DEV BLK_DEV_RAM MD BLK_DEV_DM DM_LOG_WRITES \
+    EXT4_FS
 assert_off STRICT_DEVMEM
+for setting in CONFIG_BLK_DEV_RAM_COUNT=16 CONFIG_BLK_DEV_RAM_SIZE=1048576; do
+    if ! grep -qxF "$setting" "$arm64_object_root/.config"; then
+        echo "FAIL: $setting is required for power-loss node disks" >&2
+        exit 1
+    fi
+done
 if ! grep -qxF 'CONFIG_NR_CPUS=2' "$arm64_object_root/.config"; then
     echo "FAIL: CONFIG_NR_CPUS must be the arm64 minimum (2)" >&2
     exit 1

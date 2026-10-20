@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod bundle;
+pub mod disk;
 pub mod evidence;
 pub mod process;
 pub mod reconcile;
@@ -10,7 +11,9 @@ pub mod supervise;
 
 pub use bundle::{Bundle, BundleError, HookSpec, NodeSpec, parse_bundle};
 pub use evidence::CheckEvidence;
-pub use reconcile::{ActiveWindows, EventKillWindow, EventPark, HookWindow, NodeActions};
+pub use reconcile::{
+    ActiveWindows, EventKillWindow, EventPark, HookWindow, NodeActions, PowerLossWindow,
+};
 pub use recovery::{RecoveryError, RecoveryReadiness};
 pub use supervise::{Action, Counters, ProcessSupervisor, Supervisor};
 
@@ -20,3 +23,6 @@ pub const ANTITHESIS_OUTPUT_DIR: &str = "/run/antithesis";
 
 #[cfg(target_os = "linux")]
 pub mod debug;
+
+#[cfg(target_os = "linux")]
+pub mod blockdev;
