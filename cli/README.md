@@ -133,9 +133,22 @@ selected backend's policy. A saved UML run from before this policy cannot be
 replayed or branched because its guest image was not admitted under this rule.
 
 Consonance artifact overrides are `kernel`, `base_initramfs` and `uml_profile`
-inside `runner.options`. `check` provisions checksummed versioned artifacts.
-Development artifacts are discovered under `consonance/harmony-linux/build/ARCH`,
-and installed artifacts under `share/harmony/guest/ARCH`. The cache uses
+inside `runner.options`; a recipe needs none of them. `check` provisions
+checksummed versioned artifacts.
+Development artifacts are discovered under `consonance/harmony-linux/build/ARCH`
+of the source checkout: the one the CLI was built from, else the one holding
+the executable, else the one holding the current directory. Installed artifacts
+live under `share/harmony/guest/ARCH`. When a CLI from a source checkout on
+Linux finds no current artifacts, `check` (or any command that needs them)
+builds them with `consonance/harmony-linux/scripts/fetch.sh` and
+`scripts/build-platform-runtime.sh`, holding a lock in the build directory so
+concurrent commands build once. The build tree is `GUEST_BUILD_ROOT`, otherwise
+a per-checkout directory under the cache directory below
+(`guest-build/KEY`). The first build takes several minutes and needs the
+Debian build packages listed in the
+[guest Linux README](../consonance/harmony-linux/linux/README.md). With
+`--offline` the command reports the missing artifacts instead. Other CLIs
+download release artifacts. The cache uses
 `HARMONY_DATA_DIR`, otherwise `XDG_DATA_HOME/harmony`, macOS
 `~/Library/Application Support/Harmony`, or Linux `~/.local/share/harmony`.
 Fault runs keep booted setup snapshots in `HARMONY_CACHE_DIR/boot`, otherwise
