@@ -105,6 +105,7 @@ enum Outcome {
     Error(String),
 }
 
+#[derive(Clone)]
 struct Ddmin {
     kept: Vec<usize>,
     replaced: Set,
@@ -124,18 +125,6 @@ impl Ddmin {
         let mut set = self.replaced.clone();
         set.extend(chunk);
         set
-    }
-
-    fn plan(&self) -> Vec<Set> {
-        if self.kept.is_empty() {
-            return Vec::new();
-        }
-        let (_, _, chunks) = self.round(self.parts);
-        chunks
-            .iter()
-            .skip(self.cursor)
-            .map(|chunk| self.with(chunk))
-            .collect()
     }
 }
 
@@ -167,6 +156,41 @@ impl<T> Coordinator<T> {
             }) => Outcome::Failed,
             Some(_) => Outcome::Unknown,
         }
+    }
+
+    fn plan(&self, search: &Ddmin) -> Vec<Set> {
+        let mut search = search.clone();
+        let mut plan = Vec::new();
+        while !search.kept.is_empty() {
+            let (parts, size, chunks) = search.round(search.parts);
+            let sets = chunks[search.cursor..]
+                .iter()
+                .map(|chunk| search.with(chunk))
+                .collect::<Vec<_>>();
+            let Some(accepted) = sets
+                .iter()
+                .position(|set| matches!(self.outcome(set), Outcome::Reproduced))
+            else {
+                if size == 1
+                    || sets
+                        .iter()
+                        .any(|set| matches!(self.outcome(set), Outcome::Unknown))
+                {
+                    plan.extend(sets);
+                    break;
+                }
+                search.parts = (parts * 2).min(search.kept.len());
+                search.cursor = 0;
+                continue;
+            };
+            plan.extend(sets[..=accepted].iter().cloned());
+            let chunk = &chunks[search.cursor + accepted];
+            search.kept.retain(|index| !chunk.contains(index));
+            search.replaced = sets[accepted].clone();
+            search.parts = parts.saturating_sub(1).max(2);
+            search.cursor = 0;
+        }
+        plan
     }
 
     fn consume(&mut self, set: Set, reproduced: bool) {
@@ -364,9 +388,9 @@ fn coordinate<T: Clone>(
         }
         let plan = match (done, started) {
             (true, _) => Vec::new(),
-            (false, true) => search.plan(),
+            (false, true) => coordinator.plan(&search),
             (false, false) => std::iter::once(baseline.clone())
-                .chain(search.plan())
+                .chain(coordinator.plan(&search))
                 .collect(),
         };
         coordinator.settle(&plan, jobs);
@@ -830,6 +854,39 @@ mod tests {
         assert!(!timed_out.load(Ordering::Relaxed));
         assert_eq!(reduction.replaced, BTreeSet::from([0, 2, 3, 5]));
         assert_eq!(reduction.value, vec![0, 1, 2, 3, 5, 6]);
+    }
+
+    #[test]
+    fn a_reproducing_candidate_starts_its_next_round_while_earlier_candidates_run() {
+        let next_round = AtomicBool::new(false);
+        let timed_out = AtomicBool::new(false);
+        let seen = Mutex::new(BTreeMap::<Vec<usize>, usize>::new());
+        let reduction = run(4, |_, input, probe| {
+            let replaced = waits(input);
+            *seen.lock().unwrap().entry(replaced.clone()).or_default() += 1;
+            if replaced == vec![0, 1, 2, 4, 5, 6] || replaced == vec![1, 3, 4, 5, 6] {
+                next_round.store(true, Ordering::Relaxed);
+            }
+            if replaced == vec![1, 4, 5, 6] {
+                probe.reproduced();
+            }
+            if (replaced == vec![0, 1, 2, 3, 6] || replaced == vec![1, 4, 5, 6])
+                && !wait_until(|| next_round.load(Ordering::Relaxed) || probe.cancelled())
+            {
+                timed_out.store(true, Ordering::Relaxed);
+            }
+            if probe.cancelled() {
+                return Ok(None);
+            }
+            needs(&[0])(&mut (), input, probe)
+        })
+        .unwrap();
+        let single = run(1, needs(&[0])).unwrap();
+        assert!(!timed_out.load(Ordering::Relaxed));
+        assert!(seen.into_inner().unwrap().values().all(|count| *count == 1));
+        assert_eq!(reduction.replaced, single.replaced);
+        assert_eq!(reduction.attempts, single.attempts);
+        assert_eq!(reduction.replaced, BTreeSet::from([2, 3, 4, 5]));
     }
 
     #[test]

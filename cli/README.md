@@ -251,11 +251,14 @@ share one snapshot cache, the same cache a search uses. A candidate matches the
 accepted actions up to its first replaced fault, so its replay restores the
 snapshot an earlier replay recorded at that step and runs only the steps after
 it. A candidate counts as soon as the violation appears: the next round starts
-then, and the candidate's replay continues to the end for its report. Replays
-of the round's higher-numbered candidates stop when a lower-numbered one
-reproduces. A candidate checked before is not replayed again. The accepted
-candidates, the attempt list and the final replay are the same for every N,
-because the attempt list holds the candidates in the order one job checks them.
+then, and the candidate's replay continues to the end for its report. Idle
+workers start every candidate of the current round. When a candidate reports
+the violation while lower-numbered candidates still run, idle workers also
+start the round that would follow its acceptance. A replay stops as soon as
+other results make it unnecessary. A candidate checked before is not replayed
+again. The accepted candidates, the
+attempt list and the final replay are the same for every N, because the attempt
+list holds the candidates in the order one job checks them.
 
 The output is a replay of the reduced actions that `show`, `show --timeline` and
 `branch` accept. `shrink.json` lists every attempt with the replaced steps and
