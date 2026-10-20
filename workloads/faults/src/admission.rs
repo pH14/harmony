@@ -142,11 +142,13 @@ impl<'a> ArchivedImage<'a> {
     pub fn inspect(&self) -> Result<ImageReport, Box<dyn Error>> {
         let mut report = ImageReport::default();
         let mut found = BTreeSet::new();
-        for (&path, &(mode, data)) in &self.entries {
-            if mode & 0o170000 == 0o100000 && data.starts_with(b"\x7fELF") {
-                scan_file(&mut report, &mut found, &format!("/{path}"), data.to_vec());
-            }
-        }
+        let files: Vec<(String, &[u8])> = self
+            .entries
+            .iter()
+            .filter(|(_, (mode, data))| mode & 0o170000 == 0o100000 && data.starts_with(b"\x7fELF"))
+            .map(|(path, (_, data))| (format!("/{path}"), *data))
+            .collect();
+        scan_files(&mut report, &mut found, &files);
         let reviewed = if self.mentions(ALLOWLIST_PATH) {
             let read = self
                 .file(ALLOWLIST_PATH)
@@ -282,6 +284,7 @@ pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
     files.sort();
     let mut report = ImageReport::default();
     let mut found = BTreeSet::new();
+    let mut executables = Vec::new();
     for path in files {
         let mut file = fs::File::open(&path)?;
         let mut magic = [0; 4];
@@ -296,8 +299,9 @@ pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
         let mut bytes = magic.to_vec();
         file.read_to_end(&mut bytes)?;
         let image_path = format!("/{}", path.strip_prefix(&root)?.display());
-        scan_file(&mut report, &mut found, &image_path, bytes);
+        executables.push((image_path, bytes));
     }
+    scan_files(&mut report, &mut found, &executables);
     let reviewed = match read_allowlist(&root) {
         Ok(reviewed) => reviewed,
         Err(error) => {
@@ -327,28 +331,76 @@ pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
     Ok(report)
 }
 
-fn scan_file(
+type ElfScan = Result<Option<Vec<InstructionSite>>, String>;
+
+fn scan_files<B: AsRef<[u8]> + Sync>(
     report: &mut ImageReport,
     found: &mut BTreeSet<InstructionSite>,
-    image_path: &str,
-    bytes: Vec<u8>,
+    files: &[(String, B)],
 ) {
-    if !bytes.starts_with(b"\x7fELF") {
-        return;
-    }
-    let digest = format!("{:x}", Sha256::digest(&bytes));
-    match scan_elf(&bytes, &digest) {
-        Ok(None) => {}
-        Ok(Some(sites)) => {
-            found.extend(sites.iter().cloned());
-            report.executables.push(ExecutableScan {
-                path: image_path.to_owned(),
-                digest,
-                sites,
-            });
+    let digests: Vec<String> = files
+        .iter()
+        .map(|(_, bytes)| format!("{:x}", Sha256::digest(bytes.as_ref())))
+        .collect();
+    let mut unique: BTreeMap<&str, &[u8]> = BTreeMap::new();
+    for ((_, bytes), digest) in files.iter().zip(&digests) {
+        if bytes.as_ref().starts_with(b"\x7fELF") {
+            unique.entry(digest).or_insert(bytes.as_ref());
         }
-        Err(error) => report.scan_errors.push(format!("{image_path}: {error}")),
     }
+    let mut work: Vec<(&str, &[u8])> = unique.into_iter().collect();
+    work.sort_by_key(|(_, bytes)| std::cmp::Reverse(bytes.len()));
+    let scans = scan_in_parallel(&work);
+    for ((image_path, bytes), digest) in files.iter().zip(&digests) {
+        if !bytes.as_ref().starts_with(b"\x7fELF") {
+            continue;
+        }
+        match &scans[digest.as_str()] {
+            Ok(None) => {}
+            Ok(Some(sites)) => {
+                found.extend(sites.iter().cloned());
+                report.executables.push(ExecutableScan {
+                    path: image_path.clone(),
+                    digest: digest.clone(),
+                    sites: sites.clone(),
+                });
+            }
+            Err(error) => report.scan_errors.push(format!("{image_path}: {error}")),
+        }
+    }
+}
+
+fn scan_in_parallel<'a>(work: &[(&'a str, &[u8])]) -> BTreeMap<&'a str, ElfScan> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(work.len())
+        .max(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let scan = || {
+        let mut done = Vec::new();
+        loop {
+            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(&(digest, bytes)) = work.get(index) else {
+                return done;
+            };
+            let aligned = bytes.to_vec();
+            done.push((
+                digest,
+                scan_elf(&aligned, digest).map_err(|error| error.to_string()),
+            ));
+        }
+    };
+    std::thread::scope(|scope| {
+        let helpers: Vec<_> = (1..workers).map(|_| scope.spawn(scan)).collect();
+        let mut scans: BTreeMap<&'a str, ElfScan> = scan().into_iter().collect();
+        for helper in helpers {
+            match helper.join() {
+                Ok(done) => scans.extend(done),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        scans
+    })
 }
 
 fn finish_scan(

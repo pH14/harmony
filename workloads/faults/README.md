@@ -41,6 +41,8 @@ rootfs segment that the guest receives ([`admission`](src/admission.rs)). It
 derives the bundle and event attestation from those same archived bytes. A
 staged file changed between scanning and packing cannot make admission name
 different executable or bundle bytes from the guest image.
+The scan decodes each distinct executable digest once, largest first, on every
+CPU the process may use, and reports files in path order.
 
 Packaging temporarily grants host read and directory search permission while
 copying staged files, then restores their original modes. The archived scan
