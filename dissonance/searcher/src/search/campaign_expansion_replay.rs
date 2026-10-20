@@ -91,6 +91,8 @@ where
                 }
                 let spec = pending.spec.clone();
                 let outcome = run_expansion_task(workload, &config.run, &mut target, &spec, &())?;
+                let task = spec.task;
+                drop(spec);
                 campaign.complete(outcome)?;
                 let mut admission = campaign
                     .admit_next()?
@@ -98,8 +100,9 @@ where
                 let actual =
                     ExpansionTaskRecord::take(&mut admission, campaign.counters.tasks_reserved);
                 if serde_json::to_vec(&actual)? != serde_json::to_vec(&record)? {
-                    return Err(format!("expansion task {} replay differs in its tree, evidence, frontier or admissions", spec.task).into());
+                    return Err(format!("expansion task {} replay differs in its tree, evidence, frontier or admissions", task).into());
                 }
+                drop(campaign.stream_cleanup(admission));
             }
             ExpansionStreamRecord::End {
                 counters,

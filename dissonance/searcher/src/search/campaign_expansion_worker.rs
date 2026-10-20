@@ -624,7 +624,7 @@ mod execution_tests {
             |action| u64::from(*action)
         }
         fn snapshot_memory_charge(_: &u8) -> usize {
-            1
+            256 << 10
         }
         fn apply_action(
             &self,

@@ -2219,6 +2219,13 @@ where
         }
     }
 
+    pub(crate) fn release_completed_origin_reference(&mut self, id: u64) {
+        self.release_keep(1);
+        if let Some(index) = self.index_of_id(id) {
+            self.reclaim_inactive_snapshot(index);
+        }
+    }
+
     pub(crate) fn job_origin(&self, id: usize) -> Result<JobOriginParts<A, S>, &'static str> {
         let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
         if self.entry_state[id].snapshot_selectable {
@@ -11710,5 +11717,147 @@ mod tests {
         let stronger =
             insert_portfolio_at(&mut archive, None, vec![4], 1, 30, 40).expect("stronger");
         assert!(archive.outranks_slot_holders(stronger, (2, ()), 0));
+    }
+    type CompletedOriginHistory = (Archive<u8, FlatKey, (), ()>, Vec<(u64, Arc<()>)>);
+
+    fn completed_origin_history() -> CompletedOriginHistory {
+        let keys = (0..u16::try_from(HISTORY_COMPACTION_MIN_DROPS + 2).unwrap())
+            .map(|index| [index, index, 0, 0])
+            .collect::<Vec<_>>();
+        let mut archive = flat_archive(&keys);
+        let mut cleanup = Vec::new();
+        for index in 0..HISTORY_COMPACTION_MIN_DROPS {
+            let id = archive.stable_id(index).unwrap();
+            archive.pin_metadata(id).unwrap();
+            let (snapshot, _, _, snapshot_id) = archive.pin_job_origin(index).unwrap();
+            cleanup.push((snapshot_id, snapshot));
+            assert!(archive.deactivate(index));
+            archive.unpin_job_origin(snapshot_id);
+            archive.unpin_metadata(id);
+        }
+        assert!(archive.metadata_pins.is_empty());
+        assert!(archive.inflight_snapshot_pins.is_empty());
+        (archive, cleanup)
+    }
+
+    #[test]
+    fn completed_origin_reference_release_refreshes_failed_compaction() {
+        let (mut archive, cleanup) = completed_origin_history();
+        archive.memory_limit = Some(archive.history_memory_bytes() * 2);
+        archive.compact_history_if_needed().unwrap();
+        assert_eq!(
+            archive.failed_compaction.map(|(_, dropped)| dropped),
+            Some(0)
+        );
+        let releases = archive.keep_releases;
+        for (id, snapshot) in cleanup {
+            drop(snapshot);
+            archive.release_completed_origin_reference(id);
+            assert!(
+                archive.entries[archive.index_of_id(id).unwrap()]
+                    .snapshot
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            archive.keep_releases - releases,
+            HISTORY_COMPACTION_MIN_DROPS * 3
+        );
+        archive.compact_history_if_needed().unwrap();
+        assert_eq!(archive.failed_compaction, None);
+        assert_eq!(archive.live_entry_count(), 2);
+    }
+
+    #[test]
+    fn completed_origin_handoff_keeps_cleanup_timing_out_of_budget_selection_and_checkpoint() {
+        fn handoff(blocked: bool, old_path: bool, limit: usize) -> Archive<u8, FlatKey, (), ()> {
+            let (mut archive, origins) = completed_origin_history();
+            let cleanup = if old_path {
+                origins
+            } else {
+                for (id, snapshot) in origins {
+                    drop(snapshot);
+                    archive.release_completed_origin_reference(id);
+                }
+                Vec::new()
+            };
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let (held_tx, held_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                drop(cleanup);
+            });
+            held_rx.recv().unwrap();
+            let worker = if blocked {
+                Some(worker)
+            } else {
+                release_tx.send(()).unwrap();
+                worker.join().unwrap();
+                None
+            };
+            archive.memory_limit = Some(archive.history_memory_bytes() * 2);
+            archive.compact_history_if_needed().unwrap();
+            archive.memory_limit = Some(limit);
+            let first = archive.maintain_memory_budget();
+            let second = archive.maintain_memory_budget();
+            if let Some(worker) = worker {
+                release_tx.send(()).unwrap();
+                worker.join().unwrap();
+            }
+            first.unwrap();
+            second.unwrap();
+            archive
+        }
+        let (mut sizing, origins) = completed_origin_history();
+        for (id, snapshot) in origins {
+            drop(snapshot);
+            sizing.release_completed_origin_reference(id);
+        }
+        sizing.memory_limit = Some(sizing.history_memory_bytes() * 2);
+        sizing.compact_history_if_needed().unwrap();
+        let limit = sizing.resident_memory_bytes() + 1;
+        let mut fast = handoff(false, false, limit);
+        let mut blocked = handoff(true, false, limit);
+        let mut planted = handoff(true, true, limit);
+        assert_eq!(fast.active_count(), 2);
+        assert_eq!(blocked.active_count(), 2);
+        assert_eq!(planted.active_count(), 1);
+        assert_eq!(
+            postcard::to_allocvec(&fast).unwrap(),
+            postcard::to_allocvec(&blocked).unwrap()
+        );
+        assert_ne!(
+            postcard::to_allocvec(&fast).unwrap(),
+            postcard::to_allocvec(&planted).unwrap()
+        );
+        let selected = |archive: &mut Archive<u8, FlatKey, (), ()>| {
+            archive.prepare_selection();
+            let mut random = RomuDuoJrRand::with_seed(719);
+            (0..32)
+                .map(|_| {
+                    let (index, _) = archive.select_parent(&mut random).unwrap();
+                    archive.stable_id(index).unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        let fast_parents = selected(&mut fast);
+        assert_eq!(fast_parents, selected(&mut blocked));
+        assert_ne!(fast_parents, selected(&mut planted));
+        let final_artifact_limit = Some(usize::MAX);
+        fast.memory_limit = final_artifact_limit;
+        blocked.memory_limit = final_artifact_limit;
+        fast.compact_history_for_final_report().unwrap();
+        blocked.compact_history_for_final_report().unwrap();
+        assert_eq!(
+            postcard::to_allocvec(&fast).unwrap(),
+            postcard::to_allocvec(&blocked).unwrap()
+        );
+        let (_, fast_snapshots) = fast.take_entry_reports_and_snapshots();
+        let (_, blocked_snapshots) = blocked.take_entry_reports_and_snapshots();
+        assert_eq!(
+            postcard::to_allocvec(&fast_snapshots).unwrap(),
+            postcard::to_allocvec(&blocked_snapshots).unwrap()
+        );
     }
 }

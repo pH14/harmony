@@ -61,7 +61,7 @@ where
         executable,
         options.work_budget,
     );
-    let mut writer: StreamWriter<'_, ExpansionStreamRecord<G>, ExpansionAdmission<G, W::Note>> =
+    let mut writer: StreamWriter<'_, ExpansionStreamRecord<G>, ExpansionStreamCleanup<G, W::Note>> =
         StreamWriter::new_with_cleanup(stream);
     writer.write_header(&header)?;
     let placement = options.placement.as_ref();
@@ -176,8 +176,8 @@ where
                         ExpansionTaskRecord::take(&mut admission, campaign.counters.tasks_reserved);
                     record_profile(&mut campaign.profile.record_ns, started);
                     let started = profile_now();
-                    writer
-                        .write_line_with_cleanup(ExpansionStreamRecord::Task(record), admission)?;
+                    let cleanup = campaign.stream_cleanup(admission);
+                    writer.write_line_with_cleanup(ExpansionStreamRecord::Task(record), cleanup)?;
                     record_profile(&mut campaign.profile.stream_ns, started);
                     let started = profile_now();
                     if let Some(progress) = progress.as_mut() {

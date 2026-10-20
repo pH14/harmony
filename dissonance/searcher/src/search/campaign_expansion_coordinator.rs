@@ -71,6 +71,12 @@ pub struct ExpansionAdmission<G: ExpansionWorkload, N> {
     pub useful: bool,
 }
 
+type ExpansionStreamCleanup<G, N> = (
+    Vec<<G as CampaignTypes>::Action>,
+    Vec<Option<[u8; 32]>>,
+    ExpansionTaskOutcome<G, N>,
+);
+
 struct PendingExpansion<G: ExpansionWorkload> {
     spec: ExpansionTaskSpec<G>,
 }
@@ -112,6 +118,22 @@ fn expansion_records<G: ExpansionWorkload, N>(
 }
 
 impl<'a, G: ExpansionWorkload, N> ExpansionCoordinator<'a, G, N> {
+    pub(super) fn stream_cleanup(
+        &mut self,
+        admission: ExpansionAdmission<G, N>,
+    ) -> ExpansionStreamCleanup<G, N> {
+        let snapshot_id = admission.spec.snapshot_id;
+        drop(admission.spec.snapshot);
+        self.core
+            .archive
+            .release_completed_origin_reference(snapshot_id);
+        (
+            admission.spec.replay,
+            admission.spec.replay_certificates,
+            admission.outcome,
+        )
+    }
+
     pub fn start(
         workload: &'a G,
         config: &'a CampaignConfig<G>,

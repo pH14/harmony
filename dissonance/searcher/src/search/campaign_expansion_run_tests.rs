@@ -832,3 +832,141 @@ fn expansion_commitments_preserve_root_and_edge_preparation_failure_evidence() {
         );
     }
 }
+
+#[test]
+fn expansion_stream_handoff_releases_origin_before_blocked_outcome_cleanup() {
+    let workload = TestWorkload::new(Mode::Normal);
+    let mut config = run_config(1);
+    config.window = 1;
+    config.execution_budget = 14;
+    let watch = RunWatch::new(1024, false, None);
+    let mut campaign = ExpansionCoordinator::<TestWorkload, Vec<u8>>::start(
+        &workload,
+        &config,
+        &CampaignOrigin::Genesis,
+    )
+    .unwrap();
+    let spec = campaign.reserve().unwrap().unwrap();
+    let origin = Arc::downgrade(&spec.snapshot);
+    let outcome =
+        run_expansion_task(&workload, &(), &mut Target::default(), &spec, &watch).unwrap();
+    drop(spec);
+    campaign.complete(outcome).unwrap();
+    let mut admission = campaign.admit_next().unwrap().unwrap();
+    watch.admitted(&mut admission, &campaign);
+    let record = ExpansionTaskRecord::take(&mut admission, campaign.counters().tasks_reserved);
+    assert!(!record.nodes.is_empty());
+    assert_eq!(origin.strong_count(), 2);
+    campaign
+        .archive()
+        .validate_inflight_pins(
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+    let cleanup = campaign.stream_cleanup(admission);
+    assert!(cleanup.2.trace.as_ref().unwrap().nodes.iter().any(|node| {
+        node.evidence
+            .as_ref()
+            .is_some_and(|edge| edge.note.as_ref().is_some_and(|note| note.len() == 1024))
+    }));
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        held_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+        drop(cleanup);
+    });
+    held_rx.recv().unwrap();
+    let while_blocked = origin.strong_count();
+    release_tx.send(()).unwrap();
+    worker.join().unwrap();
+    assert_eq!(while_blocked, 1);
+    assert_eq!(origin.strong_count(), 1);
+}
+
+struct PressureWatch {
+    inner: RunWatch,
+    compactions: std::sync::atomic::AtomicU64,
+    entry_drops: std::sync::atomic::AtomicU64,
+}
+
+impl ExpansionWatch<TestWorkload> for PressureWatch {
+    type Note = Vec<u8>;
+
+    fn note_memory_charge(&self, note: &Self::Note) -> usize {
+        self.inner.note_memory_charge(note)
+    }
+
+    fn admitted(
+        &self,
+        _: &mut ExpansionAdmission<TestWorkload, Self::Note>,
+        campaign: &ExpansionCoordinator<'_, TestWorkload, Self::Note>,
+    ) {
+        self.compactions
+            .fetch_max(campaign.archive().history_compactions(), Ordering::Relaxed);
+        self.entry_drops
+            .fetch_max(campaign.archive().entry_drops(), Ordering::Relaxed);
+    }
+
+    fn run_edge(
+        &self,
+        id: ExpansionEdgeId,
+        job: &JobSpec<TestWorkload>,
+        execute: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+    ) -> WatchedJob<TestWorkload, Self::Note> {
+        self.inner.run_edge(id, job, execute)
+    }
+}
+
+#[test]
+fn expansion_runtime_replay_matches_under_bounded_memory_and_history_pressure() {
+    let workload = TestWorkload::new(Mode::Normal);
+    let mut config = run_config(2);
+    config.execution_budget = 280;
+    config.archive_entry_limit = 2;
+    let mib = 1_usize << 20;
+    let reserve = workload
+        .draw_state_memory_reserve_bytes(&())
+        .checked_add(crate::search::duration::DurationPolicies::<Key>::memory_reserve_bytes())
+        .unwrap();
+    let total = reserve.checked_add(512 << 10).unwrap();
+    config.memory_budget_mib = Some(total.checked_add(mib - 1).unwrap() / mib);
+    let archive_allowance = config.memory_budget_mib.unwrap().checked_mul(mib).unwrap() - reserve;
+    assert!((512 << 10..(512 << 10) + mib).contains(&archive_allowance));
+    let watch = PressureWatch {
+        inner: RunWatch::new(1024, false, None),
+        compactions: std::sync::atomic::AtomicU64::new(0),
+        entry_drops: std::sync::atomic::AtomicU64::new(0),
+    };
+    let mut stream = Vec::new();
+    let (report, snapshot) = run_expansion_watched(
+        &workload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+        CampaignExecutionOptions::default(),
+        &watch,
+    )
+    .unwrap();
+    assert!(report.counters.tasks_admitted > 16);
+    assert!(watch.compactions.load(Ordering::Relaxed) > 0);
+    assert!(watch.entry_drops.load(Ordering::Relaxed) > 0);
+    let (replayed, replayed_snapshot) = replay_expansion(
+        &workload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream.as_slice(),
+        &report,
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_vec(&report).unwrap(),
+        serde_json::to_vec(&replayed).unwrap()
+    );
+    assert_eq!(
+        snapshot.to_bytes().unwrap(),
+        replayed_snapshot.to_bytes().unwrap()
+    );
+}

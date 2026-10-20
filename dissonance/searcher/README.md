@@ -300,7 +300,13 @@ cleanup data. Admission mutably borrows those vectors, copies actions and
 milestones, and takes only accepted snapshots. Duplicate or rejected incoming
 snapshots return to their original candidate; nonviable candidates remain there.
 No snapshot is cloned for cleanup, and snapshot retirement, retention accounting
-and pin release remain on the coordinator. A serializer disposes this payload
+and pin release remain on the coordinator. After the expansion admission callback
+and record extraction, the coordinator drops the task's origin snapshot reference
+and notifies archive reclamation before queuing cleanup. This also invalidates
+compaction shortcuts that depended on that reference; serializer scheduling must
+not change archive retention or selection. Full-tree replay releases its execution
+spec before admission and uses the same origin-release boundary. Only the replay
+and certificate vectors and spent outcome pass to asynchronous cleanup. A serializer disposes this payload
 before serializing its record; cleanup data never enters JSON or the stream hash.
 Inline coordinators perform the same disposal before writing the line without
 requiring their cleanup data to be static or creating a thread. Only native
