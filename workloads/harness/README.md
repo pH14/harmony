@@ -21,6 +21,7 @@ generic operations onto the target's client API.
 | `targets/nats-kv` | NATS JetStream key-value image and adapter |
 | `targets/rqlite` | rqlite image and adapter |
 | `native.py` | runs an image in a container without Harmony |
+| `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
 ## Writing a target
 

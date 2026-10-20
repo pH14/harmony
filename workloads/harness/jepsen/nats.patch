@@ -1,0 +1,112 @@
+diff --git a/project.clj b/project.clj
+index 385ae72..268b272 100644
+--- a/project.clj
++++ b/project.clj
+@@ -8,7 +8,7 @@
+                   :exclusions [com.fasterxml.jackson.core/jackson-databind
+                                com.fasterxml.jackson.core/jackson-annotations
+                                com.fasterxml.jackson.core/jackson-core]]
+-                 [io.jepsen/antithesis "0.1.0-SNAPSHOT"]
++                 [io.jepsen/antithesis "0.1.0"]
+                  [io.nats/jnats "2.24.1"]
+                  ; We're stuck on this version because Antithesis only works
+                  ; with Jackson ~2.2.3, and this version of Cheshire is close
+diff --git a/src/jepsen/nats/db.clj b/src/jepsen/nats/db.clj
+index ec7a4e5..ffc9bc3 100644
+--- a/src/jepsen/nats/db.clj
++++ b/src/jepsen/nats/db.clj
+@@ -44,22 +44,18 @@
+   (str dir "/data"))
+ 
+ (defn install!
+-  "Install nats"
++  "Install nats from the binaries baked into the node image."
+   [test]
+   (c/su
+-    ; Server
+-    (let [url (str "https://binaries.nats.dev/nats-io/nats-server/v2@v"
+-                   (:version test))
+-          path (cu/cached-wget! url)]
+-      (c/exec :mkdir :-p dir)
+-      (c/exec :cp path bin)
+-      (c/exec :chmod :+x bin))
+-    ; Client
+-    (let [version "0.2.2"
+-          url (str "https://github.com/nats-io/natscli/releases/download/v"
+-                   version "/nats-" version "-amd64.deb")
+-          path (cu/cached-wget! url)]
+-      (c/exec :dpkg :-i path))))
++    (c/exec :mkdir :-p dir)
++    (c/exec :cp (str "/usr/local/lib/nats-bin/" (:version test) "/nats-server") bin)
++    (c/exec :chmod :+x bin)))
++
++(defn signal!
++  "Sends a signal to every nats-server process by exact process name. Unlike
++  grepkill!, this never matches the shell that runs it."
++  [signal]
++  (c/su (c/exec :pkill (str "-" signal) :-x bin-name (c/lit "|| true"))))
+ 
+ (defn routes
+   "The routes config snippet for the given node in the given test."
+@@ -181,11 +177,6 @@
+     (configure! test node)
+     (when (:lazyfs test)
+       (db/setup! lazyfs test node))
+-    (c/su
+-      ; On first run, I think the binary... even though you downloaded it... it
+-      ; downloads and replaces itself with something else?
+-      (c/cd dir (c/exec bin)))
+-
+     (db/start! this test node)
+     (cu/await-tcp-port client/port
+                        {:log-interval 10000}))
+@@ -193,8 +184,8 @@
+   (teardown! [this test node]
+     ; Always tear down, in case we have a previous, crashed state left over
+     (db/teardown! lazyfs test node)
+-    (c/su (cu/grepkill! :kill bin-name)
+-          (c/exec :rm :-rf dir)))
++    (signal! "KILL")
++    (c/su (c/exec :rm :-rf dir)))
+ 
+   db/LogFiles
+   (log-files [this test node]
+@@ -209,17 +200,17 @@
+ 
+   db/Pause
+   (pause! [_ test node]
+-    (c/su (cu/grepkill! :stop bin-name))
++    (signal! "STOP")
+     :paused)
+ 
+   (resume! [_ test node]
+-    (c/su (cu/grepkill! :cont bin-name))
++    (signal! "CONT")
+     :resumed)
+ 
+   db/Kill
+   (kill! [_ test node]
+     (info "Killing nats")
+-    (c/su (cu/grepkill! :kill bin-name))
++    (signal! "KILL")
+     (when (:lazyfs test)
+       (lazyfs/lose-unfsynced-writes! lazyfs))
+     :killed)
+diff --git a/src/jepsen/nats/nemesis.clj b/src/jepsen/nats/nemesis.clj
+index 1fb0dde..665a2be 100644
+--- a/src/jepsen/nats/nemesis.clj
++++ b/src/jepsen/nats/nemesis.clj
+@@ -359,9 +359,10 @@
+         gen (gen/map corrupt-file-expand-value gen)
+         ; And slow down
+         gen (gen/stagger interval gen)]
+-    {:nemesis (nf/corrupt-file-nemesis
+-                ; 4K chunks by default, I guess?
+-                {:chunk-size (* 1024 4)})
++    {:nemesis (when needed?
++                (nf/corrupt-file-nemesis
++                  ; 4K chunks by default, I guess?
++                  {:chunk-size (* 1024 4)}))
+      :generator (when needed? gen)
+      :perf #{{:name "corrupt-file"
+               :fs #{:bitflip-file-chunks
