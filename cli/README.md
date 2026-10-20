@@ -71,8 +71,12 @@ executions = 1000
 wall_seconds = 600
 ```
 
-The faults package also accepts `setup`, `ready`, `workload`, `check`, `command`
-and `knobs` in `workload.options`. Lifecycle commands and node/hook commands are
+The faults package also accepts `setup`, `ready`, `workload`, `check`, `command`,
+`knobs` and `exclude_faults` in `workload.options`. `exclude_faults` lists fault
+kinds the search never draws, for example `exclude_faults = ["disk_corrupt",
+"power_loss_all"]`; the
+[faults README](../workloads/faults/README.md#actions) lists the
+names. Lifecycle commands and node/hook commands are
 argument arrays; an explicit shell is required for shell syntax. Nodes, lifecycle
 commands and hooks compile into a supervisor bundle. Omit them to use the image's
 bundle. Services share the image filesystem. See the

@@ -92,6 +92,8 @@ pub enum BundleError {
     DiskSize { line: usize, size: String },
     #[error("line {line}: more than {} disks", crate::disk::MAX_DISKS)]
     TooManyDisks { line: usize },
+    #[error("line {line}: disk flag {word:?} is not \"checksummed\"")]
+    DiskFlag { line: usize, word: String },
 }
 
 pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
@@ -113,7 +115,16 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
             "node" => parse_node(&mut bundle, line, words)?,
             "hook" => parse_hook(&mut bundle, line, words)?,
             "disk" => {
-                let words: Vec<String> = words.collect();
+                let mut words: Vec<String> = words.collect();
+                if words.len() > 3 {
+                    let flags = words.split_off(3);
+                    if flags != ["checksummed"] {
+                        return Err(BundleError::DiskFlag {
+                            line,
+                            word: flags.join(" "),
+                        });
+                    }
+                }
                 let [node, path, size] =
                     <[String; 3]>::try_from(words).map_err(|words| BundleError::Incomplete {
                         line,
@@ -497,6 +508,27 @@ check /bin/check --json
                 line: 2,
                 item: "disk",
                 need: 1,
+            }
+        );
+        assert_eq!(
+            parse_bundle("node a /a\ndisk a /d 16M checksummed\n")
+                .unwrap()
+                .disk(0)
+                .map(|disk| disk.bytes),
+            Some(16 << 20)
+        );
+        assert_eq!(
+            error("node a /a\ndisk a /d 16M fast\n"),
+            BundleError::DiskFlag {
+                line: 2,
+                word: "fast".to_owned(),
+            }
+        );
+        assert_eq!(
+            error("node a /a\ndisk a /d 16M checksummed extra\n"),
+            BundleError::DiskFlag {
+                line: 2,
+                word: "checksummed extra".to_owned(),
             }
         );
         let mut text = String::new();

@@ -4,6 +4,71 @@ use serde::{Deserialize, Serialize};
 
 pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v9";
 pub const MAX_NODES: u16 = 64;
+pub const CHECKSUMMED: &str = "checksummed";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FaultKind {
+    Kill,
+    KillAll,
+    Pause,
+    Restart,
+    Hook,
+    PowerLoss,
+    PowerLossAll,
+    DiskError,
+    DiskStall,
+    DiskCorrupt,
+    EventKill,
+    EventPark,
+}
+
+impl FaultKind {
+    pub const ALL: [Self; 12] = [
+        Self::Kill,
+        Self::KillAll,
+        Self::Pause,
+        Self::Restart,
+        Self::Hook,
+        Self::PowerLoss,
+        Self::PowerLossAll,
+        Self::DiskError,
+        Self::DiskStall,
+        Self::DiskCorrupt,
+        Self::EventKill,
+        Self::EventPark,
+    ];
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Kill => "kill",
+            Self::KillAll => "kill_all",
+            Self::Pause => "pause",
+            Self::Restart => "restart",
+            Self::Hook => "hook",
+            Self::PowerLoss => "power_loss",
+            Self::PowerLossAll => "power_loss_all",
+            Self::DiskError => "disk_error",
+            Self::DiskStall => "disk_stall",
+            Self::DiskCorrupt => "disk_corrupt",
+            Self::EventKill => "event_kill",
+            Self::EventPark => "event_park",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Result<Self, String> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.name() == name)
+            .ok_or_else(|| {
+                format!(
+                    "unknown fault kind {name:?}; expected one of {}",
+                    Self::ALL.map(Self::name).join(", ")
+                )
+            })
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultVocabulary {
@@ -11,7 +76,11 @@ pub struct FaultVocabulary {
     hooks: Vec<u32>,
     #[serde(default)]
     disks: Vec<u16>,
+    #[serde(default)]
+    checksummed: Vec<u16>,
     instrumented_events: bool,
+    #[serde(default)]
+    excluded: Vec<FaultKind>,
 }
 
 impl FaultVocabulary {
@@ -34,7 +103,9 @@ impl FaultVocabulary {
             nodes,
             hooks: sorted,
             disks: Vec::new(),
+            checksummed: Vec::new(),
             instrumented_events: false,
+            excluded: Vec::new(),
         })
     }
 
@@ -50,6 +121,28 @@ impl FaultVocabulary {
         }
         self.disks = sorted;
         Ok(self)
+    }
+
+    pub fn with_checksummed(mut self, checksummed: Vec<u16>) -> Result<Self, String> {
+        let mut sorted = checksummed.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.len() != checksummed.len() {
+            return Err("a fault bundle marks one disk checksummed twice".to_owned());
+        }
+        if sorted.iter().any(|node| !self.disks.contains(node)) {
+            return Err("a fault bundle marks a node without a disk checksummed".to_owned());
+        }
+        self.checksummed = sorted;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn excluding(mut self, kinds: &[FaultKind]) -> Self {
+        self.excluded.extend_from_slice(kinds);
+        self.excluded.sort_unstable();
+        self.excluded.dedup();
+        self
     }
 
     #[must_use]
@@ -91,14 +184,27 @@ impl FaultVocabulary {
                     })?);
                 }
                 "disk" => {
-                    let (Some(node), Some(_path), Some(_size), None) =
-                        (fields.next(), fields.next(), fields.next(), fields.next())
-                    else {
+                    let (Some(node), Some(_path), Some(_size), flag, None) = (
+                        fields.next(),
+                        fields.next(),
+                        fields.next(),
+                        fields.next(),
+                        fields.next(),
+                    ) else {
                         return Err(format!(
-                            "bundle line {line_number}: disk needs a node, a path and a size"
+                            "bundle line {line_number}: disk needs a node, a path, a size and an optional {CHECKSUMMED} flag"
                         ));
                     };
-                    disk_names.push((line_number, node.to_owned()));
+                    let checksummed = match flag {
+                        None => false,
+                        Some(CHECKSUMMED) => true,
+                        Some(other) => {
+                            return Err(format!(
+                                "bundle line {line_number}: disk flag {other:?} is not {CHECKSUMMED:?}"
+                            ));
+                        }
+                    };
+                    disk_names.push((line_number, node.to_owned(), checksummed));
                 }
                 "ready" | "setup" | "workload" | "check" => {
                     if fields.next().is_none() {
@@ -119,17 +225,25 @@ impl FaultVocabulary {
         }
         let disks = disk_names
             .into_iter()
-            .map(|(line_number, name)| {
+            .map(|(line_number, name, checksummed)| {
                 names
                     .iter()
                     .position(|node| *node == name)
                     .and_then(|index| u16::try_from(index).ok())
+                    .map(|node| (node, checksummed))
                     .ok_or_else(|| {
                         format!("bundle line {line_number}: disk names undeclared node {name:?}")
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Self::new(nodes, hooks)?.with_disks(disks)
+        let checksummed = disks
+            .iter()
+            .filter(|(_, checksummed)| *checksummed)
+            .map(|(node, _)| *node)
+            .collect();
+        Self::new(nodes, hooks)?
+            .with_disks(disks.into_iter().map(|(node, _)| node).collect())?
+            .with_checksummed(checksummed)
     }
 
     #[must_use]
@@ -148,8 +262,23 @@ impl FaultVocabulary {
     }
 
     #[must_use]
+    pub fn checksummed(&self) -> &[u16] {
+        &self.checksummed
+    }
+
+    #[must_use]
     pub fn instrumented_events(&self) -> bool {
         self.instrumented_events
+    }
+
+    #[must_use]
+    pub fn excluded(&self) -> &[FaultKind] {
+        &self.excluded
+    }
+
+    #[must_use]
+    pub fn draws(&self, kind: FaultKind) -> bool {
+        !self.excluded.contains(&kind)
     }
 
     #[must_use]
@@ -160,19 +289,28 @@ impl FaultVocabulary {
             .map(u32::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let disks = self
-            .disks
-            .iter()
-            .map(u16::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
+        let list = |nodes: &[u16]| {
+            nodes
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let disks = list(&self.disks);
+        let checksummed = list(&self.checksummed);
         let events = if self.instrumented_events {
             "antithesis"
         } else {
             "none"
         };
+        let excluded = self
+            .excluded
+            .iter()
+            .map(|kind| kind.name())
+            .collect::<Vec<_>>()
+            .join(",");
         format!(
-            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};disks={disks};events={events}",
+            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};disks={disks};checksummed={checksummed};events={events};exclude={excluded}",
             self.nodes,
         )
     }
@@ -198,6 +336,10 @@ impl FaultVocabulary {
             .next()
             .and_then(|field| field.strip_prefix("disks="))
             .ok_or("fault vocabulary has no disk list")?;
+        let checksummed = fields
+            .next()
+            .and_then(|field| field.strip_prefix("checksummed="))
+            .ok_or("fault vocabulary has no checksummed disk list")?;
         let instrumented_events = match fields
             .next()
             .and_then(|field| field.strip_prefix("events="))
@@ -207,6 +349,10 @@ impl FaultVocabulary {
             "antithesis" => true,
             _ => return Err("fault vocabulary has an unknown event capability".to_owned()),
         };
+        let excluded = fields
+            .next()
+            .and_then(|field| field.strip_prefix("exclude="))
+            .ok_or("fault vocabulary has no excluded fault list")?;
         if fields.next().is_some() {
             return Err("fault vocabulary has trailing fields".to_owned());
         }
@@ -221,20 +367,35 @@ impl FaultVocabulary {
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
-        let disks = if disks.is_empty() {
+        let nodes_of = |list: &str| {
+            if list.is_empty() {
+                Ok(Vec::new())
+            } else {
+                list.split(',')
+                    .map(|id| {
+                        id.parse::<u16>()
+                            .map_err(|error| format!("fault vocabulary disk node: {error}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            }
+        };
+        let excluded = if excluded.is_empty() {
             Vec::new()
         } else {
-            disks
+            excluded
                 .split(',')
-                .map(|id| {
-                    id.parse::<u16>()
-                        .map_err(|error| format!("fault vocabulary disk node: {error}"))
-                })
+                .map(FaultKind::from_name)
                 .collect::<Result<Vec<_>, _>>()?
         };
-        Ok(Self::new(nodes, hooks)?
-            .with_disks(disks)?
-            .with_instrumented_events(instrumented_events))
+        let vocabulary = Self::new(nodes, hooks)?
+            .with_disks(nodes_of(disks)?)?
+            .with_checksummed(nodes_of(checksummed)?)?
+            .with_instrumented_events(instrumented_events)
+            .excluding(&excluded);
+        if vocabulary.excluded != excluded {
+            return Err("fault vocabulary lists excluded fault kinds out of order".to_owned());
+        }
+        Ok(vocabulary)
     }
 }
 
@@ -286,9 +447,10 @@ ready /usr/local/pgsql/bin/pg_isready
         assert_eq!(vocabulary.nodes(), 3);
         assert_eq!(vocabulary.disks(), [0, 1]);
         let identifier = vocabulary.identifier();
+        assert!(vocabulary.checksummed().is_empty());
         assert_eq!(
             identifier,
-            "faultlab_bundle_v9;nodes=3;hooks=;disks=0,1;events=none"
+            "faultlab_bundle_v9;nodes=3;hooks=;disks=0,1;checksummed=;events=none;exclude="
         );
         assert_eq!(
             FaultVocabulary::from_identifier(&identifier).expect("resolve"),
@@ -298,10 +460,65 @@ ready /usr/local/pgsql/bin/pg_isready
             "node a /a\ndisk z /data 16M\n",
             "node a /a\ndisk a /data\n",
             "node a /a\ndisk a /data 16M extra\n",
+            "node a /a\ndisk a /data 16M checksummed extra\n",
             "node a /a\ndisk a /one 16M\ndisk a /two 16M\n",
         ] {
             assert!(FaultVocabulary::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_checksummed_flag_marks_only_its_own_disk() {
+        let vocabulary = FaultVocabulary::parse(
+            "node a /a\nnode b /b\nnode c /c\ndisk a /data 16M\ndisk c /data 64M checksummed\n",
+        )
+        .expect("parse");
+        assert_eq!(vocabulary.disks(), [0, 2]);
+        assert_eq!(vocabulary.checksummed(), [2]);
+        let identifier = vocabulary.identifier();
+        assert_eq!(
+            identifier,
+            "faultlab_bundle_v9;nodes=3;hooks=;disks=0,2;checksummed=2;events=none;exclude="
+        );
+        assert_eq!(
+            FaultVocabulary::from_identifier(&identifier).expect("resolve"),
+            vocabulary
+        );
+        assert!(
+            FaultVocabulary::new(2, Vec::new())
+                .and_then(|vocabulary| vocabulary.with_disks(vec![0]))
+                .and_then(|vocabulary| vocabulary.with_checksummed(vec![1]))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn excluded_fault_kinds_are_pinned_in_the_identifier() {
+        let vocabulary = FaultVocabulary::parse(ETCD).expect("parse").excluding(&[
+            FaultKind::Pause,
+            FaultKind::Kill,
+            FaultKind::Pause,
+        ]);
+        assert_eq!(vocabulary.excluded(), [FaultKind::Kill, FaultKind::Pause]);
+        assert!(!vocabulary.draws(FaultKind::Kill));
+        assert!(vocabulary.draws(FaultKind::Restart));
+        let identifier = vocabulary.identifier();
+        assert_eq!(
+            identifier,
+            "faultlab_bundle_v9;nodes=1;hooks=1,2;disks=;checksummed=;events=none;exclude=kill,pause"
+        );
+        assert_eq!(
+            FaultVocabulary::from_identifier(&identifier).expect("resolve"),
+            vocabulary
+        );
+        for kind in FaultKind::ALL {
+            assert_eq!(FaultKind::from_name(kind.name()), Ok(kind));
+            assert_eq!(
+                serde_json::to_string(&kind).expect("serialize"),
+                format!("\"{}\"", kind.name())
+            );
+        }
+        assert!(FaultKind::from_name("wait").is_err());
     }
 
     #[test]
@@ -386,7 +603,7 @@ ready /usr/local/pgsql/bin/pg_isready
         );
         assert_eq!(
             etcd.identifier(),
-            "faultlab_bundle_v9;nodes=1;hooks=1,2;disks=;events=none"
+            "faultlab_bundle_v9;nodes=1;hooks=1,2;disks=;checksummed=;events=none;exclude="
         );
         assert_ne!(
             etcd.identifier(),
@@ -403,13 +620,19 @@ ready /usr/local/pgsql/bin/pg_isready
             "faultlab_bundle_v5;nodes=1;hooks=1;events=none;interrupts=enabled",
             "faultlab_bundle_v7;nodes=1;hooks=1;events=none",
             "faultlab_bundle_v8;nodes=1;hooks=1;disks=;events=none",
-            "faultlab_bundle_v9;nodes=0;hooks=1;disks=;events=none",
-            "faultlab_bundle_v9;nodes=x;hooks=1;disks=;events=none",
-            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;events=other",
-            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;events=none;extra=2",
-            "faultlab_bundle_v9;nodes=1;hooks=one;disks=;events=none",
-            "faultlab_bundle_v9;nodes=1;hooks=1;disks=1;events=none",
-            "faultlab_bundle_v9;nodes=2;hooks=1;disks=0,0;events=none",
+            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;events=none",
+            "faultlab_bundle_v9;nodes=0;hooks=1;disks=;checksummed=;events=none;exclude=",
+            "faultlab_bundle_v9;nodes=x;hooks=1;disks=;checksummed=;events=none;exclude=",
+            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;checksummed=;events=other;exclude=",
+            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;checksummed=;events=none;exclude=;extra=2",
+            "faultlab_bundle_v9;nodes=1;hooks=one;disks=;checksummed=;events=none;exclude=",
+            "faultlab_bundle_v9;nodes=1;hooks=1;disks=1;checksummed=;events=none;exclude=",
+            "faultlab_bundle_v9;nodes=2;hooks=1;disks=0,0;checksummed=;events=none;exclude=",
+            "faultlab_bundle_v9;nodes=2;hooks=1;disks=0;checksummed=1;events=none;exclude=",
+            "faultlab_bundle_v9;nodes=2;hooks=1;disks=0;checksummed=0,0;events=none;exclude=",
+            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;checksummed=;events=none;exclude=clock",
+            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;checksummed=;events=none;exclude=kill,kill",
+            "faultlab_bundle_v9;nodes=1;hooks=1;disks=;checksummed=;events=none;exclude=pause,kill",
         ] {
             assert!(
                 FaultVocabulary::from_identifier(identifier).is_err(),
@@ -417,7 +640,7 @@ ready /usr/local/pgsql/bin/pg_isready
             );
         }
         let no_hooks = FaultVocabulary::from_identifier(
-            "faultlab_bundle_v9;nodes=2;hooks=;disks=;events=antithesis",
+            "faultlab_bundle_v9;nodes=2;hooks=;disks=;checksummed=;events=antithesis;exclude=",
         )
         .expect("resolve");
         assert_eq!(no_hooks.nodes(), 2);

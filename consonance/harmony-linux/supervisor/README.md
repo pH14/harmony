@@ -166,8 +166,10 @@ remain covered under Miri.
 
 ## Node disks
 
-A bundle line `disk <node> <path> <size>` gives the named node its own ext4
-filesystem mounted at `path`. Sizes take a `K`, `M` or `G` suffix and must be
+A bundle line `disk <node> <path> <size> [checksummed]` gives the named node
+its own ext4 filesystem mounted at `path`. The supervisor accepts the optional
+`checksummed` flag and ignores it; the faults search reads it to decide which
+disks draw corruption faults. Sizes take a `K`, `M` or `G` suffix and must be
 whole 4 KiB pages from `16M` through `1G`; a bundle has at most five disks. The
 supervisor builds each disk before the setup command runs:
 
