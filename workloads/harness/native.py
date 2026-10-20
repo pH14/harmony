@@ -409,7 +409,8 @@ class Run:
             self.done.set()
             self.collect()
             if not self.args.keep:
-                self.docker("rm", "-f", "-t", "0", self.name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.docker("kill", self.name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.docker("rm", "-f", self.name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
                 print(f"kept container {self.name}", file=sys.stderr)
 
