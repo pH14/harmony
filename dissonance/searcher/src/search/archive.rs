@@ -5,7 +5,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
-    fmt::Debug,
+    fmt::{self, Debug},
     mem::size_of,
     num::{NonZeroU64, NonZeroUsize},
     sync::Arc,
@@ -577,6 +577,48 @@ pub struct ArchiveCandidate<T, K, M> {
     pub suffix: T,
     pub key: K,
     pub milestones: M,
+}
+
+struct ProgressLabel {
+    inline: [u8; 128],
+    len: usize,
+    heap: Option<String>,
+}
+
+impl ProgressLabel {
+    fn new(progress: impl Debug) -> Self {
+        let mut label = Self {
+            inline: [0; 128],
+            len: 0,
+            heap: None,
+        };
+        fmt::write(&mut label, format_args!("{progress:?}")).unwrap();
+        label
+    }
+
+    fn as_str(&self) -> &str {
+        self.heap
+            .as_deref()
+            .unwrap_or_else(|| std::str::from_utf8(&self.inline[..self.len]).unwrap())
+    }
+}
+
+impl fmt::Write for ProgressLabel {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if let Some(heap) = self.heap.as_mut() {
+            heap.push_str(value);
+        } else if let Some(end) = self.len.checked_add(value.len())
+            && end <= self.inline.len()
+        {
+            self.inline[self.len..end].copy_from_slice(value.as_bytes());
+            self.len = end;
+        } else {
+            let mut heap = self.as_str().to_owned();
+            heap.push_str(value);
+            self.heap = Some(heap);
+        }
+        Ok(())
+    }
 }
 
 struct RecentCells<K: ArchiveKey> {
@@ -3229,36 +3271,56 @@ where
         Err("recent cell draw exceeded its total".into())
     }
 
-    fn tier_runs(&self, progress: K::Progress) -> TierRuns {
+    fn tier_runs(&self, progress: K::Progress) -> &TierRuns {
+        static EMPTY: TierRuns = TierRuns {
+            current: 0,
+            longest: 0,
+            draws: 0,
+            yields: 0,
+            wins: 0,
+            dry: 0,
+            cells: 0,
+            next_tier: String::new(),
+            next_draws: 0,
+            next_cells: 0,
+        };
         self.selector_accounting
             .tier_runs
-            .get(&format!("{progress:?}"))
-            .cloned()
-            .unwrap_or_default()
+            .get(ProgressLabel::new(progress).as_str())
+            .unwrap_or(&EMPTY)
     }
 
     fn tier_runs_mut(&mut self, progress: K::Progress) -> &mut TierRuns {
+        let label = ProgressLabel::new(progress);
+        if !self
+            .selector_accounting
+            .tier_runs
+            .contains_key(label.as_str())
+        {
+            self.selector_accounting
+                .tier_runs
+                .insert(label.as_str().to_owned(), TierRuns::default());
+        }
         self.selector_accounting
             .tier_runs
-            .entry(format!("{progress:?}"))
-            .or_default()
+            .get_mut(label.as_str())
+            .unwrap()
     }
 
     fn restart_tier_run(&mut self, progress: K::Progress) {
-        let next = self
-            .tiers
-            .range(..progress)
-            .next_back()
-            .map(|(below, _)| (format!("{below:?}"), self.tier_runs(*below)));
+        let next = self.tiers.range(..progress).next_back().map(|(below, _)| {
+            let runs = self.tier_runs(*below);
+            (format!("{below:?}"), runs.draws, runs.cells)
+        });
         let runs = self.tier_runs_mut(progress);
         runs.longest = runs.longest.max(runs.current);
         runs.current = 0;
         runs.wins = 0;
         runs.dry = 0;
-        let (tier, next_runs) = next.unwrap_or_default();
+        let (tier, next_draws, next_cells) = next.unwrap_or_default();
         runs.next_tier = tier;
-        runs.next_draws = next_runs.draws;
-        runs.next_cells = next_runs.cells;
+        runs.next_draws = next_draws;
+        runs.next_cells = next_cells;
     }
 
     fn tier_halvings(&self, progress: K::Progress, next: Option<K::Progress>) -> u32 {
@@ -3271,7 +3333,7 @@ where
         });
         let pace = runs.longest.max(cells);
         let counts = self.tier_runs(next);
-        let (next_draws, next_cells) = if format!("{next:?}") == runs.next_tier {
+        let (next_draws, next_cells) = if ProgressLabel::new(next).as_str() == runs.next_tier {
             (
                 counts.draws.saturating_sub(runs.next_draws),
                 counts.cells.saturating_sub(runs.next_cells),
@@ -6755,6 +6817,28 @@ mod tests {
             postcard::to_stdvec(&single_rand).unwrap(),
             postcard::to_stdvec(&repeated_rand).unwrap()
         );
+    }
+
+    #[test]
+    fn progress_labels_preserve_debug_text_and_fall_back_for_long_unicode_output() {
+        struct Segmented(usize);
+        impl std::fmt::Debug for Segmented {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                for _ in 0..self.0 {
+                    formatter.write_str("level🦀")?;
+                }
+                Ok(())
+            }
+        }
+        for parts in [0, 1, 15, 16, 17, 128] {
+            let value = Segmented(parts);
+            let label = super::ProgressLabel::new(&value);
+            assert_eq!(label.as_str(), format!("{value:?}"));
+            assert_eq!(label.heap.is_some(), parts * "level🦀".len() > 128);
+        }
+        let label = super::ProgressLabel::new((u8::MAX, i32::MIN));
+        assert_eq!(label.as_str(), format!("{:?}", (u8::MAX, i32::MIN)));
+        assert!(label.heap.is_none());
     }
 
     #[test]

@@ -623,6 +623,10 @@ checkpoint state. `recent_selections` records draws through this path. There
 is no retirement: a cell that stops producing keeps drawing at a share that only
 shrinks with its count.
 
+Tier accounting borrows existing run counters and formats progress labels into
+128 bytes of stack storage, growing a temporary string only for longer labels.
+Stored labels and checkpoint/report bytes keep the same debug representation.
+
 A cell's draw count resets to zero when an arrival from another cell
 displaces a holder it strictly outranks under a preference, so a place
 reached again with more of what the preference counts draws like a place
@@ -840,6 +844,11 @@ wait time, and the workload's own counters from `TargetExecution::telemetry`,
 which the report also sums across workers. Report equality and the report's
 serialized form leave telemetry out, so a replayed report stays byte-identical;
 a caller that wants it writes it separately.
+
+Admission reuses a scratch action vector between jobs, retaining at most 64
+actions of capacity. This host scratch space is outside the archive's logical
+budget and checkpoint state; oversized temporary vectors are released after
+the admission.
 
 Optional job observations use `run_campaign_checkpointed_observed`. Each workload
 owns its `CampaignTypes::JobObservation` schema; uninterested workloads use `()`.
