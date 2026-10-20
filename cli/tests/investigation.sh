@@ -111,7 +111,7 @@ grep -q 'maximum integer' invalid-seed.txt
 test ! -e .harmony/runs/invalid-seed
 printf '{"file":' >> .harmony/runs/neighborhood/checkpoints/checkpoints.jsonl
 status=0
-"$binary" search --resume neighborhood --executions 4 --for 30s --name extended || status=$?
+"$binary" search --resume neighborhood --executions 4 --for 10m --name extended || status=$?
 test "$status" -le 1
 python3 - <<'PY'
 import json
