@@ -433,7 +433,11 @@ snapshots, so a long run shows where it has reached without keeping a history.
 The older-state sample uses Floyd sampling with at most 750 bounded draws.
 Visual RNG range reduction rejects incomplete tails to avoid modulo bias,
 so attaching a viewer does not scan the archive. Sampling and snapshot copying
-are bounded by the sample size, and decoding runs on the feed thread. This
+are bounded by the sample size, and decoding runs on the feed thread. One
+observer machine decodes, observes and discards each sampled snapshot before
+decoding the next; decoded state storage does not grow with the sample count.
+Packed samples and the resulting points still occupy their bounded buffers.
+This does not bound total viewer or process memory. This
 visual RNG is independent of search policy and recorded campaign bytes.
 
 A slow viewer may skip ordinary visualization batches. Completion uses a separate

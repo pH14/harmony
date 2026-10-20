@@ -95,7 +95,28 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
 
 pub type MemoryView<V> = fn(&[u8]) -> std::result::Result<V, Box<dyn Error>>;
 
-type Observe<V> = Arc<dyn Fn(&[Vec<u8>]) -> Vec<Option<V>> + Send + Sync>;
+type ReadView<V> = Box<dyn FnMut(&[u8]) -> Option<V>>;
+type Observe<V> = Arc<dyn Fn() -> Option<ReadView<V>> + Send + Sync>;
+
+fn observe_packed<R: AsRef<[u8]>, V>(
+    packed: &[(u64, Vec<u8>)],
+    create: &Observe<V>,
+    mut decode: impl FnMut(&[u8]) -> Option<R>,
+) -> Vec<Option<V>> {
+    if packed.is_empty() {
+        return Vec::new();
+    }
+    let Some(mut observe) = create() else {
+        return packed.iter().map(|_| None).collect();
+    };
+    packed
+        .iter()
+        .map(|(_, bytes)| {
+            let raw = decode(bytes)?;
+            observe(raw.as_ref())
+        })
+        .collect()
+}
 
 struct Shared<V> {
     feed: Option<Feed<V>>,
@@ -167,18 +188,10 @@ fn native_observer<V: 'static>(
         }
         Ok(memory)
     };
-    Arc::new(move |raws| {
-        if raws.is_empty() {
-            return Vec::new();
-        }
-        let Ok(mut machine) =
-            QuickNesMachine::from_rom_bytes_with_identity(&rom, &path, &sha256, &execution)
-        else {
-            return raws.iter().map(|_| None).collect();
-        };
-        raws.iter()
-            .map(|raw| view(&read(&mut machine, raw).ok()?).ok())
-            .collect()
+    Arc::new(move || {
+        let mut machine =
+            QuickNesMachine::from_rom_bytes_with_identity(&rom, &path, &sha256, &execution).ok()?;
+        Some(Box::new(move |raw: &[u8]| view(&read(&mut machine, raw).ok()?).ok()) as ReadView<V>)
     })
 }
 
@@ -248,9 +261,8 @@ impl<G: ArcadeGame> LiveWatch<G> {
         let (id, snapshot) = resident_root(archive)?;
         let frames = G::snapshot_frame_count(snapshot);
         let raw = raw_state(G::emulator_state(snapshot))?;
-        let view = (self.observe)(std::slice::from_ref(&raw))
-            .pop()
-            .flatten()
+        let view = (self.observe)()
+            .and_then(|mut observe| observe(&raw))
             .ok_or("the live view could not read the first archived state")?;
         let snapshot = core_state(&raw);
         let digest = snapshot_digest(snapshot);
@@ -742,17 +754,15 @@ fn glance_json<V: Serialize>(
     observe: &Observe<V>,
     workers: u32,
 ) -> Arc<str> {
-    let (ids, raws): (Vec<u64>, Vec<Vec<u8>>) = packed
+    let points = packed
         .iter()
-        .filter_map(|(id, packed)| Some((*id, raw_state(packed).ok()?)))
-        .unzip();
-    let points = ids
-        .into_iter()
-        .zip(observe(&raws))
-        .filter_map(|(id, observation)| {
+        .zip(observe_packed(packed, observe, |bytes| {
+            raw_state(bytes).ok()
+        }))
+        .filter_map(|((id, _), observation)| {
             Some(Point {
                 observation: observation?,
-                retained: Some(id),
+                retained: Some(*id),
                 frame: 0,
                 priority: false,
             })
@@ -1025,12 +1035,12 @@ impl<G: ArcadeGame> Server<G> {
         let unseen: Vec<usize> = (0..found.len())
             .filter(|&index| found[index].observation.is_none() && raw[index].is_some())
             .collect();
-        let raws: Vec<Vec<u8>> = unseen
-            .iter()
-            .filter_map(|&index| raw[index].clone())
-            .collect();
-        for (index, observation) in unseen.into_iter().zip((self.observe)(&raws)) {
-            found[index].observation = observation;
+        if !unseen.is_empty()
+            && let Some(mut observe) = (self.observe)()
+        {
+            for index in unseen {
+                found[index].observation = raw[index].as_deref().and_then(&mut observe);
+            }
         }
         let mut genesis = None;
         let mut states = Vec::new();
@@ -1487,6 +1497,108 @@ mod tests {
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn glance_decodes_one_state_at_a_time_with_one_observer() {
+        use std::sync::Arc;
+
+        struct Decoded {
+            bytes: Vec<u8>,
+            live: Arc<AtomicUsize>,
+        }
+        impl AsRef<[u8]> for Decoded {
+            fn as_ref(&self) -> &[u8] {
+                &self.bytes
+            }
+        }
+        impl Drop for Decoded {
+            fn drop(&mut self) {
+                assert_eq!(self.live.fetch_sub(1, Ordering::SeqCst), 1);
+            }
+        }
+
+        let live = Arc::new(AtomicUsize::new(0));
+        let factories = Arc::new(AtomicUsize::new(0));
+        let factory_count = Arc::clone(&factories);
+        let observed_live = Arc::clone(&live);
+        let observe: super::Observe<u8> = Arc::new(move || {
+            assert_eq!(factory_count.fetch_add(1, Ordering::SeqCst), 0);
+            let live = Arc::clone(&observed_live);
+            Some(Box::new(move |raw| {
+                assert_eq!(live.load(Ordering::SeqCst), 1);
+                raw.first().copied()
+            }))
+        });
+        let packed = [
+            (41, lz4_flex::block::compress_prepend_size(&[11])),
+            (42, vec![1]),
+            (43, lz4_flex::block::compress_prepend_size(&[22])),
+        ];
+        let mut decodes = 0;
+        let result = super::observe_packed(&packed, &observe, |bytes| {
+            assert_eq!(live.load(Ordering::SeqCst), 0);
+            decodes += 1;
+            let bytes = super::raw_state(bytes).ok()?;
+            assert_eq!(live.fetch_add(1, Ordering::SeqCst), 0);
+            Some(Decoded {
+                bytes,
+                live: Arc::clone(&live),
+            })
+        });
+        assert_eq!(result, [Some(11), None, Some(22)]);
+        assert_eq!(decodes, 3);
+        assert_eq!(factories.load(Ordering::SeqCst), 1);
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn glance_keeps_original_ids_and_order_when_decode_or_observation_fails() {
+        use std::sync::Arc;
+
+        let observe: super::Observe<u8> = Arc::new(|| {
+            Some(Box::new(|raw| {
+                raw.first().copied().filter(|value| *value != 33)
+            }))
+        });
+        let packed = [
+            (91, lz4_flex::block::compress_prepend_size(&[11])),
+            (12, vec![1]),
+            (83, lz4_flex::block::compress_prepend_size(&[33])),
+            (44, lz4_flex::block::compress_prepend_size(&[22])),
+        ];
+        let json: serde_json::Value = serde_json::from_str(&super::glance_json(
+            Stats::default(),
+            &packed,
+            &observe,
+            128,
+        ))
+        .unwrap();
+        assert_eq!(json["workers"], 128);
+        assert_eq!(json["type"], "batch");
+        assert_eq!(
+            json["points"],
+            serde_json::json!([
+                {"observation": 11, "retained": 91, "frame": 0},
+                {"observation": 22, "retained": 44, "frame": 0}
+            ])
+        );
+        assert!(json["motion"].as_array().unwrap().is_empty());
+        let unavailable: super::Observe<u8> = Arc::new(|| None);
+        assert_eq!(
+            super::observe_packed(&packed, &unavailable, |_| -> Option<Vec<u8>> {
+                panic!("an unavailable observer must not decode snapshots")
+            }),
+            [None, None, None, None]
+        );
+        let unused: super::Observe<u8> =
+            Arc::new(|| panic!("an empty glance must not construct an observer"));
+        assert!(
+            super::observe_packed(&[], &unused, |_| -> Option<Vec<u8>> {
+                panic!("an empty glance must not decode snapshots")
+            })
+            .is_empty()
+        );
+    }
+
     #[derive(
         Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
     )]
@@ -1758,7 +1870,7 @@ mod tests {
         events.send(super::Event::Finished).unwrap();
         let count = Arc::new(AtomicUsize::new(0));
         let terminal = OnceLock::new();
-        let observe: super::Observe<u8> = Arc::new(|_| Vec::new());
+        let observe: super::Observe<u8> = Arc::new(|| None);
         super::feed_loop(
             &super::Feeding {
                 events: &received,
@@ -1822,7 +1934,7 @@ mod tests {
                 nes_games::arcade::famidash::group_stage(0),
                 Box::new(|| Err("this terminal-only test must not execute a target".into())),
             )),
-            observe: Arc::new(|_| Vec::new()),
+            observe: Arc::new(|| None),
             terminal,
             streams: Arc::new(super::Streams::default()),
         };
