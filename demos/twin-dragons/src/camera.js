@@ -19,8 +19,7 @@ export function trackingGoal(held, point, points, now, progress, retreatMs = 150
     return point;
   }
   const goal = held.goal, ahead = progress(goal);
-  const near = points.filter((p) => !p.stale &&
-    (Math.hypot(p.x + 8 - goal.x, p.y - goal.y) < 192 || progress({ x: p.x + 8, y: p.y }) > ahead)).length;
+  const near = points.filter((p) => Math.hypot(p.x + 8 - goal.x, p.y - goal.y) < 192 || progress({ x: p.x + 8, y: p.y }) > ahead).length;
   if (near >= 2) held.behind = 0;
   else held.behind ||= now;
   return !held.behind || now - held.behind < retreatMs ? goal : point;

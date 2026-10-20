@@ -298,9 +298,7 @@ view on phones. The camera holds the full level height on screen and follows
 the search frontier (the 80th-percentile x of live sprites, smoothed), and
 stays where it is while fewer than four sprites are in the level. Starting a
 new search or selecting a level clears earlier pointer and manual-pan
-holds. As attempts expire, the map holds each one's last sampled position at
-reduced opacity without replaying it or counting it as live camera evidence.
-New visible results replace those held positions. Sprites replay
+holds. Sprites replay
 rollouts from their start states, so the frontier drops back whenever the
 search draws earlier states; the camera moves back only after fewer than two
 sprites have been near its target for 1.5 seconds of continuous visible

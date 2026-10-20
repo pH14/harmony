@@ -254,7 +254,6 @@ const swarm = new Swarm(
   (budget.snapshotsMiB === 32 ? 2 : 8) * 1048576,
   budget.snapshotsMiB === 32 ? 2048 : 8192,
   FINISH_HOLD,
-  true,
 );
 let visualization = "movement", liveVisualization = null, swarmRooms = new Map();
 const pointLevels = new Map();
@@ -350,7 +349,7 @@ function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null, 
   ctx.imageSmoothingEnabled = false;
   for (let i = 0; i < shown.length; i += 2) {
     const p = shown[i], raw = shown[i + 1];
-    ctx.globalAlpha = raw.stale ? 0.35 : raw.life === undefined ? 0.8 : Math.min(1, raw.life / 0.05 + 0.2) * (0.97 - 0.32 * raw.life);
+    ctx.globalAlpha = raw.life === undefined ? 0.8 : Math.min(1, raw.life / 0.05 + 0.2) * (0.97 - 0.32 * raw.life);
     ctx.drawImage(sprites, (p.pose >> 1) * SPRITE.width, (p.pose & 1) * SPRITE.height, SPRITE.width, SPRITE.height,
       p.x - (SPRITE.originX + 8) * size, p.y - 8 - SPRITE.originY - 8 + SPRITE.height * (1 - size), SPRITE.width * size, SPRITE.height * size);
   }
@@ -389,7 +388,7 @@ function maxZoom(c) {
   return c?.dataset.viewport === "true" ? Math.max(6, closeUpZoom(c) * 2.5) : 6;
 }
 function frontier(level) {
-  const map = maps.get(level), raw = (swarmRooms.get(level) || []).filter((p) => !p.stale);
+  const map = maps.get(level), raw = swarmRooms.get(level) || [];
   const left = (p) => (p.samples ? p.samples.at(-MOTION_STRIDE) - p.frame : 0);
   const order = (p) => game.route(level, p.x + 8, p.y + 8);
   const finisher = raw.filter((p) => p.finish && p.samples && levelRooms(level).includes(trailRoom(p.samples))).sort((a, b) => left(a) - left(b) || (game.grid ? order(b) - order(a) : game.vertical ? a.y - b.y : b.x - a.x))[0];
@@ -616,7 +615,7 @@ function followRoom(now, immediate = false) {
     camera.busierSince = 0;
     return lead === mapLevel ? null : lead;
   }
-  const live = (id) => swarmRooms.get(id)?.filter((p) => !p.stale).length || 0;
+  const live = (id) => swarmRooms.get(id)?.length || 0;
   const busiest = levelRooms().reduce((best, id) => (live(id) > live(best) * 1.5 ? id : best), mapLevel);
   if (busiest === mapLevel || (!immediate && now - camera.roomSince < ROOM_DWELL_MS)) {
     camera.busierSince = 0;
@@ -636,7 +635,7 @@ function followStalledPath(now) {
   if (path.show) {
     const rooms = catalog.levels.find((entry) => entry.id === path.show.level)?.rooms || [];
     if (roomLevel(branchPreview?.room ?? mapLevel) !== path.show.from) path.show = null;
-    else if (rooms.reduce((n, id) => n + (swarmRooms.get(id)?.filter((p) => !p.stale).length || 0), 0) >= 3) {
+    else if (rooms.reduce((n, id) => n + (swarmRooms.get(id)?.length || 0), 0) >= 3) {
       showPathLevel(path.show.level);
       path.show = null;
     }
@@ -645,8 +644,7 @@ function followStalledPath(now) {
   const counts = new Map();
   for (const [room, points] of swarmRooms) {
     const level = roomLevel(room);
-    const live = points.filter((p) => !p.stale).length;
-    if (live && level != null) counts.set(level, (counts.get(level) || 0) + live);
+    if (points.length && level != null) counts.set(level, (counts.get(level) || 0) + points.length);
   }
   const deepest = busierDeeperLevel(trailsSeen ? counts : pointLevels, path.level);
   if (deepest == null || (!path.leftRoot && now - path.since < PATH_STALL_MS)) {

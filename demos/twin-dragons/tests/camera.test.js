@@ -33,13 +33,6 @@ test("a result gap resets retreat evidence, including repeated sparse bursts", (
   assert.equal(held.behind, 0);
 });
 
-test("stale sprites cannot prevent the camera following a real retreat", () => {
-  const goal = { x: 1000, y: 100 }, back = { x: 200, y: 100 };
-  const held = { goal, behind: 100 };
-  const points = [{ x: 992, y: 100, stale: true }, { x: 992, y: 100, stale: true }];
-  assert.equal(trackingGoal(held, back, points, 2000, (p) => p.x), back);
-});
-
 test("suspending camera updates discards retreat evidence in every room", () => {
   const goal = { x: 1000, y: 100 }, back = { x: 200, y: 100 };
   const held = { goal, behind: 100 }, other = { behind: 200 };
