@@ -642,6 +642,14 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
+Active tiers cache their exact Debug progress labels for policy lookups. The cache
+is excluded from checkpoints and rebuilt on restore; historical policy counters
+remain keyed by their original strings, including collisions between unequal
+progress values. Inactive tiers format labels on demand. Each active tier owns
+one boxed label, charged by its byte length and the normal heap bound; removal
+releases it, so the cache does not accumulate with historical tiers. This extra
+selector storage can change memory-budget maintenance at tight limits.
+
 One selector exists, `tier_progress_cascade_pace_yield_cell_recent_count_decay_v2`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at

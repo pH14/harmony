@@ -715,6 +715,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     active_ids: ActiveIds,
     tiers: BTreeMap<K::Progress, TierCells<K>>,
     #[serde(skip)]
+    tier_label_bytes: usize,
+    #[serde(skip)]
     recent_cells: RefCell<RecentCells<K>>,
     #[serde(skip)]
     entry_memory_bytes_cache: std::cell::Cell<[(usize, usize); 2]>,
@@ -966,6 +968,8 @@ impl<K> Default for CellMembers<K> {
 #[derive(Deserialize, Serialize)]
 #[serde(transparent, bound = "K: ArchiveKey")]
 struct TierCells<K: ArchiveKey> {
+    #[serde(skip)]
+    label: Option<Box<str>>,
     places: BTreeMap<K::Place, usize>,
     #[serde(skip)]
     weights: WeightedSet<K::Place>,
@@ -974,6 +978,7 @@ struct TierCells<K: ArchiveKey> {
 impl<K: ArchiveKey> Default for TierCells<K> {
     fn default() -> Self {
         Self {
+            label: None,
             places: BTreeMap::new(),
             weights: WeightedSet::default(),
         }
@@ -1463,6 +1468,7 @@ where
             selector_weighted: false,
             active_ids: ActiveIds::default(),
             tiers: BTreeMap::new(),
+            tier_label_bytes: 0,
             recent_cells: RefCell::default(),
             entry_memory_bytes_cache: std::cell::Cell::default(),
             preserve_inactive_snapshots: false,
@@ -2044,6 +2050,7 @@ where
         self.active_ids = ActiveIds::default();
         self.recent_cells = RefCell::default();
         self.tiers.clear();
+        self.tier_label_bytes = 0;
         if selector_indexed {
             self.rebuild_selector_index();
         }
@@ -2284,7 +2291,8 @@ where
         let removals = self.entries.len().saturating_sub(active);
         let tiers = self.tiers.len();
         let preferences = K::preferences();
-        heap::btree_bytes::<usize, ()>(1, active)
+        self.tier_label_bytes
+            .saturating_add(heap::btree_bytes::<usize, ()>(1, active))
             .saturating_add(heap::vec_bytes::<(K::Progress, K::Place, u64, usize)>(
                 self.entries.len().min(256),
             ))
@@ -2369,6 +2377,7 @@ where
                 (
                     progress,
                     TierCells {
+                        label: None,
                         places,
                         weights: WeightedSet::default(),
                     },
@@ -2379,6 +2388,18 @@ where
             state.cell_handle = self.cells.handle(&cell_of(entry.key)).unwrap_or(usize::MAX);
         }
         self.reweight_selector_index();
+    }
+
+    fn rebuild_tier_labels(&mut self) {
+        self.tier_label_bytes = 0;
+        for (progress, tier) in &mut self.tiers {
+            let label = format!("{progress:?}").into_boxed_str();
+            self.tier_label_bytes = self
+                .tier_label_bytes
+                .checked_add(heap::block(label.len()))
+                .expect("tier label charge overflow");
+            tier.label = Some(label);
+        }
     }
 
     pub(crate) fn prepare_selection(&mut self) {
@@ -2529,8 +2550,17 @@ where
                 self.cells.records[handle].members = CellMembers::default();
             }
         }
-        if tier.places.is_empty() {
-            self.tiers.remove(&progress);
+        if tier.places.is_empty()
+            && let Some(tier) = self.tiers.remove(&progress)
+        {
+            self.tier_label_bytes = self
+                .tier_label_bytes
+                .checked_sub(
+                    tier.label
+                        .as_deref()
+                        .map_or(0, |label| heap::block(label.len())),
+                )
+                .expect("tier label charge underflow");
         }
     }
 
@@ -2540,7 +2570,17 @@ where
         let place_weight = self.place_weight(progress, place);
         let holder_weight = count_decay(self.entry_state[id].selected);
         let handle = self.cell_handle(id);
-        let tier = self.tiers.entry(progress).or_default();
+        let tier = self.tiers.entry(progress).or_insert_with(|| {
+            let label = format!("{progress:?}").into_boxed_str();
+            self.tier_label_bytes = self
+                .tier_label_bytes
+                .checked_add(heap::block(label.len()))
+                .expect("tier label charge overflow");
+            TierCells {
+                label: Some(label),
+                ..TierCells::default()
+            }
+        });
         tier.weights.insert(place, place_weight);
         tier.places.insert(place, handle);
         let members = &mut self.cells.records[handle].members;
@@ -2618,6 +2658,7 @@ where
     }
 
     fn reweight_selector_index(&mut self) {
+        self.rebuild_tier_labels();
         self.recent_cells.get_mut().valid = false;
         let mut tiers = std::mem::take(&mut self.tiers);
         for (progress, tier) in &mut tiers {
@@ -2699,6 +2740,7 @@ where
         snapshots: Vec<(u64, S)>,
     ) -> Result<(), &'static str> {
         self.validate_cell_arena()?;
+        self.rebuild_tier_labels();
         self.action_cost = action_cost;
         self.selector_accounting
             .best_holder_draws
@@ -3567,33 +3609,54 @@ where
             next_draws: 0,
             next_cells: 0,
         };
+        let fallback;
+        let label = if let Some(label) = self
+            .tiers
+            .get(&progress)
+            .and_then(|tier| tier.label.as_deref())
+        {
+            label
+        } else {
+            fallback = ProgressLabel::new(progress);
+            fallback.as_str()
+        };
         self.selector_accounting
             .tier_runs
-            .get(ProgressLabel::new(progress).as_str())
+            .get(label)
             .unwrap_or(&EMPTY)
     }
 
     fn tier_runs_mut(&mut self, progress: K::Progress) -> &mut TierRuns {
-        let label = ProgressLabel::new(progress);
-        if !self
-            .selector_accounting
-            .tier_runs
-            .contains_key(label.as_str())
+        let fallback;
+        let label = if let Some(label) = self
+            .tiers
+            .get(&progress)
+            .and_then(|tier| tier.label.as_deref())
         {
+            label
+        } else {
+            fallback = ProgressLabel::new(progress);
+            fallback.as_str()
+        };
+        if !self.selector_accounting.tier_runs.contains_key(label) {
             self.selector_accounting
                 .tier_runs
-                .insert(label.as_str().to_owned(), TierRuns::default());
+                .insert(label.to_owned(), TierRuns::default());
         }
-        self.selector_accounting
-            .tier_runs
-            .get_mut(label.as_str())
-            .unwrap()
+        self.selector_accounting.tier_runs.get_mut(label).unwrap()
     }
 
     fn restart_tier_run(&mut self, progress: K::Progress) {
         let next = self.tiers.range(..progress).next_back().map(|(below, _)| {
             let runs = self.tier_runs(*below);
-            (format!("{below:?}"), runs.draws, runs.cells)
+            (
+                self.tiers
+                    .get(below)
+                    .and_then(|tier| tier.label.as_deref())
+                    .map_or_else(|| format!("{below:?}"), str::to_owned),
+                runs.draws,
+                runs.cells,
+            )
         });
         let runs = self.tier_runs_mut(progress);
         runs.longest = runs.longest.max(runs.current);
@@ -3616,7 +3679,15 @@ where
         });
         let pace = runs.longest.max(cells);
         let counts = self.tier_runs(next);
-        let (next_draws, next_cells) = if ProgressLabel::new(next).as_str() == runs.next_tier {
+        let fallback;
+        let next_label =
+            if let Some(label) = self.tiers.get(&next).and_then(|tier| tier.label.as_deref()) {
+                label
+            } else {
+                fallback = ProgressLabel::new(next);
+                fallback.as_str()
+            };
+        let (next_draws, next_cells) = if next_label == runs.next_tier {
             (
                 counts.draws.saturating_sub(runs.next_draws),
                 counts.cells.saturating_sub(runs.next_cells),
@@ -7269,6 +7340,170 @@ mod tests {
         let label = super::ProgressLabel::new((u8::MAX, i32::MIN));
         assert_eq!(label.as_str(), format!("{:?}", (u8::MAX, i32::MIN)));
         assert!(label.heap.is_none());
+    }
+
+    thread_local! {
+        static LABEL_FORMAT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct LabelProgress(u8);
+
+    impl std::fmt::Debug for LabelProgress {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            LABEL_FORMAT_CALLS.with(|calls| calls.set(calls.get() + 1));
+            for _ in 0..40 {
+                formatter.write_str("階層🦀")?;
+            }
+            write!(formatter, "{}", self.0.min(1))
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct LabelKey(u8);
+
+    impl ArchiveKey for LabelKey {
+        type Place = u8;
+        type Progress = LabelProgress;
+        type Identity = ();
+        type Lineage = ();
+
+        fn place(self) -> u8 {
+            self.0
+        }
+        fn progress(self) -> LabelProgress {
+            LabelProgress(self.0)
+        }
+        fn identity(self) {}
+        fn complete(self, _: Option<(Self, &())>) -> Self {
+            self
+        }
+        fn record(_: &mut (), _: Self) {}
+    }
+
+    #[test]
+    fn cached_tier_labels_preserve_collisions_unicode_draws_and_restore() {
+        let mut cached = Archive::<u8, LabelKey, (), ()>::new(|_| 1);
+        cached.prepare_selection();
+        for value in 0..3 {
+            cached
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![value],
+                        key: LabelKey(value),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let expected_charge: usize = cached
+            .tiers
+            .values()
+            .map(|tier| {
+                let label = tier.label.as_deref().unwrap();
+                assert!(label.len() > 128);
+                heap::block(label.len())
+            })
+            .sum();
+        assert_eq!(cached.tier_label_bytes, expected_charge);
+        cached.tier_runs_mut(LabelProgress(1)).wins = 7;
+        assert_eq!(cached.tier_runs(LabelProgress(2)).wins, 7);
+        assert_eq!(cached.selector_counters().tier_runs.len(), 2);
+        let bytes = postcard::to_stdvec(&cached).unwrap();
+        let mut restored: Archive<u8, LabelKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+        restored.restore_runtime(|_| 1, None, Vec::new()).unwrap();
+        assert_eq!(restored.tier_label_bytes, expected_charge);
+        assert_eq!(postcard::to_stdvec(&restored).unwrap(), bytes);
+        restored.prepare_selection();
+        for tier in restored.tiers.values_mut() {
+            tier.label = None;
+        }
+        restored.tier_label_bytes = 0;
+        let mut actual = RomuDuoJrRand::with_seed(773);
+        let mut reference = actual;
+        let before_fallback = LABEL_FORMAT_CALLS.with(std::cell::Cell::get);
+        for iteration in 0..2048 {
+            let before_cached = LABEL_FORMAT_CALLS.with(std::cell::Cell::get);
+            let a = cached.select_parent(&mut actual).unwrap();
+            cached.record_selection(a.0, &a.1);
+            if iteration % 97 == 0 {
+                cached.restart_tier_run(LabelProgress(2));
+            }
+            assert_eq!(LABEL_FORMAT_CALLS.with(std::cell::Cell::get), before_cached);
+            let b = restored.select_parent(&mut reference).unwrap();
+            restored.record_selection(b.0, &b.1);
+            if iteration % 97 == 0 {
+                restored.restart_tier_run(LabelProgress(2));
+            }
+            assert_eq!(a, b);
+        }
+        assert!(LABEL_FORMAT_CALLS.with(std::cell::Cell::get) > before_fallback);
+        assert_eq!(cached.selector_counters(), restored.selector_counters());
+        assert_eq!(
+            postcard::to_stdvec(&actual).unwrap(),
+            postcard::to_stdvec(&reference).unwrap()
+        );
+        assert_eq!(
+            postcard::to_stdvec(&cached).unwrap(),
+            postcard::to_stdvec(&restored).unwrap()
+        );
+    }
+
+    #[test]
+    fn cached_tier_labels_release_last_member_and_recreate_without_history_growth() {
+        let mut archive = Archive::<u8, LabelKey, (), ()>::new(|_| 1);
+        archive.prepare_selection();
+        for value in 0..3 {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![value],
+                        key: LabelKey(value),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let charge = archive.tier_label_bytes;
+        let removed_charge = heap::block(
+            archive.tiers[&LabelProgress(2)]
+                .label
+                .as_deref()
+                .unwrap()
+                .len(),
+        );
+        archive.deactivate(2);
+        assert!(!archive.tiers.contains_key(&LabelProgress(2)));
+        assert_eq!(archive.tier_label_bytes, charge - removed_charge);
+        archive.tier_runs_mut(LabelProgress(2)).wins = 31;
+        assert_eq!(archive.tier_label_bytes, charge - removed_charge);
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![9],
+                    key: LabelKey(2),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(archive.tier_label_bytes, charge);
+        assert_eq!(archive.tier_runs(LabelProgress(2)).wins, 31);
+        assert_eq!(
+            archive.tiers[&LabelProgress(2)].label.as_deref().unwrap(),
+            format!("{:?}", LabelProgress(2))
+        );
     }
 
     #[test]
