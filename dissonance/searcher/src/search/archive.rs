@@ -1891,6 +1891,11 @@ where
 
     #[must_use]
     pub fn index_of_id(&self, id: u64) -> Option<usize> {
+        if let Ok(index) = usize::try_from(id)
+            && self.entries.get(index).is_some_and(|entry| entry.id == id)
+        {
+            return Some(index);
+        }
         self.id_to_index.get(&id).copied()
     }
 
@@ -3791,10 +3796,12 @@ where
         state.draws = state.draws.saturating_add(1);
         state.draws_total = state.draws_total.saturating_add(1);
         let place_weight = count_decay(state.draws);
-        self.recent_cells.get_mut().set_weight(
-            cell_of(key),
-            if state.draws < 32 { place_weight } else { 0 },
-        );
+        if state.draws <= 32 {
+            self.recent_cells.get_mut().set_weight(
+                cell_of(key),
+                if state.draws < 32 { place_weight } else { 0 },
+            );
+        }
         let holder_weight = count_decay(self.selected[id]);
         if let Some(tier) = self.tiers.get_mut(&key.progress()) {
             tier.weights.set_weight(&key.place(), place_weight);
@@ -8474,6 +8481,36 @@ mod tests {
             .compact_history(true)
             .expect("a preservation flag without a snapshot retains nothing");
         assert_eq!(empty.live_entry_count(), 0);
+    }
+
+    #[test]
+    fn stable_id_lookup_matches_the_index_across_compaction_and_restore() {
+        let keys = (0..64).map(|id| [id, id, 0, 0]).collect::<Vec<_>>();
+        let mut archive = flat_archive(&keys);
+        for compacted in [false, true] {
+            if compacted {
+                for index in (0..archive.entries.len()).step_by(2) {
+                    archive.deactivate(index);
+                }
+                archive.compact_history(true).unwrap();
+                assert!(archive.entries.len() < keys.len());
+            }
+            for candidate in 0..128 {
+                assert_eq!(
+                    archive.index_of_id(candidate),
+                    archive.id_to_index.get(&candidate).copied()
+                );
+            }
+            assert_eq!(archive.index_of_id(u64::MAX), None);
+            let bytes = postcard::to_stdvec(&archive).unwrap();
+            let restored: Archive<u8, FlatKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+            for candidate in 0..128 {
+                assert_eq!(
+                    restored.index_of_id(candidate),
+                    archive.index_of_id(candidate)
+                );
+            }
+        }
     }
 
     #[test]
