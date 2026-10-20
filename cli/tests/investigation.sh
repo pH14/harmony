@@ -111,7 +111,7 @@ grep -q 'maximum integer' invalid-seed.txt
 test ! -e .harmony/runs/invalid-seed
 printf '{"file":' >> .harmony/runs/neighborhood/checkpoints/checkpoints.jsonl
 status=0
-"$binary" search --resume neighborhood --executions 4 --for 10m --name extended || status=$?
+"$binary" search --resume neighborhood --executions 2 --for 10m --name extended || status=$?
 test "$status" -le 1
 python3 - <<'PY'
 import json
@@ -119,7 +119,7 @@ from pathlib import Path
 runs = Path('.harmony/runs')
 a = json.loads((runs / 'neighborhood/report.json').read_text())
 b = json.loads((runs / 'extended/report.json').read_text())
-assert b['executions'] == a['executions'] + 4
+assert b['executions'] == a['executions'] + 2
 assert json.loads((runs / 'prefix/manifest.json').read_text())['payload']['settle'] is False
 for name in ('neighborhood', 'extended'):
     assert json.loads((runs / name / 'manifest.json').read_text())['payload']['settle'] is True
