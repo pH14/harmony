@@ -439,7 +439,16 @@ rollouts from their start states, so the frontier drops back whenever the
 search draws earlier states; the camera moves back only after fewer than two
 sprites have been near its target for 1.5 seconds of continuous visible
 frontier evidence (a gap, camera hold or hidden tab resets that interval), and
-it closes a large gap faster than a small one. Following pauses
+it eases toward a new target in time rather than jumping faster across large
+gaps. Distant work first widens the view, then returns to close-up following.
+Following bounds the combined pan and zoom displacement of the previous
+viewport's corners to two normalized viewport lengths per second, including
+zoom-induced movement. This keeps the display cadence independent of how
+quickly workers discover distant states. An empty room or level follows
+fresh activity after 250 ms instead of waiting through occupied-view dwell
+and stall intervals; active views retain their existing hysteresis. Manual
+holds, selected rooms and focused histories prevent automatic level changes.
+Following pauses
 for 3 seconds after the mouse moves over the map and for 2.5 seconds after a
 touch, so a pointer left resting on the map does not stop it. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement.

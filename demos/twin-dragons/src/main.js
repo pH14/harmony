@@ -9,7 +9,7 @@ import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { Swarm, ghosts, trailRoom, MOTION_STRIDE } from "./swarm.js";
-import { resumeFollowing, resetRetreat, trackingGoal } from "./camera.js";
+import { resumeFollowing, resetRetreat, trackingGoal, followView } from "./camera.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, GRID_CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
@@ -727,13 +727,14 @@ function followRoom(now, immediate = false) {
     return lead === mapLevel ? null : lead;
   }
   const live = (id) => swarmRooms.get(id)?.length || 0;
+  const occupied = live(mapLevel) > 0;
   const busiest = levelRooms().reduce((best, id) => (live(id) > live(best) * 1.5 ? id : best), mapLevel);
-  if (busiest === mapLevel || (!immediate && now - camera.roomSince < ROOM_DWELL_MS)) {
+  if (busiest === mapLevel || (!immediate && occupied && now - camera.roomSince < ROOM_DWELL_MS)) {
     camera.busierSince = 0;
     return null;
   }
   camera.busierSince ||= now;
-  return immediate || now - camera.busierSince > 2500 ? busiest : null;
+  return immediate || now - camera.busierSince > (occupied ? 2500 : 250) ? busiest : null;
 }
 function showPathLevel(level) {
   const room = catalog.levels.find((entry) => entry.id === level)?.rooms[0];
@@ -751,6 +752,10 @@ function followPathExit(from, to, now) {
 }
 function followStalledPath(now) {
   if (!ready || path.level == null) return;
+  if (paused || !camera.follow || camera.focus || camera.pinned != null || camera.manual > now || camera.held > now) {
+    path.idle = 0;
+    return;
+  }
   if (path.show) {
     const rooms = catalog.levels.find((entry) => entry.id === path.show.level)?.rooms || [];
     if (roomLevel(branchPreview?.room ?? mapLevel) !== path.show.from) path.show = null;
@@ -759,19 +764,19 @@ function followStalledPath(now) {
       path.show = null;
     }
   }
-  if (paused) return;
   const counts = new Map();
   for (const [room, points] of swarmRooms) {
     const level = roomLevel(room);
     if (points.length && level != null) counts.set(level, (counts.get(level) || 0) + points.length);
   }
   const deepest = busierDeeperLevel(trailsSeen ? counts : pointLevels, path.level);
-  if (deepest == null || (!path.leftRoot && now - path.since < PATH_STALL_MS)) {
+  const occupied = (counts.get(path.level) || 0) > 0;
+  if (deepest == null || (occupied && !path.leftRoot && now - path.since < PATH_STALL_MS)) {
     path.idle = 0;
     return;
   }
   path.idle ||= now;
-  if (!path.leftRoot && now - path.idle < PATH_STALL_MS) return;
+  if (!path.leftRoot && now - path.idle < (occupied ? PATH_STALL_MS : 250)) return;
   path.leftRoot = false;
   const onPath = roomLevel(branchPreview?.room ?? mapLevel) === path.level;
   path.level = deepest;
@@ -835,13 +840,14 @@ function updateCamera(now) {
     if (!c) continue;
     const view = roomView(room, c);
     let target = held;
-    if (target?.canvas !== c) camera.targets.set(room, (target = { canvas: c, x: view.x, y: view.y, behind: held?.behind ?? 0 }));
+    if (target?.canvas !== c) camera.targets.set(room, (target = { canvas: c, behind: held?.behind ?? 0 }));
     target.goal = point;
-    const gap = Math.hypot(point.x - target.x, point.y - target.y);
-    const settle = reducedMotion.matches ? 1 : 1 - Math.exp((-dt * (1 + gap / 120)) / 0.5);
-    target.x += (point.x - target.x) * settle;
-    target.y += (point.y - target.y) * settle;
-    steerCamera(room, c, target, closeUpZoom(c) * (room === camera.introRoom ? scale : 1), smooth(0.6), 1);
+    const zoom = closeUpZoom(c) * (room === camera.introRoom ? scale : 1);
+    if (reducedMotion.matches) steerCamera(room, c, point, zoom, 1, 1);
+    else {
+      Object.assign(view, followView(view, point, canvasPanel(c), c, zoom, dt));
+      roomView(room).zoom = view.zoom;
+    }
   }
 }
 let searchChoices = [{ id: 0, parent: null }],
