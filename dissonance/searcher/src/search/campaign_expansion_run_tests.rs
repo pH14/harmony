@@ -63,7 +63,7 @@ impl ExpansionWatch<TestWorkload> for RunWatch {
         }
         let result = execute()?;
         self.physical_edges.lock().unwrap().push(id);
-        if id.task > 0 && id.ordinal >= 15 {
+        if self.fail_task.is_none() && id.task > 0 && id.ordinal >= 15 {
             self.release_first();
         }
         Ok((result, vec![7; self.heap]))
