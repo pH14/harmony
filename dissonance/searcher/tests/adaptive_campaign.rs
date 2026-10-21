@@ -832,7 +832,7 @@ fn failed_parent_skips_replay_and_preserves_preparation_observations() {
             (),
             &[],
             RetentionPolicy::Unprobed,
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         )
         .expect("failed parent is reportable with replay input");
 

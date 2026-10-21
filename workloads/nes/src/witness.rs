@@ -77,7 +77,7 @@ where
             aggregate,
             &[*action],
             RetentionPolicy::Unprobed,
-            true,
+            searcher::search::rollout::RolloutStop::new(true),
         )?;
         let [last] = result.actions.as_slice() else {
             return Err("witness did not execute its next action".into());

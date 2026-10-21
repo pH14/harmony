@@ -442,7 +442,7 @@ pub(crate) fn execute_job(
     replay_certificates: &[Option<[u8; 32]>],
     parent_milestones: FaultMilestones,
     suffix: &[FaultAction],
-    stop_rollout_on_objective: bool,
+    stop: searcher::search::rollout::RolloutStop,
 ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
     if replay.len() != replay_certificates.len() {
         return Err("fault replay certificate count does not match its action path".into());
@@ -504,7 +504,7 @@ pub(crate) fn execute_job(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop_rollout_on_objective) {
+        if outcome.should_stop(stop) {
             break;
         }
     }
@@ -1023,7 +1023,7 @@ impl TargetExecution for FaultWorkload {
         parent_milestones: FaultMilestones,
         suffix: &[FaultAction],
         _retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: searcher::search::rollout::RolloutStop,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
         execute_job(
             target,
@@ -1032,7 +1032,7 @@ impl TargetExecution for FaultWorkload {
             replay_certificates,
             parent_milestones,
             suffix,
-            stop_rollout_on_objective,
+            stop,
         )
     }
 
@@ -1045,7 +1045,7 @@ impl TargetExecution for FaultWorkload {
         parent_milestones: FaultMilestones,
         suffix: &[FaultAction],
         _retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: searcher::search::rollout::RolloutStop,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
         execute_job(
             target,
@@ -1054,7 +1054,7 @@ impl TargetExecution for FaultWorkload {
             &vec![None; replay.len()],
             parent_milestones,
             suffix,
-            stop_rollout_on_objective,
+            stop,
         )
     }
 }
@@ -1632,6 +1632,7 @@ mod tests {
                 duration_checkpoint_before: None,
                 duration_checkpoint_after: None,
                 suffix_limit: None,
+                deadline_actions: None,
             });
             let line = serde_json::to_string(&record).unwrap();
             assert!(line.contains(&format!("\"digest\":\"{digest}\"")));

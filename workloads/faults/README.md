@@ -205,8 +205,10 @@ last duration while jobs from the parent still keep states, so a lineage keeps
 one fault rate across jobs. Job length follows the suffix reach in the
 [searcher README](../../dissonance/searcher/README.md). It starts at 64
 actions and stays there while most actions open slots no state has held
-before, which fault actions do because the edge bucket is part of the holder
-identity.
+before. Fault actions often do, because the edge bucket is part of the holder
+identity. With every fault kind, later actions of long jobs open fewer novel
+slots, and most jobs return to one action. A worker ends its job at the
+search's wall-time limit, as the searcher README describes.
 Each action also records a coverage
 quantum: the number of coverage callbacks an instrumented thread makes between
 VM exits during the action's window. It is drawn log-uniform over powers of two

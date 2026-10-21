@@ -433,7 +433,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     parent_milestones: Mm2Milestones,
     suffix: &[ButtonChord],
     retention: RetentionPolicy,
-    stop_rollout_on_objective: bool,
+    stop: searcher::search::rollout::RolloutStop,
 ) -> Result<Mm2CampaignJobResult<M>, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -500,7 +500,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop_rollout_on_objective) {
+        if outcome.should_stop(stop) {
             break;
         }
     }
@@ -823,7 +823,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for Mm2Game<M> {
         parent_milestones: Self::Milestones,
         suffix: &[Self::Action],
         retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: searcher::search::rollout::RolloutStop,
     ) -> Result<Mm2CampaignJobResult<M>, Box<dyn Error>> {
         target.restore(origin_snapshot)?;
         for action in replay {
@@ -838,7 +838,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for Mm2Game<M> {
             parent_milestones,
             suffix,
             retention,
-            stop_rollout_on_objective,
+            stop,
         )
     }
 }
