@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,16 +27,20 @@ const membersEnv = "HARNESS_ETCD_MEMBERS"
 
 type adapter struct {
 	members []string
+	names   []string
 }
 
 func (adapter) Family() family.Family { return family.Register{} }
 
+func (a adapter) Nodes() []string { return a.names }
+
 func (a adapter) Connect(context.Context, int) (runner.Client, error) {
-	return client{members: a.members, http: newHTTP()}, nil
+	return client{members: a.members, names: a.names, http: newHTTP()}, nil
 }
 
 type client struct {
 	members []string
+	names   []string
 	http    *http.Client
 }
 
@@ -50,7 +55,20 @@ func newHTTP() *http.Client {
 func (c client) Close() {}
 
 type kv struct {
-	Value string `json:"value"`
+	Key            string `json:"key"`
+	Value          string `json:"value"`
+	CreateRevision number `json:"create_revision"`
+	ModRevision    number `json:"mod_revision"`
+	Version        number `json:"version"`
+}
+
+// The gateway writes 64-bit integers as JSON strings.
+type number uint64
+
+func (c *number) UnmarshalJSON(data []byte) error {
+	n, err := strconv.ParseUint(strings.Trim(string(data), `"`), 10, 64)
+	*c = number(n)
+	return err
 }
 
 // The gateway omits zero fields: a range with no match has no "kvs" and a
@@ -87,7 +105,16 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		}
 		return nil, nil
 	case family.RegisterReadF:
-		r, err := c.post(ctx, base, "/v3/kv/range", map[string]any{"key": key})
+		body := map[string]any{"key": key}
+		if op.Node != "" {
+			pinned, err := c.fence(ctx, op.Node)
+			if err != nil {
+				return nil, runner.Definite(err)
+			}
+			base = pinned
+			body["serializable"] = true
+		}
+		r, err := c.post(ctx, base, "/v3/kv/range", body)
 		if err != nil {
 			return nil, runner.Definite(err)
 		}
@@ -102,8 +129,70 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 			return string(value), nil
 		}
 		return nil, runner.Definite(fmt.Errorf("range: %d values for one key", len(r.Kvs)))
+	case family.RegisterReplicas:
+		copies, err := c.replicas(ctx, op.Node, op.V.(family.ReplicaQuery).Keys)
+		if err != nil {
+			return nil, runner.Definite(err)
+		}
+		return copies, nil
 	}
 	return nil, runner.Definite(fmt.Errorf("unknown operation %q", op.F))
+}
+
+// A member answers a put only after it has applied the put, and it applies
+// entries in log order. Once the fence put returns, a serializable range on
+// that member sees every write acknowledged before the fence started.
+func (c client) fence(ctx context.Context, node string) (string, error) {
+	at := slices.Index(c.names, node)
+	if at < 0 {
+		return "", fmt.Errorf("unknown node %q", node)
+	}
+	base := c.members[at]
+	value := fmt.Sprintf("%016x", sdk.Random())
+	if _, err := c.post(ctx, base, "/v3/kv/put", map[string]any{"key": enc("fence-" + node), "value": enc(value)}); err != nil {
+		return "", fmt.Errorf("fence on %s: %w", node, err)
+	}
+	return base, nil
+}
+
+func (c client) replicas(ctx context.Context, node string, keys []string) (map[string]family.Copy, error) {
+	base, err := c.fence(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	sorted := slices.Sorted(slices.Values(keys))
+	r, err := c.post(ctx, base, "/v3/kv/range", map[string]any{
+		"key":          enc(sorted[0]),
+		"range_end":    enc(sorted[len(sorted)-1] + "\x00"),
+		"serializable": true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	copies := make(map[string]family.Copy, len(keys))
+	for _, key := range keys {
+		copies[key] = family.Copy{}
+	}
+	for _, entry := range r.Kvs {
+		name, err := base64.StdEncoding.DecodeString(entry.Key)
+		if err != nil {
+			return nil, err
+		}
+		if _, wanted := copies[string(name)]; !wanted {
+			continue
+		}
+		value, err := base64.StdEncoding.DecodeString(entry.Value)
+		if err != nil {
+			return nil, err
+		}
+		text := string(value)
+		copies[string(name)] = family.Copy{Value: &text, Meta: map[string]uint64{
+			"create_revision": uint64(entry.CreateRevision),
+			"mod_revision":    uint64(entry.ModRevision),
+			"version":         uint64(entry.Version),
+		}}
+	}
+	return copies, nil
 }
 
 // Only a refused or failed dial is definite. The gateway answers every other
@@ -171,5 +260,9 @@ func main() {
 			members[i] = fmt.Sprintf("http://10.77.0.%d:2379", i+1)
 		}
 	}
-	runner.Main(adapter{members: members})
+	names := make([]string, count)
+	for i := range names {
+		names[i] = fmt.Sprintf("m%d", i+1)
+	}
+	runner.Main(adapter{members: members, names: names})
 }

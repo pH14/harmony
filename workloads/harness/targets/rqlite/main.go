@@ -26,6 +26,7 @@ const (
 	upsertSQL = "INSERT INTO kv(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v"
 	casSQL    = "UPDATE kv SET v = ? WHERE k = ? AND v = ?"
 	readSQL   = "SELECT v FROM kv WHERE k = ?"
+	keysSQL   = "SELECT k, v FROM kv"
 	appendSQL = "INSERT INTO log(v) VALUES(?)"
 	scanSQL   = "SELECT v FROM log ORDER BY id"
 	fenceSQL  = "UPDATE ready SET n = n + 1 WHERE k = 1"
@@ -266,6 +267,18 @@ func key(k string) (int64, error) {
 }
 
 func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
+	if op.F == family.RegisterReplicas {
+		pinned, err := pinnedClient(ctx, op.Node)
+		if err != nil {
+			return nil, runner.Definite(err)
+		}
+		defer pinned.Close()
+		copies, err := pinned.replicas(ctx, op.V.(family.ReplicaQuery).Keys)
+		if err != nil {
+			return nil, runner.Definite(err)
+		}
+		return copies, nil
+	}
 	k, err := key(op.K)
 	if err != nil {
 		return nil, runner.Definite(err)
@@ -341,6 +354,52 @@ func (c *client) read(ctx context.Context, k int64, level string) (any, error) {
 		}
 	}
 	return nil, fmt.Errorf("query: %d rows for one key", len(res.Values))
+}
+
+// A row has no version, so a copy holds the value alone.
+func (c *client) replicas(ctx context.Context, keys []string) (map[string]family.Copy, error) {
+	resp, status, err := c.post(ctx, "/db/query?level=none", [][]any{{keysSQL}})
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("query: status %d: %s", status, resp.text)
+	}
+	if resp.Error != "" {
+		return nil, fmt.Errorf("query: %s", resp.Error)
+	}
+	if len(resp.Results) != 1 {
+		return nil, fmt.Errorf("query: %d results", len(resp.Results))
+	}
+	res := resp.Results[0]
+	if res.Error != "" {
+		return nil, fmt.Errorf("query: %s", res.Error)
+	}
+	copies := make(map[string]family.Copy, len(keys))
+	for _, name := range keys {
+		copies[name] = family.Copy{}
+	}
+	for _, row := range res.Values {
+		if len(row) != 2 {
+			return nil, fmt.Errorf("query: row has %d columns", len(row))
+		}
+		k, ok := row[0].(float64)
+		if !ok {
+			return nil, fmt.Errorf("query: key %v has type %T", row[0], row[0])
+		}
+		name := fmt.Sprintf("k%d", int64(k))
+		if _, wanted := copies[name]; !wanted {
+			continue
+		}
+		switch value := row[1].(type) {
+		case nil:
+		case string:
+			copies[name] = family.Copy{Value: &value}
+		default:
+			return nil, fmt.Errorf("query: value %v has type %T", value, value)
+		}
+	}
+	return copies, nil
 }
 
 func (c *client) execute(ctx context.Context, statements [][]any) (result, error) {

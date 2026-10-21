@@ -168,6 +168,12 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		}
 		c.remember(value, next)
 		return nil, nil
+	case family.RegisterReplicas:
+		copies, err := c.replicasOn(ctx, kv, op.V.(family.ReplicaQuery).Keys, op.Node)
+		if err != nil {
+			return nil, runner.Definite(err)
+		}
+		return copies, nil
 	}
 	return nil, runner.Definite(fmt.Errorf("unknown operation %q", op.F))
 }
@@ -176,22 +182,8 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 // hosts it. The read first waits for that store to hold a fence written after
 // the read started, then takes the key's last message from it.
 func (c *client) readOn(ctx context.Context, kv jetstream.KeyValue, key, node string) (any, error) {
-	fenceKey := "fence-" + node
-	revision, err := kv.Put(ctx, fenceKey, []byte(fmt.Sprintf("%016x", sdk.Random())))
-	if err != nil {
-		return nil, fmt.Errorf("fence: %w", err)
-	}
-	fence, err := c.consumerOn(ctx, node, jetstream.ConsumerConfig{
-		FilterSubject: keySubject + fenceKey,
-		DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
-		OptStartSeq:   revision,
-	})
-	if err != nil {
+	if err := c.fenceOn(ctx, kv, node); err != nil {
 		return nil, err
-	}
-	defer c.dropConsumer(fence)
-	if _, err := next(ctx, fence); err != nil {
-		return nil, fmt.Errorf("fence %d on %s: %w", revision, node, err)
 	}
 	last, err := c.consumerOn(ctx, node, jetstream.ConsumerConfig{
 		FilterSubject: keySubject + key,
@@ -213,6 +205,72 @@ func (c *client) readOn(ctx context.Context, kv jetstream.KeyValue, key, node st
 		return nil, nil
 	}
 	return string(msg.Data()), nil
+}
+
+func (c *client) fenceOn(ctx context.Context, kv jetstream.KeyValue, node string) error {
+	fenceKey := "fence-" + node
+	revision, err := kv.Put(ctx, fenceKey, []byte(fmt.Sprintf("%016x", sdk.Random())))
+	if err != nil {
+		return fmt.Errorf("fence: %w", err)
+	}
+	fence, err := c.consumerOn(ctx, node, jetstream.ConsumerConfig{
+		FilterSubject: keySubject + fenceKey,
+		DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
+		OptStartSeq:   revision,
+	})
+	if err != nil {
+		return err
+	}
+	defer c.dropConsumer(fence)
+	if _, err := next(ctx, fence); err != nil {
+		return fmt.Errorf("fence %d on %s: %w", revision, node, err)
+	}
+	return nil
+}
+
+// The consumer delivers the last message of every subject in the bucket from
+// the node's own store. The stream sequence of that message is the key's
+// revision, which is the same on every replica.
+func (c *client) replicasOn(ctx context.Context, kv jetstream.KeyValue, keys []string, node string) (map[string]family.Copy, error) {
+	if err := c.fenceOn(ctx, kv, node); err != nil {
+		return nil, err
+	}
+	last, err := c.consumerOn(ctx, node, jetstream.ConsumerConfig{
+		FilterSubject: keySubject + ">",
+		DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer c.dropConsumer(last)
+	copies := make(map[string]family.Copy, len(keys))
+	for _, key := range keys {
+		copies[key] = family.Copy{}
+	}
+	initial := last.CachedInfo().NumPending
+	for received, pending := uint64(0), initial; received < initial && pending > 0; received++ {
+		msg, err := next(ctx, last)
+		if err != nil {
+			return nil, fmt.Errorf("keys on %s: %w", node, err)
+		}
+		meta, err := msg.Metadata()
+		if err != nil {
+			return nil, fmt.Errorf("keys on %s: %w", node, err)
+		}
+		pending = meta.NumPending
+		key := strings.TrimPrefix(msg.Subject(), keySubject)
+		if _, wanted := copies[key]; !wanted {
+			continue
+		}
+		switch msg.Headers().Get("KV-Operation") {
+		case "DEL", "PURGE":
+			copies[key] = family.Copy{}
+			continue
+		}
+		value := string(msg.Data())
+		copies[key] = family.Copy{Value: &value, Meta: map[string]uint64{"revision": meta.Sequence.Stream}}
+	}
+	return copies, nil
 }
 
 func (c *client) consumerOn(ctx context.Context, node string, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
