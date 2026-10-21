@@ -210,6 +210,8 @@ pub struct Report {
     pub bugs: Vec<BugSummary>,
     #[serde(default)]
     pub never_satisfied: Vec<String>,
+    #[serde(default)]
+    pub undecided_checks: crate::archive::UndecidedChecks,
     pub replays: Vec<ReplaySummary>,
     pub execution_ticks: u64,
     pub wall_seconds: u64,
@@ -245,6 +247,7 @@ impl Report {
             first_bug_execution: None,
             bugs: Vec::new(),
             never_satisfied: Vec::new(),
+            undecided_checks: crate::archive::UndecidedChecks::default(),
             replays: Vec::new(),
             execution_ticks: 0,
             wall_seconds: 0,
@@ -619,6 +622,7 @@ mod live {
             "milestones": archive.milestones,
             "assertions": archive.assertions,
             "never_satisfied": archive.assertions.never_satisfied(),
+            "undecided_checks": archive.undecided_checks,
             "park_sites": archive.park_sites,
             "park_reads": archive.park_reads,
             "park_thresholds": archive.park_thresholds,
@@ -646,6 +650,7 @@ mod live {
         for id in &report.never_satisfied {
             eprintln!("FAIL: assertion never satisfied: {id}");
         }
+        report.undecided_checks = archive.undecided_checks;
         report.executions = campaign_report.campaign.executions_completed;
         report.execution_ticks = campaign_report.campaign.execution_work;
         for bug in &written {
@@ -1289,6 +1294,7 @@ mod tests {
             start_generation: 7,
             end_generation: 7,
             points: ids(&[11]),
+            undecided_keys: 0,
             pending_faults: 0,
         };
         let observation = |check| FaultObservations {

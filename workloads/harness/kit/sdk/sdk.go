@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"math/rand/v2"
@@ -136,6 +137,22 @@ func emit(kind Kind, hit, cond bool, message string, details map[string]any, ski
 	if err != nil {
 		panic("encode assertion: " + err.Error())
 	}
+	write(dir, line)
+}
+
+func CheckUndecided(keys int) {
+	dir := os.Getenv("ANTITHESIS_OUTPUT_DIR")
+	if dir == "" || keys <= 0 {
+		return
+	}
+	write(dir, UndecidedRecord(keys))
+}
+
+func UndecidedRecord(keys int) []byte {
+	return fmt.Appendf(nil, "{\"harmony_check\":{\"undecided_keys\":%d}}\n", keys)
+}
+
+func write(dir string, line []byte) {
 	sink.Lock()
 	defer sink.Unlock()
 	file, err := os.OpenFile(filepath.Join(dir, "sdk.jsonl"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)

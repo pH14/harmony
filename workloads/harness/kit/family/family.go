@@ -32,10 +32,11 @@ type Violation struct {
 }
 
 type Report struct {
-	Violations []Violation
-	Decided    bool
-	Undecided  map[string]bool
-	Facts      map[string]bool
+	Violations    []Violation
+	Decided       bool
+	Undecided     map[string]bool
+	Facts         map[string]bool
+	UndecidedKeys int
 }
 
 type Family interface {

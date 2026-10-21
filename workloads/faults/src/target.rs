@@ -617,6 +617,8 @@ pub struct CheckEvidence {
     pub start_generation: u64,
     pub end_generation: u64,
     pub points: Vec<String>,
+    #[serde(default)]
+    pub undecided_keys: u64,
     pub pending_faults: u64,
 }
 
@@ -650,15 +652,20 @@ pub struct CompletedCheck {
     pub start_generation: u64,
     pub end_generation: u64,
     pub points: Vec<String>,
+    #[serde(default)]
+    pub undecided_keys: u64,
 }
 
 impl SdkCapture {
-    fn note_completed_check(&mut self, run: u64, check_passes: &BTreeMap<u64, BTreeSet<String>>) {
+    fn note_completed_check(
+        &mut self,
+        run: u64,
+        check_passes: &BTreeMap<u64, BTreeSet<String>>,
+        check_undecided: &BTreeMap<u64, u64>,
+    ) {
         let register = |id: u32| self.registers.get(&id).copied().unwrap_or_default();
-        let Some(points) = check_passes
-            .get(&register(reg::COMPLETED_CHECK_PID))
-            .filter(|points| !points.is_empty())
-        else {
+        let pid = register(reg::COMPLETED_CHECK_PID);
+        let Some(points) = check_passes.get(&pid).filter(|points| !points.is_empty()) else {
             return;
         };
         self.completed_check = Some(CompletedCheck {
@@ -666,6 +673,7 @@ impl SdkCapture {
             start_generation: register(reg::COMPLETED_CHECK_START_GENERATION),
             end_generation: register(reg::COMPLETED_CHECK_END_GENERATION),
             points: points.iter().cloned().collect(),
+            undecided_keys: check_undecided.get(&pid).copied().unwrap_or_default(),
         });
     }
 
@@ -687,6 +695,8 @@ impl SdkCapture {
 struct SdkDecoderState {
     capture: SdkCapture,
     check_passes: BTreeMap<u64, BTreeSet<String>>,
+    #[serde(default)]
+    check_undecided: BTreeMap<u64, u64>,
     last_moment: u64,
     offset: u32,
     action_after: Option<u64>,
@@ -763,6 +773,7 @@ impl SdkDecoder {
                         .sum::<usize>()
             })
             .sum::<usize>();
+        bytes += self.state.check_undecided.len() * tree_entry::<u64, u64>();
         bytes += capture.parks.capacity() * std::mem::size_of::<ParkLanding>();
         bytes += capture.park_reads.capacity() * std::mem::size_of::<ParkRead>();
         if let Some(check) = &capture.completed_check {
@@ -784,12 +795,16 @@ impl SdkDecoder {
         let state = std::sync::Arc::make_mut(&mut staged.state);
         let capture = &mut state.capture;
         let check_passes = &mut state.check_passes;
+        let check_undecided = &mut state.check_undecided;
         let mut processed = 0_usize;
         for (moment, event_id, bytes) in events {
             processed += 1;
             if *event_id == JSON_EVENT_ID && bytes.trim_ascii_start().first() == Some(&b'{') {
                 if let Some(event) = decode_json_event(bytes) {
                     capture.setup_complete |= event.setup_complete;
+                    if let (Some(keys), Some(pid)) = (event.undecided_keys, event.pid) {
+                        check_undecided.insert(pid, keys);
+                    }
                     if let Some(park) = event.park {
                         capture.parks.push(ParkLanding {
                             moment: *moment,
@@ -848,9 +863,10 @@ impl SdkDecoder {
                             let previous = capture.registers.insert(local, value);
                             if local == reg::CHECKS_STARTED && previous != Some(value) {
                                 check_passes.clear();
+                                check_undecided.clear();
                             }
                             if local == reg::COMPLETED_CHECK_RUN {
-                                capture.note_completed_check(value, check_passes);
+                                capture.note_completed_check(value, check_passes, check_undecided);
                             }
                         }
                         STATE_MAX => {
@@ -935,10 +951,14 @@ pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, S
 fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, String> {
     let mut capture = SdkCapture::default();
     let mut check_passes: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+    let mut check_undecided: BTreeMap<u64, u64> = BTreeMap::new();
     for (moment, event_id, bytes) in events {
         if *event_id == JSON_EVENT_ID && bytes.trim_ascii_start().first() == Some(&b'{') {
             if let Some(event) = decode_json_event(bytes) {
                 capture.setup_complete |= event.setup_complete;
+                if let (Some(keys), Some(pid)) = (event.undecided_keys, event.pid) {
+                    check_undecided.insert(pid, keys);
+                }
                 if let Some(park) = event.park {
                     capture.parks.push(ParkLanding {
                         moment: *moment,
@@ -995,9 +1015,10 @@ fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapt
                         let previous = capture.registers.insert(local, value);
                         if local == reg::CHECKS_STARTED && previous != Some(value) {
                             check_passes.clear();
+                            check_undecided.clear();
                         }
                         if local == reg::COMPLETED_CHECK_RUN {
-                            capture.note_completed_check(value, &check_passes);
+                            capture.note_completed_check(value, &check_passes, &check_undecided);
                         }
                     }
                     STATE_MAX => {
@@ -1117,6 +1138,7 @@ impl FaultObservations {
                     start_generation: completed.start_generation,
                     end_generation: completed.end_generation,
                     points: completed.points,
+                    undecided_keys: completed.undecided_keys,
                     pending_faults: value(reg::PENDING_FAULTS),
                 }
             }),
@@ -2107,10 +2129,49 @@ mod tests {
                 start_generation: 2,
                 end_generation: 2,
                 points: vec!["checked".to_owned()],
+                undecided_keys: 0,
                 pending_faults: 1,
             })
         );
         assert!(FaultObservations::default().check.is_none());
+    }
+
+    fn json_undecided(pid: u64, keys: u64) -> (u64, u32, Vec<u8>) {
+        (
+            0,
+            JSON_EVENT_ID,
+            format!(
+                r#"{{"harmony_attribution":{{"rip":"0x1","pid":{pid},"comm_hex":"61"}},"harmony_check":{{"undecided_keys":{keys}}}}}"#
+            )
+            .into_bytes(),
+        )
+    }
+
+    #[test]
+    fn a_completed_check_carries_its_own_undecided_keys() {
+        let mut events = vec![
+            state_event(reg::CHECK_ENABLED, STATE_SET, 1),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+            json_pass(40, "checked"),
+            json_undecided(40, 3),
+            json_undecided(41, 9),
+        ];
+        events.extend(completion(40, 1, 1));
+        let check = |events: &[(u64, u32, Vec<u8>)]| {
+            let capture = decode_sdk_events(events).unwrap();
+            assert_eq!(capture, decode_sdk_events_reference(events).unwrap());
+            FaultObservations::new(1, &capture, FaultStop::Deadline)
+                .check
+                .unwrap()
+        };
+        assert_eq!(check(&events).undecided_keys, 3);
+        events.extend([
+            state_event(reg::CHECKS_STARTED, STATE_SET, 2),
+            json_pass(40, "checked"),
+        ]);
+        events.extend(completion(40, 2, 1));
+        let next = check(&events);
+        assert_eq!((next.run, next.undecided_keys), (2, 0));
     }
 
     #[test]

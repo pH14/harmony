@@ -259,6 +259,7 @@ func (r Register) Check(h *history.History) Report {
 		switch {
 		case budget.exhausted:
 			report.Undecided[RegisterLinearizable] = true
+			report.UndecidedKeys++
 		case !result:
 			found.add(RegisterLinearizable, func() map[string]any {
 				return map[string]any{"key": key, "operations": len(operations)}

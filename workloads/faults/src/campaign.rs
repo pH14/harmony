@@ -38,9 +38,9 @@ use crate::{
     archive::{
         DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultHangRecord,
         FaultInput, FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER,
-        MAX_RECORDED_BUGS, MAX_RECORDED_HANGS, ParkThresholds, REPLACEMENT_IDENTIFIER, action_cost,
-        archive_key, bug_outcome, merge_milestones, merge_progress_watermark, milestone_key,
-        milestones, park_threshold_bucket, sample_action,
+        MAX_RECORDED_BUGS, MAX_RECORDED_HANGS, ParkThresholds, REPLACEMENT_IDENTIFIER,
+        UndecidedChecks, action_cost, archive_key, bug_outcome, merge_milestones,
+        merge_progress_watermark, milestone_key, milestones, park_threshold_bucket, sample_action,
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
@@ -140,6 +140,25 @@ pub struct FaultCampaignEvidence {
     park_sites: BTreeMap<u64, u64>,
     park_reads: BTreeMap<u64, u64>,
     park_thresholds: BTreeMap<u32, ParkThresholds>,
+    undecided_checks: UndecidedChecks,
+    undecided_execution: Option<(u64, u64)>,
+}
+
+impl FaultCampaignEvidence {
+    fn note_undecided_keys(&mut self, sequence: u64, keys: u64) {
+        let counted = match self.undecided_execution {
+            Some((execution, counted)) if execution == sequence => counted,
+            _ => 0,
+        };
+        let totals = &mut self.undecided_checks;
+        totals.keys = totals.keys.saturating_sub(counted).saturating_add(keys);
+        match (counted > 0, keys > 0) {
+            (false, true) => totals.executions = totals.executions.saturating_add(1),
+            (true, false) => totals.executions = totals.executions.saturating_sub(1),
+            _ => {}
+        }
+        self.undecided_execution = Some((sequence, keys));
+    }
 }
 
 pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
@@ -625,6 +644,7 @@ impl Reporting for FaultWorkload {
             park_sites: evidence.park_sites.clone(),
             park_reads: evidence.park_reads.clone(),
             park_thresholds: evidence.park_thresholds.clone(),
+            undecided_checks: evidence.undecided_checks,
         }
     }
 }
@@ -1164,6 +1184,13 @@ impl Evaluation for FaultWorkload {
             for read in &observation.park_reads {
                 *evidence.park_reads.entry(read.site).or_default() += 1;
             }
+            evidence.note_undecided_keys(
+                sequence,
+                observation
+                    .check
+                    .as_ref()
+                    .map_or(0, |check| check.undecided_keys),
+            );
         }
         let bug = action
             .observations
@@ -1809,6 +1836,50 @@ mod tests {
         );
         assert_eq!(evidence.park_sites.get(&9), Some(&1));
         assert_eq!(evidence.park_reads.get(&9), Some(&1));
+    }
+
+    #[test]
+    fn undecided_keys_count_the_latest_check_of_each_execution() {
+        let game = game();
+        let mut evidence = FaultCampaignEvidence::default();
+        let checked = |keys| FaultObservations {
+            check: Some(crate::target::CheckEvidence {
+                run: 1,
+                undecided_keys: keys,
+                ..crate::target::CheckEvidence::default()
+            }),
+            ..FaultObservations::default()
+        };
+        let result = |observations| FaultCampaignActionResult {
+            action: FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
+            observations,
+            milestones: FaultMilestones::default(),
+            outcome: Outcome {
+                objective_reached: false,
+                disposition: ExecutionDisposition::Runnable,
+            },
+            candidate: None,
+        };
+        for (sequence, observations) in [
+            (1, vec![checked(2)]),
+            (1, vec![checked(3), checked(4)]),
+            (2, vec![checked(0)]),
+            (3, vec![checked(5)]),
+            (3, vec![FaultObservations::default()]),
+            (4, vec![checked(1)]),
+        ] {
+            game.merge_action_evidence(&mut evidence, &result(observations), sequence, || {
+                Err("no input".into())
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            evidence.undecided_checks,
+            UndecidedChecks {
+                executions: 2,
+                keys: 5,
+            }
+        );
     }
 
     #[test]

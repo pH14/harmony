@@ -41,12 +41,13 @@ func main() {
 		runner.Emit(fam, report)
 	}
 	out, err := json.Marshal(map[string]any{
-		"files":      h.Files,
-		"ops":        len(h.Ops),
-		"malformed":  h.Malformed,
-		"decided":    report.Decided,
-		"facts":      report.Facts,
-		"violations": report.Violations,
+		"files":          h.Files,
+		"ops":            len(h.Ops),
+		"malformed":      h.Malformed,
+		"decided":        report.Decided,
+		"undecided_keys": report.UndecidedKeys,
+		"facts":          report.Facts,
+		"violations":     report.Violations,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

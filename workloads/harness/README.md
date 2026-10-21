@@ -141,7 +141,8 @@ indeterminate write or `cas` whose new value no read returns and no `cas`
 expects, since such an operation can always be linearized last. Each remaining
 open operation can still double the search, so the check stops after a budget
 of model steps per key (`Register.Steps`, default 65,536) and then reports
-neither a violation nor a pass. The budget counts steps rather than time
+neither a violation nor a pass for that property. The report counts these keys
+in `UndecidedKeys`. The budget counts steps rather than time
 because the check runs in the guest, where pure computation advances no
 virtual time: a time limit never fires there, and an exhaustive search freezes
 the guest until the host watchdog ends the job. A cheaper check reports a read
@@ -175,6 +176,11 @@ also writes these `Sometimes` assertions:
   `HARMONY_DISTURBANCE_GENERATION` compared with the first check's value,
   which the check stores in `disturbance-baseline` in the journal directory;
 - the family's own, such as `log: an append was acknowledged`.
+
+When the family left keys undecided, the check writes one
+`{"harmony_check":{"undecided_keys":N}}` record, which the host carries into
+`undecided_checks` in `campaign-summary.json` and `report.json`. The JSON line
+the check prints and the `harness-check` output both have `undecided_keys`.
 
 The supervisor gives every child `ANTITHESIS_OUTPUT_DIR=/run/antithesis`,
 where `sdk.jsonl` links to `/dev/harmony`. Each record is one `write`.

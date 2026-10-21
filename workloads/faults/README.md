@@ -474,6 +474,16 @@ distinct assertions a workload declares. Every process's records feed the key.
 passed is a campaign failure: it appears under `never_satisfied` in both
 `campaign-summary.json` and `report.json`, and the search prints one
 `FAIL: assertion never satisfied` line for each.
+A harness check that stops checking some keys at its step budget writes
+`{"harmony_check":{"undecided_keys":N}}`. The host keeps the count from the
+process that ran the check, and the completed check's evidence carries it as
+`undecided_keys`, so a replay's `check` object shows it. `undecided_checks` in
+`campaign-summary.json` and `report.json` has `executions`, the number of
+executions whose latest completed check left at least one key undecided, and
+`keys`, the sum of those checks' counts. An execution that starts from an
+archived state and completes no check of its own counts that state's latest
+check. `harmony show` prints `undecided keys: K in E executions` when `keys`
+is above zero.
 `park_sites` in `campaign-summary.json` counts event-park landings by site.
 `park_reads` counts, by landing site, the holds after which the held thread
 read shared memory that another process changed during the hold.

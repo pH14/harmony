@@ -117,6 +117,27 @@ func TestRegisterStepBudgetLeavesLinearizabilityUndecided(t *testing.T) {
 	if !report.Undecided[RegisterLinearizable] {
 		t.Fatalf("undecided %v", report.Undecided)
 	}
+	if report.UndecidedKeys != 1 {
+		t.Fatalf("undecided keys %d", report.UndecidedKeys)
+	}
+}
+
+func TestRegisterCountsEachUndecidedKey(t *testing.T) {
+	b := newBuilder(t)
+	for index, key := range []string{"k0", "k1", "k2"} {
+		at := int64(10 * index)
+		b.write(0, key, "a"+key, at+1, history.OK, at+2)
+		b.read(1, key, "a"+key, at+3, at+4)
+	}
+	b.write(0, "k3", "a", 31, history.OK, 32)
+	report := Register{Steps: 1}.Check(b.build())
+	expectKinds(t, report)
+	if report.UndecidedKeys != 3 {
+		t.Fatalf("undecided keys %d", report.UndecidedKeys)
+	}
+	if clean := (Register{}).Check(b.build()); clean.UndecidedKeys != 0 || clean.Undecided[RegisterLinearizable] {
+		t.Fatalf("report %+v", clean)
+	}
 }
 
 func (b *builder) readKeyOn(p int, node, key string, value any, invoke int64, complete int64) {

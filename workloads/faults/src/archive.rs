@@ -446,12 +446,20 @@ pub struct FaultArchiveReport {
     pub park_reads: BTreeMap<u64, u64>,
     #[serde(default)]
     pub park_thresholds: BTreeMap<u32, ParkThresholds>,
+    #[serde(default)]
+    pub undecided_checks: UndecidedChecks,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ParkThresholds {
     pub armed: u64,
     pub fired: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UndecidedChecks {
+    pub executions: u64,
+    pub keys: u64,
 }
 
 #[must_use]
