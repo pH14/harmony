@@ -728,11 +728,19 @@ a long job adds a new state, so a long job wastes little and extends a lineage
 by many actions per draw. When few actions do, one-action jobs spread over
 many parents find the rare new state at less cost. Starting long gives the
 first jobs from the root deep lineages, and a failing start costs about 126
-actions, because each job moves the length one step. Most fault actions open
-a novel slot, because the edge bucket is part of the holder identity, so fault
-jobs stay at 64 actions. Tiny worlds open novel slots with at most about one
-action in eight, so the reach length falls to one action within the first
-few jobs and the per-parent length decides. The reach counts and the slot
+actions, because each job moves the length one step. Fault actions often open
+a novel slot, because the edge bucket is part of the holder identity. In NATS
+searches with the clock and kill faults left out, 57% to 88% of drawn jobs
+ran 64 actions in four of five 30-minute searches; with every fault kind about
+20% did. Those searches found the NATS bug in 64-action jobs that ended 20 to
+160 seconds of guest time after power-on. Starting long puts those jobs first,
+while every parent is still shallow; searches that started at one action reached
+64 actions only after the archive had grown deep, and missed the bug more often.
+Tiny worlds open novel slots with at most about one action in eight, so the
+reach length falls to one action within the first few jobs and the per-parent
+length decides. The fall costs those first jobs: crossing a fresh room in 16
+tiny-world layouts takes a median of 118 units of work with the reach, against
+29.5 without it. The reach counts and the slot
 set change only at admission. The core checkpoint carries the counts, the
 archive checkpoint carries the slot set, and the slot set counts toward the
 archive's history memory.
