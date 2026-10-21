@@ -361,11 +361,14 @@ NATS documents that this default can lose acknowledged writes when the
 replicas lose power before the sync
 ([JetStream](https://docs.nats.io/nats-concepts/jetstream),
 [nats-server #7564](https://github.com/nats-io/nats-server/issues/7564)), and a
-search of that build finds this loss within minutes: a power cut to every node
-and two restarts, after which reads return an older value or no value for keys
-with acknowledged writes. An explain report whose remaining faults cut power
-says so in its summary. For this build, replay the report's `actions.json` on
-the default image: a violation that disappears there is the documented loss.
+search of that build finds this loss within minutes: reads return an older
+value or no value for keys with acknowledged writes after a power cut to every
+node. An explain report whose remaining faults cut power says so in its
+summary. The loss needs a power cut, because a killed or restarted node keeps
+every write it handed to the kernel. A finding whose shrunk faults include no
+power cut is outside the documented loss. A replay of `actions.json` on the
+default image can diverge from the run, so search the default image to check a
+finding that needs a power cut.
 
 Each client maps every value it has written or read to that value's
 revision. A `cas` from `old` updates with `old`'s revision. When the revision

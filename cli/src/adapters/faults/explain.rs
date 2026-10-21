@@ -1051,7 +1051,7 @@ pub fn render(explanation: &Explanation) -> String {
     if !power_cuts.is_empty() {
         let _ = writeln!(
             text,
-            "- Power loss: fault {} cuts power, and a node loses every write it had not synced to disk. A system that acknowledges a write before it syncs it loses acknowledged writes this way by design. Replay `actions.json` on a build that syncs every write before acknowledging it to tell that loss from a bug.",
+            "- Power loss: fault {} cuts power, and a node loses every write it had not synced to disk. A system that acknowledges a write before it syncs it loses acknowledged writes this way by design. A replay on a build that syncs every write can diverge from this run, so search that build to tell that loss from a bug.",
             power_cuts.join(", ")
         );
     }
