@@ -147,11 +147,12 @@ function paintRecording() {
   if (!map) throw new Error("Wait for the game map to load.");
   composeView(recordingCanvas, {
     map, overview: document.querySelector(".level-overview"),
-    title: `Harmony Plays ${game.title} | ${$("workers").textContent} ${Number($("workers").textContent) === 1 ? "Core" : "Cores"}`,
+    title: `Harmony Plays ${game.title} | ${$("workers").textContent} ${Number($("workers").textContent) === 1 ? "Worker" : "Workers"}`,
     detail: maps.get(Number(map.dataset.map))?.label || "",
     progress: `${$("hero-timelines").textContent} timelines tried · ${$("work").textContent} game frames`,
     attribution: `${document.querySelector(".game-attribution")?.textContent || game.title} / github.com/pH14/harmony`,
   });
+  recording.frame();
 }
 window.addEventListener("beforeunload", (event) => {
   if (recording.state !== "idle") { event.preventDefault(); event.returnValue = ""; }
@@ -1745,7 +1746,7 @@ function startSearch(level = bootLevel) {
       } else if (data.type === "batch") {
         if (data.active !== activeSearch) return;
         const { motion, finishes, exits, ...batchStats } = data;
-        swarm.add(activeSearch, motion || [], heat.clock(performance.now()), finishes);
+        swarm.add(activeSearch, motion || [], heat.clock(performance.now()), finishes, liveView && !data.stopped ? 100 : 0);
         if (motion?.length) trailsSeen = true;
         else if (liveView && !trailsSeen) {
           for (const [level, count] of pointLevels) pointLevels.set(level, count * 0.9);

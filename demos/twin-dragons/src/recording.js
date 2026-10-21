@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-const TYPES = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
+const TYPES = ["video/mp4;codecs=avc1.640034", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
 
 export class ViewRecording {
   constructor({ Recorder = globalThis.MediaRecorder, maxBytes = 256 * 1024 * 1024, maxDuration = 10 * 60 * 1000, maxPendingBytes = 8 * 1024 * 1024, onChange = () => {}, onComplete = () => {}, onError = () => {} } = {}) {
@@ -20,7 +20,9 @@ export class ViewRecording {
     this.writable = writable;
     this.writes = Promise.resolve();
     try {
-      this.stream = canvas.captureStream(60);
+      this.stream = canvas.captureStream(0);
+      this.track = this.stream.getVideoTracks()[0];
+      if (!this.track?.requestFrame) throw new Error("Display-paced video recording is unavailable in this browser.");
       this.recorder = new this.Recorder(this.stream, { mimeType: this.mimeType, videoBitsPerSecond: 20_000_000 });
       this.recorder.ondataavailable = ({ data }) => {
         if (this.state === "idle" || !data.size) return;
@@ -40,6 +42,13 @@ export class ViewRecording {
       if (!writable) this.timer = setTimeout(() => this.stop("Recording duration limit reached"), this.maxDuration);
       this.onChange(this.state);
     } catch (error) { this.cleanup(); throw error; }
+  }
+  frame() {
+    if (this.state !== "recording" || this.backpressured || this.recorder.state !== "recording") return false;
+    try {
+      this.track.requestFrame();
+      return true;
+    } catch (error) { this.fail(error); return false; }
   }
   write(data) {
     const writable = this.writable;
@@ -113,7 +122,7 @@ export class ViewRecording {
     if (writable) {
       try { Promise.resolve(writable.abort()).catch(() => {}); } catch { /* Preserve the original capture error. */ }
     }
-    this.recorder = this.stream = null;
+    this.recorder = this.stream = this.track = null;
     this.chunks = [];
     this.backpressured = false;
     this.pendingBytes = 0;

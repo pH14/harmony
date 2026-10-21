@@ -164,20 +164,26 @@ choose.
 The 1920 × 1080 video contains the same map and mini map shown on the
 page, including the current Movement/Heatmap layers, moving sprites, camera
 position rectangle, automatic scrolling and level transitions. It adds a
-“Harmony Plays” game title with the current core count, the map label,
+“Harmony Plays” game title with the current worker count, the map label,
 timeline/frame totals, and game attribution plus the Harmony source URL.
 Inspecting, panning or changing the map during recording changes the video as
 well. Leave the camera following the search to record its automatic scrolling.
 
-Keep the tab visible: background tabs throttle rendering. The browser targets
-60 frames per second at 20 Mbit/s. Composition follows each map render without a
-separate time threshold that skips animation frames. Actual cadence still depends
-on rendering and encoding load; capture settings alone do not prove 60 fps.
+Keep the tab visible: background tabs throttle rendering. Composition follows
+each map render and requests a capture frame afterward, without a separate
+time threshold that skips animation frames. Capture follows display cadence up
+to the browser's capability, including 120 Hz displays, without accelerating
+the game's 60-frame clock. The encoder requests 20 Mbit/s; the browser can use a
+different actual bitrate. Actual captured and presented cadence still
+depends on rendering, encoding and playback load; capture settings alone do
+not prove smooth motion.
 The full-HD canvas scales the layout and text together and keeps pixel-art
-smoothing disabled. Verify exported frame timestamps and changing decoded map
-frames when qualifying recording performance.
-Chrome and Firefox normally export WebM; browsers supporting only MP4 use MP4.
-An unsupported browser disables recording and explains why. The search continues
+smoothing disabled. Verify identifiable sprite positions, camera movement,
+exported frame timestamps and actual playback when qualifying recordings.
+Supported H.264/MP4 is preferred, with WebM and generic MP4 fallbacks.
+Reported support does not guarantee
+encoding or playback at the display cadence.
+The page reports unavailable recording and startup failures. The search continues
 when recording stops or fails. The page asks before navigating away during an
 active recording.
 
@@ -392,7 +398,13 @@ picking the live level again restores the earlier choice.
 Movement shows the level map with small dragon sprites replaying recorded
 search rollouts. Each rollout worker samples its emulator every four game
 frames and at each action's end, without changing inputs, random draws or
-captured endpoints. Loading
+captured endpoints. Native live batches spread sprite starts over at most
+100 milliseconds instead of starting every sampled trail together. Finishing
+trails and the terminal batch start immediately. Each
+sprite still follows its actual samples at 60 game frames per second, and
+does not appear before its scheduled start. Pending starts share the existing
+movement byte and trail limits and freeze with the search's activity clock.
+Regular browser-run searches keep immediate starts. Loading
 frames and frames with zero health are hidden. Each sprite fades in as its
 rollout starts and eases to about two-thirds opacity as it finishes, followed
 by two faint dots at its position six and twelve game frames earlier. Sprites
