@@ -1090,6 +1090,8 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub execution_failures: u64,
     #[serde(default)]
     pub hung_jobs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hang_stop: Option<String>,
     pub objectives_reached: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub objective_witness: Option<Input<A>>,
@@ -1592,6 +1594,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     execution_failures: u64,
     hung_jobs: u64,
     hang_streak: u64,
+    pub(crate) hang_stop: Option<String>,
     pub(crate) objectives_reached: u64,
     pub(crate) objective_witness: Option<Input<G::Action>>,
     sequence: u64,
@@ -1633,6 +1636,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             execution_failures: 0,
             hung_jobs: 0,
             hang_streak: 0,
+            hang_stop: None,
             objectives_reached: 0,
             objective_witness: None,
             sequence: 0,
@@ -2108,6 +2112,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         if let Some(attempted) = hang {
             self.hung_jobs = self.hung_jobs.saturating_add(1);
             self.hang_streak = self.hang_streak.saturating_add(1);
+            if self.hang_stop.is_none() {
+                self.hang_stop = self.hang_streak_failure();
+            }
             workload.merge_hang_evidence(&mut self.evidence, sequence, || {
                 let mut input = self
                     .archive
@@ -2824,6 +2831,7 @@ fn build_report<G: Workload>(
     let terminal_objectives = core.terminal_objectives;
     let execution_failures = core.execution_failures;
     let hung_jobs = core.hung_jobs;
+    let hang_stop = core.hang_stop.clone();
     let objectives_reached = core.objectives_reached;
     let objective_witness = core.objective_witness.clone();
     let replacement_cost_displaced = core.archive.replacement_cost_displaced();
@@ -2894,6 +2902,7 @@ fn build_report<G: Workload>(
         terminal_objectives,
         execution_failures,
         hung_jobs,
+        hang_stop,
         objectives_reached,
         objective_witness,
         replacement_cost_displaced,
@@ -4798,6 +4807,7 @@ where
             counters.bootstrap_execution_work,
             counters.job_execution_work,
         )
+        && core.hang_stop.is_none()
         && replay_job_parents.len()
             < usize::try_from(
                 header
@@ -4900,6 +4910,9 @@ where
                     core.objective_witness.is_some(),
                 ) {
                     return Err("campaign replay selected work after its objective stop".into());
+                }
+                if core.hang_stop.is_some() {
+                    return Err("campaign replay selected work after its hang stop".into());
                 }
                 if stop_reservations_after_work_budget(
                     header.work_budget,
@@ -5413,6 +5426,9 @@ where
                 {
                     return Err("campaign replay selected work after its objective stop".into());
                 }
+                if core.hang_stop.is_some() && replay_job_parents.get(next_slot).is_some() {
+                    return Err("campaign replay selected work after its hang stop".into());
+                }
                 if stop_reservations_after_work_budget(
                     header.work_budget,
                     counters.bootstrap_execution_work,
@@ -5433,6 +5449,7 @@ where
                         counters.bootstrap_execution_work,
                         counters.job_execution_work.saturating_add(execution_work),
                     )
+                    && core.hang_stop.is_none()
                     && replay_job_parents.get(next_slot).is_none()
                 {
                     return Err(
@@ -7046,27 +7063,43 @@ mod tests {
     }
 
     #[test]
-    fn campaign_stops_when_every_job_hangs() {
+    fn campaign_stops_when_every_job_hangs_and_keeps_its_evidence() {
         let (workload, config) = hanging_campaign(1, 1_000);
         let mut stream = Vec::new();
-        let error = run_campaign_checkpointed(
+        let (live, _) = run_campaign_checkpointed(
             &workload,
             &config,
             &CampaignOrigin::Genesis,
             &mut stream,
             None,
         )
-        .expect_err("a host that hangs every job stops the campaign");
+        .expect("a hang stop finishes the campaign");
         assert_eq!(
-            error.to_string(),
-            "campaign stopped after 11 hung jobs in a row: 0 of the 0 earlier jobs hung, \
-             so a run this long has less than a 1 in 1000 chance on a working host"
+            live.hang_stop.as_deref(),
+            Some(
+                "campaign stopped after 11 hung jobs in a row: 0 of the 0 earlier jobs hung, \
+                 so a run this long has less than a 1 in 1000 chance on a working host"
+            )
         );
         let records = stream_records(&stream);
-        assert_eq!(records.len(), 11);
-        assert!(records.iter().all(
-            |record| matches!(record, CampaignStreamRecord::Job(job) if job.decisions.is_empty())
-        ));
+        let jobs = records
+            .iter()
+            .filter(|record| matches!(record, CampaignStreamRecord::Job(_)))
+            .count();
+        assert!(
+            (11..11 + config.window).contains(&jobs),
+            "{jobs} jobs after the stop"
+        );
+        assert!(records.iter().all(|record| match record {
+            CampaignStreamRecord::Job(job) => job.decisions.is_empty(),
+            CampaignStreamRecord::End(_) => true,
+            CampaignStreamRecord::Skip(_) => false,
+        }));
+        assert_eq!(live.hung_jobs, u64::try_from(jobs).unwrap());
+        assert_eq!(u64::from(live.archive.marker), live.hung_jobs);
+        let replayed = replay_campaign_checkpointed(&workload, &stream, None, None)
+            .expect("a stream that stopped on hangs replays");
+        assert_eq!(replayed.0, live);
     }
 
     #[test]

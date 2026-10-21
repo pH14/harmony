@@ -860,6 +860,7 @@ where
             .duration_draw
             .and_then(|draw| duration_policies.context_checkpoint(draw.context));
         let objectives_before = core.objectives_reached;
+        let stopped_before = core.hang_stop.is_some();
         let admission_started = profile_now();
         core.archive
             .set_admission_wave(pending_job.continuation_wave);
@@ -1008,13 +1009,19 @@ where
             counters.note_first_objective(sequence);
         }
         if core.hang_streak() > 0 {
-            if let Some(failure) = core.hang_streak_failure() {
-                return Err(failure.into());
+            match &core.hang_stop {
+                Some(stop) if !stopped_before => {
+                    eprintln!("{stop}; finishing the jobs in flight");
+                }
+                Some(_) => eprintln!(
+                    "campaign reservation {reservation} hung; recorded as hung job {}",
+                    core.hung_jobs()
+                ),
+                None => eprintln!(
+                    "campaign reservation {reservation} hung; recorded as hung job {} and continuing",
+                    core.hung_jobs()
+                ),
             }
-            eprintln!(
-                "campaign reservation {reservation} hung; recorded as hung job {} and continuing",
-                core.hung_jobs()
-            );
         }
         if let Some(sink) = progress.as_deref_mut()
             && progress_checkpoint_due(sequence)
@@ -1111,6 +1118,7 @@ where
                 config.stop_campaign_on_objective,
                 core.objective_witness.is_some(),
             )
+            || core.hang_stop.is_some()
         {
             return Ok(None);
         }

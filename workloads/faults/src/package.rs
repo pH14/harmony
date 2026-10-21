@@ -217,6 +217,8 @@ pub struct Report {
     pub watchdog_cutoffs: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hang_reports: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hang_stop: Option<String>,
     pub execution_failures: u64,
 }
 
@@ -248,6 +250,7 @@ impl Report {
             wall_seconds: 0,
             watchdog_cutoffs: 0,
             hang_reports: Vec::new(),
+            hang_stop: None,
             execution_failures: 0,
         }
     }
@@ -626,6 +629,7 @@ mod live {
             "watchdog_cutoffs": archive.watchdog_cutoffs,
             "hung_jobs": campaign_report.campaign.hung_jobs,
             "hang_reports": hangs.iter().map(HangReport::file_name).collect::<Vec<_>>(),
+            "hang_stop": campaign_report.campaign.hang_stop,
             "execution_failures": campaign_report.campaign.execution_failures,
             "telemetry": campaign_report.campaign.telemetry,
             "snapshot_cache_locks": cache.lock_counters().into_iter().collect::<std::collections::BTreeMap<_, _>>(),
@@ -699,8 +703,14 @@ mod live {
         report.wall_seconds = started.elapsed().as_secs();
         report.watchdog_cutoffs = archive.watchdog_cutoffs;
         report.hang_reports = hangs.iter().map(HangReport::file_name).collect();
+        report
+            .hang_stop
+            .clone_from(&campaign_report.campaign.hang_stop);
         report.execution_failures = campaign_report.campaign.execution_failures;
         report.write(&options.output)?;
+        if let Some(stop) = &report.hang_stop {
+            eprintln!("{stop}");
+        }
         Ok(report)
     }
 

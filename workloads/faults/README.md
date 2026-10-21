@@ -614,7 +614,10 @@ is too long for the hang rate seen before it. With `h` hangs in the `n` jobs
 before the run, the estimated rate is `(h + 1) / (n + 2)`. The campaign stops
 when a run of `k` hangs has a chance below 1 in 1000 under that rate, that is
 when `rate^(k - 1) < 1/1000`. With no earlier jobs this stops after 11 hangs in
-a row. The stop is an incomplete error that names both counts.
+a row. The jobs in flight finish, and the run directory gets `report.json`,
+`campaign-summary.json` and the `hang-N.json` files as for any other run. Both
+reports carry `hang_stop`, a message that names both counts, and the search
+prints it and exits `2`.
 
 Infrastructure failures remain incomplete: the affected reservation returns an
 error before admission, result certification, selection accounting, mixture
