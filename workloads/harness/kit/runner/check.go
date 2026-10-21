@@ -38,6 +38,14 @@ type CheckResult struct {
 	Decided    bool                    `json:"decided"`
 	Violations []family.Violation      `json:"violations"`
 	Facts      map[string]bool         `json:"facts"`
+	Replicas   *ReplicaResult          `json:"replicas,omitempty"`
+}
+
+type ReplicaResult struct {
+	Rounds  int                     `json:"rounds,omitempty"`
+	Agreed  bool                    `json:"agreed"`
+	Nodes   map[string]history.Type `json:"nodes,omitempty"`
+	Skipped string                  `json:"skipped,omitempty"`
 }
 
 func (r CheckResult) String() string {
@@ -97,6 +105,12 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 		}()
 	}
 	wg.Wait()
+	var replicas *ReplicaResult
+	if replicated, ok := fam.(family.Replicated); ok && errors.Join(errs...) == nil {
+		var err error
+		replicas, err = compareReplicas(ctx, adapter, replicated, recorder, journal, nodes, config)
+		errs = append(errs, err)
+	}
 	closeErr := journal.Close()
 	if err := errors.Join(errs...); err != nil {
 		return CheckResult{}, err
@@ -121,6 +135,7 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 		Decided:    report.Decided,
 		Violations: report.Violations,
 		Facts:      report.Facts,
+		Replicas:   replicas,
 	}
 	if len(nodes) > 0 {
 		result.Nodes = map[string]history.Type{}
@@ -135,24 +150,80 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 }
 
 func checkRead(ctx context.Context, adapter Adapter, recorder family.Recorder, journal *history.Journal, p int, op family.Op, timeout time.Duration) (history.Type, error) {
+	outcome, _, err := checkReadResult(ctx, adapter, recorder, journal, p, op, timeout)
+	return outcome, err
+}
+
+func checkReadResult(ctx context.Context, adapter Adapter, recorder family.Recorder, journal *history.Journal, p int, op family.Op, timeout time.Duration) (history.Type, any, error) {
 	client, err := connect(ctx, adapter, p, timeout)
 	if err != nil {
-		return "", nil
+		return "", nil, nil
 	}
 	defer client.Close()
 	index, err := journal.Invoke(p, op.F, op.K, op.Node, op.V)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	result, err := invoke(ctx, client, op, timeout)
 	switch {
 	case err == nil:
-		return history.OK, recorder.Record(journal, p, op, index, result)
+		return history.OK, result, recorder.Record(journal, p, op, index, result)
 	case IsDefinite(err):
-		return history.Fail, journal.Complete(p, history.Fail, op.F, op.K, index, errorValue(err))
+		return history.Fail, nil, journal.Complete(p, history.Fail, op.F, op.K, index, errorValue(err))
 	default:
-		return history.Info, journal.Complete(p, history.Info, op.F, op.K, index, errorValue(err))
+		return history.Info, nil, journal.Complete(p, history.Info, op.F, op.K, index, errorValue(err))
 	}
+}
+
+func compareReplicas(ctx context.Context, adapter Adapter, replicated family.Replicated, recorder family.Recorder, journal *history.Journal, nodes []string, config Config) (*ReplicaResult, error) {
+	if len(nodes) < 2 {
+		return &ReplicaResult{Skipped: "the adapter pins reads to fewer than two nodes"}, nil
+	}
+	rounds, settle := replicated.Settle()
+	result := &ReplicaResult{}
+	for round := range rounds {
+		if round > 0 {
+			timer := time.NewTimer(settle)
+			select {
+			case <-ctx.Done():
+			case <-timer.C:
+			}
+			timer.Stop()
+		}
+		outcomes := make([]history.Type, len(nodes))
+		held := make([]map[string]family.Copy, len(nodes))
+		errs := make([]error, len(nodes))
+		var wg sync.WaitGroup
+		for index, node := range nodes {
+			op := replicated.Replicas(round)
+			op.Node = node
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var value any
+				outcomes[index], value, errs[index] = checkReadResult(ctx, adapter, recorder, journal, len(nodes)+1+index, op, config.Timeout)
+				held[index], _ = value.(map[string]family.Copy)
+			}()
+		}
+		wg.Wait()
+		if err := errors.Join(errs...); err != nil {
+			return nil, err
+		}
+		result.Rounds = round + 1
+		result.Nodes = map[string]history.Type{}
+		copies := map[string]map[string]family.Copy{}
+		for index, node := range nodes {
+			result.Nodes[node] = outcomes[index]
+			if outcomes[index] == history.OK && held[index] != nil {
+				copies[node] = held[index]
+			}
+		}
+		if len(copies) < 2 || replicated.Agree(copies) {
+			result.Agreed = len(copies) >= 2
+			break
+		}
+	}
+	return result, nil
 }
 
 func Emit(fam family.Family, report family.Report) {

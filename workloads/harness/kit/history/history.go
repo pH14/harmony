@@ -133,6 +133,7 @@ type Op struct {
 	Type     Type
 	Invoke   int64
 	Complete int64
+	Ended    int64
 }
 
 func (op *Op) Definite() bool {
@@ -239,6 +240,7 @@ func Build(files []File) *History {
 					Type:     Info,
 					Invoke:   record.TS,
 					Complete: Forever,
+					Ended:    Forever,
 				})
 			case OK, Fail, Info:
 				at, ok := pending[record.I]
@@ -250,6 +252,7 @@ func Build(files []File) *History {
 				op := &h.Ops[at]
 				op.Type = record.T
 				op.Output = record.V
+				op.Ended = record.TS
 				if record.T != Info {
 					op.Complete = record.TS
 				}
