@@ -437,7 +437,7 @@ ghostDot.width = ghostDot.height = 32;
 function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null, visible = null) {
   if (!sprites.complete || !sprites.naturalWidth) return 0;
   const map = maps.get(level), points = rooms?.get(level) || [];
-  const size = Math.max(1, Math.min(2.5, 18 / (SPRITE.height * screenScale)));
+  const size = Math.max(1, 18 / (SPRITE.height * screenScale));
   const radius = 1.7 * size, margin = 32 * size;
   const shown = [];
   let count = 0;
@@ -751,12 +751,9 @@ function followPathExit(from, to, now) {
   if (following) path.show = { level: path.level, from: shown };
 }
 function followStalledPath(now) {
-  if (!ready || path.level == null) return;
-  if (paused || !camera.follow || camera.focus || camera.pinned != null || camera.manual > now || camera.held > now) {
-    path.idle = 0;
-    return;
-  }
-  if (path.show) {
+  if (!ready || path.level == null || paused) return;
+  const canFollow = camera.follow && !camera.focus && camera.pinned == null && camera.manual <= now && camera.held <= now;
+  if (path.show && canFollow) {
     const rooms = catalog.levels.find((entry) => entry.id === path.show.level)?.rooms || [];
     if (roomLevel(branchPreview?.room ?? mapLevel) !== path.show.from) path.show = null;
     else if (rooms.reduce((n, id) => n + (swarmRooms.get(id)?.length || 0), 0) >= 3) {
@@ -778,12 +775,19 @@ function followStalledPath(now) {
   path.idle ||= now;
   if (!path.leftRoot && now - path.idle < (occupied ? PATH_STALL_MS : 250)) return;
   path.leftRoot = false;
-  const onPath = roomLevel(branchPreview?.room ?? mapLevel) === path.level;
+  const shown = roomLevel(branchPreview?.room ?? mapLevel);
+  const onPath = shown === path.level || path.show?.from === shown;
   path.level = deepest;
   if (!path.levels.includes(deepest)) path.levels.push(deepest);
   path.since = now;
   path.idle = 0;
-  if (onPath) showPathLevel(deepest);
+  renderLevelStrip();
+  if (onPath) {
+    if (canFollow) {
+      showPathLevel(deepest);
+      path.show = null;
+    } else path.show = { level: deepest, from: shown };
+  }
 }
 function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
   resumeFollowing(camera);

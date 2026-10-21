@@ -15,9 +15,11 @@ try {
     CanvasRenderingContext2D.prototype.drawImage = function (...args) {
       const result = drawImage.apply(this, args);
       if (window.terminalMotion && this.canvas.classList.contains("area-map") &&
-          args.length === 9 && args[0] instanceof HTMLImageElement && args[1] > 0 &&
+          args.length === 9 && args[0] instanceof HTMLImageElement &&
           window.terminalMotion.length < 5000)
-        window.terminalMotion.push({ at: performance.now(), x: args[5] });
+        window.terminalMotion.push({ at: performance.now(), x: args[5],
+          zoom: Number(this.canvas.dataset.zoom),
+          cssHeight: Math.abs(this.getTransform().d) * args[8] * this.canvas.clientHeight / this.canvas.height });
       return result;
     };
     const Worker = window.Worker;
@@ -57,11 +59,41 @@ try {
     pointFinishDeliver({ ...pointFinishBatch, points: [], motion, finishes: [], exits: [] });
   });
   await page.waitForFunction(() => document.querySelector(".area-map")?.dataset.map === "2", null, { timeout: 3000 });
+  await page.locator('#level-trail button[data-level="0"]').click();
+  await page.evaluate(() => {
+    const motion = Array.from({ length: 4 }, (_, i) => Uint16Array.from([
+      0, 3, 120 + i * 20, 120, 0, 600, 3, 240 + i * 20, 120, 0,
+    ]));
+    pointFinishDeliver({ ...pointFinishBatch, points: [], motion, finishes: [], exits: [] });
+  });
+  await page.waitForFunction(() => document.querySelector('#level-trail button[data-level="3"] .level-live'), null, { timeout: 4000 });
+  assert.equal(await page.locator(".area-map").getAttribute("data-map"), "0", "Pinned history keeps its camera while fresh no-exit activity advances live progress");
+  await page.locator('#level-trail button[data-level="3"]').click();
+  await page.waitForFunction(() => document.querySelector(".area-map")?.dataset.map === "3");
+  await page.reload();
+  await page.waitForFunction(() => window.pointFinishBatch && document.querySelector(".area-map")?.dataset.map === "0", null, { timeout: 15000 });
+  const fresh = await page.evaluate(() => {
+    window.terminalMotion = [];
+    const motion = Array.from({ length: 4 }, (_, i) => Uint16Array.from([
+      0, 4, 120 + i * 20, 120, 2, 120, 4, 12000 + i * 20, 120, 2,
+    ]));
+    pointFinishDeliver({ ...pointFinishBatch, points: [], motion, finishes: [], exits: [] });
+    return performance.now();
+  });
+  await page.waitForFunction(() => document.querySelector(".area-map")?.dataset.map === "4", null, { timeout: 1500 });
+  assert.ok(await page.evaluate(start => performance.now() - start, fresh) < 1500,
+    "An empty view follows fresh no-exit work without occupied-view stall delays");
+  await page.waitForFunction(() => terminalMotion.some(p => p.zoom < 5), null, { timeout: 2500 });
+  const drawn = await page.evaluate(() => terminalMotion);
+  assert.ok(drawn.some(p => p.zoom > 10), "The fixture also draws close-up actors");
+  assert.ok(drawn.filter(p => p.zoom < 5).every(p => p.cssHeight >= 17.9),
+    "Actual canvas transforms preserve readable actor boxes when following widens the view");
+  await page.waitForTimeout(2200);
   const finalBatch = async (level) => page.evaluate(level => {
     window.terminalMotion = [];
     const canvas = document.querySelector(".area-map");
-    const x = level === 0 ? Math.round(Number(canvas.dataset.centerX)) : 120;
-    const y = level === 0 ? Math.round(Number(canvas.dataset.centerY)) : 120;
+    const x = Math.round(Number(canvas.dataset.centerX));
+    const y = Math.round(Number(canvas.dataset.centerY));
     window.terminalFixture = { x, y, map: canvas.dataset.map };
     const motion = Array.from({ length: 4 }, (_, i) => Uint16Array.from([
       0, level, x + i * 10, y, 2, 60, level, x + 60 + i * 10, y, 2,
@@ -70,7 +102,7 @@ try {
       points: [], motion, finishes: [], exits: [], stopped: true });
     pointFinishDeliver({ type: "limit", won: false, finished: true });
   }, level);
-  await finalBatch(2);
+  await finalBatch(4);
   await page.waitForFunction(() => terminalMotion.length > 8, null, { timeout: 2000 });
   await page.waitForTimeout(650);
   const moving = await page.evaluate(() => terminalMotion);
