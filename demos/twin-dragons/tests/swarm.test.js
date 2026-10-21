@@ -169,3 +169,20 @@ test("scheduled births share caps and finish hold, and a pause freezes their clo
   assert.equal(swarm.frame(0, 600).size, 0);
   assert.equal(swarm.bytes, 0);
 });
+
+
+test("terminal presentation deadline uses retained actual durations and finish holds", () => {
+  const swarm = new Swarm(4096, 10, 500);
+  const long = new Uint16Array([0, 0, 10, 20, 0, 65535, 0, 18, 28, 2]);
+  const short = new Uint16Array([0, 0, 10, 20, 0, 60, 0, 18, 28, 2]);
+  swarm.add(0, [short, short], 100, [1], 100);
+  assert.equal(swarm.endTime(0, 100), 1600);
+  assert.equal(swarm.endTime(1, 100), 100);
+  swarm.add(1, [long], 200);
+  assert.equal(swarm.endTime(1, 200), 200 + 65535 / 0.06);
+  assert.equal(swarm.bytes, short.byteLength * 2 + long.byteLength);
+  swarm.frame(0, 1600);
+  assert.equal(swarm.endTime(0, 1600), 1600);
+  swarm.remove(1);
+  assert.equal(swarm.bytes, 0);
+});

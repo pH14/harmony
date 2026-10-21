@@ -67,6 +67,12 @@ export class Swarm {
       }
     }
   }
+  endTime(branch, milliseconds) {
+    let end = milliseconds;
+    for (const trail of this.trails.values()) if (trail.branch === branch)
+      end = Math.max(end, trail.started + trail.duration / 0.06 + (trail.finish ? this.finishHold : 0));
+    return end;
+  }
   frame(branch, milliseconds, still = false, maxPoints = this.maxTrails, detail = false) {
     this.prune(branch, milliseconds);
     const rooms = new Map(), step = Math.max(1, Math.ceil(this.trails.size / maxPoints));

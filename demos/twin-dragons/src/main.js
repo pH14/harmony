@@ -178,6 +178,7 @@ let heat = new Heatmap(),
   bootLevel = 0,
   gameWon = false,
   paused = false,
+  terminalDrain = null,
   replayPaused = false,
   replayWatching = false,
   viewerReplay = false,
@@ -252,6 +253,7 @@ function requestStates(ids, cell = selectedCell, ordinal) {
   worker.postMessage({ type: "states", ids, request: token });
 }
 function saveSearchView() {
+  terminalDrain = null;
   clearRouteSelection();
   heat.setRunning(false, performance.now());
   searchViews.set(activeSearch, {
@@ -1564,6 +1566,7 @@ function inspect(cell) {
   }
 }
 function startSearch(level = bootLevel) {
+  terminalDrain = null;
   if (!catalog.levels.some((entry) => entry.id === level)) throw new Error("Unknown level");
   bootLevel = level;
   if (engine) {
@@ -1819,7 +1822,9 @@ function startSearch(level = bootLevel) {
           heat.releasePending(data.request);
         }
       } else if (data.type === "limit") {
-        paused = true;
+        const clock = heat.clock(performance.now()), end = swarm.endTime(activeSearch, clock);
+        terminalDrain = !paused && !reducedMotion.matches && end > clock ? { branch: activeSearch, end } : null;
+        paused = !terminalDrain;
         replayPaused = false;
         const ended = data.finished ? "Search finished" : "Memory limit reached";
         $("status").textContent = data.won ? "Game won" : ended;
@@ -1840,7 +1845,8 @@ function startSearch(level = bootLevel) {
   mapBuilt(bootLevel).then(() => starting.postMessage(init, ports));
 }
 function updateSearchControl() {
-  heat.setRunning(ready && !paused && !stats.stopped, performance.now());
+  if (paused || terminalDrain?.branch !== activeSearch) terminalDrain = null;
+  heat.setRunning(ready && !paused && (!stats.stopped || !!terminalDrain), performance.now());
   $("pause").innerHTML = paused
     ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l14 8-14 8z"/></svg>'
     : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>';
@@ -3108,6 +3114,11 @@ function drawTrail(ctx, level, scale, override) {
 }
 
 function animate(now) {
+  if (terminalDrain && heat.clock(now) >= terminalDrain.end) {
+    heat.setRunning(false, now - (heat.clock(now) - terminalDrain.end));
+    terminalDrain = null;
+    paused = true;
+  }
   const wallElapsed = lastTime ? now - lastTime : 0,
     elapsed = Math.min(100, wallElapsed);
   lastTime = now;

@@ -161,6 +161,16 @@ browser, so a cloud machine needs no desktop or video encoder. No screen-sharing
 permission is needed. The file picker requests access only to the file you
 choose.
 
+When a search finishes, an actively playing view finishes the motion trails it
+already holds at their original game-frame speed, then freezes. No search work
+or counters continue. The tail ends at the latest retained trail's recorded
+endpoint plus any existing finish hold; the same byte and trail caps apply.
+Manual pause, reset or switching searches cancels the tail, and reduced-motion
+views freeze immediately. Long recorded trails can produce a long tail: their
+16-bit frame timestamps bound it to about 18 minutes 13 seconds, including
+birth staggering and the finish hold. This is presentation of existing data,
+not continued search or a minimum recording duration.
+
 The 1920 × 1080 video contains the same map and mini map shown on the
 page, including the current Movement/Heatmap layers, moving sprites, camera
 position rectangle, automatic scrolling and level transitions. It adds a
