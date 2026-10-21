@@ -452,10 +452,14 @@ cleared-level count plus one objective endpoint, including endpoints already
 sent in earlier batches. Reconnecting while the server remains alive replays
 this terminal snapshot; it restores observed progress and final status. Closing
 the page does not stop the cloud search. After search and
-export complete, shutdown waits only for active event streams, up to the existing
-ten-second I/O timeout; no viewer adds no shutdown delay. A peer that cannot read
-within that deadline can still lose the final delivery, and replay is unavailable
-after the server process exits.
+export complete, shutdown closes the archive lookup queue and waits for active
+event streams and state responses, up to the existing ten-second I/O timeout;
+no viewer adds no shutdown delay. Unserved or later terminal state requests
+receive normal JSON with their request token and explicit missing IDs, because
+the archive has closed. No snapshot or history is fabricated. Already-served
+lookup results remain valid; active nonterminal lookup failures remain errors.
+A peer that cannot read within that deadline can still lose the final delivery,
+and replay is unavailable after the server process exits.
 
 Each evaluation writes `telemetry.json` beside `campaign.json`, including
 coordinator, admission wait, completed-buffer and worker busy/idle counters.

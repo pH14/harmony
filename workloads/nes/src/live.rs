@@ -154,7 +154,7 @@ pub struct LiveWatch<G: ArcadeGame> {
     workload: Arc<G>,
     shared: SharedFeed<G::View>,
     events: Sender<Event>,
-    lookups: Mutex<Receiver<Lookup<G::View>>>,
+    lookups: Mutex<Option<Receiver<Lookup<G::View>>>>,
     pending_lookups: Arc<AtomicUsize>,
     observe: Observe<G::View>,
     game: String,
@@ -296,11 +296,28 @@ impl<G: ArcadeGame> LiveWatch<G> {
         Ok(())
     }
 
+    fn close_lookups(&self) {
+        let lookups = self
+            .lookups
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(lookups) = lookups {
+            for lookup in lookups.try_iter() {
+                self.pending_lookups.fetch_sub(1, Ordering::Relaxed);
+                let _ = lookup.reply.send(Vec::new());
+            }
+        }
+    }
+
     fn serve(&self, campaign: &impl CampaignView<G>) {
         if self.pending_lookups.load(Ordering::Relaxed) == 0 {
             return;
         }
         let Ok(lookups) = self.lookups.try_lock() else {
+            return;
+        };
+        let Some(lookups) = lookups.as_ref() else {
             return;
         };
         for lookup in lookups.try_iter().take(1) {
@@ -999,6 +1016,19 @@ struct Server<G: ArcadeGame> {
 }
 
 impl<G: ArcadeGame> Server<G> {
+    fn lookup(&self, ids: Vec<u64>) -> Option<Vec<Found<G::View>>> {
+        let (reply, answer) = mpsc::channel();
+        self.pending_lookups.fetch_add(1, Ordering::Relaxed);
+        if self.lookups.send(Lookup { ids, reply }).is_err() {
+            self.pending_lookups.fetch_sub(1, Ordering::Relaxed);
+            return self.terminal.get().map(|_| Vec::new());
+        }
+        match answer.recv_timeout(LOOKUP_WAIT) {
+            Ok(found) => Some(found),
+            Err(_) => self.terminal.get().map(|_| Vec::new()),
+        }
+    }
+
     fn states(&self, target: &str) -> Option<String> {
         let request: i64 = query(target, "request")
             .and_then(|value| value.parse().ok())
@@ -1009,20 +1039,11 @@ impl<G: ArcadeGame> Server<G> {
             .take(STATES_PER_LOOKUP)
             .filter_map(|id| id.parse().ok())
             .collect();
-        let (reply, answer) = mpsc::channel();
-        self.pending_lookups.fetch_add(1, Ordering::Relaxed);
-        if self
-            .lookups
-            .send(Lookup {
-                ids: ids.clone(),
-                reply,
-            })
-            .is_err()
-        {
-            self.pending_lookups.fetch_sub(1, Ordering::Relaxed);
-            return None;
-        }
-        let mut found = answer.recv_timeout(LOOKUP_WAIT).ok()?;
+        let mut found = if self.terminal.get().is_some() {
+            Vec::new()
+        } else {
+            self.lookup(ids.clone())?
+        };
         let raw: Vec<_> = found
             .iter()
             .map(|found| {
@@ -1136,6 +1157,7 @@ impl<G: ArcadeGame> Server<G> {
             return write_events(&mut stream, &receiver, &self.terminal);
         }
         if target.starts_with("/live/states") {
+            let _active = self.streams.enter();
             return match self.states(&target) {
                 Some(body) => respond(&mut stream, "200 OK", "application/json", body.as_bytes()),
                 None => respond(
@@ -1432,7 +1454,7 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
             workload: Arc::clone(&game),
             shared: Arc::clone(&shared),
             events: events.clone(),
-            lookups: Mutex::new(pending),
+            lookups: Mutex::new(Some(pending)),
             pending_lookups: Arc::clone(&pending_lookups),
             observe: Arc::clone(&observe),
             game: self.id.to_owned(),
@@ -1481,6 +1503,7 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
         let result = evaluate(game.as_ref(), run, &watch);
         let _ = watch.events.send(Event::Finished);
         let _ = feed.join();
+        watch.close_lookups();
         streams.wait(IO_TIMEOUT);
         let _ = fs::remove_file(record);
         result
@@ -1956,6 +1979,178 @@ mod tests {
         assert!(reply.starts_with("HTTP/1.1 200 OK"));
         assert!(reply.find("ready").unwrap() < reply.find("batch").unwrap());
         assert!(reply.find("batch").unwrap() < reply.find("limit").unwrap());
+    }
+
+    type LookupWorkload = nes_games::famidash::campaign::FamidashGame<super::NativeMachine>;
+
+    fn state_lookup_fixture() -> (
+        std::sync::Arc<super::Server<LookupWorkload>>,
+        super::LiveWatch<LookupWorkload>,
+    ) {
+        use std::sync::{Arc, Mutex, OnceLock, atomic::AtomicBool, mpsc};
+        let workload = Arc::new(LookupWorkload::with_targets(
+            b"lookup-test-rom",
+            "lookup-test-core",
+            "lookup-test-sha",
+            nes_games::arcade::famidash::group_stage(0),
+            Box::new(|| Err("lookup fixture must not execute a target".into())),
+        ));
+        let (events, _) = mpsc::channel();
+        let (lookups, receiver) = mpsc::channel();
+        let pending_lookups = Arc::new(AtomicUsize::new(0));
+        let observe: super::Observe<_> = Arc::new(|| None);
+        let server = Arc::new(super::Server {
+            events: events.clone(),
+            lookups,
+            pending_lookups: Arc::clone(&pending_lookups),
+            site: None,
+            workload: Arc::clone(&workload),
+            observe: Arc::clone(&observe),
+            terminal: Arc::new(OnceLock::new()),
+            streams: Arc::new(super::Streams::default()),
+        });
+        let watch = super::LiveWatch {
+            workload,
+            shared: Arc::new(Mutex::new(super::Shared {
+                feed: None,
+                stats: super::Stats::default(),
+            })),
+            events,
+            lookups: Mutex::new(Some(receiver)),
+            pending_lookups,
+            observe,
+            game: "famidash".into(),
+            viewers: Arc::new(AtomicUsize::new(0)),
+            glance: Arc::new(AtomicBool::new(false)),
+            recording: AtomicBool::new(false),
+            details: Arc::new(AtomicUsize::new(0)),
+            cleared: AtomicUsize::new(0),
+        };
+        (server, watch)
+    }
+
+    fn state_lookup_http(
+        server: std::sync::Arc<super::Server<LookupWorkload>>,
+    ) -> (std::net::TcpStream, std::thread::JoinHandle<()>) {
+        use std::{
+            io::Write,
+            net::{TcpListener, TcpStream},
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(b"GET /live/states?ids=7,8&request=42 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let thread = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            server.handle(stream).unwrap();
+        });
+        (client, thread)
+    }
+
+    fn state_lookup_response(
+        mut client: std::net::TcpStream,
+        thread: std::thread::JoinHandle<()>,
+    ) -> (String, String) {
+        use std::io::Read;
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        thread.join().unwrap();
+        let (header, body) = response.split_once("\r\n\r\n").unwrap();
+        (header.to_owned(), body.to_owned())
+    }
+
+    #[test]
+    fn terminal_state_lookup_drains_a_queued_http_request_before_shutdown() {
+        let (server, watch) = state_lookup_fixture();
+        let (client, thread) = state_lookup_http(std::sync::Arc::clone(&server));
+        let lookup = watch
+            .lookups
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        server.lookups.send(lookup).unwrap();
+        assert!(!server.streams.wait(std::time::Duration::ZERO));
+        assert!(server.terminal.set(terminal_fixture()).is_ok());
+        watch.close_lookups();
+        let (header, body) = state_lookup_response(client, thread);
+        assert!(header.starts_with("HTTP/1.1 200 OK"));
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"type":"states","request":42,"states":[],"missing":[7,8]})
+        );
+        assert!(server.streams.wait(std::time::Duration::ZERO));
+        assert!(watch.lookups.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn terminal_state_lookup_after_close_and_late_enqueue_return_missing() {
+        let (server, watch) = state_lookup_fixture();
+        assert!(server.terminal.set(terminal_fixture()).is_ok());
+        watch.close_lookups();
+        assert!(server.lookup(vec![7, 8]).unwrap().is_empty());
+        let (client, thread) = state_lookup_http(std::sync::Arc::clone(&server));
+        let (header, body) = state_lookup_response(client, thread);
+        assert!(header.starts_with("HTTP/1.1 200 OK"));
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["missing"], serde_json::json!([7, 8]));
+        assert_eq!(body["request"], 42);
+        assert_eq!(server.pending_lookups.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn terminal_state_lookup_preserves_an_already_served_found_reply() {
+        use nes_games::arcade::ArcadeGame;
+        let (server, watch) = state_lookup_fixture();
+        let (client, thread) = state_lookup_http(std::sync::Arc::clone(&server));
+        let lookup = watch
+            .lookups
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        watch.pending_lookups.fetch_sub(1, Ordering::Relaxed);
+        lookup
+            .reply
+            .send(vec![super::Found {
+                id: 7,
+                observation: Some(
+                    LookupWorkload::memory_view(&[0; machine::nes::WRAM_SIZE]).unwrap(),
+                ),
+                digest: Some(81),
+                frames_at: Some(4),
+                input: vec![machine::nes::ButtonChord::new(1, 4)],
+                packed: None,
+            }])
+            .unwrap_or_else(|_| panic!("queued lookup receiver disappeared"));
+        assert!(server.terminal.set(terminal_fixture()).is_ok());
+        watch.close_lookups();
+        let (header, body) = state_lookup_response(client, thread);
+        assert!(header.starts_with("HTTP/1.1 200 OK"));
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["states"][0]["id"], 7);
+        assert_eq!(body["states"][0]["frames"], 4);
+        assert_eq!(body["states"][0]["actions"][0]["frames"], 4);
+        assert_eq!(body["missing"], serde_json::json!([8]));
+    }
+
+    #[test]
+    fn terminal_state_lookup_keeps_nonterminal_disconnect_an_http_error() {
+        let (server, watch) = state_lookup_fixture();
+        watch.close_lookups();
+        let (client, thread) = state_lookup_http(server);
+        let (header, body) = state_lookup_response(client, thread);
+        assert!(header.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert_eq!(body, "no state lookup");
     }
 
     #[test]
