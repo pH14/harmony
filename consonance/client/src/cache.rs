@@ -401,7 +401,7 @@ impl State {
         self.segments.charged().saturating_add(self.stored) > self.budget
     }
 
-    fn set_store(&mut self, holder: u64, bytes: Option<usize>) {
+    fn set_store(&mut self, holder: u64, bytes: Option<usize>) -> Option<usize> {
         let old = match bytes {
             Some(bytes) => self.stores.insert(holder, bytes),
             None => self.stores.remove(&holder),
@@ -410,6 +410,7 @@ impl State {
             .stored
             .saturating_sub(old.unwrap_or(0))
             .saturating_add(bytes.unwrap_or(0));
+        old
     }
 }
 
@@ -709,7 +710,10 @@ impl CacheIndex for LocalIndex {
     fn report_store(&self, holder: u64, bytes: u64) -> bool {
         let headroom = self.headroom();
         let mut state = self.state(lock_work::Site::ReportStore);
-        state.set_store(holder, Some(usize::try_from(bytes).unwrap_or(usize::MAX)));
+        let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+        let grew = state
+            .set_store(holder, Some(bytes))
+            .is_some_and(|old| bytes > old);
         state.measure(headroom);
         while state.over_budget() {
             let Some(&(_, id)) = state.evictable.first() else {
@@ -722,7 +726,7 @@ impl CacheIndex for LocalIndex {
             .iter()
             .max_by_key(|&(&id, &bytes)| (bytes, std::cmp::Reverse(id)))
             .map(|(&id, _)| id);
-        let shrink = state.over_budget() && largest == Some(holder);
+        let shrink = state.over_budget() && (grew || largest == Some(holder));
         if shrink {
             state.stats.shrinks += 1;
         }
@@ -1447,7 +1451,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_stores_share_the_budget_and_the_largest_store_shrinks() {
+    fn worker_stores_share_the_budget_and_a_growing_or_largest_store_shrinks() {
         let per_entry = PAGE;
         let bytes = per_entry as u64;
         let index = LocalIndex::with_segment_bytes(4 * per_entry, per_entry);
@@ -1459,9 +1463,10 @@ mod tests {
         assert!(!index.report_store(2, 2 * bytes));
         assert_eq!(index.stats().evictions, 1);
         assert!(put(&index, space, b"c", None, &[(2, 1)], &[]).is_err());
+        assert!(index.report_store(1, bytes + 1));
         assert!(!index.report_store(1, bytes + 1));
         assert!(index.report_store(2, 2 * bytes));
-        assert_eq!(index.stats().shrinks, 1);
+        assert_eq!(index.stats().shrinks, 2);
         index.release(b);
         assert!(!index.report_store(2, 2 * bytes));
         assert_eq!(index.stats().charged, 0);
