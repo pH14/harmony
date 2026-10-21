@@ -331,19 +331,23 @@ bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a
 missing prefix is rebuilt from the chain's longest matching link.
 One memory budget covers the shared cache and every worker's local snapshot
 store. It is the free memory left after a 1 GiB reserve, the coordinator's 512 MiB
-search state, and for each worker
-twice its guest RAM plus 256 MiB: the guest itself and the guest pages a
-snapshot import or export holds while it decompresses or compresses them. The
-worker count drops until each worker also has room for a store as large as its
-guest RAM. On macOS a search runs at most four workers. During the search the
-cache measures free memory again and lowers the budget when memory it does not
-count grows past this plan (see the
-[client README](../../consonance/client/README.md)).
+search state, one guest RAM for a worker's import (its decompressed pages and
+the pages it adds to the store before the next report), and each worker's guest
+RAM plus 256 MiB for the rest of the worker process. The worker count drops until each worker also has room for a
+store one and a half times its guest RAM. With a smaller share, workers drop
+prefix snapshots often and spend most of their time running prefixes again. On macOS a search runs at most four workers.
+During the search the cache measures free memory again. The budget falls when
+memory it does not count, such as the pages a snapshot import or export holds,
+grows past this plan, and rises back toward the plan when that memory is free
+(see the [client README](../../consonance/client/README.md)).
 Before each execution and after each sealed prefix, a worker reports its
 store's page, VM-state and index bytes to the cache, which evicts entries to keep the total in
 budget. When eviction cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
-its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and
+its newest prefix, and then drops back to the setup snapshot. While the total
+is over budget, every other worker also drops prefix snapshots until its store
+is no larger than at its last report that fit the budget, so the stores stop
+growing while the largest store's worker is busy. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
 and `shrinks`, under `snapshot_cache`. It samples the shared index once under
 `snapshot_cache_locks` for per-operation acquisition attempts, acquired/completed

@@ -236,6 +236,7 @@ struct State {
     evictable: BTreeSet<(u128, u64)>,
     divergences: BTreeMap<Namespace, Arc<CacheDivergence>>,
     stores: BTreeMap<u64, usize>,
+    fitted: BTreeMap<u64, usize>,
     stored: usize,
     next_id: u64,
     floor: u128,
@@ -388,11 +389,11 @@ impl State {
 
     fn measure(&mut self, headroom: Option<u64>) {
         if let Some(headroom) = headroom {
-            self.budget = self.budget.min(measured_budget(
+            self.budget = measured_budget(
                 self.planned,
                 self.segments.charged().saturating_add(self.stored),
                 headroom,
-            ));
+            );
             self.stats.lowest_budget = self.stats.lowest_budget.min(self.budget);
         }
     }
@@ -410,6 +411,9 @@ impl State {
             .stored
             .saturating_sub(old.unwrap_or(0))
             .saturating_add(bytes.unwrap_or(0));
+        if bytes.is_none() {
+            self.fitted.remove(&holder);
+        }
     }
 }
 
@@ -460,6 +464,7 @@ impl LocalIndex {
                 evictable: BTreeSet::new(),
                 divergences: BTreeMap::new(),
                 stores: BTreeMap::new(),
+                fitted: BTreeMap::new(),
                 stored: 0,
                 next_id: 0,
                 floor: 0,
@@ -709,7 +714,8 @@ impl CacheIndex for LocalIndex {
     fn report_store(&self, holder: u64, bytes: u64) -> bool {
         let headroom = self.headroom();
         let mut state = self.state(lock_work::Site::ReportStore);
-        state.set_store(holder, Some(usize::try_from(bytes).unwrap_or(usize::MAX)));
+        let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+        state.set_store(holder, Some(bytes));
         state.measure(headroom);
         while state.over_budget() {
             let Some(&(_, id)) = state.evictable.first() else {
@@ -717,12 +723,20 @@ impl CacheIndex for LocalIndex {
             };
             state.evict(id);
         }
+        let over = state.over_budget();
+        if !over {
+            state.fitted.insert(holder, bytes);
+        }
+        let grew = state
+            .fitted
+            .get(&holder)
+            .is_none_or(|&fitted| bytes > fitted);
         let largest = state
             .stores
             .iter()
             .max_by_key(|&(&id, &bytes)| (bytes, std::cmp::Reverse(id)))
             .map(|(&id, _)| id);
-        let shrink = state.over_budget() && largest == Some(holder);
+        let shrink = over && (grew || largest == Some(holder));
         if shrink {
             state.stats.shrinks += 1;
         }
@@ -1447,7 +1461,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_stores_share_the_budget_and_the_largest_store_shrinks() {
+    fn worker_stores_share_the_budget_and_a_growing_or_largest_store_shrinks() {
         let per_entry = PAGE;
         let bytes = per_entry as u64;
         let index = LocalIndex::with_segment_bytes(4 * per_entry, per_entry);
@@ -1459,9 +1473,9 @@ mod tests {
         assert!(!index.report_store(2, 2 * bytes));
         assert_eq!(index.stats().evictions, 1);
         assert!(put(&index, space, b"c", None, &[(2, 1)], &[]).is_err());
-        assert!(!index.report_store(1, bytes + 1));
+        assert!(index.report_store(1, bytes + 1));
         assert!(index.report_store(2, 2 * bytes));
-        assert_eq!(index.stats().shrinks, 1);
+        assert_eq!(index.stats().shrinks, 2);
         index.release(b);
         assert!(!index.report_store(2, 2 * bytes));
         assert_eq!(index.stats().charged, 0);
@@ -1471,7 +1485,23 @@ mod tests {
     }
 
     #[test]
-    fn measured_headroom_keeps_the_lowest_budget() {
+    fn a_store_over_budget_shrinks_until_it_is_back_to_its_last_fitting_size() {
+        let page = PAGE as u64;
+        let index = LocalIndex::with_segment_bytes(8 * PAGE, PAGE);
+        assert!(!index.report_store(1, 6 * page));
+        assert!(!index.report_store(2, page));
+        assert!(index.report_store(2, 4 * page));
+        assert!(index.report_store(2, 3 * page));
+        assert!(!index.report_store(2, 2 * page));
+        assert!(index.report_store(1, 6 * page + 1));
+        assert!(index.report_store(3, page));
+        index.forget_store(1);
+        assert!(!index.report_store(2, 2 * page));
+        assert_eq!(index.stats().shrinks, 4);
+    }
+
+    #[test]
+    fn measured_headroom_lowers_the_budget_until_memory_returns() {
         use std::sync::atomic::{AtomicU64, Ordering};
         static HEADROOM: AtomicU64 = AtomicU64::new(0);
         fn headroom() -> Option<u64> {
@@ -1495,11 +1525,13 @@ mod tests {
         assert!(stats.evictions > 0);
         HEADROOM.store(RESERVE_BYTES + 64 * page, Ordering::Relaxed);
         let c = put(&index, space, b"c", None, &[(2, 1)], &[]).unwrap();
+        let d = put(&index, space, b"d", None, &[(3, 1)], &[]).unwrap();
         index.release(c);
+        index.release(d);
         let stats = index.stats();
         assert_eq!(stats.budget, 4 * PAGE);
         assert_eq!(stats.lowest_budget as u64, charged - page);
-        assert!(stats.charged as u64 <= charged - page);
+        assert!(stats.charged as u64 > charged - page);
         HEADROOM.store(0, Ordering::Relaxed);
         assert!(index.report_store(1, page));
         assert_eq!(index.stats().charged, 0);

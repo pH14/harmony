@@ -12,6 +12,7 @@ pub struct MemoryNeeds {
     pub coordinator: u64,
     pub worker: u64,
     pub store_floor: u64,
+    pub transient: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,16 +29,18 @@ pub fn plan_memory(cores: usize, needs: MemoryNeeds) -> Result<MemoryPlan, Strin
 fn fit(headroom: u64, cores: usize, needs: MemoryNeeds) -> Result<MemoryPlan, String> {
     let usable = headroom
         .saturating_sub(RESERVE_BYTES)
-        .saturating_sub(needs.coordinator);
+        .saturating_sub(needs.coordinator)
+        .saturating_sub(needs.transient);
     let per_worker = needs.worker.saturating_add(needs.store_floor).max(1);
     let workers = (cores as u64).min(usable / per_worker);
     if workers == 0 {
         return Err(format!(
-            "{} MiB free, one worker needs {} MiB, the coordinator {} MiB, and {} MiB stays in \
-             reserve",
+            "{} MiB free, one worker needs {} MiB, the coordinator {} MiB, a worker's transient \
+             {} MiB, and {} MiB stays in reserve",
             headroom >> 20,
             per_worker >> 20,
             needs.coordinator >> 20,
+            needs.transient >> 20,
             RESERVE_BYTES >> 20
         ));
     }
@@ -126,6 +129,7 @@ mod tests {
             coordinator,
             worker,
             store_floor,
+            transient: 0,
         }
     }
 
@@ -164,7 +168,32 @@ mod tests {
     }
 
     #[test]
-    fn measured_memory_lowers_the_budget_and_never_raises_it() {
+    fn one_transient_comes_out_before_the_workers() {
+        let plan = fit(
+            12 * GIB,
+            8,
+            MemoryNeeds {
+                transient: 2 * GIB,
+                ..needs(0, 2 * GIB, GIB)
+            },
+        )
+        .expect("plan");
+        assert_eq!(plan.workers, 3);
+        assert_eq!(plan.budget as u64, 9 * GIB - 3 * 2 * GIB);
+        let error = fit(
+            5 * GIB,
+            8,
+            MemoryNeeds {
+                transient: 2 * GIB,
+                ..needs(0, 2 * GIB, GIB)
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("a worker's transient 2048 MiB"), "{error}");
+    }
+
+    #[test]
+    fn measured_memory_sets_the_budget_up_to_the_plan() {
         let planned = (6 * GIB) as usize;
         assert_eq!(measured_budget(planned, 0, 20 * GIB), planned);
         assert_eq!(
@@ -195,7 +224,7 @@ mod tests {
 
     #[test]
     fn page_cache_left_by_a_build_keeps_every_worker() {
-        let needs = needs(GIB / 2, 2 * GIB + GIB / 4, GIB);
+        let needs = needs(GIB / 2, GIB + GIB / 4, GIB + GIB / 2);
         let empty = cgroup_headroom(14 * GIB, 0, "file 0\nshmem 0\n");
         let built = cgroup_headroom(
             14 * GIB,
@@ -204,7 +233,7 @@ mod tests {
         );
         assert_eq!(built, empty);
         let plan = fit(built, 5, needs).expect("plan");
-        assert_eq!(plan.workers, 3);
+        assert_eq!(plan.workers, 4);
         let dirty = cgroup_headroom(
             14 * GIB,
             10 * GIB,
@@ -214,20 +243,23 @@ mod tests {
     }
 
     #[test]
-    fn a_fourteen_gib_cgroup_keeps_guests_and_transients_out_of_the_budget() {
-        let worker = 2 * GIB + GIB / 4;
-        let faults = needs(GIB / 2, worker, GIB);
+    fn fourteen_twelve_and_ten_gib_cgroups_keep_guests_out_of_the_budget() {
+        let worker = GIB + GIB / 4;
+        let faults = MemoryNeeds {
+            transient: GIB,
+            ..needs(GIB / 2, worker, GIB + GIB / 2)
+        };
+        let fixed = RESERVE_BYTES + GIB / 2 + GIB;
         let headroom = cgroup_headroom(14 * GIB, 0, "file 0\n");
         let plan = fit(headroom, 5, faults).expect("plan");
-        assert_eq!(plan.workers, 3);
-        let budget = plan.budget as u64;
-        assert_eq!(budget, 14 * GIB - RESERVE_BYTES - GIB / 2 - 3 * worker);
+        assert_eq!(plan.workers, 4);
+        assert_eq!(plan.budget as u64, 14 * GIB - fixed - 4 * worker);
         let plan = fit(cgroup_headroom(12 * GIB, 0, ""), 5, faults).expect("plan");
         assert_eq!(plan.workers, 3);
-        assert_eq!(
-            plan.budget as u64,
-            12 * GIB - RESERVE_BYTES - GIB / 2 - 3 * worker
-        );
+        assert_eq!(plan.budget as u64, 12 * GIB - fixed - 3 * worker);
+        let plan = fit(cgroup_headroom(10 * GIB, 0, ""), 3, faults).expect("plan");
+        assert_eq!(plan.workers, 2);
+        assert_eq!(plan.budget as u64, 10 * GIB - fixed - 2 * worker);
     }
 
     #[test]
