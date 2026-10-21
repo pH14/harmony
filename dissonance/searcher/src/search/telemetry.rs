@@ -295,7 +295,34 @@ pub(crate) const fn unix_seconds() -> u64 {
     0
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static TEST_SCHEDSTAT: std::cell::Cell<Option<Option<(u64, u64)>>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_schedstat<T>(sample: Option<(u64, u64)>, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Option<(u64, u64)>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_SCHEDSTAT.set(self.0);
+        }
+    }
+    let _restore = Restore(TEST_SCHEDSTAT.replace(Some(sample)));
+    run()
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_schedstat(sample: Option<(u64, u64)>) {
+    assert!(TEST_SCHEDSTAT.get().is_some());
+    TEST_SCHEDSTAT.set(Some(sample));
+}
+
 pub(crate) fn thread_schedstat() -> Option<(u64, u64)> {
+    #[cfg(test)]
+    if let Some(sample) = TEST_SCHEDSTAT.get() {
+        return sample;
+    }
     let text = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
     let mut fields = text.split_ascii_whitespace();
     let cpu = fields.next()?.parse().ok()?;
@@ -411,6 +438,35 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn cpu_timespec_conversion_rejects_invalid_components_and_preserves_precision() {
+        assert_eq!(cpu_timespec_ns(0, 0), Some(0));
+        assert_eq!(cpu_timespec_ns(3, 999_999_999), Some(3_999_999_999));
+        assert_eq!(cpu_timespec_ns(-1, 0), None);
+        assert_eq!(cpu_timespec_ns(0, -1), None);
+        assert_eq!(cpu_timespec_ns(0, 1_000_000_000), None);
+        assert_eq!(
+            cpu_timespec_ns(i64::MAX, 999_999_999),
+            Some(i64::MAX as u128 * 1_000_000_000 + 999_999_999)
+        );
+    }
+
+    #[test]
+    fn test_schedstat_scopes_restore_missing_samples_and_unwind() {
+        with_test_schedstat(Some((3, 4)), || {
+            assert_eq!(thread_schedstat(), Some((3, 4)));
+            with_test_schedstat(None, || assert_eq!(thread_schedstat(), None));
+            assert_eq!(thread_schedstat(), Some((3, 4)));
+            assert!(
+                std::panic::catch_unwind(|| with_test_schedstat(None, || panic!(
+                    "injected scope panic"
+                )))
+                .is_err()
+            );
+            assert_eq!(thread_schedstat(), Some((3, 4)));
+        });
     }
 
     #[test]

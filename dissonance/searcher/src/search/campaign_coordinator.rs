@@ -965,13 +965,6 @@ where
         telemetry.workers = workers;
         idle_clock.finish(&mut telemetry.admission);
         telemetry.sum_targets();
-        telemetry.coordinator_host = HostTimes::try_measure(
-            coordinator_schedstat,
-            (
-                telemetry.admission.idle_admission_order_ns,
-                telemetry.admission.idle_no_job_ns,
-            ),
-        );
         telemetry.coordinator = profile.telemetry_json()?;
         let persistence_started = now();
 
@@ -1025,6 +1018,13 @@ where
             config.materialize_final_artifacts,
         )?;
         telemetry.persistence_ns = nanos_since(persistence_started);
+        telemetry.coordinator_host = HostTimes::try_measure(
+            coordinator_schedstat,
+            (
+                telemetry.admission.idle_admission_order_ns,
+                telemetry.admission.idle_no_job_ns,
+            ),
+        );
         report.telemetry = telemetry;
         Ok((report, checkpoint))
     }

@@ -13,14 +13,9 @@ own one-worker reference.
 
 This is a bounded throughput and ordering check, not a whole-game effectiveness
 experiment or proof of saturation on an unmeasured host. The 10,000 execution-budget
-ceiling comes from the evaluator's full-replay contract. Famidash uses bounded
-expansion: the budget charges edge attempts and one unit for an empty task;
-executed edges, failed preparation, tasks and replay work are distinct counters.
-The v2 expansion stream retains observation counts and fresh SHA-256 commitments
-to their postcard encoding. Full replay regenerates the observations and checks
-those commitments alongside every tree decision and the final report/checkpoint.
-Cold boot, final
-serialization and verification are included in campaign seconds; search
+ceiling comes from the evaluator's full-replay contract. Every current NES
+route uses the same campaign job accounting and per-worker reservation window.
+Cold boot, final serialization and verification are included in campaign seconds; search
 seconds and worker busy fractions are reported separately. Busy time includes
 restore, execution and capture; it does not measure guest cycles. Read raw
 `telemetry.json` for coordinator occupancy, admission stalls and completed
@@ -32,13 +27,10 @@ deterministically from their owned values. Serialization and destruction can
 run ahead; output bytes and failure prefixes retain logical order.
 `coordinator_host` samples coordinator CPU and scheduler wait even with verbose
 profiling off. It is absent when the operating system cannot supply these
-counters. For bounded expansion it starts after all workers are ready and ends
-after stream finish, integrity verification, final archive/report and snapshot
-checkpoint construction, immediately before the search returns. It includes
-dispatch and finalization, including final checkpoint persistence, and excludes
-earlier boot and later evaluator witness verification. The linear runner's
-counter also includes live-observer construction, encoder startup and worker
-readiness. These counters include work outside individual coordinator spans.
+counters. The linear runner's counter includes live-observer construction,
+encoder startup, worker readiness, dispatch and finalization before the search
+returns. It excludes later evaluator replay and witness verification. These
+counters include work outside individual coordinator spans.
 Native `dispatch_phase` instead starts after all
 workers are ready, before reservation, and stops before final checkpoint/report
 persistence. Use `coordinator_host` for the coordination capacity bound; retain
@@ -47,26 +39,25 @@ end-to-end persistence separately, without adding dispatch or finish to the
 whole coordinator counter.
 Do not add nested or concurrent timers to infer elapsed time.
 
-For an expansion coordinator diagnostic, set `HARMONY_COORDINATOR_PROFILE=1`.
-`telemetry.coordinator` then contains inclusive wall-time spans for reservation,
-selection, root preparation, completion, validation, evidence merging, archive
-insertion, maintenance, observation, record construction, output and checkpoints.
-These spans locate expensive operations; nested spans and scheduling waits make
-their sum unsuitable as coordinator CPU. Use `coordinator_host` for the whole
-CPU cost, and repeat capacity trials with this optional clock instrumentation off.
+For a coordinator diagnostic, set `HARMONY_COORDINATOR_PROFILE=1`.
+`telemetry.coordinator` then contains admission, bookkeeping, history compaction,
+stream write and selection wall durations. A restored prefix can make these
+fields incomplete. Nested work and scheduling waits make their sum unsuitable
+as coordinator CPU. Use `coordinator_host` for whole CPU cost, and repeat
+capacity trials with optional verbose instrumentation off.
 The independent `HARMONY_WORKER_CPU_PROFILE` presence switch measures each
 worker's actual execute closure with Linux thread CPU time, including required
-restore, reconstruction, snapshot capture and observation work. It excludes queue waits, reply delivery and
+restore, snapshot capture and observation work. It excludes queue waits, reply delivery and
 post-job target telemetry. Its `execute_cpu` coverage reports calls, samples,
 ordinary errors, panics and overflow; unsupported or incomplete coverage cannot
 supply a worker service cost. The boundary includes clock and unwind-probe
 overhead and is not a guest-instruction-only floor. The qualifier reports
-`worker_execute_cpu_ns_per_task` only for complete, successful job coverage with
-the matching admitted-task denominator. For capacity, compare fresh default
+`worker_execute_cpu_ns_per_job` only for complete, successful job coverage with
+the matching completed-job denominator. For capacity, compare fresh default
 arms with both switches unset against worker-only arms with only `HARMONY_WORKER_CPU_PROFILE` present. Require own full
 replay and witnesses and equal logical artifacts in the same executable. Use
 whole C and S0/S1/H maxima over both arms, and only complete worker-only CPU for
-T; never substitute zero for default or unsupported worker CPU. Set both switches
+the worker service cost; never substitute zero for default or unsupported worker CPU. Set both switches
 only for a separately labeled full diagnostic. Presence enables either switch,
 even with a value of `0`. Worker `profile_mode` is explicit host-only provenance:
 `off`, `coordinator_only`, `worker_only` or `coordinator_and_worker`. The qualifier
@@ -107,22 +98,20 @@ paths and their SHA-256 values:
   "rom_sha256": "REPLACE_WITH_ROM_SHA256",
   "core_sha256": "REPLACE_WITH_CORE_SHA256",
   "seed": 27, "workers": 1, "executions": 8000,
-  "memory_mib": 8192, "window": 256, "wall_seconds": 3600,
+  "memory_mib": 8192, "window": 512, "wall_seconds": 3600,
   "mixture": "alphabet_only", "verification": "campaign"
 }
 ```
 
-The qualifier overrides `workers`, `window` and `verification`. Normal Famidash
-uses an **absolute outstanding-task window**: this example sends `window: 256`
-unchanged at every worker count, including counts that do not divide 256. Each
-task can attempt up to 14 edges, and its ordered admission determines subsequent
-roots.
-The other current NES routes use reservations per worker; for those routes the
-qualifier divides the configured absolute window by the worker count and
-requires exact divisibility. No algorithm flag selects this behavior. Changing the logical window changes adaptive
-search and invalidates a fixed-work speedup comparison. The native Famidash
-launcher uses an absolute task window of 256. The qualifier’s generic default
-is 512; pass `--window 256` explicitly to qualify the launcher configuration.
+The qualifier overrides `workers`, `window` and `verification`. Every NES route
+uses reservations per worker: the qualifier divides the chosen absolute window
+by the worker count and requires exact divisibility. With `--window 512`, the
+one-worker request has `window: 512`, and the 128-worker request has `window: 4`.
+There is no game-specific engine or window selection. Changing the absolute
+logical window changes adaptive search and invalidates a fixed-work speedup
+comparison. The Arcade launcher uses a per-worker window of four for every game;
+its total window therefore grows with the worker count. The qualifier's fixed
+window comparison must not be presented as identical to every launcher setting.
 
 On a quiet host, select physical CPUs of one core type. In addition to the
 workers, budget CPU for one coordinator, two stream serializers and one ordered
@@ -134,7 +123,7 @@ use 134 usable CPUs, allowing two more for monitoring and host work:
 taskset -c 0-133 python3 scripts/qualify-nes-scaling.py \
   --evaluator workloads/nes/target/release/nes-eval \
   --request /srv/runs/famidash-scaling-request.json \
-  --workers 1 2 4 8 16 32 64 128 --window 256 --repeats 3 \
+  --workers 1 2 4 8 16 32 64 128 --window 512 --repeats 3 \
   --out /srv/runs/famidash-scaling-001
 ```
 
@@ -152,30 +141,22 @@ averages are retained, but do not prove an idle host. Capacity measurements
 must include the whole campaign's cgroup memory rather than process RSS alone.
 
 `summary.json` reports per-count median/range, speedup, total campaign time,
-worker busy fractions and explicitly labelled throughput. For Famidash,
-throughput is admitted tasks per search second, and coordinator CPU, encoder
-CPU and producer wait are reported **per task**, not per executed edge. The
-summary retains executed-edge rates, attempts, consumed budget, failed
-preparation, empty tasks and bootstrap/reconstruction/edge frame work separately.
-It verifies each result counter against the campaign report and derives session
-work by checked final-minus-initial subtraction. Worker `jobs` must equal
-session admitted tasks, including checkpoint-pending tasks executed again;
-newly reserved tasks alone are not that denominator. The qualifier itself
-requires fresh requests; the counter validator also understands resumed reports.
-Linear routes continue to use jobs as their execution and cost unit.
-Stream costs distinguish `stream_aux_cpu_ns_per_task`, the sum of all stream
+worker busy fractions and explicitly labelled job throughput. Result executions
+must match the campaign report's completed jobs and the sum of worker `jobs`.
+Costs use completed jobs as their denominator; a missing or contradictory
+counter fails validation. Every trial starts a fresh campaign.
+Stream costs distinguish `stream_aux_cpu_ns_per_job`, the sum of all stream
 thread CPU for a shared auxiliary-core budget, from the two serializer costs
-and relay cost. `stream_dedicated_core_bottleneck_ns_per_task` is their maximum,
+and relay cost. `stream_dedicated_core_bottleneck_ns_per_job` is their maximum,
 valid only when all three have measured CPU coverage and each has a separate
 core. It is unavailable when a role is missing or counters overflow. It is a
 necessary service bound, not a measured throughput or placement guarantee.
-The final coordinator stream-drain CPU is reported separately when profiling
-supplies it. It is already included in expansion's whole `coordinator_host`
-counter; add it only when using the narrower dispatch counter. Include all
-other auxiliary work in the model. The qualifier reports this whole counter as
-`coordinator_whole_cpu_ns_per_task`, with scheduler wait separately; unsupported
-coverage remains null. `coordinator_cpu_ns_per_task` retains the narrower dispatch
-cost, and neither it nor stream finish is added to the whole value.
+Whole coordinator CPU includes final stream drain and report/checkpoint work.
+The qualifier reports it as `coordinator_whole_cpu_ns_per_job`, with scheduler
+wait separately; unsupported coverage remains null.
+`coordinator_cpu_ns_per_job` retains the narrower dispatch cost. Do not add the
+nested dispatch counter or final drain to the whole value. Include all other
+auxiliary work in the model.
 Missing CPU coverage remains null rather than a zero cost. These costs do not
 automatically establish a worker-count ceiling; apply the capacity model in
 [Performance](../../docs/PERFORMANCE.md) using equivalent-core worker measurements.
@@ -210,7 +191,7 @@ and network work. This budget does not enforce thread placement. The browser's
 rendering and video encoding use the viewing computer's resources.
 
 The archive budget is only part of whole-campaign RAM. Also allow for worker
-targets, pending task origins and results, stream buffers, live observation and
+targets, pending job origins and results, stream buffers, live observation and
 checkpoint/export transients. Required machine `memory_max_mib` is the explicit
 whole-unit ceiling, greater than the archive ceiling `memory_mib`; it is not an
 automatic overhead estimate. The example sets 80 GiB per run, not an aggregate
@@ -236,9 +217,9 @@ recording format, limits and download behavior.
 python3 -m unittest discover -s scripts -p test_qualify_nes_scaling.py
 ```
 
-The tests plant a valid-but-different trial stream, corrupt stream identity,
-missing replays, incomplete telemetry and a failed evaluator. Expansion fixtures
-use the current evaluator's cumulative and session fields; planted wrong
-engines, counter underflow, bad frame totals and edge-based worker counts must
-fail. The fixed-window test includes three workers with a window of 512. These
-checks preserve the run evidence on failure.
+The tests plant a valid-but-different trial stream and binary checkpoint, corrupt
+stream identity, missing replays, inconsistent completed-job counters, incomplete
+telemetry and a failed evaluator. They check independent profiling provenance,
+unsupported CPU coverage, every stream role and counter overflow. Fixed absolute
+windows and worker divisibility apply equally to Famidash and the other NES
+games. A mismatch preserves the actual requests, logs and artifacts.

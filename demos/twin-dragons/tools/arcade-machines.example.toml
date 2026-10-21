@@ -17,11 +17,9 @@ roms = "~/arcade-roms"
 # size aggregate runs plus host services within actual host RAM. `runs`
 # lists directories that hold other `nes-eval` campaigns; the page lists every
 # running campaign under them so it can be watched. Set workers = 128 to offer
-# that choice; select 128 in the dialog to use it. Famidash uses a fixed window
-# of 256 expansion tasks (up to 3584 pending edge attempts), independent of
-# workers; other games use window = 4 per worker. Memory/feedback capacity at
-# the Famidash task window remains to be qualified. The whole-unit ceiling
-# includes workers, pending tasks/results, stream/live buffers and transients;
+# that choice; select 128 in the dialog to use it. All games use window = 4
+# per worker with the established rollout campaign runner. The whole-unit ceiling
+# includes workers, pending reservations/results, stream/live buffers and transients;
 # no universal archive-to-overhead formula is assumed.
 # This config sets limits, not a throughput or resource-adequacy guarantee.
 [machines.example]

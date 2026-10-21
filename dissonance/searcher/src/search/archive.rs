@@ -2165,29 +2165,6 @@ where
         }
     }
 
-    pub(crate) fn validate_inflight_pins(
-        &self,
-        metadata: &BTreeMap<u64, u32>,
-        snapshots: &BTreeMap<u64, u32>,
-    ) -> Result<(), &'static str> {
-        if &self.metadata_pins != metadata || &self.inflight_snapshot_pins != snapshots {
-            return Err("archive in-flight pin maps differ from the reserved tasks");
-        }
-        if metadata
-            .iter()
-            .any(|(id, count)| *count == 0 || self.index_of_id(*id).is_none())
-            || snapshots.iter().any(|(id, count)| {
-                *count == 0
-                    || self
-                        .index_of_id(*id)
-                        .is_none_or(|index| self.entries[index].snapshot.is_none())
-            })
-        {
-            return Err("archive in-flight pin map names an invalid entry");
-        }
-        Ok(())
-    }
-
     pub(crate) fn preserve_recorded_metadata_uses(&mut self, uses: BTreeMap<u64, u32>) {
         self.metadata_pins = uses;
         self.failed_compaction = None;
@@ -2253,13 +2230,6 @@ where
         }
     }
 
-    pub(crate) fn release_completed_origin_reference(&mut self, id: u64) {
-        self.release_keep(1);
-        if let Some(index) = self.index_of_id(id) {
-            self.reclaim_inactive_snapshot(index);
-        }
-    }
-
     pub(crate) fn job_origin(&self, id: usize) -> Result<JobOriginParts<A, S>, &'static str> {
         let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
         if self.entry_state[id].snapshot_selectable {
@@ -2288,34 +2258,6 @@ where
             .input_index
             .actions_between(keyframe_entry.input_node, entry.input_node, distance)
             .ok_or("job origin keyframe is not on the entry's input path")?;
-        Ok((snapshot, replay, certificates))
-    }
-
-    pub(crate) fn job_origin_from(
-        &self,
-        id: usize,
-        snapshot_id: u64,
-    ) -> Result<JobOriginParts<A, S>, &'static str> {
-        let entry = self
-            .entries
-            .get(id)
-            .ok_or("saved job parent entry is missing")?;
-        let origin_index = self
-            .index_of_id(snapshot_id)
-            .ok_or("saved job snapshot entry is missing")?;
-        let origin = &self.entries[origin_index];
-        let snapshot = origin
-            .snapshot
-            .clone()
-            .ok_or("saved job origin has no resident snapshot")?;
-        let distance = entry
-            .input_len
-            .checked_sub(origin.input_len)
-            .ok_or("saved job origin is longer than its parent")?;
-        let (replay, certificates) = self
-            .input_index
-            .actions_between(origin.input_node, entry.input_node, distance)
-            .ok_or("saved job origin is not on the parent's input path")?;
         Ok((snapshot, replay, certificates))
     }
 
@@ -2806,12 +2748,9 @@ where
         self.replacement_cost_displaced
     }
 
+    #[cfg(test)]
     pub(crate) fn entry_cost_in_group(&self, id: usize) -> u64 {
         self.entry_state[id].cost_in_group
-    }
-
-    pub(crate) fn memory_budget_bytes(&self) -> Option<usize> {
-        self.memory_limit
     }
 
     #[must_use]
@@ -8769,99 +8708,6 @@ mod tests {
     }
 
     #[test]
-    fn saved_job_origin_uses_the_pinned_snapshot_after_selectability_changes() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
-        for (parent, action) in [(None, 0u8), (Some(0), 1), (Some(0), 2)] {
-            archive
-                .insert(
-                    parent,
-                    u64::from(action),
-                    ArchiveCandidate {
-                        suffix: vec![action],
-                        key: FlatKey([u16::from(action), u16::from(action), 0, 0]),
-                        milestones: (),
-                    },
-                    (),
-                )
-                .unwrap()
-                .unwrap();
-        }
-        let parent_id = archive.stable_id(1).unwrap();
-        archive.pin_metadata(parent_id).unwrap();
-        let (held, _, _, origin_id) = archive.pin_job_origin(1).unwrap();
-        archive.entry_state[1].snapshot_selectable = false;
-        archive.entry_state[1].keyframe_id = archive.stable_id(0).unwrap();
-        let before = postcard::to_allocvec(&archive).unwrap();
-        let (restored, replay, certificates) = archive.job_origin_from(1, origin_id).unwrap();
-        assert!(Arc::ptr_eq(&held, &restored));
-        assert!(replay.is_empty());
-        assert!(certificates.is_empty());
-        let (_, current_replay, _) = archive.job_origin(1).unwrap();
-        assert_eq!(current_replay, vec![1]);
-        let metadata = BTreeMap::from([(parent_id, 1)]);
-        let pins = BTreeMap::from([(origin_id, 1)]);
-        archive.validate_inflight_pins(&metadata, &pins).unwrap();
-        assert!(
-            archive
-                .validate_inflight_pins(&BTreeMap::new(), &pins)
-                .is_err()
-        );
-        assert!(archive.job_origin_from(99, origin_id).is_err());
-        assert!(archive.job_origin_from(1, u64::MAX).is_err());
-        assert!(
-            archive
-                .job_origin_from(1, archive.stable_id(2).unwrap())
-                .is_err()
-        );
-        assert_eq!(postcard::to_allocvec(&archive).unwrap(), before);
-        drop(restored);
-        drop(held);
-        archive.unpin_job_origin(origin_id);
-        archive.unpin_metadata(parent_id);
-        archive.entries[2].snapshot = None;
-        assert!(
-            archive
-                .job_origin_from(2, archive.stable_id(2).unwrap())
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn restored_pin_validation_rejects_zero_unknown_and_nonresident_entries() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
-        archive
-            .insert(
-                None,
-                0,
-                ArchiveCandidate {
-                    suffix: vec![0],
-                    key: FlatKey([0, 0, 0, 0]),
-                    milestones: (),
-                },
-                (),
-            )
-            .unwrap()
-            .unwrap();
-        let id = archive.stable_id(0).unwrap();
-        for bad in [BTreeMap::from([(id, 0)]), BTreeMap::from([(u64::MAX, 1)])] {
-            archive.metadata_pins = bad.clone();
-            assert!(
-                archive
-                    .validate_inflight_pins(&bad, &BTreeMap::new())
-                    .is_err()
-            );
-        }
-        archive.metadata_pins.clear();
-        archive.inflight_snapshot_pins = BTreeMap::from([(id, 1)]);
-        archive.entries[0].snapshot = None;
-        assert!(
-            archive
-                .validate_inflight_pins(&BTreeMap::new(), &archive.inflight_snapshot_pins)
-                .is_err()
-        );
-    }
-
-    #[test]
     fn budget_enforcement_evicts_cached_snapshots_before_dropping_entries() {
         let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
@@ -11902,147 +11748,5 @@ mod tests {
         let stronger =
             insert_portfolio_at(&mut archive, None, vec![4], 1, 30, 40).expect("stronger");
         assert!(archive.outranks_slot_holders(stronger, (2, ()), 0));
-    }
-    type CompletedOriginHistory = (Archive<u8, FlatKey, (), ()>, Vec<(u64, Arc<()>)>);
-
-    fn completed_origin_history() -> CompletedOriginHistory {
-        let keys = (0..u16::try_from(HISTORY_COMPACTION_MIN_DROPS + 2).unwrap())
-            .map(|index| [index, index, 0, 0])
-            .collect::<Vec<_>>();
-        let mut archive = flat_archive(&keys);
-        let mut cleanup = Vec::new();
-        for index in 0..HISTORY_COMPACTION_MIN_DROPS {
-            let id = archive.stable_id(index).unwrap();
-            archive.pin_metadata(id).unwrap();
-            let (snapshot, _, _, snapshot_id) = archive.pin_job_origin(index).unwrap();
-            cleanup.push((snapshot_id, snapshot));
-            assert!(archive.deactivate(index));
-            archive.unpin_job_origin(snapshot_id);
-            archive.unpin_metadata(id);
-        }
-        assert!(archive.metadata_pins.is_empty());
-        assert!(archive.inflight_snapshot_pins.is_empty());
-        (archive, cleanup)
-    }
-
-    #[test]
-    fn completed_origin_reference_release_refreshes_failed_compaction() {
-        let (mut archive, cleanup) = completed_origin_history();
-        archive.memory_limit = Some(archive.history_memory_bytes() * 2);
-        archive.compact_history_if_needed().unwrap();
-        assert_eq!(
-            archive.failed_compaction.map(|(_, dropped)| dropped),
-            Some(0)
-        );
-        let releases = archive.keep_releases;
-        for (id, snapshot) in cleanup {
-            drop(snapshot);
-            archive.release_completed_origin_reference(id);
-            assert!(
-                archive.entries[archive.index_of_id(id).unwrap()]
-                    .snapshot
-                    .is_none()
-            );
-        }
-        assert_eq!(
-            archive.keep_releases - releases,
-            HISTORY_COMPACTION_MIN_DROPS * 3
-        );
-        archive.compact_history_if_needed().unwrap();
-        assert_eq!(archive.failed_compaction, None);
-        assert_eq!(archive.live_entry_count(), 2);
-    }
-
-    #[test]
-    fn completed_origin_handoff_keeps_cleanup_timing_out_of_budget_selection_and_checkpoint() {
-        fn handoff(blocked: bool, old_path: bool, limit: usize) -> Archive<u8, FlatKey, (), ()> {
-            let (mut archive, origins) = completed_origin_history();
-            let cleanup = if old_path {
-                origins
-            } else {
-                for (id, snapshot) in origins {
-                    drop(snapshot);
-                    archive.release_completed_origin_reference(id);
-                }
-                Vec::new()
-            };
-            let (release_tx, release_rx) = std::sync::mpsc::channel();
-            let (held_tx, held_rx) = std::sync::mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                held_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-                drop(cleanup);
-            });
-            held_rx.recv().unwrap();
-            let worker = if blocked {
-                Some(worker)
-            } else {
-                release_tx.send(()).unwrap();
-                worker.join().unwrap();
-                None
-            };
-            archive.memory_limit = Some(archive.history_memory_bytes() * 2);
-            archive.compact_history_if_needed().unwrap();
-            archive.memory_limit = Some(limit);
-            let first = archive.maintain_memory_budget();
-            let second = archive.maintain_memory_budget();
-            if let Some(worker) = worker {
-                release_tx.send(()).unwrap();
-                worker.join().unwrap();
-            }
-            first.unwrap();
-            second.unwrap();
-            archive
-        }
-        let (mut sizing, origins) = completed_origin_history();
-        for (id, snapshot) in origins {
-            drop(snapshot);
-            sizing.release_completed_origin_reference(id);
-        }
-        sizing.memory_limit = Some(sizing.history_memory_bytes() * 2);
-        sizing.compact_history_if_needed().unwrap();
-        let limit = sizing.resident_memory_bytes() + 1;
-        let mut fast = handoff(false, false, limit);
-        let mut blocked = handoff(true, false, limit);
-        let mut planted = handoff(true, true, limit);
-        assert_eq!(fast.active_count(), 2);
-        assert_eq!(blocked.active_count(), 2);
-        assert_eq!(planted.active_count(), 1);
-        assert_eq!(
-            postcard::to_allocvec(&fast).unwrap(),
-            postcard::to_allocvec(&blocked).unwrap()
-        );
-        assert_ne!(
-            postcard::to_allocvec(&fast).unwrap(),
-            postcard::to_allocvec(&planted).unwrap()
-        );
-        let selected = |archive: &mut Archive<u8, FlatKey, (), ()>| {
-            archive.prepare_selection();
-            let mut random = RomuDuoJrRand::with_seed(719);
-            (0..32)
-                .map(|_| {
-                    let (index, _) = archive.select_parent(&mut random).unwrap();
-                    archive.stable_id(index).unwrap()
-                })
-                .collect::<Vec<_>>()
-        };
-        let fast_parents = selected(&mut fast);
-        assert_eq!(fast_parents, selected(&mut blocked));
-        assert_ne!(fast_parents, selected(&mut planted));
-        let final_artifact_limit = Some(usize::MAX);
-        fast.memory_limit = final_artifact_limit;
-        blocked.memory_limit = final_artifact_limit;
-        fast.compact_history_for_final_report().unwrap();
-        blocked.compact_history_for_final_report().unwrap();
-        assert_eq!(
-            postcard::to_allocvec(&fast).unwrap(),
-            postcard::to_allocvec(&blocked).unwrap()
-        );
-        let (_, fast_snapshots) = fast.take_entry_reports_and_snapshots();
-        let (_, blocked_snapshots) = blocked.take_entry_reports_and_snapshots();
-        assert_eq!(
-            postcard::to_allocvec(&fast_snapshots).unwrap(),
-            postcard::to_allocvec(&blocked_snapshots).unwrap()
-        );
     }
 }

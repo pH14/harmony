@@ -202,7 +202,7 @@ def run_request(
         "workers": settings.workers,
         "executions": 1 << 40,
         "memory_mib": settings.memory_mib,
-        "window": 256 if GAMES[settings.game].request.startswith("famidash") else 4,
+        "window": 4,
         "wall_seconds": round(settings.hours * 3600),
         "verification": "witness",
         "live": "127.0.0.1:0",

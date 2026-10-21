@@ -26,13 +26,12 @@ use crate::{
     },
     nes_backend::{NesBackend, SnapshotState},
     search::{
-        archive::{ArchiveKey, RetentionPolicy},
+        archive::RetentionPolicy,
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignJobResult, CampaignModeReport, CampaignStreamHeader, CampaignTypes, Evaluation,
-            ExpansionEvidence, ExpansionWorkload, InputPolicy, Reporting, SnapshotCheckpoint,
-            TargetExecution, WorkloadPolicies, postcard_semantic_result_sha256,
-            postcard_value_sha256,
+            InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+            postcard_semantic_result_sha256, postcard_value_sha256,
         },
         draw::{MixtureDraw, draw_suffix_prefix},
         draw_tables::{DrawTableHeader, DrawTables, biased_step},
@@ -329,85 +328,6 @@ where
         }
     }
     Ok(())
-}
-
-impl<M: NesBackend<Vec<u8>>, const GROUP: usize> ExpansionWorkload for FamidashGame<M, GROUP> {
-    type ExpansionQuality = FamidashChampionKey;
-    type ExpansionBucket = (
-        <FamidashArchiveKey as ArchiveKey>::Progress,
-        <FamidashArchiveKey as ArchiveKey>::Place,
-        <FamidashArchiveKey as ArchiveKey>::Identity,
-    );
-
-    fn expansion_policy(&self) -> &'static str {
-        "famidash_champion_level_x_desc_progress_place_identity_bucket_beam_width2_fanout2_depth4_v1"
-    }
-
-    fn expansion_quality(&self, key: Self::Key) -> Self::ExpansionQuality {
-        key.champion_key()
-    }
-
-    fn expansion_bucket(&self, key: Self::Key) -> Self::ExpansionBucket {
-        (key.progress(), key.place(), key.identity())
-    }
-
-    fn expansion_observation_memory_charge(_observation: &Self::Observations) -> usize {
-        std::mem::size_of::<FamidashObservations>()
-    }
-
-    fn expansion_terminal_key(
-        &self,
-        target: &Self::Target,
-    ) -> Result<Option<Self::Key>, Box<dyn Error>> {
-        if target.exit_kind() == ExitKind::Ok
-            && target.is_terminal()
-            && target.mechanical_state().gameplay.is_none()
-        {
-            return Ok(None);
-        }
-        self.current_key(target).map(Some)
-    }
-
-    fn validate_expansion_action(
-        &self,
-        requested: Self::Action,
-        recorded: Self::Action,
-        disposition: ExecutionDisposition,
-    ) -> bool {
-        let canonical = |action: ButtonChord| action.hold_frames == action.bounded_hold_frames();
-        canonical(requested)
-            && canonical(recorded)
-            && match disposition {
-                ExecutionDisposition::Runnable => requested == recorded,
-                ExecutionDisposition::Terminal | ExecutionDisposition::Failed => {
-                    requested.buttons == recorded.buttons
-                        && recorded.hold_frames <= requested.hold_frames
-                }
-            }
-    }
-
-    fn merge_expansion_evidence<F>(
-        &self,
-        evidence: &mut Self::Evidence,
-        action: &ExpansionEvidence<Self>,
-        sequence: u64,
-        input: F,
-    ) -> Result<(), Box<dyn Error>>
-    where
-        F: FnOnce() -> Result<FamidashInput, Box<dyn Error>>,
-    {
-        if let Some(observations) = &action.preparation_failure {
-            self.merge_preparation_failure(evidence, observations);
-            return Ok(());
-        }
-        merge_observed_evidence(
-            evidence,
-            &action.observations,
-            action.milestones,
-            sequence,
-            input,
-        )
-    }
 }
 
 impl<M: NesBackend<Vec<u8>>, const GROUP: usize> CampaignTypes for FamidashGame<M, GROUP> {
@@ -780,79 +700,6 @@ mod tests {
         FamidashGame::new(&[0], Path::new("core.so"), "core", execution, stage)
     }
 
-    #[test]
-    fn expansion_quality_and_bucket_keep_distinct_domain_roles() {
-        let game = game("first", Stage::through_group(Side::Main, 0).unwrap());
-        let key = FamidashArchiveKey::default();
-        let next_x = FamidashArchiveKey { x: 1, ..key };
-        let next_level = FamidashArchiveKey {
-            level: 1,
-            x: -1,
-            ..key
-        };
-        assert!(game.expansion_quality(next_x) > game.expansion_quality(key));
-        assert!(game.expansion_quality(next_level) > game.expansion_quality(next_x));
-        assert_eq!(game.expansion_bucket(key), game.expansion_bucket(next_x));
-        for changed in [
-            FamidashArchiveKey { motion: 1, ..key },
-            FamidashArchiveKey {
-                camera_phase: 1,
-                ..key
-            },
-            FamidashArchiveKey { x: 8, ..key },
-            FamidashArchiveKey {
-                gravity: true,
-                ..key
-            },
-            next_level,
-        ] {
-            assert_ne!(game.expansion_bucket(key), game.expansion_bucket(changed));
-        }
-    }
-
-    #[test]
-    fn expansion_actions_require_exact_runnable_or_positive_same_button_shortening() {
-        let game = game("first", Stage::through_group(Side::Main, 0).unwrap());
-        let requested = ButtonChord::new(1, 40);
-        for disposition in [
-            ExecutionDisposition::Runnable,
-            ExecutionDisposition::Terminal,
-            ExecutionDisposition::Failed,
-        ] {
-            assert!(game.validate_expansion_action(requested, requested, disposition));
-            assert!(!game.validate_expansion_action(
-                requested,
-                ButtonChord::new(0, 40),
-                disposition
-            ));
-            assert!(!game.validate_expansion_action(
-                requested,
-                ButtonChord::new(1, 41),
-                disposition
-            ));
-            assert!(!game.validate_expansion_action(
-                requested,
-                ButtonChord {
-                    buttons: 1,
-                    hold_frames: 0
-                },
-                disposition
-            ));
-            assert!(!game.validate_expansion_action(
-                ButtonChord {
-                    buttons: 1,
-                    hold_frames: 0
-                },
-                requested,
-                disposition
-            ));
-            assert_eq!(
-                game.validate_expansion_action(requested, ButtonChord::new(1, 3), disposition),
-                disposition != ExecutionDisposition::Runnable
-            );
-        }
-    }
-
     fn evidence_value(value: &FamidashCampaignEvidence) -> serde_json::Value {
         serde_json::json!({"aggregate":value.aggregate,"watermark":value.watermark,"first_reached":value.first_reached,"first_inputs":value.first_inputs,"champion_input":value.champion_input,"champion_milestones":value.champion_milestones,"champion_key":value.champion_key})
     }
@@ -906,105 +753,6 @@ mod tests {
             trailing.extend_from_slice(b"{}");
             assert!(FamidashGame::<QuickNesMachine>::evidence_from_checkpoint(&trailing).is_err());
         }
-    }
-
-    #[test]
-    fn expansion_evidence_matches_borrowed_action_evidence_and_keeps_input_lazy() {
-        use crate::famidash::target::{FamidashGameplayState, FamidashMechanicalState};
-        use std::cell::Cell;
-        let game = game("first", Stage::through_group(Side::Main, 0).unwrap());
-        let mut normal = FamidashCampaignEvidence::default();
-        let mut expanded = normal.clone();
-        let calls = Cell::new(0);
-        for (sequence, x, death) in [(1, 8, false), (2, 4, false), (3, 4, true), (4, 16, true)] {
-            let observations = vec![FamidashObservations {
-                frame_count: sequence,
-                decoded: FamidashMechanicalState {
-                    gameplay: Some(FamidashGameplayState {
-                        x,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                terminal: death,
-            }];
-            assert_eq!(
-                FamidashGame::<QuickNesMachine>::expansion_observation_memory_charge(
-                    &observations[0]
-                ),
-                std::mem::size_of::<FamidashObservations>()
-            );
-            let milestones = FamidashMilestones {
-                death,
-                ..Default::default()
-            };
-            let action = CampaignActionResult::<FamidashGame<QuickNesMachine>> {
-                action: ButtonChord::new(1, 2),
-                observations,
-                milestones,
-                outcome: Outcome::default(),
-                candidate: None,
-            };
-            game.merge_action_evidence(&mut normal, &action, sequence, || {
-                Ok(FamidashInput {
-                    actions: vec![action.action],
-                })
-            })
-            .unwrap();
-            let expansion = ExpansionEvidence::<FamidashGame<QuickNesMachine>> {
-                requested_action: action.action,
-                action: action.action,
-                preparation_failure: None,
-                observations: action.observations,
-                milestones,
-                outcome: action.outcome,
-                candidate_key: None,
-                candidate_viable: None,
-                result_sha256: String::new(),
-                replay_certificate: None,
-                execution_work: 2,
-            };
-            game.merge_expansion_evidence(&mut expanded, &expansion, sequence, || {
-                calls.set(calls.get() + 1);
-                Ok(FamidashInput {
-                    actions: vec![expansion.action],
-                })
-            })
-            .unwrap();
-            assert_eq!(evidence_value(&normal), evidence_value(&expanded));
-            let bytes = FamidashGame::<QuickNesMachine>::evidence_checkpoint(&expanded).unwrap();
-            expanded = FamidashGame::<QuickNesMachine>::evidence_from_checkpoint(&bytes).unwrap();
-            assert_eq!(evidence_value(&normal), evidence_value(&expanded));
-            assert_eq!(
-                FamidashGame::<QuickNesMachine>::evidence_checkpoint(&expanded).unwrap(),
-                bytes
-            );
-        }
-        assert_eq!(calls.get(), 3);
-        assert_eq!(expanded.first_reached.first_death, Some(3));
-        assert_eq!(expanded.champion_key, Some((0, 16)));
-        let before = evidence_value(&expanded);
-        let preparation = ExpansionEvidence::<FamidashGame<QuickNesMachine>> {
-            requested_action: ButtonChord::new(1, 1),
-            action: ButtonChord::new(1, 1),
-            preparation_failure: Some(Vec::new()),
-            observations: Vec::new(),
-            milestones: FamidashMilestones {
-                complete: true,
-                ..Default::default()
-            },
-            outcome: Outcome::default(),
-            candidate_key: None,
-            candidate_viable: None,
-            result_sha256: String::new(),
-            replay_certificate: None,
-            execution_work: 0,
-        };
-        game.merge_expansion_evidence(&mut expanded, &preparation, 5, || {
-            panic!("preparation failure must not materialize input")
-        })
-        .unwrap();
-        assert_eq!(evidence_value(&expanded), before);
     }
 
     #[test]

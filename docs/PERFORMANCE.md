@@ -271,11 +271,10 @@ This introduces three limits to parallelism:
 - **Coordinator occupancy.** With coordinator time t per job and execution
   time T per worker, the search saturates at T divided by t workers. The
   shorter an execution, the fewer workers one coordinator can feed.
-- **Admission order.** Linear campaigns admit results in planned-finish
-  order, which sums each job's action costs. Bounded-expansion campaigns
-  admit whole tasks in FIFO reservation order. Either policy can hold a
-  completed result behind an earlier result that has not finished. Jobs or
-  tasks count against their admission window from reservation until admission,
+- **Admission order.** Campaigns admit results in planned-finish
+  order, which sums each job's action costs. This can hold a completed result
+  behind an earlier result that has not finished. Jobs count against their
+  admission window from reservation until admission,
   and an idle worker waits once that window is full. A slow early result can
   therefore limit throughput even when coordinator CPU capacity is sufficient.
 - **Critical path.** Because a selection can depend on an earlier admitted

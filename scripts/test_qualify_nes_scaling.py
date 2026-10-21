@@ -14,9 +14,9 @@ scaling = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(scaling)
 
 
-def expansion_detail(**values):
-    return {"kind": "bounded_expansion_spans_v1", "basis": "inclusive_wall_ns_not_cpu",
-            "spans": {}, "cpu": {}, "stream_finish_host": None, **values}
+def linear_detail(complete=True, **values):
+    fields = ("admission_ns", "bookkeeping_ns", "history_compaction_ns", "stream_write_ns", "selection_ns")
+    return {"timing_complete": complete, **dict.fromkeys(fields, 0 if complete else None), **values}
 
 
 def off_telemetry(**values):
@@ -45,46 +45,45 @@ class ScalingTests(unittest.TestCase):
         self.assertIsNone(measured["stream_aux_cpu_ns_per_job"])
         self.assertEqual(measured["producer_wait_ns_per_job"], 2)
 
-    def test_whole_coordinator_cpu_keeps_dispatch_and_finish_as_components(self):
+    def test_whole_coordinator_cpu_preserves_narrower_dispatch_separately(self):
         telemetry = {
             "workers": [{"jobs": 10, "profile_mode": "coordinator_only"}],
             "coordinator_host": {"coordinator_cpu_ns": 1700, "coordinator_run_wait_ns": 400},
             "dispatch_phase": {"host": {"coordinator_cpu_ns": 900}},
-            "coordinator": expansion_detail(stream_finish_host={"coordinator_cpu_ns": 200}),
+            "coordinator": linear_detail(),
         }
-        costs = scaling.coordination_costs(telemetry, 10, "task")
-        self.assertEqual(costs["coordinator_whole_cpu_ns_per_task"], 170)
-        self.assertEqual(costs["coordinator_whole_run_wait_ns_per_task"], 40)
-        self.assertEqual(costs["coordinator_cpu_ns_per_task"], 90)
-        self.assertEqual(costs["coordinator_stream_finish_cpu_ns_per_task"], 20)
+        costs = scaling.coordination_costs(telemetry, 10)
+        self.assertEqual(costs["coordinator_whole_cpu_ns_per_job"], 170)
+        self.assertEqual(costs["coordinator_whole_run_wait_ns_per_job"], 40)
+        self.assertEqual(costs["coordinator_cpu_ns_per_job"], 90)
         telemetry["coordinator_host"] = None
-        costs = scaling.coordination_costs(telemetry, 10, "task")
-        self.assertIsNone(costs["coordinator_whole_cpu_ns_per_task"])
-        self.assertIsNone(costs["coordinator_whole_run_wait_ns_per_task"])
-        self.assertEqual(costs["coordinator_cpu_ns_per_task"], 90)
+        costs = scaling.coordination_costs(telemetry, 10)
+        self.assertIsNone(costs["coordinator_whole_cpu_ns_per_job"])
+        self.assertIsNone(costs["coordinator_whole_run_wait_ns_per_job"])
+        self.assertEqual(costs["coordinator_cpu_ns_per_job"], 90)
 
     def test_parallel_stream_bottleneck_uses_every_role_and_complete_cpu_coverage(self):
         stream = {"worker_cpu_ns": 90, "serializers": [{"cpu_ns": 60}, {"cpu_ns": 20}],
                   "relay": {"cpu_ns": 10}, "counter_overflow": False}
         def measure():
-            return scaling.coordination_costs(off_telemetry(stream=stream), 10, "task")
+            return scaling.coordination_costs(off_telemetry(stream=stream), 10)
         costs = measure()
-        self.assertEqual(costs["stream_aux_cpu_ns_per_task"], 9)
-        self.assertEqual(costs["serializer_cpu_ns_per_task"], [6, 2])
-        self.assertEqual(costs["relay_cpu_ns_per_task"], 1)
-        self.assertEqual(costs["stream_dedicated_core_bottleneck_ns_per_task"], 6)
+        self.assertEqual(costs["stream_aux_cpu_ns_per_job"], 9)
+        self.assertEqual(costs["serializer_cpu_ns_per_job"], [6, 2])
+        self.assertEqual(costs["relay_cpu_ns_per_job"], 1)
+        self.assertEqual(costs["stream_dedicated_core_bottleneck_ns_per_job"], 6)
         stream["relay"]["cpu_ns"] = 80
-        self.assertEqual(measure()["stream_dedicated_core_bottleneck_ns_per_task"], 8)
+        self.assertEqual(measure()["stream_dedicated_core_bottleneck_ns_per_job"], 8)
         stream["serializers"][1]["cpu_ns"] = None
-        self.assertIsNone(measure()["stream_dedicated_core_bottleneck_ns_per_task"])
-        self.assertEqual(measure()["serializer_cpu_ns_per_task"], [6, None])
+        self.assertIsNone(measure()["stream_dedicated_core_bottleneck_ns_per_job"])
+        self.assertEqual(measure()["serializer_cpu_ns_per_job"], [6, None])
         stream["serializers"][1]["cpu_ns"] = 20
         stream["counter_overflow"] = True
-        self.assertIsNone(measure()["stream_aux_cpu_ns_per_task"])
-        self.assertIsNone(measure()["stream_dedicated_core_bottleneck_ns_per_task"])
+        self.assertIsNone(measure()["stream_aux_cpu_ns_per_job"])
+        self.assertIsNone(measure()["stream_dedicated_core_bottleneck_ns_per_job"])
         stream["counter_overflow"] = False
         stream["serializers"][0]["counter_overflow"] = True
-        self.assertIsNone(measure()["stream_dedicated_core_bottleneck_ns_per_task"])
+        self.assertIsNone(measure()["stream_dedicated_core_bottleneck_ns_per_job"])
         stream["serializers"][0]["counter_overflow"] = False
         stream["serializers"][0]["cpu_ns"] = True
         with self.assertRaises(ValueError):
@@ -132,7 +131,7 @@ class ScalingTests(unittest.TestCase):
                 environment["HARMONY_WORKER_CPU_PROFILE"] = "0"
             self.assertEqual(scaling.requested_profiling(environment), mode)
             telemetry = {"workers": [{"profile_mode": mode, "execute_cpu": {} if roles[1] else None}],
-                         "coordinator": expansion_detail() if roles[0] else None}
+                         "coordinator": linear_detail() if roles[0] else None}
             provenance = scaling.profile_provenance(telemetry)
             self.assertEqual(provenance, {"profiling_mode": mode,
                                          "coordinator_verbose_enabled": roles[0],
@@ -158,11 +157,11 @@ class ScalingTests(unittest.TestCase):
                      counter_overflow=False, complete=False)
         for mode in ("worker_only", "coordinator_and_worker"):
             telemetry = {"workers": [{"profile_mode": mode, "jobs": 3, "execute_cpu": value}],
-                         "coordinator": expansion_detail() if mode == "coordinator_and_worker" else None}
-            costs = scaling.coordination_costs(telemetry, 3, "task")
+                         "coordinator": linear_detail() if mode == "coordinator_and_worker" else None}
+            costs = scaling.coordination_costs(telemetry, 3)
             self.assertEqual(costs["profiling_mode"], mode)
             self.assertTrue(costs["worker_execute_cpu_enabled"])
-            self.assertIsNone(costs["worker_execute_cpu_ns_per_task"])
+            self.assertIsNone(costs["worker_execute_cpu_ns_per_job"])
 
     def test_coordinator_details_match_mode_without_rejecting_linear_partial_coverage(self):
         fields = ("admission_ns", "bookkeeping_ns", "history_compaction_ns", "stream_write_ns", "selection_ns")
@@ -170,7 +169,7 @@ class ScalingTests(unittest.TestCase):
         for mode in ("off", "coordinator_only"):
             telemetry = {"workers": [{"profile_mode": mode}], "coordinator": linear}
             self.assertEqual(scaling.profile_provenance(telemetry)["profiling_mode"], mode)
-        for mode, detail in [("off", expansion_detail()), ("worker_only", expansion_detail()),
+        for mode, detail in [("off", linear_detail()), ("worker_only", linear_detail()),
                              ("coordinator_only", None), ("coordinator_and_worker", None),
                              ("off", {"timing_complete": True, **dict.fromkeys(fields, 1)}),
                              ("off", dict(linear, selection_ns=1)),
@@ -197,123 +196,12 @@ class ScalingTests(unittest.TestCase):
             (directory / f"{name}.json").write_text(json.dumps(value))
         (directory / "checkpoint.bin").write_bytes(checkpoint)
 
-    def write_expansion(self, directory, workers=1, resumed=False):
-        self.write_run(directory, workers=workers)
-        initial = dict(tasks_reserved=2 if resumed else 0, tasks_admitted=1 if resumed else 0,
-                       edge_attempts=4 if resumed else 0, executed_edges=3 if resumed else 0,
-                       budget_consumed=4 if resumed else 0, preparation_failures=1 if resumed else 0,
-                       empty_tasks=0, bootstrap_work=3, reconstruction_work=2 if resumed else 0,
-                       execution_work=10 if resumed else 0,
-                       executions_to_first_objective=None, work_to_first_objective=None)
-        final = dict(tasks_reserved=3, tasks_admitted=3, edge_attempts=9, executed_edges=7,
-                     budget_consumed=10, preparation_failures=2, empty_tasks=1,
-                     bootstrap_work=3, reconstruction_work=8, execution_work=31,
-                     executions_to_first_objective=None, work_to_first_objective=None)
-        deltas = {target: final[source] - initial[source]
-                  for source, target in scaling.EXPANSION_FIELDS.items()}
-        deltas["frames_emulated"] = sum(deltas[name] for name in
-                                       ("bootstrap_frames", "reconstruction_frames", "edge_frames"))
-        report = json.loads((directory / "campaign.json").read_text())
-        report.update(header={"format": "dissonance-bounded-expansion-v2",
-                              "schedule": "bounded_beam_fifo_tasks_v1", "window": 512,
-                              "execution_budget": 10}, counters=final, initial_counters=initial)
-        (directory / "campaign.json").write_text(json.dumps(report))
-        result = json.loads((directory / "result.json").read_text())
-        result.update(engine="bounded_expansion", window_semantics="fixed_outstanding_tasks",
-                      initial_counters=initial, session_counter_deltas=deltas, executions=7,
-                      frames_emulated=42, executions_per_second=deltas["executed_edges"],
-                      rate_basis="session_counter_deltas_over_search_seconds",
-                      rates_include_startup_and_finalization_wall=True)
-        for source, target in scaling.EXPANSION_FIELDS.items():
-            if source != "executed_edges":
-                result[target] = final[source]
-        (directory / "result.json").write_text(json.dumps(result))
-        telemetry = json.loads((directory / "telemetry.json").read_text())
-        telemetry["workers"][0]["jobs"] = deltas["tasks_admitted"]
-        (directory / "telemetry.json").write_text(json.dumps(telemetry))
-
-    def test_expansion_schema_uses_tasks_not_executed_edges_and_checked_resumed_deltas(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            for resumed in (False, True):
-                directory = Path(temporary) / str(resumed)
-                self.write_expansion(directory, resumed=resumed)
-                result, telemetry, _ = scaling.validate_result(directory, "bounded_expansion")
-                report = scaling.read_json(directory / "campaign.json")
-                deltas = scaling.expansion_deltas(result, report)
-                self.assertEqual(sum(row["jobs"] for row in telemetry["workers"]), 2 if resumed else 3)
-                self.assertEqual(deltas["executed_edges"], 4 if resumed else 7)
-                self.assertEqual(deltas["reconstruction_frames"], 6 if resumed else 8)
-                self.assertEqual(result["frames_emulated"], 42)
-                costs = scaling.coordination_costs(off_telemetry(stream={"worker_cpu_ns": 12}), 3, "task")
-                self.assertEqual(costs["stream_aux_cpu_ns_per_task"], 4)
-
-    def test_expansion_rejects_wrong_shape_bad_deltas_and_edge_based_worker_counts(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary) / "run"
-            self.write_expansion(directory)
-            result_path, report_path = directory / "result.json", directory / "campaign.json"
-            original_result, original_report = scaling.read_json(result_path), scaling.read_json(report_path)
-            plants = [lambda r, p: r.update(engine="linear"),
-                      lambda r, p: r.update(window_semantics="per_worker"),
-                      lambda r, p: p.pop("counters"),
-                      lambda r, p: p["counters"].update(executed_edges=8),
-                      lambda r, p: (p["initial_counters"].update(execution_work=99),
-                                    r["initial_counters"].update(execution_work=99)),
-                      lambda r, p: r["session_counter_deltas"].update(tasks_admitted=7),
-                      lambda r, p: r["session_counter_deltas"].update(empty_tasks=True),
-                      lambda r, p: r.update(frames_emulated=31),
-                      lambda r, p: r.update(rate_basis="cumulative"),
-                      lambda r, p: p["counters"].update(tasks_reserved=4)]
-            for plant in plants:
-                r, p = json.loads(json.dumps(original_result)), json.loads(json.dumps(original_report))
-                plant(r, p)
-                result_path.write_text(json.dumps(r)); report_path.write_text(json.dumps(p))
-                with self.assertRaises((ValueError, KeyError)):
-                    scaling.validate_result(directory, "bounded_expansion")
-            result_path.write_text(json.dumps(original_result)); report_path.write_text(json.dumps(original_report))
-            telemetry_path = directory / "telemetry.json"
-            telemetry = scaling.read_json(telemetry_path)
-            telemetry["workers"][0]["jobs"] = original_result["executions"]
-            telemetry_path.write_text(json.dumps(telemetry))
-            with self.assertRaisesRegex(ValueError, "worker telemetry"):
-                scaling.validate_result(directory, "bounded_expansion")
-
     def test_counter_bounds_never_accept_boolean_negative_or_overflow(self):
         for value in (True, -1, 1 << 64, 1.0, None):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 scaling.counter(value)
         with self.assertRaises(ValueError):
             scaling.checked_sum([(1 << 64) - 1, 1])
-
-    def test_expansion_fixed_absolute_window_allows_nondividing_worker_counts(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            evaluator = root / "evaluator"; evaluator.write_text("immutable executable")
-            request = root / "request.json"
-            request.write_text(json.dumps({"game": "famidash", "executions": 10}))
-            observed = []
-            def run(command, directory, timeout, environment):
-                self.assertNotIn("HARMONY_COORDINATOR_PROFILE", environment)
-                self.assertNotIn("HARMONY_WORKER_CPU_PROFILE", environment)
-                configured = scaling.read_json(Path(command[1]))
-                observed.append((configured["workers"], configured["window"]))
-                self.write_expansion(Path(command[2]), workers=configured["workers"])
-                return 1.0
-            output = root / "evidence"
-            args = ["qualify", "--evaluator", str(evaluator), "--request", str(request),
-                    "--out", str(output), "--workers", "1", "3", "--window", "512", "--repeats", "1",
-                    "--allow-oversubscription"]
-            with patch.object(sys, "argv", args), patch.object(scaling, "run_trial", side_effect=run):
-                scaling.main()
-            self.assertEqual(observed, [(1, 512), (3, 512)])
-            summary = scaling.read_json(output / "summary.json")
-            self.assertEqual(summary["status"], "verified")
-            self.assertEqual(summary["requested_profiling_mode"], "off")
-            self.assertEqual(summary["trials"][0]["coordination"]["profiling_mode"], "off")
-            self.assertEqual(summary["throughput_unit"], "tasks_per_second")
-            self.assertEqual(summary["trials"][0]["throughput_per_second"], 3)
-            self.assertEqual(summary["trials"][0]["executed_edges_per_second"], 7)
-            self.assertEqual(summary["trials"][0]["coordination"]["unit"], "task")
 
     def test_requested_worker_only_rejects_full_mode_and_preserves_raw_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -330,7 +218,7 @@ class ScalingTests(unittest.TestCase):
                     "clock": "thread_cpu_time", "scope": "actual_worker_execute_including_unwind_excluding_queue_reply_and_post_job_telemetry",
                     "supported": True, "total_cpu_ns": 900, "calls": 10, "samples": 10,
                     "errors": 0, "panics": 0, "counter_overflow": False, "complete": True})
-                telemetry["coordinator"] = expansion_detail()
+                telemetry["coordinator"] = linear_detail()
                 (output / "telemetry.json").write_text(json.dumps(telemetry))
                 return 1.0
             output = root / "evidence"
@@ -405,7 +293,7 @@ class ScalingTests(unittest.TestCase):
             evaluator = root / "evaluator"
             evaluator.write_text("immutable executable")
             request = root / "request.json"
-            request.write_text(json.dumps({"executions": 10}))
+            request.write_text(json.dumps({"game": "famidash", "executions": 10}))
             observed = []
 
             def run(command, directory, timeout, environment):
@@ -450,6 +338,39 @@ class ScalingTests(unittest.TestCase):
             summary = json.loads((output / "summary.json").read_text())
             self.assertEqual(summary["status"], "verified")
             self.assertEqual(summary["rates"]["2"]["speedup"], 1)
+
+    def test_every_game_requires_worker_divisibility_before_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            request = root / "request.json"
+            evaluator = root / "evaluator"
+            evaluator.write_text("immutable executable")
+            for game in ("famidash", "smb"):
+                request.write_text(json.dumps({"game": game, "executions": 10}))
+                output = root / game
+                args = ["qualify", "--evaluator", str(evaluator), "--request", str(request),
+                        "--out", str(output), "--workers", "1", "3", "--window", "512"]
+                with patch.object(sys, "argv", args), patch.object(scaling, "run_trial") as run:
+                    with self.assertRaises(SystemExit):
+                        scaling.main()
+                    run.assert_not_called()
+                self.assertFalse(output.exists())
+
+    def test_report_completed_jobs_and_unknown_engine_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "run"
+            self.write_run(directory)
+            report_path = directory / "campaign.json"
+            report = scaling.read_json(report_path)
+            report_path.write_text(json.dumps(dict(report, executions_completed=9)))
+            with self.assertRaisesRegex(ValueError, "completed campaign jobs"):
+                scaling.validate_result(directory)
+            report_path.write_text(json.dumps(report))
+            result_path = directory / "result.json"
+            result = scaling.read_json(result_path)
+            result_path.write_text(json.dumps(dict(result, engine="unrecognized")))
+            with self.assertRaisesRegex(ValueError, "unexpected evaluator engine"):
+                scaling.validate_result(directory)
 
     def test_failed_evaluator_retains_log(self):
         with tempfile.TemporaryDirectory() as temporary:

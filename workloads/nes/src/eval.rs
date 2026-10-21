@@ -4,9 +4,8 @@ use crate::{
     search::{
         archive::{ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{
-            CampaignConfig, CampaignExecutionOptions, CampaignModeReport, CampaignOrigin,
-            CampaignWatch, SnapshotCheckpoint, Workload, replay_campaign_checkpointed,
-            run_campaign_watched,
+            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, CampaignWatch, Workload,
+            replay_campaign_checkpointed, run_campaign_watched,
         },
         checkpoint::CheckpointPlan,
         draw::draw_mixture_from_identifier,
@@ -24,73 +23,6 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-
-#[path = "eval_expansion.rs"]
-mod expansion;
-pub use expansion::evaluate_expansion_watched;
-
-struct ReportMetrics {
-    executions: u64,
-    execution_work: u64,
-    rate_executions: u64,
-    rate_work: u64,
-    executions_to_first_objective: Option<u64>,
-    work_to_first_objective: Option<u64>,
-    victory_observed: bool,
-    stop_reason: Option<&'static str>,
-    extra: Value,
-}
-
-impl ReportMetrics {
-    fn rates(&self, search_seconds: f64) -> (f64, f64) {
-        (
-            self.rate_executions as f64 / search_seconds,
-            self.rate_work as f64 / search_seconds,
-        )
-    }
-}
-
-trait EvaluationReport<G: Workload>: Serialize {
-    fn supports_resumed_replay() -> bool {
-        false
-    }
-    fn archive(&self) -> &G::ArchiveReport;
-    fn objective_witness(&self) -> Option<&Input<G::Action>>;
-    fn stream_sha256(&self) -> &str;
-    fn telemetry(&self) -> &crate::search::telemetry::CampaignTelemetry;
-    fn metrics(&self) -> Result<ReportMetrics>;
-}
-
-impl<G: Workload> EvaluationReport<G> for CampaignModeReport<G::Action, G::ArchiveReport>
-where
-    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-{
-    fn archive(&self) -> &G::ArchiveReport {
-        &self.archive
-    }
-    fn objective_witness(&self) -> Option<&Input<G::Action>> {
-        self.objective_witness.as_ref()
-    }
-    fn stream_sha256(&self) -> &str {
-        &self.stream_sha256
-    }
-    fn telemetry(&self) -> &crate::search::telemetry::CampaignTelemetry {
-        &self.telemetry
-    }
-    fn metrics(&self) -> Result<ReportMetrics> {
-        Ok(ReportMetrics {
-            executions: self.executions_completed,
-            execution_work: self.execution_work,
-            rate_executions: self.executions_completed,
-            rate_work: self.execution_work,
-            executions_to_first_objective: self.executions_to_first_objective,
-            work_to_first_objective: self.work_to_first_objective,
-            victory_observed: self.objectives_reached > 0,
-            stop_reason: None,
-            extra: Value::Null,
-        })
-    }
-}
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -236,56 +168,6 @@ where
     G::Observations: 'static,
     G::Snapshot: crate::witness::EndpointIdentity + 'static,
 {
-    evaluate_engine(
-        game,
-        run,
-        request,
-        execution_sha256,
-        out,
-        started,
-        request
-            .window
-            .saturating_mul(usize::try_from(request.workers)?),
-        None,
-        |game, config, origin, stream, progress, options| {
-            run_campaign_watched(game, config, origin, stream, progress, options, watch)
-        },
-        |game, _config, _origin, bytes, _expected| {
-            replay_campaign_checkpointed(game, bytes, None, None)
-        },
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn evaluate_engine<G: Workload, R: EvaluationReport<G>>(
-    game: &G,
-    run: G::Run,
-    request: &Request,
-    execution_sha256: &str,
-    out: &Path,
-    started: Instant,
-    absolute_window: usize,
-    identity_extra: Option<Value>,
-    search: impl FnOnce(
-        &G,
-        &CampaignConfig<G>,
-        &CampaignOrigin<G>,
-        &mut dyn Write,
-        Option<&mut dyn Write>,
-        CampaignExecutionOptions,
-    ) -> Result<(R, SnapshotCheckpoint<G::Snapshot>)>,
-    replay: impl FnOnce(
-        &G,
-        &CampaignConfig<G>,
-        &CampaignOrigin<G>,
-        &[u8],
-        &R,
-    ) -> Result<(R, SnapshotCheckpoint<G::Snapshot>)>,
-) -> Result<()>
-where
-    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-    G::Snapshot: crate::witness::EndpointIdentity,
-{
     let full = request.verification == "campaign";
     if request.verification != "witness" && !full {
         return Err("verification must be campaign or witness".into());
@@ -293,7 +175,7 @@ where
     if full && request.executions > 10000 {
         return Err("full campaign verification is bounded to 10000 executions; use witness verification for performance runs".into());
     }
-    if full && request.resume.is_some() && !R::supports_resumed_replay() {
+    if full && request.resume.is_some() {
         return Err("a run resumed from a search checkpoint has no stream to replay; use witness verification".into());
     }
     let origin = match &request.resume {
@@ -323,7 +205,9 @@ where
         stop_rollout_on_objective: true,
         stop_campaign_on_objective: true,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
-        window: absolute_window,
+        window: request
+            .window
+            .saturating_mul(usize::try_from(request.workers)?),
         memory_budget_mib: Some(request.memory_mib),
         materialize_final_artifacts: full,
         run: run.clone(),
@@ -339,13 +223,7 @@ where
     {
         return Err("search limits must be positive".into());
     }
-    let mut identity = json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume});
-    if let (Some(identity), Some(extra)) = (
-        identity.as_object_mut(),
-        identity_extra.and_then(|value| value.as_object().cloned()),
-    ) {
-        identity.extend(extra);
-    }
+    let identity = json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume});
     write_json(&out.join("identity.json"), &identity)?;
     let mut stream = StreamSink {
         file: if full {
@@ -365,7 +243,7 @@ where
     let preparation_seconds = started.elapsed().as_secs_f64();
     phase(out, "search", started)?;
     let search_started = telemetry_now();
-    let searched = search(
+    let searched = run_campaign_watched(
         game,
         &config,
         &origin,
@@ -376,6 +254,7 @@ where
             checkpoints,
             placement: None,
         },
+        watch,
     )
     .and_then(|outcome| {
         stream.flush()?;
@@ -385,16 +264,16 @@ where
     let search_seconds = search_started.elapsed().as_secs_f64();
     phase(out, "export", started)?;
     let export_started = telemetry_now();
-    let metrics = report.metrics()?;
+    let victory_observed = report.objectives_reached > 0;
     let mut value = serde_json::to_value(&report)?;
-    let witness: Input<G::Action> = if let Some(input) = report.objective_witness() {
+    let witness: Input<G::Action> = if let Some(input) = report.objective_witness.as_ref() {
         input.clone()
     } else {
         serde_json::from_value(value["archive"]["champion_input"].clone())?
     };
     write_json(&out.join("witness-input.json"), &witness)?;
     if let Some(deepest) = game
-        .source_entries(report.archive())
+        .source_entries(&report.archive)
         .iter()
         .max_by_key(|entry| entry.key.progress())
     {
@@ -407,7 +286,7 @@ where
         archive.remove("entries");
     }
     write_json(&out.join("campaign.json"), &value)?;
-    write_json(&out.join("telemetry.json"), report.telemetry())?;
+    write_json(&out.join("telemetry.json"), &report.telemetry)?;
     let export_seconds = export_started.elapsed().as_secs_f64();
     phase(out, "verification", started)?;
     let verify_started = telemetry_now();
@@ -416,12 +295,12 @@ where
     if first != second {
         return Err("witness replay endpoint is nondeterministic".into());
     }
-    if metrics.victory_observed && first["victory"] != true {
+    if victory_observed && first["victory"] != true {
         return Err("reported victory was not reproduced by its witness".into());
     }
     if full {
         let bytes = fs::read(out.join("stream.jsonl"))?;
-        let (replayed, replay_checkpoint) = replay(game, &config, &origin, &bytes, &report)?;
+        let (replayed, replay_checkpoint) = replay_campaign_checkpointed(game, &bytes, None, None)?;
         if serde_json::to_value(&replayed)? != serde_json::to_value(&report)?
             || checkpoint != replay_checkpoint
         {
@@ -461,24 +340,22 @@ where
         }
     }
     let verification_seconds = verify_started.elapsed().as_secs_f64();
-    let solved = objective_within_budget(metrics.work_to_first_objective, request.frames);
-    let (executions_per_second, frames_per_second) = metrics.rates(search_seconds);
-    let mut result = json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
-        "victory_observed":metrics.victory_observed,
-        "frame_budget_overshoot":request.frames.map(|limit| metrics.execution_work.saturating_sub(limit)),
-        "executions": metrics.executions, "frames_emulated":metrics.execution_work,
-        "frames_to_first_victory":metrics.work_to_first_objective, "executions_to_first_victory":metrics.executions_to_first_objective,
+    let solved = objective_within_budget(report.work_to_first_objective, request.frames);
+    let executions_per_second = report.executions_completed as f64 / search_seconds;
+    let frames_per_second = report.execution_work as f64 / search_seconds;
+    let result = json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
+        "victory_observed":victory_observed,
+        "frame_budget_overshoot":request.frames.map(|limit| report.execution_work.saturating_sub(limit)),
+        "executions": report.executions_completed, "frames_emulated":report.execution_work,
+        "frames_to_first_victory":report.work_to_first_objective, "executions_to_first_victory":report.executions_to_first_objective,
         "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":executions_per_second,
         "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": frames_per_second,
         "export_seconds":export_seconds, "verification_seconds":verification_seconds,
         "witness_replays":2, "campaign_replay":full,
         "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
-        "stream_sha256":report.stream_sha256(), "stream_bytes_generated":stream.bytes, "stream_retained":full,
-        "stop_reason":if solved {"victory"} else if let Some(reason) = metrics.stop_reason {reason} else if metrics.executions >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| metrics.execution_work >= limit) {"frame_limit"} else {"wall_limit"}
+        "stream_sha256":report.stream_sha256, "stream_bytes_generated":stream.bytes, "stream_retained":full,
+        "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.execution_work >= limit) {"frame_limit"} else {"wall_limit"}
     });
-    if let (Some(result), Some(extra)) = (result.as_object_mut(), metrics.extra.as_object()) {
-        result.extend(extra.clone());
-    }
     write_json(&out.join("result.json"), &result)?;
     phase(out, "done", started)
 }
@@ -542,7 +419,7 @@ mod tests {
         for task in 0..1000 {
             serde_json::to_writer(
                 &mut *writer,
-                &serde_json::json!({"tasks_admitted": task, "executed_edges": task * 14}),
+                &serde_json::json!({"executions_completed": task, "execution_work": task * 10}),
             )
             .unwrap();
             writer.write_all(b"\n").unwrap();
@@ -582,10 +459,12 @@ mod tests {
                 ..CountingSink::default()
             },
         );
-        progress.write_all(b"{\"tasks_admitted\":1}\n").unwrap();
+        progress
+            .write_all(b"{\"executions_completed\":1}\n")
+            .unwrap();
         let error = finish_progress(Ok(()), &mut progress, &mut Vec::new()).unwrap_err();
         assert_eq!(error.to_string(), "injected progress flush failure");
-        assert_eq!(progress.get_ref().bytes, b"{\"tasks_admitted\":1}\n");
+        assert_eq!(progress.get_ref().bytes, b"{\"executions_completed\":1}\n");
         assert_eq!(progress.get_ref().flushes, 1);
     }
 
@@ -599,7 +478,9 @@ mod tests {
                     ..CountingSink::default()
                 },
             );
-            progress.write_all(b"{\"tasks_admitted\":1}\n").unwrap();
+            progress
+                .write_all(b"{\"executions_completed\":1}\n")
+                .unwrap();
             let result: Result<()> =
                 Err(io::Error::new(io::ErrorKind::NotFound, "primary search error").into());
             let mut diagnostics = Vec::new();
@@ -609,7 +490,7 @@ mod tests {
                 io::ErrorKind::NotFound
             );
             assert_eq!(error.to_string(), "primary search error");
-            assert_eq!(progress.get_ref().bytes, b"{\"tasks_admitted\":1}\n");
+            assert_eq!(progress.get_ref().bytes, b"{\"executions_completed\":1}\n");
             assert_eq!(progress.get_ref().flushes, 1);
             assert_eq!(!diagnostics.is_empty(), fail_flush);
             if fail_flush {

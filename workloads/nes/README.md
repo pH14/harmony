@@ -319,73 +319,24 @@ writes encoded chunks into this buffer. Successful completion explicitly flushes
 the buffer before verification and result publication, so delayed file errors
 remain run failures. Buffering does not change the stream's bytes or ordering.
 
-The evaluator's progress sidecar uses a fixed 8 KiB buffer, 7 KiB more than the
-previous 1 KiB line writer, outside the archive memory budget. Expansion writes
-cumulative counters on the Searcher's sparse logarithmic task-admission cadence
-and once at successful completion unless that final count was already emitted.
-It does not write a record for every task. The buffer preserves each emitted
-JSON record and its newline without forcing individual file writes. Successful
-completion explicitly flushes progress before export and verification; flush
-errors fail the run. Search-error cleanup
-also flushes progress, preserving the primary error and reporting a secondary
-flush failure. Linear progress producers still explicitly flush every update.
-Sidecar readers can lag until the buffer fills or completion flushes it; there
-is no wall-time freshness guarantee, and a hard kill can lose the buffered tail.
-The live viewer uses its independent 100 ms feed and does not read this file.
+The evaluator's progress sidecar uses a fixed 8 KiB buffer outside the archive
+memory budget. The searcher's progress producer controls record emission and
+can explicitly flush updates; the buffer preserves each JSON record and its
+newline. Successful completion flushes progress before export and verification;
+flush errors fail the run. Search-error cleanup also flushes progress,
+preserving the primary error and reporting a secondary flush failure. A hard
+kill can lose the buffered tail. The live viewer uses its independent 100 ms
+feed and does not read this file.
 
-Expansion's opt-in `HARMONY_COORDINATOR_PROFILE` telemetry records inclusive wall
-spans, including dispatch, stream drain, persistence polling and stream finish.
-These spans can overlap and are not CPU costs. The private
-`telemetry.coordinator.stream_finish_host` measurement records the coordinator's
-thread CPU and scheduler wait only around stream finish, including its final
-flush and the measurement overhead. This tail lies after the dispatch CPU
-boundary; qualification must account for it rather than crediting buffered
-output as free work. The independent
+`HARMONY_COORDINATOR_PROFILE` enables coordinator timing diagnostics. These
+inclusive wall spans can overlap and are not CPU costs. The independent
 `HARMONY_WORKER_CPU_PROFILE` presence switch measures actual worker execute CPU
-without enabling these verbose coordinator probes. Set both switches for full
-diagnostics; set neither for default execution. A present value such as `0` still
-enables its switch. Worker host telemetry records the actual cached role mode;
-unsupported CPU measurements remain unavailable even when requested. Capacity
-comparisons use fresh default and worker-only arms with the same binary and own
-oracles, keeping C and stream-role maxima across both and complete worker-only
-service costs. Full verbose runs are separately labeled diagnostics. Disabling a
-role performs no additional timing reads for that role.
-
-## Famidash expansion evaluation
-
-Normal Famidash evaluation, including stages, whole-game runs and all live ROM
-groups, uses the bounded expansion engine. Each task explores the fixed
-width-two, fanout-two, depth-four beam and can attempt at most 14 edges. The
-request's `window` is the exact number of outstanding tasks, independent of
-`workers`; qualification across worker counts must hold this task window fixed.
-Other games retain the existing per-worker request-window interpretation. The
-Arcade launcher sends a fixed 256-task Famidash window (up to 3,584 pending edge
-attempts); its memory and feedback capacity are not a throughput qualification.
-
-`identity.json` records the expansion policy and task-window semantics. In
-`result.json`, `executions` counts actual executed edges; `edge_attempts` includes
-edge preparation failures, `budget_consumed` also includes empty-task progress,
-and reserved/admitted tasks are separate. `frames_emulated` includes bootstrap,
-parent reconstruction and edge work, each also exported separately. First-victory
-counts refer to actual edges and canonical work at the first objective. Progress
-and budget counts are cumulative after checkpoint resume. Rates use only
-`session_counter_deltas` (final counters minus `initial_counters`) over the new
-session's search wall time, including startup/finalization wall. Fresh bootstrap
-work is present in the initial counters and cumulative total, separately from
-the dispatch delta; inherited checkpoint work never inflates session rates.
-Worker job telemetry also covers only the current session. A victory
-observed only beyond the requested frame budget does not pass the solved check.
-The request execution limit bounds attempts rather than guaranteeing that many
-actual edges. Worker count changes physical execution, not the task window.
-
-Expansion uses the common evaluator's ROM/core/prepared-execution identity,
-phase/timing exports, two witness replays, milestone checks and bounded full
-verification. Full verification replays the typed tree stream and compares the
-logical report and final snapshot checkpoint. Search checkpoint/resume options
-are passed to the expansion engine without being silently discarded; their
-format and supported policy are owned by the searcher. A resumed expansion run
-can use full verification: replay starts at its checkpoint and verifies the new
-session's typed stream and final artifacts.
+without enabling coordinator probes. Set both switches for full diagnostics;
+set neither for default execution. A present value such as `0` still enables
+its switch. Worker host telemetry records the actual cached role mode;
+unsupported CPU measurements remain unavailable even when requested. CPU
+comparisons require fresh same-binary default and worker-only runs with their
+own correctness checks; diagnostics do not establish physical core capacity.
 
 ## Live view
 

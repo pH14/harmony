@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use super::{CampaignCoordinator, ExpansionCoordinator, ExpansionWorkload, Workload};
+use super::{CampaignCoordinator, Workload};
 use crate::search::archive::{Archive, Input};
 use serde::Serialize;
 
@@ -29,23 +29,5 @@ where
 
     fn objective_witness(&self) -> Option<&Input<G::Action>> {
         CampaignCoordinator::objective_witness(self)
-    }
-}
-
-impl<G: ExpansionWorkload, N> CampaignView<G> for ExpansionCoordinator<'_, G, N> {
-    fn archive(&self) -> &Archive<G::Action, G::Key, G::Milestones, G::Snapshot> {
-        ExpansionCoordinator::archive(self)
-    }
-
-    fn executions(&self) -> u64 {
-        ExpansionCoordinator::executions(self)
-    }
-
-    fn finished(&self) -> bool {
-        ExpansionCoordinator::is_stopped(self)
-    }
-
-    fn objective_witness(&self) -> Option<&Input<G::Action>> {
-        ExpansionCoordinator::objective_witness(self)
     }
 }

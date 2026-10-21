@@ -290,10 +290,9 @@ value, including its error. Serialization and destruction callback scheduling,
 thread identity and cross-record order are unspecified. Each record's own
 cleanup still precedes serialization, and its record destruction follows it.
 Owned payloads are destroyed exactly once, including unpublished tails. Stateful
-global-counter serializers do not satisfy this contract. Famidash linear records
-use derived serialization of owned scalar/key/action fields; expansion records
-add fresh postcard observation commitments computed only from their owned
-vectors. Neither reads mutable observers or scheduling state while encoding.
+global-counter serializers do not satisfy this contract. Campaign records use
+derived serialization of owned scalar/key/action fields, without reading mutable
+observers or scheduling state while encoding.
 
 Stream telemetry separates `serializers[0]`, `serializers[1]` and `relay`, with
 Linux TID, optional thread CPU/run-wait, work wall time and channel waits.
@@ -322,13 +321,7 @@ cleanup data. Admission mutably borrows those vectors, copies actions and
 milestones, and takes only accepted snapshots. Duplicate or rejected incoming
 snapshots return to their original candidate; nonviable candidates remain there.
 No snapshot is cloned for cleanup, and snapshot retirement, retention accounting
-and pin release remain on the coordinator. After the expansion admission callback
-and record extraction, the coordinator drops the task's origin snapshot reference
-and notifies archive reclamation before queuing cleanup. This also invalidates
-compaction shortcuts that depended on that reference; serializer scheduling must
-not change archive retention or selection. Full-tree replay releases its execution
-spec before admission and uses the same origin-release boundary. Only the replay
-and certificate vectors and spent outcome pass to asynchronous cleanup. A serializer disposes this payload
+and pin release remain on the coordinator. A serializer disposes this payload
 before serializing its record; cleanup data never enters JSON or the stream hash.
 Inline coordinators perform the same disposal before writing the line without
 requiring their cleanup data to be static or creating a thread. Only native
@@ -472,131 +465,6 @@ set of every live ID or perform a tree lookup for each marker. The retained
 markers and logical memory accounting are unchanged.
 `DISSONANCE_BENCHMARK_LANDINGS_CLEANUP=1` enables paired measurements of this
 cleanup against the original temporary-set implementation.
-
-## Bounded local expansion
-
-`search::expansion` is a local task mechanism, separate from campaign reservation,
-archive admission, stream replay, and workload-specific policy. It has width two,
-fanout two, and four layers. A task has a nonzero edge-attempt budget at most fourteen;
-this is a work budget, not a beam tuning parameter. Requests are planned
-in parent-ordinal/branch order, deduplicated by their complete requested local
-suffix, and reduced in that same order regardless of completion order. Entropy is
-derived from task seed, parent ordinal, depth and branch. The mechanism does not
-claim a path was unexplored by earlier global tasks or count reconstruction and
-witness work as new task edges.
-
-A root carries an opaque stable parent ID, shared domain facts, root cost, last
-action and task seed. The caller keeps that global parent pinned. Root and child
-snapshots are accepted as `Arc`s directly, and domain facts carry the key and
-cumulative milestones needed to execute a child. No global root input is copied
-or reconstructed here. Nodes retain local suffixes of at most four actions, all
-returned evidence, facts, objective and failure records, including filtered
-branches. The root ID and local suffix identify a lazily reconstructed witness.
-Each node retains its requested action separately from its recorded suffix: the
-requested suffix is its parent's recorded suffix followed by the requested
-action. A workload validates terminal action shortening; runnable actions must
-remain unchanged. Different requested terminal actions can produce the same
-shortened recorded path, so the task-unique edge-attempt counter refers to
-requested paths. A preparation failure can consume an attempt without executing guest actions; actual executed
-edges and frames belong to domain evidence, not this generic counter.
-The zero-action root produces no frontier proposal and no attempted edge.
-
-Path cost is the checked sum of actual edge costs from this immutable root.
-Endpoint cost adds the root cost with saturating arithmetic only when endpoint
-and root progress are equal; otherwise it is the local path sum. Leaving and
-returning to root progress therefore includes the root cost again. This agrees
-with admitting each complete suffix independently against the same root through
-`Archive::insert_after`; it differs from resetting cost at each intermediate
-progress transition. Frontier ranking uses workload quality descending, then
-endpoint cost ascending, then canonical ordinal. Its second member is the best
-remaining endpoint in a different workload bucket, falling back to the next
-distinct requested input. Quality is distinct from archive same-slot preference.
-Only runnable, nonobjective endpoints expand; objectives retain their evidence
-and witness suffix even if their reported machine status remains runnable.
-
-At most two parent snapshot payloads and four returned child payloads are locally
-held together. Requests share parent payloads; only frontier nodes retain snapshot
-leases after reduction. External archive owners and aliases retained by an adapter
-are outside this local owner bound. Budget callbacks declare snapshot payload,
-evidence plus domain-fact payload, and action heap charges; path charges also
-include stored action capacities and requested-action copies. Fixed tree/index
-metadata is bounded by fourteen edges. These are checked returned-payload charge
-limits, not hard peak-allocation or RSS limits: action cloning, adapter scratch,
-and a whole returned layer may allocate before their charges are checked. Native
-callers must enforce their own process memory bound. Cancellation and invalid
-replies return normal errors and release kernel-owned snapshots and evidence;
-no partial trace is returned on such errors. The campaign adapter owns failing
-prefix persistence and publication.
-
-`ExpansionWorkload` supplies the local quality and diversity bucket, recorded-action
-validation, owned observation charges, and borrowed evidence merging. The native
-adapter reconstructs the selected parent once through its certified ancestor
-path, then restores local snapshots for individual edges. An empty reconstruction
-path shares the archive snapshot directly. Each edge has a separate watch scope;
-sibling restores must not combine their trails into one linear recording.
-Observation IDs use checked `task * 32 + ordinal`. Normal preparation failures
-retain their observations and consume an attempt without inventing an executed
-action. Integrity and terminal-key errors retain their original typed error at
-the direct adapter boundary. Thread-pool failures use the pool's existing string
-transport and are admitted at their task's FIFO position.
-
-`ExpansionCoordinator` reserves from one adaptive archive. Its fixed task window
-is independent of worker count, and the runner refills immediately after each
-ordered admission. A larger window exposes more tasks but reserves more parents
-before earlier results become available to global selection. Completed tasks
-awaiting FIFO admission still occupy slots; a full window is not a count of
-runnable tasks. A task claims at most fourteen remaining attempt units; unused
-claims return after admission. A root preparation failure or empty tree consumes
-one budget unit to bound campaigns that produce no executable edges. Reports
-distinguish budget units, edge attempts, actual executed edges, reconstruction
-work and guest execution work. The local frontier contributes at most two ordinary
-proposals, both against the same pinned root. Every executed intermediate edge
-still contributes observations, failures and objective witnesses. This capability
-requires lineage-independent archive key completion; it rejects a completed
-frontier key that changes when bound to the reserved root.
-
-Task record staging reserves its node vector from the already validated trace
-length. Frontier prefix-certificate collection uses fixed depth-bounded stack
-storage while preserving root-to-leaf order and mixed-certificate and missing-prefix-evidence
-rejection. These storage choices do not change expansion policy, integrity
-checks, archive mutation order or encoded records; their CPU effect requires
-measurement.
-
-The `dissonance-bounded-expansion-v2` stream records task reservation watermarks,
-root metadata, replay paths and certificates, every node's requested and recorded
-actions, endpoint facts, costs, evidence, result digests, local filtering and
-global admission decisions. Observation and preparation-failure vectors are
-represented by their count and a SHA-256 commitment to the complete postcard
-value. Option presence distinguishes absent preparation failure from an empty
-failure vector. Encoding freshly hashes the exact vectors after worker and
-admission observers; the worker's independently certified result digest does not
-replace this commitment. Raw observations still reach global evidence merging
-and live feeds before the record moves to the encoder. Decoding retains only
-validated commitments and never allocates from a declared observation count.
-Snapshot payloads and watch notes stay outside this logical stream. Observer-dependent byte charges also stay outside it. Encoding,
-hashing and spent-result disposal use the existing bounded background writer.
-Full replay reconstructs the reserved task windows, reexecutes each complete
-tree and compares the task records, final digest, counters and logical archive
-report. The final record names budget exhaustion, a reached work budget, an
-objective, or an observed wall stop. Replay checks that the named deterministic
-condition was reached; a wall stop requires a declared wall budget. A shorter
-self-consistent prefix cannot claim budget exhaustion. Replay rejects records
-larger than 256 MiB, truncated records and trailing
-records after the final counter record.
-
-This campaign currently accepts alphabet-only, unprobed execution with objective
-stopping inside each branch. Search checkpoints persist the global archive,
-evidence, random state, counters and FIFO reservations. Pending tasks rerun from
-their saved roots on resume; local trees, completed results and watch notes are
-not checkpoint payloads. The body identifies the expansion algorithm, and
-restore validates its policies, origins, budgets and pins. Interval checkpoints
-trigger when an admitted task crosses an interval boundary. Resume and bootstrap
-both use the coordinator session lifecycle.
-
-The normal Famidash evaluator and live view use this runner. Native throughput
-and game effectiveness remain under qualification. The local mechanism's
-structural bounds do not establish a campaign memory ceiling or a 100-worker
-throughput result.
 
 ## Workload boundary
 
@@ -1146,14 +1014,9 @@ the executions double, so each doubling adds 1,024 lines, the same bound the
 progress curve keeps. A 250-million-execution run writes about 12,500 lines.
 The cadence depends only on the cumulative execution count.
 
-Bounded expansion uses the same sparse logarithmic cadence counted in admitted
-tasks instead of executions. It also emits the final cumulative counters on
-successful completion, including a run with no admissions or a resumed run,
-unless that count was already emitted. Resume retains the cumulative cadence;
-a stopping boundary can add a final line between cadence points. The native
-evaluator buffers these records in 8 KiB and flushes at completion, so sidecar
-freshness has no wall-time guarantee and a hard kill can lose the buffered tail.
-The independent live feed does not depend on sidecar emission.
+The native evaluator buffers progress records in 8 KiB and flushes at completion,
+so sidecar freshness has no wall-time guarantee and a hard kill can lose the buffered
+tail. The independent live feed does not depend on sidecar emission.
 
 Progress sidecars carry objective workload evidence, actual admitted execution
 work, terminal endpoint and execution-failure totals, final totals, logical
@@ -1167,29 +1030,6 @@ the start of the search in this process. Phase durations are wall time and
 include time the coordinator thread waits for a CPU, so coordinator work per
 job is `coordinator_cpu_ns` over admissions. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
-
-Bounded expansion additionally exposes a separate `coordinator.cpu` object when
-profiling is enabled. On Linux, `clock=thread_cpu_time` samples the current
-coordinator thread around the readiness-to-dispatch-completion interval and
-around each `receive_timeout`, before reply validation or completion handling.
-The dispatch samples sit immediately after the initial scheduler-statistics
-read and before its final read; stream finalization and worker readiness are
-excluded. Compare this independent CPU total with `dispatch_phase.host` rather
-than treating the inclusive wall spans as additive CPU. Receive calls, replies,
-timeouts, errors, and valid CPU sample counts describe coverage. Checked counter increments flag
-`counter_overflow` and make receive coverage incomplete. Missing,
-backwards, or overflowing samples leave CPU totals null and coverage incomplete;
-non-Linux builds expose unsupported/null measurements. Profile-off execution
-performs no thread-CPU clock reads.
-
-The original receive wall bracket is unchanged; its CPU bracket also includes
-the existing wall-clock probes. Each profiled receive adds two thread-CPU clock
-reads, potentially system calls,
-including calls that time out. This overhead is part of the profiled run and its
-dispatch CPU; do not subtract an assumed clock cost or infer unprofiled capacity
-from it. Receive CPU is a subset of dispatch CPU, while receive wall time also
-includes sleeping and scheduling delays. These measurements are ephemeral
-telemetry only, excluded from logical reports, streams, and checkpoints.
 
 The independent process-start `HARMONY_WORKER_CPU_PROFILE` presence switch
 measures each native worker's `execute_cpu` around the actual execute call and
@@ -1207,7 +1047,7 @@ it excludes startup, idle/queue waits, reply transport and post-job target
 telemetry. Calls, valid samples, errors and panics are separate, and coverage
 must match worker jobs. Missing, backwards, overflowing or unsupported samples
 invalidate completeness rather than standing in for zero. This is worker CPU
-per submitted task, not guest-only cycles or an independently qualified native
+per submitted job, not guest-only cycles or an independently qualified native
 service floor.
 
 Detailed coordinator phase clocks are opt-in through the process-start
@@ -1222,17 +1062,13 @@ where a run's time went. It records bootstrap, search, and persistence wall
 time. Native `dispatch_phase` measures wall time and optional coordinator host
 counters from the worker-readiness barrier, before the first reservation, through
 final admission. It excludes live-observer construction, encoder startup and
-worker readiness. The linear runner's `coordinator_host` includes those startup
-stages. Bounded expansion instead reuses the dispatch host counter's start read,
-immediately after all workers are ready, and measures `coordinator_host` after
-stream finish, integrity verification, final archive/report and snapshot-checkpoint
-construction, immediately before returning. It includes all coordinator dispatch
-and finalization CPU, including final checkpoint persistence, but excludes boot
-before readiness and evaluator witness verification after return. Unsupported
-scheduler statistics remain null. Dispatch and disjoint stream-finish CPU are
-components of this whole counter; never add them to it. Stream draining during
-report persistence is reported separately. Dispatch-phase idle counters use the
-same readiness boundary.
+worker readiness. The whole `coordinator_host` counter starts at coordinator
+construction and is sampled after final archive compaction, stream draining,
+integrity verification, report construction and snapshot-checkpoint construction.
+It includes coordinator startup, dispatch and finalization CPU, and excludes the
+evaluator's subsequent witness verification. Dispatch CPU is a subset of this
+whole counter and must not be added to it. Unsupported scheduler statistics remain
+null. Dispatch-phase idle counters use the same readiness boundary.
 Stepped coordinators omit this phase. The report also records
 the coordinator phase durations and the coordinator's receive time,
 split into time when every worker was running and time when finished results

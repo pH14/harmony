@@ -34,13 +34,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::{
-    eval::{Request, Result, evaluate_expansion_watched, evaluate_watched},
+    eval::{Request, Result, evaluate_watched},
     search::{
         campaign::{
-            CampaignAdmission, CampaignAdmissionDecision, CampaignCoordinator, CampaignView,
-            CampaignWatch, ExpansionAdmission, ExpansionCoordinator, ExpansionDecision,
-            ExpansionEdgeAdmission, ExpansionEdgeId, ExpansionWatch, ExpansionWorkload, JobOutcome,
-            JobSpec, WatchedJob,
+            CampaignCoordinator, CampaignView, CampaignWatch, JobOutcome, JobSpec, WatchedJob,
         },
         draw::draw_mixture_identifier,
     },
@@ -441,113 +438,6 @@ where
 
     fn start(&self, campaign: &mut CampaignCoordinator<'_, G>) -> Result<()> {
         self.root(campaign)
-    }
-}
-
-fn expansion_feed_admission(edge: &ExpansionEdgeAdmission) -> Result<CampaignAdmission> {
-    let decision = match edge.decision {
-        ExpansionDecision::Retained { id } => CampaignAdmissionDecision::Retained { id },
-        ExpansionDecision::Duplicate { id } => CampaignAdmissionDecision::Duplicate { id },
-        ExpansionDecision::Objective => CampaignAdmissionDecision::Objective,
-        ExpansionDecision::Filtered
-        | ExpansionDecision::PreparationFailed
-        | ExpansionDecision::Rejected => CampaignAdmissionDecision::Rejected,
-    };
-    Ok(CampaignAdmission {
-        reservation: edge.id.observation_reservation()?,
-        decisions: vec![decision],
-    })
-}
-
-fn live_note_memory_charge<V>(note: &Note<V>) -> usize {
-    std::mem::size_of::<Note<V>>()
-        .saturating_add(
-            note.steps
-                .capacity()
-                .saturating_mul(std::mem::size_of::<feed::Step<V>>()),
-        )
-        .saturating_add(note.trail.as_ref().map_or(0, |trail| {
-            trail.capacity().saturating_mul(std::mem::size_of::<u16>())
-        }))
-}
-
-impl<G: ArcadeGame + ExpansionWorkload + Send> ExpansionWatch<G> for LiveWatch<G>
-where
-    G::ArchiveReport: Serialize,
-{
-    type Note = Note<G::View>;
-
-    fn note_memory_charge(&self, note: &Self::Note) -> usize {
-        live_note_memory_charge(note)
-    }
-
-    fn start(&self, campaign: &ExpansionCoordinator<'_, G, Self::Note>) -> Result<()> {
-        self.root(campaign)
-    }
-
-    fn run_edge(
-        &self,
-        id: ExpansionEdgeId,
-        job: &JobSpec<G>,
-        execute: impl FnOnce() -> std::result::Result<JobOutcome<G>, Box<dyn Error>>,
-    ) -> WatchedJob<G, Self::Note> {
-        if id.observation_reservation()? != job.reservation {
-            return Err("expansion live edge observation identity differs".into());
-        }
-        <Self as CampaignWatch<G>>::run(self, job, execute)
-    }
-
-    fn admitted(
-        &self,
-        admission: &mut ExpansionAdmission<G, Self::Note>,
-        campaign: &ExpansionCoordinator<'_, G, Self::Note>,
-    ) {
-        let watched = self.viewers.load(Ordering::Relaxed) > 0;
-        let changed = self.recording.swap(watched, Ordering::Relaxed) != watched;
-        if watched || changed || campaign.finished() {
-            let mut shared = lock(&self.shared);
-            if let Some(feed) = shared.feed.as_mut() {
-                if changed && !watched {
-                    feed.forget_pending();
-                }
-                if watched {
-                    feed.add_reconstruction_frames(admission.outcome.reconstruction_work);
-                    if let Some(trace) = admission.outcome.trace.as_mut() {
-                        let mut mapped = Vec::with_capacity(admission.decisions.len());
-                        for edge in &admission.decisions {
-                            let note = trace
-                                .nodes
-                                .iter_mut()
-                                .find(|node| node.ordinal == edge.id.ordinal)
-                                .and_then(|node| node.evidence.as_mut())
-                                .and_then(|edge| edge.note.take());
-                            if let Some(note) = note {
-                                mapped.push(
-                                    expansion_feed_admission(edge).expect(
-                                        "executed expansion live edge identity was validated",
-                                    ),
-                                );
-                                feed.note(note);
-                            }
-                        }
-                        feed.admit(mapped);
-                    }
-                    feed.forget_dropped(campaign);
-                }
-            }
-            shared.stats = feed::stats(campaign);
-        }
-        if !watched && let Some(trace) = admission.outcome.trace.as_mut() {
-            for node in &mut trace.nodes {
-                if let Some(edge) = node.evidence.as_mut() {
-                    edge.note.take();
-                }
-            }
-        }
-        if watched && self.glance.swap(false, Ordering::AcqRel) {
-            let _ = self.events.send(Event::Glance(glance(campaign)));
-        }
-        self.serve(campaign);
     }
 }
 
@@ -1324,70 +1214,6 @@ where
     })
 }
 
-pub fn evaluate_live_expansion<G>(
-    rom: &[u8],
-    request: &Request,
-    out: &Path,
-    started: Instant,
-    id: &str,
-) -> Result<()>
-where
-    G: ArcadeGame<Machine = NativeMachine> + ExpansionWorkload + Send + 'static,
-    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-    G::Milestones: 'static,
-    G::Observations: 'static,
-    G::Snapshot: EndpointIdentity + 'static,
-    <G::Key as crate::search::archive::ArchiveKey>::Progress: Send + Sync + 'static,
-    G::ExpansionQuality: 'static,
-    G::ExpansionBucket: 'static,
-{
-    evaluate_live_with::<G>(
-        rom,
-        request,
-        out,
-        id,
-        |game, run, effective, execution, watch| {
-            evaluate_expansion_watched(game, run, effective, execution, out, started, watch)
-        },
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn evaluate_watching_expansion<G>(
-    game: G,
-    run: G::Run,
-    rom: &[u8],
-    request: &Request,
-    execution_sha256: &str,
-    out: &Path,
-    started: Instant,
-    id: &str,
-    view: MemoryView<G::View>,
-) -> Result<()>
-where
-    G: ArcadeGame + ExpansionWorkload + Send + 'static,
-    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-    G::Milestones: 'static,
-    G::Observations: 'static,
-    G::Snapshot: EndpointIdentity + 'static,
-    <G::Key as crate::search::archive::ArchiveKey>::Progress: Send + Sync + 'static,
-    G::ExpansionQuality: 'static,
-    G::ExpansionBucket: 'static,
-{
-    let watched = Watched {
-        rom,
-        request,
-        execution_sha256,
-        out,
-        id,
-        address: "127.0.0.1:0",
-        view,
-    };
-    watched.evaluate(game, run, |game, run, watch| {
-        evaluate_expansion_watched(game, run, request, execution_sha256, out, started, watch)
-    })
-}
-
 struct Watched<'a, V> {
     rom: &'a [u8],
     request: &'a Request,
@@ -1755,71 +1581,6 @@ mod tests {
             super::resident_root(&absent).unwrap_err().to_string(),
             "the live view found no archived state to start from"
         );
-    }
-
-    #[test]
-    fn expansion_note_charge_counts_reserved_storage_even_when_empty() {
-        let note = super::Note::<u8> {
-            reservation: 0,
-            steps: Vec::with_capacity(4),
-            trail: Some(Vec::with_capacity(18)),
-            next_level: 0,
-            execution_work: 0,
-            death: false,
-        };
-        assert_eq!(
-            super::live_note_memory_charge(&note),
-            std::mem::size_of_val(&note)
-                + note.steps.capacity() * std::mem::size_of::<nes_games::arcade::feed::Step<u8>>()
-                + note.trail.as_ref().unwrap().capacity() * std::mem::size_of::<u16>()
-        );
-    }
-
-    #[test]
-    fn expansion_feed_mapping_preserves_identity_and_every_decision() {
-        use crate::search::campaign::{
-            CampaignAdmissionDecision as Old, ExpansionDecision as New, ExpansionEdgeAdmission,
-            ExpansionEdgeId,
-        };
-        for (decision, expected) in [
-            (New::Retained { id: 7 }, Old::Retained { id: 7 }),
-            (New::Duplicate { id: 8 }, Old::Duplicate { id: 8 }),
-            (New::Objective, Old::Objective),
-            (New::Rejected, Old::Rejected),
-            (New::Filtered, Old::Rejected),
-            (New::PreparationFailed, Old::Rejected),
-        ] {
-            let edge = ExpansionEdgeAdmission {
-                id: ExpansionEdgeId {
-                    task: 9,
-                    ordinal: 2,
-                },
-                sequence: 11,
-                decision,
-            };
-            let mapped = super::expansion_feed_admission(&edge).unwrap();
-            assert_eq!(mapped.reservation, 9 * 32 + 2);
-            assert_eq!(mapped.decisions, [expected]);
-        }
-        for id in [
-            ExpansionEdgeId {
-                task: 0,
-                ordinal: 0,
-            },
-            ExpansionEdgeId {
-                task: u64::MAX,
-                ordinal: 1,
-            },
-        ] {
-            assert!(
-                super::expansion_feed_admission(&ExpansionEdgeAdmission {
-                    id,
-                    sequence: 0,
-                    decision: New::Filtered
-                })
-                .is_err()
-            );
-        }
     }
 
     fn terminal_fixture() -> super::Terminal {

@@ -53,20 +53,6 @@ mod coordinator;
 
 pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
 
-#[path = "campaign_expansion.rs"]
-mod expansion_campaign;
-
-pub use expansion_campaign::{
-    EXPANSION_SCHEDULE, EXPANSION_STREAM_FORMAT, ExpansionAccountingRecord, ExpansionAdmission,
-    ExpansionCoordinator, ExpansionCounters, ExpansionDecision, ExpansionDuplicateRecord,
-    ExpansionEdge, ExpansionEdgeAdmission, ExpansionEdgeId, ExpansionEvidence,
-    ExpansionEvidenceData, ExpansionEvidenceRecord, ExpansionFacts, ExpansionNodeRecord,
-    ExpansionObservations, ExpansionOutcome, ExpansionReservationRecord, ExpansionRunReport,
-    ExpansionStopReason, ExpansionStreamHeader, ExpansionStreamRecord, ExpansionTaskOutcome,
-    ExpansionTaskRecord, ExpansionTaskSpec, ExpansionTrace, ExpansionWatch, ExpansionWorkload,
-    WorkloadExpansionFacts, replay_expansion, run_expansion_task, run_expansion_watched,
-};
-
 #[path = "campaign_view.rs"]
 mod view;
 
@@ -6056,6 +6042,7 @@ mod tests {
     }
     std::thread_local! {
         static FINALIZATION: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, false)) };
+        static ARCHIVE_REPORT_SCHEDSTAT: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
@@ -6209,6 +6196,9 @@ mod tests {
             evidence: &Self::Evidence,
             state: ArchiveReportState<Self>,
         ) -> Self::ArchiveReport {
+            if let Some(sample) = ARCHIVE_REPORT_SCHEDSTAT.get() {
+                crate::search::telemetry::set_test_schedstat(Some(sample));
+            }
             TestArchiveReport {
                 entries: state.entries,
                 marker: *evidence,
@@ -12359,6 +12349,92 @@ mod tests {
         assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
     }
 
+    fn final_report_counter_fixture(
+        sample: Option<(u64, u64)>,
+        report_sample: Option<(u64, u64)>,
+    ) -> (CampaignOutcome<TestWorkload>, Vec<u8>) {
+        struct Restore(Option<(u64, u64)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ARCHIVE_REPORT_SCHEDSTAT.set(self.0);
+            }
+        }
+        let _restore = Restore(ARCHIVE_REPORT_SCHEDSTAT.replace(report_sample));
+        crate::search::telemetry::with_test_schedstat(sample, || {
+            let mut stream = Vec::new();
+            let outcome = run_campaign_checkpointed(
+                &TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                },
+                &three_worker_config(),
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+            )
+            .unwrap();
+            (outcome, stream)
+        })
+    }
+
+    fn assert_final_report_counter_outputs_equal(
+        a: &(CampaignOutcome<TestWorkload>, Vec<u8>),
+        b: &(CampaignOutcome<TestWorkload>, Vec<u8>),
+    ) {
+        assert_eq!(a.1, b.1);
+        assert_eq!(
+            serde_json::to_value(&a.0.0).unwrap(),
+            serde_json::to_value(&b.0.0).unwrap()
+        );
+        assert_eq!(a.0.1.to_bytes().unwrap(), b.0.1.to_bytes().unwrap());
+    }
+
+    #[test]
+    fn whole_coordinator_cpu_includes_final_archive_report_without_changing_logical_outputs() {
+        let reference = final_report_counter_fixture(Some((100, 200)), None);
+        let measured = final_report_counter_fixture(Some((100, 200)), Some((1100, 2200)));
+        let whole = measured.0.0.telemetry.coordinator_host.unwrap();
+        assert_eq!(whole.coordinator_cpu_ns, 1000);
+        assert_eq!(whole.coordinator_run_wait_ns, 2000);
+        let dispatch = measured
+            .0
+            .0
+            .telemetry
+            .dispatch_phase
+            .as_ref()
+            .unwrap()
+            .host
+            .unwrap();
+        assert_eq!(dispatch.coordinator_cpu_ns, 0);
+        assert_eq!(dispatch.coordinator_run_wait_ns, 0);
+        assert_final_report_counter_outputs_equal(&reference, &measured);
+    }
+
+    #[test]
+    fn unavailable_whole_coordinator_cpu_stays_null_without_changing_logical_outputs() {
+        let reference = final_report_counter_fixture(Some((100, 200)), None);
+        let unavailable = final_report_counter_fixture(None, None);
+        assert!(unavailable.0.0.telemetry.coordinator_host.is_none());
+        assert!(
+            serde_json::to_value(&unavailable.0.0.telemetry)
+                .unwrap()
+                .get("coordinator_host")
+                .is_none()
+        );
+        assert!(
+            unavailable
+                .0
+                .0
+                .telemetry
+                .dispatch_phase
+                .as_ref()
+                .unwrap()
+                .host
+                .is_none()
+        );
+        assert_final_report_counter_outputs_equal(&reference, &unavailable);
+    }
+
     #[test]
     fn placement_runs_once_on_the_coordinator_and_each_worker_thread() {
         let placed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -13633,9 +13709,5 @@ mod tests {
         assert_eq!(counts.sink_panics, 1);
         assert_eq!(counts.discarded, 1);
         assert_eq!(counts.delivered, 0);
-    }
-
-    mod expansion_tests {
-        include!("campaign_expansion_tests.rs");
     }
 }

@@ -299,10 +299,6 @@ impl<V: Copy> Feed<V> {
         }
     }
 
-    pub fn add_reconstruction_frames(&mut self, frames: u64) {
-        self.frames = self.frames.saturating_add(frames);
-    }
-
     pub fn note(&mut self, note: Note<V>) {
         self.frames = self.frames.saturating_add(note.execution_work);
         self.deaths += u64::from(note.death);
@@ -489,23 +485,6 @@ mod tests {
             error.to_string(),
             "the replay frame count differs from the archived state"
         );
-    }
-
-    #[test]
-    fn reconstruction_frames_do_not_fabricate_executions_deaths_or_samples() {
-        let mut feed = Feed::new(0, 0_u8, 0, 99);
-        feed.add_reconstruction_frames(23);
-        let batch = feed.take_batch(Stats {
-            executions: 7,
-            ..Stats::default()
-        });
-        assert_eq!(batch.frames, 23);
-        assert_eq!(batch.stats.executions, 7);
-        assert_eq!(batch.deaths, 0);
-        assert_eq!(batch.sampled_jobs, 0);
-        assert!(batch.points.is_empty());
-        feed.add_reconstruction_frames(u64::MAX);
-        assert_eq!(feed.take_batch(Stats::default()).frames, u64::MAX);
     }
 
     fn step(view: u8, digest: Option<u64>, objective: bool) -> Step<u8> {

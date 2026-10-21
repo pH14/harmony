@@ -39,21 +39,6 @@ stream. Archive entries record a snapshot digest from `snapshot_identity_sha256`
 and an archive checkpoint must match those digests. SMB hashes the logical
 snapshot identity; the other games hash the serialized snapshot.
 
-Famidash also implements the explicit `ExpansionWorkload` capability for the
-fixed width-two, fanout-two, depth-four beam. Its quality is descending
-`(level, x)`, while its diversity bucket combines archive progress, place and
-identity. Runnable actions must match the request exactly; terminal or failed
-actions may shorten its positive hold while preserving buttons. Expansion and
-ordinary action evidence share borrowed observations and the same lazy
-first-milestone/champion input handling. Its evidence checkpoint codec preserves
-aggregate milestones, progress, first-arrival times and inputs, and champion
-state, so interval persistence and resumed evidence merging retain the complete
-search history. Preparation failures preserve the
-ordinary evaluator's no-op evidence behavior. A terminal endpoint without
-gameplay may have no archive key; other key errors remain errors. Observation
-charges use the fixed-size observation value, with vector storage accounted by
-the expansion owner.
-
 Each game's recorded emulator policy ends with a hash field. The native
 constructors take the core hash and the prepared execution hash from
 `machine::quicknes::prepared_execution_sha256`, record both, and load every
@@ -64,11 +49,7 @@ passes the hash of its core WASM module instead.
 `arcade` holds what the arcade page draws, for both the browser campaign and a
 native live campaign. Feed statistics and retained-state pruning read the
 `CampaignView` interface, so they do not depend on a coordinator's scheduling
-or mutable admission API. Native expansion edges reuse the ordinary live note
-capture and checked task/edge observation identities; the live feed maps each
-edge decision without changing the protocol, and adds parent-reconstruction
-frames separately from sampled notes. Note charges include inline values and
-reserved step/trail storage. `ArcadeGame` extends `Workload` with a view of each
+or mutable admission API. `ArcadeGame` extends `Workload` with a view of each
 observation, the four-number motion sample of a frame, the cleared-level count
 and the emulator state and canonical frame clock of a snapshot. Feed construction
 uses the actual root's stable id, view, frame clock and digest, including a

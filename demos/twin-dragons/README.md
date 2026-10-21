@@ -231,11 +231,9 @@ memory_max_mib = 24576
 ```
 
 The dialog must also select 128 workers to start one 128-worker campaign.
-For Famidash the launcher sets a fixed `window: 256` at every worker count:
-this is 256 outstanding expansion tasks, each with at most 14 edge attempts,
-so up to 3,584 edge attempts can be pending. Other games retain `window: 4`
-per worker. This is configuration, not a throughput guarantee; memory and
-feedback behavior at this task window still need capacity qualification.
+All games use the established campaign runner with a request `window: 4` per
+worker. This bounds outstanding rollout reservations at four times the worker
+count; it is configuration, not a throughput or resource-adequacy guarantee.
 `memory_mib` is the maximum archive and bounded draw-state budget offered by
 the dialog. Required `memory_max_mib` is a separate whole-unit RAM ceiling,
 strictly greater than the archive ceiling; the example allocates 24 GiB to each
@@ -695,10 +693,10 @@ shows another level and runs `famidash_start_level_tape()`, the workload's own
 A press and 40-frame wait. The community group and the side ROMs open the
 community menu, so their tape presses Right on the title menu.
 
-The browser search plans individual rollouts; native Famidash campaigns use
-bounded expansion tasks. Their execution counts and time to a level transition
-must be measured separately. Native search throughput alone does not establish
-how quickly either mode advances through a level.
+Browser and native searches use the established rollout campaign algorithm.
+Their worker counts, execution rates and time to a level transition must be
+measured separately. Native search throughput alone does not establish how
+quickly either mode advances through a level.
 
 ### Super Mario Bros.
 
