@@ -1844,15 +1844,18 @@ function startSearch(level = bootLevel) {
   const starting = worker;
   mapBuilt(bootLevel).then(() => starting.postMessage(init, ports));
 }
-function updateSearchControl() {
-  if (paused || terminalDrain?.branch !== activeSearch) terminalDrain = null;
-  heat.setRunning(ready && !paused && (!stats.stopped || !!terminalDrain), performance.now());
+function renderPauseButton() {
   $("pause").innerHTML = paused
     ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l14 8-14 8z"/></svg>'
     : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>';
   const label = paused ? "Resume Search" : "Pause Search";
   $("pause").setAttribute("aria-label", label);
   $("pause").title = label;
+}
+function updateSearchControl() {
+  if (paused || terminalDrain?.branch !== activeSearch) terminalDrain = null;
+  heat.setRunning(ready && !paused && (!stats.stopped || !!terminalDrain), performance.now());
+  renderPauseButton();
   $("goal-status").textContent = !ready
     ? "Loading…"
     : paused
@@ -3114,10 +3117,11 @@ function drawTrail(ctx, level, scale, override) {
 }
 
 function animate(now) {
-  if (terminalDrain && heat.clock(now) >= terminalDrain.end) {
-    heat.setRunning(false, now - (heat.clock(now) - terminalDrain.end));
+  if (terminalDrain && (reducedMotion.matches || heat.clock(now) >= terminalDrain.end)) {
+    heat.setRunning(false, reducedMotion.matches ? now : now - (heat.clock(now) - terminalDrain.end));
     terminalDrain = null;
     paused = true;
+    renderPauseButton();
   }
   const wallElapsed = lastTime ? now - lastTime : 0,
     elapsed = Math.min(100, wallElapsed);

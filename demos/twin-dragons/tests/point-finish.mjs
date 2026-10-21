@@ -92,6 +92,9 @@ try {
     frames: document.querySelector("#work").textContent })), settled, "Presentation and counters freeze after the retained tail expires");
   assert.equal(Number(settled.executions.replace(/\D/g, "")), 123);
   assert.equal(Number(settled.frames.replace(/\D/g, "")), 4560);
+  assert.equal(await page.locator("#pause").getAttribute("aria-label"), "Resume Search");
+  assert.equal(await page.locator("#status").textContent(), "Search finished");
+  assert.equal(await page.locator("#goal-status").textContent(), "Search finished");
   for (const mode of ["paused", "reduced-motion"]) {
     await page.emulateMedia({ reducedMotion: mode === "reduced-motion" ? "reduce" : "no-preference" });
     await page.reload();
@@ -100,12 +103,29 @@ try {
     await finalBatch(0);
     await page.waitForTimeout(150);
     const first = await page.evaluate(() => terminalMotion.map(p => p.x));
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(1200);
+    const beyondTTL = await page.evaluate(() => terminalMotion.length);
+    await page.waitForTimeout(200);
     const final = await page.evaluate(() => terminalMotion.map(p => p.x));
-    assert.ok(first.length > 0 && final.length > first.length, mode + " continues to paint the frozen view: " + JSON.stringify({ first, final, fixture: await page.evaluate(() => terminalFixture), canvas: await page.locator(".area-map").evaluate(c => ({...c.dataset})) }));
+    assert.ok(first.length > 0 && beyondTTL > first.length && final.length > beyondTTL, mode + " paints frozen positions beyond the actual one-second trail TTL: " + JSON.stringify({ first, final, fixture: await page.evaluate(() => terminalFixture), canvas: await page.locator(".area-map").evaluate(c => ({...c.dataset})) }));
     assert.deepEqual([...new Set(final)].sort(), [...new Set(first)].sort(), mode + " never advances final motion");
     assert.equal(await page.locator("#pause").isDisabled(), true);
   }
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.reload();
+  await page.waitForFunction(() => window.pointFinishBatch && document.querySelector(".area-map")?.dataset.map === "0", null, { timeout: 15000 });
+  await finalBatch(0);
+  await page.waitForTimeout(200);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.evaluate(() => { window.terminalMotion = []; });
+  await page.waitForTimeout(1200);
+  const reduced = await page.evaluate(() => terminalMotion.map(p => p.x));
+  await page.waitForTimeout(200);
+  const later = await page.evaluate(() => terminalMotion.map(p => p.x));
+  assert.ok(reduced.length > 0 && later.length > reduced.length, "Enabling reduced motion mid-tail freezes rather than expiring its trails");
+  assert.deepEqual([...new Set(later)].sort(), [...new Set(reduced)].sort());
+  assert.equal(await page.locator("#pause").getAttribute("aria-label"), "Resume Search");
+  assert.equal(await page.locator("#status").textContent(), "Search finished");
   assert.deepEqual(errors, []);
   console.log("Point-only level transitions and terminal trail drain, final freeze/counters, manual pause and reduced motion passed.");
 } finally { await browser.close(); }
