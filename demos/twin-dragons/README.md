@@ -446,7 +446,9 @@ viewport's corners to two normalized viewport lengths per second, including
 zoom-induced movement. This keeps the display cadence independent of how
 quickly workers discover distant states. Sprite overlays retain a readable
 minimum screen size when the view widens; their sampled positions and game
-clock stay unchanged. An empty room or level follows
+clock stay unchanged. Clicking or dragging the whole-level overview restores
+at least the close-up scale before centering the selected location, while
+preserving a higher manually chosen zoom. An empty room or level follows
 fresh activity after 250 ms instead of waiting through occupied-view dwell
 and stall intervals; active views retain their existing hysteresis. Manual
 holds, selected rooms and focused histories prevent automatic level changes.

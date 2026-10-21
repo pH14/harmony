@@ -610,6 +610,11 @@ function levelOverview(id) {
   const seek = (e) => {
     const r = strip.getBoundingClientRect();
     moveCameraByHand();
+    const c = mapCanvas(id);
+    if (c) {
+      const view = roomView(id, c);
+      roomView(id).zoom = view.zoom = Math.max(view.zoom, closeUpZoom(c));
+    }
     const x = ((e.clientX - r.left) / r.width) * map.width, y = ((e.clientY - r.top) / r.height) * map.height;
     scrollRoom(id, game.vertical ? { y } : { x, y });
     drawMap(performance.now());
