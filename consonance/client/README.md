@@ -425,12 +425,14 @@ snapshot store, including when a caller passes a lease from another namespace.
 User-mode Linux root extents bind the launch identity, and later cache extents
 also bind the setup checkpoint digest. Their imports check the binding before
 creating a checkpoint, even when a caller passes a foreign lease.
-`cache::plan_memory` takes the free memory less a 1 GiB reserve and the
-coordinator's need, fits as many workers as the cores allow with room for each
+`cache::plan_memory` takes the free memory less a 1 GiB reserve, the
+coordinator's need and one worker's transient need, fits as many workers as the cores allow with room for each
 worker and a minimum store, and gives the rest, after the workers, to the
 budget. It fails when one worker does not fit. `MemoryNeeds` names the
-coordinator, worker and minimum store sizes; the caller derives them from the
-guest's configured memory. The coordinator's need is the memory it will still
+coordinator, worker, minimum store and transient sizes; the caller derives them from the
+guest's configured memory. The transient need is memory one worker holds
+briefly beyond its share, such as an import's decompressed pages, and the plan
+keeps room for one. The coordinator's need is the memory it will still
 allocate, because its running process is already part of the usage. On Linux the free memory is the lower of
 `MemAvailable` and, for each enclosing cgroup, the lower of `memory.max` and
 `memory.high` minus usage. Usage is `memory.current` less clean page cache:
