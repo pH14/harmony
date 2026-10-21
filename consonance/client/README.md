@@ -409,10 +409,10 @@ new segment at that limit evicts entries until a segment dies, or is refused. Th
 each worker's local snapshot store reports, so the cache gets what the stores
 leave. When nothing can be evicted the index refuses the extent and the worker
 keeps its snapshot local. A report that leaves the total over budget after
-eviction asks the worker with the largest store to shrink, and asks any worker
-whose store grew since its last report to shrink as well. A busy worker with
-the largest store can go many seconds without a report, and the other stores
-must not grow over the budget meanwhile.
+eviction asks the worker with the largest store to shrink. It also asks any
+worker to shrink whose store is larger than at its last report that fit the
+budget. A busy worker with the largest store can go a minute or more without a
+report, and the other stores must not grow meanwhile.
 
 `Session::store_bytes` reports the snapshot store's page and VM-state bytes
 plus its index bytes, which include each layer's page table and lookup cache.

@@ -337,10 +337,10 @@ Before each execution and after each sealed prefix, a worker reports its
 store's page, VM-state and index bytes to the cache, which evicts entries to keep the total in
 budget. When eviction cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
-its newest prefix, and then drops back to the setup snapshot. A worker whose
-store grew since its last report drops one prefix snapshot per report while the
-total is over budget, so its store stops growing while the largest store's
-worker is busy. The run prints the worker count and budget, and
+its newest prefix, and then drops back to the setup snapshot. While the total
+is over budget, every other worker also drops prefix snapshots until its store
+is no larger than at its last report that fit the budget, so the stores stop
+growing while the largest store's worker is busy. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
 and `shrinks`, under `snapshot_cache`. It samples the shared index once under
 `snapshot_cache_locks` for per-operation acquisition attempts, acquired/completed
