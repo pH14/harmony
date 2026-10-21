@@ -161,15 +161,21 @@ browser, so a cloud machine needs no desktop or video encoder. No screen-sharing
 permission is needed. The file picker requests access only to the file you
 choose.
 
-The silent 1280 × 720 video contains the same map and mini map shown on the
+The 1920 × 1080 video contains the same map and mini map shown on the
 page, including the current Movement/Heatmap layers, moving sprites, camera
-position rectangle, automatic scrolling and level transitions. It adds game and
-level labels, timeline/frame/worker totals, and a credits reference. Inspecting,
-panning or changing the map during recording changes the video as well. Leave
-the camera following the search to record its automatic scrolling.
+position rectangle, automatic scrolling and level transitions. It adds a
+“Harmony Plays” game title with the current core count, the map label,
+timeline/frame totals, and game attribution plus the Harmony source URL.
+Inspecting, panning or changing the map during recording changes the video as
+well. Leave the camera following the search to record its automatic scrolling.
 
 Keep the tab visible: background tabs throttle rendering. The browser targets
-30 frames per second; actual cadence depends on rendering and encoding load.
+60 frames per second at 20 Mbit/s. Composition follows each map render without a
+separate time threshold that skips animation frames. Actual cadence still depends
+on rendering and encoding load; capture settings alone do not prove 60 fps.
+The full-HD canvas scales the layout and text together and keeps pixel-art
+smoothing disabled. Verify exported frame timestamps and changing decoded map
+frames when qualifying recording performance.
 Chrome and Firefox normally export WebM; browsers supporting only MP4 use MP4.
 An unsupported browser disables recording and explains why. The search continues
 when recording stops or fails. The page asks before navigating away during an

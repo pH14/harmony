@@ -78,9 +78,9 @@ ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 <dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Pick a game</h2></div><div id="game-choice" class="game-choice"><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="segments" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring Your Own ROM</h3><div id="rom-games" class="segments" role="group" aria-labelledby="byo-rom-title"></div></section></div><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><div id="level-grid" class="level-grid"></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 const recordingCanvas = document.createElement("canvas");
-recordingCanvas.width = 1280;
-recordingCanvas.height = 720;
-let recordingURL = null, lastRecorded = -Infinity, choosingRecordingFile = false;
+recordingCanvas.width = 1920;
+recordingCanvas.height = 1080;
+let recordingURL = null, choosingRecordingFile = false;
 const recording = new ViewRecording({
   onChange(state) {
     $("record-view").textContent = state === "recording" ? "Stop recording" : state === "stopping" ? "Saving video…" : "Record clip";
@@ -147,10 +147,10 @@ function paintRecording() {
   if (!map) throw new Error("Wait for the game map to load.");
   composeView(recordingCanvas, {
     map, overview: document.querySelector(".level-overview"),
-    title: `Harmony Arcade · ${game.title}`,
-    detail: `${maps.get(Number(map.dataset.map))?.label || ""} · ${visualization === "both" ? "Movement + Heatmap" : visualization} · ${liveView ? "Native search" : "Browser search"}`,
-    progress: `${$("hero-timelines").textContent} timelines tried · ${$("work").textContent} game frames · ${$("workers").textContent} workers`,
-    attribution: `${document.querySelector(".game-attribution")?.textContent || game.title} · harmony · Credits: github.com/pH14/harmony · Silent video`,
+    title: `Harmony Plays ${game.title} | ${$("workers").textContent} ${Number($("workers").textContent) === 1 ? "Core" : "Cores"}`,
+    detail: maps.get(Number(map.dataset.map))?.label || "",
+    progress: `${$("hero-timelines").textContent} timelines tried · ${$("work").textContent} game frames`,
+    attribution: `${document.querySelector(".game-attribution")?.textContent || game.title} / github.com/pH14/harmony`,
   });
 }
 window.addEventListener("beforeunload", (event) => {
@@ -2213,8 +2213,8 @@ function drawMap(now) {
     updateRoomChrome(c);
   }
   for (const strip of document.querySelectorAll(".level-overview")) drawOverview(strip, now);
-  if (recording.state === "recording" && now - lastRecorded >= 1000 / 30) {
-    try { paintRecording(); lastRecorded = now; } catch (error) { recording.fail(error); }
+  if (recording.state === "recording") {
+    try { paintRecording(); } catch (error) { recording.fail(error); }
   }
   drawCost = drawCost * 0.9 + (performance.now() - start) * 0.1;
   const behind = drawCost > 6 && frameGap > 20, ahead = drawCost < 4 || frameGap < 18;

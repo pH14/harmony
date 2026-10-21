@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ViewRecording } from "../src/recording.js";
+import { ViewRecording, composeView } from "../src/recording.js";
 
 function fixture(options = {}) {
   const track = { stop() { this.stopped = true; } };
   class Recorder {
     static isTypeSupported(type) { return type === "video/webm;codecs=vp8"; }
-    constructor(stream, options) { this.mimeType = options.mimeType; this.state = "inactive"; Recorder.last = this; }
+    constructor(stream, options) { this.mimeType = options.mimeType; this.options = options; this.state = "inactive"; Recorder.last = this; }
     start() { this.state = "recording"; }
     stop() { this.state = "inactive"; this.ondataavailable?.({ data: new Blob(["trailer"]) }); this.onstop?.(); }
     pause() { this.state = "paused"; }
@@ -16,7 +16,7 @@ function fixture(options = {}) {
   }
   const completions = [], errors = [], states = [];
   const recording = new ViewRecording({ Recorder, onComplete: (...args) => completions.push(args), onError: error => errors.push(error), onChange: state => states.push(state), ...options });
-  const canvas = { captureStream(fps) { assert.equal(fps, 30); return { getTracks: () => [track] }; } };
+  const canvas = { captureStream(fps) { assert.equal(fps, 60); return { getTracks: () => [track] }; } };
   return { recording, Recorder, canvas, track, completions, errors, states };
 }
 
@@ -175,4 +175,24 @@ test("aborting a pending file write cannot later cancel a new recording", async 
   assert.equal(f.recording.state, "recording");
   assert.deepEqual(f.errors, []);
   f.recording.stop();
+});
+
+test("recording requests sufficient bitrate for full HD at sixty frames", () => {
+  const f = fixture();
+  f.recording.start(f.canvas);
+  assert.equal(f.Recorder.last.options.videoBitsPerSecond, 20_000_000);
+  f.recording.stop();
+});
+
+test("full HD composition scales text and map together without losing layout", () => {
+  const calls = [];
+  const ctx = Object.fromEntries(["save", "restore", "scale", "fillRect", "fillText", "drawImage"].map(name => [name, (...args) => calls.push([name, ...args])]));
+  const map = { width: 1280, height: 320 }, overview = { width: 1280, height: 96 };
+  composeView({ width: 1920, height: 1080, getContext: () => ctx }, { map, overview, title: "Harmony Plays Famidash | 128 Cores", detail: "Stereo Madness", progress: "500,000 timelines tried · 6,780,374 game frames", attribution: "Famidash by TFDSoft, MIT / github.com/pH14/harmony" });
+  assert.deepEqual(calls[0], ["save"]);
+  assert.deepEqual(calls[1], ["scale", 1.5, 1.5]);
+  assert.deepEqual(calls.at(-1), ["restore"]);
+  assert.equal(calls.filter(([name]) => name === "drawImage").length, 2);
+  assert.equal(ctx.imageSmoothingEnabled, false);
+  assert.deepEqual(calls.filter(([name]) => name === "fillText").map(([, text]) => text), ["Harmony Plays Famidash | 128 Cores", "Stereo Madness", "500,000 timelines tried · 6,780,374 game frames", "Famidash by TFDSoft, MIT / github.com/pH14/harmony"]);
 });

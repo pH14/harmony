@@ -13,7 +13,8 @@ async function inspectVideo(page, source = "download", sampleTime = 1) {
     await new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = () => reject(new Error("Recorded video cannot decode")); });
     const sample = (y, height) => {
       const c = document.createElement("canvas"); c.width = 308; c.height = Math.ceil(height / 4);
-      c.getContext("2d").drawImage(video, 24, y, 1232, height, 0, 0, c.width, c.height);
+      const scale = video.videoWidth / 1280;
+      c.getContext("2d").drawImage(video, 24 * scale, y * scale, 1232 * scale, height * scale, 0, 0, c.width, c.height);
       return c.toDataURL();
     };
     const first = sample(88, 438), firstOverview = sample(548, 92);
@@ -47,6 +48,7 @@ try {
     const capture = HTMLCanvasElement.prototype.captureStream;
     HTMLCanvasElement.prototype.captureStream = function (...args) {
       window.recordedCanvas = this;
+      window.recordedFrameRate = args[0];
       const stream = capture.apply(this, args);
       window.recordedTracks = stream.getTracks();
       return stream;
@@ -56,8 +58,8 @@ try {
   await page.waitForFunction(() => Number(document.querySelector("#hero-timelines")?.textContent.replace(/\D/g, "")) > 30, null, { timeout: 60000 });
   assert.equal(await page.locator("#record-view").isEnabled(), true);
   const before = await page.locator(".area-map").first().getAttribute("data-center-x");
-  const captureStarted = Date.now();
   await page.locator("#record-view").click();
+  const captureStarted = Date.now();
   await page.waitForFunction(before => Math.abs(Number(document.querySelector(".area-map").dataset.centerX) - Number(before)) > 50, before, { timeout: process.env.LIVE_RECORDING ? 45000 : 15000 });
   await page.waitForTimeout(2500);
   assert.equal(await page.locator("#record-view").getAttribute("aria-pressed"), "true");
@@ -65,17 +67,20 @@ try {
   const composition = await page.evaluate(() => {
     const target = window.recordedCanvas, ctx = target.getContext("2d");
     const diverse = (x, y, w, h) => {
-      const pixels = ctx.getImageData(x, y, w, h).data, colors = new Set();
+      const scale = target.width / 1280;
+      const pixels = ctx.getImageData(x * scale, y * scale, w * scale, h * scale).data, colors = new Set();
       for (let i = 0; i < pixels.length; i += 4) colors.add(`${pixels[i]},${pixels[i + 1]},${pixels[i + 2]}`);
       return colors.size;
     };
     return { width: target.width, height: target.height, mainColors: diverse(24, 88, 1232, 438), overviewColors: diverse(24, 548, 1232, 92), camera: document.querySelector(".area-map").dataset.centerX };
   });
-  assert.equal(composition.width, 1280);
-  assert.equal(composition.height, 720);
+  assert.equal(composition.width, 1920);
+  assert.equal(composition.height, 1080);
+  assert.equal(await page.evaluate(() => recordedFrameRate), 60);
   assert.ok(composition.mainColors > 20, JSON.stringify(composition));
   assert.ok(composition.overviewColors > 10, JSON.stringify(composition));
   await writeFile(`${output}/recorded-frame.png`, Buffer.from(await page.evaluate(() => recordedCanvas.toDataURL().split(",")[1]), "base64"));
+  const capturedSeconds = (Date.now() - captureStarted) / 1000;
   await page.locator("#record-view").click();
   await page.locator("#download-recording").waitFor({ state: "visible" });
   assert.equal(await page.evaluate(() => recordedTracks.every(track => track.readyState === "ended")), true);
@@ -86,9 +91,9 @@ try {
   await download.saveAs(artifact);
   assert.ok((await stat(artifact)).size > 1000);
   // Decode the downloaded bytes and verify actual playable frames and changing search visuals.
-  const sampleTime = process.env.LIVE_RECORDING ? Math.max(1, (Date.now() - captureStarted) / 1000 - 1) : 1;
+  const sampleTime = process.env.LIVE_RECORDING ? Math.max(1, capturedSeconds - 0.5) : 1;
   const playback = await inspectVideo(page, "download", sampleTime);
-  assert.deepEqual({ width: playback.width, height: playback.height, changed: playback.changed, overviewChanged: playback.overviewChanged }, { width: 1280, height: 720, changed: true, overviewChanged: true });
+  assert.deepEqual({ width: playback.width, height: playback.height, changed: playback.changed, overviewChanged: playback.overviewChanged }, { width: 1920, height: 1080, changed: true, overviewChanged: true });
   assert.ok(Math.abs(playback.time - sampleTime) < 0.01, "The decoded clip reaches its sampled game frame");
   const firstURL = await page.locator("#download-recording").getAttribute("href");
   await page.locator("#record-view").click();
@@ -109,7 +114,7 @@ try {
   await writeFile(fileArtifact, Buffer.from(fileBytes, "base64"));
   assert.ok((await stat(fileArtifact)).size > 1000);
   const filePlayback = await inspectVideo(page, "file");
-  assert.deepEqual(filePlayback, { width: 1280, height: 720, changed: true, overviewChanged: true, time: 1 });
+  assert.deepEqual(filePlayback, { width: 1920, height: 1080, changed: true, overviewChanged: true, time: 1 });
   await page.evaluate(() => { window.showSaveFilePicker = async () => { throw new DOMException("Canceled", "AbortError"); }; });
   await page.locator("#record-to-file").click();
   await page.waitForFunction(() => document.querySelector("#recording-status").textContent === "File recording canceled.");

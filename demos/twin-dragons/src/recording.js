@@ -20,8 +20,8 @@ export class ViewRecording {
     this.writable = writable;
     this.writes = Promise.resolve();
     try {
-      this.stream = canvas.captureStream(30);
-      this.recorder = new this.Recorder(this.stream, { mimeType: this.mimeType, videoBitsPerSecond: 5_000_000 });
+      this.stream = canvas.captureStream(60);
+      this.recorder = new this.Recorder(this.stream, { mimeType: this.mimeType, videoBitsPerSecond: 20_000_000 });
       this.recorder.ondataavailable = ({ data }) => {
         if (this.state === "idle" || !data.size) return;
         this.bytes += data.size;
@@ -130,14 +130,17 @@ function fit(ctx, canvas, x, y, width, height) {
 
 export function composeView(target, { map, overview, title, detail, progress, attribution }) {
   const ctx = target.getContext("2d");
+  const width = 1280, height = 720;
+  ctx.save();
+  ctx.scale(target.width / width, target.height / height);
   ctx.fillStyle = "#081727";
-  ctx.fillRect(0, 0, target.width, target.height);
+  ctx.fillRect(0, 0, width, height);
   ctx.fillStyle = "#eff5ff";
   ctx.font = "bold 24px sans-serif";
-  ctx.fillText(title, 24, 38, target.width - 48);
+  ctx.fillText(title, 24, 38, width - 48);
   ctx.font = "16px sans-serif";
   ctx.fillStyle = "#a8c6df";
-  ctx.fillText(detail, 24, 66, target.width - 48);
+  ctx.fillText(detail, 24, 66, width - 48);
   ctx.imageSmoothingEnabled = false;
   const vertical = map.height > map.width;
   if (vertical) {
@@ -148,8 +151,9 @@ export function composeView(target, { map, overview, title, detail, progress, at
     if (overview) fit(ctx, overview, 24, 548, 1232, 92);
   }
   ctx.fillStyle = "#eff5ff";
-  ctx.fillText(progress, 24, 680, target.width - 48);
+  ctx.fillText(progress, 24, 680, width - 48);
   ctx.font = "12px sans-serif";
   ctx.fillStyle = "#a8c6df";
-  ctx.fillText(attribution, 24, 706, target.width - 48);
+  ctx.fillText(attribution, 24, 706, width - 48);
+  ctx.restore();
 }
