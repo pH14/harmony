@@ -224,7 +224,7 @@ test("supported explicit H264 is preferred and unsupported codecs fall back in o
   }
 });
 
-test("manual frame requests follow composition calls without a fixed-rate elapsed gate", () => {
+test("manual frame requests follow composition calls without a time threshold", () => {
   const f = fixture();
   assert.equal(f.recording.frame(), false);
   f.recording.start(f.canvas);
