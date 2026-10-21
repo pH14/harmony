@@ -33,7 +33,7 @@ type ReplicaQuery struct {
 type Replicated interface {
 	Settle() (rounds int, pause time.Duration)
 	Replicas(round int) Op
-	Agree(copies map[string]map[string]Copy) bool
+	Disagree(h *history.History, journal string, round int) bool
 }
 
 func (r Register) Settle() (int, time.Duration) {
@@ -55,8 +55,20 @@ func (r Register) Replicas(round int) Op {
 	return Op{F: RegisterReplicas, V: ReplicaQuery{Round: round, Keys: keys}}
 }
 
-func (Register) Agree(copies map[string]map[string]Copy) bool {
-	return len(disagreements(copies, func(string) bool { return true })) == 0
+func (r Register) Disagree(h *history.History, journal string, round int) bool {
+	rounds, _ := r.Settle()
+	at := collectRounds(h, rounds)[journal][round]
+	if at == nil {
+		return false
+	}
+	writes := map[string][]registerOp{}
+	for index := range h.Ops {
+		op := &h.Ops[index]
+		if decoded, ok := decodeRegister(op); ok && op.F != RegisterReadF {
+			writes[op.K] = append(writes[op.K], decoded)
+		}
+	}
+	return len(at.disagreements(writes)) > 0
 }
 
 type disagreement struct {
@@ -120,8 +132,13 @@ type replicaRound struct {
 	copies     map[string]map[string]Copy
 }
 
-func (r Register) checkReplicas(h *history.History, writes map[string][]registerOp, report *Report, found *collector) {
-	rounds, _ := r.Settle()
+func (round *replicaRound) disagreements(writes map[string][]registerOp) []disagreement {
+	return disagreements(round.copies, func(key string) bool {
+		return !writtenDuring(writes[key], round.start, round.end)
+	})
+}
+
+func collectRounds(h *history.History, rounds int) map[string]map[int]*replicaRound {
 	byJournal := map[string]map[int]*replicaRound{}
 	for index := range h.Ops {
 		op := &h.Ops[index]
@@ -147,6 +164,12 @@ func (r Register) checkReplicas(h *history.History, writes map[string][]register
 			round.copies[op.Node] = held
 		}
 	}
+	return byJournal
+}
+
+func (r Register) checkReplicas(h *history.History, writes map[string][]registerOp, report *Report, found *collector) {
+	rounds, _ := r.Settle()
+	byJournal := collectRounds(h, rounds)
 	for _, journal := range sortedKeys(byJournal) {
 		journalRounds := byJournal[journal]
 		for _, round := range journalRounds {
@@ -158,9 +181,7 @@ func (r Register) checkReplicas(h *history.History, writes map[string][]register
 		var last []disagreement
 		every := len(journalRounds) == rounds
 		for at := 0; at < rounds && every; at++ {
-			round := journalRounds[at]
-			quiet := func(key string) bool { return !writtenDuring(writes[key], round.start, round.end) }
-			last = disagreements(round.copies, quiet)
+			last = journalRounds[at].disagreements(writes)
 			every = len(last) > 0
 		}
 		if !every {

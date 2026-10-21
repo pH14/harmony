@@ -149,18 +149,37 @@ func TestOneAnsweringNodeLeavesReplicasUndecided(t *testing.T) {
 	}
 }
 
-func TestAgreeComparesValuesAndMetadata(t *testing.T) {
-	same := map[string]map[string]Copy{"n1": {"k0": held("a", 2)}, "n2": {"k0": held("a", 2)}}
-	if !(Register{}).Agree(same) {
-		t.Fatal("equal copies disagree")
+func TestDisagreeIgnoresKeysWrittenDuringTheRound(t *testing.T) {
+	a, b := "a", "b"
+	cases := []struct {
+		name   string
+		n2     Copy
+		during bool
+		want   bool
+	}{
+		{"equal copies", held("a", 2), false, false},
+		{"equal values without metadata", Copy{Value: &a}, false, false},
+		{"value behind on a quiet key", held("b", 1), false, true},
+		{"value behind while the key is written", held("b", 1), true, false},
+		{"revision behind while the key is written", held("a", 1), true, true},
+		{"different values without metadata", Copy{Value: &b}, false, true},
 	}
-	values := map[string]map[string]Copy{"n1": {"k0": held("a", 2)}, "n2": {"k0": held("b", 3)}}
-	if (Register{}).Agree(values) {
-		t.Fatal("different values agree")
-	}
-	a := "a"
-	plain := map[string]map[string]Copy{"n1": {"k0": {Value: &a}}, "n2": {"k0": {Value: &a}}}
-	if !(Register{}).Agree(plain) {
-		t.Fatal("values without metadata disagree")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b := newBuilder(t)
+			b.write(0, "k0", "a", 1, history.OK, 2)
+			if c.during {
+				b.write(1, "k0", "c", 9, history.Info, 30)
+			}
+			n1 := held("a", 2)
+			if c.n2.Meta == nil {
+				n1 = Copy{Value: &a}
+			}
+			b.replicas(0, "n1", map[string]Copy{"k0": n1}, 10, 12)
+			b.replicas(0, "n2", map[string]Copy{"k0": c.n2}, 10, 13)
+			if got := (Register{}).Disagree(b.build(), check, 0); got != c.want {
+				t.Fatalf("disagree %v, want %v", got, c.want)
+			}
+		})
 	}
 }

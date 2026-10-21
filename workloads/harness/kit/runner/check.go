@@ -91,8 +91,16 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 	}
 	recorder := fam.Recorder(prior)
 	outcomes := make([]history.Type, len(nodes)+1)
-	errs := make([]error, len(nodes)+1)
+	errs := make([]error, len(nodes)+2)
 	var wg sync.WaitGroup
+	var replicas *ReplicaResult
+	if replicated, ok := fam.(family.Replicated); ok {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			replicas, errs[len(nodes)+1] = compareReplicas(ctx, adapter, replicated, recorder, journal, nodes, config)
+		}()
+	}
 	for index := range outcomes {
 		op := fam.Read()
 		if index > 0 {
@@ -105,12 +113,6 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 		}()
 	}
 	wg.Wait()
-	var replicas *ReplicaResult
-	if replicated, ok := fam.(family.Replicated); ok && errors.Join(errs...) == nil {
-		var err error
-		replicas, err = compareReplicas(ctx, adapter, replicated, recorder, journal, nodes, config)
-		errs = append(errs, err)
-	}
 	closeErr := journal.Close()
 	if err := errors.Join(errs...); err != nil {
 		return CheckResult{}, err
@@ -150,28 +152,23 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 }
 
 func checkRead(ctx context.Context, adapter Adapter, recorder family.Recorder, journal *history.Journal, p int, op family.Op, timeout time.Duration) (history.Type, error) {
-	outcome, _, err := checkReadResult(ctx, adapter, recorder, journal, p, op, timeout)
-	return outcome, err
-}
-
-func checkReadResult(ctx context.Context, adapter Adapter, recorder family.Recorder, journal *history.Journal, p int, op family.Op, timeout time.Duration) (history.Type, any, error) {
 	client, err := connect(ctx, adapter, p, timeout)
 	if err != nil {
-		return "", nil, nil
+		return "", nil
 	}
 	defer client.Close()
 	index, err := journal.Invoke(p, op.F, op.K, op.Node, op.V)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	result, err := invoke(ctx, client, op, timeout)
 	switch {
 	case err == nil:
-		return history.OK, result, recorder.Record(journal, p, op, index, result)
+		return history.OK, recorder.Record(journal, p, op, index, result)
 	case IsDefinite(err):
-		return history.Fail, nil, journal.Complete(p, history.Fail, op.F, op.K, index, errorValue(err))
+		return history.Fail, journal.Complete(p, history.Fail, op.F, op.K, index, errorValue(err))
 	default:
-		return history.Info, nil, journal.Complete(p, history.Info, op.F, op.K, index, errorValue(err))
+		return history.Info, journal.Complete(p, history.Info, op.F, op.K, index, errorValue(err))
 	}
 }
 
@@ -191,7 +188,6 @@ func compareReplicas(ctx context.Context, adapter Adapter, replicated family.Rep
 			timer.Stop()
 		}
 		outcomes := make([]history.Type, len(nodes))
-		held := make([]map[string]family.Copy, len(nodes))
 		errs := make([]error, len(nodes))
 		var wg sync.WaitGroup
 		for index, node := range nodes {
@@ -200,9 +196,7 @@ func compareReplicas(ctx context.Context, adapter Adapter, replicated family.Rep
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				var value any
-				outcomes[index], value, errs[index] = checkReadResult(ctx, adapter, recorder, journal, len(nodes)+1+index, op, config.Timeout)
-				held[index], _ = value.(map[string]family.Copy)
+				outcomes[index], errs[index] = checkRead(ctx, adapter, recorder, journal, len(nodes)+1+index, op, config.CheckTimeout)
 			}()
 		}
 		wg.Wait()
@@ -211,15 +205,22 @@ func compareReplicas(ctx context.Context, adapter Adapter, replicated family.Rep
 		}
 		result.Rounds = round + 1
 		result.Nodes = map[string]history.Type{}
-		copies := map[string]map[string]family.Copy{}
+		answered := 0
 		for index, node := range nodes {
 			result.Nodes[node] = outcomes[index]
-			if outcomes[index] == history.OK && held[index] != nil {
-				copies[node] = held[index]
+			if outcomes[index] == history.OK {
+				answered++
 			}
 		}
-		if len(copies) < 2 || replicated.Agree(copies) {
-			result.Agreed = len(copies) >= 2
+		if answered < 2 {
+			break
+		}
+		h, err := history.Load(config.Dir)
+		if err != nil {
+			return nil, err
+		}
+		if !replicated.Disagree(h, journal.Name(), round) {
+			result.Agreed = true
 			break
 		}
 	}

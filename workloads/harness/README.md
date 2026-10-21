@@ -183,18 +183,19 @@ operations never produce a violation.
 
 The bundle's `check` line performs one read through the adapter into its own
 journal, plus one read per node when the adapter pins reads. For the register
-family it then runs up to three `replicas` rounds, 500 ms of guest time apart
-(`Register.Pause`), each with one read per node bounded by `--timeout`. It
-stops after the first round in which every answering node holds equal copies,
-or in which fewer than two nodes answer. Guest computation advances no virtual
+family it also runs, starting with those reads, up to three `replicas` rounds
+500 ms of guest time apart (`Register.Pause`), each with one read per node
+bounded by `--check-timeout`. After each round it reloads the journals and
+stops when the round shows no disagreement under the register rule above, or
+when fewer than two nodes answered. Guest computation advances no virtual
 time, so the settle period is a fixed number of rounds with a sleep between
-them. The check then loads every journal and runs the family checker. It prints one JSON line with
-the read outcome, each node's read outcome under `nodes`, the violations and,
-for the register family, `replicas`: the rounds run, whether the last round
-agreed, each node's outcome in that round, or `skipped` with the reason when
-the adapter pins reads to fewer than two nodes. It writes
-one failing `Always` per violation, at most three per kind and node, with
-evidence and the kind's total `occurrences` in `details`; evidence from a
+them. The check then loads every journal and runs the family checker. It
+prints one JSON line with the read outcome, each node's read outcome under
+`nodes`, the violations and, for the register family, `replicas`: the rounds
+run, whether the last round agreed, each node's outcome in that round, or
+`skipped` with the reason when the adapter pins reads to fewer than two nodes.
+It writes one failing `Always` per violation, at most three per kind and node,
+with evidence and the kind's total `occurrences` in `details`; evidence from a
 pinned read also has `node` and that node's `node_occurrences`. It writes a
 passing `Always` for each kind without a violation only once a read the kind
 covers has succeeded, so a check that cannot reach the system is silent. It
