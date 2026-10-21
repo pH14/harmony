@@ -349,7 +349,9 @@ accept. It also holds:
 
 - `explain.md`: the promise that broke, the fault table with guest times and the
   nodes left running, the history output, and one section per fault and per gap
-  between faults;
+  between faults. When a remaining fault cuts power, the summary says so and
+  states that a system that acknowledges writes before syncing them loses them
+  this way, with a search of a build that syncs every write as the test;
 - `explain.json`: the same content as data;
 - `actions.json`: the reduced actions for `debug run --actions`;
 - `probes/STEP/`: each probe script and its raw terminal output;

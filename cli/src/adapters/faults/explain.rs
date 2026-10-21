@@ -1037,6 +1037,24 @@ pub fn render(explanation: &Explanation) -> String {
             );
         }
     }
+    let power_cuts = explanation
+        .faults
+        .iter()
+        .filter(|fault| {
+            matches!(
+                fault.operation,
+                FaultOperation::PowerLoss(..) | FaultOperation::PowerLossAll(_)
+            )
+        })
+        .map(|fault| fault.number.to_string())
+        .collect::<Vec<_>>();
+    if !power_cuts.is_empty() {
+        let _ = writeln!(
+            text,
+            "- Power loss: fault {} cuts power, and a node loses every write it had not synced to disk. A system that acknowledges a write before it syncs it loses acknowledged writes this way by design. A replay on a build that syncs every write can diverge from this run, so search that build to tell that loss from a bug.",
+            power_cuts.join(", ")
+        );
+    }
     if let Some(capture) = explanation.capture_seconds {
         let _ = writeln!(
             text,
@@ -2098,6 +2116,14 @@ mod tests {
         ] {
             assert!(text.contains(expected), "missing {expected:?} in\n{text}");
         }
+        assert!(!text.contains("- Power loss:"), "{text}");
+        let mut cut = explanation.clone();
+        cut.faults[1].operation = FaultOperation::PowerLossAll(ticks(256));
+        assert!(
+            render(&cut).contains("- Power loss: fault 2 cuts power, and a node loses every write it had not synced to disk."),
+            "{}",
+            render(&cut)
+        );
         assert_eq!(explanation.history_error, None);
         explanation.host_history = Some(HostHistory {
             command: "harness-check -family register '/runs/x/copied/tmp/harness/journal'".into(),

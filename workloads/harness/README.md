@@ -353,6 +353,23 @@ non-direct message get routes to the stream leader and gives read-after-write
 coherency. `ready` therefore turns `AllowDirect` off on stream `KV_B`, and the
 client binds the bucket after ready, so `Get` uses the leader path.
 
+The image runs every node with `jetstream { sync_interval: always }`, which
+syncs each write before the acknowledgement, so a lost acknowledged write is a
+finding under every fault the search draws, power loss included. Build with
+`--build-arg NATS_SYNC=default` to keep JetStream's default two-minute sync.
+NATS documents that this default can lose acknowledged writes when the
+replicas lose power before the sync
+([JetStream](https://docs.nats.io/nats-concepts/jetstream),
+[nats-server #7564](https://github.com/nats-io/nats-server/issues/7564)), and a
+search of that build finds this loss within minutes: reads return an older
+value or no value for keys with acknowledged writes after a power cut to every
+node. An explain report whose remaining faults cut power says so in its
+summary. The loss needs a power cut, because a killed or restarted node keeps
+every write it handed to the kernel. A finding whose shrunk faults include no
+power cut is outside the documented loss. A replay of `actions.json` on the
+default image can diverge from the run, so search the default image to check a
+finding that needs a power cut.
+
 Each client maps every value it has written or read to that value's
 revision. A `cas` from `old` updates with `old`'s revision. When the revision
 is unknown, it first reads the key and fails definitely unless the key holds
