@@ -45,12 +45,32 @@ try {
       window.recordingSavedFile = await directory.getFileHandle("search-recording.webm", { create: true });
       return window.recordingSavedFile;
     };
+    const paintings = new WeakMap();
+    const drawImage = CanvasRenderingContext2D.prototype.drawImage;
+    CanvasRenderingContext2D.prototype.drawImage = function (...args) {
+      const result = drawImage.apply(this, args);
+      paintings.set(this.canvas, (paintings.get(this.canvas) || 0) + 1);
+      return result;
+    };
     const capture = HTMLCanvasElement.prototype.captureStream;
     HTMLCanvasElement.prototype.captureStream = function (...args) {
       window.recordedCanvas = this;
       window.recordedFrameRate = args[0];
       const stream = capture.apply(this, args);
       window.recordedTracks = stream.getTracks();
+      window.recordedFrameRequests = 0;
+      window.recordedFramesAfterPaint = 0;
+      let previousPaint = paintings.get(this) || 0;
+      const canvas = this;
+      const track = stream.getVideoTracks()[0], requestFrame = track.requestFrame;
+      track.requestFrame = function (...args) {
+        const result = requestFrame.apply(this, args);
+        const painted = paintings.get(canvas) || 0;
+        window.recordedFrameRequests++;
+        if (painted > previousPaint) window.recordedFramesAfterPaint++;
+        previousPaint = painted;
+        return result;
+      };
       return stream;
     };
   }, TOUR_KEY);
@@ -76,7 +96,10 @@ try {
   });
   assert.equal(composition.width, 1920);
   assert.equal(composition.height, 1080);
-  assert.equal(await page.evaluate(() => recordedFrameRate), 60);
+  assert.equal(await page.evaluate(() => recordedFrameRate), 0, "Capture is explicitly display-paced");
+  const frameRequests = await page.evaluate(() => ({ requested: recordedFrameRequests, afterPaint: recordedFramesAfterPaint }));
+  assert.ok(frameRequests.requested > 0, "The real video track receives explicit frame requests");
+  assert.equal(frameRequests.afterPaint, frameRequests.requested, "Every requested frame follows canvas composition");
   assert.ok(composition.mainColors > 20, JSON.stringify(composition));
   assert.ok(composition.overviewColors > 10, JSON.stringify(composition));
   await writeFile(`${output}/recorded-frame.png`, Buffer.from(await page.evaluate(() => recordedCanvas.toDataURL().split(",")[1]), "base64"));
