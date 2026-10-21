@@ -131,6 +131,89 @@ fn encoded(records: &[serde_json::Value]) -> Vec<u8> {
 }
 
 #[test]
+fn expansion_runtime_progress_is_sparse_and_preserves_the_final_counters() {
+    for (budget, expected) in [
+        (0, vec![0]),
+        (1, vec![1]),
+        (100, vec![1, 100]),
+        (103, vec![1, 100, 103]),
+    ] {
+        let workload = TestWorkload::new(Mode::Terminal);
+        let mut config = run_config(1);
+        config.execution_budget = budget;
+        config.window = 1;
+        let mut stream = Vec::new();
+        let mut progress = Vec::new();
+        let (report, _) = run_expansion_watched(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            Some(&mut progress),
+            CampaignExecutionOptions::default(),
+            &RunWatch::new(0, false, None),
+        )
+        .unwrap();
+        assert_eq!(report.counters.tasks_admitted, budget);
+        let lines = records(&progress);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line["tasks_admitted"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            lines.last().unwrap(),
+            &serde_json::to_value(report.counters).unwrap()
+        );
+    }
+}
+
+#[test]
+fn expansion_runtime_progress_final_write_failure_is_returned() {
+    struct FailFinal {
+        bytes: Vec<u8>,
+    }
+    impl Write for FailFinal {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.bytes.contains(&b'\n') {
+                return Err(std::io::Error::other("injected final progress failure"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let workload = TestWorkload::new(Mode::Terminal);
+    let mut config = run_config(1);
+    config.execution_budget = 2;
+    config.window = 1;
+    let mut stream = Vec::new();
+    let mut progress = FailFinal { bytes: Vec::new() };
+    let result = run_expansion_watched(
+        &workload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        Some(&mut progress),
+        CampaignExecutionOptions::default(),
+        &RunWatch::new(0, false, None),
+    );
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("injected final progress failure")
+    );
+    assert_eq!(records(&progress.bytes)[0]["tasks_admitted"], 1);
+    assert_eq!(records(&stream).last().unwrap()["record"], "end");
+}
+
+#[test]
 fn expansion_runtime_stream_report_and_checkpoint_ignore_worker_count_and_physical_order() {
     let (single, one_stream, _) = run_case(1, 0, false, None);
     let (parallel, three_stream, watch) = run_case(3, 0, true, None);
@@ -528,12 +611,13 @@ fn expansion_runtime_resumes_pending_pool_tasks_and_replays_the_resumed_stream()
         expected_sha256: None,
     };
     let mut resumed_stream = Vec::new();
+    let mut resumed_progress = Vec::new();
     let (resumed, resumed_snapshot) = run_expansion_watched(
         &workload,
         &config,
         &origin,
         &mut resumed_stream,
-        None,
+        Some(&mut resumed_progress),
         CampaignExecutionOptions::default(),
         &RunWatch::new(0, false, None),
     )
@@ -545,6 +629,10 @@ fn expansion_runtime_resumes_pending_pool_tasks_and_replays_the_resumed_stream()
     assert_eq!(resumed.initial_counters.tasks_reserved, header.reserved);
     assert!(resumed.initial_counters.tasks_admitted < resumed.initial_counters.tasks_reserved);
     assert_eq!(resumed.counters, original.counters);
+    assert_eq!(
+        records(&resumed_progress),
+        vec![serde_json::to_value(resumed.counters).unwrap()]
+    );
     assert_eq!(
         serde_json::to_vec(&resumed.archive).unwrap(),
         serde_json::to_vec(&original.archive).unwrap()

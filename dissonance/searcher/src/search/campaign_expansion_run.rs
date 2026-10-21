@@ -70,6 +70,7 @@ where
     let first_start = Mutex::new(first_start);
     let mut coordinator = None;
     let mut initial_counters = None;
+    let mut last_progress_admission = None;
     let mut telemetry = CampaignTelemetry::default();
     let mut coordinator_schedstat = None;
     let cpu_profile_enabled = profile_clock_enabled();
@@ -182,9 +183,12 @@ where
                     writer.write_line_with_cleanup(ExpansionStreamRecord::Task(record), cleanup)?;
                     record_profile(&mut campaign.profile.stream_ns, started);
                     let started = profile_now();
-                    if let Some(progress) = progress.as_mut() {
+                    if progress_checkpoint_due(campaign.counters.tasks_admitted)
+                        && let Some(progress) = progress.as_mut()
+                    {
                         serde_json::to_writer(&mut **progress, &campaign.counters)?;
                         progress.write_all(b"\n")?;
+                        last_progress_admission = Some(campaign.counters.tasks_admitted);
                     }
                     record_profile(&mut campaign.profile.progress_ns, started);
                     running += reserve(campaign)?;
@@ -327,6 +331,14 @@ where
         config.campaign_seed,
         config.materialize_final_artifacts,
     )?;
+    let started = profile_now();
+    if last_progress_admission != Some(counters.tasks_admitted)
+        && let Some(progress) = progress.as_mut()
+    {
+        serde_json::to_writer(&mut **progress, &counters)?;
+        progress.write_all(b"\n")?;
+    }
+    record_profile(&mut campaign.profile.progress_ns, started);
     telemetry.persistence_ns = nanos_since(persist_started);
     if profile_clock_enabled() {
         telemetry.coordinator = serde_json::json!({

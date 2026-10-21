@@ -1144,8 +1144,16 @@ The live progress sidecar gets a line at the first execution and every 100
 executions until 204,800. After that the step between lines doubles each time
 the executions double, so each doubling adds 1,024 lines, the same bound the
 progress curve keeps. A 250-million-execution run writes about 12,500 lines.
-The cadence depends only on the execution count, so a resumed run writes the
-same lines as an uninterrupted one.
+The cadence depends only on the cumulative execution count.
+
+Bounded expansion uses the same sparse logarithmic cadence counted in admitted
+tasks instead of executions. It also emits the final cumulative counters on
+successful completion, including a run with no admissions or a resumed run,
+unless that count was already emitted. Resume retains the cumulative cadence;
+a stopping boundary can add a final line between cadence points. The native
+evaluator buffers these records in 8 KiB and flushes at completion, so sidecar
+freshness has no wall-time guarantee and a hard kill can lose the buffered tail.
+The independent live feed does not depend on sidecar emission.
 
 Progress sidecars carry objective workload evidence, actual admitted execution
 work, terminal endpoint and execution-failure totals, final totals, logical
