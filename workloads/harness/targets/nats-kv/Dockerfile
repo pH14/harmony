@@ -69,6 +69,13 @@ RUN sha256="${NATS_SOURCE_SHA256}" \
     && tar -xf nats-source.tar.gz -C nats --strip-components=1 \
     && rm nats-source.tar.gz
 
+# NATS 2.11 and later require the SDK's no-op module. The toolexec emits calls
+# for its own SDK version, so the module must be that version too.
+RUN cd nats \
+    && if grep -q 'github.com/antithesishq/antithesis-sdk-go ' go.mod; then \
+        go get "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}-default-no-op"; \
+    fi
+
 RUN go install "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec@v${ANTITHESIS_SDK_VERSION}"
 
 COPY workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch \
