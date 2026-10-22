@@ -518,6 +518,18 @@ build the version with those bugs. The raft submodule comes from
 `RedisLabs/raft`, since the recorded `yossigo/raft` URL no longer resolves.
 `/symbols/sources` lists the commit of every tree.
 
+Both commits mishandle a failed Raft log write. `RaftLogAppend` advances the
+log index before its `fflush` and `fsync` succeed, and the failed bytes stay
+buffered and reach the file later. Each append the leader retries during a
+`DiskError` window on a follower therefore adds another copy of one entry,
+with the leader's term, at the follower's next index. After the follower
+restarts it applies those copies in place of the leader's entries. The copies
+carry the same term as the leader's entries at those indexes, so the Raft
+consistency check never replaces them, and the cluster can lose acknowledged
+writes. A search with the default fault alphabet finds this as a
+linearizability violation on `dfd91d4` too, with a `DiskError` among the
+shrunk faults.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
