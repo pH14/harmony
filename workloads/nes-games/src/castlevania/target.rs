@@ -884,7 +884,7 @@ mod checkpoint_tests {
     use searcher::search::campaign::{SnapshotCheckpoint, SnapshotCheckpointEntry};
 
     #[test]
-    fn framed_snapshot_round_trip_refuses_previous_flat_format() {
+    fn framed_snapshot_round_trip_refuses_a_flat_format() {
         let snapshot = CastlevaniaSnapshot {
             emulator_state: vec![3, 1, 4, 1, 5],
             observation: CastlevaniaObservations {
@@ -905,7 +905,7 @@ mod checkpoint_tests {
             checkpoint
         );
         let old = postcard::to_allocvec(&(
-            "castlevania-quicknes-snapshot-checkpoint-v1",
+            "castlevania-quicknes-snapshot-checkpoint-v0",
             &checkpoint.entries,
         ))
         .unwrap();

@@ -24,7 +24,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     let core_path =
         PathBuf::from(env::var_os("HARMONY_QUICKNES_CORE").ok_or("HARMONY_QUICKNES_CORE")?);
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core_path)?));
+    let mut warm = None;
+    if let Ok(frames) = env::var("PROBE_WARM") {
+        let warm = warm.insert(QuickNesMachine::from_rom_bytes(&rom, &core_path, &core_sha256)?);
+        for step in 0..frames.parse::<u32>()? / 30 {
+            let chord = ButtonChord::new([0x00, 0x08, 0x80, 0x81, 0x02][step as usize % 5], 30);
+            let snap = warm.snapshot()?;
+            warm.branch(snap, &nes::reproducer(&[chord]))?;
+            warm.run(StopConditions::default(), None)?;
+            warm.drop_snapshot(snap)?;
+        }
+    }
     let mut machine = QuickNesMachine::from_rom_bytes(&rom, &core_path, &core_sha256)?;
+    if let Some(warm) = &mut warm {
+        let snap = warm.snapshot()?;
+        warm.branch(snap, &nes::reproducer(&[ButtonChord::new(0x80, 30)]))?;
+        warm.run(StopConditions::default(), None)?;
+        warm.drop_snapshot(snap)?;
+    }
     let shots = env::var_os("PROBE_SHOTS").map(PathBuf::from);
     let shot_every: u32 = env::var("PROBE_SHOT_EVERY")
         .ok()
@@ -101,6 +118,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if let Some(dir) = &shots {
         fs::write(dir.join("final-wram.bin"), prior)?;
+        let snap = machine.snapshot()?;
+        fs::write(dir.join("final-state.bin"), machine.snapshot_bytes(snap)?)?;
     }
     Ok(())
 }

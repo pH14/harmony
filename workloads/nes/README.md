@@ -164,6 +164,7 @@ and platform evidence is not uniform:
 | Mega Man 2/native | All eight independent stage origins and the whole-game origin pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
 | Twin Dragons/native | Unit tests are checked in and `twin-dragons-campaign` passes local replay qualification; no CI lane runs it yet. | Host QuickNES core and the pinned silent-effects release ROM. |
+| Castlevania/native | Unit tests are checked in and a short cold `nes-eval` probe replays its witness; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Castlevania (USA) (Rev 1) ROM. |
 | Famidash/native | Unit tests are checked in, and `nes-eval` clears Stereo Madness with a replayed victory witness on seeds 1 to 5; no CI lane runs it yet. | Host QuickNES core with the four-screen state patch and the four official 1.2.8 release ROMs. |
 | Super Tilt Bro/native | The `STB` job in `Checks / Dissonance Workloads / NES` runs a bounded search on affected pull requests. The `Benchmarks / Dissonance Workloads / NES` capability panel evaluates Easy/Fair/Hard AI in independent case jobs through `nes-eval`. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
 
@@ -194,8 +195,8 @@ cargo test --manifest-path workloads/nes/Cargo.toml
 cargo clippy --manifest-path workloads/nes/Cargo.toml --all-features --all-targets -- -D warnings
 ```
 
-The [Mega Man 2](src/mm2/README.md) and
-[Metroid](src/metroid/README.md) READMEs document their input and observation maps. Campaign streams
+The [Mega Man 2](src/mm2/README.md),
+[Metroid](src/metroid/README.md) and [Castlevania](src/castlevania/README.md) READMEs document their input and observation maps. Campaign streams
 and checkpoints retain their versioned workload identities across crate moves.
 
 The `tools` directory contains NES movie conversion and trace utilities.
@@ -302,8 +303,8 @@ protocol and validation machinery without copying the evaluation loop.
 
 ## Live view
 
-Every `nes-eval` campaign of Super Mario Bros., Mega Man 2, Metroid, Twin
-Dragons or Famidash serves the arcade page's view of itself over HTTP on a
+Every `nes-eval` campaign of Super Mario Bros., Mega Man 2, Metroid,
+Castlevania, Twin Dragons or Famidash serves the arcade page's view of itself over HTTP on a
 loopback port. It prints `live view listening on 127.0.0.1:PORT` and writes
 `live.json` with the address, the page's game id, the process id and, on Linux,
 the process start time from `/proc/self/stat`, to its output directory. It
@@ -342,7 +343,7 @@ through a fresh target when the archived input does not hold every frame the
 core ran, as the browser does. Requests are limited to 64 KiB with 10-second
 read and write timeouts, and the server holds at most 64 connections. Open
 `http://127.0.0.1:8790/?game=GAME&live` to watch. The page ids are
-`super-mario-bros`, `mega-man-2`, `metroid`, `twin-dragons` and the five
+`super-mario-bros`, `mega-man-2`, `metroid`, `castlevania`, `twin-dragons` and the five
 Famidash groups `famidash`, `famidash-community`, `famidash-b`, `famidash-c` and
 `famidash-d`; a Famidash campaign reports the group that holds its stage.
 

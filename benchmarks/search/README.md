@@ -11,7 +11,7 @@ counted as a whole-game solve. No run starts from a supplied solution tape.
 
 Build the pinned QuickNES core with `scripts/build-quicknes-core.sh`. Build Super
 Tilt Bro with the script in `workloads/nes/scripts`. Supply your own
-SMB, MM2, and Metroid ROMs. Put their absolute paths and SHA-256 values in a
+SMB, MM2, Metroid and Castlevania ROMs. Put their absolute paths and SHA-256 values in a
 private inventory outside the repository:
 
 ```json
@@ -20,6 +20,7 @@ private inventory outside the repository:
   "smb": {"path": "/private/assets/smb.nes", "sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"},
   "mm2": {"path": "/private/assets/mm2.nes", "sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf"},
   "metroid": {"path": "/private/assets/metroid.nes", "sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6"},
+  "castlevania": {"path": "/private/assets/castlevania.nes", "sha256": "5e859d77bc0e3a9f30a7c14d2637b9c2aae6ce19f6520a7c9b252a86974f7800"},
   "stb": {"path": "/private/assets/stb.nes", "sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3"}
 }
 ```
@@ -212,7 +213,7 @@ ladder. Reaching the ending passes every milestone before it. Two more tables
 give each root's continuation graph counters and its emulator work per
 execution. `--out` writes one JSON document per source, and `ladder` accepts
 those documents as sources in place of a matrix directory.
-`milestones.py` prints the execution at which each Metroid or MM2 cell first
+`milestones.py` prints the execution at which each Metroid, MM2 or Castlevania cell first
 reached each named milestone.
 
 ## Evidence and resource accounting
