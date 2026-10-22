@@ -1894,6 +1894,27 @@ where
         Ok(Input { actions })
     }
 
+    pub(crate) fn pinned_job_origin_path(
+        &self,
+        id: usize,
+        snapshot_id: u64,
+    ) -> Result<ReplayPath<A>, &'static str> {
+        let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
+        if entry.id == snapshot_id {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let origin = &self.entries[self
+            .index_of_id(snapshot_id)
+            .ok_or("pinned job origin snapshot is missing")?];
+        let distance = entry
+            .input_len
+            .checked_sub(origin.input_len)
+            .ok_or("pinned job origin is longer than its dependent")?;
+        self.input_index
+            .actions_between(origin.input_node, entry.input_node, distance)
+            .ok_or("pinned job origin is not on the entry's input path")
+    }
+
     pub(crate) fn pin_job_origin(
         &mut self,
         id: usize,
