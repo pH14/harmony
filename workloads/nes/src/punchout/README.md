@@ -31,6 +31,9 @@ checked against rendered frames.
 | `$0002` | Screen step between fights: 0 on the result screen, 2 on the next opponent's profile |
 | `$0005` | Why the fight stopped: 0 running, 1 opponent down, 2 Mac down, 3 round over |
 | `$0006` | Round, from 1 |
+| `$000D` | Scene between fights: `$0C` result, champion, cutscene and profile screens, `$0A` the password box |
+| `$0012` | 1 while a screen between fights waits for Start |
+| `$0013` | Cutscene timer; it counts down by one every 8 frames through the bicycle scene after a title bout |
 | `$0090` | Opponent action; bit 7 is set on the frame an action starts |
 | `$0302`-`$0305` | Clock: minutes, tens of seconds, seconds |
 | `$0323`, `$0324` | Hearts as tens and ones digits; 20 at the start of the first fight |
@@ -68,7 +71,10 @@ buckets, hearts in 5-heart buckets capped at 4, and stars. The place is the
 opponent, the phase (fight, between rounds, won, other), the screen step
 between fights, the round, the opponent's knockdowns this round, the
 opponent's health in 8-point buckets and the opponent's action. Outside a
-fight the place drops the fight fields. Higher Mac health, then hearts, then
+fight the place drops the fight fields and adds the scene, the Start prompt
+and the cutscene timer in 16-step buckets. After a title bout the screens run
+for about 3,000 frames, including a 1,530-frame cutscene, and without the
+timer they form one place that the search does not leave. Higher Mac health, then hearts, then
 stars is preferred within a place, and the identity adds the exact health
 bytes and hearts.
 
