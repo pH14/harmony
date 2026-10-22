@@ -18,14 +18,14 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "punchout_defeated_health_hearts_stars_tier_opponent_round_health_8_action_knockdown_place_v2";
+pub const KEY_POLICY_IDENTIFIER: &str = "punchout_defeated_health_hearts_stars_tier_opponent_round_health_8_action_knockdown_scene_timer_16_place_v3";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
 const MAC_HEALTH_TIER_BUCKET: u8 = 24;
 const HEARTS_TIER_BUCKET: u8 = 5;
 const HEARTS_TIER_CAP: u8 = 4;
+const SCENE_TIMER_BUCKET: u8 = 16;
 const PHASE_FIGHT: u8 = 0;
 const PHASE_ROUND_BREAK: u8 = 1;
 const PHASE_WON: u8 = 2;
@@ -52,13 +52,16 @@ pub struct PunchOutArchiveKey {
     pub opponent_health: u8,
     pub opponent_action: u8,
     pub round_knockdowns: u8,
+    pub scene: u8,
+    pub prompt: u8,
+    pub scene_timer: u8,
     pub mac_health: u8,
     pub hearts: u8,
     pub stars: u8,
 }
 
 impl ArchiveKey for PunchOutArchiveKey {
-    type Place = (u8, u8, u8, u8, u8, u8, u8);
+    type Place = (u8, u8, u8, u8, u8, u8, u8, u8, u8, u8);
     type Progress = PunchOutTier;
     type Identity = (u8, u8, u8);
 
@@ -71,6 +74,9 @@ impl ArchiveKey for PunchOutArchiveKey {
             self.round_knockdowns,
             self.opponent_health / HEALTH_BUCKET,
             self.opponent_action,
+            self.scene,
+            self.prompt,
+            self.scene_timer,
         )
     }
 
@@ -166,6 +172,13 @@ pub fn archive_key(state: PunchOutMechanicalState) -> Option<PunchOutArchiveKey>
         opponent_health: if fighting { state.opponent_health } else { 0 },
         opponent_action: if fighting { state.opponent_action } else { 0 },
         round_knockdowns: if fighting { state.round_knockdowns } else { 0 },
+        scene: if fighting { 0 } else { state.scene },
+        prompt: if fighting { 0 } else { state.prompt },
+        scene_timer: if fighting {
+            0
+        } else {
+            state.scene_timer / SCENE_TIMER_BUCKET
+        },
         mac_health: state.mac_health,
         hearts: state.hearts,
         stars: state.stars,
@@ -368,6 +381,24 @@ mod tests {
             archive_key(knockout).unwrap().place(),
             archive_key(technical).unwrap().place()
         );
+    }
+
+    #[test]
+    fn the_cutscene_timer_separates_places_between_fights() {
+        let mut early = state(0, 0x40);
+        early.mode = MODE_TKO;
+        early.opponent = 3;
+        early.scene = 0x0c;
+        early.scene_timer = 0xfe;
+        let mut late = early;
+        late.scene_timer = 0x40;
+        assert_ne!(
+            archive_key(early).unwrap().place(),
+            archive_key(late).unwrap().place()
+        );
+        let mut fighting = state(0x60, 0x60);
+        fighting.scene_timer = 0x40;
+        assert_eq!(archive_key(fighting).unwrap().scene_timer, 0);
     }
 
     #[test]

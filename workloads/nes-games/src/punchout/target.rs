@@ -50,6 +50,9 @@ const OPPONENT: usize = 0x01;
 const SCREEN: usize = 0x02;
 const STOP: usize = 0x05;
 const ROUND: usize = 0x06;
+const SCENE: usize = 0x0d;
+const PROMPT: usize = 0x12;
+const SCENE_TIMER: usize = 0x13;
 const OPPONENT_ACTION: usize = 0x90;
 const OPPONENT_ACTION_ID: u8 = 0x7f;
 const HEARTS_TENS: usize = 0x323;
@@ -72,6 +75,9 @@ pub struct PunchOutMechanicalState {
     pub stars: u8,
     pub round_knockdowns: u8,
     pub opponent_action: u8,
+    pub scene: u8,
+    pub prompt: u8,
+    pub scene_timer: u8,
 }
 
 impl PunchOutMechanicalState {
@@ -661,6 +667,9 @@ pub fn decode_state(wram: &[u8]) -> Result<PunchOutMechanicalState, MachineError
         stars: byte(wram, STARS)?,
         round_knockdowns: byte(wram, ROUND_KNOCKDOWNS)?,
         opponent_action: byte(wram, OPPONENT_ACTION)? & OPPONENT_ACTION_ID,
+        scene: byte(wram, SCENE)?,
+        prompt: byte(wram, PROMPT)?,
+        scene_timer: byte(wram, SCENE_TIMER)?,
     })
 }
 
