@@ -26,7 +26,7 @@ checked against rendered frames.
 
 | Address | Meaning |
 | --- | --- |
-| `$0000` | Mode: `$01` fight and round intro, `$FF` between rounds, `$FE` won fight and the following screens, `$FD` lost fight |
+| `$0000` | Mode: `$01` fight and round intro, `$FF` between rounds, `$FE` won fight by knockout and the following screens, `$FC` won fight by technical knockout (three knockdowns in a round), `$FD` lost fight |
 | `$0001` | Opponent index, 0 for Glass Joe; it already names the next opponent on the won-fight screen |
 | `$0002` | Screen step between fights: 0 on the result screen, 2 on the next opponent's profile |
 | `$0005` | Why the fight stopped: 0 running, 1 opponent down, 2 Mac down, 3 round over |

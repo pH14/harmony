@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     chord::{ChordVocabulary, Tap},
     punchout::target::{
-        ButtonChord, FULL_HEALTH, HEALTH_BUCKET, MODE_FIGHT, MODE_ROUND_BREAK, MODE_WON,
+        ButtonChord, FULL_HEALTH, HEALTH_BUCKET, MODE_FIGHT, MODE_ROUND_BREAK, MODE_TKO, MODE_WON,
         OPPONENT_COUNT, PunchOutInput, PunchOutMechanicalState, PunchOutObservations,
         PunchOutSnapshot,
     },
@@ -19,7 +19,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "punchout_defeated_health_hearts_stars_tier_opponent_round_health_8_action_knockdown_place_v1";
+    "punchout_defeated_health_hearts_stars_tier_opponent_round_health_8_action_knockdown_place_v2";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -146,7 +146,7 @@ fn phase(mode: u8) -> u8 {
     match mode {
         MODE_FIGHT => PHASE_FIGHT,
         MODE_ROUND_BREAK => PHASE_ROUND_BREAK,
-        MODE_WON => PHASE_WON,
+        MODE_WON | MODE_TKO => PHASE_WON,
         _ => PHASE_OTHER,
     }
 }
@@ -355,6 +355,19 @@ mod tests {
         assert_ne!(won.place(), profile.place());
         assert_eq!(profile.opponent_action, 0);
         assert_eq!(won.progress().defeated, 1);
+    }
+
+    #[test]
+    fn knockout_and_technical_knockout_share_the_won_phase() {
+        let mut knockout = state(0, 0x40);
+        knockout.mode = MODE_WON;
+        knockout.opponent = 1;
+        let mut technical = knockout;
+        technical.mode = MODE_TKO;
+        assert_eq!(
+            archive_key(knockout).unwrap().place(),
+            archive_key(technical).unwrap().place()
+        );
     }
 
     #[test]

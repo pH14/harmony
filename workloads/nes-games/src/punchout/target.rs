@@ -41,6 +41,7 @@ pub const INITIAL_HEARTS: u8 = 20;
 pub const MODE_FIGHT: u8 = 0x01;
 pub const MODE_ROUND_BREAK: u8 = 0xff;
 pub const MODE_WON: u8 = 0xfe;
+pub const MODE_TKO: u8 = 0xfc;
 pub const MODE_LOST: u8 = 0xfd;
 const STOP_MAC_DOWN: u8 = 2;
 
