@@ -37,14 +37,21 @@ const MODE_INTRO: u8 = 0x04;
 const MODE_PLAYING: u8 = 0x05;
 const MODE_DYING: u8 = 0x06;
 const MODE_GAME_OVER_FADE: u8 = 0x07;
+const MODE_STAGE_EXIT: u8 = 0x08;
+#[cfg(test)]
 const MODE_DOOR: u8 = 0x0a;
+const MODE_STAGE_CLEAR: u8 = 0x0c;
 const MODE_GAME_OVER: u8 = 0x0d;
+const MODE_ENDING: u8 = 0x0f;
 const PLAYING_CONTROL: u8 = 0x06;
+const MAP_STAGE: u8 = 0x14;
+const FELL_Y: u8 = 0xe0;
 const GENESIS_LIVES: u8 = 4;
 
 const MODE: usize = 0x18;
 const SUBMODE: usize = 0x19;
 const STAGE: usize = 0x28;
+const NEXT_STAGE: usize = 0x29;
 const LIVES: usize = 0x2a;
 const Y: usize = 0x3f;
 const X_LOW: usize = 0x40;
@@ -53,6 +60,7 @@ const HEALTH: usize = 0x45;
 const SECTION: usize = 0x46;
 const INVINCIBLE: usize = 0x5b;
 const MULTIPLIER: usize = 0x64;
+const DRACULA_FORM: usize = 0x7a;
 const WHIP: usize = 0x70;
 const HEARTS: usize = 0x71;
 const SUBWEAPON: usize = 0x15b;
@@ -74,6 +82,7 @@ pub struct CastlevaniaMechanicalState {
     pub subweapon: u8,
     pub multiplier: u8,
     pub boss_health: u8,
+    pub second_form: bool,
 }
 
 impl CastlevaniaMechanicalState {
@@ -85,7 +94,7 @@ impl CastlevaniaMechanicalState {
     #[must_use]
     pub fn dead(self) -> bool {
         matches!(self.mode, MODE_DYING | MODE_GAME_OVER_FADE | MODE_GAME_OVER)
-            || (self.mode == MODE_PLAYING && self.health == 0)
+            || (self.mode == MODE_PLAYING && (self.health == 0 || self.y >= FELL_Y))
     }
 
     #[must_use]
@@ -98,25 +107,26 @@ impl CastlevaniaMechanicalState {
 
     #[must_use]
     pub fn boss_damage(self) -> u8 {
-        if self.boss_stage().is_some() {
-            FULL_BOSS_HEALTH.saturating_sub(self.boss_health)
+        if self.boss_stage().is_none() || self.mode != MODE_PLAYING {
+            return 0;
+        }
+        let damage = FULL_BOSS_HEALTH.saturating_sub(self.boss_health);
+        if self.second_form {
+            damage.saturating_add(FULL_BOSS_HEALTH)
         } else {
-            0
+            damage
         }
     }
 
     #[must_use]
     pub fn boss_down(self) -> bool {
-        self.boss_stage().is_some() && self.boss_health == 0 && !self.dead()
+        self.boss_stage().is_some() && self.mode == MODE_STAGE_CLEAR
     }
 
     #[must_use]
     pub fn victory(self) -> bool {
         self.stage == FINAL_STAGE
-            && !matches!(
-                self.mode,
-                MODE_PLAYING | MODE_DYING | MODE_GAME_OVER_FADE | MODE_DOOR | MODE_GAME_OVER
-            )
+            && matches!(self.mode, MODE_STAGE_EXIT | MODE_STAGE_CLEAR | MODE_ENDING)
     }
 
     #[must_use]
@@ -677,10 +687,14 @@ fn byte(wram: &[u8], address: usize) -> Result<u8, MachineError> {
 }
 
 pub fn decode_state(wram: &[u8]) -> Result<CastlevaniaMechanicalState, MachineError> {
+    let stage = match byte(wram, STAGE)? {
+        MAP_STAGE => byte(wram, NEXT_STAGE)?,
+        stage => stage,
+    };
     Ok(CastlevaniaMechanicalState {
         mode: byte(wram, MODE)?,
         submode: byte(wram, SUBMODE)?,
-        stage: byte(wram, STAGE)?,
+        stage,
         section: byte(wram, SECTION)?,
         lives: byte(wram, LIVES)?,
         health: byte(wram, HEALTH)?,
@@ -692,6 +706,7 @@ pub fn decode_state(wram: &[u8]) -> Result<CastlevaniaMechanicalState, MachineEr
         subweapon: byte(wram, SUBWEAPON)?,
         multiplier: byte(wram, MULTIPLIER)?,
         boss_health: byte(wram, BOSS_HEALTH)?,
+        second_form: stage == FINAL_STAGE && byte(wram, DRACULA_FORM)? != 0,
     })
 }
 
@@ -820,7 +835,19 @@ mod tests {
     }
 
     #[test]
-    fn boss_damage_counts_only_in_boss_stages() {
+    fn falling_below_the_screen_is_a_death_before_the_dying_mode() {
+        let mut wram = playing_wram();
+        wram[Y] = 0xc8;
+        assert!(!decode_state(&wram).unwrap().dead());
+        wram[Y] = FELL_Y;
+        let state = decode_state(&wram).unwrap();
+        assert_eq!(state.health, FULL_HEALTH);
+        assert!(state.dead());
+        assert!(state.terminal());
+    }
+
+    #[test]
+    fn boss_damage_counts_only_in_boss_stages_during_play() {
         let mut wram = playing_wram();
         wram[STAGE] = 2;
         wram[BOSS_HEALTH] = 0x10;
@@ -829,19 +856,81 @@ mod tests {
         let state = decode_state(&wram).unwrap();
         assert_eq!(state.boss_damage(), 0x30);
         assert_eq!(state.boss_stage(), Some("phantom_bat"));
-        wram[BOSS_HEALTH] = 0;
-        assert!(decode_state(&wram).unwrap().boss_down());
+        wram[SUBMODE] = 0;
+        wram[MODE] = MODE_STAGE_CLEAR;
+        assert_eq!(decode_state(&wram).unwrap().boss_damage(), 0);
     }
 
     #[test]
-    fn leaving_play_in_the_final_stage_is_victory() {
+    fn a_boss_is_down_only_once_its_crystal_starts_the_stage_clear() {
+        let mut wram = playing_wram();
+        wram[STAGE] = 9;
+        wram[BOSS_HEALTH] = 0;
+        let state = decode_state(&wram).unwrap();
+        assert_eq!(state.boss_stage(), Some("mummies"));
+        assert_eq!(state.boss_damage(), FULL_BOSS_HEALTH);
+        assert!(!state.boss_down());
+        assert!(!state.terminal());
+        wram[MODE] = MODE_STAGE_CLEAR;
+        wram[SUBMODE] = 0;
+        let state = decode_state(&wram).unwrap();
+        assert!(state.boss_down());
+        assert!(!state.terminal());
+        wram[STAGE] = 8;
+        assert!(!decode_state(&wram).unwrap().boss_down());
+    }
+
+    #[test]
+    fn the_castle_map_reads_the_next_stage() {
+        let mut wram = playing_wram();
+        wram[MODE] = MODE_STAGE_CLEAR;
+        wram[SUBMODE] = 7;
+        wram[STAGE] = MAP_STAGE;
+        wram[NEXT_STAGE] = 4;
+        let state = decode_state(&wram).unwrap();
+        assert_eq!(state.stage, 4);
+        assert!(!state.boss_down());
+        assert!(!state.terminal());
+    }
+
+    #[test]
+    fn dracula_second_form_extends_boss_damage() {
+        let mut wram = playing_wram();
+        wram[STAGE] = FINAL_STAGE;
+        wram[BOSS_HEALTH] = 0;
+        let first = decode_state(&wram).unwrap();
+        assert!(!first.second_form);
+        assert_eq!(first.boss_damage(), FULL_BOSS_HEALTH);
+        assert!(!first.terminal());
+        wram[DRACULA_FORM] = 1;
+        wram[BOSS_HEALTH] = FULL_BOSS_HEALTH;
+        let second = decode_state(&wram).unwrap();
+        assert!(second.second_form);
+        assert_eq!(second.boss_damage(), FULL_BOSS_HEALTH);
+        wram[BOSS_HEALTH] = 0x20;
+        assert_eq!(decode_state(&wram).unwrap().boss_damage(), 0x60);
+        wram[BOSS_HEALTH] = 0;
+        let fallen = decode_state(&wram).unwrap();
+        assert!(!fallen.victory());
+        assert!(!fallen.terminal());
+        wram[STAGE] = 15;
+        assert!(!decode_state(&wram).unwrap().second_form);
+    }
+
+    #[test]
+    fn the_final_stage_clear_is_victory() {
         let mut wram = playing_wram();
         wram[STAGE] = FINAL_STAGE;
         assert!(!decode_state(&wram).unwrap().victory());
-        wram[MODE] = 0x08;
-        let state = decode_state(&wram).unwrap();
-        assert!(state.victory());
-        assert!(state.terminal());
+        wram[MODE] = MODE_DOOR;
+        assert!(!decode_state(&wram).unwrap().victory());
+        for mode in [MODE_STAGE_EXIT, MODE_STAGE_CLEAR, MODE_ENDING] {
+            wram[MODE] = mode;
+            let state = decode_state(&wram).unwrap();
+            assert!(state.victory());
+            assert_eq!(state.boss_down(), mode == MODE_STAGE_CLEAR);
+            assert!(state.terminal());
+        }
         wram[STAGE] = 17;
         assert!(!decode_state(&wram).unwrap().victory());
     }

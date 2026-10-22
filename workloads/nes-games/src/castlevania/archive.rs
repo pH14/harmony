@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "castlevania_stage_boss_whip_subweapon_hearts_tier_section_spatial_32_boss_damage_health_preference_v1";
+pub const KEY_POLICY_IDENTIFIER: &str = "castlevania_stage_boss_whip_subweapon_hearts_tier_section_spatial_32_boss_damage_health_preference_v2";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 const PLAY_MODE_MARK: u8 = 0;
@@ -370,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn boss_hits_are_places_and_a_downed_boss_is_a_tier() {
+    fn boss_hits_are_places_and_a_cleared_boss_is_a_tier() {
         let mut fight = state(3, 0x300, 0x40);
         fight.boss_health = 0x20;
         let hit = archive_key(fight).unwrap();
@@ -380,6 +380,12 @@ mod tests {
             archive_key(state(3, 0x300, 0x40)).unwrap().place()
         );
         fight.boss_health = 0;
+        let empty_meter = archive_key(fight).unwrap();
+        assert!(!empty_meter.tier.boss_down);
+        assert_eq!(empty_meter.boss_damage, 8);
+        assert_eq!(bosses_down(fight), 0);
+        fight.mode = 0x0c;
+        fight.submode = 0;
         let down = archive_key(fight).unwrap();
         assert!(down.tier.boss_down);
         assert!(down.progress() > hit.progress());

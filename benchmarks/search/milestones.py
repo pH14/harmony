@@ -68,7 +68,13 @@ CASTLEVANIA_MILESTONES = [
     name
     for stage in range(1, 19)
     for name in [f"stage_{stage:02}_entered"]
-    + ([f"{CASTLEVANIA_BOSSES[stage]}_engaged", f"{CASTLEVANIA_BOSSES[stage]}_defeated"] if stage in CASTLEVANIA_BOSSES else [])
+    + (
+        [f"{CASTLEVANIA_BOSSES[stage]}_engaged"]
+        + (["dracula_second_form"] if stage == 18 else [])
+        + [f"{CASTLEVANIA_BOSSES[stage]}_defeated"]
+        if stage in CASTLEVANIA_BOSSES
+        else []
+    )
 ] + ["ending"]
 
 MILESTONES = {"metroid": METROID_MILESTONES, "mm2": MM2_MILESTONES, "castlevania": CASTLEVANIA_MILESTONES}

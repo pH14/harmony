@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::target::{BOSSES, CastlevaniaObservations, FINAL_STAGE, FULL_BOSS_HEALTH};
+use super::target::{BOSSES, CastlevaniaObservations, FINAL_STAGE};
 
-pub const NAMED_PROGRESS_FORMAT: &str = "castlevania-named-progress-v1";
+pub const NAMED_PROGRESS_FORMAT: &str = "castlevania-named-progress-v2";
 const SECTION_MARK: &str = "_section_";
+const DRACULA_SECOND_FORM: &str = "dracula_second_form";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FirstSeen {
@@ -35,6 +36,9 @@ pub fn route_milestones() -> Vec<String> {
         names.push(format!("stage_{stage:02}_entered"));
         if let Some(boss) = boss_of(stage) {
             names.push(format!("{boss}_engaged"));
+            if stage == FINAL_STAGE {
+                names.push(DRACULA_SECOND_FORM.to_owned());
+            }
             names.push(format!("{boss}_defeated"));
         }
     }
@@ -99,15 +103,19 @@ impl NamedProgress {
         }
         if state.victory() {
             names.push("dracula_engaged".to_owned());
+            names.push(DRACULA_SECOND_FORM.to_owned());
             names.push("dracula_defeated".to_owned());
             names.push("ending".to_owned());
             return names;
         }
         if let Some(boss) = boss_of(state.stage) {
-            if state.boss_health < FULL_BOSS_HEALTH && state.playing() {
+            if state.boss_damage() > 0 || state.boss_down() {
                 names.push(format!("{boss}_engaged"));
             }
-            if state.boss_down() && state.stage != FINAL_STAGE {
+            if state.second_form && state.playing() {
+                names.push(DRACULA_SECOND_FORM.to_owned());
+            }
+            if state.boss_down() {
                 names.push(format!("{boss}_defeated"));
             }
         }
@@ -162,7 +170,7 @@ mod tests {
         assert!(names.contains(&"phantom_bat_defeated".to_owned()));
         assert!(names.contains(&"dracula_engaged".to_owned()));
         assert_eq!(names.last().map(String::as_str), Some("ending"));
-        assert_eq!(names.len(), 18 + 12 + 1);
+        assert_eq!(names.len(), 18 + 12 + 1 + 1);
         assert!(names.iter().all(|name| !name.contains('-')));
     }
 
@@ -182,27 +190,56 @@ mod tests {
     }
 
     #[test]
-    fn a_boss_is_engaged_on_its_first_hit_and_defeated_at_zero() {
+    fn a_boss_is_engaged_on_its_first_hit_and_defeated_at_the_stage_clear() {
         let mut fight = at(3);
         assert!(!NamedProgress::reached(&fight).contains(&"phantom_bat_engaged".to_owned()));
         fight.decoded.boss_health = 0x30;
         assert!(NamedProgress::reached(&fight).contains(&"phantom_bat_engaged".to_owned()));
         fight.decoded.boss_health = 0;
-        assert!(NamedProgress::reached(&fight).contains(&"phantom_bat_defeated".to_owned()));
+        assert!(!NamedProgress::reached(&fight).contains(&"phantom_bat_defeated".to_owned()));
+        let mut clear = fight.clone();
+        clear.decoded.mode = 0x0c;
+        clear.decoded.submode = 0;
+        let names = NamedProgress::reached(&clear);
+        assert!(names.contains(&"phantom_bat_engaged".to_owned()));
+        assert!(names.contains(&"phantom_bat_defeated".to_owned()));
         let mut dead = fight;
         dead.decoded.mode = 6;
         assert!(NamedProgress::reached(&dead).is_empty());
     }
 
     #[test]
-    fn dracula_at_zero_is_engaged_and_leaving_play_is_the_ending() {
+    fn both_mummies_fall_before_the_mummies_are_defeated() {
+        let mut fight = at(9);
+        fight.decoded.boss_health = 0x20;
+        let names = NamedProgress::reached(&fight);
+        assert!(names.contains(&"mummies_engaged".to_owned()));
+        assert!(!names.contains(&"mummies_defeated".to_owned()));
+        fight.decoded.mode = 0x0c;
+        assert!(NamedProgress::reached(&fight).contains(&"mummies_defeated".to_owned()));
+    }
+
+    #[test]
+    fn dracula_falls_only_after_the_second_form() {
         let mut fight = at(18);
         fight.decoded.boss_health = 0;
         let names = NamedProgress::reached(&fight);
         assert!(names.contains(&"dracula_engaged".to_owned()));
+        assert!(!names.contains(&DRACULA_SECOND_FORM.to_owned()));
         assert!(!names.contains(&"dracula_defeated".to_owned()));
-        fight.decoded.mode = 0x08;
-        assert!(NamedProgress::reached(&fight).contains(&"ending".to_owned()));
+        fight.decoded.second_form = true;
+        fight.decoded.boss_health = 0x40;
+        let names = NamedProgress::reached(&fight);
+        assert!(names.contains(&"dracula_engaged".to_owned()));
+        assert!(names.contains(&DRACULA_SECOND_FORM.to_owned()));
+        assert!(!names.contains(&"dracula_defeated".to_owned()));
+        fight.decoded.boss_health = 0;
+        assert!(!NamedProgress::reached(&fight).contains(&"ending".to_owned()));
+        fight.decoded.mode = 0x0c;
+        fight.decoded.submode = 0;
+        let names = NamedProgress::reached(&fight);
+        assert!(names.contains(&"dracula_defeated".to_owned()));
+        assert!(names.contains(&"ending".to_owned()));
     }
 
     #[test]
