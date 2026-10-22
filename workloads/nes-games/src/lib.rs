@@ -7,6 +7,7 @@ pub mod famidash;
 pub mod metroid;
 pub mod mm2;
 pub mod nes_backend;
+pub mod punchout;
 pub mod smb;
 pub mod stb;
 pub mod twin_dragons;
