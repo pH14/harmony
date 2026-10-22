@@ -17,7 +17,7 @@ use std::{
 
 use machine::{
     MachineError,
-    nes::{ButtonChord, core_state},
+    nes::{ButtonChord, WRAM_SIZE, core_state, with_cartridge_ram},
     quicknes::QuickNesMachine,
 };
 use nes_games::{
@@ -64,7 +64,7 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
     execution_sha256: &str,
 ) -> G {
     let (machine_rom, path, sha256, execution) = (
-        rom.to_vec(),
+        machine_image(rom, G::MEMORY_BYTES),
         core_path.to_path_buf(),
         core_sha256.to_owned(),
         execution_sha256.to_owned(),
@@ -76,7 +76,7 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
         Arc::new(move || {
             Ok(Traced::new(
                 QuickNesMachine::from_rom_bytes_with_identity(
-                    &machine_rom,
+                    machine_rom.as_ref().map_err(Clone::clone)?,
                     &path,
                     &sha256,
                     &execution,
@@ -85,6 +85,14 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
             ))
         }),
     )
+}
+
+fn machine_image(rom: &[u8], memory_bytes: usize) -> std::result::Result<Vec<u8>, MachineError> {
+    if memory_bytes > WRAM_SIZE {
+        with_cartridge_ram(rom)
+    } else {
+        Ok(rom.to_vec())
+    }
 }
 
 type Games<G> = Arc<dyn Fn() -> G + Send + Sync>;
@@ -144,7 +152,7 @@ fn native_observer<V: 'static>(
     view: MemoryView<V>,
 ) -> Observe<V> {
     let (rom, path, sha256, execution) = (
-        rom.to_vec(),
+        machine_image(rom, bytes),
         request.core.clone(),
         request.core_sha256.clone(),
         execution_sha256.to_owned(),
@@ -160,9 +168,9 @@ fn native_observer<V: 'static>(
         Ok(memory)
     };
     Arc::new(move |raws| {
-        let Ok(mut machine) =
-            QuickNesMachine::from_rom_bytes_with_identity(&rom, &path, &sha256, &execution)
-        else {
+        let Ok(mut machine) = rom.as_ref().map_err(Clone::clone).and_then(|rom| {
+            QuickNesMachine::from_rom_bytes_with_identity(rom, &path, &sha256, &execution)
+        }) else {
             return raws.iter().map(|_| None).collect();
         };
         raws.iter()
