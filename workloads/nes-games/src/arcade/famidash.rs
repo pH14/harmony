@@ -154,6 +154,10 @@ impl<M: NesBackend<Vec<u8>> + NesMemory + 'static, const GROUP: usize> ArcadeGam
         cleared(observation.decoded)
     }
 
+    fn snapshot_frame_count(snapshot: &FamidashSnapshot) -> u64 {
+        snapshot.observation.frame_count
+    }
+
     fn emulator_state(snapshot: &FamidashSnapshot) -> &[u8] {
         &snapshot.emulator_state
     }

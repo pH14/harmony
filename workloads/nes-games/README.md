@@ -95,3 +95,12 @@ Metroid, Mega Man 2 and SMB stream evidence from borrowed fields, preserving the
 existing resume bytes without building another owned evidence graph. These shared
 implementations also serve native and browser consumers; file publication remains
 a native coordinator facility.
+
+## Arcade live-feed observations
+
+Arcade adapters expose each archived snapshot's game-frame count for exact
+ready-state and lookup replay. Feed batches retain level/objective completion
+points separately from sampled motion, so downsampling and terminal delivery
+can preserve progress. Sampling affects presentation only. The native live
+service uses the existing campaign coordinator and full admission-observation
+interface; search selection and admission policy remain unchanged.

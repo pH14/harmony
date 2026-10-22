@@ -9,8 +9,9 @@ parameter picks the game, and the level selector switches between them. The
 page opens the level selector and starts searching once a level is chosen, or
 from the first level if the selector is closed. A `level` URL parameter with a
 level id starts that level's search at once. Each
-game has one map per level. All execution happens on the visitor's computer,
-so hosting needs only static files.
+game has one map per level. By default, search and rendering run on the
+visitor's computer, so hosting needs only static files. Native runs move the
+search to a Linux machine while the viewing browser renders and records it.
 
 ## Run
 
@@ -134,14 +135,137 @@ archived actions, `feed::archived_state` replays the input through a fresh
 target and returns the recorded actions, so replay, forks and Play from here use
 the actions the core really ran. The native live view uses the same rule.
 
+### Record the search view
+
+For a long experiment, use **Record to file** in Chrome on localhost or HTTPS.
+Choose a video file, let the search run, then **Stop recording** to finish and
+save it. MediaRecorder chunks write to that file in order as they arrive;
+there is no recording duration or file size limit. The browser holds at most
+8 MiB of pending writes plus an encoder chunk and its normal frame buffers.
+If storage cannot keep up, capture pauses while writes drain and resumes
+without stopping the search; the status explains the pause. Video omits the
+search activity during these pauses. Disk or encoder failures abort the
+uncommitted file and report the error. Stop recording before
+leaving the page so the browser can finish and commit the file.
+
+**Record clip** works in browsers without the file picker too: let the search
+run, then **Stop recording** and **Download video**. Clips stay in browser
+memory and stop at 10 minutes or approximately 256 MiB (plus the final encoder
+chunk). Download each clip before starting another or leaving the page; a
+successful new clip replaces the preceding download. Failed recordings
+preserve the last clip.
+
+Both modes work for browser searches and native `?live` campaigns, including
+runs opened through the launcher or an SSH tunnel. Encoding runs in the viewing
+browser, so a cloud machine needs no desktop or video encoder. No screen-sharing
+permission is needed. The file picker requests access only to the file you
+choose.
+
+When a search finishes, an actively playing view finishes the motion trails it
+already holds at their original game-frame speed, then freezes. No search work
+or counters continue. The tail ends at the latest retained trail's recorded
+endpoint plus any existing finish hold; the same byte and trail caps apply.
+A view already paused when the search finishes does not drain. The search pause
+button stays disabled after completion; reset or switching searches cancels the
+tail. Reduced-motion views freeze immediately, including when that preference
+is enabled during the tail. Long recorded trails can produce a long tail: their
+16-bit frame timestamps bound it to about 18 minutes 13 seconds, including
+birth staggering and the finish hold. This is presentation of existing data,
+not continued search or a minimum recording duration.
+
+The 1920 × 1080 video contains the same map and mini map shown on the
+page, including the current Movement/Heatmap layers, moving sprites, camera
+position rectangle, automatic scrolling and level transitions. It adds a
+“Harmony Plays” game title with the current worker count, the map label,
+timeline/frame totals, and game attribution plus the Harmony source URL.
+Inspecting, panning or changing the map during recording changes the video as
+well. Leave the camera following the search to record its automatic scrolling.
+
+Keep the tab visible: background tabs throttle rendering. Composition follows
+each map render and requests a capture frame afterward, without a separate
+time threshold that skips animation frames. Capture follows display cadence up
+to the browser's capability, including 120 Hz displays, without accelerating
+the game's 60-frame clock. The encoder requests 20 Mbit/s; the browser can use a
+different actual bitrate. Actual captured and presented cadence still
+depends on rendering, encoding and playback load; capture settings alone do
+not prove smooth motion.
+The full-HD canvas scales the layout and text together and keeps pixel-art
+smoothing disabled. Verify identifiable sprite positions, camera movement,
+exported frame timestamps and actual playback when qualifying recordings.
+Supported H.264/MP4 is preferred, with WebM and generic MP4 fallbacks.
+Reported support does not guarantee
+encoding or playback at the display cadence.
+The page reports unavailable recording and startup failures. The search continues
+when recording stops or fails. The page asks before navigating away during an
+active recording.
+
+`tests/recording.test.js` covers encoding failure, unsupported/startup failure,
+empty clips, size/time limits, repeated recordings, track cleanup, ordered file
+writes, slow-storage backpressure, write/close errors and abort/retry isolation.
+`node tests/recording.mjs` records an actual Famidash search, verifies camera
+movement and mini-map pixels, downloads and decodes the video, checks changing
+frames, failure recovery and mobile layout. It also writes a real file through
+an OPFS-backed file handle (substituting only the picker), reads the committed
+bytes back and decodes the streamed video. It saves video/PNG evidence under
+`test-results/recording/`. Run it against the built preview server with
+`DEMO_URL=http://127.0.0.1:4173`; set `CHROME_CHANNEL=chrome` to use installed
+Chrome instead of Playwright's bundled Chromium. `tests/point-finish.mjs` checks
+that completion observations still advance the camera when transport sampling
+omits their finishing trails, including several exits in one batch.
+Set `LIVE_RECORDING=1` and
+point `DEMO_URL` at a running native Famidash live server to exercise the same
+record/download checks against its actual event stream.
+
 ### Native runs
 
 `tools/launcher.py` starts live campaigns on Linux machines over SSH and serves
-the page that watches them. Copy `tools/arcade-machines.example.toml` to
+the page that watches them. On the Mac, install `uv` and complete the
+[Run](#run) prerequisites and `npm ci` / `./tools/build-runtime.sh` steps first;
+these build the browser runtime, maps and homebrew ROM assets. The Linux
+machine needs the repository's pinned Rust toolchain (installed through
+`rustup`), git, curl, a C++ compiler, make, patch, flock and sha256sum. Its SSH
+account needs a writable working directory and permission to start systemd
+user units, or system units when connecting as root.
+
+From `demos/twin-dragons`, copy `tools/arcade-machines.example.toml` to
 `~/.config/harmony/arcade-machines.toml` and list each machine with its SSH
 destination, a working directory, and the most workers and memory the page may
 ask for. The optional `roms` directory holds the ROMs the site does not ship,
-named as in `roms/manifest.json`. Then run:
+named as in `roms/manifest.json`. For example, to offer up to 128 workers:
+
+```toml
+[machines.cloud]
+ssh = "your-cloud-host"
+dir = "/srv/harmony-arcade"
+workers = 128
+memory_mib = 16384
+memory_max_mib = 24576
+```
+
+The dialog must also select 128 workers to start one 128-worker campaign.
+All games use the established campaign runner with a request `window: 4` per
+worker. This bounds outstanding rollout reservations at four times the worker
+count; it is configuration, not a throughput or resource-adequacy guarantee.
+`memory_mib` is the maximum archive and bounded draw-state budget offered by
+the dialog. Required `memory_max_mib` is a separate whole-unit RAM ceiling,
+strictly greater than the archive ceiling; the example allocates 24 GiB to each
+run. The dialog labels archive memory separately and displays the chosen
+machine's whole-run ceiling. The launcher passes that ceiling to `MemoryMax`
+and disables swap with `MemorySwapMax=0`; it does not configure a CPU set.
+
+The whole ceiling must cover worker targets, pending tasks/results, stream and
+live observation buffers, and checkpoint/export transients as well as the
+archive. No fixed per-worker or archive-to-overhead formula establishes that a
+long campaign fits. Measure whole-cgroup `memory.peak` and memory events at the
+intended worker count, archive budget and live workload. The ceiling applies
+to each run, not all runs on a machine: budget simultaneous runs and leave host
+RAM for other services. Exceeding the ceiling can terminate a run.
+
+Leave CPU capacity beyond the selected workers for coordination, stream output,
+live observation and host services. These limits do not establish scaling
+performance. Rendering and video encoding run on the viewing Mac.
+
+Then run on the Mac:
 
 ```bash
 npm run build
@@ -150,12 +274,12 @@ tools/launcher.py
 
 and open `http://127.0.0.1:8790/`. On a loopback address the page asks
 `/launcher/machines`; when the launcher answers, a Native runs button opens a
-dialog to pick the machine, game, workers, memory cap, seed and time limit. A
+dialog to pick the machine, game, workers, archive budget, seed and time limit. A
 run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
 builds the QuickNES core with `scripts/build-quicknes-core.sh` and `nes-eval`
 there once per commit, uploads the ROM, and starts `nes-eval` with
 `live: 127.0.0.1:0` as a `systemd-run` unit named `harmony-arcade-<id>` with
-`MemoryMax` 1 GiB above the search's memory budget and `Nice=10`. The launcher
+the machine's explicit `MemoryMax`, `MemorySwapMax=0` and `Nice=10`. The launcher
 reads the port `nes-eval` printed, forwards it with `ssh -L`, and serves the
 page at `/runs/<id>/?game=<game>&live` with `/runs/<id>/live/` proxied to that
 port. A restarted launcher finds the running units on each machine and
@@ -278,7 +402,13 @@ picking the live level again restores the earlier choice.
 Movement shows the level map with small dragon sprites replaying recorded
 search rollouts. Each rollout worker samples its emulator every four game
 frames and at each action's end, without changing inputs, random draws or
-captured endpoints. Loading
+captured endpoints. Native live batches spread sprite starts over at most
+100 milliseconds instead of starting every sampled trail together. Finishing
+trails and the terminal batch start immediately. Each
+sprite still follows its actual samples at 60 game frames per second, and
+does not appear before its scheduled start. Pending starts share the existing
+movement byte and trail limits and freeze with the search's activity clock.
+Regular browser-run searches keep immediate starts. Loading
 frames and frames with zero health are hidden. Each sprite fades in as its
 rollout starts and eases to about two-thirds opacity as it finishes, followed
 by two faint dots at its position six and twelve game frames earlier. Sprites
@@ -303,7 +433,20 @@ rollouts from their start states, so the frontier drops back whenever the
 search draws earlier states; the camera moves back only after fewer than two
 sprites have been near its target for 1.5 seconds of continuous visible
 frontier evidence (a gap, camera hold or hidden tab resets that interval), and
-it closes a large gap faster than a small one. Following pauses
+it eases toward a new target in time rather than jumping faster across large
+gaps. Distant work first widens the view, then returns to close-up following.
+Following bounds the combined pan and zoom displacement of the previous
+viewport's corners to two normalized viewport lengths per second, including
+zoom-induced movement. This keeps the display cadence independent of how
+quickly workers discover distant states. Sprite overlays retain a readable
+minimum screen size when the view widens; their sampled positions and game
+clock stay unchanged. Clicking or dragging the whole-level overview restores
+at least the close-up scale before centering the selected location, while
+preserving a higher manually chosen zoom. An empty room or level follows
+fresh activity after 250 ms instead of waiting through occupied-view dwell
+and stall intervals; active views retain their existing hysteresis. Manual
+holds, selected rooms and focused histories prevent automatic level changes.
+Following pauses
 for 3 seconds after the mouse moves over the map and for 2.5 seconds after a
 touch, so a pointer left resting on the map does not stop it. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement.
@@ -382,9 +525,16 @@ On a first visit the camera opens at 1.3 times the close-up, follows for 1.5
 seconds, then eases to the close-up over 0.8 seconds. Returning and
 reduced-motion visitors start at the close-up.
 
-Clicking a cell with retained states opens History, listing up to twelve saved
-paths to that cell. Selecting a path draws its trail in gold and replays its
-controller history in a second emulator, comparing the endpoint byte for byte.
+Clicking a cell with retained states opens History, listing recent saved
+paths to that cell. Each cell keeps twelve recent route IDs and monotonic path
+numbers. The playing route and an outstanding selection fetch can each pin one
+additional route across the heatmap, preserving their labels during new arrivals.
+Leaving the selection or switching searches releases those pins. A cached playing
+history remains usable when the search evicts its state; a forgotten, unselected
+ID receives a new path number if it arrives again. Route metadata therefore does
+not grow with every retained state in a long cloud session. Selecting a path
+draws its trail in gold and replays its controller history in a second emulator,
+comparing the endpoint byte for byte.
 Play from here hands control to the visitor: arrows or WASD move, Z or Space
 jumps and X breathes fire. Branch search from here verifies the controller
 prefix and starts a separate search rooted at that state. The fork point
@@ -562,9 +712,10 @@ shows another level and runs `famidash_start_level_tape()`, the workload's own
 A press and 40-frame wait. The community group and the side ROMs open the
 community menu, so their tape presses Right on the title menu.
 
-The native search with 16 workers clears Stereo Madness in 10,900 to 14,700
-executions on seeds 1 to 5, so at 120 rollouts per second the browser search
-reaches Back on Track in about two minutes.
+Browser and native searches use the established rollout campaign algorithm.
+Their worker counts, execution rates and time to a level transition must be
+measured separately. Native search throughput alone does not establish how
+quickly either mode advances through a level.
 
 ### Super Mario Bros.
 

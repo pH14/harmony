@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import http.client
+import json
+import os
 import shlex
 import subprocess
 import tempfile
@@ -25,7 +27,66 @@ class LauncherTest(unittest.TestCase):
         machine = config.machines["example"]
         self.assertEqual(machine.workers, 8)
         self.assertEqual(machine.memory_mib, 16384)
+        self.assertEqual(machine.memory_max_mib, 24576)
         self.assertEqual(config.roms, Path("~/arcade-roms").expanduser())
+
+    def test_config_requires_separate_typed_whole_memory_ceiling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "machines.toml"
+            prefix = '[machines.example]\nssh="host"\ndir="/srv"\nworkers=128\nmemory_mib=1024\n'
+            for whole in (None, '"2048"', "true", "2048.0", "0", "-1", "1024", "512"):
+                with self.subTest(whole=whole):
+                    path.write_text(prefix + (f"memory_max_mib={whole}\n" if whole is not None else ""))
+                    with self.assertRaisesRegex(ValueError, "memory_max_mib"):
+                        launcher.load_config(path)
+            path.write_text(prefix + "memory_max_mib=3072\n")
+            machine = launcher.load_config(path).machines["example"]
+            self.assertEqual((machine.memory_mib, machine.memory_max_mib), (1024, 3072))
+
+    def test_deployment_passes_the_machine_whole_limit_without_archive_arithmetic(self) -> None:
+        launch = launcher.Launcher(self.config(), Path("."))
+        for workers, archive in ((1, 256), (8, 4096)):
+            with self.subTest(workers=workers, archive=archive):
+                run = launcher.Run.launched("20260101-000000-metroid-00000000", launcher.Settings(
+                    "metroid", "example", workers, archive, 1, 1.0))
+                starts = []
+                def remote(machine, script, *args, stdin=None):
+                    if script == launcher.START:
+                        starts.append((args, json.loads(stdin)))
+                        return "live view listening on 127.0.0.1:4100"
+                    return ""
+                with (
+                    mock.patch.object(launcher, "ssh", side_effect=remote),
+                    mock.patch.object(launcher.Launcher, "commit", return_value="0" * 40),
+                    mock.patch.object(launcher.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout=b"")),
+                    mock.patch.object(launcher, "rom_path", return_value=EXAMPLE),
+                    mock.patch.object(launcher.Launcher, "attach"),
+                ):
+                    launch.deploy(run)
+                self.assertEqual(len(starts), 1)
+                self.assertEqual(starts[0][0][4], "24576")
+                self.assertEqual(starts[0][1]["memory_mib"], archive)
+                self.assertEqual(starts[0][1]["workers"], workers)
+
+    def test_actual_start_script_sets_whole_memory_and_disables_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            commands = root / "bin"
+            commands.mkdir()
+            for name, body in {"systemd-run": 'printf "%s\\n" "$@" > "$ARG_LOG"',
+                               "journalctl": 'echo "live view listening on 127.0.0.1:4100"'}.items():
+                path = commands / name
+                path.write_text("#!/bin/sh\n" + body + "\n")
+                path.chmod(0o755)
+            log = root / "arguments"
+            subprocess.run(["bash", "-c", launcher.START, "start", str(root), "one", "{}", "unit", "24576", "commit"],
+                           input=b"{}", capture_output=True, check=True, timeout=5,
+                           env={**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"], "ARG_LOG": str(log)})
+            args = log.read_text().splitlines()
+            self.assertIn("MemoryMax=24576M", args)
+            self.assertIn("MemorySwapMax=0", args)
+            self.assertIn("Nice=10", args)
+            self.assertEqual((root / "runs/one/request.json").read_bytes(), b"{}")
 
     def test_settings_stay_within_the_machine_limits(self) -> None:
         config = self.config()
@@ -50,6 +111,21 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(request["live"], "127.0.0.1:0")
         self.assertEqual(request["wall_seconds"], 5400)
         self.assertNotIn("mixture", request)
+
+    def test_all_games_keep_per_worker_window_and_live_routing(self) -> None:
+        for game in (
+            "famidash", "famidash-community", "famidash-b", "famidash-c", "famidash-d",
+            "super-mario-bros", "mega-man-2", "metroid", "twin-dragons",
+        ):
+            for workers in (1, 128):
+                with self.subTest(game=game, workers=workers):
+                    settings = launcher.Settings(game, "cloud", workers, 4096, 19, 1)
+                    request = launcher.run_request(settings, "/r.nes", "aa", "/c.so", "bb")
+                    self.assertEqual(request["game"], launcher.GAMES[game].request)
+                    self.assertEqual(request["live"], "127.0.0.1:0")
+                    self.assertEqual(request["workers"], workers)
+                    self.assertEqual(request["window"], 4)
+                    self.assertNotIn("algorithm", request)
 
     def test_roms_come_from_the_site_or_the_rom_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -83,7 +159,7 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(run.started, 1700000000.0)
         self.assertRegex(run.id, r"^found-[0-9a-f]{10}$")
         self.assertEqual(launcher.external_runs(machine, listing)[0].id, run.id)
-        other = launcher.Machine("other", "other", "/srv", 1, 1024, ("/srv/runs",))
+        other = launcher.Machine("other", "other", "/srv", 1, 1024, 2048, ("/srv/runs",))
         self.assertNotEqual(launcher.external_runs(other, listing)[0].id, run.id)
         described = run.describe()
         self.assertTrue(described["external"])
@@ -227,7 +303,9 @@ class LauncherTest(unittest.TestCase):
                 self.assertEqual(page.getheader(launcher.LAUNCHER_HEADER), "1")
                 machines = get("GET", "/launcher/machines", f"localhost:{port}")
                 self.assertEqual(machines.status, 200)
-                self.assertIn(b'"example"', machines.read())
+                machine_options = json.loads(machines.read())
+                self.assertEqual(machine_options["machines"][0]["memory_mib"], 16384)
+                self.assertEqual(machine_options["machines"][0]["memory_max_mib"], 24576)
                 self.assertEqual(get("GET", "/", f"evil.example:{port}").status, 403)
                 self.assertEqual(
                     get("GET", "/runs/none/live/events", f"127.0.0.1:{port}").status, 404

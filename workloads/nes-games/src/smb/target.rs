@@ -103,6 +103,11 @@ impl<P: SnapshotState> SmbSnapshot<P> {
     }
 
     #[must_use]
+    pub fn frame_count(&self) -> u64 {
+        self.observation.frame_count
+    }
+
+    #[must_use]
     pub fn emulator_state(&self) -> &P {
         &self.emulator_state
     }
