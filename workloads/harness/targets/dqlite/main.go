@@ -138,7 +138,9 @@ func read(ctx context.Context, conn *dqlite.Conn) ([]string, error) {
 	row := make([]driver.Value, 1)
 	for {
 		err := rows.Next(row)
-		if errors.Is(err, io.EOF) {
+		// The driver wraps a connection that closes while it fetches the next
+		// batch of rows around io.EOF, so only the bare value ends the rows.
+		if err == io.EOF {
 			return values, nil
 		}
 		if err != nil {

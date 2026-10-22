@@ -559,7 +559,9 @@ drawn from the SDK stream. `append` inserts a row into table `log`, whose
 by row id. dqlite serves both only on the leader, so the adapter has no pinned
 reads. The driver reports a lost connection, a lost leadership and a deposed
 leader with the same error, so an append is a definite failure only when no
-connection to a leader opens. Read errors are definite.
+connection to a leader opens. Read errors are definite. The driver returns a
+large result in batches and reports a connection that closes between batches
+as an error that wraps `io.EOF`, so only a bare `io.EOF` ends a read.
 
 dqlite answers a query from the leader's own database, with no Raft round trip
 when that database has applied the whole log. A deposed leader that has not
