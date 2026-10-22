@@ -333,6 +333,16 @@ where
             wall_started: config.wall_budget.map(|_| telemetry_started),
             admissions: None,
         };
+        let mut pinned = BTreeMap::<u64, u32>::new();
+        for job in &in_flight {
+            let count = pinned.entry(job.pending.snapshot_id).or_default();
+            *count = count.saturating_add(1);
+        }
+        if &pinned != coordinator.core.archive.inflight_snapshot_pins() {
+            return Err(
+                "search checkpoint in-flight jobs differ from the archive's snapshot pins".into(),
+            );
+        }
         for job in in_flight {
             let parent_index = coordinator
                 .core

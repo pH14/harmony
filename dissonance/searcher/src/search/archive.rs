@@ -1894,6 +1894,10 @@ where
         Ok(Input { actions })
     }
 
+    pub(crate) fn inflight_snapshot_pins(&self) -> &BTreeMap<u64, u32> {
+        &self.inflight_snapshot_pins
+    }
+
     pub(crate) fn pinned_job_origin_path(
         &self,
         id: usize,
