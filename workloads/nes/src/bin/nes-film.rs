@@ -8,6 +8,7 @@ use std::{
 };
 
 use nes_workload::{
+    castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
     famidash::{
         campaign::{FamidashCampaignRun, FamidashGame},
         levels::{Side, Stage},
@@ -272,6 +273,17 @@ fn main() -> Result<()> {
                 identity,
             )
         }
+        "castlevania" => {
+            if args.ai.is_some() {
+                return Err("Castlevania takes no ai option".into());
+            }
+            produce(
+                CastlevaniaGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                CastlevaniaCampaignRun,
+                &args,
+                identity,
+            )
+        }
         "famidash" => {
             if args.ai.is_some() {
                 return Err("Famidash takes no ai option".into());
@@ -292,7 +304,7 @@ fn main() -> Result<()> {
                 identity,
             )
         }
-        _ => Err("nes-film renders the STB, Twin Dragons and Famidash scenarios".into()),
+        _ => Err("nes-film renders the STB, Twin Dragons, Castlevania and Famidash scenarios".into()),
     }
 }
 

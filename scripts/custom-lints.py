@@ -35,6 +35,7 @@ GAME_NAMES = [
     r"zelda",
     r"tetris",
     r"twin[\s_-]*dragons",
+    r"castlevania",
 ]
 
 # Emulator and runtime names.
