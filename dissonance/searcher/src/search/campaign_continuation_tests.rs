@@ -1781,3 +1781,80 @@ fn a_checkpoint_resumes_jobs_whose_pinned_snapshot_was_released_after_dispatch()
     );
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn a_checkpoint_whose_in_flight_jobs_do_not_match_the_snapshot_pins_is_rejected() {
+    let directory = checkpoint_directory("forged-pins");
+    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 6);
+    config.campaign_seed = 940;
+    config.stop_campaign_on_objective = false;
+    run_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(700),
+            on_marks: false,
+            on_top_progress: false,
+            checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
+        }),
+    );
+    let path = directory.join("000000000700-interval.ckpt");
+    let mut reader = crate::search::checkpoint::CheckpointReader::open(&path).unwrap();
+    let _core: CoreCheckpoint<TestWorkload> = reader.next().unwrap();
+    let _archive: crate::search::archive::Archive<TestAction, TestKey, (), u8> =
+        reader.next().unwrap();
+    let _evidence: Vec<u8> = reader.next().unwrap();
+    let _draw: Vec<u8> = reader.next().unwrap();
+    let _durations: crate::search::duration::DurationPoliciesCheckpoint<TestKey> =
+        reader.next().unwrap();
+    let _rand: RomuDuoJrRand = reader.next().unwrap();
+    let _counters: CampaignCounters = reader.next().unwrap();
+    let _profile: LiveCoordinatorProfile = reader.next().unwrap();
+    let mut in_flight: Vec<InFlightJob<TestWorkload>> = reader.next().unwrap();
+    reader.finish().unwrap();
+    assert!(!in_flight.is_empty());
+    let encode = |jobs: &[InFlightJob<TestWorkload>]| {
+        let refs = jobs
+            .iter()
+            .map(|job| InFlightJobRef {
+                reservation: job.reservation,
+                spec: &job.spec,
+                pending: &job.pending,
+            })
+            .collect::<Vec<_>>();
+        postcard::to_allocvec(&refs).unwrap()
+    };
+    let bytes = std::fs::read(&path).unwrap();
+    let payload = &bytes[..bytes.len() - 32];
+    let original = encode(&in_flight);
+    let prefix = payload.strip_suffix(original.as_slice()).unwrap();
+    in_flight[0].pending.snapshot_id += 1;
+    assert!(encode(&in_flight) != original);
+    let mut forged = prefix.to_vec();
+    forged.extend(encode(&in_flight));
+    let checksum = sha2::Sha256::digest(&forged);
+    forged.extend_from_slice(&checksum);
+    std::fs::write(&path, forged).unwrap();
+    let error = run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::SearchCheckpoint {
+            path,
+            expected_sha256: None,
+        },
+        &mut Vec::new(),
+        None,
+    )
+    .err()
+    .expect("a forged checkpoint is rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("differ from the archive's snapshot pins"),
+        "{error}"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
