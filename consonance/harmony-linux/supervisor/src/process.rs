@@ -237,6 +237,28 @@ pub fn prepare_antithesis_output(
     std::os::unix::fs::symlink(device, sink)
 }
 
+const PF_EXITING: u64 = 0x4;
+
+#[must_use]
+pub fn exiting(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat_exiting(&stat),
+        Err(error) => {
+            error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+        }
+    }
+}
+
+fn stat_exiting(stat: &str) -> bool {
+    let Some((_, fields)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    let mut fields = fields.split_whitespace();
+    let state = fields.next();
+    let flags = fields.nth(5).and_then(|flags| flags.parse::<u64>().ok());
+    matches!(state, Some("Z" | "X" | "x")) || flags.is_some_and(|flags| flags & PF_EXITING != 0)
+}
+
 pub fn enable_subreaper() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -424,6 +446,37 @@ mod tests {
             unexpected_exit(&ExitStatus::from_raw(3 << 8)),
             Some("exit status 3".to_owned())
         );
+    }
+
+    #[test]
+    fn a_process_in_exit_or_a_zombie_is_exiting() {
+        let stat = |state: &str, flags: u64| {
+            format!("41 (nats (server)) {state} 1 41 41 0 -1 {flags} 0 0 0 0 0 0 0 0 20 0 9 0")
+        };
+        assert!(!stat_exiting(&stat("S", 0x0040_0040)));
+        assert!(!stat_exiting(&stat("D", 0x0040_0140)));
+        assert!(stat_exiting(&stat("D", 0x0040_0144)));
+        assert!(stat_exiting(&stat("R", PF_EXITING)));
+        assert!(stat_exiting(&stat("Z", 0)));
+        assert!(stat_exiting(&stat("X", 0)));
+        assert!(!stat_exiting("41 (truncated"));
+        assert!(!stat_exiting("41 (short) S 1"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_running_process_is_not_exiting_and_its_unreaped_exit_is() {
+        assert!(!exiting(std::process::id()));
+        let mut child = Command::new("/bin/true").spawn().unwrap();
+        let pid = child.id();
+        assert!(
+            (0..10_000).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                exiting(pid)
+            }),
+            "child {pid} never showed its exit"
+        );
+        child.wait().unwrap();
     }
 
     #[test]
