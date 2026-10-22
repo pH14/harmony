@@ -290,22 +290,29 @@ try {
   );
   const { x, y } = await page.evaluate(() => {
     const level = Number(document.querySelector("#map").dataset.map);
-    const cell = [...window.tdTestRouteCells.values()]
-      .filter((entry) => entry.ids.size > 1 && entry.observation.level === level)
-      .sort((a, b) => b.ids.size - a.ids.size)[0];
+    const cells = [...window.tdTestRouteCells.values()].sort((a, b) => b.ids.size - a.ids.size);
+    window.tdTestFixtureCells = {};
+    for (const entry of cells)
+      window.tdTestFixtureCells[entry.observation.level] ??= entry.observation;
+    const cell = cells.find((entry) => entry.ids.size > 1 && entry.observation.level === level);
     window.tdTestRouteCells = null;
     return cell.observation;
   });
   const introMap = page.locator('.map-row .area-map').first();
   await introMap.scrollIntoViewIfNeeded();
-  const clickIntroCell = async () => {
+  const clickIntroCell = async ({ x: cellX, y: cellY } = { x, y }) => {
     const room = Number(await introMap.getAttribute("data-map"));
-    const point = await showOnMap(page, room, Math.floor(x / 32) * 32 + 16, Math.floor((y - 8) / 32) * 32 + 24);
+    const point = await showOnMap(page, room, Math.floor(cellX / 32) * 32 + 16, Math.floor((cellY - 8) / 32) * 32 + 24);
     await page.mouse.move(point.x, point.y);
     assert.equal(await introMap.evaluate((c) => getComputedStyle(c).cursor), "pointer");
     await page.mouse.click(point.x, point.y);
   };
-  selectFixtureCell = clickIntroCell;
+  selectFixtureCell = async () => {
+    const room = Number(await introMap.getAttribute("data-map"));
+    const observation = await page.evaluate((room) => window.tdTestFixtureCells[room], room);
+    assert.equal(observation?.level, room, "Replay fixture clicks a retained cell from the displayed level");
+    await clickIntroCell(observation);
+  };
   const emptyCell = async (move) => {
     const room = Number(await introMap.getAttribute("data-map"));
     const point = await showOnMap(page, room, 16, 8);
