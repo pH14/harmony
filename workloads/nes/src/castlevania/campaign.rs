@@ -5,12 +5,13 @@ use std::{error::Error, io::Write, path::PathBuf};
 use machine::quicknes::QuickNesMachine;
 
 pub use nes_games::castlevania::campaign::{
-    CAMPAIGN_STREAM_FORMAT, SNAPSHOT_CHECKPOINT_FORMAT, CastlevaniaCampaignCheckpoint,
-    CastlevaniaCampaignEvidence, CastlevaniaCampaignModeReport, CastlevaniaCampaignRun,
-    CastlevaniaCampaignStreamHeader, CastlevaniaSnapshotCheckpoint, CastlevaniaTargets,
+    CAMPAIGN_STREAM_FORMAT, CastlevaniaCampaignCheckpoint, CastlevaniaCampaignEvidence,
+    CastlevaniaCampaignModeReport, CastlevaniaCampaignRun, CastlevaniaCampaignStreamHeader,
+    CastlevaniaSnapshotCheckpoint, CastlevaniaTargets, SNAPSHOT_CHECKPOINT_FORMAT,
 };
 
 use crate::{
+    castlevania::{archive::CastlevaniaArchiveReport, target::CastlevaniaInput},
     search::{
         archive::RetentionPolicy,
         campaign::{
@@ -20,7 +21,6 @@ use crate::{
         draw::DrawMixture,
     },
     target::{ExitKind, Target},
-    castlevania::{archive::CastlevaniaArchiveReport, target::CastlevaniaInput},
 };
 
 pub type CastlevaniaGame = nes_games::castlevania::campaign::CastlevaniaGame<QuickNesMachine>;
@@ -121,9 +121,7 @@ impl crate::film::Endpointed for CastlevaniaGame {
         for action in &input.actions {
             target.apply(action);
             if target.exit_kind() != ExitKind::Ok {
-                return Err(
-                    "the recorded Castlevania input crashed during headless replay".into(),
-                );
+                return Err("the recorded Castlevania input crashed during headless replay".into());
             }
         }
         Ok(serde_json::to_value(target.observe().decoded)?)

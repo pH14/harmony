@@ -304,7 +304,9 @@ fn main() -> Result<()> {
                 identity,
             )
         }
-        _ => Err("nes-film renders the STB, Twin Dragons, Castlevania and Famidash scenarios".into()),
+        _ => {
+            Err("nes-film renders the STB, Twin Dragons, Castlevania and Famidash scenarios".into())
+        }
     }
 }
 
