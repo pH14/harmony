@@ -175,6 +175,10 @@ const PROGRESS_CHECKPOINT_INTERVAL: u64 = 100;
 
 const MAX_PROGRESS_CURVE_POINTS: usize = 1_024;
 
+const CELL_INTERVAL_REPORT_LINES: u64 = 32;
+
+const CELL_INTERVAL_TOP_CELLS: usize = 16;
+
 fn compact_progress_curve<M, P>(
     curve: &mut Vec<ProgressPoint<M, P>>,
     current_interval: u64,
@@ -199,6 +203,13 @@ fn progress_line_interval(executions: u64) -> u64 {
 fn progress_checkpoint_due(executions: u64) -> bool {
     executions > 0
         && (executions == 1 || executions.is_multiple_of(progress_line_interval(executions)))
+}
+
+fn cell_interval_report_due(executions: u64) -> bool {
+    executions > 0
+        && executions.is_multiple_of(
+            progress_line_interval(executions).saturating_mul(CELL_INTERVAL_REPORT_LINES),
+        )
 }
 
 fn full_selector_report_due(executions: u64) -> bool {
@@ -3210,7 +3221,7 @@ pub struct CampaignProgressRecord<K> {
 }
 
 fn write_live_progress<G: Workload>(
-    core: &CoordinatorCore<G>,
+    core: &mut CoordinatorCore<G>,
     counters: &CampaignCounters,
     profile: Option<(&LiveCoordinatorProfile, HostTimes)>,
     draw_state_memory_bytes: usize,
@@ -3218,14 +3229,21 @@ fn write_live_progress<G: Workload>(
     final_census: bool,
     sink: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
-    let line = serde_json::to_string(&progress_record(
+    let mut record = progress_record(
         core,
         counters,
         profile,
         draw_state_memory_bytes,
         telemetry_started,
         final_census,
-    )?)?;
+    )?;
+    if final_census || cell_interval_report_due(core.sequence) {
+        record.selector.cell_interval = Some(
+            core.archive
+                .take_cell_interval(core.sequence, CELL_INTERVAL_TOP_CELLS),
+        );
+    }
+    let line = serde_json::to_string(&record)?;
     sink.write_all(line.as_bytes())?;
     sink.write_all(b"\n")?;
     sink.flush()?;
@@ -8700,6 +8718,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
     }
 
@@ -8728,6 +8747,97 @@ mod tests {
             serde_json::from_slice(&written).expect("job round-trips");
         assert_eq!(round_trip, job);
     }
+    #[test]
+    fn cell_interval_accounting_leaves_the_draws_unchanged() {
+        let config = CampaignConfig {
+            campaign_seed: 47,
+            workers: 2,
+            execution_budget: 7_000,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: false,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 32,
+            window: 4,
+            memory_budget_mib: Some(8),
+            materialize_final_artifacts: true,
+            run: (),
+            mixture: DrawMixture::EnergySplice { scale: 6 },
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        };
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let run = |with_progress: bool| {
+            let mut stream = Vec::new();
+            let mut progress = Vec::new();
+            let outcome = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                with_progress.then_some(&mut progress as &mut dyn Write),
+            )
+            .expect("campaign runs");
+            (outcome, stream, progress)
+        };
+        let (first, first_stream, first_progress) = run(true);
+        let (second, second_stream, _) = run(true);
+        let (silent, silent_stream, silent_progress) = run(false);
+        assert!(silent_progress.is_empty());
+        assert_eq!(first_stream, second_stream);
+        assert_eq!(first_stream, silent_stream);
+        assert_eq!(first, second);
+        assert_eq!(first, silent);
+        let records = String::from_utf8(first_progress)
+            .expect("progress is utf-8")
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<CampaignProgressRecord<serde_json::Value>>(line)
+                    .expect("progress record parses")
+            })
+            .collect::<Vec<_>>();
+        let intervals = records
+            .iter()
+            .filter_map(|record| {
+                record
+                    .selector
+                    .cell_interval
+                    .as_ref()
+                    .map(|interval| (record.executions, interval))
+            })
+            .collect::<Vec<_>>();
+        assert!(intervals.len() >= 3);
+        assert_eq!(intervals[0].1.since, 0);
+        for pair in intervals.windows(2) {
+            assert_eq!(pair[1].1.since, pair[0].0);
+        }
+        for (_, interval) in &intervals {
+            assert!(interval.top.len() <= super::CELL_INTERVAL_TOP_CELLS.min(interval.cells));
+            assert!(
+                interval
+                    .top
+                    .windows(2)
+                    .all(|rows| rows[0].counts.draws >= rows[1].counts.draws)
+            );
+        }
+        let interval_draws: u64 = intervals
+            .iter()
+            .map(|(_, interval)| interval.totals.draws)
+            .sum();
+        let final_record = records.last().expect("a final progress line");
+        assert!(final_record.selector.cell_interval.is_some());
+        let selector = &final_record.selector;
+        assert!(interval_draws >= selector.cell_selections);
+        assert!(
+            interval_draws
+                <= selector.cell_selections + selector.continuation_selections.unwrap_or(0)
+        );
+        assert!(interval_draws > 0);
+    }
+
     #[test]
     fn a_key_without_a_preference_runs_and_replays_with_no_continuation_bank() {
         let config = CampaignConfig {

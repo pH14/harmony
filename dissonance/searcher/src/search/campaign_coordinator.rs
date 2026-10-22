@@ -694,7 +694,7 @@ where
         core.finish_curve();
         if let Some(sink) = progress {
             write_live_progress(
-                &core,
+                &mut core,
                 &counters,
                 profile_printed.then(|| {
                     (
@@ -1126,6 +1126,7 @@ where
                 path: SelectorPath::Continuation,
                 tier_rank: None,
                 best_preference: None,
+                fall_through: false,
             };
             let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
             let splice = Some(CampaignSpliceRecord::Tail {
