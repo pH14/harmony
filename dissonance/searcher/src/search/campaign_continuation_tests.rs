@@ -1838,7 +1838,7 @@ fn a_checkpoint_whose_in_flight_jobs_do_not_match_the_snapshot_pins_is_rejected(
     let checksum = sha2::Sha256::digest(&forged);
     forged.extend_from_slice(&checksum);
     std::fs::write(&path, forged).unwrap();
-    let error = run_campaign_checkpointed(
+    let Err(error) = run_campaign_checkpointed(
         &TestWorkload,
         &config,
         &CampaignOrigin::SearchCheckpoint {
@@ -1847,9 +1847,9 @@ fn a_checkpoint_whose_in_flight_jobs_do_not_match_the_snapshot_pins_is_rejected(
         },
         &mut Vec::new(),
         None,
-    )
-    .err()
-    .expect("a forged checkpoint is rejected");
+    ) else {
+        panic!("a forged checkpoint is rejected");
+    };
     assert!(
         error
             .to_string()
