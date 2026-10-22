@@ -63,6 +63,10 @@ pub(crate) fn serialize(c: &Contract) -> String {
         c.vtime_execution_tick_vns
     ));
     line(format!(
+        "vtime-coverage-callback-vns={}",
+        c.vtime_coverage_callback_vns
+    ));
+    line(format!(
         "vtime-clockevent-period-vns={}",
         c.vtime_clockevent_period_vns
     ));

@@ -16,6 +16,7 @@ pub const NAMESPACE_SHIFT: u32 = 24;
 pub const LOCAL_MASK: u32 = (1 << NAMESPACE_SHIFT) - 1;
 pub const NAMESPACE_ASSERT: u8 = 1;
 pub const NAMESPACE_LIFECYCLE: u8 = 4;
+pub const COVERAGE_SKIP_LIMIT: u64 = 1 << 15;
 const VIOLATION: u8 = 1;
 const SERVICE_PREFIX: usize = 10;
 
@@ -195,6 +196,7 @@ pub fn decide_coverage<H: ServiceHandler + Clone>(
     thread: u32,
     observed: u64,
     ready: u32,
+    until_deadline: Option<u64>,
 ) -> Result<CoverageOutcome, Status> {
     let quantum_question = coverage_question(thresholds, thread, observed, ready)?;
     let mut candidate = env.checked_clone().map_err(|_| Status::Internal)?;
@@ -236,7 +238,8 @@ pub fn decide_coverage<H: ServiceHandler + Clone>(
     if quantum == 0 {
         return Err(Status::BadRequest);
     }
-    let next = observed.checked_add(quantum).ok_or(Status::OutOfRange)?;
+    let span = coverage_span(quantum, ready, until_deadline);
+    let next = observed.checked_add(span).ok_or(Status::OutOfRange)?;
     *env = candidate;
     thresholds.insert(thread, next);
     Ok(CoverageOutcome::Answered(Coverage {
@@ -248,6 +251,16 @@ pub fn decide_coverage<H: ServiceHandler + Clone>(
     }))
 }
 
+pub fn coverage_span(quantum: u64, ready: u32, until_deadline: Option<u64>) -> u64 {
+    match until_deadline {
+        Some(callbacks) if ready == 1 => {
+            let spans = callbacks.div_ceil(quantum).saturating_sub(1);
+            quantum * spans.clamp(1, (COVERAGE_SKIP_LIMIT / quantum).max(1))
+        }
+        _ => quantum,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +269,19 @@ mod tests {
         Arc,
         atomic::{AtomicU8, Ordering},
     };
+
+    #[test]
+    fn width_one_skips_exchanges_that_end_before_the_deadline() {
+        assert_eq!(coverage_span(8, 1, None), 8);
+        assert_eq!(coverage_span(8, 2, Some(1000)), 8);
+        assert_eq!(coverage_span(8, 1, Some(0)), 8);
+        assert_eq!(coverage_span(8, 1, Some(8)), 8);
+        assert_eq!(coverage_span(8, 1, Some(17)), 16);
+        assert_eq!(coverage_span(8, 1, Some(24)), 16);
+        assert_eq!(coverage_span(8, 1, Some(1 << 30)), COVERAGE_SKIP_LIMIT);
+        assert_eq!(coverage_span(1 << 15, 1, Some(1 << 30)), 1 << 15);
+        assert_eq!(coverage_span(1 << 16, 1, Some(1 << 30)), 1 << 16);
+    }
 
     #[derive(Clone)]
     struct UnrecordedHandler(&'static [u8]);
@@ -418,7 +444,7 @@ mod tests {
         let mut thresholds = BTreeMap::new();
         assert!(env.snapshot_state().is_ok());
         assert_eq!(
-            decide_coverage(&mut env, &mut thresholds, 4, 11, 1, 2),
+            decide_coverage(&mut env, &mut thresholds, 4, 11, 1, 2, None),
             Err(Status::Internal)
         );
         assert_eq!(state.load(Ordering::SeqCst), 1);
@@ -444,7 +470,7 @@ mod tests {
         let mut thresholds = BTreeMap::new();
         let before = RecordedState::capture(&env).unwrap().encode();
         assert_eq!(
-            decide_coverage(&mut env, &mut thresholds, 4, 11, 1, 2),
+            decide_coverage(&mut env, &mut thresholds, 4, 11, 1, 2, None),
             Ok(CoverageOutcome::External(
                 Question::with_request_id(
                     11,
@@ -583,27 +609,37 @@ mod tests {
         let mut thresholds = BTreeMap::new();
         assert_eq!(coverage_request(&[0; 15]), Err(Status::BadRequest));
         let CoverageOutcome::Answered(first) =
-            decide_coverage(&mut env, &mut thresholds, 4, 1, 1, 2).unwrap()
+            decide_coverage(&mut env, &mut thresholds, 4, 1, 1, 2, None).unwrap()
         else {
             panic!("nominal coverage must answer");
         };
         assert_eq!(first.next, 1 + DEFAULT_COVERAGE_QUANTUM);
         assert!(first.selected < 2);
         assert_eq!(
-            decide_coverage(&mut env, &mut thresholds, 5, 1, 3, 2),
+            decide_coverage(&mut env, &mut thresholds, 5, 1, 3, 2, None),
             Err(Status::BadRequest)
         );
         let mut replay_env = env.clone();
         let mut replay_thresholds = thresholds.clone();
-        let continuation = decide_coverage(&mut env, &mut thresholds, 5, 1, first.next, 2).unwrap();
+        let continuation =
+            decide_coverage(&mut env, &mut thresholds, 5, 1, first.next, 2, None).unwrap();
         assert_eq!(
-            decide_coverage(&mut replay_env, &mut replay_thresholds, 5, 1, first.next, 2).unwrap(),
+            decide_coverage(
+                &mut replay_env,
+                &mut replay_thresholds,
+                5,
+                1,
+                first.next,
+                2,
+                None
+            )
+            .unwrap(),
             continuation
         );
         env.record_service_request(9, SERVICE_SCHEDULER, 7, Answer::Data(vec![1, 2, 3]));
         let before = thresholds.clone();
         assert_eq!(
-            decide_coverage(&mut env, &mut thresholds, 9, 7, 1, 2),
+            decide_coverage(&mut env, &mut thresholds, 9, 7, 1, 2, None),
             Err(Status::Internal)
         );
         assert_eq!(thresholds, before);
@@ -620,16 +656,16 @@ mod tests {
             Answer::Data(64_u64.to_le_bytes().to_vec()),
         );
         let CoverageOutcome::Answered(first) =
-            decide_coverage(&mut env, &mut thresholds, 41, 7, 1, 2).unwrap()
+            decide_coverage(&mut env, &mut thresholds, 41, 7, 1, 2, None).unwrap()
         else {
             panic!("recorded coverage must answer");
         };
         assert_eq!(first.next, 65);
         let mut replay_env = env.clone();
         let mut replay_thresholds = thresholds.clone();
-        let next = decide_coverage(&mut env, &mut thresholds, 42, 7, 65, 2).unwrap();
+        let next = decide_coverage(&mut env, &mut thresholds, 42, 7, 65, 2, None).unwrap();
         assert_eq!(
-            decide_coverage(&mut replay_env, &mut replay_thresholds, 42, 7, 65, 2).unwrap(),
+            decide_coverage(&mut replay_env, &mut replay_thresholds, 42, 7, 65, 2, None).unwrap(),
             next
         );
     }
@@ -638,18 +674,32 @@ mod tests {
     fn a_reused_thread_identity_restarts_at_the_first_threshold() {
         let mut env = RecordedEnv::new(11, NominalHandler);
         let mut thresholds = BTreeMap::new();
-        let CoverageOutcome::Answered(advanced) =
-            decide_coverage(&mut env, &mut thresholds, 0, 7, SDK_COVERAGE_QUANTUM, 1).unwrap()
-        else {
+        let CoverageOutcome::Answered(advanced) = decide_coverage(
+            &mut env,
+            &mut thresholds,
+            0,
+            7,
+            SDK_COVERAGE_QUANTUM,
+            1,
+            None,
+        )
+        .unwrap() else {
             panic!("nominal coverage must answer");
         };
         assert_eq!(
-            decide_coverage(&mut env, &mut thresholds, 1, 7, advanced.next + 1, 1),
+            decide_coverage(&mut env, &mut thresholds, 1, 7, advanced.next + 1, 1, None),
             Err(Status::BadRequest)
         );
-        let CoverageOutcome::Answered(restarted) =
-            decide_coverage(&mut env, &mut thresholds, 2, 7, SDK_COVERAGE_QUANTUM, 1).unwrap()
-        else {
+        let CoverageOutcome::Answered(restarted) = decide_coverage(
+            &mut env,
+            &mut thresholds,
+            2,
+            7,
+            SDK_COVERAGE_QUANTUM,
+            1,
+            None,
+        )
+        .unwrap() else {
             panic!("nominal coverage must answer");
         };
         assert_eq!(thresholds.get(&7), Some(&restarted.next));
@@ -662,7 +712,7 @@ mod tests {
         let mut threshold = SDK_COVERAGE_QUANTUM;
         for moment in 0..1024 {
             let CoverageOutcome::Answered(coverage) =
-                decide_coverage(&mut env, &mut thresholds, moment, 7, threshold, 1).unwrap()
+                decide_coverage(&mut env, &mut thresholds, moment, 7, threshold, 1, None).unwrap()
             else {
                 panic!("nominal coverage must answer");
             };
@@ -681,7 +731,7 @@ mod tests {
         let mut threshold = SDK_COVERAGE_QUANTUM;
         for moment in 10..130_010 {
             let CoverageOutcome::Answered(coverage) =
-                decide_coverage(&mut env, &mut thresholds, moment, 7, threshold, 1).unwrap()
+                decide_coverage(&mut env, &mut thresholds, moment, 7, threshold, 1, None).unwrap()
             else {
                 panic!("recorded coverage policy must answer");
             };
@@ -711,13 +761,13 @@ mod tests {
         env.record_question(10, &question, Answer::Data(7_u64.to_le_bytes().to_vec()));
         let mut thresholds = BTreeMap::new();
         let CoverageOutcome::Answered(first) =
-            decide_coverage(&mut env, &mut thresholds, 10, 7, observed, 1).unwrap()
+            decide_coverage(&mut env, &mut thresholds, 10, 7, observed, 1, None).unwrap()
         else {
             panic!("recorded answer must win");
         };
         assert_eq!(first.next, observed + 7);
         let CoverageOutcome::Answered(next) =
-            decide_coverage(&mut env, &mut thresholds, 11, 7, first.next, 1).unwrap()
+            decide_coverage(&mut env, &mut thresholds, 11, 7, first.next, 1, None).unwrap()
         else {
             panic!("schedule must answer after the exact override");
         };
@@ -736,7 +786,7 @@ mod tests {
             env.record_service_request(41, SERVICE_COVERAGE_QUANTUM, 7, Answer::Data(answer));
             let answers = RecordedState::capture(&env).unwrap().answers().count();
             assert_eq!(
-                decide_coverage(&mut env, &mut thresholds, 41, 7, 1, 2),
+                decide_coverage(&mut env, &mut thresholds, 41, 7, 1, 2, None),
                 Err(status)
             );
             assert!(thresholds.is_empty());

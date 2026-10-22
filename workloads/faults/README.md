@@ -212,8 +212,13 @@ search's wall-time limit, as the searcher README describes.
 Each action also records a coverage
 quantum: the number of coverage callbacks an instrumented thread makes between
 VM exits during the action's window. It is drawn log-uniform over powers of two
-from 1 through 32768, and it is part of the action's archive key. Replay serves
-the same quantum, so busy-loop scheduling replays along with fault timing:
+from 1 through 32768, and it is part of the action's archive key. Virtual time
+per callback is the same at every quantum, so the quantum sets how soon after a
+timer deadline a busy thread exits, and leaves CPU speed unchanged. A thread
+with no scheduling choice exits only near its next timer deadline, so a small
+quantum costs no more wall time than a large one. Replay
+serves the same quantum, so busy-loop scheduling replays along with fault
+timing:
 
 | action | effect |
 |---|---|

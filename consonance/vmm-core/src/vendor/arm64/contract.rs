@@ -14,6 +14,7 @@ pub(crate) const LINUX_CLOCKEVENT_PERIOD_VNS: u64 = 10_000_000;
 const _: () = assert!(EXECUTION_TICK_VNS < LINUX_CLOCKEVENT_PERIOD_VNS);
 pub const TRAPPED_TIME_READ_VNS: u64 = 1;
 pub const ARCH_CONTROL_EXIT_VNS: u64 = 10_000;
+pub const COVERAGE_CALLBACK_VNS: u64 = 12;
 
 pub fn virtual_time_timing() -> VirtualTimeTiming {
     VirtualTimeTiming {
@@ -23,6 +24,7 @@ pub fn virtual_time_timing() -> VirtualTimeTiming {
         trapped_time_read_vns: TRAPPED_TIME_READ_VNS,
         architectural_control_vns: ARCH_CONTROL_EXIT_VNS,
         execution_tick_vns: EXECUTION_TICK_VNS,
+        coverage_callback_vns: COVERAGE_CALLBACK_VNS,
     }
 }
 
@@ -121,6 +123,7 @@ fn compute_contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
         t.trapped_time_read_vns,
         t.architectural_control_vns,
         t.execution_tick_vns,
+        t.coverage_callback_vns,
         LINUX_CLOCKEVENT_PERIOD_VNS,
     ] {
         h.update(vns.to_le_bytes());
@@ -323,6 +326,7 @@ mod tests {
             t.trapped_time_read_vns,
             t.architectural_control_vns,
             t.execution_tick_vns,
+            t.coverage_callback_vns,
             LINUX_CLOCKEVENT_PERIOD_VNS,
         ] {
             h.update(vns.to_le_bytes());
@@ -340,6 +344,7 @@ mod tests {
         assert_eq!(timing.trapped_time_read_vns, 1);
         assert_eq!(timing.architectural_control_vns, 10_000);
         assert_eq!(timing.execution_tick_vns, 100_000);
+        assert_eq!(timing.coverage_callback_vns, 12);
     }
 
     #[test]
