@@ -34,6 +34,7 @@ FROM ${DEBIAN_IMAGE} AS instrumented-build
 
 ARG DQLITE_COMMIT=1f49444df95301957dc3a396b4557a84e4d0f547
 ARG RAFT_COMMIT=63c8aa5b45684f5f3ba23283e924c6c7a7f3e40c
+ARG RAFT_BACKPORT=35479fc555a7a6518d65a61dfa6964f0415f10eb
 ARG LIBUV_COMMIT=0c1fa696aa502eb749c2c4735005f41ba00a27b8
 ARG DQLITE_REPO=https://github.com/canonical/dqlite.git
 ARG RAFT_REPO=https://github.com/canonical/raft.git
@@ -51,8 +52,13 @@ RUN fetch() { mkdir -p "$1" && git -C "$1" init -q && git -C "$1" fetch -q --dep
         && git -C "$1" checkout -q FETCH_HEAD && test "$(git -C "$1" rev-parse HEAD)" = "$3"; } \
     && fetch dqlite "${DQLITE_REPO}" "${DQLITE_COMMIT}" \
     && fetch raft "${RAFT_REPO}" "${RAFT_COMMIT}" \
+    && if [ -n "${RAFT_BACKPORT}" ]; then \
+        git -C raft fetch -q --depth 2 "${RAFT_REPO}" "${RAFT_BACKPORT}" \
+        && git -C raft diff "${RAFT_BACKPORT}^" "${RAFT_BACKPORT}" -- src | git -C raft apply; \
+    fi \
     && fetch libuv "${LIBUV_REPO}" "${LIBUV_COMMIT}" \
-    && for tree in dqlite raft libuv; do echo "${tree} $(git -C "${tree}" rev-parse HEAD)"; done > /build/sources
+    && { for tree in dqlite raft libuv; do echo "${tree} $(git -C "${tree}" rev-parse HEAD)"; done; \
+        echo "raft-backport ${RAFT_BACKPORT:-none}"; } > /build/sources
 
 COPY workloads/languages/c/shim.c /build/languages/c/shim.c
 COPY workloads/languages/vendor /build/languages/vendor

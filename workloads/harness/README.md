@@ -547,7 +547,12 @@ The Dockerfile builds libuv, canonical/raft at `RAFT_COMMIT` and dqlite at
 `DQLITE_COMMIT` (default 1f49444, December 2022) as static libraries with clang
 `trace-pc-guard` coverage and links them into `dqlite-node` with Debian's
 static SQLite. Pass another `RAFT_COMMIT` to compare raft versions under the
-same dqlite.
+same dqlite. The build applies the `src` changes of raft commit `RAFT_BACKPORT`
+(default 35479fc, raft PR #367) on top of `RAFT_COMMIT`. Without it a follower
+whose term changes while it writes entries to disk sends the append result to
+a null leader address and crashes (raft issues #339 and #350), and a search
+stops at that crash within minutes on raft commits from late 2022. Pass an
+empty `RAFT_BACKPORT` to build `RAFT_COMMIT` unchanged.
 
 The adapter drives the `log` family with the pure-Go
 [go-dqlite](https://github.com/canonical/go-dqlite) driver and no
