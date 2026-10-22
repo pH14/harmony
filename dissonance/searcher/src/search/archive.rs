@@ -1907,9 +1907,10 @@ where
         if entry.id == snapshot_id {
             return Ok((Vec::new(), Vec::new()));
         }
-        let origin = &self.entries[self
+        let origin = self
             .index_of_id(snapshot_id)
-            .ok_or("pinned job origin snapshot is missing")?];
+            .and_then(|index| self.entries.get(index))
+            .ok_or("pinned job origin snapshot is missing")?;
         let distance = entry
             .input_len
             .checked_sub(origin.input_len)
