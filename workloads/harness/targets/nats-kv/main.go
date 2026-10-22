@@ -153,8 +153,11 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 			if err != nil {
 				return nil, runner.Definite(err)
 			}
-			if value == nil || *value != old {
-				return nil, runner.Definite(fmt.Errorf("key %s does not hold %q", op.K, old))
+			if value == nil {
+				return nil, runner.Definite(fmt.Errorf("key %s holds no value, not %q", op.K, old))
+			}
+			if *value != old {
+				return nil, runner.Definite(fmt.Errorf("key %s holds %q, not %q", op.K, *value, old))
 			}
 			revision = current
 			c.remember(old, revision)
@@ -220,6 +223,10 @@ func (c *client) get(ctx context.Context, key string) (*string, uint64, error) {
 		}
 		switch header.Get("KV-Operation") {
 		case "DEL", "PURGE":
+			return nil, 0, nil
+		}
+		switch header.Get(jetstream.MarkerReasonHeader) {
+		case "MaxAge", "Purge", "Remove":
 			return nil, 0, nil
 		}
 	}
