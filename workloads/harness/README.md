@@ -22,6 +22,7 @@ generic operations onto the target's client API.
 | `targets/rqlite` | rqlite image and adapter |
 | `targets/etcd` | etcd image and adapter, three members or one |
 | `targets/redisraft` | Redis-Raft image and adapter |
+| `targets/tarantool` | Tarantool image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -530,6 +531,54 @@ writes. A search with the default fault alphabet finds this as a
 linearizability violation on `dfd91d4` too, with a `DiskError` among the
 shrunk faults.
 
+## Tarantool
+
+`targets/tarantool` drives the `register` family against a three-instance
+Tarantool replica set (`n1` to `n3` at 10.77.0.1-3, port 3301) in
+`harness-net` namespaces, through
+[go-tarantool](https://github.com/tarantool/go-tarantool) v3. `config.yaml` is
+Tarantool's declarative configuration: Raft failover
+(`replication.failover: election`), the MVCC transaction manager, and WAL,
+snapshot and vinyl files under `/tmp/tarantool/<node>` on a 256 MiB node disk.
+Logs are `/tmp/tarantool/<node>.log`. The bundle declares both and the four
+network hooks. Three settings differ from the defaults: `wal.mode: fsync`,
+since the default `write` mode acknowledges a transaction before it reaches
+the disk; `election_timeout: 1` (default 5 s), for elections about as fast as
+in the other targets; and `memtx.memory` 64 MiB, so three instances fit in the
+guest. `harness.lua` creates the synchronous space `kv` on whichever instance
+is leader and defines the functions the adapter calls.
+
+`write` is a `replace` in `kv` and `cas` is a transaction that reads the key
+and replaces it only when it holds the old value. Each operation goes to one
+instance drawn from the SDK stream. A follower answers a write with
+`ER_READONLY` before it has any effect, so the adapter asks that instance for
+`box.info.election.leader_name` and sends the write there once. `ER_READONLY`,
+`ER_TRANSACTION_CONFLICT`, a `cas` that finds another value and a failed
+connect are definite failures; other write errors are indeterminate. `read` is
+a `get` in a transaction begun with `txn_isolation = 'linearizable'`. The
+[MVCC transaction mode](https://www.tarantool.io/en/doc/latest/platform/atomic/txn_mode_mvcc/)
+page defines a linearizable read as one that reflects every write whose
+response arrived earlier, and states that `box.begin` with this level waits
+until the instance has heard from enough peers to be sure of that. Read errors
+are definite. The client registers go-tarantool's UUID extension, because an
+`ER_READONLY` error carries the leader's UUID.
+
+A read pinned to node `nI` writes key `fence-nI` with a fresh value through
+the leader, then reads the fence and the key on `nI` at the `read-confirmed`
+level until the fence value appears. That level shows only transactions the
+quorum confirmed, from `nI`'s own copy, and an instance applies confirmed
+transactions in log order. A `replicas` read on `nI` reads every key the same
+way. Tuples carry no version, so copies hold values alone. `ready` passes once
+a write succeeds through any instance.
+
+The Dockerfile clones tag `3.8.1` (default) with its submodules and checks the
+commit. It builds with clang 19 from Bookworm backports and `trace-pc-guard`
+coverage, and links the C forwarding shim. Tarantool links Bookworm's
+`libssl3`; `tarantool-x86_64.txt` reviews the entropy instructions in that
+`libcrypto.so.3`, and the image drops OpenSSL's legacy provider, which
+Tarantool never loads. A new `libssl3` package changes the digest, and the
+reviews must be redone.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
@@ -595,6 +644,10 @@ container. Opt-in options:
   node's SQLite database has applied.
 - An etcd pinned read trusts a member to answer a put only after it has applied
   the put.
+- A Tarantool pinned read trusts `read-confirmed` to show only confirmed
+  transactions from the instance's own copy.
+- A Tarantool write or `cas` that fails with `ER_READONLY` or
+  `ER_TRANSACTION_CONFLICT` is trusted never to reach the WAL.
 - A Redis-Raft write or `cas` that fails with `MOVED`, `NOLEADER`,
   `NOCLUSTER`, `LOADING` or `ERR not leader` is trusted never to reach the
   Raft log.
