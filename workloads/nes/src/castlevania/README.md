@@ -93,7 +93,8 @@ entries by `stage:section` as `[entries, max health, selections]`.
 schedule from power-on and prints the listed bytes every `every` frames, or
 whenever one of them changes when `every` is 0. A `pADDR=VALUE` step writes one
 RAM byte. `PROBE_DIFF=1` prints every zero-page change, and
-`PROBE_SHOTS=<dir>` with `PROBE_SHOT_EVERY=<n>` writes raw RGB frames. It reads
+`PROBE_SHOTS=<dir>` with `PROBE_SHOT_EVERY=<n>` writes raw RGB frames, and the
+last RAM and core state as `final-wram.bin` and `final-state.bin`. It reads
 the ROM from `HARMONY_CASTLEVANIA_ROM` and the core from
 `HARMONY_QUICKNES_CORE`. `nes-film --game castlevania` renders an input to
 video.
