@@ -21,6 +21,7 @@ generic operations onto the target's client API.
 | `targets/nats-kv` | NATS JetStream key-value image and adapter |
 | `targets/rqlite` | rqlite image and adapter |
 | `targets/etcd` | etcd image and adapter, three members or one |
+| `targets/dqlite` | dqlite image, node program and adapter |
 | `targets/redisraft` | Redis-Raft image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
@@ -504,11 +505,11 @@ Every probe then passes once a `SET` succeeds through any node.
 new value only when the key holds the old one. Each operation goes to one node
 drawn from the SDK stream over a new connection, and the client follows one
 `-MOVED` redirect to the leader. A write or `cas` is a definite failure on a
-dial error or a `MOVED`, `NOLEADER`, `NOCLUSTER`, `LOADING` or `ERR not leader`
-reply, which Redis-Raft sends before it appends the command to the log. Other
-write errors are indeterminate, and read errors are definite. Every command on
-a follower answers `-MOVED`, so the adapter pins no reads and the check skips
-the replica comparison.
+dial error or a `MOVED`, `NOLEADER`, `NOCLUSTER`, `LOADING`, `ERR not leader`,
+`CLUSTERDOWN` or `TRYAGAIN` reply, which Redis-Raft sends before it appends the
+command to the log. Other write errors are indeterminate, and read errors are
+definite. Every command on a follower answers `-MOVED`, so the adapter pins no
+reads and the check skips the replica comparison.
 
 The image builds Redis, Redis-Raft and Redis-Raft's raft, hiredis and libuv
 submodules from pinned commits with clang `trace-pc-guard` coverage. Redis
@@ -532,6 +533,64 @@ consistency check never replaces them, and the cluster can lose acknowledged
 writes. A search with the default fault alphabet finds this as a
 linearizability violation on `dfd91d4` too, with a `DiskError` among the
 shrunk faults.
+
+`Dockerfile.master` builds Redis-Raft master (`ade4aa8`, July 2023) with Redis
+7.2.0 (`2962227`), since master needs the Redis 7 module configuration API.
+Master carries raft and hiredis in `deps` and has no libuv. Its nodes take
+`--raft.id`, `--raft.addr` and `--raft.log-filename` (`node-master.sh`), report
+cluster state in `INFO raft` with `raft_`-prefixed fields, answer a follower
+command with `-MOVED <slot> <address>`, and reject a command with
+`CLUSTERDOWN` when there is no leader. The adapter handles both versions.
+
+## dqlite
+
+`targets/dqlite` runs three dqlite nodes at 10.77.0.1-3, port 9001, in
+`harness-net` namespaces with the four network hooks. `node/dqlite-node.c` is a
+small C program that starts one node with `dqlite_node_create` and
+`dqlite_node_start` and waits for `SIGTERM`. It sets the network latency to
+70 ms, which gives a 1,050 ms election timeout and a 105 ms heartbeat. Each
+node's data directory `/tmp/dqlite/<node>` is a 256 MiB node disk, and its log
+is `/tmp/dqlite/<node>.log`. Node 1 bootstraps a one-node cluster on its first
+start. The first `ready` probe adds nodes 2 and 3 as voters and creates the
+tables. Every probe then needs one committed `UPDATE ready SET n = n + 1`.
+
+The Dockerfile builds libuv, canonical/raft at `RAFT_COMMIT` and dqlite at
+`DQLITE_COMMIT` (default 1f49444, December 2022) as static libraries with clang
+`trace-pc-guard` coverage and links them into `dqlite-node` with Debian's
+static SQLite. Pass another `RAFT_COMMIT` to compare raft versions under the
+same dqlite. The build applies the `src` changes of raft commit `RAFT_BACKPORT`
+(default 35479fc, raft PR #367) on top of `RAFT_COMMIT`. Without it a follower
+whose term changes while it writes entries to disk sends the append result to
+a null leader address and crashes (raft issues #339 and #350), and a search
+stops at that crash within minutes on raft commits from late 2022. Pass an
+empty `RAFT_BACKPORT` to build `RAFT_COMMIT` unchanged.
+
+The adapter drives the `log` family with the pure-Go
+[go-dqlite](https://github.com/canonical/go-dqlite) driver and no
+`database/sql` layer, because `database/sql` retries a statement after the
+driver reports a bad connection. Each process keeps one connection to the
+leader. It asks the nodes for the leader in a rotation that starts at a node
+drawn from the SDK stream. `append` inserts a row into table `log`, whose
+`AUTOINCREMENT` row id is the position, and `read` selects every value ordered
+by row id. dqlite serves both only on the leader, so the adapter has no pinned
+reads. The driver reports a lost connection, a lost leadership and a deposed
+leader with the same error, so an append is a definite failure only when no
+connection to a leader opens. Read errors are definite. The driver returns a
+large result in batches and reports a connection that closes between batches
+as an error that wraps `io.EOF`, so only a bare `io.EOF` ends a read.
+
+dqlite answers a query from the leader's own database, with no Raft round trip
+when that database has applied the whole log. A deposed leader that has not
+yet stepped down therefore answers from stale state; a native run with faults
+showed reads that missed 167 acknowledged appends. After each query the
+adapter asks the other nodes for their leader, and the read counts only when
+one of them names the node that answered. That node has accepted no entry
+from a later leader, and with three nodes a later leader commits nothing
+without it or the answering node.
+
+`Dockerfile.bundled-raft` builds a dqlite release, which carries raft in
+`src/raft` and no longer links a separate libraft. `DQLITE_COMMIT` defaults to
+`91e3e2f` (v1.18.7). It links the same `dqlite-node`, bundle and adapter.
 
 ## Native runner
 

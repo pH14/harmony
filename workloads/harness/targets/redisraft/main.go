@@ -43,7 +43,7 @@ func (e serverError) Error() string { return string(e) }
 
 // Redis-Raft rejects a command with these errors before it appends the
 // command to the Raft log.
-var rejected = []string{"MOVED ", "NOLEADER", "NOCLUSTER", "LOADING", "ERR not leader"}
+var rejected = []string{"MOVED ", "NOLEADER", "NOCLUSTER", "LOADING", "ERR not leader", "CLUSTERDOWN ", "TRYAGAIN"}
 
 func definite(err error) bool {
 	var reply serverError
@@ -110,7 +110,8 @@ func call(ctx context.Context, addr string, args ...string) (reply, error) {
 	r, err := once(ctx, addr, args)
 	var moved serverError
 	if errors.As(err, &moved) && strings.HasPrefix(string(moved), "MOVED ") {
-		leader := strings.TrimSpace(strings.TrimPrefix(string(moved), "MOVED "))
+		fields := strings.Fields(string(moved))
+		leader := fields[len(fields)-1]
 		return once(ctx, leader, args)
 	}
 	return r, err
@@ -192,15 +193,21 @@ func parse(in *bufio.Reader) (reply, error) {
 	return reply{}, fmt.Errorf("unknown reply %q", line)
 }
 
+// Redis-Raft before the Redis 7 module API answers RAFT.INFO; later versions
+// report the same fields, prefixed with raft_, in INFO raft.
 func info(ctx context.Context, addr string) (map[string]string, error) {
 	r, err := once(ctx, addr, []string{"RAFT.INFO"})
+	var unknown serverError
+	if errors.As(err, &unknown) {
+		r, err = once(ctx, addr, []string{"INFO", "raft"})
+	}
 	if err != nil {
 		return nil, err
 	}
 	fields := map[string]string{}
 	for _, line := range strings.Split(r.str, "\r\n") {
 		if name, value, ok := strings.Cut(line, ":"); ok {
-			fields[name] = value
+			fields[strings.TrimPrefix(name, "raft_")] = value
 		}
 	}
 	return fields, nil
