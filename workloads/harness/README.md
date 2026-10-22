@@ -22,6 +22,7 @@ generic operations onto the target's client API.
 | `targets/rqlite` | rqlite image and adapter |
 | `targets/etcd` | etcd image and adapter, three members or one |
 | `targets/redisraft` | Redis-Raft image and adapter |
+| `targets/dqlite` | dqlite image, node program and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -530,6 +531,45 @@ writes. A search with the default fault alphabet finds this as a
 linearizability violation on `dfd91d4` too, with a `DiskError` among the
 shrunk faults.
 
+## dqlite
+
+`targets/dqlite` runs three dqlite nodes at 10.77.0.1-3, port 9001, in
+`harness-net` namespaces with the four network hooks. `node/dqlite-node.c` is a
+small C program that starts one node with `dqlite_node_create` and
+`dqlite_node_start` and waits for `SIGTERM`. It sets the network latency to
+70 ms, which gives a 1,050 ms election timeout and a 105 ms heartbeat. Each
+node's data directory `/tmp/dqlite/<node>` is a 256 MiB node disk, and its log
+is `/tmp/dqlite/<node>.log`. Node 1 bootstraps a one-node cluster on its first
+start. The first `ready` probe adds nodes 2 and 3 as voters and creates the
+tables. Every probe then needs one committed `UPDATE ready SET n = n + 1`.
+
+The Dockerfile builds libuv, canonical/raft at `RAFT_COMMIT` and dqlite at
+`DQLITE_COMMIT` (default 1f49444, December 2022) as static libraries with clang
+`trace-pc-guard` coverage and links them into `dqlite-node` with Debian's
+static SQLite. Pass another `RAFT_COMMIT` to compare raft versions under the
+same dqlite.
+
+The adapter drives the `log` family with the pure-Go
+[go-dqlite](https://github.com/canonical/go-dqlite) driver and no
+`database/sql` layer, because `database/sql` retries a statement after the
+driver reports a bad connection. Each process keeps one connection to the
+leader. It asks the nodes for the leader in a rotation that starts at a node
+drawn from the SDK stream. `append` inserts a row into table `log`, whose
+`AUTOINCREMENT` row id is the position, and `read` selects every value ordered
+by row id. dqlite serves both only on the leader, so the adapter has no pinned
+reads. The driver reports a lost connection, a lost leadership and a deposed
+leader with the same error, so an append is a definite failure only when no
+connection to a leader opens. Read errors are definite.
+
+dqlite answers a query from the leader's own database, with no Raft round trip
+when that database has applied the whole log. A deposed leader that has not
+yet stepped down therefore answers from stale state; a native run with faults
+showed reads that missed 167 acknowledged appends. After each query the
+adapter asks the other nodes for their leader, and the read counts only when
+one of them names the node that answered. That node has accepted no entry
+from a later leader, and with three nodes a later leader commits nothing
+without it or the answering node.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
@@ -598,3 +638,6 @@ container. Opt-in options:
 - A Redis-Raft write or `cas` that fails with `MOVED`, `NOLEADER`,
   `NOCLUSTER`, `LOADING` or `ERR not leader` is trusted never to reach the
   Raft log.
+- A dqlite read trusts a peer to stop naming the old leader once it accepts an
+  entry from a new leader. canonical/raft keeps the old leader's name after a
+  vote and replaces it when the new leader's first append arrives.
