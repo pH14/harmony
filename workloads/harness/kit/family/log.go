@@ -13,15 +13,17 @@ import (
 )
 
 const (
-	LogLost        = "log: every acknowledged append is in every later read"
-	LogOrder       = "log: reads agree on one order of values"
-	LogDuplicate   = "log: no read contains a value twice"
-	LogPhantom     = "log: every value read was appended"
-	LogFailedRead  = "log: no append that failed is in a read"
-	LogPosition    = "log: acknowledged appends have distinct positions"
-	LogNodeLost    = "log: every node's read includes every acknowledged append"
-	LogNodeOrder   = "log: each node's reads agree on one order of values"
-	LogAppendAcked = "log: an append was acknowledged"
+	LogLost         = "log: every acknowledged append is in every later read"
+	LogReadLost     = "log: every value a read returned is in every later read"
+	LogOrder        = "log: reads agree on one order of values"
+	LogDuplicate    = "log: no read contains a value twice"
+	LogPhantom      = "log: every value read was appended"
+	LogFailedRead   = "log: no append that failed is in a read"
+	LogPosition     = "log: acknowledged appends have distinct positions"
+	LogNodeLost     = "log: every node's read includes every acknowledged append"
+	LogNodeReadLost = "log: every node's read includes every value an earlier read returned"
+	LogNodeOrder    = "log: each node's reads agree on one order of values"
+	LogAppendAcked  = "log: an append was acknowledged"
 )
 
 const (
@@ -39,7 +41,7 @@ type Log struct{}
 func (Log) Name() string { return "log" }
 
 func (Log) Kinds() []string {
-	return []string{LogLost, LogOrder, LogDuplicate, LogPhantom, LogFailedRead, LogPosition, LogNodeLost, LogNodeOrder}
+	return []string{LogLost, LogReadLost, LogOrder, LogDuplicate, LogPhantom, LogFailedRead, LogPosition, LogNodeLost, LogNodeReadLost, LogNodeOrder}
 }
 
 func (Log) Observations() []string { return []string{LogAppendAcked} }
@@ -337,20 +339,23 @@ func (Log) Check(h *history.History) Report {
 		a.prepare(appended)
 	}
 	report.Decided = len(state.reads) > 0
-	report.Undecided = map[string]bool{LogLost: true, LogOrder: true, LogNodeLost: true, LogNodeOrder: true}
+	report.Undecided = map[string]bool{LogLost: true, LogReadLost: true, LogOrder: true, LogNodeLost: true, LogNodeReadLost: true, LogNodeOrder: true}
 	for index := range state.reads {
 		if state.reads[index].op.Node == "" {
 			delete(report.Undecided, LogLost)
+			delete(report.Undecided, LogReadLost)
 			delete(report.Undecided, LogOrder)
 		} else {
 			delete(report.Undecided, LogNodeLost)
+			delete(report.Undecided, LogNodeReadLost)
 			delete(report.Undecided, LogNodeOrder)
 		}
 	}
 	var found collector
 	checkPositions(acks, &found)
 	checkReadContents(state, appended, &found)
-	checkLost(state, acks, &found)
+	lost := checkLost(state, acks, &found)
+	checkReadLost(state, lost, &found)
 	checkOrder(state, &found)
 	report.Violations = found.result()
 	return report
@@ -416,7 +421,8 @@ func checkReadContents(state *logState, appended map[string]*history.Op, found *
 	}
 }
 
-func checkLost(state *logState, acks []ack, found *collector) {
+func checkLost(state *logState, acks []ack, found *collector) map[*logRead]bool {
+	lost := map[*logRead]bool{}
 	reach := map[*arena][]int{}
 	for _, a := range state.arenas {
 		prefix := make([]int, len(acks))
@@ -439,6 +445,7 @@ func checkLost(state *logState, acks []ack, found *collector) {
 		if before == 0 || reach[read.arena][before-1] < read.n {
 			continue
 		}
+		lost[read] = true
 		kind := LogLost
 		if read.op.Node != "" {
 			kind = LogNodeLost
@@ -472,6 +479,103 @@ func checkLost(state *logState, acks []ack, found *collector) {
 			return details
 		})
 	}
+	return lost
+}
+
+func checkReadLost(state *logState, lost map[*logRead]bool, found *collector) {
+	var sources, reads []*logRead
+	for index := range state.reads {
+		read := &state.reads[index]
+		if read.op.Node == "" && read.n > 0 {
+			sources = append(sources, read)
+		}
+		reads = append(reads, read)
+	}
+	if len(sources) == 0 {
+		return
+	}
+	sort.SliceStable(sources, func(i, j int) bool { return sources[i].op.Complete < sources[j].op.Complete })
+	sort.SliceStable(reads, func(i, j int) bool { return reads[i].op.Invoke < reads[j].op.Invoke })
+	widest := map[*arena]*logRead{}
+	var arenas []*arena
+	reach := map[[2]*arena][]int{}
+	next := 0
+	for _, read := range reads {
+		for next < len(sources) && sources[next].op.Complete < read.op.Invoke {
+			source := sources[next]
+			current := widest[source.arena]
+			if current == nil {
+				arenas = append(arenas, source.arena)
+			}
+			if current == nil || source.n > current.n {
+				widest[source.arena] = source
+			}
+			next++
+		}
+		if lost[read] {
+			continue
+		}
+		for _, a := range arenas {
+			witness := widest[a]
+			key := [2]*arena{a, read.arena}
+			prefix, ok := reach[key]
+			if !ok {
+				prefix = arenaReach(a, read.arena)
+				reach[key] = prefix
+			}
+			if prefix[witness.n-1] < read.n {
+				continue
+			}
+			kind := LogReadLost
+			if read.op.Node != "" {
+				kind = LogNodeReadLost
+			}
+			found.addFor(kind, read.op.Node, func() map[string]any {
+				missing := 0
+				var first string
+				firstAt := -1
+				var values []string
+				for at, value := range witness.values() {
+					position, ok := read.arena.index(value)
+					if ok && position < read.n {
+						continue
+					}
+					missing++
+					if firstAt < 0 {
+						first, firstAt = value, at
+					}
+					if len(values) < maxMissing {
+						values = append(values, value)
+					}
+				}
+				return map[string]any{
+					"value":          first,
+					"position":       firstAt,
+					"earlier_read":   describeRead(witness),
+					"read":           describeRead(read),
+					"missing":        missing,
+					"missing_values": values,
+				}
+			})
+			break
+		}
+	}
+}
+
+func arenaReach(from, to *arena) []int {
+	prefix := make([]int, len(from.values))
+	highest := -1
+	for at, value := range from.values {
+		position, ok := to.index(value)
+		if !ok {
+			position = math.MaxInt
+		}
+		if position > highest {
+			highest = position
+		}
+		prefix[at] = highest
+	}
+	return prefix
 }
 
 func checkOrder(state *logState, found *collector) {
