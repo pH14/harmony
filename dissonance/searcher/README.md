@@ -240,8 +240,10 @@ The same prefix nodes can hold optional workload endpoint certificates. A
 retained candidate binds the certificate for each action since its parent,
 including intermediate actions that were not themselves retained. A job
 origin returns the replay actions and certificates from the same node walk,
-and in-flight checkpoints preserve both vectors. Shared prefixes reject a
-conflicting binding; compaction and snapshot eviction keep nodes on any
+and in-flight checkpoints preserve both vectors. Resume rebuilds each job's
+vectors from the snapshot the job pinned at dispatch and rejects a checkpoint
+whose in-flight jobs do not match the archive's snapshot pins. Shared prefixes
+reject a conflicting binding; compaction and snapshot eviction keep nodes on any
 selectable entry's path. Workloads without endpoint certificates leave these
 certificate slots absent, while workloads that require them reject missing values during
 replay.
