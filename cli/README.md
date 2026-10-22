@@ -493,7 +493,8 @@ failures or hung jobs; unconfirmed hits can still appear. `1` means a
 confirmed bug or unmet reachability assertion. Failures or hung jobs take
 precedence with `2`. A hung job is a job that tripped the guest progress
 watchdog. The search records it as `hang-N.json` in the run directory and keeps
-running. CLI, admission and setup errors also exit `2`, sometimes without a run
+running. It records the input of each failed execution as `failure-N.json`, which
+`debug run --actions` replays. CLI, admission and setup errors also exit `2`, sometimes without a run
 directory. Inspect the report and manifest as well as
 the exit status: a completed manifest can accompany any of these codes. `show`
 displays saved evidence; it does not verify artifacts or perform a fresh

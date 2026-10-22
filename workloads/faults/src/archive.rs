@@ -409,6 +409,14 @@ pub struct FaultHangRecord {
     pub input: FaultInput,
 }
 
+pub const MAX_RECORDED_FAILURES: usize = 64;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultFailureRecord {
+    pub execution: u64,
+    pub input: FaultInput,
+}
+
 #[must_use]
 pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
     (
@@ -436,6 +444,8 @@ pub struct FaultArchiveReport {
     pub bugs: Vec<FaultBugRecord>,
     #[serde(default)]
     pub hangs: Vec<FaultHangRecord>,
+    #[serde(default)]
+    pub failures: Vec<FaultFailureRecord>,
     #[serde(default)]
     pub selector: SelectorAccounting,
     #[serde(default)]
