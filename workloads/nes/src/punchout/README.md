@@ -69,8 +69,10 @@ ROM.
 The progress tier is the opponents defeated. The place is the
 opponent, the phase (fight, between rounds, won, other), the screen step
 between fights, the round, the opponent's knockdowns this round, the
-opponent's health in 8-point buckets and the opponent's action. Outside a
-fight the place drops the fight fields and adds the scene, the Start prompt
+opponent's health in 8-point buckets and the opponent's action. While the
+action is the spin punch series (26) the place also holds the opponent's step
+counter (`$0096`) modulo 4, so progress through the series' 265 frames is kept
+as separate places. Outside a fight the place drops the fight fields and adds the scene, the Start prompt
 and the cutscene timer in 16-step buckets. After a title bout the screens run
 for about 3,000 frames, including a 1,530-frame cutscene, and without the
 timer they form one place that the search does not leave. Higher Mac health, then hearts, then

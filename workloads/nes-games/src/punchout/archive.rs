@@ -18,11 +18,13 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "punchout_defeated_tier_opponent_round_health_8_action_knockdown_scene_timer_16_place_mac_health_hearts_stars_preference_v4";
+pub const KEY_POLICY_IDENTIFIER: &str = "punchout_defeated_tier_opponent_round_health_8_action_knockdown_scene_timer_16_spin_step_4_place_mac_health_hearts_stars_preference_v5";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
 const SCENE_TIMER_BUCKET: u8 = 16;
+const SPIN_SERIES_ACTION: u8 = 26;
+const SPIN_STEP_BUCKETS: u8 = 4;
 const PHASE_FIGHT: u8 = 0;
 const PHASE_ROUND_BREAK: u8 = 1;
 const PHASE_WON: u8 = 2;
@@ -45,6 +47,7 @@ pub struct PunchOutArchiveKey {
     pub round: u8,
     pub opponent_health: u8,
     pub opponent_action: u8,
+    pub opponent_step: u8,
     pub round_knockdowns: u8,
     pub scene: u8,
     pub prompt: u8,
@@ -55,7 +58,7 @@ pub struct PunchOutArchiveKey {
 }
 
 impl ArchiveKey for PunchOutArchiveKey {
-    type Place = (u8, u8, u8, u8, u8, u8, u8, u8, u8, u8);
+    type Place = (u8, u8, u8, u8, u8, u8, u8, u8, u8, u8, u8);
     type Progress = PunchOutTier;
     type Identity = (u8, u8, u8);
 
@@ -68,6 +71,7 @@ impl ArchiveKey for PunchOutArchiveKey {
             self.round_knockdowns,
             self.opponent_health / HEALTH_BUCKET,
             self.opponent_action,
+            self.opponent_step,
             self.scene,
             self.prompt,
             self.scene_timer,
@@ -162,6 +166,11 @@ pub fn archive_key(state: PunchOutMechanicalState) -> Option<PunchOutArchiveKey>
         round: state.round,
         opponent_health: if fighting { state.opponent_health } else { 0 },
         opponent_action: if fighting { state.opponent_action } else { 0 },
+        opponent_step: if fighting && state.opponent_action == SPIN_SERIES_ACTION {
+            state.opponent_step % SPIN_STEP_BUCKETS
+        } else {
+            0
+        },
         round_knockdowns: if fighting { state.round_knockdowns } else { 0 },
         scene: if fighting { 0 } else { state.scene },
         prompt: if fighting { 0 } else { state.prompt },
@@ -364,6 +373,31 @@ mod tests {
         );
         assert_ne!(full.identity(), archive_key(low_health).unwrap().identity());
         assert_ne!(full.identity(), archive_key(low_hearts).unwrap().identity());
+    }
+
+    #[test]
+    fn the_opponent_step_separates_places_only_during_the_spin_series() {
+        let mut spinning = state(0x58, 0x60);
+        spinning.opponent_action = SPIN_SERIES_ACTION;
+        spinning.opponent_step = 2;
+        let mut later = spinning;
+        later.opponent_step = 0;
+        assert_ne!(
+            archive_key(spinning).unwrap().place(),
+            archive_key(later).unwrap().place()
+        );
+        assert_eq!(
+            archive_key(spinning).unwrap().progress(),
+            archive_key(later).unwrap().progress()
+        );
+        let mut idle = spinning;
+        idle.opponent_action = 1;
+        let mut idle_later = later;
+        idle_later.opponent_action = 1;
+        assert_eq!(
+            archive_key(idle).unwrap().place(),
+            archive_key(idle_later).unwrap().place()
+        );
     }
 
     #[test]

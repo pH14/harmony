@@ -55,6 +55,7 @@ const PROMPT: usize = 0x12;
 const SCENE_TIMER: usize = 0x13;
 const OPPONENT_ACTION: usize = 0x90;
 const OPPONENT_ACTION_ID: u8 = 0x7f;
+const OPPONENT_STEP: usize = 0x96;
 const HEARTS_TENS: usize = 0x323;
 const HEARTS_ONES: usize = 0x324;
 const STARS: usize = 0x342;
@@ -75,6 +76,7 @@ pub struct PunchOutMechanicalState {
     pub stars: u8,
     pub round_knockdowns: u8,
     pub opponent_action: u8,
+    pub opponent_step: u8,
     pub scene: u8,
     pub prompt: u8,
     pub scene_timer: u8,
@@ -667,6 +669,7 @@ pub fn decode_state(wram: &[u8]) -> Result<PunchOutMechanicalState, MachineError
         stars: byte(wram, STARS)?,
         round_knockdowns: byte(wram, ROUND_KNOCKDOWNS)?,
         opponent_action: byte(wram, OPPONENT_ACTION)? & OPPONENT_ACTION_ID,
+        opponent_step: byte(wram, OPPONENT_STEP)?,
         scene: byte(wram, SCENE)?,
         prompt: byte(wram, PROMPT)?,
         scene_timer: byte(wram, SCENE_TIMER)?,
@@ -768,8 +771,10 @@ mod tests {
         let mut wram = fighting_wram();
         wram[HEARTS_TENS] = 1;
         wram[HEARTS_ONES] = 7;
+        wram[OPPONENT_STEP] = 255;
         let state = decode_state(&wram).unwrap();
         assert_eq!(state.hearts, 17);
+        assert_eq!(state.opponent_step, 255);
         assert_eq!(state.opponent_action, 0x01);
     }
 
