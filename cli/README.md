@@ -394,10 +394,16 @@ report states when it did not finish and marks its output partial.
 `host_history` (`--host-history`) checks the client history on the host. Each
 `@/path` word names a guest file or directory. At the violation, before the
 logs and the history command, the probe copies every file under those paths
-(each up to 16 MiB) through the terminal with `find`, `wc` and `base64`. After
-the replays, `explain` replaces each `@/path` with the quoted path of its copy
-under `copied/` and runs the text with `sh -c` in the output directory. The
-report holds the command, its exit status, and its combined stdout and stderr.
+(each up to 16 MiB) through the terminal with `find`, `wc`, `head -c` and
+`base64`. The guest keeps running during the probe, so a client can still
+append to its journal. Each copy holds the bytes the file had when `wc`
+measured it. After the replays, `explain` replaces each `@/path` with the
+quoted path of its copy under `copied/` and runs the text with `sh -c` in the
+output directory. The report holds the command, its exit status, and its
+combined stdout and stderr. The report names every file the probe could not
+copy and the reason: over the size limit, unreadable in the guest, a copy cut
+short, or a failed probe. The host check then ran on part of the history, so
+the report marks its output partial in the summary and beside the output.
 Use it when the system under test's history checker reads a journal it can
 check offline, or when a live read from the guest can outlast the limit.
 

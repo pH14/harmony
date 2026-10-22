@@ -57,7 +57,7 @@ pub fn script(settings: &Explain, history: bool) -> String {
     if history && !copies.is_empty() {
         let _ = write!(
             text,
-            "for f in $(find {} -type f 2>/dev/null); do\n  size=$(($(wc -c < \"$f\")))\n  if [ \"$size\" -gt {COPY_LIMIT} ]; then\n    echo \"$m skip $size $f\"\n    continue\n  fi\n  echo \"$m file $size $f\"\n  base64 < \"$f\"\n  echo \"$m end\"\ndone\n",
+            "for f in $(find {} -type f 2>/dev/null); do\n  if ! size=$(wc -c 2>&1 < \"$f\"); then\n    echo \"$m unreadable $f\"\n    echo \"$size\"\n    echo \"$m end\"\n    continue\n  fi\n  size=$(($size))\n  if [ \"$size\" -gt {COPY_LIMIT} ]; then\n    echo \"$m skip $size $f\"\n    continue\n  fi\n  echo \"$m file $size $f\"\n  head -c \"$size\" \"$f\" | base64\n  echo \"$m end\"\ndone\necho \"$m copied\"\n",
             patterns(&copies)
         );
     }
@@ -85,6 +85,21 @@ pub struct LogPart {
 
 pub type Files = BTreeMap<String, (u64, u64)>;
 
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct Uncopied {
+    pub path: String,
+    pub reason: String,
+}
+
+impl Uncopied {
+    fn new(path: &str, reason: impl Into<String>) -> Self {
+        Self {
+            path: path.to_owned(),
+            reason: reason.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Capture {
     pub uptime: Option<f64>,
@@ -94,7 +109,8 @@ pub struct Capture {
     pub history: Option<String>,
     pub history_finished: bool,
     pub files: BTreeMap<String, Vec<u8>>,
-    pub skipped: Vec<String>,
+    pub skipped: Vec<Uncopied>,
+    pub copies_finished: bool,
 }
 
 pub fn decode(text: &str) -> Option<Vec<u8>> {
@@ -119,6 +135,25 @@ pub fn decode(text: &str) -> Option<Vec<u8>> {
         }
     }
     Some(bytes)
+}
+
+fn copied(size: &str, body: &[&str], finished: bool) -> std::result::Result<Vec<u8>, String> {
+    let size = size
+        .parse::<usize>()
+        .map_err(|_| format!("the guest printed size {size:?}"))?;
+    if !finished {
+        return Err(format!(
+            "the copy of {size} bytes ended before its end marker"
+        ));
+    }
+    let bytes = decode(&body.concat()).ok_or("the copy is not valid base64")?;
+    if bytes.len() != size {
+        return Err(format!(
+            "the copy decoded to {} of {size} bytes",
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
 }
 
 pub fn parse(output: &str) -> Capture {
@@ -146,11 +181,19 @@ pub fn parse(output: &str) -> Capture {
             }
             continue;
         }
-        if kind == "skip" {
-            capture.skipped.push(arguments.to_owned());
+        if kind == "copied" {
+            capture.copies_finished = true;
             continue;
         }
-        if !matches!(kind, "log" | "data" | "history" | "file") {
+        if kind == "skip" {
+            let (size, path) = arguments.split_once(' ').unwrap_or(("", arguments));
+            capture.skipped.push(Uncopied::new(
+                path,
+                format!("{size} bytes, over the {} MiB copy limit", COPY_LIMIT >> 20),
+            ));
+            continue;
+        }
+        if !matches!(kind, "log" | "data" | "history" | "file" | "unreadable") {
             continue;
         }
         let mut body = Vec::new();
@@ -162,24 +205,27 @@ pub fn parse(output: &str) -> Capture {
             }
             body.push(line);
         }
+        if kind == "file" {
+            let (size, path) = arguments.split_once(' ').unwrap_or(("", arguments));
+            match copied(size, &body, finished) {
+                Ok(bytes) => {
+                    capture.files.insert(path.to_owned(), bytes);
+                }
+                Err(reason) => capture.skipped.push(Uncopied::new(path, reason)),
+            }
+            continue;
+        }
+        if kind == "unreadable" {
+            capture.skipped.push(Uncopied::new(
+                arguments,
+                format!("the guest could not read it: {}", body.join(" ").trim()),
+            ));
+            continue;
+        }
         if !finished && kind != "history" {
             continue;
         }
         match kind {
-            "file" => {
-                let copied = arguments.split_once(' ').and_then(|(size, path)| {
-                    let bytes = decode(&body.concat())?;
-                    (size.parse::<usize>().ok()? == bytes.len()).then(|| (path.to_owned(), bytes))
-                });
-                match copied {
-                    Some((path, bytes)) => {
-                        capture.files.insert(path, bytes);
-                    }
-                    None => capture
-                        .skipped
-                        .push(format!("{arguments} (unreadable copy)")),
-                }
-            }
             "log" => {
                 let mut fields = arguments.splitn(3, ' ');
                 if let (Some(size), Some(start), Some(path)) =
@@ -704,7 +750,8 @@ pub struct Observed {
     pub history: Option<String>,
     pub history_finished: bool,
     pub copied: Vec<String>,
-    pub skipped: Vec<String>,
+    pub skipped: Vec<Uncopied>,
+    pub copies_finished: bool,
     pub error: Option<String>,
 }
 
@@ -752,7 +799,9 @@ pub struct Explanation {
     pub history: Option<String>,
     pub history_error: Option<String>,
     pub copied: Vec<String>,
-    pub skipped_copies: Vec<String>,
+    pub skipped_copies: Vec<Uncopied>,
+    #[serde(default)]
+    pub copy_error: Option<String>,
     #[serde(default)]
     pub host_history: Option<HostHistory>,
     pub windows: Vec<Window>,
@@ -771,6 +820,8 @@ pub struct HostHistory {
     pub command: String,
     pub status: Option<i32>,
     pub output: String,
+    #[serde(default)]
+    pub partial: bool,
 }
 
 pub struct Inputs<'a> {
@@ -898,6 +949,20 @@ pub fn explanation(inputs: &Inputs<'_>) -> Explanation {
             }),
         copied: violation.map_or_else(Vec::new, |observed| observed.copied.clone()),
         skipped_copies: violation.map_or_else(Vec::new, |observed| observed.skipped.clone()),
+        copy_error: if inputs.settings.copies().is_empty() {
+            None
+        } else {
+            match violation {
+                None => Some(format!("step {} was not probed", inputs.violation)),
+                Some(observed) if !observed.copies_finished => Some(
+                    observed
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "its output ended before the copies finished".into()),
+                ),
+                Some(_) => None,
+            }
+        },
         host_history: None,
         windows,
         commands: Commands {
@@ -920,6 +985,23 @@ pub fn explanation(inputs: &Inputs<'_>) -> Explanation {
         probe_seconds: 0,
         settings: inputs.settings.clone(),
     }
+}
+
+const PARTIAL: &str = "This check read only the copied files. Its verdict and the keys and operations it names describe that subset of the history, and a check of the full history can differ.";
+
+fn copy_gap(explanation: &Explanation) -> Option<String> {
+    let mut parts = explanation
+        .skipped_copies
+        .iter()
+        .map(|uncopied| format!("`{}` ({})", uncopied.path, uncopied.reason))
+        .collect::<Vec<_>>();
+    if let Some(error) = &explanation.copy_error {
+        parts.push(format!(
+            "the files the probe did not reach, because the probe at step {} failed: {error}",
+            explanation.violation_step
+        ));
+    }
+    (!parts.is_empty()).then(|| format!("Not copied: {}.", parts.join("; ")))
 }
 
 fn pretty_history(history: &str) -> String {
@@ -1094,6 +1176,11 @@ pub fn render(explanation: &Explanation) -> String {
                 .join(", ")
         )
     };
+    if explanation.settings.host_history.is_some()
+        && let Some(gap) = copy_gap(explanation)
+    {
+        let _ = writeln!(text, "- Host check: partial. {gap}");
+    }
     let _ = writeln!(
         text,
         "- Time: shrink {} s, probes {} s.\n",
@@ -1158,26 +1245,30 @@ pub fn render(explanation: &Explanation) -> String {
             explanation.copied.len()
         );
     }
-    if !explanation.skipped_copies.is_empty() {
-        let _ = writeln!(
-            text,
-            "\nNot copied (larger than {} MiB or unreadable): {}.",
-            COPY_LIMIT >> 20,
-            explanation.skipped_copies.join(", ")
-        );
+    if let Some(gap) = copy_gap(explanation) {
+        let _ = writeln!(text, "\n{gap}");
     }
     match (&explanation.host_history, &explanation.settings.host_history) {
         (Some(host), _) => {
             let _ = write!(
                 text,
-                "\nOutput of `{}` on the host{}:\n\n{}",
+                "\nOutput of `{}` on the host{}{}:\n\n{}",
                 host.command,
                 host.status
                     .map_or(", ended by a signal".into(), |status| format!(
                         ", exit status {status}"
                     )),
+                if host.partial {
+                    ", from a partial copy"
+                } else {
+                    ""
+                },
                 fence(&pretty_history(&host.output))
             );
+            if host.partial {
+                text.push_str(PARTIAL);
+                text.push('\n');
+            }
         }
         (None, Some(_)) => text.push_str("\nThe host history command has not run.\n"),
         (None, None) if explanation.settings.history.is_none() => text.push_str(
@@ -1287,13 +1378,16 @@ impl Worker<'_> {
             history: capture.history,
             history_finished: capture.history_finished,
             skipped: capture.skipped,
+            copies_finished: capture.copies_finished,
             error: ran.err().map(|error| error.to_string()),
             ..Observed::default()
         };
         for (path, bytes) in capture.files {
             match store(&self.out.join("copied"), &path, &bytes) {
                 Ok(()) => observed.copied.push(path),
-                Err(error) => observed.skipped.push(format!("{path} ({error})")),
+                Err(error) => observed
+                    .skipped
+                    .push(Uncopied::new(&path, error.to_string())),
             }
         }
         self.observed.push(observed);
@@ -1357,17 +1451,25 @@ pub fn host_history(out: &Path) -> Result<()> {
         text.push_str(&errors);
     }
     text.truncate(text.trim_end().len());
+    let partial = copy_gap(&explanation);
     explanation.host_history = Some(HostHistory {
         command,
         status: output.status.code(),
         output: text,
+        partial: partial.is_some(),
     });
     fs::write(&path, serde_json::to_vec_pretty(&explanation)?)?;
     fs::write(out.join("explain.md"), render(&explanation))?;
-    println!(
-        "ran the host history command: {}",
-        out.join("explain.md").display()
-    );
+    match partial {
+        Some(gap) => println!(
+            "ran the host history command on a partial copy: {}\n{gap}",
+            out.join("explain.md").display()
+        ),
+        None => println!(
+            "ran the host history command: {}",
+            out.join("explain.md").display()
+        ),
+    }
     Ok(())
 }
 
@@ -1744,6 +1846,7 @@ mod tests {
         };
         let first = parse(&shell(&script(&settings, true)));
         assert!(first.history_finished);
+        assert!(first.copies_finished);
         assert_eq!(
             first.files,
             BTreeMap::from([(format!("{base}/n1/streams/S/1.blk"), b"block".to_vec())])
@@ -2075,6 +2178,7 @@ mod tests {
         };
         observed.get_mut(&5).unwrap().history_finished = true;
         observed.get_mut(&5).unwrap().copied = vec!["/tmp/harness/journal/a.jsonl".into()];
+        observed.get_mut(&5).unwrap().copies_finished = true;
         let mut explanation = explanation(&Inputs {
             out: Path::new("/runs/x"),
             actions: &actions,
@@ -2129,10 +2233,32 @@ mod tests {
             command: "harness-check -family register '/runs/x/copied/tmp/harness/journal'".into(),
             status: Some(3),
             output: "{\"violations\":1}".into(),
+            partial: false,
         });
         let text = render(&explanation);
         assert!(text.contains("on the host, exit status 3:"), "{text}");
         assert!(text.contains("\"violations\": 1"), "{text}");
+        assert!(!text.contains("partial"), "{text}");
+        let mut partial = explanation.clone();
+        partial.skipped_copies = vec![Uncopied::new(
+            "/tmp/harness/journal/drive-1.jsonl",
+            "the copy decoded to 3 of 9 bytes",
+        )];
+        partial.host_history.as_mut().unwrap().partial = true;
+        let text = render(&partial);
+        for expected in [
+            "- Host check: partial. Not copied: `/tmp/harness/journal/drive-1.jsonl` (the copy decoded to 3 of 9 bytes).\n",
+            "on the host, exit status 3, from a partial copy:",
+            PARTIAL,
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in\n{text}");
+        }
+        partial.skipped_copies.clear();
+        assert!(!render(&partial).contains("Not copied"));
+        partial.copy_error = Some("guest command exceeded its five-minute host limit".into());
+        assert!(render(&partial).contains(
+            "Not copied: the files the probe did not reach, because the probe at step 5 failed: guest command exceeded its five-minute host limit."
+        ));
 
         let point = observed.get_mut(&5).unwrap();
         point.history_finished = false;
@@ -2155,11 +2281,37 @@ mod tests {
         assert!(render(&explanation).contains(
             "The history command at step 5 did not finish: host command limit of 300 s reached. The output above is partial."
         ));
+        assert_eq!(explanation.copy_error, None);
         let mut explanation = explanation;
         explanation.history = Some("\n".into());
         let text = render(&explanation);
         assert!(text.contains("did not finish: host command limit of 300 s reached.\n"));
         assert!(!text.contains("Output of the history command"));
+
+        let copy_error = |observed: &BTreeMap<usize, Observed>| {
+            super::explanation(&Inputs {
+                out: Path::new("/runs/x"),
+                actions: &actions,
+                bundle: BUNDLE,
+                image: "app.oci",
+                seed: 51,
+                expected: &expected,
+                violation: 5,
+                observed,
+                settings: &settings,
+            })
+            .copy_error
+        };
+        observed.get_mut(&5).unwrap().copies_finished = false;
+        assert_eq!(
+            copy_error(&observed).as_deref(),
+            Some("host command limit of 300 s reached")
+        );
+        observed.remove(&5);
+        assert_eq!(
+            copy_error(&observed).as_deref(),
+            Some("step 5 was not probed")
+        );
     }
 
     #[test]
@@ -2186,7 +2338,7 @@ mod tests {
         let capture = parse(&format!("{MARK} log 4 0 /a.log\nabc\n"));
         assert!(capture.logs.is_empty());
         let capture = parse(&format!(
-            "{MARK} file 3 /j/a\nYWJj\n{MARK} end\n{MARK} file 9 /j/b\nYWJj\n{MARK} end\n{MARK} skip 99999999 /j/c\n"
+            "{MARK} file 3 /j/a\nYWJj\n{MARK} end\n{MARK} file 9 /j/b\nYWJj\n{MARK} end\n{MARK} skip 99999999 /j/c\n{MARK} file 3 /j/d\nY$Jj\n{MARK} end\n{MARK} unreadable /j/e\nsh: can't open /j/e: Permission denied\n{MARK} end\n{MARK} file 3 /j/f\nYW\n"
         ));
         assert_eq!(
             capture.files,
@@ -2195,10 +2347,64 @@ mod tests {
         assert_eq!(
             capture.skipped,
             vec![
-                "9 /j/b (unreadable copy)".to_owned(),
-                "99999999 /j/c".to_owned()
+                Uncopied::new("/j/b", "the copy decoded to 3 of 9 bytes"),
+                Uncopied::new("/j/c", "99999999 bytes, over the 16 MiB copy limit"),
+                Uncopied::new("/j/d", "the copy is not valid base64"),
+                Uncopied::new(
+                    "/j/e",
+                    "the guest could not read it: sh: can't open /j/e: Permission denied"
+                ),
+                Uncopied::new("/j/f", "the copy of 3 bytes ended before its end marker"),
             ]
         );
+    }
+
+    #[test]
+    fn a_file_that_grows_during_the_probe_copies_the_bytes_it_measured() {
+        use std::{
+            io::Write as _,
+            sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            },
+        };
+        let root = tempfile::tempdir().unwrap();
+        let journal = root.path().join("journal");
+        fs::create_dir_all(&journal).unwrap();
+        let path = journal.join("drive-1.jsonl");
+        fs::write(&path, "{\"t\":\"invoke\"}\n".repeat(4096)).unwrap();
+        fs::write(journal.join("check-1.jsonl"), "{\"t\":\"ok\"}\n").unwrap();
+        let settings = Explain {
+            host_history: Some(format!("harness-check @{}", journal.display())),
+            ..Explain::default()
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (stop, path) = (Arc::clone(&stop), path.clone());
+            std::thread::spawn(move || {
+                let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+                let line = "{\"t\":\"ok\"}\n".repeat(64);
+                while !stop.load(Ordering::Relaxed) {
+                    file.write_all(line.as_bytes()).unwrap();
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+            })
+        };
+        let captures = (0..10)
+            .map(|_| parse(&shell(&script(&settings, true))))
+            .collect::<Vec<_>>();
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        let full = fs::read(&path).unwrap();
+        let drive = path.display().to_string();
+        for capture in captures {
+            assert!(capture.copies_finished);
+            assert_eq!(capture.skipped, Vec::new());
+            assert_eq!(capture.files.len(), 2);
+            let copy = &capture.files[&drive];
+            assert!(copy.len() >= 4096 * 14, "{}", copy.len());
+            assert_eq!(copy[..], full[..copy.len()]);
+        }
     }
 
     #[cfg(feature = "frontend")]
@@ -2219,7 +2425,14 @@ mod tests {
             seed: 51,
             expected: &expected,
             violation: 5,
-            observed: &BTreeMap::new(),
+            observed: &BTreeMap::from([(
+                5,
+                Observed {
+                    step: 5,
+                    copies_finished: true,
+                    ..Observed::default()
+                },
+            )]),
             settings: &settings,
         });
         fs::write(
@@ -2232,7 +2445,28 @@ mod tests {
         host_history(root.path()).unwrap();
         let saved: Explanation =
             serde_json::from_slice(&fs::read(root.path().join("explain.json")).unwrap()).unwrap();
+        let host = saved.host_history.clone().unwrap();
+        assert!(!host.partial);
+        let mut gap = saved;
+        gap.skipped_copies = vec![Uncopied::new(
+            "/tmp/j/b.jsonl",
+            "the copy is not valid base64",
+        )];
+        fs::write(
+            root.path().join("explain.json"),
+            serde_json::to_vec(&gap).unwrap(),
+        )
+        .unwrap();
+        host_history(root.path()).unwrap();
+        let saved: Explanation =
+            serde_json::from_slice(&fs::read(root.path().join("explain.json")).unwrap()).unwrap();
         let host = saved.host_history.unwrap();
+        assert!(host.partial);
+        assert!(
+            fs::read_to_string(root.path().join("explain.md"))
+                .unwrap()
+                .contains("exit status 3, from a partial copy:")
+        );
         assert_eq!(host.status, Some(3));
         assert_eq!(
             host.output.split_whitespace().collect::<Vec<_>>(),
