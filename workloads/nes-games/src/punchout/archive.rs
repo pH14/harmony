@@ -18,13 +18,10 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "punchout_defeated_health_hearts_stars_tier_opponent_round_health_8_action_knockdown_scene_timer_16_place_v3";
+pub const KEY_POLICY_IDENTIFIER: &str = "punchout_defeated_tier_opponent_round_health_8_action_knockdown_scene_timer_16_place_mac_health_hearts_stars_preference_v4";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
-const MAC_HEALTH_TIER_BUCKET: u8 = 24;
-const HEARTS_TIER_BUCKET: u8 = 5;
-const HEARTS_TIER_CAP: u8 = 4;
 const SCENE_TIMER_BUCKET: u8 = 16;
 const PHASE_FIGHT: u8 = 0;
 const PHASE_ROUND_BREAK: u8 = 1;
@@ -37,9 +34,6 @@ pub type PunchOutArchive =
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct PunchOutTier {
     pub defeated: u8,
-    pub mac_health: u8,
-    pub hearts: u8,
-    pub stars: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -142,9 +136,6 @@ impl PunchOutArchiveKey {
 pub fn tier(state: PunchOutMechanicalState) -> PunchOutTier {
     PunchOutTier {
         defeated: state.opponents_defeated(),
-        mac_health: state.mac_health.min(FULL_HEALTH) / MAC_HEALTH_TIER_BUCKET,
-        hearts: (state.hearts / HEARTS_TIER_BUCKET).min(HEARTS_TIER_CAP),
-        stars: state.stars.min(3),
     }
 }
 
@@ -336,19 +327,47 @@ mod tests {
     }
 
     #[test]
-    fn opponent_health_is_an_eight_point_place_and_mac_resources_are_the_tier() {
+    fn opponent_health_is_an_eight_point_place_and_the_tier_is_opponents_defeated() {
         let fresh = archive_key(state(0x60, 0x60)).unwrap();
         let hit = archive_key(state(0x58, 0x60)).unwrap();
         assert_ne!(fresh.place(), hit.place());
         assert_eq!(fresh.progress(), hit.progress());
         let hurt = archive_key(state(0x58, 0x20)).unwrap();
         assert_eq!(hurt.place(), hit.place());
-        assert!(hurt.progress() < hit.progress());
+        assert_eq!(hurt.progress(), hit.progress());
         assert_eq!(hit.preference_cmp(0, hurt), Ordering::Greater);
     }
 
     #[test]
-    fn a_defeated_opponent_outranks_every_resource_tier() {
+    fn states_differing_only_in_mac_health_or_hearts_share_a_tier() {
+        let full = state(0x58, 0x60);
+        let mut low_health = full;
+        low_health.mac_health = 0x08;
+        let mut low_hearts = full;
+        low_hearts.hearts = 0;
+        let mut low_stars = full;
+        low_stars.stars = 3;
+        let full = archive_key(full).unwrap();
+        for other in [low_health, low_hearts, low_stars] {
+            let other = archive_key(other).unwrap();
+            assert_eq!(full.progress(), other.progress());
+            assert_eq!(full.place(), other.place());
+            assert_ne!(full, other);
+        }
+        assert_eq!(
+            full.preference_cmp(0, archive_key(low_health).unwrap()),
+            Ordering::Greater
+        );
+        assert_eq!(
+            full.preference_cmp(0, archive_key(low_hearts).unwrap()),
+            Ordering::Greater
+        );
+        assert_ne!(full.identity(), archive_key(low_health).unwrap().identity());
+        assert_ne!(full.identity(), archive_key(low_hearts).unwrap().identity());
+    }
+
+    #[test]
+    fn a_defeated_opponent_outranks_every_state_of_the_previous_opponent() {
         let mut next = state(0x60, 0x08);
         next.opponent = 1;
         next.hearts = 0;

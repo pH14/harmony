@@ -66,8 +66,7 @@ defeating the fourteenth opponent, read as the opponent index reaching 14; no
 run has reached Mr. Dream yet, so that reading is not checked against the
 ROM.
 
-The progress tier is the opponents defeated, then Mac's health in 24-point
-buckets, hearts in 5-heart buckets capped at 4, and stars. The place is the
+The progress tier is the opponents defeated. The place is the
 opponent, the phase (fight, between rounds, won, other), the screen step
 between fights, the round, the opponent's knockdowns this round, the
 opponent's health in 8-point buckets and the opponent's action. Outside a
