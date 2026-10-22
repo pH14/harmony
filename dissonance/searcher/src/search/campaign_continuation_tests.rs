@@ -1746,3 +1746,38 @@ fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
         "{error}"
     );
 }
+
+#[test]
+fn a_checkpoint_resumes_jobs_whose_pinned_snapshot_was_released_after_dispatch() {
+    let directory = checkpoint_directory("released-pin");
+    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 6);
+    config.campaign_seed = 940;
+    config.stop_campaign_on_objective = false;
+    let (original, original_progress) = run_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(700),
+            on_marks: false,
+            on_top_progress: false,
+            checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
+        }),
+    );
+    let (resumed, resumed_progress) = run_with_checkpoints(
+        &config,
+        &CampaignOrigin::SearchCheckpoint {
+            path: directory.join("000000000700-interval.ckpt"),
+            expected_sha256: None,
+        },
+        None,
+    );
+    assert_eq!(resumed.0.archive, original.0.archive);
+    assert_eq!(
+        progress_lines_after(&resumed_progress, 700),
+        progress_lines_after(&original_progress, 700)
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
