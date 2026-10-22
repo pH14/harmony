@@ -3695,6 +3695,10 @@ where
             .continuation_selections
             .get_or_insert(0);
         *count = count.saturating_add(1);
+        if let Some(interval) = self.interval_counts(cell_of(self.entries[id].key)) {
+            interval.draws = interval.draws.saturating_add(1);
+            interval.continuation = interval.continuation.saturating_add(1);
+        }
     }
 
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
@@ -8068,6 +8072,10 @@ mod tests {
         assert_eq!(archive.selected[id], 0);
         assert_eq!(archive.cell_draws(key), 0);
         assert_eq!(archive.selector_report().continuation_selections, Some(20));
+        let interval = archive.take_cell_interval(100, 1);
+        assert_eq!(interval.totals.continuation, 20);
+        assert_eq!(interval.totals.draws, 20);
+        assert_eq!(interval.top[0].counts.continuation, 20);
         archive.record_selection(
             id,
             &SelectorDraw {

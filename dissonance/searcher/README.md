@@ -671,7 +671,8 @@ cells with any count in the interval, `totals` the sums over all of them, and
 Each cell reports these counts:
 
 - `draws`: selections of an entry in the cell.
-- `continuation`: draws dispatched from the continuation bank.
+- `continuation`: draws dispatched from the continuation bank, credited to the
+  cell of the entry they continue.
 - `recent`: draws whose cell came from the recent window. The other tier draws
   chose the cell by its count-decay weight.
 - `best_holder`: draws whose holder came from the best-holder share. The other
