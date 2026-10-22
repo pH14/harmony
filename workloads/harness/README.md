@@ -21,6 +21,7 @@ generic operations onto the target's client API.
 | `targets/nats-kv` | NATS JetStream key-value image and adapter |
 | `targets/rqlite` | rqlite image and adapter |
 | `targets/etcd` | etcd image and adapter, three members or one |
+| `targets/redisraft` | Redis-Raft image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -481,6 +482,54 @@ other versions. It instruments `go.etcd.io/etcd` (server and raft) and
 `go.etcd.io/bbolt`. Build the single-member image with
 `--build-arg HARNESS_BUNDLE=bundle-single`.
 
+## Redis-Raft
+
+`targets/redisraft` drives the `register` family against three `redis-server`
+nodes at 10.77.0.1-3 (port 6379) in `harness-net` namespaces, each loading the
+[Redis-Raft](https://github.com/RedisLabs/redisraft) module with its default
+settings: quorum reads, an fsync of the Raft log before each acknowledgement,
+and no follower proxy. Node `nI` has module id `I`, keeps its Raft log and
+snapshot under `/tmp/redisraft/nI` on a 256 MiB node disk and logs to
+`/tmp/redisraft/nI.log`. The bundle declares both, and the four network hooks.
+
+`ready` forms the cluster once per execution: `RAFT.CLUSTER INIT` on `n1`,
+`RAFT.CLUSTER JOIN 10.77.0.1:6379` on `n2` and `n3`, then waits until `n1`
+reports three voting nodes in `RAFT.INFO` and writes `/tmp/redisraft/formed`.
+Every probe then passes once a `SET` succeeds through any node.
+
+`write` is `SET`, `read` is `GET` and `cas` is an `EVAL` script that sets the
+new value only when the key holds the old one. Each operation goes to one node
+drawn from the SDK stream over a new connection, and the client follows one
+`-MOVED` redirect to the leader. A write or `cas` is a definite failure on a
+dial error or a `MOVED`, `NOLEADER`, `NOCLUSTER`, `LOADING` or `ERR not leader`
+reply, which Redis-Raft sends before it appends the command to the log. Other
+write errors are indeterminate, and read errors are definite. Every command on
+a follower answers `-MOVED`, so the adapter pins no reads and the check skips
+the replica comparison.
+
+The image builds Redis, Redis-Raft and Redis-Raft's raft, hiredis and libuv
+submodules from pinned commits with clang `trace-pc-guard` coverage. Redis
+links the C forwarding shim and exports its callbacks to the module.
+`REDIS_COMMIT` defaults to `f88f866`, and `REDISRAFT_COMMIT` to `dfd91d4`, the
+fix for [#18](https://github.com/RedisLabs/redisraft/issues/18) and
+[#19](https://github.com/RedisLabs/redisraft/issues/19). Pass
+`REDISRAFT_COMMIT=8da0c777e5d6865435115725241a50c6798ed185`, its parent, to
+build the version with those bugs. The raft submodule comes from
+`RedisLabs/raft`, since the recorded `yossigo/raft` URL no longer resolves.
+`/symbols/sources` lists the commit of every tree.
+
+Both commits mishandle a failed Raft log write. `RaftLogAppend` advances the
+log index before its `fflush` and `fsync` succeed, and the failed bytes stay
+buffered and reach the file later. Each append the leader retries during a
+`DiskError` window on a follower therefore adds another copy of one entry,
+with the leader's term, at the follower's next index. After the follower
+restarts it applies those copies in place of the leader's entries. The copies
+carry the same term as the leader's entries at those indexes, so the Raft
+consistency check never replaces them, and the cluster can lose acknowledged
+writes. A search with the default fault alphabet finds this as a
+linearizability violation on `dfd91d4` too, with a `DiskError` among the
+shrunk faults.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
@@ -546,3 +595,6 @@ container. Opt-in options:
   node's SQLite database has applied.
 - An etcd pinned read trusts a member to answer a put only after it has applied
   the put.
+- A Redis-Raft write or `cas` that fails with `MOVED`, `NOLEADER`,
+  `NOCLUSTER`, `LOADING` or `ERR not leader` is trusted never to reach the
+  Raft log.
