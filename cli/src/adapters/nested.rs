@@ -362,7 +362,8 @@ fn execute_ready(
     Ok(if result? { 1 } else { 0 })
 }
 
-#[cfg(all(test, feature = "frontend"))]
+#[cfg(test)]
+#[cfg(feature = "frontend")]
 mod tests {
     use super::*;
 

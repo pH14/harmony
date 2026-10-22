@@ -258,7 +258,8 @@ pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
     outcome
 }
 
-#[cfg(all(test, feature = "frontend"))]
+#[cfg(test)]
+#[cfg(feature = "frontend")]
 mod tests {
     use super::*;
 

@@ -416,7 +416,8 @@ pub fn run_prepared(
     finish(&out, &mut manifest, result)
 }
 
-#[cfg(all(test, feature = "frontend"))]
+#[cfg(test)]
+#[cfg(feature = "frontend")]
 mod tests {
     use super::*;
 
