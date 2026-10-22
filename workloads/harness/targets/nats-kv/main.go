@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,6 +25,8 @@ const (
 	keySubject        = "$KV." + bucket + "."
 	replicas          = 3
 	placementAttempts = 16
+	msgGetSubject     = "$JS.API.STREAM.MSG.GET." + stream
+	msgNotFound       = 10037
 )
 
 var servers = []string{
@@ -80,8 +83,6 @@ func (adapter) Connect(_ context.Context, process int) (runner.Client, error) {
 
 func (c *client) Close() { c.conn.Close() }
 
-// The bucket handle caches the stream's AllowDirect setting when it binds, so
-// it must bind after ready has turned direct gets off.
 func (c *client) bucket(ctx context.Context) (jetstream.KeyValue, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -134,29 +135,28 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 			}
 			return value, nil
 		}
-		entry, err := kv.Get(ctx, op.K)
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
-		}
+		value, revision, err := c.get(ctx, op.K)
 		if err != nil {
 			return nil, runner.Definite(err)
 		}
-		value := string(entry.Value())
-		c.remember(value, entry.Revision())
-		return value, nil
+		if value == nil {
+			return nil, nil
+		}
+		c.remember(*value, revision)
+		return *value, nil
 	case family.RegisterCAS:
 		pair := op.V.([]string)
 		old, value := pair[0], pair[1]
 		revision, ok := c.revision(old)
 		if !ok {
-			entry, err := kv.Get(ctx, op.K)
+			value, current, err := c.get(ctx, op.K)
 			if err != nil {
 				return nil, runner.Definite(err)
 			}
-			if string(entry.Value()) != old {
-				return nil, runner.Definite(fmt.Errorf("key %s holds %q, not %q", op.K, entry.Value(), old))
+			if value == nil || *value != old {
+				return nil, runner.Definite(fmt.Errorf("key %s does not hold %q", op.K, old))
 			}
-			revision = entry.Revision()
+			revision = current
 			c.remember(old, revision)
 		}
 		next, err := kv.Update(ctx, op.K, []byte(value), revision)
@@ -176,6 +176,55 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		return copies, nil
 	}
 	return nil, runner.Definite(fmt.Errorf("unknown operation %q", op.F))
+}
+
+// The bucket handle picks direct or leader gets from the stream configuration
+// it saw when it bound, and a direct get may come from any replica. An explicit
+// message get request is answered only by the stream leader.
+func (c *client) get(ctx context.Context, key string) (*string, uint64, error) {
+	request, err := json.Marshal(map[string]string{"last_by_subj": keySubject + key})
+	if err != nil {
+		return nil, 0, err
+	}
+	reply, err := c.conn.RequestWithContext(ctx, msgGetSubject, request)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get %s: %w", key, err)
+	}
+	var response struct {
+		Message *struct {
+			Sequence uint64 `json:"seq"`
+			Header   []byte `json:"hdrs"`
+			Data     []byte `json:"data"`
+		} `json:"message"`
+		Error *struct {
+			ErrCode     int    `json:"err_code"`
+			Description string `json:"description"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(reply.Data, &response); err != nil {
+		return nil, 0, fmt.Errorf("get %s: %w", key, err)
+	}
+	if response.Error != nil {
+		if response.Error.ErrCode == msgNotFound {
+			return nil, 0, nil
+		}
+		return nil, 0, fmt.Errorf("get %s: %s", key, response.Error.Description)
+	}
+	if response.Message == nil {
+		return nil, 0, fmt.Errorf("get %s: empty response", key)
+	}
+	if len(response.Message.Header) > 0 {
+		header, err := nats.DecodeHeadersMsg(response.Message.Header)
+		if err != nil {
+			return nil, 0, fmt.Errorf("get %s: %w", key, err)
+		}
+		switch header.Get("KV-Operation") {
+		case "DEL", "PURGE":
+			return nil, 0, nil
+		}
+	}
+	value := string(response.Message.Data)
+	return &value, response.Message.Sequence, nil
 }
 
 // A one-replica consumer serves messages from the store of the server that
