@@ -793,6 +793,7 @@ pub struct QuickNesMachine {
     capture_video: bool,
     capture_audio: bool,
     capture_marks: Vec<(usize, usize)>,
+    torn_down: bool,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -946,6 +947,7 @@ impl QuickNesMachine {
             state_len,
             snapshots: BTreeMap::new(),
             next_snap: 0,
+            torn_down: false,
             staged: VecDeque::new(),
             hold_remaining: 0,
             input: 0,
@@ -1359,13 +1361,29 @@ fn validate_canonical_quicknes_state(state: &[u8]) -> Result<(), MachineError> {
     Ok(())
 }
 
-impl Drop for QuickNesMachine {
-    fn drop(&mut self) {
+impl QuickNesMachine {
+    pub fn close(mut self) -> Result<(), MachineError> {
+        let teardown = self.teardown();
+        #[cfg(not(miri))]
+        let closed = match self._library.take() {
+            Some(mut library) => library.close_handle(),
+            None => Ok(()),
+        };
+        #[cfg(miri)]
+        let closed = Ok(());
+        teardown.and(closed)
+    }
+
+    fn teardown(&mut self) -> Result<(), MachineError> {
+        if self.torn_down {
+            return Ok(());
+        }
+        self.torn_down = true;
         self.api.activate();
         reset_capture_state();
-        let _ = guarded_native_cleanup(self.api, || {
+        let result = guarded_native_cleanup(self.api, || {
             // SAFETY: this machine exclusively owns one initialized, loaded
-            // core image, and Drop runs these operations exactly once.
+            // core image, and `torn_down` makes these operations run once.
             unsafe {
                 (self.api.unload_game)();
                 (self.api.deinit)();
@@ -1376,6 +1394,13 @@ impl Drop for QuickNesMachine {
         if let Some(id) = self.api.loopback_id {
             loopback::remove(id);
         }
+        result
+    }
+}
+
+impl Drop for QuickNesMachine {
+    fn drop(&mut self) {
+        let _ = self.teardown();
     }
 }
 
@@ -2471,7 +2496,7 @@ mod tests {
 
     #[cfg(all(unix, not(miri)))]
     #[test]
-    fn a_late_loaded_helper_cannot_change_a_prepared_run() {
+    fn a_late_loaded_helper_poisons_the_guard_at_core_close() {
         use sha2::{Digest, Sha256};
         use std::{ffi::CString, fs, process::Command};
 
@@ -2494,6 +2519,19 @@ mod tests {
                 Ok(()) => format!("accepted:({})", machine.read_wram().unwrap()[0]),
                 Err(error) => format!("rejected:({error})"),
             };
+            let closed = match machine.close() {
+                Ok(()) => "closed".to_owned(),
+                Err(error) => format!("close-failed:({error})"),
+            };
+            let reopened = match QuickNesMachine::from_rom_bytes_with_identity(
+                &[0],
+                &core,
+                &core_sha256,
+                &prepared,
+            ) {
+                Ok(_) => "reopened".to_owned(),
+                Err(error) => format!("refused:({error})"),
+            };
             let path = CString::new(helper.to_string_lossy().as_bytes()).unwrap();
             // SAFETY: RTLD_NOLOAD checks whether the test-built helper remains
             // mapped; a returned reference is closed below.
@@ -2508,7 +2546,7 @@ mod tests {
                 // SAFETY: RTLD_NOLOAD returned a live reference above.
                 unsafe { libc::dlclose(loaded) };
             }
-            println!("QUICKNES_LATE_RESULT:{prepared}:{outcome}:{transient}");
+            println!("QUICKNES_LATE_RESULT:{prepared}:{outcome}:{transient}:{closed}:{reopened}");
             return;
         }
 
@@ -2570,7 +2608,7 @@ mod tests {
             let child = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "quicknes::tests::a_late_loaded_helper_cannot_change_a_prepared_run",
+                    "quicknes::tests::a_late_loaded_helper_poisons_the_guard_at_core_close",
                     "--nocapture",
                 ])
                 .env("HARMONY_QUICKNES_LATE_CHILD", &directory)
@@ -2592,24 +2630,19 @@ mod tests {
             results.push((digest.to_owned(), outcome.to_owned()));
         }
         assert_eq!(results[0].0, results[1].0);
-        if results
-            .iter()
-            .all(|(_, outcome)| outcome.starts_with("accepted:"))
-        {
-            assert!(results[0].1.starts_with("accepted:(13):"), "{results:?}");
-            assert!(results[1].1.starts_with("accepted:(27):"), "{results:?}");
-        }
         assert!(
-            results
-                .iter()
-                .all(|(_, outcome)| outcome.ends_with(":true")),
+            results[0].1.starts_with("accepted:(13):true:"),
             "{results:?}"
         );
         assert!(
-            results
-                .iter()
-                .all(|(_, outcome)| outcome.contains("rejected:(machine backend failed: QuickNES native loader changed outside the approved core lifecycle)")),
-            "one prepared identity accepted divergent late-helper output: {results:?}"
+            results[1].1.starts_with("accepted:(27):true:"),
+            "{results:?}"
+        );
+        let changed = "machine backend failed: QuickNES native loader changed outside the approved core lifecycle";
+        assert!(
+            results.iter().all(|(_, outcome)| outcome
+                .ends_with(&format!(":close-failed:({changed}):refused:({changed})"))),
+            "the core close after a late helper did not return the loader guard failure: {results:?}"
         );
         fs::remove_dir_all(directory).unwrap();
     }
