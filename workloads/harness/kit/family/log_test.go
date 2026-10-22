@@ -475,3 +475,27 @@ func TestLogNodeReadIsNotASourceOfReturnedValues(t *testing.T) {
 	b.readValues(3, []string{"a"}, 4, 5)
 	expectKinds(t, Log{}.Check(b.build()))
 }
+
+func TestLogReadWithFailedValueIsNotASource(t *testing.T) {
+	b := newBuilder(t)
+	b.appendValue(0, "f", 1, history.Fail, nil, 2)
+	b.readValues(1, []string{"f"}, 3, 4)
+	b.readValues(1, nil, 5, 6)
+	expectKinds(t, Log{}.Check(b.build()), LogFailedRead)
+}
+
+func TestLogWidestEarlierReadIsTheSource(t *testing.T) {
+	b := newBuilder(t)
+	b.appendValue(0, "a", 1, history.Info, nil, 0)
+	b.appendValue(1, "b", 1, history.Info, nil, 0)
+	b.appendValue(2, "c", 1, history.Info, nil, 0)
+	b.readValues(3, []string{"a"}, 1, 2)
+	b.readValues(3, []string{"a", "b", "c"}, 3, 4)
+	b.readValues(3, []string{"a"}, 5, 6)
+	report := Log{}.Check(b.build())
+	expectKinds(t, report, LogReadLost)
+	details := report.Violations[0].Details
+	if details["value"] != "b" || details["missing"] != 2 {
+		t.Fatalf("details %+v", details)
+	}
+}

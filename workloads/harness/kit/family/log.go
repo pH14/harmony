@@ -486,7 +486,7 @@ func checkReadLost(state *logState, lost map[*logRead]bool, found *collector) {
 	var sources, reads []*logRead
 	for index := range state.reads {
 		read := &state.reads[index]
-		if read.op.Node == "" && read.n > 0 {
+		if read.op.Node == "" && read.n > 0 && read.n <= read.arena.phantom && read.n <= read.arena.failed {
 			sources = append(sources, read)
 		}
 		reads = append(reads, read)
