@@ -625,6 +625,14 @@ cutoff cannot show whether the guest hung or the host was slow, and a confirmed
 finding ends the campaign while a hang should not. The reports'
 `watchdog_cutoffs` field and the summary's `hung_jobs` field count hung jobs.
 
+An action that fails in the guest ends its execution, for example when the
+fault agent reports an infrastructure failure. The reports'
+`execution_failures` field counts these executions. Each one's full input, up
+to and including the failing action and with the branch root's actions,
+becomes a `failure-N.json` file in the run directory (at most 64 per campaign),
+and the search prints the file name. `harmony debug run --actions
+failure-N.json` replays the input, and its console shows the guest's error.
+
 The searcher stops the campaign when the current run of consecutive hung jobs
 is too long for the hang rate seen before it. With `h` hangs in the `n` jobs
 before the run, the estimated rate is `(h + 1) / (n + 2)`. The campaign stops
@@ -913,8 +921,9 @@ Search also writes
 encoded window list used by the guest, including windows inherited from a
 branch root. At completion, `first-bug-input.json` holds the first confirmed
 finding's actions when one exists; otherwise it holds the first recorded
-candidate's actions. Each `hang-N.json` has the same `actions` and `standing`
-fields, so `harmony debug run --actions` and replay accept it as input.
+candidate's actions. Each `hang-N.json` and `failure-N.json` has the same
+`actions` and `standing` fields, so `harmony debug run --actions` and replay
+accept it as input.
 
 `FaultArchiveKey` has a place, a progress, and a holder identity. The place is
 the passed assertion set and every lifecycle count except liveness, plus two

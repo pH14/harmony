@@ -36,11 +36,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     archive::{
-        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultHangRecord,
-        FaultInput, FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER,
-        MAX_RECORDED_BUGS, MAX_RECORDED_HANGS, ParkThresholds, REPLACEMENT_IDENTIFIER,
-        UndecidedChecks, action_cost, archive_key, bug_outcome, merge_milestones,
-        merge_progress_watermark, milestone_key, milestones, park_threshold_bucket, sample_action,
+        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord,
+        FaultFailureRecord, FaultHangRecord, FaultInput, FaultMilestones, FaultProgressWatermark,
+        KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS, MAX_RECORDED_FAILURES, MAX_RECORDED_HANGS,
+        ParkThresholds, REPLACEMENT_IDENTIFIER, UndecidedChecks, action_cost, archive_key,
+        bug_outcome, merge_milestones, merge_progress_watermark, milestone_key, milestones,
+        park_threshold_bucket, sample_action,
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
@@ -136,6 +137,8 @@ pub struct FaultCampaignEvidence {
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
     hangs: Vec<FaultHangRecord>,
+    #[serde(default)]
+    failures: Vec<FaultFailureRecord>,
     assertions: Assertions,
     park_sites: BTreeMap<u64, u64>,
     park_reads: BTreeMap<u64, u64>,
@@ -639,6 +642,7 @@ impl Reporting for FaultWorkload {
             watchdog_cutoffs: state.hung_jobs,
             bugs: evidence.bugs.clone(),
             hangs: evidence.hangs.clone(),
+            failures: evidence.failures.clone(),
             selector: state.selector,
             assertions: evidence.assertions.clone(),
             park_sites: evidence.park_sites.clone(),
@@ -1200,11 +1204,19 @@ impl Evaluation for FaultWorkload {
         let champion = (milestone_key(action.milestones)
             > milestone_key(evidence.champion_milestones))
         .then_some(action.milestones);
-        if bug.is_some() || champion.is_some() {
+        let failed = action.outcome.disposition.is_failed()
+            && evidence.failures.len() < MAX_RECORDED_FAILURES;
+        if bug.is_some() || champion.is_some() || failed {
             let mut input = input()?;
             input
                 .actions
                 .splice(0..0, evidence.root_actions.iter().copied());
+            if failed {
+                evidence.failures.push(FaultFailureRecord {
+                    execution: sequence,
+                    input: input.clone(),
+                });
+            }
             if let Some(observations) = bug {
                 evidence.bugs.push(FaultBugRecord {
                     execution: sequence,
@@ -1769,6 +1781,73 @@ mod tests {
         assert_eq!(evidence.hangs.len(), MAX_RECORDED_HANGS);
         game.merge_hang_evidence(&mut evidence, 0, || Err("not materialized".into()))
             .unwrap();
+    }
+
+    #[test]
+    fn a_failed_execution_records_its_rooted_input_up_to_its_bound() {
+        let game = game();
+        let root = FaultAction::from(FaultOperation::Kill(0, std::num::NonZeroU16::MIN));
+        let failing = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
+        let mut evidence = FaultCampaignEvidence {
+            root_actions: vec![root],
+            ..FaultCampaignEvidence::default()
+        };
+        let result = |disposition| FaultCampaignActionResult {
+            action: failing,
+            observations: Vec::new(),
+            milestones: FaultMilestones::default(),
+            outcome: Outcome {
+                objective_reached: false,
+                disposition,
+            },
+            candidate: None,
+        };
+        game.merge_action_evidence(
+            &mut evidence,
+            &result(ExecutionDisposition::Runnable),
+            3,
+            || Err("a runnable action needs no input".into()),
+        )
+        .unwrap();
+        assert!(evidence.failures.is_empty());
+        game.merge_action_evidence(
+            &mut evidence,
+            &result(ExecutionDisposition::Failed),
+            4,
+            || {
+                Ok(FaultInput {
+                    actions: vec![failing],
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            evidence.failures,
+            vec![FaultFailureRecord {
+                execution: 4,
+                input: FaultInput {
+                    actions: vec![root, failing],
+                },
+            }]
+        );
+        assert!(evidence.bugs.is_empty());
+        for sequence in 5..u64::try_from(MAX_RECORDED_FAILURES).unwrap() + 20 {
+            game.merge_action_evidence(
+                &mut evidence,
+                &result(ExecutionDisposition::Failed),
+                sequence,
+                || Ok(FaultInput::default()),
+            )
+            .unwrap();
+        }
+        assert_eq!(evidence.failures.len(), MAX_RECORDED_FAILURES);
+        game.merge_action_evidence(
+            &mut evidence,
+            &result(ExecutionDisposition::Failed),
+            0,
+            || Err("not materialized".into()),
+        )
+        .unwrap();
     }
 
     #[test]
