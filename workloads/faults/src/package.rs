@@ -219,6 +219,8 @@ pub struct Report {
     pub watchdog_cutoffs: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hang_reports: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_reports: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hang_stop: Option<String>,
     pub execution_failures: u64,
@@ -253,6 +255,7 @@ impl Report {
             wall_seconds: 0,
             watchdog_cutoffs: 0,
             hang_reports: Vec::new(),
+            failure_reports: Vec::new(),
             hang_stop: None,
             execution_failures: 0,
         }
@@ -374,7 +377,10 @@ mod live {
         bundle::FaultVocabulary,
         campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_with_plan},
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
-        report::{BugReport, HangReport, write_bug_reports, write_hang_reports},
+        report::{
+            BugReport, FailureReport, HangReport, write_bug_reports, write_failure_reports,
+            write_hang_reports,
+        },
         target::{ActionWindows, FaultAction, FaultObservations, FaultOperation},
     };
 
@@ -595,6 +601,15 @@ mod live {
                 options.output.join(hang.file_name()).display()
             );
         }
+        let failures =
+            write_failure_reports(windows, &inherited, &archive.failures, &options.output)?;
+        for failure in &failures {
+            eprintln!(
+                "failed execution {} saved to {}",
+                failure.execution,
+                options.output.join(failure.file_name()).display()
+            );
+        }
         if let Some(first) = written.first() {
             std::fs::write(
                 options.output.join("first-bug-input.json"),
@@ -634,6 +649,7 @@ mod live {
             "hang_reports": hangs.iter().map(HangReport::file_name).collect::<Vec<_>>(),
             "hang_stop": campaign_report.campaign.hang_stop,
             "execution_failures": campaign_report.campaign.execution_failures,
+            "failure_reports": failures.iter().map(FailureReport::file_name).collect::<Vec<_>>(),
             "telemetry": campaign_report.campaign.telemetry,
             "snapshot_cache_locks": cache.lock_counters().into_iter().collect::<std::collections::BTreeMap<_, _>>(),
             "snapshot_cache": cache
@@ -707,6 +723,7 @@ mod live {
         report.wall_seconds = started.elapsed().as_secs();
         report.watchdog_cutoffs = archive.watchdog_cutoffs;
         report.hang_reports = hangs.iter().map(HangReport::file_name).collect();
+        report.failure_reports = failures.iter().map(FailureReport::file_name).collect();
         report
             .hang_stop
             .clone_from(&campaign_report.campaign.hang_stop);

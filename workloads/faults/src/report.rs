@@ -5,11 +5,12 @@ use std::{error::Error, path::Path};
 use fault_policy::StandingWindow;
 use serde::{Deserialize, Serialize};
 
-use crate::archive::{FaultBugRecord, FaultHangRecord};
+use crate::archive::{FaultBugRecord, FaultFailureRecord, FaultHangRecord};
 use crate::target::{ActionWindows, FaultAction, FaultObservations, standing_windows};
 
 pub const BUG_REPORT_STEM: &str = "bug-";
 pub const HANG_REPORT_STEM: &str = "hang-";
+pub const FAILURE_REPORT_STEM: &str = "failure-";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BugReport {
@@ -121,6 +122,46 @@ pub fn write_hang_reports(
             root_seal: windows.root_seal,
             actions: hang.input.actions.clone(),
             standing: standing_hex(windows, inherited, &hang.input.actions)?,
+        };
+        std::fs::write(
+            directory.join(report.file_name()),
+            serde_json::to_vec_pretty(&report)?,
+        )?;
+        written.push(report);
+    }
+    Ok(written)
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FailureReport {
+    pub failure: u64,
+    pub execution: u64,
+    pub root_seal: u64,
+    pub actions: Vec<FaultAction>,
+    pub standing: String,
+}
+
+impl FailureReport {
+    #[must_use]
+    pub fn file_name(&self) -> String {
+        format!("{FAILURE_REPORT_STEM}{}.json", self.failure)
+    }
+}
+
+pub fn write_failure_reports(
+    windows: ActionWindows,
+    inherited: &[StandingWindow],
+    failures: &[FaultFailureRecord],
+    directory: &Path,
+) -> Result<Vec<FailureReport>, Box<dyn Error>> {
+    let mut written = Vec::with_capacity(failures.len());
+    for (index, failure) in failures.iter().enumerate() {
+        let report = FailureReport {
+            failure: u64::try_from(index)?.saturating_add(1),
+            execution: failure.execution,
+            root_seal: windows.root_seal,
+            actions: failure.input.actions.clone(),
+            standing: standing_hex(windows, inherited, &failure.input.actions)?,
         };
         std::fs::write(
             directory.join(report.file_name()),
@@ -300,6 +341,41 @@ mod tests {
             actions
         );
         let decoded: HangReport = serde_json::from_str(&text).expect("decode");
+        assert_eq!(decoded, written[0]);
+        assert_eq!(
+            decoded.standing,
+            BugReport::new(1, 12, WINDOWS, &[], &actions, &FaultObservations::default())
+                .unwrap()
+                .standing
+        );
+    }
+
+    #[test]
+    fn every_recorded_failure_gets_a_numbered_replayable_input() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let actions = vec![
+            FaultOperation::Kill(0, TICKS).into(),
+            FaultOperation::Wait(NonZeroU16::MIN).into(),
+        ];
+        let failures = [FaultFailureRecord {
+            execution: 12,
+            input: crate::archive::FaultInput {
+                actions: actions.clone(),
+            },
+        }];
+        let written =
+            write_failure_reports(WINDOWS, &[], &failures, directory.path()).expect("write");
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].file_name(), "failure-1.json");
+        assert_eq!(written[0].execution, 12);
+        let text = std::fs::read_to_string(directory.path().join("failure-1.json")).expect("read");
+        assert_eq!(
+            crate::package::parse_recorded_input(&text)
+                .expect("a failure report is a recorded input")
+                .actions,
+            actions
+        );
+        let decoded: FailureReport = serde_json::from_str(&text).expect("decode");
         assert_eq!(decoded, written[0]);
         assert_eq!(
             decoded.standing,
