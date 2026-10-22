@@ -6,11 +6,71 @@ use machine::nes::ButtonChord;
 use machine::{Machine, StopConditions, nes, quicknes::QuickNesMachine};
 use sha2::{Digest, Sha256};
 
+const WAIT_LIMIT: u32 = 20_000;
+
+struct Probe {
+    machine: QuickNesMachine,
+    frame: u32,
+    prior: [u8; 2048],
+    shots: Option<PathBuf>,
+    shot_every: u32,
+    diff: bool,
+    every: u32,
+    addrs: Vec<usize>,
+}
+
+impl Probe {
+    fn hold(&mut self, buttons: u8, hold: u8) -> Result<(), Box<dyn Error>> {
+        let chord = ButtonChord::new(buttons, hold);
+        let snap = self.machine.snapshot()?;
+        self.machine.branch(snap, &nes::reproducer(&[chord]))?;
+        self.machine.run(StopConditions::default(), None)?;
+        self.machine.drop_snapshot(snap)?;
+        let video = self.machine.take_video_frames();
+        for (index, w) in self.machine.frames().iter().enumerate() {
+            self.frame += 1;
+            let frame = self.frame;
+            if let Some(dir) = &self.shots
+                && frame.is_multiple_of(self.shot_every)
+                && let Some(v) = video.get(index)
+            {
+                fs::write(
+                    dir.join(format!("{frame:06}-{}x{}.rgb", v.width, v.height)),
+                    &v.rgb24,
+                )?;
+            }
+            if self.diff && w != &self.prior {
+                let diffs: Vec<String> = w
+                    .iter()
+                    .zip(self.prior.iter())
+                    .enumerate()
+                    .filter(|(i, (a, b))| a != b && *i < 0x100)
+                    .map(|(i, (a, _))| format!("{i:03x}={a:02x}"))
+                    .collect();
+                if !diffs.is_empty() {
+                    println!("{frame:5} diff {}", diffs.join(" "));
+                }
+            }
+            if (self.every > 0 && frame.is_multiple_of(self.every))
+                || (self.every == 0 && self.addrs.iter().any(|a| w[*a] != self.prior[*a]))
+            {
+                print!("{frame:5}  {buttons:02x}    ");
+                for a in &self.addrs {
+                    print!("{:02x}   ", w[*a]);
+                }
+                println!();
+            }
+            self.prior = *w;
+        }
+        Ok(())
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
     let schedule = args
         .next()
-        .ok_or("usage: castlevania-probe <buttons:hold|pADDR=VALUE,...> <every> <addr,addr,...>")?;
+        .ok_or("usage: castlevania-probe <buttons:hold|pADDR=VALUE|uADDR=VALUE/buttons,...> <every> <addr,addr,...>")?;
     let every: u32 = args.next().ok_or("missing print interval")?.parse()?;
     let addrs = args
         .next()
@@ -35,20 +95,45 @@ fn main() -> Result<(), Box<dyn Error>> {
         fs::create_dir_all(dir)?;
         machine.set_video_capture(true);
     }
-    let mut frame = 0u32;
     print!("frame  chord ");
     for a in &addrs {
         print!("{a:04x} ");
     }
     println!();
-    let mut prior = machine.read_wram()?;
+    let prior = machine.read_wram()?;
+    let mut probe = Probe {
+        machine,
+        frame: 0,
+        prior,
+        shots,
+        shot_every,
+        diff,
+        every,
+        addrs,
+    };
     for step in schedule.split(',') {
         if let Some(poke) = step.strip_prefix('p') {
             let (address, value) = poke.split_once('=').ok_or("bad poke")?;
-            machine.poke_wram(
+            probe.machine.poke_wram(
                 usize::from_str_radix(address, 16)?,
                 u8::from_str_radix(value, 16)?,
             )?;
+            continue;
+        }
+        if let Some(until) = step.strip_prefix('u') {
+            let (condition, b) = until.split_once('/').ok_or("bad wait")?;
+            let (address, value) = condition.split_once('=').ok_or("bad wait")?;
+            let address = usize::from_str_radix(address, 16)?;
+            let value = u8::from_str_radix(value, 16)?;
+            let buttons = u8::from_str_radix(b, 16)?;
+            let mut waited = 0;
+            while probe.prior[address] != value {
+                if waited == WAIT_LIMIT {
+                    return Err(format!("{address:#x} never read {value:#04x}").into());
+                }
+                probe.hold(buttons, 1)?;
+                waited += 1;
+            }
             continue;
         }
         let (b, h) = step.split_once(':').ok_or("bad step")?;
@@ -56,49 +141,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut remaining: u32 = h.parse()?;
         while remaining > 0 {
             let hold = remaining.min(120);
-            let chord = ButtonChord::new(buttons, u8::try_from(hold)?);
-            let snap = machine.snapshot()?;
-            machine.branch(snap, &nes::reproducer(&[chord]))?;
-            machine.run(StopConditions::default(), None)?;
-            machine.drop_snapshot(snap)?;
-            let video = machine.take_video_frames();
-            for (index, w) in machine.frames().iter().enumerate() {
-                frame += 1;
-                if let Some(dir) = &shots
-                    && frame.is_multiple_of(shot_every)
-                    && let Some(v) = video.get(index)
-                {
-                    fs::write(
-                        dir.join(format!("{frame:06}-{}x{}.rgb", v.width, v.height)),
-                        &v.rgb24,
-                    )?;
-                }
-                if diff && w != &prior {
-                    let diffs: Vec<String> = w
-                        .iter()
-                        .zip(prior.iter())
-                        .enumerate()
-                        .filter(|(i, (a, b))| a != b && *i < 0x100)
-                        .map(|(i, (a, _))| format!("{i:03x}={a:02x}"))
-                        .collect();
-                    if !diffs.is_empty() {
-                        println!("{frame:5} diff {}", diffs.join(" "));
-                    }
-                }
-                if (every > 0 && frame.is_multiple_of(every))
-                    || (every == 0 && addrs.iter().any(|a| w[*a] != prior[*a]))
-                {
-                    print!("{frame:5}  {buttons:02x}    ");
-                    for a in &addrs {
-                        print!("{:02x}   ", w[*a]);
-                    }
-                    println!();
-                }
-                prior = *w;
-            }
+            probe.hold(buttons, u8::try_from(hold)?)?;
             remaining -= hold;
         }
     }
+    let Probe {
+        mut machine,
+        prior,
+        shots,
+        ..
+    } = probe;
     if let Some(dir) = &shots {
         fs::write(dir.join("final-wram.bin"), prior)?;
         let snap = machine.snapshot()?;
