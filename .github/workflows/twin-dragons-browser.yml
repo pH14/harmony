@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  twin-dragons-build:
-    name: Twin Dragons Build
+  twin-dragons-runtime:
+    name: Twin Dragons Runtime
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
@@ -37,12 +37,50 @@ jobs:
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
           "$RUNNER_TEMP/emsdk/emsdk" install 4.0.15
           "$RUNNER_TEMP/emsdk/emsdk" activate 4.0.15
-      - name: Build pinned runtime and static site
+      - name: Build pinned runtime
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           cd demos/twin-dragons
           npm ci
-          ./tools/build-runtime.sh
+          ./tools/build-runtime.sh --runtime-only
+          tar -czf "$RUNNER_TEMP/twin-dragons-runtime.tar.gz" public rust/pkg .build/twin-dragons-source
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twin-dragons-runtime
+          path: ${{ runner.temp }}/twin-dragons-runtime.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  twin-dragons-build:
+    name: Twin Dragons Build
+    needs: twin-dragons-runtime
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: demos/twin-dragons/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust adapter tools
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component clippy --target wasm32-unknown-unknown
+          rustup default 1.97.0
+          cargo install wasm-pack --version 0.14.0 --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: twin-dragons-runtime
+          path: ${{ runner.temp }}
+      - name: Compose assets and build the static site
+        run: |
+          cd demos/twin-dragons
+          tar -xzf "$RUNNER_TEMP/twin-dragons-runtime.tar.gz"
+          npm ci
+          ./tools/build-assets.sh
           npm run build
       - name: Lint and test the browser adapter
         run: |

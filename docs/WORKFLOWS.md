@@ -759,11 +759,14 @@ fetch assets for the CLI version and host architecture into the user data
 cache; development builds can supply explicit runtime paths and `HARMONY_SDK_DIR`.
 
 The Twin Dragons browser lane (`Checks / Dissonance Workloads / Twin Dragons
-Browser`) owns the standalone `demos/twin-dragons/rust` adapter. It builds
-QuickNES into WebAssembly, fetches the pinned silent-effects Twin Dragons ROM
-through `workloads/nes/scripts/build-twin-dragons-rom.sh`, runs adapter
-checks, and uploads the static `twin-dragons-browser-dist` with corresponding
-sources. Its two browser jobs reuse that build: `games` runs the per-game
+Browser`) owns the standalone `demos/twin-dragons/rust` adapter. Its runtime
+job compiles the pinned cores, ROMs and Rust worker, then transfers those
+outputs and the extracted Twin Dragons map source to the build job. The build
+job composes every map and sprite asset, builds the site and runs all adapter
+checks. Each stage retains a 15-minute budget. The runtime stage fetches the
+pinned silent-effects Twin Dragons ROM through
+`workloads/nes/scripts/build-twin-dragons-rom.sh`. The build stage uploads
+the static `twin-dragons-browser-dist` with corresponding sources. Its two browser jobs reuse that build: `games` runs the per-game
 search and replay suites and `interface` runs the tour and interaction suites,
 so each stays within the 15-minute pull-request limit. Both verify exact
 selected-history replays and upload `twin-dragons-browser-evidence-<suite>`

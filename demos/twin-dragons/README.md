@@ -990,7 +990,12 @@ block, so snapshot digests are comparable only between cores in the same audio
 mode.
 
 `Checks / Dissonance Workloads / Twin Dragons Browser` rebuilds the static app
-once and uploads `twin-dragons-browser-dist`. Two browser jobs then run
+once in two stages and uploads `twin-dragons-browser-dist`. The runtime stage
+uses `./tools/build-runtime.sh --runtime-only` to compile cores, ROMs and the
+Rust worker; the build stage consumes those outputs and extracted Twin Dragons
+map source, runs `./tools/build-assets.sh`, and runs every adapter check. Each
+stage keeps a 15-minute budget. The default `./tools/build-runtime.sh` still
+runs both stages locally. Two browser jobs then run
 `npm run test:browser:games` and `npm run test:browser:interface` against that
 build and upload their evidence. `npm run test:browser` runs both. No
 generated assets or ROM are checked in.
