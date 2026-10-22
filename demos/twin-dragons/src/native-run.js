@@ -24,7 +24,7 @@ function describe(run) {
   const minutes = Math.round((Date.now() / 1000 - run.started) / 60);
   if (run.external) return `${run.game} on ${run.machine} · ${run.directory} · ${minutes} min`;
   const memory = `${(run.memory_mib / 1024).toFixed(1)} GiB`;
-  return `${run.game} on ${run.machine} · ${run.workers} workers · ${memory} · seed ${run.seed} · ${minutes} min`;
+  return `${run.game} on ${run.machine} · ${run.workers} workers · ${memory} archive · seed ${run.seed} · ${minutes} min`;
 }
 
 export async function nativeRuns(gameId, mount) {
@@ -41,12 +41,14 @@ export async function nativeRuns(gameId, mount) {
     seed = element("input", { type: "number", min: 0, value: 1 }),
     hours = element("input", { type: "number", min: 0.5, max: 72, step: 0.5, value: 12 }),
     start = element("button", { type: "submit", textContent: "Start run" }),
+    wholeMemory = element("p", { className: "native-memory-limit" }),
     message = element("p", { className: "native-message", role: "status" }),
     list = element("ul", { className: "native-runs" });
   const limits = () => {
     const entry = options.machines.find((m) => m.name === machine.value);
     workers.max = entry.workers;
     memory.max = entry.memory_mib / 1024;
+    wholeMemory.textContent = `Whole-run memory ceiling: ${(entry.memory_max_mib / 1024).toFixed(1)} GiB, swap disabled. Shared by this run’s archive, workers and live service.`;
   };
   machine.onchange = limits;
   limits();
@@ -56,7 +58,7 @@ export async function nativeRuns(gameId, mount) {
     field("Machine", machine),
     field("Game", game),
     field("Workers", workers),
-    field("Memory cap (GiB)", memory),
+    field("Archive budget (GiB)", memory),
     field("Seed", seed),
     field("Time limit (hours)", hours),
     start,
@@ -67,6 +69,7 @@ export async function nativeRuns(gameId, mount) {
     element("button", { className: "close", type: "button", ariaLabel: "Close native runs", textContent: "×", onclick: () => dialog.close() }),
     element("h2", { textContent: "Native runs" }),
     form,
+    wholeMemory,
     message,
     list,
   );

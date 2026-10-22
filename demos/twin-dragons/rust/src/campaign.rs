@@ -476,6 +476,7 @@ impl<G: BrowserGame> Search<G> {
         while coordinator.reserve_next()? {}
         coordinator.watch_admissions();
         let feed = Feed::new(
+            0,
             G::memory_view(&restore_ram(options.core, &raw)?)?,
             frames,
             snapshot_digest(&raw),

@@ -1346,7 +1346,7 @@ dialog h2 {
 #tour-open:hover { border-color: transparent; filter: brightness(1.08); }
 .goal { padding-top: 0; border-top: 0; }
 .map-footer { padding: 12px 0 0; }
-.map-footer:has(#memory-limit[hidden]) { display: none; }
+.map-footer:has(#memory-limit[hidden]):has(#recording-status:empty) { display: none; }
 .search-details { margin: 10px 4px 0; padding-top: 8px; border-top: 1px solid var(--line); }
 .search-details summary { padding: 4px 0; color: var(--muted); font-size: 11px; cursor: pointer; }
 .search-details .metrics { flex-direction: column; gap: 6px; margin-top: 6px; }
@@ -1444,3 +1444,7 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
 .native-runs li { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
 .native-state { grid-column: 1; color: var(--muted); overflow-wrap: anywhere; }
 .native-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 8px; align-items: center; }
+
+.recording-controls { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 8px; }
+#record-view[aria-pressed="true"] { color: #ff6c77; }
+#recording-status { font-size: 12px; }

@@ -55,6 +55,8 @@ pub trait ArcadeGame:
 
     fn emulator_state(snapshot: &Self::Snapshot) -> &[u8];
 
+    fn snapshot_frame_count(snapshot: &Self::Snapshot) -> u64;
+
     fn probe() -> trail::Probe {
         trail::Probe {
             motion: Self::motion,
