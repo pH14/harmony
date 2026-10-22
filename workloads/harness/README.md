@@ -583,3 +583,6 @@ container. Opt-in options:
   node's SQLite database has applied.
 - An etcd pinned read trusts a member to answer a put only after it has applied
   the put.
+- A Redis-Raft write or `cas` that fails with `MOVED`, `NOLEADER`,
+  `NOCLUSTER`, `LOADING` or `ERR not leader` is trusted never to reach the
+  Raft log.
