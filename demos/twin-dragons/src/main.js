@@ -9,7 +9,8 @@ import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { Swarm, ghosts, trailRoom, MOTION_STRIDE } from "./swarm.js";
-import { resumeFollowing, resetRetreat, trackingGoal, followView } from "./camera.js";
+import { resumeFollowing, resetRetreat, trackingGoal, followView, slewPoint } from "./camera.js";
+import { SmoothCounter } from "./counter.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, GRID_CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
@@ -213,6 +214,7 @@ let stateCache = new StateCache(),
   wins = new Map(),
   path = { level: 0, levels: [0], since: 0, idle: 0 },
   stats = {};
+const counters = { executions: new SmoothCounter(), states: new SmoothCounter(), frames: new SmoothCounter() };
 const views = new Map(),
   controller = new Controller();
 let playSession = null,
@@ -471,7 +473,8 @@ const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3,
   PATH_STALL_MS = 8000,
   ROOM_DWELL_MS = 10000,
-  CAMERA_RETREAT_MS = 1500;
+  CAMERA_RETREAT_MS = 1500,
+  LIVE_CAMERA_SPEED = 2400;
 const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
@@ -854,7 +857,8 @@ function updateCamera(now) {
     const zoom = closeUpZoom(c) * (room === camera.introRoom ? scale : 1);
     if (reducedMotion.matches) steerCamera(room, c, point, zoom, 1, 1);
     else {
-      Object.assign(view, followView(view, point, canvasPanel(c), c, zoom, dt));
+      const aim = liveView ? slewPoint(target, point, dt, LIVE_CAMERA_SPEED) : point;
+      Object.assign(view, followView(view, aim, canvasPanel(c), c, zoom, dt));
       roomView(room).zoom = view.zoom;
     }
   }
@@ -1638,6 +1642,7 @@ function startSearch(level = bootLevel) {
   latestBest = null;
   lastAuto = 0;
   stats = {};
+  for (const counter of Object.values(counters)) counter.reset();
   for (const id of ["play", "scrub"]) $(id).disabled = true;
   $("details").replaceChildren();
   $("state-list").replaceChildren();
@@ -1775,6 +1780,7 @@ function startSearch(level = bootLevel) {
           if (++traillessBatches === 20 && visualization === "movement") setVisualization("heat");
         }
         stats = batchStats;
+        if (liveView) for (const [key, counter] of Object.entries(counters)) counter.push(batchStats[key] || 0, performance.now());
         gameWon ||= data.won;
         const now = performance.now();
         heat.visitMotion(data.motion || [], maps, now);
@@ -1952,10 +1958,19 @@ function setTitle(id, text) {
   const node = $(id);
   if (node.title !== text) node.title = text;
 }
-function updateStats() {
+function shown(key) {
+  return liveView && !paused ? counters[key].read(performance.now()) : stats[key];
+}
+function updateCounters() {
   const others = [...searchViews].filter(([id]) => id !== activeSearch).map(([, view]) => view.stats || {});
-  const total = (key) => others.reduce((sum, other) => sum + (other[key] || 0), stats[key] || 0);
+  const total = (key) => others.reduce((sum, other) => sum + (other[key] || 0), shown(key) || 0);
   setText("hero-timelines", fmt(total("executions")));
+  setText("attempts", fmt(shown("executions")));
+  setText("states", fmt(shown("states")));
+  setText("work", fmt(shown("frames")));
+}
+function updateStats() {
+  updateCounters();
   const anyVisited = !!$("room-tabs").querySelector(".visited");
   for (const tab of $("room-tabs").children) {
     const seen = seenMaps.has(Number(tab.dataset.map));
@@ -1966,15 +1981,12 @@ function updateStats() {
     }
     tab.classList.toggle("visited", seen);
   }
-  setText("attempts", fmt(stats.executions));
-  setText("states", fmt(stats.states));
   setText("cells", fmt(heat.cells.size));
   renderLevelStrip();
   const witness = completionWitness();
   $("completion").hidden = !witness;
   if (witness) setText("completion", witness.label);
   setTitle("states", `Shared snapshot memory: ${fmt(stats.snapshot_bytes / 1048576)} MiB; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`);
-  setText("work", fmt(stats.frames));
   setText("memory", `${((stats.snapshot_bytes || 0) / 1000000).toFixed(1)} MB`);
   setTitle("memory", "Retained snapshots across all search branches");
   setText("workers", fmt(stats.workers ?? budget.workers));
@@ -3146,7 +3158,7 @@ function animate(now) {
   if (statsDirty) {
     statsDirty = false;
     updateStats();
-  }
+  } else if (liveView && !paused) updateCounters();
   if (mapMoving || now - lastMapPaint >= 1000 / 30) {
     drawMap(now);
     lastMapPaint = now;

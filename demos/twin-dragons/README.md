@@ -121,7 +121,9 @@ stream in place of the coordinator worker: the same `ready`, `batch`, `states`
 and `limit` messages, without rollout workers. Open
 `http://127.0.0.1:8790/?game=super-mario-bros&live` on the host, or forward the
 port over SSH and open the same address on another machine. Pause stops drawing
-new results and leaves the campaign running. A live view cannot branch. Build
+new results and leaves the campaign running. The counters interpolate between
+the stream's 100 ms batches, and the camera target moves at most 2,400 px/s so
+far-ahead trails do not make the zoom swing. A live view cannot branch. Build
 the page with `npm run build` and pass the `dist` directory, with a `roms`
 directory added beside `index.html`, as the request's `live_site`.
 [`workloads/nes`](../../workloads/nes/README.md#live-view) documents the request

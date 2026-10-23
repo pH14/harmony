@@ -54,3 +54,11 @@ export function followView(view, point, panel, viewport, targetZoom, seconds) {
     zoom: scale / fit,
   };
 }
+
+export function slewPoint(target, point, seconds, speed) {
+  const from = target.slew;
+  if (!from) return (target.slew = { x: point.x, y: point.y });
+  const dx = point.x - from.x, dy = point.y - from.y, gap = Math.hypot(dx, dy), step = speed * Math.max(0, seconds);
+  target.slew = gap <= step ? { x: point.x, y: point.y } : { x: from.x + dx * step / gap, y: from.y + dy * step / gap };
+  return target.slew;
+}

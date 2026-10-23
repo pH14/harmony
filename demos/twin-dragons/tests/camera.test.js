@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resumeFollowing, resetRetreat, trackingGoal, followView } from "../src/camera.js";
+import { resumeFollowing, resetRetreat, trackingGoal, followView, slewPoint } from "../src/camera.js";
 
 test("following a selected level clears the previous camera's interaction holds", () => {
   const camera = { follow: false, manual: 10000, held: 3000, only: 1,
