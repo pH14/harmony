@@ -9,6 +9,7 @@ pub enum RecoveryError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryReadiness {
     generation: u64,
+    first_unready: u64,
     ready: bool,
     fault_pending: bool,
     queued: Vec<u32>,
@@ -19,6 +20,7 @@ impl RecoveryReadiness {
     pub fn initially_ready() -> Self {
         Self {
             generation: 0,
+            first_unready: 0,
             ready: true,
             fault_pending: false,
             queued: Vec::new(),
@@ -30,6 +32,9 @@ impl RecoveryReadiness {
             .generation
             .checked_add(1)
             .ok_or(RecoveryError::GenerationExhausted)?;
+        if self.ready {
+            self.first_unready = self.generation;
+        }
         self.ready = false;
         self.fault_pending |= after_fault;
         Ok(())
@@ -67,6 +72,52 @@ impl RecoveryReadiness {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+
+    #[must_use]
+    pub fn first_unready(&self) -> u64 {
+        self.first_unready
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HookFaults {
+    heal: Option<u32>,
+    launches: u64,
+    unhealed: Option<u64>,
+}
+
+impl HookFaults {
+    #[must_use]
+    pub fn new(heal: Option<u32>) -> Self {
+        Self {
+            heal,
+            launches: 0,
+            unhealed: None,
+        }
+    }
+
+    pub fn launched(&mut self, id: u32) -> u64 {
+        let launch = self.launches;
+        self.launches = self.launches.saturating_add(1);
+        if self.heal.is_some_and(|heal| heal != id) {
+            self.unhealed = Some(launch);
+        }
+        launch
+    }
+
+    pub fn finished(&mut self, id: u32, launch: u64, succeeded: bool) {
+        if succeeded
+            && self.heal == Some(id)
+            && self.unhealed.is_some_and(|unhealed| unhealed < launch)
+        {
+            self.unhealed = None;
+        }
+    }
+
+    #[must_use]
+    pub fn in_force(&self) -> bool {
+        self.unhealed.is_some()
+    }
 }
 
 pub const RECOVERY_NANOS: u64 = 30_000_000_000;
@@ -74,6 +125,7 @@ pub const RECOVERY_NANOS: u64 = 30_000_000_000;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RecoveryWatch {
     quiet_since: u64,
+    unready_since: Option<(u64, u64)>,
     reported: Option<u64>,
 }
 
@@ -86,12 +138,21 @@ impl RecoveryWatch {
     ) -> Option<u64> {
         if disturbed {
             self.quiet_since = tick;
+        }
+        if !readiness.is_pending() {
             return None;
         }
-        if !readiness.is_pending() || self.reported == Some(readiness.generation()) {
+        let unready_since = match self.unready_since {
+            Some((generation, since)) if generation == readiness.first_unready() => since,
+            _ => {
+                self.unready_since = Some((readiness.first_unready(), tick));
+                tick
+            }
+        };
+        if disturbed || self.reported == Some(readiness.generation()) {
             return None;
         }
-        let quiet = tick.saturating_sub(self.quiet_since);
+        let quiet = tick.saturating_sub(self.quiet_since.max(unready_since));
         if quiet < RECOVERY_NANOS / crate::TICK_NANOS {
             return None;
         }
@@ -102,7 +163,7 @@ impl RecoveryWatch {
 
 #[cfg(test)]
 mod tests {
-    use super::{RecoveryError, RecoveryReadiness, RecoveryWatch};
+    use super::{HookFaults, RecoveryError, RecoveryReadiness, RecoveryWatch};
 
     const BOUND: u64 = super::RECOVERY_NANOS / crate::TICK_NANOS;
 
@@ -119,6 +180,84 @@ mod tests {
         assert_eq!(
             watch.observe(30 + BOUND, false, &readiness),
             Some(20 + BOUND)
+        );
+    }
+
+    #[test]
+    fn a_workload_that_loses_readiness_after_faults_end_gets_the_whole_bound() {
+        let mut readiness = RecoveryReadiness::initially_ready();
+        let mut watch = RecoveryWatch::default();
+        readiness.restarted(true).unwrap();
+        assert_eq!(watch.observe(10, true, &readiness), None);
+        assert_eq!(watch.observe(20, false, &readiness), None);
+        readiness.mark_ready(readiness.generation());
+        assert_eq!(watch.observe(30, false, &readiness), None);
+        let mut tick = 10 + BOUND;
+        for _ in 0..4 {
+            readiness.restarted(true).unwrap();
+            assert_eq!(watch.observe(tick, false, &readiness), None);
+            assert_eq!(watch.observe(tick + BOUND - 1, false, &readiness), None);
+            readiness.mark_ready(readiness.generation());
+            tick += BOUND;
+        }
+        readiness.restarted(true).unwrap();
+        assert_eq!(watch.observe(tick, false, &readiness), None);
+        readiness.restarted(true).unwrap();
+        assert_eq!(watch.observe(tick + BOUND - 1, false, &readiness), None);
+        assert_eq!(watch.observe(tick + BOUND, false, &readiness), Some(BOUND));
+    }
+
+    #[test]
+    fn a_hook_fault_stays_in_force_until_a_later_heal_succeeds() {
+        let mut faults = HookFaults::new(Some(4));
+        assert!(!faults.in_force());
+        let early_heal = faults.launched(4);
+        assert!(!faults.in_force());
+        let partition = faults.launched(1);
+        assert!(faults.in_force());
+        faults.finished(1, partition, true);
+        faults.finished(4, early_heal, true);
+        assert!(faults.in_force());
+        let failed_heal = faults.launched(4);
+        faults.finished(4, failed_heal, false);
+        assert!(faults.in_force());
+        let heal = faults.launched(4);
+        faults.launched(3);
+        faults.finished(4, heal, true);
+        assert!(faults.in_force());
+        let heal = faults.launched(4);
+        faults.finished(4, heal, true);
+        assert!(!faults.in_force());
+    }
+
+    #[test]
+    fn hooks_leave_no_fault_in_force_without_a_heal_hook() {
+        let mut faults = HookFaults::new(None);
+        let launch = faults.launched(1);
+        assert!(!faults.in_force());
+        faults.finished(1, launch, true);
+        assert!(!faults.in_force());
+    }
+
+    #[test]
+    fn an_unhealed_hook_keeps_an_unready_workload_from_being_reported() {
+        let mut readiness = RecoveryReadiness::initially_ready();
+        let mut watch = RecoveryWatch::default();
+        let mut faults = HookFaults::new(Some(4));
+        faults.launched(1);
+        readiness.restarted(true).unwrap();
+        for tick in 0..3 * BOUND {
+            assert_eq!(watch.observe(tick, faults.in_force(), &readiness), None);
+        }
+        let heal = faults.launched(4);
+        faults.finished(4, heal, true);
+        assert_eq!(
+            watch.observe(4 * BOUND - 2, faults.in_force(), &readiness),
+            None
+        );
+        assert_eq!(
+            watch.observe(4 * BOUND - 1, faults.in_force(), &readiness),
+            Some(BOUND)
         );
     }
 
@@ -206,6 +345,7 @@ mod tests {
     fn generation_exhaustion_does_not_reuse_a_stale_generation() {
         let mut readiness = RecoveryReadiness {
             generation: u64::MAX,
+            first_unready: 0,
             ready: true,
             fault_pending: false,
             queued: Vec::new(),

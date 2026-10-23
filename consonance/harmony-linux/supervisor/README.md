@@ -76,10 +76,19 @@ built-in Always assertion covers that case:
 `workload becomes ready within 30 seconds after faults end`. Once no fault
 window is active and no injected fault is pending for 30 seconds of virtual
 time, a readiness generation that has still not passed its `ready` probe
-violates it, once per generation. A node that a kill or power-loss window left
-down counts as a fault still in effect: both keep their node down until a later
-restart window, so the 30 seconds start only once every node is meant to run. The details give the generation and the quiet
-ticks. A node that crash-loops after an injected kill, or a cluster that never
+violates it, once per generation. The 30 seconds count from the later of the
+end of faults and the restart that last made a ready workload unready. A
+restart long after faults end therefore gets its own 30 seconds, and a node
+that keeps restarting before the probe passes keeps the earlier start. A node
+that a kill or power-loss window left down counts as a fault still in effect:
+both keep their node down until a later restart window, so the 30 seconds
+start only once every node is meant to run.
+A bundle's `heal` line names the hook that lifts the faults its other hooks
+leave in force. In such a bundle, every other hook launch counts as a fault
+still in effect until a heal hook launched after it exits successfully, so a
+cluster still partitioned by a hook does not start the 30 seconds. Without a
+`heal` line, a hook counts only while its window is active. The details give
+the generation and the quiet ticks. A node that crash-loops after an injected kill, or a cluster that never
 regains readiness after a restart, reports through this assertion.
 
 After initial readiness, an optional `workload` command starts once and remains

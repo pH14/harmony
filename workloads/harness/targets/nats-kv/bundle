@@ -12,6 +12,7 @@ hook 1 /opt/harmony/harness-net partition
 hook 2 /opt/harmony/harness-net isolate
 hook 3 /opt/harmony/harness-net delay
 hook 4 /opt/harmony/harness-net heal
+heal 4
 ready /opt/harmony/nats-kv-harness ready
 workload /opt/harmony/nats-kv-harness drive
 check /opt/harmony/nats-kv-harness check
