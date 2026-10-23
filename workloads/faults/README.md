@@ -369,9 +369,11 @@ One memory budget covers the shared cache and every worker's local snapshot
 store. It is the free memory left after a 1 GiB reserve, the coordinator's 512 MiB
 search state, one guest RAM for a worker's import (its decompressed pages and
 the pages it adds to the store before the next report), and each worker's guest
-RAM plus 256 MiB for the rest of the worker process. The worker count drops until each worker also has room for a
-store one and a half times its guest RAM. With a smaller share, workers drop
-prefix snapshots often and spend most of their time running prefixes again. On macOS a search runs at most four workers.
+RAM plus 256 MiB for the rest of the worker process. The worker count drops
+until each worker also has room for a store as large as its guest RAM. With a
+1 GiB guest and four workers on etcd in a 14 GiB cgroup, a store holds about
+330 MiB once it has the setup snapshot, and a median of 0.85 to 1.2 GiB during a
+search. On macOS a search runs at most four workers.
 During the search the cache measures free memory again. The budget falls when
 memory it does not count, such as the pages a snapshot import or export holds,
 grows past this plan, and rises back toward the plan when that memory is free
