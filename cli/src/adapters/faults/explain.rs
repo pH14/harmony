@@ -567,7 +567,7 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
     match *operation {
         FaultOperation::Wait(ticks) => format!("wait {}", span(ticks)),
         FaultOperation::Burst { faults, ticks, .. } => {
-            format!("burst of {faults} drawn faults, one every {}", span(ticks))
+            format!("burst of {faults} drawn faults within {}", span(ticks))
         }
         FaultOperation::Kill(index, _) => {
             format!("kill {} (down until a later restart)", node(index))
