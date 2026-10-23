@@ -396,8 +396,16 @@ A fault search keeps one reservation per worker in its admission window, the
 same window as every other workload. Each selection sees the archive as of the
 last admission, so a wider window makes each new state wait more admissions
 before a job can start from it, and the deepest chain grows that much slower.
-At the `--for` limit the search stops reserving and finishes the jobs already
-running, so it ends at most one job per worker past its limit.
+The search stops at the `--for` limit and on the first SIGINT or SIGTERM. A
+search that does not resume a checkpoint also stops at its first admitted
+finding. It drops the jobs in flight and writes its report.
+While a job's session waits for a worker reply, it checks the job's cancel flag
+every 20 ms. On a stop it retires that session worker, so the search exits
+within a few seconds of the stop. Each finding's confirmation replay still runs
+before `report.json` is written. `report.json` records `jobs_cancelled` and
+`interrupted`. A second SIGINT or SIGTERM exits at once with status 128 plus
+the signal number and writes no report. Session workers ignore SIGINT and
+SIGTERM, so only the search process decides the stop.
 Each worker reports its time through the campaign `telemetry`: boot, new
 action runs, prefix rebuilds, and replayed actions, each in host and virtual
 time. It also reports session restore, branch, seal, observation, and drop

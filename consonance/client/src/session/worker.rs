@@ -16,7 +16,10 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     ptr::NonNull,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -81,6 +84,7 @@ const OTHER: u8 = 0;
 const HUNG: u8 = 1;
 const ABANDONED: u8 = 2;
 const INFRASTRUCTURE: u8 = 3;
+const CANCEL_POLL: Duration = Duration::from_millis(20);
 
 pub trait SearchSession: std::fmt::Debug {
     fn execution_endpoint(
@@ -191,6 +195,7 @@ pub trait SearchSession: std::fmt::Debug {
         Ok(events.split_off(offset))
     }
     fn abandoned(&self) -> bool;
+    fn set_cancel(&mut self, _cancel: Option<Arc<AtomicBool>>) {}
 }
 
 trait ServedSession: SearchSession {
@@ -1223,6 +1228,7 @@ pub struct WorkerSession {
     transport: Arc<work::Work>,
     import_reuse: crate::import_reuse::ImportReuse,
     shutdown: Option<Result<(), String>>,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 struct Exchange<'a>(&'a Cell<bool>);
@@ -1298,6 +1304,7 @@ impl WorkerSession {
             copies: Arc::default(),
             import_reuse: Default::default(),
             shutdown: None,
+            cancel: None,
             transport,
             telemetry_queries: Cell::new(0),
             telemetry_query_failures: Cell::new(0),
@@ -1361,6 +1368,7 @@ impl WorkerSession {
             &self.transport,
             work::Group::request(&request.0),
         )
+        .and_then(|()| self.await_reply())
         .and_then(|()| {
             receive_measured(
                 &self.stream,
@@ -1379,6 +1387,27 @@ impl WorkerSession {
         };
         self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcAfter)?;
         self.reply_status(&body)
+    }
+
+    fn await_reply(&self) -> io::Result<()> {
+        let Some(cancel) = &self.cancel else {
+            return Ok(());
+        };
+        let slice = rustix::event::Timespec::try_from(CANCEL_POLL).map_err(io::Error::other)?;
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err(io::Error::other("the search stopped this job"));
+            }
+            let mut waiting = [rustix::event::PollFd::new(
+                &self.stream,
+                rustix::event::PollFlags::IN,
+            )];
+            match rustix::event::poll(&mut waiting, Some(&slice)) {
+                Ok(0) | Err(rustix::io::Errno::INTR) => {}
+                Ok(_) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     fn reply_status(&self, body: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -1984,6 +2013,9 @@ impl SearchSession for WorkerSession {
 
     fn abandoned(&self) -> bool {
         self.failed.get()
+    }
+    fn set_cancel(&mut self, cancel: Option<Arc<AtomicBool>>) {
+        self.cancel = cancel;
     }
 }
 
@@ -5058,6 +5090,7 @@ mod tests {
                 copies: Arc::default(),
                 import_reuse: Default::default(),
                 shutdown: None,
+                cancel: None,
                 transport: Arc::default(),
                 telemetry_queries: Cell::new(0),
                 telemetry_query_failures: Cell::new(0),
@@ -6204,6 +6237,49 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn a_cancelled_job_stops_waiting_for_its_reply_and_retires_the_worker() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut session = WorkerSession {
+            stream: parent,
+            process: None,
+            owner: None,
+            loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            setup: (SnapId(0), 0),
+            failed: Cell::new(false),
+            counters: RefCell::new(Vec::new()),
+            telemetry_queries: Cell::new(0),
+            telemetry_query_failures: Cell::new(0),
+            exchanging: Cell::new(false),
+            retained_export: RefCell::new(Vec::new()),
+            copies: Arc::default(),
+            import_reuse: Default::default(),
+            shutdown: None,
+            cancel: None,
+            transport: Arc::default(),
+        };
+        session.set_cancel(Some(Arc::clone(&cancel)));
+        let stopper = {
+            let cancel = Arc::clone(&cancel);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                cancel.store(true, Ordering::Release);
+            })
+        };
+        let started = Instant::now();
+        let error = session.state_hash().unwrap_err().to_string();
+        assert!(error.contains("the search stopped this job"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(session.abandoned());
+        stopper.join().unwrap();
+        drop(session);
+        let mut rest = Vec::new();
+        (&child).read_to_end(&mut rest).unwrap();
+        assert!(!rest.is_empty());
+    }
+
+    #[test]
     fn actual_drop_preserves_grace_before_enabling_one_signal_and_confirming_exit() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let (parent, child) = UnixStream::pair().unwrap();
@@ -6233,6 +6309,7 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
             copies: Arc::default(),
             import_reuse: Default::default(),
             shutdown: None,
+            cancel: None,
             transport: Arc::default(),
         };
         let (notice_tx, notice_rx) = std::sync::mpsc::channel();

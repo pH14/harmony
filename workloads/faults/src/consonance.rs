@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -611,6 +611,22 @@ thread_local! {
     static COORDINATOR_SESSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static LIVE: RefCell<Option<Live>> = const { RefCell::new(None) };
     static RETIRED: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
+    static JOB_CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+pub(crate) struct JobCancel;
+
+impl JobCancel {
+    pub(crate) fn install(cancel: Option<Arc<AtomicBool>>) -> Self {
+        JOB_CANCEL.with(|slot| *slot.borrow_mut() = cancel);
+        Self
+    }
+}
+
+impl Drop for JobCancel {
+    fn drop(&mut self) {
+        JOB_CANCEL.with(|slot| *slot.borrow_mut() = None);
+    }
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -1365,6 +1381,8 @@ fn with_live<T>(
             crate::job_observation::new_generation();
         }
         let live = slot.as_mut().ok_or("the session was not initialized")?;
+        live.session
+            .set_cancel(JOB_CANCEL.with(|cancel| cancel.borrow().clone()));
         let result = operation(live);
         if result.is_err() {
             live.cursor.invalidate();

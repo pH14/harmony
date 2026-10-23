@@ -962,6 +962,7 @@ pub fn run_scaled(
             work_budget: Some(budget),
             checkpoints: None,
             placement: None,
+            interrupt: None,
         },
     )?;
     let elapsed = started.elapsed().as_secs_f64();

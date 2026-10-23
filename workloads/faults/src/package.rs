@@ -224,6 +224,15 @@ pub struct Report {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hang_stop: Option<String>,
     pub execution_failures: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub jobs_cancelled: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl Report {
@@ -258,6 +267,8 @@ impl Report {
             failure_reports: Vec::new(),
             hang_stop: None,
             execution_failures: 0,
+            jobs_cancelled: 0,
+            interrupted: false,
         }
     }
 
@@ -487,6 +498,7 @@ mod live {
         resources: &Resources,
         session_worker: Option<WorkerLauncher>,
         start: &super::SearchStart,
+        interrupt: Option<&'static std::sync::atomic::AtomicBool>,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
         let workers = u32::try_from(resources.placement.workers.len())?;
@@ -568,6 +580,7 @@ mod live {
                 checkpoint_owner: options.checkpoint_owner.clone(),
                 max_image_bytes: 64 << 20,
             }),
+            interrupt,
         );
         if let Err(error) = stream.flush() {
             if cache.verify_integrity().is_ok() {
@@ -648,6 +661,8 @@ mod live {
             "hung_jobs": campaign_report.campaign.hung_jobs,
             "hang_reports": hangs.iter().map(HangReport::file_name).collect::<Vec<_>>(),
             "hang_stop": campaign_report.campaign.hang_stop,
+            "jobs_cancelled": campaign_report.campaign.jobs_cancelled,
+            "interrupted": campaign_report.campaign.interrupted,
             "execution_failures": campaign_report.campaign.execution_failures,
             "failure_reports": failures.iter().map(FailureReport::file_name).collect::<Vec<_>>(),
             "telemetry": campaign_report.campaign.telemetry,
@@ -728,6 +743,8 @@ mod live {
             .hang_stop
             .clone_from(&campaign_report.campaign.hang_stop);
         report.execution_failures = campaign_report.campaign.execution_failures;
+        report.jobs_cancelled = campaign_report.campaign.jobs_cancelled;
+        report.interrupted = campaign_report.campaign.interrupted;
         report.write(&options.output)?;
         if let Some(stop) = &report.hang_stop {
             eprintln!("{stop}");

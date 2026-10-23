@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, time::Duration};
+use std::{
+    error::Error,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use serde::{Deserialize, Serialize};
 
 use super::{
     archive::RetentionPolicy,
     campaign::{CampaignActionResult, CampaignCandidate, CampaignJobResult, Workload},
-    telemetry::Moment,
 };
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -36,43 +41,50 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    pub fn should_stop(self, stop: RolloutStop) -> bool {
-        self.ends_rollout(stop) || stop.deadline_passed()
+    pub fn should_stop(self, stop: &RolloutStop) -> bool {
+        self.ends_rollout(stop) || stop.cancelled()
     }
 
-    pub const fn ends_rollout(self, stop: RolloutStop) -> bool {
+    pub const fn ends_rollout(self, stop: &RolloutStop) -> bool {
         self.disposition.is_terminal() || (stop.objective && self.objective_reached)
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct RolloutStop {
     objective: bool,
-    deadline: Option<(Moment, Duration)>,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl RolloutStop {
     pub const fn new(stop_on_objective: bool) -> Self {
         Self {
             objective: stop_on_objective,
-            deadline: None,
+            cancel: None,
         }
     }
 
-    pub(crate) const fn with_deadline(self, deadline: Option<(Moment, Duration)>) -> Self {
+    #[must_use]
+    pub fn with_cancel(self, cancel: Option<Arc<AtomicBool>>) -> Self {
         Self {
             objective: self.objective,
-            deadline,
+            cancel,
         }
     }
 
-    pub const fn stops_on_objective(self) -> bool {
+    pub const fn stops_on_objective(&self) -> bool {
         self.objective
     }
 
-    pub fn deadline_passed(self) -> bool {
-        self.deadline
-            .is_some_and(|(started, budget)| started.elapsed() >= budget)
+    #[must_use]
+    pub const fn cancellation(&self) -> Option<&Arc<AtomicBool>> {
+        self.cancel.as_ref()
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
     }
 }
 
@@ -233,7 +245,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop) {
+        if outcome.should_stop(&stop) {
             break;
         }
     }

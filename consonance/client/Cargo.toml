@@ -24,6 +24,7 @@ thiserror = "2"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"
+rustix = { version = "1", features = ["event"] }
 
 [dev-dependencies]
 memmap2 = "0.9"
