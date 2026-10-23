@@ -8,7 +8,9 @@ use std::{
 
 use super::heap;
 
-pub const CONTINUATION_IDENTIFIER: &str = "position_edges_preference_queue_v1";
+pub const CONTINUATION_IDENTIFIER: &str = "position_edges_cell_best_sources_success_share_v2";
+
+pub const CONTINUATION_SHARE_SCALE: u16 = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Continuation<P, A> {

@@ -815,10 +815,16 @@ exits. Every retained parent and child whose positions differ records an edge
 between the two positions, inside one place or across two, holding the
 cheapest action tail observed between them, the donor and leaf it came from,
 and the preferences the tail gained from its source to its arrival. Edges
-inside a place give nearly every position on a route an exit, so an
-improvement anywhere queues. When a replacement wins its slot under
-`preference_cmp` with `Ordering::Greater`, its position is queued at the index
-of the lowest preference it took. A reservation that takes the queue examines
+inside a place give nearly every position on a route an exit. An ordinary
+admission queues its position when it becomes the best holder of its cell
+under a preference, `preference_cmp` returning `Ordering::Greater` against
+every holder of the cell, at the index of the lowest such preference. The
+first holder of an empty cell queues at index 0. A slot win below the cell's
+best holder does not queue, so the queue carries only stock no other state in
+the cell already holds. A continuation landing queues its position when it
+wins its slot, including an empty slot, at the lowest preference it took
+there. Edges are keyed by position without progress, so a landing at a new
+tier follows the moves recorded at earlier tiers. A reservation that takes the queue examines
 at most 8 exits, skipping stale parents and prefixes already archived. Among the rest it dispatches the first whose holder beats
 every current holder of the slot it would land in, the parent's progress at the
 destination position, under the preference it won, and otherwise the first edge
@@ -843,12 +849,15 @@ propagates. A source whose
 exits run out leaves the queue, and removing a position releases its
 edges and the pending entries that depended on them.
 
-One reservation in four attempts a continuation while the queue is not empty.
-The share is fixed rather than fed back from how the replays are doing: one in
-eight starves the chain and one in two crowds out ordinary exploration. The
-draw is `RomuDuoJrRand::with_seed(campaign_seed ^ reservation)`, so replay
-recomputes it at each reconstructed reservation and rejects a record whose
-`continuation_energy` disagrees; the tier draw salts the same seed.
+While the queue is not empty, a reservation attempts a continuation with
+probability `(replaced + 1) / (jobs + 2)` from `ContinuationAccounting`, in
+steps of 1/256. The share starts at one half and follows the measured rate at
+which replays win their slot, so replays that keep winning take more of the
+search and replays that stop winning give it back. The draw is
+`RomuDuoJrRand::with_seed(campaign_seed ^ reservation)` below 256, compared
+with the share. Replay recomputes it at each reconstructed reservation and
+rejects a record whose `continuation_energy` disagrees; the tier draw salts
+the same seed.
 
 The bank exists only for a workload whose key declares a preference. Without
 one nothing is recorded, nothing is charged, and the stream is unchanged.
