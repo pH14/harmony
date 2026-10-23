@@ -137,3 +137,25 @@ revision, guest budget and observed results with the pull request. A longer
 fault-search qualification must also satisfy every reachability assertion.
 Replays use their exact recording binaries, kernel, initramfs and image;
 measurements from different builds are not interchangeable.
+
+## Clock-skew consistency witness
+
+`bash workloads/harness/targets/hbase/check-clock-skew.sh IMAGE EVIDENCE CONFIG`
+warms up the cluster, steps the first RegionServer's wall clock back one
+second, and checks for an acknowledged Put followed by a stale Get. It treats
+the consistency finding as the expected result and requires exact replay.
+The pinned HBase revision and image `harmony-hbase:qualified-2c79c38`
+reproduced the finding without a service restart: an acknowledged CAS on `k0`
+completed, a later Put on `k0` was acknowledged, and two later successful
+reads returned the CAS value. The checker orders these operations with its
+monotonic journal clock, so the wall-clock step does not create a false order.
+
+HBase's [version semantics](https://hbase.apache.org/docs/single-page/) assign
+an implicit Put the RegionServer's current wall-clock time and make an
+ordinary Get return the highest timestamped version. A backward clock step
+can therefore make a later acknowledged write temporarily invisible to a
+normal Get. The master's default [skew warning and rejection thresholds](https://hbase.apache.org/devapidocs/src-html/org/apache/hadoop/hbase/master/ServerManager.FlushedSequenceIdFlusher.html)
+are 10 and 30 seconds, respectively; they do not prevent a one-second step.
+Applications requiring read-after-write visibility should keep RegionServer
+clocks synchronized and avoid backward steps. This is a conditional clock
+fault, not evidence of stale reads under normal synchronized operation.
