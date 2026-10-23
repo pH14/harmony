@@ -38,7 +38,6 @@ ARG RQLITE_VERSION=v10.6.2
 ARG RQLITE_SOURCE_SHA256=
 ARG ANTITHESIS_SDK_VERSION=0.8.0
 ARG RQLITE_SOURCE_BASE=https://github.com/rqlite/rqlite/archive/refs/tags
-ARG RQLITE_INSTRUMENT=github.com/rqlite,github.com/hashicorp/raft,github.com/mattn/go-sqlite3,go.etcd.io/bbolt
 ENV CGO_ENABLED=1 GOFLAGS=-trimpath GOTOOLCHAIN=local
 
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
@@ -74,7 +73,7 @@ RUN go install "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-to
 COPY workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch \
      /build/antithesis-sdk-go-v0.8.0-linux-arm64.patch
 COPY workloads/languages/go/antithesis-go-toolexec-v0.8.0-stdlib.patch /build/stdlib.patch
-COPY workloads/languages/go/configure-stdlib.sh /build/configure-stdlib.sh
+COPY workloads/languages/go/configure-instrumentation.sh /build/configure-instrumentation.sh
 
 RUN sdk_cache_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
     && test -d "${sdk_cache_dir}" \
@@ -94,7 +93,7 @@ RUN mkdir -p /out/rqlite /out/symbols /out/stdlib \
     && sdk_dir=/build/antithesis-sdk-go \
     && (cd /build/rqlite \
         && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
-           bash /build/configure-stdlib.sh "${sdk_dir}" "${RQLITE_INSTRUMENT}" /out/stdlib > /out/stdlib/instrumentation.env \
+           bash /build/configure-instrumentation.sh "${sdk_dir}" /out/stdlib ./cmd/rqlited > /out/stdlib/instrumentation.env \
         && source /out/stdlib/instrumentation.env \
         && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
            ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
