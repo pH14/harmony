@@ -92,7 +92,7 @@ scan. After any series change, run `test-patch-series.sh` and the platform
 image checks. Generate a patch from a pristine extract of the pinned source;
 preserve its explanatory preamble before the first diff header.
 
-`common/0006-harmony-dcache-pvclock.patch` makes the pending-cleanup path in
+`vm/0002-harmony-dcache-pvclock.patch` makes the pending-cleanup path in
 `shrink_dcache_parent` sleep for one jiffy under either Harmony clock. Without
 that wait, a task can spin over dentries whose teardown was preempted, with no
 clock advancement to schedule the owner. This is distinct from the rwsem

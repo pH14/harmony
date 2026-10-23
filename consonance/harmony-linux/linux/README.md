@@ -395,19 +395,12 @@ the nested profile's reviewed instruction baselines. The ordinary guest kernel
 keeps its existing toolchain profiles. Compilation and instruction audits finish
 before the job attempts to boot L1 or run the inner VMM.
 
-### JVM termination and dentry cleanup
+### Dentry cleanup under virtual clocks
 
-The default HotSpot/ZooKeeper startup probe exposed a deterministic kernel
-stall after readiness when the probe inspected `/proc/PID/task/*/stat` and
-terminated the JVM. Host KVM exit samples stayed in `d_walk`, `select_collect2`
-and `_raw_spin_lock`: the dcache cleanup loop found pending teardown owned by
-another task, but its exit-free retries did not advance the virtual clock to
-reschedule that task. The common dcache patch waits one jiffy on that path,
-outside dentry locks and RCU sections, rather than skipping pending entries.
-The original default-JVM reproducer reached readiness at 79.71 guest seconds
-and then completed with the production patch (seed 17); seed 18 completed
-after readiness at 79.62 guest seconds. Both returned exit code zero, and
-seed 17 replayed successfully with the exact recording artifacts. The
-unpatched kernel hit its 600-second wall cutoff. The clean patched build
-also passed the x86 counter-opcode and packed-image audits. See issue #881 and the ZooKeeper target README
-for the reproduction image and measurement commands.
+`shrink_dcache_parent` can find pending teardown owned by another task without
+collecting entries to dispose. An exit-free retry loop cannot advance the
+virtual clock, and `cond_resched` alone does not ensure the owner runs. The
+VM-only dcache patch sleeps for one jiffy on that path under either Harmony
+clock, outside dentry locks and RCU sections. It preserves pending entries
+and the normal kernel path when Harmony clocks are disabled. UML uses its
+own scheduling mechanism and does not include this patch.
