@@ -22,6 +22,7 @@ generic operations onto the target's client API.
 | `targets/rqlite` | rqlite image and adapter |
 | `targets/etcd` | etcd image and adapter, three members or one |
 | `targets/redisraft` | Redis-Raft image and adapter |
+| `targets/openbao` | OpenBao image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -533,6 +534,42 @@ consistency check never replaces them, and the cluster can lose acknowledged
 writes. A search with the default fault alphabet finds this as a
 linearizability violation on `dfd91d4` too, with a `DiskError` among the
 shrunk faults.
+
+## OpenBao
+
+`targets/openbao` drives the `register` family against
+[OpenBao](https://github.com/openbao/openbao) `v2.7.1` with integrated
+storage (Raft) on three nodes `n1` to `n3` at 10.77.0.1-3 (API port 8200,
+cluster port 8201) in `harness-net` namespaces. `setup.sh` writes each node's
+configuration from `bao.hcl.in`: a `raft` storage path under `/tmp/bao/<node>`
+on a 256 MiB node disk, `retry_join` toward all three nodes, a `static` seal
+with a fixed test key so a restarted node unseals itself, and
+`disable_standby_reads`. Each node logs to `/tmp/bao/<node>.log`. OpenBao
+documents that integrated storage commits an entry once a quorum stores it
+durably and that writes return only after they are committed and applied.
+Standby reads are eventually consistent by default, so the target turns them
+off and every request reaches the active node.
+
+`ready.sh` initializes the cluster once per execution through `n1` with one
+recovery share, keeps the root token in `/tmp/bao/token`, mounts KV version 2
+at `secret/`, and then runs the adapter's `ready`, which passes once a write
+succeeds through any node.
+
+Each operation goes to a node drawn from the SDK stream over a new HTTP
+connection, and the client follows no redirects. A standby whose forwarded
+request fails answers `307` toward the active node, and the forwarded request
+may already have committed, so a redirected write is indeterminate. `write` and `read` use `secret/data/<key>`. `cas` writes with
+`options.cas` set to the version that stored the old value, from the
+versions the client has seen or from a read. A `check-and-set parameter did
+not match` answer and a failed dial are definite failures, other write errors
+are indeterminate and read errors are definite. Reads go to the active node,
+so the adapter pins no reads and the check skips the replica comparison.
+
+The image builds `bao` from the release source with Go 1.27 and the
+`openbao` build tag, without the web UI, through the Antithesis Go
+instrumentation. `cpuid-xgetbv.sh` replaces `klauspost/cpuid` with a copy whose `XGETBV`
+clears ECX: admission accepts `XGETBV` only after a provable zero selector,
+and every caller passes 0.
 
 ## Native runner
 
