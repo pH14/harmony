@@ -1416,6 +1416,25 @@ index 1ebddd5..7e066eb 100644
  		goto stop;
 PATCH
 
+# On x86 the core keeps the CPU clock in a struct field, so every instruction
+# loads and stores it. Other targets keep it in a local variable and write it
+# back when run() returns. Use the local on x86 too.
+patch -d "$build_root/core" -f -p1 <<'PATCH'
+diff --git a/nes_emu/blargg_endian.h b/nes_emu/blargg_endian.h
+index f5f1567..971814b 100644
+--- a/nes_emu/blargg_endian.h
++++ b/nes_emu/blargg_endian.h
+@@ -12,7 +12,7 @@
+ #if defined (_M_IX86) || defined (_M_IA64) || defined (__i486__) || \
+ 		defined (__x86_64__) || defined (__ia64__)
+ 	#define BLARGG_CPU_X86 1
+-	#define BLARGG_CPU_CISC 1
++	#define BLARGG_CPU_CISC 0
+ #endif
+ 
+ #if defined (__powerpc__) || defined (__ppc__) || defined (__POWERPC__) || defined (__powerc)
+PATCH
+
 make -C "$build_root/core" -j "${HARMONY_QUICKNES_BUILD_JOBS:-4}" \
     DEBUG=0 OPTIMIZE=-O2 GIT_VERSION="$revision"
 

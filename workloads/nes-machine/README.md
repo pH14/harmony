@@ -108,6 +108,11 @@ index memory directly instead of calling the read function. Emulated state and
 timing are unchanged. The patch is about 1.08x faster on a Metroid tape built
 with gcc 11, and the core produces the same bytes on every frame.
 
+A fourth patch keeps the CPU clock in a local variable on x86, as the core
+already does on other targets, and writes it back when `run` returns. The x86
+build otherwise loads and stores the clock field on every instruction. It adds
+about 1.03x on the same tape, with identical frames.
+
 Snapshots contain a format marker, the QuickNES revision, core hash, prepared
 execution hash, fixed serialized-state length, and canonicalized core state.
 The current marker is `HQNESST3`; older snapshots are rejected. Restore rejects
