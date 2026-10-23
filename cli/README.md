@@ -90,6 +90,9 @@ wall_seconds = 600
 A fresh search takes its execution budget from `--executions` or `[search]
 executions`, and its wall budget from `--for` or `[search] wall_seconds`. With
 only a wall budget the search has no execution cap and stops at the wall limit.
+At the wall limit a faults search drops the jobs still running and writes its
+report within a few seconds. The first SIGINT or SIGTERM stops it the same way,
+and a second one exits at once without a report.
 With only an execution budget it stops at that count. With both it stops at
 whichever comes first. With neither it stops at 1,000 executions. A value written
 in `harmony.toml` counts as given. The built-in 1,000 applies only when no

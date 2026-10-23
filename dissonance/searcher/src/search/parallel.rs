@@ -260,10 +260,30 @@ impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn receive(&self) -> Result<WorkerReply<Key, Output, O>, WorkerPoolError> {
         self.reply_receiver
             .recv()
             .map_err(|_| WorkerPoolError::RepliesClosed)
+    }
+
+    pub(crate) fn receive_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<WorkerReply<Key, Output, O>>, WorkerPoolError> {
+        match self.reply_receiver.recv_timeout(timeout) {
+            Ok(reply) => Ok(Some(reply)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(WorkerPoolError::RepliesClosed),
+        }
+    }
+
+    pub(crate) fn discard_queued(&self) {
+        if let Some(shared) = self.jobs.as_ref()
+            && let Ok(mut queue) = shared.queue.lock()
+        {
+            queue.jobs.clear();
+        }
     }
 
     pub(crate) fn try_receive(

@@ -43,6 +43,7 @@ impl WorkerSession {
             &self.transport,
             work::Group::Endpoint,
         )
+        .and_then(|()| self.await_reply())
         .and_then(|()| {
             receive_measured(
                 &self.stream,

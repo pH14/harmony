@@ -285,7 +285,7 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop) {
+        if outcome.should_stop(&stop) {
             break;
         }
     }

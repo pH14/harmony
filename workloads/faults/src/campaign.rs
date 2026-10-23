@@ -450,6 +450,7 @@ pub(crate) fn execute_job(
     if replay.len() != replay_certificates.len() {
         return Err("fault replay certificate count does not match its action path".into());
     }
+    let _cancel = crate::consonance::JobCancel::install(stop.cancellation().cloned());
     target.restore(origin_snapshot)?;
     if job_hung(target, "parent reconstruction")? {
         return Ok(hung_job(&[]));
@@ -507,7 +508,7 @@ pub(crate) fn execute_job(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop) {
+        if outcome.should_stop(&stop) {
             break;
         }
     }
@@ -1299,7 +1300,7 @@ pub fn run_fault_campaign_checkpointed(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
-    run_fault_campaign_with_plan(game, config, origin, stream, progress, None)
+    run_fault_campaign_with_plan(game, config, origin, stream, progress, None, None)
 }
 
 pub fn run_fault_campaign_with_plan(
@@ -1309,6 +1310,7 @@ pub fn run_fault_campaign_with_plan(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
     checkpoints: Option<searcher::search::checkpoint::CheckpointPlan>,
+    interrupt: Option<&'static std::sync::atomic::AtomicBool>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
     let mut generic = config.generic();
     if let CampaignOrigin::SearchCheckpoint { path, .. } = origin {
@@ -1324,6 +1326,7 @@ pub fn run_fault_campaign_with_plan(
         CampaignExecutionOptions {
             placement: config.placement.clone(),
             checkpoints,
+            interrupt,
             ..CampaignExecutionOptions::default()
         },
     )?;
@@ -1658,7 +1661,6 @@ mod tests {
                 duration_checkpoint_before: None,
                 duration_checkpoint_after: None,
                 suffix_limit: None,
-                deadline_actions: None,
             });
             let line = serde_json::to_string(&record).unwrap();
             assert!(line.contains(&format!("\"digest\":\"{digest}\"")));
