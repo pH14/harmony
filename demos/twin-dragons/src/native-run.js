@@ -20,7 +20,7 @@ async function post(path, body = {}) {
   return reply;
 }
 
-function segments(items, selected, pick) {
+export function segments(items, selected, pick) {
   const group = element("div", { className: "segments", role: "group" });
   for (const [id, label] of items) {
     group.append(element("button", { type: "button", textContent: label, ariaPressed: String(id === selected), onclick: () => pick(id) }));
@@ -39,21 +39,22 @@ function age(started) {
   return minutes < 1 ? "just now" : minutes < 90 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago`;
 }
 
-export async function nativeRuns(gameId, mount, catalog) {
-  if (!LOOPBACK.has(location.hostname)) return;
+export async function detectLauncher() {
+  if (!LOOPBACK.has(location.hostname)) return null;
   const page = await fetch(location.href, { method: "HEAD" }).catch(() => null);
-  if (!page?.headers.has(LAUNCHER_HEADER)) return;
+  if (!page?.headers.has(LAUNCHER_HEADER)) return null;
   const options = await fetch("/launcher/machines").then((response) => (response.ok ? response.json() : null)).catch(() => null);
-  if (!options?.machines?.length) return;
+  return options?.machines?.length ? options : null;
+}
+
+export function nativePanel(options, catalog, gameId) {
   const available = new Set(options.games),
     byId = new Map(catalog.map((choice) => [choice.id, choice])),
-    members = (choice) => (choice.family ? catalog.filter((member) => member.family === choice.family) : [choice]),
-    titles = catalog.filter((choice) => (!choice.family || choice.id === choice.family) && members(choice).some((member) => available.has(member.id))),
     label = (id) => {
       const choice = byId.get(id);
       return choice?.group ? `${choice.title} · ${choice.group}` : (choice?.title ?? id);
     };
-  const state = { machine: options.machines[0].name, game: available.has(gameId) ? gameId : options.games[0] };
+  const state = { machine: options.machines[0].name, game: gameId };
   const workers = element("input", { type: "number", min: 1, value: 8 }),
     memory = element("input", { type: "number", min: 0.25, step: 0.25, value: 4 }),
     seed = element("input", { type: "number", min: 0, value: 1 }),
@@ -62,46 +63,33 @@ export async function nativeRuns(gameId, mount, catalog) {
     ceiling = element("p", { className: "native-note" }),
     message = element("p", { className: "native-message", role: "status" }),
     list = element("ul", { className: "native-runs" }),
-    machinePick = element("section", { className: "game-group" }),
-    gamePick = element("div", { className: "game-choice" });
-  const entry = () => options.machines.find((machine) => machine.name === state.machine);
+    sectionPick = element("section", { className: "game-group" });
   const limits = () => {
-    const machine = entry();
+    const machine = options.machines.find((entry) => entry.name === state.machine);
     workers.max = machine.workers;
     workers.value = Math.min(Number(workers.value) || 1, machine.workers);
     memory.max = machine.memory_mib / 1024;
     memory.value = Math.min(Number(memory.value) || 1, machine.memory_mib / 1024);
     ceiling.textContent = `Up to ${machine.workers} workers and ${(machine.memory_mib / 1024).toFixed(0)} GiB of archive on ${machine.name}. The run, its workers and the live view share ${(machine.memory_max_mib / 1024).toFixed(0)} GiB.`;
   };
-  const render = () => {
-    machinePick.replaceChildren(
-      ...(options.machines.length > 1
-        ? [element("h3", { textContent: "Machine" }), segments(options.machines.map((machine) => [machine.name, machine.name]), state.machine, (name) => { state.machine = name; limits(); render(); })]
-        : []),
-    );
-    const top = titles.find((choice) => members(choice).some((member) => member.id === state.game)),
-      homebrew = titles.filter((choice) => !choice.rom.upload),
-      owned = titles.filter((choice) => choice.rom.upload),
-      choose = (choice) => (state.game = members(choice).find((member) => available.has(member.id)).id),
-      row = (heading, choices) =>
-        choices.length
-          ? element("section", { className: "game-group" }, element("h3", { textContent: heading }), segments(choices.map((choice) => [choice.id, choice.title]), top?.id, (id) => { choose(byId.get(id)); render(); }))
-          : null;
-    const sections = members(top).filter((member) => available.has(member.id));
-    gamePick.replaceChildren(
-      ...[row("Homebrew", homebrew), row("Bring your own ROM", owned)].filter(Boolean),
-      ...(sections.length > 1
-        ? [element("section", { className: "game-group" }, element("h3", { textContent: "Section" }), segments(sections.map((member) => [member.id, member.group]), state.game, (id) => { state.game = id; render(); }))]
-        : []),
+  const sections = () => {
+    const family = byId.get(state.game)?.family;
+    return family ? catalog.filter((member) => member.family === family && available.has(member.id)) : [];
+  };
+  const renderSections = () => {
+    const members = sections();
+    sectionPick.hidden = members.length < 2;
+    sectionPick.replaceChildren(
+      element("h3", { textContent: "Section" }),
+      segments(members.map((member) => [member.id, member.group]), state.game, (id) => { state.game = id; renderSections(); }),
     );
   };
   limits();
-  render();
+  renderSections();
   const form = element(
     "form",
     { className: "native-form" },
-    machinePick,
-    gamePick,
+    sectionPick,
     element(
       "div",
       { className: "native-fields" },
@@ -113,21 +101,12 @@ export async function nativeRuns(gameId, mount, catalog) {
     element("div", { className: "native-submit" }, start, ceiling),
     message,
   );
-  const dialog = element(
-    "dialog",
-    { id: "native-run", className: "native-run", ariaLabelledby: "native-run-title" },
-    element(
-      "div",
-      { className: "level-picker-heading" },
-      element("button", { className: "close", type: "button", ariaLabel: "Close native runs", textContent: "×", onclick: () => dialog.close() }),
-      element("h2", { id: "native-run-title", textContent: "Native search" }),
-    ),
-    form,
-    element("h3", { className: "native-runs-title", textContent: "Runs" }),
-    list,
-  );
-  document.body.append(dialog);
+  const root = element("div", { className: "native-panel-body" }, form, element("h3", { className: "native-runs-title", textContent: "Runs" }), list);
+  let timer = 0, launched = null;
   const draw = (runs) => {
+    const mine = runs.find((run) => run.id === launched);
+    if (mine?.state === "running" && mine.watch) location.assign(mine.watch);
+    if (mine?.state === "failed") message.textContent = mine.message;
     list.replaceChildren(
       ...(runs.length ? runs.slice(0, 8) : [{ empty: true }]).map((run) => {
         if (run.empty) return element("li", { className: "native-empty", textContent: "No runs yet." });
@@ -161,8 +140,6 @@ export async function nativeRuns(gameId, mount, catalog) {
       .then((response) => response.json())
       .then(({ runs }) => draw(runs))
       .catch(() => (message.textContent = "The launcher stopped answering."));
-  let timer = 0;
-  dialog.addEventListener("close", () => clearInterval(timer));
   form.onsubmit = (event) => {
     event.preventDefault();
     message.textContent = "";
@@ -175,14 +152,30 @@ export async function nativeRuns(gameId, mount, catalog) {
       seed: Number(seed.value),
       hours: Number(hours.value),
     })
-      .then(refresh, (error) => (message.textContent = error.message))
+      .then((run) => ((launched = run.id), refresh()), (error) => (message.textContent = error.message))
       .finally(() => (start.disabled = false));
   };
-  const open = element("button", { type: "button", className: "native-open", textContent: "Native runs" });
-  open.onclick = () => {
-    dialog.showModal();
-    refresh();
-    timer = setInterval(refresh, REFRESH_MS);
+  return {
+    element: root,
+    machines: options.machines.map((machine) => machine.name),
+    available: (id) => available.has(id),
+    setGame(id) {
+      const choice = byId.get(id),
+        member = catalog.find((entry) => entry.family === choice?.family && available.has(entry.id));
+      state.game = available.has(id) ? id : (member?.id ?? id);
+      renderSections();
+    },
+    setMachine(name) {
+      state.machine = name;
+      limits();
+    },
+    activate() {
+      this.deactivate();
+      refresh();
+      timer = setInterval(refresh, REFRESH_MS);
+    },
+    deactivate() {
+      clearInterval(timer);
+    },
   };
-  mount.append(open);
 }

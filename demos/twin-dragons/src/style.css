@@ -1433,10 +1433,7 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
   .segments button { padding: 8px 6px; font-size: 10.5px; }
   .toggles button { gap: 4px; }
 }
-.native-open { box-sizing: border-box; height: var(--bar-height); padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); font-size: 12px; white-space: nowrap; }
-.native-open:hover { background: var(--hover); }
-.native-run { width: min(640px, calc(100% - 32px)); max-width: 640px; max-height: calc(100dvh - 32px); padding: 28px; border-radius: 16px; overscroll-behavior: contain; animation: sheet-in .2s ease-out; }
-.native-run .level-picker-heading h2 { margin: 0 0 20px; font-size: 23px; }
+.native-panel { margin-top: 4px; }
 .native-form { display: grid; gap: 14px; }
 .native-form .game-group .segments, .native-form .game-choice .segments { display: flex; }
 .native-form .game-group button { flex: 1; font-size: 13px; padding: 9px 10px; }

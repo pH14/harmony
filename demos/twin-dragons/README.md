@@ -275,9 +275,12 @@ tools/launcher.py
 ```
 
 and open `http://127.0.0.1:8790/`. On a loopback address the page asks
-`/launcher/machines`; when the launcher answers, a Native runs button opens a
-dialog to pick the machine, game, workers, archive budget, seed and time limit. A
-run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
+`/launcher/machines`; when the launcher answers, the New search picker gains a
+Run on row: This browser, or one of the machines. A machine replaces the level
+grid with the game's section, workers, archive budget, seed and time limit, and
+lists the launcher's runs with Watch and Stop. Starting a run opens its live
+view once it is running. Without a launcher, such as on the published site, the
+picker shows only browser searches. A run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
 builds the QuickNES core with `scripts/build-quicknes-core.sh` and `nes-eval`
 there once per commit, uploads the ROM, and starts `nes-eval` with
 `live: 127.0.0.1:0` as a `systemd-run` unit named `harmony-arcade-<id>` with

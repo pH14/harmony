@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import assert from "node:assert/strict";
 import test from "node:test";
-import { nativeRuns } from "../src/native-run.js";
+import { detectLauncher, nativePanel } from "../src/native-run.js";
 
 test("Native Runs distinguishes archive selection from the chosen whole-run limit", async (t) => {
   class Node {
@@ -33,15 +33,18 @@ test("Native Runs distinguishes archive selection from the chosen whole-run limi
     return { ok: true, json: async () => ({ runs: [] }) };
   };
   const catalog = [{ id: "famidash", title: "Famidash", rom: {} }];
-  await nativeRuns("famidash", mount, catalog);
+  const options = await detectLauncher();
+  assert.deepEqual(options.machines, machines);
+  const panel = nativePanel(options, catalog, "famidash");
   const all = (node) => [node, ...node.children.flatMap((child) => typeof child === "object" ? all(child) : [])];
-  const nodes = all(body), form = nodes.find((node) => node.tag === "form");
+  const nodes = all(panel.element), form = nodes.find((node) => node.tag === "form");
   const archiveLabel = nodes.find((node) => node.tag === "label" && node.children[0].textContent === "Archive (GiB)");
   assert.ok(archiveLabel);
   const archive = archiveLabel.children[1], note = nodes.find((node) => node.className === "native-note");
   assert.equal(archive.max, 4);
   assert.match(note.textContent, /share 8 GiB/);
-  nodes.find((node) => node.tag === "button" && node.textContent === "large").onclick();
+  assert.deepEqual(panel.machines, ["small", "large"]);
+  panel.setMachine("large");
   assert.equal(archive.max, 64);
   assert.match(note.textContent, /share 80 GiB/);
   archive.value = 16;
