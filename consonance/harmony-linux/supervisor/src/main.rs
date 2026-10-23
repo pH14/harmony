@@ -121,6 +121,7 @@ mod runtime {
     use harmony_sdk::{Point, Sdk};
     use harmony_supervisor::blockdev::Disks;
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
+    use harmony_supervisor::disk::DiskMode;
     use harmony_supervisor::evidence::CheckEvidence;
     use harmony_supervisor::process;
     use harmony_supervisor::reconcile::Standing;
@@ -999,6 +1000,7 @@ mod runtime {
                 tick,
                 &mut runtime.assertion_output,
             )?;
+            remount_read_only_disks(&actions, nodes, supervisor, &mut runtime, tick)?;
             for action in actions {
                 log(tick, &action.describe());
                 apply(action, spec, bundle, nodes, supervisor, &mut runtime, tick)?;
@@ -1233,6 +1235,43 @@ mod runtime {
             return Err(format!("{error}; infrastructure state: {publish}"));
         }
         Err(error)
+    }
+
+    fn remount_read_only_disks(
+        actions: &[Action],
+        nodes: &mut [Node],
+        supervisor: &mut Supervisor,
+        runtime: &mut HookRuntime,
+        tick: u64,
+    ) -> Result<(), String> {
+        for action in actions {
+            if let Action::SetDiskMode {
+                node,
+                mode: DiskMode::Normal,
+            } = *action
+            {
+                runtime.disks.set_mode(node, DiskMode::Normal)?;
+            }
+        }
+        for (node, starting) in supervisor.remount_checks(actions) {
+            let closing = actions.iter().any(|action| {
+                matches!(action, Action::SetDiskMode { node: closed, mode: DiskMode::Normal } if *closed == node)
+            });
+            if !runtime.disks.failed(node, closing)? {
+                continue;
+            }
+            if kill_node(nodes, node, supervisor, tick)? && !starting {
+                supervisor.note_killed_for_remount(node);
+            }
+            if let Some(plan) = runtime.disks.remount(node)? {
+                log(
+                    tick,
+                    &format!("node {node} failed disk remounted: {}", plan.describe()),
+                );
+            }
+            supervisor.note_process_transition();
+        }
+        Ok(())
     }
 
     fn apply(
