@@ -1052,7 +1052,9 @@ mod runtime {
                 let generation = runtime.recovery.generation();
                 log(
                     tick,
-                    &format!("workload not ready {quiet} ticks after faults ended"),
+                    &format!(
+                        "workload not ready {quiet} ticks after faults ended or readiness was lost"
+                    ),
                 );
                 process::write_record(
                     &mut runtime.assertion_output,

@@ -9,6 +9,7 @@ pub enum RecoveryError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryReadiness {
     generation: u64,
+    first_unready: u64,
     ready: bool,
     fault_pending: bool,
     queued: Vec<u32>,
@@ -19,6 +20,7 @@ impl RecoveryReadiness {
     pub fn initially_ready() -> Self {
         Self {
             generation: 0,
+            first_unready: 0,
             ready: true,
             fault_pending: false,
             queued: Vec::new(),
@@ -30,6 +32,9 @@ impl RecoveryReadiness {
             .generation
             .checked_add(1)
             .ok_or(RecoveryError::GenerationExhausted)?;
+        if self.ready {
+            self.first_unready = self.generation;
+        }
         self.ready = false;
         self.fault_pending |= after_fault;
         Ok(())
@@ -66,6 +71,11 @@ impl RecoveryReadiness {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    #[must_use]
+    pub fn first_unready(&self) -> u64 {
+        self.first_unready
     }
 }
 
@@ -115,6 +125,7 @@ pub const RECOVERY_NANOS: u64 = 30_000_000_000;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RecoveryWatch {
     quiet_since: u64,
+    unready_since: Option<(u64, u64)>,
     reported: Option<u64>,
 }
 
@@ -127,12 +138,21 @@ impl RecoveryWatch {
     ) -> Option<u64> {
         if disturbed {
             self.quiet_since = tick;
+        }
+        if !readiness.is_pending() {
             return None;
         }
-        if !readiness.is_pending() || self.reported == Some(readiness.generation()) {
+        let unready_since = match self.unready_since {
+            Some((generation, since)) if generation == readiness.first_unready() => since,
+            _ => {
+                self.unready_since = Some((readiness.first_unready(), tick));
+                tick
+            }
+        };
+        if disturbed || self.reported == Some(readiness.generation()) {
             return None;
         }
-        let quiet = tick.saturating_sub(self.quiet_since);
+        let quiet = tick.saturating_sub(self.quiet_since.max(unready_since));
         if quiet < RECOVERY_NANOS / crate::TICK_NANOS {
             return None;
         }
@@ -161,6 +181,30 @@ mod tests {
             watch.observe(30 + BOUND, false, &readiness),
             Some(20 + BOUND)
         );
+    }
+
+    #[test]
+    fn a_workload_that_loses_readiness_after_faults_end_gets_the_whole_bound() {
+        let mut readiness = RecoveryReadiness::initially_ready();
+        let mut watch = RecoveryWatch::default();
+        readiness.restarted(true).unwrap();
+        assert_eq!(watch.observe(10, true, &readiness), None);
+        assert_eq!(watch.observe(20, false, &readiness), None);
+        readiness.mark_ready(readiness.generation());
+        assert_eq!(watch.observe(30, false, &readiness), None);
+        let mut tick = 10 + BOUND;
+        for _ in 0..4 {
+            readiness.restarted(true).unwrap();
+            assert_eq!(watch.observe(tick, false, &readiness), None);
+            assert_eq!(watch.observe(tick + BOUND - 1, false, &readiness), None);
+            readiness.mark_ready(readiness.generation());
+            tick += BOUND;
+        }
+        readiness.restarted(true).unwrap();
+        assert_eq!(watch.observe(tick, false, &readiness), None);
+        readiness.restarted(true).unwrap();
+        assert_eq!(watch.observe(tick + BOUND - 1, false, &readiness), None);
+        assert_eq!(watch.observe(tick + BOUND, false, &readiness), Some(BOUND));
     }
 
     #[test]
@@ -301,6 +345,7 @@ mod tests {
     fn generation_exhaustion_does_not_reuse_a_stale_generation() {
         let mut readiness = RecoveryReadiness {
             generation: u64::MAX,
+            first_unready: 0,
             ready: true,
             fault_pending: false,
             queued: Vec::new(),
