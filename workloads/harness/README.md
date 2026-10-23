@@ -352,12 +352,15 @@ acknowledgement. `native.py` ignores `disk` lines.
 
 `targets/nats-kv` drives the `register` family against bucket `B` (three file
 replicas, history 1) on the same three nodes, scripts, network hooks, 128 MiB
-node disks and log lines as `targets/nats`. `write` is `Put`, `read` is `Get`
-and `cas` is `Update` with a revision. NATS ADR-8 states that key-value gets use direct get, which any
-replica answers, with no read-after-write consistency. ADR-31 states that the
-non-direct message get routes to the stream leader and gives read-after-write
-coherency. `ready` therefore turns `AllowDirect` off on stream `KV_B`, and the
-client binds the bucket after ready, so `Get` uses the leader path.
+node disks and log lines as `targets/nats`. `write` is `Put`, `read` is a
+leader message get and `cas` is `Update` with a revision. NATS ADR-8 states
+that key-value gets use direct get, which any replica answers, with no
+read-after-write consistency. ADR-31 states that the non-direct message get
+routes to the stream leader and gives read-after-write coherency. `ready`
+therefore turns `AllowDirect` off on stream `KV_B`. Reads not pinned to a node
+and the lookup before a `cas` send an explicit `$JS.API.STREAM.MSG.GET`
+request, which only the stream leader answers, because the bucket handle keeps
+the direct-get choice it saw when it bound.
 
 The image runs every node with `jetstream { sync_interval: always }`, which
 syncs each write before the acknowledgement, so a lost acknowledged write is a
