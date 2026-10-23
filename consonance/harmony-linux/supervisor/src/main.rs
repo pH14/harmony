@@ -1245,19 +1245,18 @@ mod runtime {
         tick: u64,
     ) -> Result<(), String> {
         for action in actions {
-            let Action::SetDiskMode {
+            if let Action::SetDiskMode {
                 node,
                 mode: DiskMode::Normal,
             } = *action
-            else {
-                continue;
-            };
-            if !runtime.disks.set_mode(node, DiskMode::Normal)? || !runtime.disks.read_only(node)? {
+            {
+                runtime.disks.set_mode(node, DiskMode::Normal)?;
+            }
+        }
+        for (node, starting) in supervisor.remount_checks(actions) {
+            if !runtime.disks.read_only(node)? {
                 continue;
             }
-            let starting = actions.iter().any(
-                |action| matches!(action, Action::Start { node: start, .. } if *start == node),
-            );
             if kill_node(nodes, node, supervisor, tick)? && !starting {
                 supervisor.note_killed_for_remount(node);
             }

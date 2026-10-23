@@ -380,6 +380,26 @@ impl ProcessSupervisor {
         self.clocks.get(usize::from(node)).copied().unwrap_or(0)
     }
 
+    #[must_use]
+    pub fn remount_checks(&self, actions: &[Action]) -> Vec<(u16, bool)> {
+        let mut checks: Vec<(u16, bool)> = Vec::new();
+        for action in actions {
+            let (node, starting) = match *action {
+                Action::SetDiskMode {
+                    node,
+                    mode: DiskMode::Normal,
+                } => (node, false),
+                Action::Start { node, .. } if self.disk_faulted(node) => (node, true),
+                _ => continue,
+            };
+            match checks.iter_mut().find(|(checked, _)| *checked == node) {
+                Some(check) => check.1 |= starting,
+                None => checks.push((node, starting)),
+            }
+        }
+        checks
+    }
+
     pub fn note_killed_for_remount(&mut self, node: u16) {
         if let Some(state) = self.nodes.get_mut(usize::from(node)) {
             state.alive = false;
@@ -1063,6 +1083,58 @@ mod tests {
             }]
         );
         assert!(sup.take_natural_deaths().is_empty());
+    }
+
+    #[test]
+    fn a_disk_that_turns_read_only_after_its_window_is_checked_before_the_restart() {
+        let mut sup = Supervisor::new(2);
+        let error = active(&[(0, ProcessAction::DiskError)]);
+        sup.tick(&error, &[]);
+        let close = sup.tick(&ActiveWindows::new(), &[]);
+        assert_eq!(sup.remount_checks(&close), [(0, false)]);
+        let quiet = sup.tick(&ActiveWindows::new(), &[]);
+        assert_eq!(sup.remount_checks(&quiet), []);
+        let restart = sup.tick(&ActiveWindows::new(), &[0]);
+        assert_eq!(
+            restart,
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
+        assert_eq!(sup.remount_checks(&restart), [(0, true)]);
+        let natural = sup.tick(&ActiveWindows::new(), &[1]);
+        assert_eq!(
+            natural,
+            [Action::Start {
+                node: 1,
+                after_fault: false
+            }]
+        );
+        assert_eq!(sup.remount_checks(&natural), []);
+    }
+
+    #[test]
+    fn a_window_close_and_a_restart_in_one_tick_check_the_disk_once() {
+        let mut sup = Supervisor::new(1);
+        let error = active(&[(0, ProcessAction::DiskError)]);
+        sup.tick(&error, &[]);
+        sup.tick(&error, &[0]);
+        let close = sup.tick(&ActiveWindows::new(), &[]);
+        assert_eq!(
+            close,
+            [
+                Action::SetDiskMode {
+                    node: 0,
+                    mode: DiskMode::Normal
+                },
+                Action::Start {
+                    node: 0,
+                    after_fault: true
+                }
+            ]
+        );
+        assert_eq!(sup.remount_checks(&close), [(0, true)]);
     }
 
     #[test]

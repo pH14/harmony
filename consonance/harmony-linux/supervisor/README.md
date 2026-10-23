@@ -254,6 +254,9 @@ Three more windows act on a node's disk:
   does, keeping every logged write and flipping no bit. It then remounts the
   disk and starts the node as a restart after a fault. Writes that failed
   during the window stay lost, as unwritten page cache is lost in a reboot.
+  ext4 may notice the aborted journal only at a later write, after the window
+  has closed. So before each start of a node whose disk had a fault, the
+  supervisor checks again and remounts a read-only filesystem the same way.
 - A disk stall window (`DiskStall { hold_nanos }`) loads a `dm-delay` table
   that holds every request for the window's length, at least 50 ms. dm-delay
   serves shorter delays from a polling kernel thread instead of a timer. When the window closes, the
