@@ -12,6 +12,7 @@ pub mod live;
 pub mod prepare;
 pub mod smb;
 pub mod witness;
+pub mod zelda;
 
 pub mod package;
 

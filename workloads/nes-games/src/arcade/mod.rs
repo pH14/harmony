@@ -7,6 +7,7 @@ pub mod metroid;
 pub mod smb;
 pub mod trail;
 pub mod twin_dragons;
+pub mod zelda;
 
 use std::{error::Error, sync::Arc};
 

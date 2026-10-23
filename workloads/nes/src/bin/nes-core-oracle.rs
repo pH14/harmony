@@ -14,6 +14,7 @@ use machine::{
 };
 use nes_workload::{
     chord::ChordVocabulary, famidash, metroid, mm2, search::rand::RomuDuoJrRand, smb, twin_dragons,
+    zelda,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -55,6 +56,11 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             setup: metroid::target::power_on_walk(),
             chords: metroid::archive::CHORDS,
             cartridge_ram: true,
+        },
+        "zelda" => Game {
+            setup: zelda::target::setup_tape(),
+            chords: zelda::archive::CHORDS,
+            cartridge_ram: false,
         },
         other => return Err(format!("unknown game {other}").into()),
     })

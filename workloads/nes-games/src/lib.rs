@@ -10,3 +10,4 @@ pub mod nes_backend;
 pub mod smb;
 pub mod stb;
 pub mod twin_dragons;
+pub mod zelda;
