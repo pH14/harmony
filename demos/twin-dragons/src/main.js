@@ -3687,4 +3687,4 @@ else {
   askedForRom = true;
   $("new-search").onclick();
 }
-nativeRuns(game.id, document.querySelector(".view-tools")).catch(() => {});
+nativeRuns(game.id, document.querySelector(".view-tools"), [...GAMES.values()]).catch(() => {});
