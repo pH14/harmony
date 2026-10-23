@@ -22,6 +22,7 @@ generic operations onto the target's client API.
 | `targets/rqlite` | rqlite image and adapter |
 | `targets/etcd` | etcd image and adapter, three members or one |
 | `targets/redisraft` | Redis-Raft image and adapter |
+| `targets/consul` | Consul key-value image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -574,6 +575,49 @@ writes. A search with the default fault alphabet finds this as a
 linearizability violation on `dfd91d4` too, with a `DiskError` among the
 shrunk faults.
 
+## Consul
+
+`targets/consul` drives the `register` family through the Consul KV HTTP API
+with Go's HTTP client, so no client library retries a request. Three servers
+`n1` to `n3` run at 10.77.0.1-3 (HTTP port 8500) in `harness-net` namespaces
+with `-bootstrap-expect 3`, data under `/tmp/consul/<node>` on a 256 MiB node
+disk and logs in `/tmp/consul/<node>.log`; the bundle declares both and the
+four network hooks. `consul.hcl` turns off the update check, which needs the
+internet, and sets `raft_multiplier = 1`, the value Consul recommends for
+production, so elections take about a second as in the other targets. Every
+other setting is Consul's default.
+
+`write` is `PUT /v1/kv/<key>`, `read` is `GET /v1/kv/<key>?consistent` and
+`cas` is `PUT /v1/kv/<key>?cas=<ModifyIndex>`. Each operation goes to one
+server drawn from the SDK stream, and a follower forwards it to the leader.
+Consul's [consistency modes](https://developer.hashicorp.com/consul/api-docs/features/consistency)
+page states that the `consistent` mode is strongly consistent without
+caveats: the leader verifies with a quorum of peers that it is still leader
+before it answers. The `default` mode skips that check and can return stale
+values during a leader change, so the adapter never uses it.
+
+A `cas` from `old` uses the ModifyIndex the client last read for `old`. Values
+are unique per operation, so that index names the one write that stored
+`old`. When the client has not read `old`, it first reads the key in the
+`consistent` mode and fails definitely unless the key holds `old`. A `cas`
+answered `false` is a definite failure. A write is a definite failure only
+when the dial fails; every other write error is indeterminate. Read errors are
+definite.
+
+A read pinned to node `nI` writes a fresh key `fence-nI-<token>` through
+`nI`, then polls that key with `?stale` on `nI` until it returns the written
+value. Each read uses its own key, because a check runs a pinned read and a
+`replicas` read on the same node at once. A server applies committed entries in log order, so `nI` then holds
+every write acknowledged before the read started. The read is then a `stale`
+get on `nI`, which a server answers from its own state store. A `replicas`
+read on `nI` takes the same fence and lists every key with `?recurse&stale`.
+Each key's metadata is `create_index` and `modify_index`, the Raft indexes
+Consul records with the entry, which are the same on every server.
+`ready` passes once a put succeeds through any server.
+
+The Dockerfile knows the source SHA-256 of `v2.1.0` (default); pass
+`CONSUL_SOURCE_SHA256` for other versions.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
@@ -639,6 +683,8 @@ container. Opt-in options:
   node's SQLite database has applied.
 - An etcd pinned read trusts a member to answer a put only after it has applied
   the put.
+- A Consul pinned read trusts a server's `stale` answer to come from a state
+  store that applies entries in log order.
 - A Redis-Raft write or `cas` that fails with `MOVED`, `NOLEADER`,
   `NOCLUSTER`, `LOADING` or `ERR not leader` is trusted never to reach the
   Raft log.
