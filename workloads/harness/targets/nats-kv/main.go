@@ -39,7 +39,7 @@ var nodes = []string{"n1", "n2", "n3"}
 
 type adapter struct{}
 
-func (adapter) Family() family.Family { return family.Register{} }
+func (adapter) Family() family.Family { return family.Register{Reads: family.MonotonicReads} }
 
 func (adapter) Nodes() []string { return nodes }
 

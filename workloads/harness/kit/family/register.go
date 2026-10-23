@@ -17,7 +17,16 @@ const (
 	RegisterLinearizable = "register: each key's history is linearizable"
 	RegisterStale        = "register: no read returns a value older than an acknowledged earlier write"
 	RegisterNodeStale    = "register: no node's read returns a value older than an acknowledged earlier write"
+	RegisterWritesLinear = "register: each key's writes and compare-and-swaps are linearizable"
+	RegisterMonotonic    = "register: no client reads a value older than one it read before"
 	RegisterWriteAcked   = "register: a write was acknowledged"
+)
+
+type ReadConsistency int
+
+const (
+	LinearizableReads ReadConsistency = iota
+	MonotonicReads
 )
 
 const (
@@ -37,12 +46,23 @@ type Register struct {
 	Steps  int
 	Rounds int
 	Pause  time.Duration
+	Reads  ReadConsistency
 }
 
 func (Register) Name() string { return "register" }
 
-func (Register) Kinds() []string {
+func (r Register) Kinds() []string {
+	if r.Reads == MonotonicReads {
+		return []string{RegisterWritesLinear, RegisterMonotonic, RegisterNodeStale, RegisterReplicasAgree}
+	}
 	return []string{RegisterLinearizable, RegisterStale, RegisterNodeStale, RegisterReplicasAgree}
+}
+
+func (r Register) linearKind() string {
+	if r.Reads == MonotonicReads {
+		return RegisterWritesLinear
+	}
+	return RegisterLinearizable
 }
 
 func (Register) Observations() []string { return []string{RegisterWriteAcked} }
@@ -203,7 +223,10 @@ func registerModel(budget *stepBudget) porcupine.Model {
 func (r Register) Check(h *history.History) Report {
 	report := Report{
 		Facts:     map[string]bool{},
-		Undecided: map[string]bool{RegisterLinearizable: true, RegisterStale: true, RegisterNodeStale: true, RegisterReplicasAgree: true},
+		Undecided: map[string]bool{},
+	}
+	for _, kind := range r.Kinds() {
+		report.Undecided[kind] = true
 	}
 	byKey := map[string][]registerOp{}
 	pinned := map[string][]registerOp{}
@@ -230,6 +253,10 @@ func (r Register) Check(h *history.History) Report {
 		switch {
 		case op.F != RegisterReadF:
 			report.Facts[RegisterWriteAcked] = true
+			if r.Reads == MonotonicReads {
+				report.Decided = true
+				delete(report.Undecided, RegisterWritesLinear)
+			}
 		case onNode:
 			report.Decided = true
 			delete(report.Undecided, RegisterNodeStale)
@@ -237,15 +264,22 @@ func (r Register) Check(h *history.History) Report {
 			report.Decided = true
 			delete(report.Undecided, RegisterLinearizable)
 			delete(report.Undecided, RegisterStale)
+			delete(report.Undecided, RegisterMonotonic)
 		}
 	}
 	sort.Strings(keys)
 	var found collector
 	for _, key := range keys {
 		ops := byKey[key]
-		checkStaleReads(key, ops, ops, RegisterStale, &found)
+		checked := ops
+		if r.Reads == MonotonicReads {
+			checkMonotonicReads(key, ops, &found)
+			checked = withoutReads(ops)
+		} else {
+			checkStaleReads(key, ops, ops, RegisterStale, &found)
+		}
 		checkStaleReads(key, ops, pinned[key], RegisterNodeStale, &found)
-		linearizable := withoutUnseenIndeterminate(ops)
+		linearizable := withoutUnseenIndeterminate(checked)
 		if len(linearizable) == 0 {
 			continue
 		}
@@ -263,10 +297,10 @@ func (r Register) Check(h *history.History) Report {
 		result := porcupine.CheckOperations(registerModel(&budget), operations)
 		switch {
 		case budget.exhausted:
-			report.Undecided[RegisterLinearizable] = true
+			report.Undecided[r.linearKind()] = true
 			report.UndecidedKeys++
 		case !result:
-			found.add(RegisterLinearizable, func() map[string]any {
+			found.add(r.linearKind(), func() map[string]any {
 				return map[string]any{"key": key, "operations": len(operations)}
 			})
 		}
@@ -274,6 +308,54 @@ func (r Register) Check(h *history.History) Report {
 	r.checkReplicas(h, byKey, &report, &found)
 	report.Violations = found.result()
 	return report
+}
+
+func withoutReads(ops []registerOp) []registerOp {
+	kept := make([]registerOp, 0, len(ops))
+	for _, op := range ops {
+		if op.input.f != RegisterReadF {
+			kept = append(kept, op)
+		}
+	}
+	return kept
+}
+
+func checkMonotonicReads(key string, ops []registerOp, found *collector) {
+	byValue := map[string]*history.Op{}
+	for _, op := range ops {
+		if op.op.Type == history.OK && op.input.f != RegisterReadF {
+			byValue[op.input.value] = op.op
+		}
+	}
+	last := map[int]registerOp{}
+	for _, read := range ops {
+		if read.input.f != RegisterReadF {
+			continue
+		}
+		previous, ok := last[read.op.Process]
+		last[read.op.Process] = read
+		if !ok || previous.output.value == "" || previous.output.value == read.output.value {
+			continue
+		}
+		evidence := func() map[string]any {
+			details := map[string]any{"key": key, "previous_read": describe(previous.op), "previous_value": previous.output.value, "read": describe(read.op)}
+			if read.output.value == "" {
+				details["value"] = nil
+			} else {
+				details["value"] = read.output.value
+			}
+			return details
+		}
+		if read.output.value == "" {
+			found.add(RegisterMonotonic, evidence)
+			continue
+		}
+		older, olderOK := byValue[read.output.value]
+		newer, newerOK := byValue[previous.output.value]
+		if olderOK && newerOK && older.Complete < newer.Invoke {
+			found.add(RegisterMonotonic, evidence)
+		}
+	}
 }
 
 func withoutUnseenIndeterminate(ops []registerOp) []registerOp {

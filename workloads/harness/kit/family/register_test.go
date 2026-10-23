@@ -204,3 +204,63 @@ func TestRegisterGeneratorUsesKnownValuesForCAS(t *testing.T) {
 		t.Fatalf("op %+v", op)
 	}
 }
+
+func TestRegisterMonotonicAcceptsStaleRead(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.write(0, "k0", "b", 3, history.OK, 4)
+	b.read(1, "k0", "a", 5, 6)
+	b.read(1, "k0", "a", 7, 8)
+	b.read(2, "k0", nil, 5, 6)
+	b.read(1, "k0", "b", 9, 10)
+	report := Register{Reads: MonotonicReads}.Check(b.build())
+	expectKinds(t, report)
+	if report.Undecided[RegisterMonotonic] || report.Undecided[RegisterWritesLinear] {
+		t.Fatalf("undecided %v", report.Undecided)
+	}
+}
+
+func TestRegisterMonotonicFindsOlderValue(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.write(0, "k0", "b", 3, history.OK, 4)
+	b.read(1, "k0", "b", 5, 6)
+	b.read(1, "k0", "a", 7, 8)
+	report := Register{Reads: MonotonicReads}.Check(b.build())
+	expectKinds(t, report, RegisterMonotonic)
+	if report.Violations[0].Details["previous_value"] != "b" {
+		t.Fatalf("details %+v", report.Violations[0].Details)
+	}
+}
+
+func TestRegisterMonotonicFindsMissingValue(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.read(1, "k0", "a", 3, 4)
+	b.read(1, "k0", nil, 5, 6)
+	expectKinds(t, Register{Reads: MonotonicReads}.Check(b.build()), RegisterMonotonic)
+}
+
+func TestRegisterMonotonicAcceptsConcurrentWrites(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 6)
+	b.write(2, "k0", "b", 2, history.OK, 5)
+	b.read(1, "k0", "b", 7, 8)
+	b.read(1, "k0", "a", 9, 10)
+	expectKinds(t, Register{Reads: MonotonicReads}.Check(b.build()))
+}
+
+func TestRegisterMonotonicChecksCASOutcomes(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.cas(1, "k0", "a", "b", 3, history.OK, 4)
+	b.cas(2, "k0", "a", "c", 5, history.OK, 6)
+	expectKinds(t, Register{Reads: MonotonicReads}.Check(b.build()), RegisterWritesLinear)
+}
+
+func TestRegisterMonotonicKeepsNodeCheck(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.readKeyOn(1, "n3", "k0", nil, 3, 4)
+	expectKinds(t, Register{Reads: MonotonicReads}.Check(b.build()), RegisterNodeStale)
+}
