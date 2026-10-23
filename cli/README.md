@@ -95,6 +95,10 @@ whichever comes first. With neither it stops at 1,000 executions. A value writte
 in `harmony.toml` counts as given. The built-in 1,000 applies only when no
 execution or wall budget is set anywhere.
 
+The faults package accepts `setup_seconds` in `workload.options` to set its
+initial guest-time budget (default 120 seconds). The value is saved for replay
+and must be positive and fit in guest nanoseconds.
+
 The faults package also accepts `setup`, `ready`, `workload`, `check`, `command`,
 `knobs` and `exclude_faults` in `workload.options`. `exclude_faults` lists fault
 kinds the search never draws, for example `exclude_faults = ["disk_corrupt",

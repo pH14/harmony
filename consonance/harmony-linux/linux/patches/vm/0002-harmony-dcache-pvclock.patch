@@ -1,0 +1,31 @@
+Let pending dentry teardown run under Harmony virtual clocks
+
+shrink_dcache_parent can find entries already being destroyed by another
+task without collecting any entries of its own. cond_resched only switches
+when need_resched is set. On Harmony's single-vCPU guest, an exit-free retry
+loop does not advance the virtual clock, so no scheduler tick arrives to
+resume the other teardown task. Default HotSpot termination after procfs
+thread inspection reproduces this stall in d_walk/select_collect2.
+
+When the first walk finds pending cleanup but no work to dispose, sleep for
+one jiffy before retrying/helping. This releases the CPU and lets a timer
+advance the deterministic clock if nothing else is runnable. The wait is
+outside dentry locks and RCU read-side sections; retain the normal path on
+kernels without either Harmony clock. No dentry is skipped or marked freed.
+
+This patch is Linux-kernel code (GPL-2.0), carried under the repository's
+kernel-patch exception.
+
+---
+--- a/fs/dcache.c
++++ b/fs/dcache.c
+@@ -1555,6 +1555,9 @@ void shrink_dcache_parent(struct dentry *parent)
+ 		cond_resched();
+ 		if (!data.found)
+ 			break;
++		if (IS_ENABLED(CONFIG_HARMONY_PVCLOCK) ||
++		    IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK))
++			schedule_timeout_uninterruptible(1);
+ 		data.victim = NULL;
+ 		d_walk(parent, &data, select_collect2);
+ 		if (data.victim) {

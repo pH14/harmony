@@ -22,6 +22,7 @@ generic operations onto the target's client API.
 | `targets/rqlite` | rqlite image and adapter |
 | `targets/etcd` | etcd image and adapter, three members or one |
 | `targets/redisraft` | Redis-Raft image and adapter |
+| `targets/zookeeper` | ZooKeeper ensemble, instrumented Java and Go log adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -483,8 +484,7 @@ put succeeds through any member.
 
 The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
 (default), `v3.5.5`, `v3.5.27` and `v3.5.28`; pass `ETCD_SOURCE_SHA256` for
-other versions. It instruments `go.etcd.io/etcd` (server and raft) and
-`go.etcd.io/bbolt`. Build the single-member image with
+other versions. Build the single-member image with
 `--build-arg HARNESS_BUNDLE=bundle-single`.
 
 ## Redis-Raft

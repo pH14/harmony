@@ -34,19 +34,10 @@ RUN bash configure --with-boot-jdk=/opt/boot-jdk --with-build-jdk=/opt/boot-jdk 
         --with-extra-cflags='-fsanitize-coverage=trace-pc-guard' \
         --with-extra-cxxflags='-fsanitize-coverage=trace-pc-guard' \
         --with-extra-ldflags='-fno-sanitize-link-runtime -Wl,--undefined=__sanitizer_cov_trace_pc_guard_init /build/libharmony-forwarding.a -ldl' \
-    && make java.base-jmod \
-    && /opt/boot-jdk/bin/jlink --module-path build/linux-*/images/jmods --add-modules java.base --output /build/plain-java \
-    && /opt/boot-jdk/bin/jmod extract --dir /build/java.base build/linux-*/images/jmods/java.base.jmod \
-    && /build/plain-java/bin/java --add-exports java.base/jdk.internal.misc=ALL-UNNAMED \
-        jdk.internal.misc.HarmonyRewriter /build/java.base/classes \
-    && mkdir /build/jmods \
-    && /opt/boot-jdk/bin/jmod create --class-path /build/java.base/classes --libs /build/java.base/lib \
-        --cmds /build/java.base/bin --config /build/java.base/conf --legal-notices /build/java.base/legal \
-        --target-platform "$(/opt/boot-jdk/bin/jmod describe build/linux-*/images/jmods/java.base.jmod | awk '$1 == "platform" {print $2}')" \
-        /build/jmods/java.base.jmod \
-    && /opt/boot-jdk/bin/jlink --module-path /build/jmods --add-modules java.base --output /opt/java \
-        --no-header-files --no-man-pages --strip-java-debug-attributes \
-    && /opt/java/bin/java -version 2>&1 | grep -q 'Server VM'
+    && make jmods
+COPY workloads/languages/java/link-runtime.sh workloads/languages/java/ModuleHashes.java /build/
+ARG JAVA_MODULES=java.base
+RUN bash /build/link-runtime.sh "${JAVA_MODULES}"
 COPY workloads/languages/java/Fixture.java /build/fixture/Fixture.java
 RUN mkdir -p /out/fixture /out/symbols/native /out/licenses \
     && /opt/boot-jdk/bin/javac --release 21 -d /out/fixture /build/fixture/Fixture.java \

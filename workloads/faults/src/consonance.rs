@@ -49,7 +49,8 @@ pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v5";
 const LOCAL_SERVICES: [u16; 2] = [STANDING_NAMESPACE, process_proto::debug::NAMESPACE];
 pub const SESSION_SERVICE: &str = "faults";
 const SEED: u64 = 0x4661_756c_744c_6162;
-const SETUP_BUDGET: u64 = 120_000_000_000;
+#[cfg(test)]
+const SETUP_BUDGET: u64 = crate::package::DEFAULT_SETUP_SECONDS * 1_000_000_000;
 const WALL_LIMIT: Duration = Duration::from_secs(60);
 const CONSOLE_TAIL: usize = 1_500;
 const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
@@ -107,6 +108,7 @@ const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 nohlt rdinit=/i
 pub struct FaultConfig {
     pub knobs: Vec<String>,
     pub ram_mib: u32,
+    pub setup_budget: u64,
     pub backend: GuestBackend,
     pub root: Option<Arc<Vec<u8>>>,
     pub boot_cache: Option<PathBuf>,
@@ -214,7 +216,7 @@ impl FaultConfig {
         let ram = usize::try_from(self.ram_mib)
             .unwrap_or(usize::MAX / (1024 * 1024))
             .saturating_mul(1024 * 1024);
-        let config = SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
+        let config = SessionConfig::new(ram, SEED, self.setup_budget, self.cmdline())
             .with_identity_tag(IDENTITY_TAG)
             .with_wall_limit(WALL_LIMIT)
             .with_deferred_virtual_time_checkpoint_hashes();
@@ -495,7 +497,7 @@ fn uml_launch(
         kernel_arguments: UmlGuest::kernel_arguments(&config.knobs),
         work_parent: guest.work_parent.clone(),
         seed: SEED,
-        setup_budget: SETUP_BUDGET,
+        setup_budget: config.setup_budget,
         progress_limit: WALL_LIMIT,
     })
 }
@@ -2611,13 +2613,14 @@ fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Resul
         }
         return Ok(format!(
             "faults-uml-v2;{};executable={:x};initramfs={:x};memory_mib={};arguments-sha256={:x};\
-             seed={SEED};setup_budget={SETUP_BUDGET};tag={IDENTITY_TAG};\
+             seed={SEED};setup_budget={};tag={IDENTITY_TAG};\
              action=standing-fault-delta-v5;snapshot=uml-checkpoint-v3",
             guest.identity,
             Sha256::digest(kernel),
             Sha256::digest(initramfs),
             config.ram_mib,
             arguments_digest.finalize(),
+            config.setup_budget,
         ));
     }
     Ok(format!(
@@ -2730,6 +2733,7 @@ mod tests {
         let config = FaultConfig {
             knobs: Vec::new(),
             ram_mib: DEFAULT_RAM_MIB,
+            setup_budget: SETUP_BUDGET,
             backend: GuestBackend::Uml(Box::new(guest.clone())),
             root: None,
             boot_cache: None,
@@ -2737,6 +2741,29 @@ mod tests {
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
         assert_eq!(launch.expected_host, guest.host);
+        let extended = FaultConfig {
+            setup_budget: 300_000_000_000,
+            ..config.clone()
+        };
+        assert_eq!(
+            uml_launch(&guest, b"initramfs", &extended)
+                .unwrap()
+                .setup_budget,
+            300_000_000_000
+        );
+        assert_ne!(
+            identity(b"kernel", b"initramfs", &config),
+            identity(b"kernel", b"initramfs", &extended)
+        );
+        let vm = FaultConfig {
+            backend: GuestBackend::Vm,
+            ..config.clone()
+        };
+        let longer_vm = FaultConfig {
+            setup_budget: extended.setup_budget,
+            ..vm.clone()
+        };
+        assert_eq!(longer_vm.session_config().run_budget, extended.setup_budget);
         assert_eq!(std::fs::read(&launch.initramfs).unwrap(), b"initramfs");
         std::fs::write(&launch.initramfs, b"stale initramfs").unwrap();
         assert!(uml_launch(&guest, b"initramfs", &config).is_err());
@@ -2771,6 +2798,7 @@ mod tests {
         let mut joined = FaultConfig {
             knobs: vec!["foo=bar root=/dev/ram0".into()],
             ram_mib: DEFAULT_RAM_MIB,
+            setup_budget: SETUP_BUDGET,
             backend: GuestBackend::Uml(Box::new(guest)),
             root: None,
             boot_cache: None,
@@ -2816,6 +2844,7 @@ mod tests {
                 session: FaultConfig {
                     knobs: Vec::new(),
                     ram_mib: DEFAULT_RAM_MIB,
+                    setup_budget: SETUP_BUDGET,
                     backend: GuestBackend::Vm,
                     root: None,
                     boot_cache: None,
@@ -3717,6 +3746,7 @@ mod tests {
             &FaultConfig {
                 knobs: Vec::new(),
                 ram_mib: DEFAULT_RAM_MIB,
+                setup_budget: SETUP_BUDGET,
                 backend: GuestBackend::Vm,
                 root: None,
                 boot_cache: None,
@@ -4323,6 +4353,7 @@ mod tests {
             &FaultConfig {
                 knobs: Vec::new(),
                 ram_mib: DEFAULT_RAM_MIB,
+                setup_budget: SETUP_BUDGET,
                 backend,
                 root: None,
                 boot_cache: None,
@@ -5557,6 +5588,7 @@ mod tests {
             &FaultConfig {
                 knobs: Vec::new(),
                 ram_mib: DEFAULT_RAM_MIB,
+                setup_budget: SETUP_BUDGET,
                 backend: GuestBackend::Vm,
                 root: None,
                 boot_cache: None,
@@ -5592,6 +5624,7 @@ mod tests {
             &FaultConfig {
                 knobs: Vec::new(),
                 ram_mib: DEFAULT_RAM_MIB,
+                setup_budget: SETUP_BUDGET,
                 backend: GuestBackend::Vm,
                 root: None,
                 boot_cache: None,
@@ -7502,6 +7535,7 @@ mod tests {
         let config = FaultConfig {
             knobs: Vec::new(),
             ram_mib: DEFAULT_RAM_MIB,
+            setup_budget: SETUP_BUDGET,
             backend: GuestBackend::Vm,
             root: None,
             boot_cache: None,
@@ -8200,6 +8234,7 @@ mod tests {
         let config = FaultConfig {
             knobs: Vec::new(),
             ram_mib: DEFAULT_RAM_MIB,
+            setup_budget: SETUP_BUDGET,
             backend: GuestBackend::Vm,
             root: None,
             boot_cache: None,

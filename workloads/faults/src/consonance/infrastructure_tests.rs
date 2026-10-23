@@ -59,6 +59,7 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
     let config = FaultConfig {
         knobs: Vec::new(),
         ram_mib: 128,
+        setup_budget: crate::package::DEFAULT_SETUP_SECONDS * 1_000_000_000,
         backend: GuestBackend::Uml(Box::new(UmlGuest::load(
             &profile,
             directory.path().join("guests"),

@@ -1,0 +1,17 @@
+[workload]
+package = "faults"
+input = "harmony-zookeeper:local"
+
+[workload.options]
+setup_seconds = 300
+
+[runner]
+kind = "consonance"
+backend = "kvm"
+
+[runner.options]
+ram_mib = 1024
+
+[search]
+seed = 17
+wall_seconds = 1800

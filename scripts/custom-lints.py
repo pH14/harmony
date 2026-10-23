@@ -47,6 +47,7 @@ EMULATOR_NAMES = [
 
 # Distributed system and database names.
 SYSTEM_NAMES = [
+    r"zookeeper",
     r"etcd",
     r"postgres(?:ql)?",
     r"cockroach(?:db)?",

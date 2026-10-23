@@ -1,0 +1,6 @@
+setup /opt/harmony/setup.sh 1
+node z1 /opt/harmony/node.sh 1 1
+log z1 /tmp/zookeeper/z1.log
+ready /usr/bin/env ZOOKEEPER_MEMBERS=1 /opt/harmony/zookeeper-harness ready --ready-timeout 20s
+workload /usr/bin/env ZOOKEEPER_MEMBERS=1 /opt/harmony/zookeeper-harness drive
+check /usr/bin/env ZOOKEEPER_MEMBERS=1 /opt/harmony/zookeeper-harness check --check-timeout 20s

@@ -7,12 +7,15 @@ use sha2::{Digest, Sha256};
 
 use crate::target::{FaultAction, FaultObservations, FaultOperation, FaultStop};
 
+pub const DEFAULT_SETUP_SECONDS: u64 = 120;
+
 pub const PACKAGE: &str = "faults";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Options {
     pub seed: u64,
     pub executions: u64,
     pub ram_mib: u32,
+    pub setup_seconds: u64,
     pub knobs: Vec<String>,
     pub wall_seconds: Option<u64>,
     pub output: PathBuf,
@@ -24,6 +27,9 @@ pub struct Options {
 
 impl Options {
     pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+        if self.setup_seconds == 0 || self.setup_seconds.checked_mul(1_000_000_000).is_none() {
+            return Err("setup_seconds must be positive and fit in guest nanoseconds".into());
+        }
         if self.executions == 0 {
             return Err("--executions must be positive".into());
         }
@@ -458,6 +464,11 @@ mod live {
         Ok(FaultConfig {
             knobs: options.knobs.clone(),
             ram_mib: options.ram_mib,
+            setup_budget: options
+                .setup_seconds
+                .checked_mul(1_000_000_000)
+                .filter(|budget| *budget > 0)
+                .ok_or("setup_seconds must be positive and fit in guest nanoseconds")?,
             backend,
             root: options.root.clone(),
             boot_cache: options.boot_cache.clone(),
@@ -1293,6 +1304,7 @@ mod tests {
             seed: 7,
             executions: 10,
             ram_mib: 1024,
+            setup_seconds: DEFAULT_SETUP_SECONDS,
             knobs: Vec::new(),
             wall_seconds: None,
             output: PathBuf::from("unused"),
@@ -1352,6 +1364,14 @@ mod tests {
     #[test]
     fn zero_bounds_are_refused_before_a_guest_boots() {
         for broken in [
+            Options {
+                setup_seconds: 0,
+                ..options()
+            },
+            Options {
+                setup_seconds: u64::MAX / 1_000_000_000 + 1,
+                ..options()
+            },
             Options {
                 executions: 0,
                 ..options()

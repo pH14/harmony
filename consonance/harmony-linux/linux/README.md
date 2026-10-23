@@ -394,3 +394,13 @@ Debian compiler container builds the matching GCC 14 kernel and fixture using
 the nested profile's reviewed instruction baselines. The ordinary guest kernel
 keeps its existing toolchain profiles. Compilation and instruction audits finish
 before the job attempts to boot L1 or run the inner VMM.
+
+### Dentry cleanup under virtual clocks
+
+`shrink_dcache_parent` can find pending teardown owned by another task without
+collecting entries to dispose. An exit-free retry loop cannot advance the
+virtual clock, and `cond_resched` alone does not ensure the owner runs. The
+VM-only dcache patch sleeps for one jiffy on that path under either Harmony
+clock, outside dentry locks and RCU sections. It preserves pending entries
+and the normal kernel path when Harmony clocks are disabled. UML uses its
+own scheduling mechanism and does not include this patch.
