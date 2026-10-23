@@ -43,9 +43,10 @@ packages that `go build` builds (default `.`). It prints the
 `ANTITHESIS_STDLIB_PACKAGES` and `ANTITHESIS_INSTRUMENT` exports.
 
 Every module in the build graph outside the standard library is instrumented:
-the main module and all its dependencies. The guest has one vCPU and virtual
-time advances only at VM exits, so a loop with no callbacks stops the whole
-guest. A third-party loop that spins until another goroutine runs, such as
+the main module and all its dependencies. A build in GOPATH mode has no
+modules, so each of its non-standard-library packages is selected by import
+path. The guest has one vCPU and virtual time advances only at VM exits, so a
+loop with no callbacks stops the whole guest. A third-party loop that spins until another goroutine runs, such as
 yamux `Stream.Read` after its session shuts down, never ends. The SDK module and
 the modules its instrumentation package imports are excluded.
 
