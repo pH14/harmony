@@ -18,7 +18,8 @@ elsewhere uses the repository license.
 The common series owns the architecture-independent Harmony character device
 and observation handles. The device allocates and bounds its shared pages in
 the kernel; platform userspace interacts through the stable character-device
-interfaces.
+interfaces. Its coverage ioctl carries one SDK coverage exchange in a single
+system call.
 
 ## VM series
 
@@ -36,7 +37,7 @@ series.
 ## Architecture series
 
 The x86 series supplies the paravirtual clock, counter confinement and
-emulation, syscall tick, idle port, and x86-specific clock and trap plumbing.
+emulation, syscall tick (skipped for the coverage ioctl), idle port, and x86-specific clock and trap plumbing.
 Its KVM host-counter patch uses the outer VMM's intercepted TSC MSR for shared,
 LAPIC, PMU and nested-VMX counter reads, and disables the optional VMX hardware
 preemption timer by default. KVM hosting is compiled only in the nested-host
@@ -55,7 +56,8 @@ on the vendor its runner provides, VMX or SVM.
 
 The arm64 series supplies the exit-count clock page, LSE-only atomic contract,
 virtual clock event, fixed counter and cache topology, interrupt handling,
-canonical state, counter trap switch, and idle register. Its IRQ-unmask fence
+canonical state, counter trap switch, idle register, and the syscall tick
+that skips the coverage ioctl. Its IRQ-unmask fence
 exits only while the clock page's `irq_pending` word says a due deadline waits
 for the unmask.
 The series moves alternative and unwind metadata after `__initdata_begin`, so

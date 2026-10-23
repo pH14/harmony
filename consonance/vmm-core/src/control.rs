@@ -4272,9 +4272,13 @@ mod tests {
             .unwrap()
             .backend
             .push_exit(Exit::Common(CommonExit::Idle));
+        let charged = 64 * <vmm_backend::X86 as crate::vendor::Vendor>::coverage_callback_vns();
         let answered = server
             .handle(&Request::Run {
-                until,
+                until: StopConditions {
+                    deadline: Some(Moment(moment + charged + 1)),
+                    on: StopMask::NONE,
+                },
                 resolve: Some(resolution(environment::channel::Answer::Data(
                     64_u64.to_le_bytes().to_vec(),
                 ))),

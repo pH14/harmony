@@ -377,6 +377,7 @@ where
     checkpoint_hash_preimage: Option<CheckpointHashPreimage>,
     pub(crate) idle_wake_vns: Option<u64>,
     run_deadline_vns: Option<u64>,
+    pending_coverage_callbacks: u64,
     pub(crate) last_step_control_idle_landing_vns: Option<u64>,
     pub(crate) sdk: Option<SdkChannel>,
     pub(crate) pvclock: Option<PvclockChannel>,
@@ -456,6 +457,7 @@ where
             checkpoint_hash_preimage: None,
             idle_wake_vns: None,
             run_deadline_vns: None,
+            pending_coverage_callbacks: 0,
             last_step_control_idle_landing_vns: None,
             sdk: None,
             pvclock: None,
@@ -1255,6 +1257,10 @@ where
             let step = self.finish_doorbell(moment, requested_len, &request)?;
             self.pvclock_refresh()?;
             <B::A as Vendor>::post_exit(self)?;
+            if self.pending_coverage_callbacks != 0 {
+                self.charge_coverage_callbacks();
+                self.pvclock_refresh()?;
+            }
             return Ok(step);
         }
         if let Some(reason) = self.terminal {
@@ -1418,6 +1424,10 @@ where
                 .expect("raw trace was started")
                 .finish_raw()
                 .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
+        }
+        if self.pending_coverage_callbacks != 0 {
+            self.charge_coverage_callbacks();
+            self.pvclock_refresh()?;
         }
         Ok(ExitProgress {
             step,
@@ -2183,6 +2193,7 @@ where
                         thread,
                         observed,
                         *ready,
+                        None,
                     ),
                     Ok(CoverageOutcome::Answered(_))
                 ) {
@@ -2387,6 +2398,7 @@ where
                 let mut env = sdk.env.checked_clone()?;
                 env.record_question(moment, &question, answer.clone());
                 let mut thresholds = sdk.coverage_thresholds.clone();
+                let until_deadline = self.coverage_callbacks_until_timer();
                 let CoverageOutcome::Answered(coverage) = sdk::decide_coverage(
                     &mut env,
                     &mut thresholds,
@@ -2394,6 +2406,7 @@ where
                     thread,
                     observed,
                     ready,
+                    until_deadline,
                 )
                 .map_err(|_| VmmError::ContractViolation("invalid coverage answer".into()))?
                 else {
@@ -2426,6 +2439,9 @@ where
                 "prepared service question differs".into(),
             ));
         }
+        let callbacks = coverage_commit
+            .as_ref()
+            .map_or(0, |(_, _, coverage)| coverage.next - coverage.observed);
         self.write_service_response(moment, &request, opcode, seq, Status::Ok, &payload)?;
         let sdk = self
             .sdk
@@ -2448,6 +2464,11 @@ where
             sdk.env.record_question(moment, &question, answer);
         }
         sdk.pending_stop = None;
+        if callbacks != 0 {
+            self.pending_coverage_callbacks = callbacks;
+            self.charge_coverage_callbacks();
+            self.pvclock_refresh()?;
+        }
         Ok((moment, question))
     }
 
@@ -2922,6 +2943,7 @@ where
             }
             match self.decide_coverage(moment, thread, observed, ready) {
                 Ok(CoverageOutcome::Answered(coverage)) => {
+                    self.pending_coverage_callbacks = coverage.next - coverage.observed;
                     let n = encode_response(
                         ServiceId::Sdk,
                         2,
@@ -3025,6 +3047,22 @@ where
         false
     }
 
+    fn coverage_callbacks_until_timer(&self) -> Option<u64> {
+        let now = self.vtime.as_ref()?.virtual_time_vns();
+        let deadline = <B::A as Vendor>::next_timer_deadline_vns(self)?;
+        let cost = B::A::coverage_callback_vns();
+        (cost > 0).then(|| deadline.saturating_sub(now).div_ceil(cost))
+    }
+
+    fn charge_coverage_callbacks(&mut self) {
+        let callbacks = std::mem::take(&mut self.pending_coverage_callbacks);
+        if let Some(vt) = self.vtime.as_mut() {
+            vt.advance_virtual_time(callbacks.saturating_mul(B::A::coverage_callback_vns()));
+            self.virtual_time_progress
+                .store(vt.virtual_time_vns(), std::sync::atomic::Ordering::Release);
+        }
+    }
+
     fn decide_coverage(
         &mut self,
         moment: u64,
@@ -3032,6 +3070,7 @@ where
         observed: u64,
         ready: u32,
     ) -> Result<CoverageOutcome, Status> {
+        let until_deadline = self.coverage_callbacks_until_timer();
         let Some(sdk) = self.sdk.as_mut() else {
             return Err(Status::UnknownService);
         };
@@ -3042,6 +3081,7 @@ where
             thread,
             observed,
             ready,
+            until_deadline,
         )?;
         if let CoverageOutcome::Answered(answer) = &coverage {
             sdk.coverage

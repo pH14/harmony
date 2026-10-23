@@ -160,7 +160,8 @@ after virtual time crosses a staged host effect or reseed, control rejects the
 decision as an unsatisfiable schedule instead of exposing it before the input.
 Further `Run` requests reject that poisoned schedule before resolving the
 pending service answer.
-An x86 SDK doorbell does not advance virtual time. An effect added at the
+An x86 SDK doorbell exit does not advance virtual time. An answered coverage
+exchange advances it after the answer is written. An effect added at the
 moment of an already surfaced decision would run after its live answer but
 before that request when replayed from an earlier snapshot. At a deferred raw
 doorbell, the effect would run before its response live but after the response
@@ -965,6 +966,14 @@ next quantum. The next threshold is part of the SDK snapshot. A thread whose
 count restarts at the first threshold gets a fresh entry, because Linux reuses
 thread IDs. A zero, malformed or overflowing quantum leaves the environment and
 every threshold unchanged.
+An answered exchange advances virtual time by the callbacks it allows before
+the next exchange times `vtime-coverage-callback-vns` (12 ns), after the exit's
+event is recorded. The guest kernel charges the coverage ioctl no execution
+tick, so a busy instrumented thread runs at the same virtual speed at every
+quantum. When the runnable width is 1, an exchange selects nothing, so the VM
+sets the next threshold at the last whole quantum before the next guest timer
+deadline, at most 32768 callbacks ahead. The timer then lands at the same
+callback as with an exchange every quantum, with fewer exits.
 
 ## ARM executable RAM restore qualification
 
