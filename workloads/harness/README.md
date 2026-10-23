@@ -31,6 +31,7 @@ generic operations onto the target's client API.
 | `targets/openbao` | OpenBao image and adapter |
 | `targets/xline` | Xline image and adapter |
 | `targets/minio` | MinIO image and adapter, four nodes with one drive each |
+| `targets/nomad` | Nomad Variables image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -1072,6 +1073,49 @@ client history, in `xl.meta` on every drive (decoded with MinIO's
 - A power loss of every node can lose an acknowledged write from every drive.
   MinIO renames `xl.meta` into place without a directory fsync unless
   `MINIO_FS_OSYNC` is set, and its documentation excludes ext4.
+
+## Nomad
+
+`targets/nomad` drives the `register` family through the Nomad Variables HTTP
+API with Go's HTTP client. Three servers `n1` to `n3` run at 10.77.0.1-3 (HTTP
+port 4646) in `harness-net` namespaces, with data under `/tmp/nomad/<node>` on
+a 256 MiB node disk and logs in `/tmp/nomad/<node>.log`. `nomad.hcl` runs each
+agent as a server with `bootstrap_expect = 3` and no client, turns off the
+update check and sets `raft_multiplier = 1`. Every other setting is Nomad's
+default.
+
+A key `k` is the variable at path `k` with one item `v`. `write` is
+`PUT /v1/var/<key>` and `cas` is `PUT /v1/var/<key>?cas=<ModifyIndex>`. Each
+operation goes to one server drawn from the SDK stream, and a follower forwards
+writes to the leader. Nomad's
+[consistency modes](https://developer.hashicorp.com/nomad/api-docs#consistency-modes)
+are `default`, which is answered by the leader and can return stale values
+from an old leader just after an election, and `stale`, which any server
+answers from its own state. Nomad has no mode that checks leadership with a
+quorum, so every read is fenced: the adapter writes a fresh variable
+`fence-nI-<token>` through the answering server `nI`, polls it with `?stale`
+on `nI` until it returns the written value, and then reads the key with
+`?stale` on `nI`. A server applies committed entries in log order, so `nI`
+then holds every write acknowledged before the read started. A `replicas` read
+on `nI` takes the same fence and reads each key. Each key's metadata is
+`create_index` and `modify_index`, the Raft indexes Nomad records with the
+variable. `ready` passes once a put succeeds through any server.
+
+A `cas` from `old` uses the ModifyIndex the client last read for `old`, or a
+fenced read when it has not read `old`. A `cas` answered `409 Conflict` is a
+definite failure. A write is a definite failure only when the dial fails;
+every other write error is indeterminate. Read errors are definite.
+
+Runs need `ram_mib = 3072`. The node disks are RAM disks inside the guest, and
+each written disk byte costs about 2.5 bytes of guest memory. With the three
+256 MiB disks full, the three servers (about 140 MiB resident each) leave about
+490 MiB free at 3072 MiB, so 2048 MiB does not fit.
+
+The image builds `nomad` from the `v2.0.7` source (BUSL-1.1) with Go 1.27,
+without the UI, through the Antithesis Go instrumentation pipeline. It runs
+`targets/minio/cpuid-xgetbv.sh` on Nomad's `klauspost/cpuid` module. The
+Dockerfile knows the source SHA-256 of `v2.0.7`; pass `NOMAD_SOURCE_SHA256`
+for other versions.
 
 ## Native runner
 
