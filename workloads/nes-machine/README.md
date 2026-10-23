@@ -113,6 +113,32 @@ already does on other targets, and writes it back when `run` returns. The x86
 build otherwise loads and stores the clock field on every instruction. It adds
 about 1.03x on the same tape, with identical frames.
 
+A fifth patch lets the CPU run code translated ahead of time.
+`scripts/quicknes-translate.py` turns the most executed instructions of a ROM
+into C++ blocks that are compiled into `run`. It reads them from a profile in
+`quicknes-profiles/`, which lists the ROM's SHA-256 and then one line per
+instruction: CPU address, PRG offset and execution count. The ROM itself is
+needed at build time, so `scripts/build-quicknes-core.sh` translates only the
+ROMs named in `HARMONY_QUICKNES_ROMS`. A core built without a matching ROM runs
+the interpreter alone. At run time the core picks the blocks for the loaded
+cartridge by a hash of its PRG data. The interpreter enters a block at jumps,
+calls, returns and branches. Each block checks that the bank it was translated
+from is mapped and that its instructions all start before `clock_limit`, and
+checks again after any access that can reach a mapper or an I/O register. If a
+check fails, the interpreter runs from that instruction. Instruction bodies,
+cycle counts, dummy reads and the effect count follow the interpreter, so
+frames and timing match. Interrupt-flag changes, `BRK`, `RTI`, indirect jumps
+and unofficial opcodes always run in the interpreter.
+
+To profile a ROM, build with `HARMONY_QUICKNES_PROFILE=1` and run the core with
+`HARMONY_QUICKNES_PROFILE_DIR` set. The core writes per-thread counts there.
+`scripts/quicknes-translate.py profile ROM OUT DUMP...` merges them and keeps
+the 6,000 most executed instructions. The committed profiles for Metroid,
+Punch-Out, Castlevania and Zelda come from recorded runs and short searches.
+A profile sets only speed: frames match the interpreter for any input. Compile
+time grows faster than the number of sets. One set compiles in about a minute
+with GCC 11, and three sets take about 15 minutes.
+
 Snapshots contain a format marker, the QuickNES revision, core hash, prepared
 execution hash, fixed serialized-state length, and canonicalized core state.
 The current marker is `HQNESST3`; older snapshots are rejected. Restore rejects

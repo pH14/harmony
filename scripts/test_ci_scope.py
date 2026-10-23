@@ -79,6 +79,8 @@ class ScopeTests(unittest.TestCase):
     def test_the_shared_emulator_build_selects_every_source_built_game(self):
         self.assertEqual(self.active("scripts/build-quicknes-core.sh"),
                          {"dissonance_stb"})
+        self.assertEqual(self.active("scripts/quicknes-translate.py"),
+                         {"dissonance_stb"})
 
 
 if __name__ == "__main__":

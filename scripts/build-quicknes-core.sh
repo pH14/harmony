@@ -1435,7 +1435,244 @@ index f5f1567..971814b 100644
  #if defined (__powerpc__) || defined (__ppc__) || defined (__POWERPC__) || defined (__powerc)
 PATCH
 
-make -C "$build_root/core" -j "${HARMONY_QUICKNES_BUILD_JOBS:-4}" \
+# The CPU can also run C++ blocks translated ahead of time from a ROM's hot
+# code. The translator writes blocks for each ROM in HARMONY_QUICKNES_ROMS that
+# has a profile in workloads/nes-machine/quicknes-profiles. A block runs only
+# while that ROM is loaded and the bank it came from is mapped, and it hands
+# back to the interpreter before an instruction could start at the clock
+# limit. A core built with no matching ROM runs the interpreter alone.
+# HARMONY_QUICKNES_PROFILE=1 builds a core that counts executed ROM
+# instructions and writes the counts under HARMONY_QUICKNES_PROFILE_DIR.
+patch -d "$build_root/core" -f -p1 <<'PATCH'
+diff --git a/nes_emu/Nes_Cpu.cpp b/nes_emu/Nes_Cpu.cpp
+index 7e066eb..f9476f8 100644
+--- a/nes_emu/Nes_Cpu.cpp
++++ b/nes_emu/Nes_Cpu.cpp
+@@ -15,6 +15,40 @@
+ #include "blargg_endian.h"
+ 
+ #include "nes_cpu_io.h"
++#include <stdint.h>
++#include "Nes_Cpu_xlat.h"
++
++#ifdef QUICKNES_XLAT_PROFILE
++#include <unordered_map>
++#include <stdio.h>
++#include <unistd.h>
++static thread_local std::unordered_map<uint64_t, uint64_t>* xl_counts;
++static thread_local uint64_t xl_notes;
++static void xl_note( uint8_t const* prg, long size, unsigned pc, uint8_t const* host )
++{
++	if ( !prg || host < prg || host >= prg + size )
++		return;
++	if ( !xl_counts )
++		xl_counts = new std::unordered_map<uint64_t, uint64_t>;
++	(*xl_counts) [(uint64_t) pc << 32 | (uint64_t) (host - prg)]++;
++	if ( ++xl_notes % (1u << 24) )
++		return;
++	char const* dir = getenv( "HARMONY_QUICKNES_PROFILE_DIR" );
++	if ( !dir )
++		return;
++	char path [512];
++	snprintf( path, sizeof path, "%s/prof-%ld-%p.txt", dir, (long) getpid(), (void*) xl_counts );
++	FILE* f = fopen( path, "w" );
++	if ( !f )
++		return;
++	for ( auto& kv : *xl_counts )
++		fprintf( f, "%u %u %llu\n", (unsigned) (kv.first >> 32), (unsigned) (kv.first & 0xFFFFFFFF), (unsigned long long) kv.second );
++	fclose( f );
++}
++#define XL_NOTE() xl_note( xl_prg, xl_prg_size, pc, code_map [pc >> page_bits] + pc );
++#else
++#define XL_NOTE()
++#endif
+ 
+ /* Copyright (C) 2003-2006 Shay Green. This module is free software; you
+ can redistribute it and/or modify it under the terms of the GNU Lesser
+@@ -38,8 +72,35 @@ inline void Nes_Cpu::set_code_page( int i, uint8_t const* p )
+ 	code_map [i] = p - (unsigned) i * page_size;
+ }
+ 
++Nes_Cpu::Nes_Cpu()
++{
++	xl_prg = 0;
++	xl_prg_size = 0;
++	xl_set = -1;
++}
++
++void Nes_Cpu::map_rom_code( nes_addr_t start, unsigned size, void const* data, void const* rom, long rom_size )
++{
++	if ( rom != xl_prg || rom_size != xl_prg_size )
++	{
++		xl_prg = (uint8_t const*) rom;
++		xl_prg_size = rom_size;
++		xl_set = -1;
++		uint64_t h = 0xcbf29ce484222325ull;
++		for ( long i = 0; i < rom_size; i++ )
++			h = (h ^ xl_prg [i]) * 0x100000001b3ull;
++		for ( int k = 0; k < xl_set_count; k++ )
++			if ( xl_set_size [k] == rom_size && xl_set_hash [k] == h )
++				xl_set = k;
++	}
++	map_code( start, size, data );
++}
++
+ void Nes_Cpu::reset( void const* unmapped_page )
+ {
++	xl_prg = 0;
++	xl_prg_size = 0;
++	xl_set = -1;
+ 	r.status = 0;
+ 	r.sp = 0;
+ 	r.pc = 0;
+@@ -227,8 +288,17 @@ Nes_Cpu::result_t Nes_Cpu::run( nes_time_t end )
+ 	uint8_t const* page;
+ 	unsigned opcode;
+ 	unsigned data;
++	unsigned xl_i = 0;
++	uint32_t const* const xl_tab = xl_set >= 0 ? xl_set_table [xl_set] : 0;
++	unsigned const xl_mask = xl_set >= 0 ? xl_set_mask [xl_set] : 0;
++	uint8_t const* const xl_base = xl_prg;
++#define XL_EXP( off ) ((uint8_t const*) ((intptr_t) xl_base + (intptr_t) (off)))
++#define XL_ENTER { if ( xl_tab ) { unsigned xl_h = (pc * 0x9E3779B1u) >> 16 & xl_mask; for ( ;; ) { \
++	uint32_t xl_v = xl_tab [xl_h]; if ( !xl_v ) break; if ( (xl_v >> 16) == pc ) { xl_i = (xl_v & 0xFFFF) - 1; goto xl_switch; } \
++	xl_h = (xl_h + 1) & xl_mask; } } }
+ 	
+ #define DISPATCH {                                  \
++	XL_NOTE()                                       \
+ 	page = code_map [pc >> page_bits];              \
+ 	opcode = page [pc];                             \
+ 	pc++;                                           \
+@@ -239,11 +309,13 @@ Nes_Cpu::result_t Nes_Cpu::run( nes_time_t end )
+ 	goto *dispatch_table [opcode];                  \
+ }
+ 	
++	XL_ENTER
+ 	goto loop;
+ dec_clock_loop:
+ 	clock_count--;
++	XL_ENTER
+ loop:
+-	
++	XL_NOTE()
+ 	page = code_map [pc >> page_bits];
+ 	opcode = page [pc];
+ 	pc++;
+@@ -351,6 +423,7 @@ imm##op:                                \
+ 	clock_count += (extra_clock >> 8) & 1;  \
+ 	if ( offset < 0 )   \
+ 		IDLE_CHECK()    \
++	XL_ENTER \
+ 	DISPATCH          \
+ }
+ 
+@@ -372,6 +445,7 @@ imm##op:                                \
+ 		WRITE_LOW( 0x100 | (sp - 1), temp >> 8 );
+ 		sp = (sp - 2) | 0x100;
+ 		WRITE_LOW( sp, temp );
++		XL_ENTER
+ 		DISPATCH
+ 	}
+ 	
+@@ -380,6 +454,7 @@ imm##op:                                \
+ 		pc = GET_OPERAND16( pc );
+ 		if ( pc < from )
+ 			IDLE_CHECK()
++		XL_ENTER
+ 		DISPATCH
+ 	}
+ 	
+@@ -427,6 +502,7 @@ imm##op:                                \
+ 		pc = 1 + READ_LOW( sp );
+ 		pc += READ_LOW( 0x100 | (sp - 0xFF) ) * 0x100;
+ 		sp = (sp - 0xFE) | 0x100;
++		XL_ENTER
+ 		DISPATCH
+ 
+ 	op_0x99: // STA abs,Y
+@@ -1249,6 +1325,7 @@ imm##op:                                \
+ 		goto stop;
+ 	}
+ 	
++#include "Nes_Cpu_xlat.inc"
+ stop:
+ 	pc--;
+ end:
+diff --git a/nes_emu/Nes_Cpu.h b/nes_emu/Nes_Cpu.h
+index f7783b0..d634b14 100644
+--- a/nes_emu/Nes_Cpu.h
++++ b/nes_emu/Nes_Cpu.h
+@@ -14,6 +14,8 @@ typedef unsigned nes_addr_t; // 16-bit address
+ 
+ class Nes_Cpu {
+ public:
++	Nes_Cpu();
++	void map_rom_code( nes_addr_t start, unsigned size, void const* code, void const* rom, long rom_size );
+ 	// Clear registers, unmap memory, and map code pages to unmapped_page.
+ 	void reset( void const* unmapped_page = 0 );
+ 	
+@@ -67,6 +69,9 @@ public:
+ 	
+ private:
+ 	uint8_t const* code_map [page_count + 1];
++	uint8_t const* xl_prg;
++	long xl_prg_size;
++	int xl_set;
+ 	nes_time_t clock_limit;
+ 	nes_time_t clock_count;
+ 	nes_time_t irq_time_;
+diff --git a/nes_emu/Nes_Cpu_xlat.h b/nes_emu/Nes_Cpu_xlat.h
+new file mode 100644
+index 0000000..b9e801d
+--- /dev/null
++++ b/nes_emu/Nes_Cpu_xlat.h
+@@ -0,0 +1,5 @@
++enum { xl_set_count = 0 };
++static long const xl_set_size [1] = { 0 };
++static uint64_t const xl_set_hash [1] = { 0 };
++static unsigned const xl_set_mask [1] = { 0 };
++static uint32_t const* const xl_set_table [1] = { 0 };
+diff --git a/nes_emu/Nes_Cpu_xlat.inc b/nes_emu/Nes_Cpu_xlat.inc
+new file mode 100644
+index 0000000..fb70cbd
+--- /dev/null
++++ b/nes_emu/Nes_Cpu_xlat.inc
+@@ -0,0 +1,8 @@
++xl_dyn:
++	XL_ENTER
++	goto loop;
++xl_switch:
++	switch ( xl_i ) {
++	default: goto loop;
++	}
++
+diff --git a/nes_emu/Nes_Mapper.cpp b/nes_emu/Nes_Mapper.cpp
+index 0ea3b0b..4cf33e6 100644
+--- a/nes_emu/Nes_Mapper.cpp
++++ b/nes_emu/Nes_Mapper.cpp
+@@ -189,7 +189,7 @@ void Nes_Mapper::set_prg_bank( nes_addr_t addr, bank_size_t bs, int bank )
+ 	if ( bank >= bank_count )
+ 		bank %= bank_count;
+ 	
+-	emu().map_code( addr, bank_size, cart_->prg() + (bank << bs) );
++	emu().map_rom_code( addr, bank_size, cart_->prg() + (bank << bs), cart_->prg(), cart_->prg_size() );
+ 	
+ 	if ( unsigned (addr - 0x6000) < 0x2000 )
+ 		emu().enable_prg_6000();
+PATCH
+
+if [ -n "${HARMONY_QUICKNES_ROMS:-}" ]; then
+    # HARMONY_QUICKNES_ROMS is a whitespace-separated list of ROM paths.
+    # shellcheck disable=SC2086
+    python3 "$script_dir/quicknes-translate.py" generate "$build_root/core" \
+        "$script_dir/../workloads/nes-machine/quicknes-profiles" $HARMONY_QUICKNES_ROMS
+fi
+
+shared_cxxflags=${CXXFLAGS:-}
+if [ -n "${HARMONY_QUICKNES_PROFILE:-}" ]; then
+    shared_cxxflags="$shared_cxxflags -DQUICKNES_XLAT_PROFILE"
+fi
+CXXFLAGS=$shared_cxxflags make -C "$build_root/core" -j "${HARMONY_QUICKNES_BUILD_JOBS:-4}" \
     DEBUG=0 OPTIMIZE=-O2 GIT_VERSION="$revision"
 
 case $(uname -s) in
