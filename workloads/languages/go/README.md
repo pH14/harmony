@@ -24,7 +24,12 @@ bash workloads/languages/run-check.sh harmony-language-go:local evidence/go
   `ANTITHESIS_STDLIB_PACKAGES` list. The upstream wrapper
   [skips every standard-library package](https://github.com/antithesishq/antithesis-sdk-go/blob/v0.8.0/tools/antithesis-go-toolexec/policy.go).
   The patch adds the list to the compiler action cache key and always excludes
-  the SDK and `runtime` packages.
+  the SDK and `runtime` packages. It also passes the generated module
+  registration file to the compiler ahead of the package's own files. Go
+  initializes package variables in file order when it sees no dependency, and
+  it sees none through an interface call from another package. Upstream
+  appends the file last, so an instrumented `k8s.io/klog/v2` crashes in its
+  `init` with a nil module handle.
 
 Set `GOFLAGS=-trimpath` before building the patched wrapper as well as the
 application. The wrapper's binary hash is part of the action cache key, so
