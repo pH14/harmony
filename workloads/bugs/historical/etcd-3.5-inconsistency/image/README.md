@@ -11,7 +11,7 @@ architecture-neutral cgo handler, and runs the server through
 `go build -toolexec`. The generated symbol tables are packaged under
 `/symbols`. A second local patch lets the instrumentor cover selected
 standard-library packages; the
-[Go recipe](../../../../languages/go/README.md#standard-library-selection)
+[Go recipe](../../../../languages/go/README.md#package-selection)
 describes the selection, and the lists are kept under `/symbols/stdlib`. The image copies the
 `libvoidstar.so` that the [shared runtime build](../../../../languages/runtime/README.md)
 composes from the generic ABI and the `workloads/faults/runtime` event runtime; every fault
