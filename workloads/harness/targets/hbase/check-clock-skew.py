@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Require a decided stale read after a one-second RegionServer clock step."""
+"""Require a decided stale read after a RegionServer clock step."""
 import json
 import sys
 from pathlib import Path
@@ -8,9 +8,9 @@ from pathlib import Path
 report = json.loads(Path(sys.argv[1]).read_text())
 actions = json.loads(Path(sys.argv[2]).read_text())
 assert len(actions) == 3
-assert actions[1]['operation'] == {
-    'Clock': {'node': 8, 'offset_ms': -1000, 'rate_ppm': 0, 'ticks': 6000}
-}
+clock = actions[1]['operation']['Clock']
+assert clock['node'] == 8 and clock['offset_ms'] == -1000
+assert clock['rate_ppm'] == 0 and clock['ticks'] in (6000, 12000)
 assert report['bug_found'], 'expected a recorded stale-read finding'
 assert not report['never_satisfied'], report['never_satisfied']
 assert report['execution_failures'] == 0

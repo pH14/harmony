@@ -14,12 +14,32 @@ fetch() {
   mv "$cache/downloads/$name.pending" "$cache/downloads/$name"
  fi
 }
-fetch https://codeload.github.com/apache/hbase/tar.gz/2c79c38bea97027fc841e2cfe074e0aef93e6e19 hbase-2c79c38bea97027fc841e2cfe074e0aef93e6e19.tar.gz
+release=${HARMONY_HBASE_RELEASE:-}
+case "$release" in
+ "")
+  fetch https://codeload.github.com/apache/hbase/tar.gz/2c79c38bea97027fc841e2cfe074e0aef93e6e19 hbase-2c79c38bea97027fc841e2cfe074e0aef93e6e19.tar.gz
+  ;;
+  3.0.0)
+  fetch https://archive.apache.org/dist/hbase/3.0.0/hbase-3.0.0-bin.tar.gz hbase-3.0.0-bin.tar.gz
+  ;;
+  *)
+  printf 'unsupported HARMONY_HBASE_RELEASE: %s\n' "$release" >&2
+  exit 2
+  ;;
+esac
 fetch https://archive.apache.org/dist/hadoop/common/hadoop-3.4.3/hadoop-3.4.3.tar.gz hadoop-3.4.3.tar.gz
-podman build "${limits[@]}" --ulimit nofile=65536:65536 --format docker -f "$recipe/source.Dockerfile" -t harmony-hbase-build:local "$cache"
+if [ -z "$release" ]; then
+ podman build "${limits[@]}" --ulimit nofile=65536:65536 --format docker -f "$recipe/source.Dockerfile" -t harmony-hbase-build:local "$cache"
+ version=4.0.0-alpha-1-SNAPSHOT
+ tag=local
+else
+ podman build "${limits[@]}" --format docker -f "$recipe/release.Dockerfile" -t harmony-hbase-build:local "$cache"
+ version=$release
+ tag=$release
+fi
 podman build "${limits[@]}" --format docker -f "$recipe/hadoop.Dockerfile" -t harmony-hadoop-build:local "$cache"
 export HARMONY_CONTAINER_TOOL=podman
 bash workloads/languages/build-image.sh java "${limits[@]}" --build-arg JAVA_MODULES=java.se,jdk.unsupported,jdk.security.auth,jdk.management,jdk.naming.dns,jdk.crypto.ec,jdk.zipfs
 podman tag harmony-language-java:local harmony-hbase-java:local
 podman build "${limits[@]}" --format docker -f workloads/harness/targets/zookeeper/Dockerfile --build-arg JAVA_IMAGE=harmony-hbase-java:local -t harmony-zookeeper:hbase .
-podman build "${limits[@]}" --format docker -f "$recipe/Dockerfile" -t harmony-hbase:local .
+podman build "${limits[@]}" --format docker -f "$recipe/Dockerfile" --build-arg HBASE_VERSION="$version" -t "harmony-hbase:$tag" .

@@ -39,10 +39,21 @@ target/release/harmony debug run harmony-hbase:local --config workloads/harness/
 target/release/harmony search --config workloads/harness/targets/hbase/harmony.toml --for 30m
 ```
 
+Set `HARMONY_HBASE_RELEASE=3.0.0` for the checksum-pinned Apache 3.0.0
+binary instead of the default source build. This produces
+`harmony-hbase:3.0.0` with the same harness and JVM instrumentation. The
+HBase 3.0.0 release-line witness can then be checked with:
+
+```sh
+bash workloads/harness/targets/hbase/check-clock-skew.sh harmony-hbase:3.0.0 \
+  /tmp/hbase3-clock-skew workloads/harness/targets/hbase/harmony.toml \
+  workloads/harness/targets/hbase/clock-skew-hbase3.json
+```
+
 `HARMONY_HBASE_BUILD_CACHE` selects the persistent source-download cache. The
-recipe verifies both source archives against pinned hashes. The HBase Maven
-build needs a file-descriptor limit of 65,536; the build script supplies it.
-It compiles upstream test sources but does not run the upstream test suite.
+recipe verifies downloaded archives against pinned hashes. The default HBase
+Maven build needs a file-descriptor limit of 65,536; the build script supplies
+it. It compiles upstream test sources but does not run the upstream test suite.
 `HARMONY_HBASE_BUILD_CPUS` and `HARMONY_HBASE_BUILD_MEMORY` bound container
 builds directly; Podman can place build containers outside a parent systemd
 unit. The memory default is 24 GiB.
@@ -144,6 +155,20 @@ measurements from different builds are not interchangeable.
 warms up the cluster, steps the first RegionServer's wall clock back one
 second, and checks for an acknowledged Put followed by a stale Get. It treats
 the consistency finding as the expected result and requires exact replay.
+Pass `clock-skew-hbase3.json` as a fourth argument when testing the Apache
+HBase 3.0.0 binary image; its longer clock-fault window and coverage choices
+reproduced the same violation under a one-second backward step. Both the run
+and its exact replay had all ten services alive, no restarts, no pending
+faults, and no undecided keys. Its guest journal records a successful CAS on
+`k2` before the step, a later acknowledged Put after the step, and two
+subsequent successful Gets returning the CAS value. These operations do not
+overlap, and the journal uses a monotonic clock. A different timing and
+coverage choice with the same one-second step completed without a violation,
+so this scenario establishes a reachable failure rather than a universal
+outcome. The diagnostic image used instrumented Java 21, while HBase 3.0.0's
+[documented supported runtime](https://hbase.apache.org/docs/configuration/basic-prerequisites/)
+is Java 17.
+
 The pinned HBase revision and image `harmony-hbase:qualified-2c79c38`
 reproduced the finding without a service restart: an acknowledged CAS on `k0`
 completed, a later Put on `k0` was acknowledged, and two later successful
