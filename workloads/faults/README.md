@@ -237,7 +237,7 @@ timing:
 | `Hook(id, ticks)` | the supervisor runs that hook once |
 | `Clock(node, offset_ms, rate_ppm, ticks)` | the node's wall clock steps by the offset and then moves by the rate in parts per million of guest time for the window, then returns to guest time; drawn only for VM execution |
 | `ClockAll(offset_ms, rate_ppm, ticks)` | every node's wall clock shifts as in `Clock`, each by a factor in [-1, 1] that the action's `choice` sets per node; drawn only for VM execution with more than one node |
-| `Burst(seed, faults, event_ready, ticks)` | the action runs `faults` faults back to back, each holding `ticks`, so the window is `faults` times `ticks`; the faults are drawn from the vocabulary with the stored seed, so replay runs the same faults; a burst never draws another burst or an aimed `EventPark`; `faults` is twice a log-uniform draw from 1 through 32, capped so the window fits 65,535 ticks; one burst costs one job, one snapshot and one restore however many faults it holds |
+| `Burst(seed, faults, event_ready, ticks)` | the action runs `faults` faults back to back inside its window, each holding an equal share of `ticks` (the first few hold one tick more when the share is uneven); the faults are drawn from the vocabulary with the stored seed, so replay runs the same faults; a burst never draws another burst or an aimed `EventPark`; `faults` is twice a log-uniform draw from 1 through 32, capped at `ticks`; a burst costs the same job time as any action of its window and packs more faults into it |
 
 A drawn clock action changes either the offset or the rate. The offset is a
 power of two from 1 ms through 2^18 ms (about 4.4 minutes) with a random sign.

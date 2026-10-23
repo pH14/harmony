@@ -197,21 +197,26 @@ pub fn burst_faults(
         return Err("only a burst expands into faults".to_owned());
     };
     let mut rand = RomuDuoJrRand::with_seed(seed);
-    (0..faults)
-        .map(|_| {
-            sample(&mut rand, vocabulary, event_ready, ticks, None, false)
+    let count = u16::from(faults.max(1));
+    let (share, extra) = (ticks.get() / count, ticks.get() % count);
+    (0..count)
+        .map(|index| {
+            let hold = NonZeroU16::new(share + u16::from(index < extra))
+                .ok_or("a burst holds more faults than ticks")?;
+            sample(&mut rand, vocabulary, event_ready, hold, None, false)
                 .map_err(|error| format!("expand a burst: {error}"))
         })
         .collect()
 }
 
-fn burst_size(rand: &mut RomuDuoJrRand, ticks: NonZeroU16) -> Result<u8, Box<dyn Error>> {
-    let half = (crate::target::burst_faults_within(ticks) / 2).max(1);
+fn burst_size(rand: &mut RomuDuoJrRand, ticks: NonZeroU16) -> u8 {
     let drawn = searcher::search::duration::DurationPolicy::draw_without_history(
         rand,
-        std::num::NonZeroU64::new(u64::from(half)).ok_or("empty burst size range")?,
+        std::num::NonZeroU64::new(u64::from(crate::target::MAX_BURST_FAULTS / 2))
+            .unwrap_or(std::num::NonZeroU64::MIN),
     );
-    Ok(u8::try_from(drawn * 2)?)
+    let faults = u8::try_from(drawn * 2).unwrap_or(crate::target::MAX_BURST_FAULTS);
+    crate::target::burst_faults_within(faults, ticks)
 }
 
 fn sample(
@@ -311,7 +316,7 @@ fn sample(
         }
         15 => FaultOperation::Burst {
             seed: rand.next_u64(),
-            faults: burst_size(rand, ticks)?,
+            faults: burst_size(rand, ticks),
             event_ready,
             ticks,
         },
@@ -798,8 +803,8 @@ mod tests {
             kinds.insert(kind(&action));
             assert_eq!(action.operation.hold(), TICKS);
             match action.operation {
-                FaultOperation::Burst { faults, .. } => {
-                    assert_eq!(action.ticks(), u64::from(faults) * u64::from(TICKS.get()));
+                FaultOperation::Burst { .. } => {
+                    assert_eq!(action.ticks(), u64::from(TICKS.get()));
                 }
                 FaultOperation::Wait(_)
                 | FaultOperation::KillAll(_)
@@ -1075,7 +1080,7 @@ mod tests {
         assert!(!sizes.is_empty());
         assert!(sizes.iter().all(|&(faults, ticks)| {
             (2..=crate::target::MAX_BURST_FAULTS).contains(&faults)
-                && faults % 2 == 0
+                && u16::from(faults) <= ticks.get()
                 && ticks == TICKS
         }));
         assert!(sizes.iter().any(|&(faults, _)| faults <= 4));

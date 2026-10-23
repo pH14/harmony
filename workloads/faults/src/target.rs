@@ -92,7 +92,7 @@ impl FaultOperation {
             | Self::Hook(_, ticks)
             | Self::Clock { ticks, .. }
             | Self::ClockAll { ticks, .. } => u64::from(ticks.get()),
-            Self::Burst { faults, ticks, .. } => u64::from(faults) * u64::from(ticks.get()),
+            Self::Burst { ticks, .. } => u64::from(ticks.get()),
         }
     }
 
@@ -180,7 +180,7 @@ impl FaultOperation {
                 ..
             } => Self::Burst {
                 seed,
-                faults: faults.min(burst_faults_within(ticks)),
+                faults: burst_faults_within(faults, ticks),
                 event_ready,
                 ticks,
             },
@@ -189,13 +189,8 @@ impl FaultOperation {
 }
 
 #[must_use]
-pub fn burst_faults_within(ticks: NonZeroU16) -> u8 {
-    let fit = u64::from(u16::MAX) / u64::from(ticks.get());
-    let mut faults = MAX_BURST_FAULTS;
-    while u64::from(faults) > fit {
-        faults /= 2;
-    }
-    faults.max(1)
+pub fn burst_faults_within(faults: u8, ticks: NonZeroU16) -> u8 {
+    u8::try_from(ticks.get()).map_or(faults, |fit| faults.min(fit))
 }
 
 pub const MAX_BURST_FAULTS: u8 = 64;
@@ -2411,13 +2406,20 @@ mod tests {
     }
 
     #[test]
-    fn a_burst_window_stays_within_the_tick_range() {
-        assert_eq!(burst_faults_within(NonZeroU16::new(1).unwrap()), 64);
-        assert_eq!(burst_faults_within(NonZeroU16::new(2_000).unwrap()), 32);
-        assert_eq!(burst_faults_within(NonZeroU16::MAX), 1);
-        let held = burst(64, 10).with_ticks(NonZeroU16::new(2_000).unwrap());
-        assert_eq!(held.operation.hold().get(), 2_000);
-        assert_eq!(held.ticks(), 32 * 2_000);
-        assert_eq!(burst(64, 10).operation.hold().get(), 10);
+    fn a_burst_shares_its_window_among_its_faults() {
+        assert_eq!(burst_faults_within(64, NonZeroU16::new(10).unwrap()), 10);
+        assert_eq!(burst_faults_within(8, NonZeroU16::new(2_000).unwrap()), 8);
+        let held = burst(64, 2_000).with_ticks(NonZeroU16::new(5).unwrap());
+        assert_eq!(held.ticks(), 5);
+        assert!(matches!(
+            held.operation,
+            FaultOperation::Burst { faults: 5, .. }
+        ));
+        let timeline = fault_timeline(WINDOWS, &vocabulary(), &[burst(8, 43)]).unwrap();
+        let lengths = timeline
+            .iter()
+            .map(|(_, (start, end))| (end - start) / SUPERVISOR_TICK_NANOS)
+            .collect::<Vec<_>>();
+        assert_eq!(lengths, [6, 6, 6, 5, 5, 5, 5, 5]);
     }
 }
