@@ -952,9 +952,14 @@ member's own state. The adapter uses the etcd API client. `write` is `Put`,
 and puts on success. Each operation goes to one member drawn from the SDK
 stream over a new connection. A failed `cas` compare and a failed dial are
 definite failures, and other write errors are indeterminate. The replica
-comparison reads each member with a serializable `Range` and compares values,
-`create_revision`, `mod_revision` and `version`. `ready` passes once a `Put`
-succeeds through any member.
+comparison first writes a fresh key `fence-nI-<token>` through member `nI`
+and polls it with a serializable `Range` on `nI` until it returns the written
+value. A member applies committed entries in log order, so its state then
+holds every write acknowledged before the comparison started, and a member cut
+off from a quorum fails the fence instead of answering from stale state. The
+comparison then reads each member with a serializable `Range` and compares
+values, `create_revision`, `mod_revision` and `version`. `ready` passes once a
+`Put` succeeds through any member.
 
 The image builds `xline` with Rust 1.97.0, `trace-pc-guard` coverage and the
 `antithesis-instrumentation` crate, which the build adds to the `xline` crate

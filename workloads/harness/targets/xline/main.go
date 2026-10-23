@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
@@ -103,6 +104,9 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		}
 		return nil, runner.Definite(fmt.Errorf("range: %d values for one key", len(r.Kvs)))
 	case family.RegisterReplicas:
+		if err := fence(ctx, kv, op.Node); err != nil {
+			return nil, runner.Definite(err)
+		}
 		copies, err := replicas(ctx, kv, op.V.(family.ReplicaQuery).Keys)
 		if err != nil {
 			return nil, runner.Definite(err)
@@ -110,6 +114,30 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		return copies, nil
 	}
 	return nil, runner.Definite(fmt.Errorf("unknown operation %q", op.F))
+}
+
+// A member applies committed entries in log order. Once a serializable range
+// on the member returns the fence written after the comparison started, its
+// state holds every write acknowledged before the comparison started. Each
+// comparison writes its own fence key, so concurrent comparisons on one member
+// cannot overwrite each other's fence.
+func fence(ctx context.Context, kv pb.KVClient, node string) error {
+	value := fmt.Sprintf("%016x", sdk.Random())
+	key := []byte("fence-" + node + "-" + value)
+	if _, err := kv.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(value)}); err != nil {
+		return fmt.Errorf("fence on %s: %w", node, err)
+	}
+	for {
+		r, err := kv.Range(ctx, &pb.RangeRequest{Key: key, Serializable: true})
+		if err == nil && len(r.Kvs) == 1 && string(r.Kvs[0].Value) == value {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("fence on %s: not applied: %w", node, ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 // A serializable range answers from the member's own applied state.
