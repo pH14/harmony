@@ -26,21 +26,22 @@ battery-backed work RAM). The pinned QuickNES core runs it.
 
 All addresses are in system RAM. The ones marked checked were read with
 `mm2-probe` (it reads any ROM named by `HARMONY_MM2_ROM`) over scripted play
-from power-on and compared with rendered frames. The others follow the
+from power-on, or over replayed search tapes, and compared with rendered
+frames. The others follow the
 community RAM map and the game's disassembly; no scripted replay has reached
 them yet.
 
 | Address | Meaning | Checked |
 | --- | --- | --- |
-| `$0010` | Level: 0 overworld, 1 to 9 the dungeons | 0 only |
+| `$0010` | Level: 0 overworld, 1 to 9 the dungeons | 0 to 3 |
 | `$0012` | Game mode: `$00` title, `$01` file select, `$0E` name registration, `$03` and `$04` level load, `$05` play, `$06` and `$07` screen scroll, `$0B` cave interior, `$10` stairs, `$11` death, `$13` ending | all but `$13` |
 | `$0070` | Link's x in pixels | yes |
 | `$0084` | Link's y in pixels; play spans about `$3D` to `$DD` | yes |
 | `$00EB` | Room: the overworld screen (row in the high nibble, column in the low) or the dungeon room | yes |
 | `$0657` | Sword: 0 none, 1 wooden, 2 white, 3 magic | 0 and 1 |
 | `$0658` | Bombs | no |
-| `$065A`-`$0666` | Bow, candle, recorder, food, potion, magic rod, raft, book, ring, ladder, magic key, power bracelet, letter | no |
-| `$066D` | Rupees | no |
+| `$065A`-`$0666` | Bow, candle, recorder, food, potion, magic rod, raft, book, ring, ladder, magic key, power bracelet, letter | candle (`$065B` = 1) |
+| `$066D` | Rupees | yes |
 | `$066E` | Keys | no |
 | `$066F` | Hearts: high nibble heart containers minus one, low nibble full hearts minus one | yes |
 | `$0670` | Partial heart: 0 empty, 1 to `$7F` half, `$80` to `$FF` full | yes |
@@ -87,7 +88,8 @@ Key choices:
   byte of the overworld screen it opens from.
 - The identity is empty and the capacity is one, so each cell keeps one state.
 - The one preference is heart containers, then health in half hearts, then
-  rupees. Ties keep the state with fewer frames.
+  rupees. Ties keep the state with fewer frames. A purchase spends rupees, so
+  a state that has just bought an item loses its cell to one that has not.
 
 Milestones are reported only and never enter the key: each Triforce piece by
 dungeon, the best sword, the ten key items (raft, ladder, bow, candle,
