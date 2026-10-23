@@ -2867,11 +2867,10 @@ where
             won_preferences
                 .iter()
                 .filter(|preference| {
-                    slot.is_empty()
-                        || slot.iter().any(|held| {
-                            key.preference_cmp(**preference, self.entries[*held].key)
-                                == Ordering::Greater
-                        })
+                    slot.iter().any(|held| {
+                        key.preference_cmp(**preference, self.entries[*held].key)
+                            == Ordering::Greater
+                    })
                 })
                 .min()
                 .map(|preference| u8::try_from(*preference).unwrap_or(u8::MAX))

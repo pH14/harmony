@@ -822,11 +822,13 @@ every holder of the cell, at the index of the lowest such preference. The
 first holder of an empty cell queues at index 0. A slot win below the cell's
 best holder does not queue, so the queue carries only stock no other state in
 the cell already holds. A continuation landing queues its position when it
-wins its slot, including an empty slot, at the lowest preference it took
-there. Edges are keyed by position without progress, so a landing at a new
-tier follows the moves recorded at earlier tiers. A reservation that takes the queue examines
-at most 8 exits, skipping stale parents and prefixes already archived. Among the rest it dispatches the first whose holder beats
-every current holder of the slot it would land in, the parent's progress at the
+beats a holder of its slot under a preference, at the lowest such preference.
+A landing in an empty slot ends its wave: waves through empty slots fill the
+archive with replayed holders at positions search never held, and those
+holders take draws from the cells that build stock. A reservation that takes
+the queue examines at most 8 exits, skipping stale parents and prefixes already
+archived. Among the rest it dispatches the first whose holder beats every
+current holder of the slot it would land in, the parent's progress at the
 destination position, under the preference it won, and otherwise the first edge
 that gains a preference; an edge that does neither is skipped. An edge inside
 one place lands only on its destination position; an edge into another place

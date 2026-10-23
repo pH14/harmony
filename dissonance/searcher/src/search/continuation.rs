@@ -8,7 +8,7 @@ use std::{
 
 use super::heap;
 
-pub const CONTINUATION_IDENTIFIER: &str = "position_edges_cell_best_sources_success_share_v2";
+pub const CONTINUATION_IDENTIFIER: &str = "position_edges_cell_best_sources_success_share_v3";
 
 pub const CONTINUATION_SHARE_SCALE: u16 = 256;
 
