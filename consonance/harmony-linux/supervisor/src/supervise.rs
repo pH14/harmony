@@ -380,6 +380,14 @@ impl ProcessSupervisor {
         self.clocks.get(usize::from(node)).copied().unwrap_or(0)
     }
 
+    pub fn note_killed_for_remount(&mut self, node: u16) {
+        if let Some(state) = self.nodes.get_mut(usize::from(node)) {
+            state.alive = false;
+            state.paused = false;
+            state.restart_after_fault = true;
+        }
+    }
+
     pub fn note_hook_started(&mut self) {
         self.counters.hooks_started += 1;
     }
@@ -1055,6 +1063,30 @@ mod tests {
             }]
         );
         assert!(sup.take_natural_deaths().is_empty());
+    }
+
+    #[test]
+    fn a_node_killed_for_a_remount_restarts_after_a_fault() {
+        let mut sup = Supervisor::new(1);
+        let error = active(&[(0, ProcessAction::DiskError)]);
+        sup.tick(&error, &[]);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::SetDiskMode {
+                node: 0,
+                mode: DiskMode::Normal
+            }]
+        );
+        sup.note_killed_for_remount(0);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[0]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
+        assert!(sup.take_natural_deaths().is_empty());
+        assert_eq!(sup.counters().unexpected_deaths, 0);
     }
 
     #[test]

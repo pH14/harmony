@@ -322,6 +322,12 @@ impl Disk {
             .map_err(|error| format!("share mount {}: {error}", path.display()))
     }
 
+    fn read_only(&self) -> Result<bool, String> {
+        let stat = rustix::fs::statvfs(Path::new(&self.spec.path))
+            .map_err(|error| format!("statvfs {}: {error}", self.spec.path))?;
+        Ok(stat.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY))
+    }
+
     fn sync(&self) -> Result<(), String> {
         let root =
             File::open(&self.spec.path).map_err(|error| format!("{}: {error}", self.spec.path))?;
@@ -490,6 +496,26 @@ impl Disks {
         };
         disk.restore_mode(mapper)?;
         Ok(Some(Corruption { flip, unmountable }))
+    }
+
+    pub fn read_only(&mut self, node: u16) -> Result<bool, String> {
+        let Some((_, disk)) = self.find(node) else {
+            return Ok(false);
+        };
+        disk.read_only()
+    }
+
+    pub fn remount(&mut self, node: u16) -> Result<Option<Plan>, String> {
+        let Some((mapper, disk)) = self.find(node) else {
+            return Ok(None);
+        };
+        let entries = disk.cut(mapper)?;
+        let plan = disk::plan_all(&entries);
+        disk.rebuild(&plan, None)?;
+        let device = disk.attach(mapper)?;
+        disk.mount(&device)?;
+        disk.restore_mode(mapper)?;
+        Ok(Some(plan))
     }
 
     pub fn set_mode(&mut self, node: u16, mode: DiskMode) -> Result<bool, String> {
