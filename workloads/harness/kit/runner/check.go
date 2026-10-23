@@ -27,6 +27,8 @@ const (
 
 const generationEnv = "HARMONY_DISTURBANCE_GENERATION"
 
+const faultsInForceEnv = "HARMONY_FAULTS_IN_FORCE"
+
 const baselineFile = "disturbance-baseline"
 
 const checkProcess = 0
@@ -177,6 +179,12 @@ func checkRead(ctx context.Context, adapter Adapter, recorder family.Recorder, j
 func compareReplicas(ctx context.Context, adapter Adapter, replicated family.Replicated, recorder family.Recorder, journal *history.Journal, nodes []string, config Config) (*ReplicaResult, error) {
 	if len(nodes) < 2 {
 		return &ReplicaResult{Skipped: "the adapter pins reads to fewer than two nodes"}, nil
+	}
+	// Replicas need only agree once faults end. A member that a fault still
+	// cuts off may answer from its own lagging copy, so no round runs and no
+	// replica record reaches the journal that later checks reread.
+	if os.Getenv(faultsInForceEnv) == "1" {
+		return &ReplicaResult{Skipped: "a fault is in force"}, nil
 	}
 	rounds, settle := replicated.Settle()
 	result := &ReplicaResult{}

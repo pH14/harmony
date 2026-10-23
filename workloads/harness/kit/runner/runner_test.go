@@ -285,6 +285,30 @@ func TestReplicaBehindOnMetadataIsCaught(t *testing.T) {
 	}
 }
 
+func TestReplicasAreComparedOnlyAfterFaultsEnd(t *testing.T) {
+	config := testConfig(t)
+	adapter := &replicatedRegister{memoryRegister: memoryRegister{values: map[string]string{}}, versions: map[string]uint64{}, behind: "n3"}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(faultsInForceEnv, "1")
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed := failing(t); len(failed) != 0 || result.Replicas == nil || result.Replicas.Skipped == "" || result.Replicas.Rounds != 0 {
+		t.Fatalf("failing %v; result %s", failed, result)
+	}
+	t.Setenv(faultsInForceEnv, "0")
+	result, err = Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed := failing(t); !failed[family.RegisterReplicasAgree] || result.Replicas.Rounds != 3 {
+		t.Fatalf("failing %v; result %s", failed, result)
+	}
+}
+
 func TestReplicasNeedTwoNodes(t *testing.T) {
 	config := testConfig(t)
 	adapter := &memoryRegister{values: map[string]string{}}
