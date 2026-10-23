@@ -47,7 +47,7 @@ HBase 3.0.0 release-line witness can then be checked with:
 ```sh
 bash workloads/harness/targets/hbase/check-clock-skew.sh harmony-hbase:3.0.0 \
   /tmp/hbase3-clock-skew workloads/harness/targets/hbase/harmony.toml \
-  workloads/harness/targets/hbase/clock-skew-hbase3.json
+  workloads/harness/targets/hbase/clock-skew-hbase-three.json
 ```
 
 `HARMONY_HBASE_BUILD_CACHE` selects the persistent source-download cache. The
@@ -155,7 +155,7 @@ measurements from different builds are not interchangeable.
 warms up the cluster, steps the first RegionServer's wall clock back one
 second, and checks for an acknowledged Put followed by a stale Get. It treats
 the consistency finding as the expected result and requires exact replay.
-Pass `clock-skew-hbase3.json` as a fourth argument when testing the Apache
+Pass `clock-skew-hbase-three.json` as a fourth argument when testing the Apache
 HBase 3.0.0 binary image; its longer clock-fault window and coverage choices
 reproduced the same violation under a one-second backward step. Both the run
 and its exact replay had all ten services alive, no restarts, no pending
