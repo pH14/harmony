@@ -25,7 +25,14 @@ bash workloads/languages/run-check.sh harmony-language-java:local evidence/java
 - The JDK is built without DWARF. Harmony reads only the `nm` symbol tables
   under `/symbols/native`, and DWARF for `libjvm.so` adds about 270 MB to the
   guest root filesystem.
-- The image holds a `jlink` runtime with only `java.base`.
+- The image defaults to a `jlink` runtime containing `java.base`. Set the
+  `JAVA_MODULES` build argument to a comma-separated module list for a service.
+  The linker resolves transitive dependencies and rewrites every included
+  module, including its native libraries in the symbol manifest. OpenJDK
+  builds all jmods once so changing the selected modules reuses that build.
+- Rewriting changes module hashes. `ModuleHashes.java` removes the original
+  hash attributes from extracted module descriptors; `jmod hash` recomputes
+  the hashes over the rewritten modules before the final link.
 
 ## Back-edge callbacks
 
@@ -44,7 +51,8 @@ JDK rewrites each class when it is defined from bytes: through
 which covers lambdas, method-handle loops and proxies, and through
 `Unsafe.defineClass`. Boot classes load from the runtime image without that
 path, so the build runs `HarmonyRewriter` over the extracted `java.base` jmod
-before `jlink`. Application classes and jars need no preparation.
+before `jlink`. `link-runtime.sh` applies the same rewrite to all selected
+modules and their dependencies. Application classes and jars need no preparation.
 
 A class that the rewriter cannot parse, such as a class file newer than Java
 21, is defined unchanged. A malformed class file is also defined unchanged, so
@@ -90,6 +98,28 @@ does not rewrite classes at definition time.
 
 - Intrinsic stubs such as `arraycopy` have no callbacks. Their loops end after
   a bounded number of iterations.
-- Only `java.base` is in the image. Add modules to the `jlink` command when a
-  workload needs them, rewrite their classes from the jmod as for `java.base`,
-  then rerun admission.
+- The default runtime includes only `java.base`. Use `jdeps` on a workload
+  and its dependency jars to choose `JAVA_MODULES`, then rerun admission and
+  the language fixtures. Reflection and optional providers may require modules
+  that static dependency analysis cannot discover.
+
+## Diagnostic callback counts
+
+`profile-callbacks.py INPUT OUTPUT` produces a diagnostic copy of
+`libvoidstar/voidstar.c`. Compile that copy through the faults runtime and put
+it in a separate diagnostic image. With `HARMONY_JAVA_COVERAGE_PROFILE=1` set
+on a JVM, it creates `/tmp/java-coverage.PID`, containing four native-endian
+64-bit counters: Java native callback calls, Java back-edge hits delivered,
+Java calls that exchanged a coverage threshold, and all coverage exchanges.
+Read the counters while the JVM is alive. The diagnostic uses atomic counters
+and adds overhead; it does not change coverage thresholds, countdowns or
+scheduler selections. Never substitute its image for a recorded production
+image during replay.
+
+A ZooKeeper startup with C1, Serial GC, one processor and a 32–128 MiB heap
+recorded 7,349,177 Java back-edges in 393 native calls, of which 266 exchanged
+a coverage threshold. All threads together made 5,149 coverage exchanges.
+The diagnostic reached readiness in 9.93 guest seconds, versus 9.94 without
+it. Java back-edge exchanges were about 5.2% of all coverage exchanges in that
+probe, so there was no evidence to justify weakening the existing countdown.
+The batching already follows the remaining budget returned by libvoidstar.
