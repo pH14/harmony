@@ -22,6 +22,7 @@ generic operations onto the target's client API.
 | `targets/rqlite` | rqlite image and adapter |
 | `targets/etcd` | etcd image and adapter, three members or one |
 | `targets/redisraft` | Redis-Raft image and adapter |
+| `targets/garage` | Garage image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -533,6 +534,53 @@ consistency check never replaces them, and the cluster can lose acknowledged
 writes. A search with the default fault alphabet finds this as a
 linearizability violation on `dfd91d4` too, with a `DiskError` among the
 shrunk faults.
+
+## Garage
+
+`targets/garage` drives the `register` family without `cas` against
+[Garage](https://garagehq.deuxfleurs.fr/) `v2.4.1`, an S3-compatible object
+store, on three nodes `n1` to `n3` at 10.77.0.1-3 (S3 port 3900, RPC port
+3901) in `harness-net` namespaces. Each node keeps its metadata (LMDB, the
+default engine) and data blocks under `/tmp/garage/<node>` on a 256 MiB node
+disk and logs to `/tmp/garage/<node>.log`. `setup.sh` writes each node's
+configuration from `garage.toml.in`: replication factor 3,
+`consistency_mode = "consistent"`, and `metadata_fsync` and `data_fsync` on.
+Garage documents that the consistent mode chooses read and write quorums so
+that reads see every completed write (read-after-write consistency). Both
+fsync settings are off by default, and the documentation says a power cut can
+then lose recent writes, so the target turns them on.
+
+`ready.sh` forms the cluster once per execution: `n1` connects to `n2` and
+`n3`, assigns the three nodes 100 MB each in zone `dc1`, applies layout
+version 1, imports a fixed access key and creates bucket `harness` with read,
+write and owner permission for it. It then marks `/tmp/garage/formed` and runs
+the adapter's `ready`, which passes once a `PutObject` succeeds through any
+node.
+
+Each operation goes to a node drawn from the SDK stream through
+[minio-go](https://github.com/minio/minio-go) with path-style requests and
+one attempt per request. `write` is `PutObject` and `read` is `GetObject`; a
+`NoSuchKey` error reads as no value. Garage has no conditional `PutObject`, so
+the family runs without `cas`. A write is a definite failure only when the dial
+fails, since Garage reports an error after a write that reached fewer nodes
+than the quorum and keeps it on those nodes. Read errors are definite. The S3
+API reads through a quorum, so the adapter pins no reads and the check skips
+the replica comparison.
+
+The register checker reports linearizability, which is stronger than
+Garage's promise. Read-after-write consistency is the stale-read property
+(`register: no read returns a value older than an acknowledged earlier
+write`). A linearizability violation with no stale read can come from a read
+that saw a write still in progress, which the promise allows.
+
+The image builds `garage` from the release source with Rust 1.97.0,
+`trace-pc-guard` coverage and the `antithesis-instrumentation` crate, which
+the build adds to the `garage` crate and references from `main.rs`. The lock
+file gains only that crate. Admission accepts `XGETBV` only after a provable
+zero selector. `sodium-xgetbv.sh` rewrites the one `XGETBV` in the libsodium
+copy that `libsodium-sys` builds so that it clears ECX itself, and
+`cpuid-xgetbv.sh` does the same for `klauspost/cpuid` in the harness. Both
+callers request only XCR0.
 
 ## Native runner
 
