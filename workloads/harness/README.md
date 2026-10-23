@@ -29,6 +29,7 @@ generic operations onto the target's client API.
 | `targets/oxia` | Oxia image and adapter |
 | `targets/garage` | Garage image and adapter |
 | `targets/openbao` | OpenBao image and adapter |
+| `targets/xline` | Xline image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -924,6 +925,50 @@ and every caller passes 0.
 
 Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
 memory, and the release image needs more than 1 GiB to unpack.
+
+## Xline
+
+`targets/xline` drives the `register` family against
+[Xline](https://github.com/xline-kv/xline) `master` (`71479a4f`) on three
+members `n1` to `n3` at 10.77.0.1-3 (client port 2379, peer port 2380) in
+`harness-net` namespaces. Each member keeps its RocksDB state machine and its
+CURP log under `/tmp/xline/<node>/data` on a 512 MiB node disk and logs to
+`/tmp/xline/<node>.log`. `n1` starts with `--is-leader` only while its data
+directory is missing, since a restarted member already holds its term and
+vote. The CURP log preallocates 64 MiB segment files and opens a new one at
+every start, so 256 MiB disks fill after a few restarts.
+
+Xline serves the etcd v3 API. A `Range` with `serializable` unset is
+linearizable and goes through CURP; a serializable `Range` answers from the
+member's own state. The adapter uses the etcd API client. `write` is `Put`,
+`read` is a linearizable `Range` and `cas` is a `Txn` that compares the value
+and puts on success. Each operation goes to one member drawn from the SDK
+stream over a new connection. A failed `cas` compare and a failed dial are
+definite failures, and other write errors are indeterminate. The replica
+comparison reads each member with a serializable `Range` and compares values,
+`create_revision`, `mod_revision` and `version`. `ready` passes once a `Put`
+succeeds through any member.
+
+The image builds `xline` with Rust 1.97.0, `trace-pc-guard` coverage and the
+`antithesis-instrumentation` crate, which the build adds to the `xline` crate
+and references from `main.rs`. The source targets Rust 1.74, so the build caps
+lints at warnings.
+
+On `71479a4f` and `v0.7.0` a restarted member can apply its log a second time.
+Xline writes the state machine to RocksDB without sync and relies on the
+fsynced CURP log, so after a power loss each member replays its whole log in
+one after-sync batch. `after_sync` in `crates/curp/src/server/cmd_worker`
+applies the batch's commands first and stores the highest command index as
+the applied index. It then applies the batch's other entries, such as the
+node-state entries at indexes 1-3, and each of them stores its own lower
+index. The next restart of that member replays every command after that
+index again, so its `mod_revision` and `version` grow past the other members'
+and the replica comparison fails. The shrunk run has a power loss of all
+nodes, a kill of `n1` and a restart of `n3`. 12 of its 20 redrawn variants
+fail.
+
+Set `ram_mib = 3072` under `[runner.options]`. The node disks live in guest
+memory.
 
 ## Native runner
 
