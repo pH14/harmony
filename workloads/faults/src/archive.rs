@@ -25,7 +25,9 @@ pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_goals_reached_tiers_assertion_ids_held_park_armed_kill_places_liveness_edge_buckets_identity_v11";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
-pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
+pub const REPLACEMENT_IDENTIFIER: &str = "fewest_planned_ticks";
+
+pub const ACTION_HOST_TICKS: u64 = 256;
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -170,7 +172,7 @@ pub fn merge_progress_watermark(
 
 #[must_use]
 pub fn action_cost(action: &FaultAction) -> u64 {
-    crate::target::action_ticks(action)
+    crate::target::action_ticks(action).saturating_add(ACTION_HOST_TICKS)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1296,15 +1298,18 @@ mod tests {
     }
 
     #[test]
-    fn action_costs_charge_the_recorded_guest_duration() {
+    fn action_costs_charge_the_recorded_guest_duration_and_the_host_work_per_action() {
         assert_eq!(
             action_cost(&FaultOperation::Wait(std::num::NonZeroU16::MIN).into()),
-            1
+            1 + ACTION_HOST_TICKS
         );
-        assert_eq!(action_cost(&FaultOperation::Kill(4, TICKS).into()), 50);
+        assert_eq!(
+            action_cost(&FaultOperation::Kill(4, TICKS).into()),
+            50 + ACTION_HOST_TICKS
+        );
         assert_eq!(
             action_cost(&FaultOperation::Wait(std::num::NonZeroU16::new(8192).unwrap()).into()),
-            8192
+            8192 + ACTION_HOST_TICKS
         );
     }
 }

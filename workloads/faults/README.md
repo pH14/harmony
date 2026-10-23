@@ -209,6 +209,10 @@ before. Fault actions often do, because the edge bucket is part of the holder
 identity. With every fault kind, later actions of long jobs open fewer novel
 slots, and most jobs return to one action. A worker ends its job at the
 search's wall-time limit, as the searcher README describes.
+An action's planned cost is its guest ticks plus 256 ticks for the host work
+around it, so planned finishes follow wall time. On etcd with KVM, a job takes
+about 0.18 seconds of wall time per action plus 0.076 seconds per guest second,
+so an action's host work costs as much as about 240 ticks of guest time.
 Each action also records a coverage
 quantum: the number of coverage callbacks an instrumented thread makes between
 VM exits during the action's window. It is drawn log-uniform over powers of two
@@ -330,8 +334,16 @@ to the action's horizon deadline, and snapshots the exact stopped endpoint. A te
 with its original stop and has no successor. If a continuable endpoint cannot
 be snapshotted, the session is abandoned and the control diagnostic is
 reported. Each session keeps only its current chain of prefix snapshots, at
-most 32 past the setup snapshot. Every sealed prefix is published to the
+most 32 past the setup snapshot. A session publishes sealed prefixes to the
 search's shared snapshot cache (see [consonance-client](../../consonance/client/README.md)).
+For its first 64 captures it publishes every prefix. After that it publishes
+only prefixes whose depth is a multiple of a spacing `n`, a power of two up to
+16. A larger `n` saves publish time, and each later import reruns about `n / 2`
+more actions. The session doubles `n` while `(2n)^2` stays at most
+`2 * publish * captures / (lookups * action)`. Here `publish` is the mean publish
+time, `action` the mean host time per captured action, `captures` the captured
+prefixes, and `lookups` the imports and misses plus one. Each published prefix
+stores its pages as a delta from the nearest published ancestor in the chain.
 Publishing an action prefix already cached with a different target state
 quarantines its namespace before the fault controller seals a link. A shared
 integrity check invalidates the campaign, including work already running from
