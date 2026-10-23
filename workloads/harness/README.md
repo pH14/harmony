@@ -560,9 +560,10 @@ answered `false` is a definite failure. A write is a definite failure only
 when the dial fails; every other write error is indeterminate. Read errors are
 definite.
 
-A read pinned to node `nI` writes key `fence-nI` with a fresh value through
-`nI`, then polls `GET /v1/kv/fence-nI?stale` on `nI` until it returns that
-value. A server applies committed entries in log order, so `nI` then holds
+A read pinned to node `nI` writes a fresh key `fence-nI-<token>` through
+`nI`, then polls that key with `?stale` on `nI` until it returns the written
+value. Each read uses its own key, because a check runs a pinned read and a
+`replicas` read on the same node at once. A server applies committed entries in log order, so `nI` then holds
 every write acknowledged before the read started. The read is then a `stale`
 get on `nI`, which a server answers from its own state store. A `replicas`
 read on `nI` takes the same fence and lists every key with `?recurse&stale`.

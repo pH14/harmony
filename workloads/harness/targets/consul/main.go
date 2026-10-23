@@ -134,16 +134,18 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 }
 
 // A server applies committed entries in log order. Once a stale read on the
-// pinned server returns the fence value written after the read started, that
-// server's store holds every write acknowledged before the read started.
+// pinned server returns the fence written after the read started, that
+// server's store holds every write acknowledged before the read started. Each
+// read writes its own fence key, so concurrent reads on one server cannot
+// overwrite each other's fence.
 func (c *client) fence(ctx context.Context, node string) (string, error) {
 	at := slices.Index(c.names, node)
 	if at < 0 {
 		return "", fmt.Errorf("unknown node %q", node)
 	}
 	base := c.servers[at]
-	key := "fence-" + node
 	value := fmt.Sprintf("%016x", sdk.Random())
+	key := "fence-" + node + "-" + value
 	applied, err := c.put(ctx, base, key, value, "")
 	if err != nil {
 		return "", fmt.Errorf("fence on %s: %w", node, err)
