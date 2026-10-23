@@ -2149,8 +2149,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         let parent_place = self.archive.entries[parent_index].key.place();
         let retained_at_start = self.archive.retained;
         let mut left_place = false;
-        let mut novel_slots = 0_usize;
-        for action in actions {
+        let mut first_novel = false;
+        let mut later_novel = 0_usize;
+        for (position, action) in actions.into_iter().enumerate() {
             let tracked = tracked_action(&action.action) && !action.outcome.disposition.is_failed();
             duration.applied |= tracked;
             let certificate = action
@@ -2228,7 +2229,12 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
                         duration.useful |= tracked;
-                        novel_slots += usize::from(self.archive.opened_novel_slot(id));
+                        let novel = self.archive.opened_novel_slot(id);
+                        if position == 0 {
+                            first_novel = novel;
+                        } else {
+                            later_novel += usize::from(novel);
+                        }
                         decisions.push(CampaignAdmissionDecision::Retained {
                             id: self
                                 .archive
@@ -2267,7 +2273,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 left_place,
                 terminal,
             );
-            self.suffix_reach.record_outcome(actions_run, novel_slots);
+            self.suffix_reach
+                .record_outcome(actions_run, first_novel, later_novel);
         }
         if sequence.is_multiple_of(self.curve_interval) {
             self.push_curve_point();
@@ -8308,7 +8315,7 @@ mod tests {
         let (_workload, _run, mut core, _target) = test_core();
         let parent = core.archive.stable_id(0).expect("the root has an id");
         while core.suffix_reach.length() > 1 {
-            core.suffix_reach.record_outcome(64, 0);
+            core.suffix_reach.record_outcome(64, true, 0);
         }
         core.archive
             .record_suffix_outcome(0, 1, false, false, false);

@@ -126,19 +126,41 @@ impl MixtureEnergy {
 
 const SUFFIX_REACH_ACTION_WINDOW: u32 = 1024;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+struct ReachTally {
+    actions: u32,
+    novel: u32,
+}
+
+impl ReachTally {
+    fn add(&mut self, actions: usize, novel: usize) {
+        self.actions = self
+            .actions
+            .saturating_add(u32::try_from(actions).unwrap_or(u32::MAX));
+        self.novel = self
+            .novel
+            .saturating_add(u32::try_from(novel.min(actions)).unwrap_or(u32::MAX));
+    }
+
+    fn halve(&mut self) {
+        self.actions /= 2;
+        self.novel /= 2;
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct SuffixReach {
     doublings: u8,
-    actions: u32,
-    novel: u32,
+    first: ReachTally,
+    later: ReachTally,
 }
 
 impl Default for SuffixReach {
     fn default() -> Self {
         Self {
             doublings: SUFFIX_DOUBLING_LIMIT.trailing_zeros() as u8,
-            actions: 0,
-            novel: 0,
+            first: ReachTally::default(),
+            later: ReachTally::default(),
         }
     }
 }
@@ -148,24 +170,31 @@ impl SuffixReach {
         (1_u8 << self.doublings).min(SUFFIX_DOUBLING_LIMIT)
     }
 
-    pub(crate) fn record_outcome(&mut self, actions: usize, novel: usize) {
+    fn actions(&self) -> u32 {
+        self.first.actions.saturating_add(self.later.actions)
+    }
+
+    pub(crate) fn record_outcome(&mut self, actions: usize, first_novel: bool, later_novel: usize) {
         if actions == 0 {
             return;
         }
-        self.actions = self
-            .actions
-            .saturating_add(u32::try_from(actions).unwrap_or(u32::MAX));
-        self.novel = self
-            .novel
-            .saturating_add(u32::try_from(novel.min(actions)).unwrap_or(u32::MAX));
-        while self.actions >= SUFFIX_REACH_ACTION_WINDOW {
-            self.actions /= 2;
-            self.novel /= 2;
+        self.first.add(1, usize::from(first_novel));
+        self.later.add(actions - 1, later_novel);
+        while self.actions() >= SUFFIX_REACH_ACTION_WINDOW {
+            self.first.halve();
+            self.later.halve();
         }
-        if self.actions < u32::from(SUFFIX_DOUBLING_LIMIT) {
+        if self.actions() < u32::from(SUFFIX_DOUBLING_LIMIT) {
             return;
         }
-        if 2 * self.novel >= self.actions {
+        let later_rate = u64::from(self.later.novel) * u64::from(self.first.actions);
+        let first_rate = u64::from(self.first.novel) * u64::from(self.later.actions);
+        let lengthen = if self.later.actions == 0 {
+            true
+        } else {
+            self.later.novel > 0 && later_rate >= first_rate
+        };
+        if lengthen {
             if self.length() < SUFFIX_DOUBLING_LIMIT {
                 self.doublings += 1;
             }
@@ -343,65 +372,81 @@ mod tests {
         let mut reach = SuffixReach::default();
         assert_eq!(reach.length(), 64);
         for _ in 0..63 {
-            reach.record_outcome(1, 0);
+            reach.record_outcome(1, true, 0);
             assert_eq!(reach.length(), 64);
         }
         let mut lengths = Vec::new();
         for _ in 0..7 {
-            reach.record_outcome(1, 0);
+            reach.record_outcome(2, true, 0);
             lengths.push(reach.length());
         }
         assert_eq!(lengths, [32, 16, 8, 4, 2, 1, 1]);
     }
 
     #[test]
-    fn suffix_reach_falls_to_one_action_when_most_actions_open_no_novel_slot() {
+    fn suffix_reach_falls_when_later_actions_open_novel_slots_less_often_than_first_actions() {
         let mut reach = SuffixReach::default();
-        for _ in 0..7 {
-            reach.record_outcome(64, 64);
-        }
-        assert_eq!(reach.length(), 64);
-        reach.record_outcome(0, 0);
-        assert_eq!(reach.length(), 64);
         let mut lengths = Vec::new();
-        for _ in 0..19 {
-            reach.record_outcome(64, 16);
+        for _ in 0..7 {
+            reach.record_outcome(64, true, 32);
             lengths.push(reach.length());
         }
-        assert_eq!(
-            lengths,
-            [
-                64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1, 1, 1
-            ]
-        );
+        assert_eq!(lengths, [32, 16, 8, 4, 2, 1, 1]);
     }
 
     #[test]
-    fn suffix_reach_stays_at_one_action_when_a_tenth_of_actions_open_novel_slots() {
-        let mut reach = SuffixReach::default();
-        for job in 0..4096 {
-            reach.record_outcome(1, usize::from(job % 10 == 0));
-            if job >= 68 {
-                assert_eq!(reach.length(), 1);
+    fn suffix_reach_holds_long_jobs_when_later_actions_match_first_actions_at_any_rate() {
+        for (every, later) in [(1, 63), (4, 16), (10, 7), (64, 1)] {
+            let mut reach = SuffixReach::default();
+            for job in 0..256 {
+                reach.record_outcome(64, job % every == every - 1, later);
             }
+            assert_eq!(
+                reach.length(),
+                64,
+                "first novel every {every}, later {later}"
+            );
         }
+        let mut reach = SuffixReach::default();
+        for job in 0..256 {
+            reach.record_outcome(64, job % 4 == 0, 8);
+        }
+        assert_eq!(reach.length(), 1);
+    }
+
+    #[test]
+    fn suffix_reach_lengthens_again_once_no_later_action_remains_in_the_window() {
+        let mut reach = SuffixReach::default();
+        while reach.length() > 1 {
+            reach.record_outcome(64, true, 0);
+        }
+        let mut jobs = 0;
+        while reach.length() == 1 {
+            reach.record_outcome(1, true, 0);
+            jobs += 1;
+            assert!(jobs < 8192, "the reach never lengthened");
+        }
+        assert!(jobs > 1024, "{jobs} jobs");
+        assert_eq!(reach.length(), 2);
+        assert_eq!(reach.later.actions, 0);
     }
 
     #[test]
     fn suffix_reach_counts_only_recent_actions() {
         let mut reach = SuffixReach::default();
         for _ in 0..64 {
-            reach.record_outcome(64, 0);
+            reach.record_outcome(64, true, 0);
         }
         assert_eq!(reach.length(), 1);
         let mut jobs = 0;
         while reach.length() < 64 {
-            reach.record_outcome(64, 64);
+            reach.record_outcome(64, false, 32);
             jobs += 1;
+            assert!(jobs < 32, "{jobs} jobs");
         }
-        assert!(jobs < 32, "{jobs} jobs");
-        assert!(reach.actions < 1024);
-        assert!(reach.novel <= reach.actions);
+        assert!(reach.actions() < 1024);
+        assert!(reach.first.novel <= reach.first.actions);
+        assert!(reach.later.novel <= reach.later.actions);
     }
 
     #[test]

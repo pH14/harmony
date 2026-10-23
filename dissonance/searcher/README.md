@@ -734,28 +734,26 @@ parent. A drawn job runs the longer of its parent's length and the reach
 length. The reach length starts at 64 actions. The archive remembers every
 slot that has held a state, so a kept state that opens a slot no state has held
 before (a novel slot) differs from one that replaces a holder or refills a slot
-that memory pressure emptied. The reach counts actions run and novel slots
-opened by drawn jobs over about the last 1,024 actions. Once it has counted 64
-actions, each drawn job moves the reach length: it doubles, up to 64 actions,
-when at least half of the counted actions opened novel slots, and halves, down
-to one action, otherwise. When most actions open novel slots, every action of
-a long job adds a new state, so a long job wastes little and extends a lineage
-by many actions per draw. When few actions do, one-action jobs spread over
-many parents find the rare new state at less cost. Starting long gives the
-first jobs from the root deep lineages, and a failing start costs about 126
-actions, because each job moves the length one step. Fault actions often open
-a novel slot, because the edge bucket is part of the holder identity. In NATS
-searches with the clock and kill faults left out, 57% to 88% of drawn jobs
-ran 64 actions in four of five 30-minute searches; with every fault kind about
-20% did. Those searches found the NATS bug in 64-action jobs that ended 20 to
-160 seconds of guest time after power-on. Starting long puts those jobs first,
-while every parent is still shallow; searches that started at one action reached
-64 actions only after the archive had grown deep, and missed the bug more often.
-Tiny worlds open novel slots with at most about one action in eight, so the
-reach length falls to one action within the first few jobs and the per-parent
-length decides. The fall costs those first jobs: crossing a fresh room in 16
-tiny-world layouts takes a median of 118 units of work with the reach, against
-29.5 without it. The reach counts and the slot
+that memory pressure emptied. The reach counts the first action of each drawn
+job and the job's later actions separately over about the last 1,024 actions, with the novel slots each
+group opened. Once it has counted 64 actions, each drawn job moves the reach
+length. It doubles, up to 64 actions, when later actions opened at least one
+novel slot and opened them at least as often as first actions. It halves, down
+to one action, otherwise. A window with no later action doubles it, so after a
+long run of one-action jobs the reach tries two actions and measures again.
+Jobs that run their parent's longer length also supply later actions. The test
+compares the two groups, so the rate at which a workload's actions open novel
+slots cancels out. Fault actions often open a novel slot, because the edge
+bucket is part of the holder identity, so a fixed share of novel actions says
+little about whether a long job pays. A long job wins when its later actions
+find new states as often as a fresh job's first action does. When they find
+fewer, one-action jobs spread over many parents find the rare new state at less
+cost, and the per-parent length decides. Starting long gives the first jobs
+from the root deep lineages, and a failing start costs about 126 actions,
+because each job moves the length one step. NATS searches have found the NATS
+bug in 64-action jobs that ended 20 to 160 seconds of guest time after
+power-on; starting long puts those jobs first, while every parent is still
+shallow. The reach counts and the slot
 set change only at admission. The core checkpoint carries the counts, the
 archive checkpoint carries the slot set, and the slot set counts toward the
 archive's history memory.
