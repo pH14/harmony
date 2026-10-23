@@ -11,11 +11,11 @@ fi
 mkdir -p "$evidence"
 evidence=$(cd "$evidence" && pwd)
 sdk_package=github.com/antithesishq/antithesis-sdk-go/instrumentation
-module_template='{{if not .Standard}}{{with .Module}}{{.Path}}{{end}}{{end}}'
+module_template='{{if not .Standard}}{{with .Module}}{{.Path}}{{else}}{{.ImportPath}}{{end}}{{end}}'
 go list std | LC_ALL=C sort -u > "$evidence/stdlib-all.txt"
 (
     cd "$sdk"
-    go list -deps -f '{{if .Standard}}{{.ImportPath}}{{end}}' runtime "$sdk_package"
+    GO111MODULE=on go list -deps -f '{{if .Standard}}{{.ImportPath}}{{end}}' runtime "$sdk_package"
     grep -E '^runtime(/|$)' "$evidence/stdlib-all.txt"
 ) | sed '/^$/d' | LC_ALL=C sort -u > "$evidence/stdlib-excluded.txt"
 LC_ALL=C comm -23 "$evidence/stdlib-all.txt" "$evidence/stdlib-excluded.txt" > "$evidence/stdlib-instrumented.txt"
@@ -27,7 +27,7 @@ fi
 (
     cd "$sdk"
     echo github.com/antithesishq/antithesis-sdk-go
-    go list -deps -f "$module_template" "$sdk_package"
+    GO111MODULE=on go list -deps -f "$module_template" "$sdk_package"
 ) | sed '/^$/d' | LC_ALL=C sort -u > "$evidence/modules-excluded.txt"
 go list -deps -f "$module_template" "$@" | sed '/^$/d' | LC_ALL=C sort -u > "$evidence/modules-all.txt"
 LC_ALL=C comm -23 "$evidence/modules-all.txt" "$evidence/modules-excluded.txt" > "$evidence/modules-instrumented.txt"

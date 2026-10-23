@@ -24,6 +24,7 @@ generic operations onto the target's client API.
 | `targets/redisraft` | Redis-Raft image and adapter |
 | `targets/consul` | Consul key-value image and adapter |
 | `targets/tarantool` | Tarantool image and adapter |
+| `targets/summitdb` | SummitDB image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -669,6 +670,43 @@ coverage, and links the C forwarding shim. Tarantool links Bookworm's
 Tarantool never loads. A new `libssl3` package changes the digest, and the
 reviews must be redone.
 
+## SummitDB
+
+`targets/summitdb` drives the `register` family through SummitDB's Redis
+protocol with a small RESP client in the adapter, so no client library retries
+a command. Three servers `n1` to `n3` run at 10.77.0.1-3 (port 7481) in
+`harness-net` namespaces, data under `/tmp/summitdb/<node>` on a 256 MiB node
+disk and logs in `/tmp/summitdb/<node>.log`; the bundle declares both and the
+four network hooks. `n1` starts alone and elects itself. `n2` and `n3` start
+with `-join 10.77.0.1:7481`. A server exits when its join request fails, so
+`node.sh` first runs `summitdb-harness wait-leader` until `n1` names a leader.
+A server that already has `raft.db` knows its peers and skips the wait.
+Durability and consistency stay at SummitDB's default, `high`.
+
+`write` is `SET`, `read` is `GET` and `cas` is an `EVAL` script that compares
+and sets inside one Raft command. Each operation goes to one server drawn from
+the SDK stream. A follower answers `TRY <leader>`, and the adapter follows that
+redirect once. The
+[Read Consistency](https://github.com/tidwall/summitdb#read-consistency)
+section of SummitDB's README states that with `--consistency high` only the
+leader accepts reads, and the Raft log index is incremented "to guarantee no
+stale data". In the source (`finn.raftLevelGuard`) the leader applies an empty
+command through Raft and answers the read from its own state after that
+command is applied.
+
+A write or `cas` is a definite failure when the dial fails or the reply is
+`TRY`, `ERR leader not known`, `ERR raft not ready` or `ERR unknown command`.
+Every other write error is indeterminate. A `cas` answered `differs` is a
+definite failure. Read errors are definite. Reads go only through the leader,
+so the adapter pins no reads and the check skips the replica comparison.
+`ready` passes once every server names the same leader and that leader applies
+a `SET`.
+
+The Dockerfile clones a fixed commit. SummitDB has no `go.mod` and vendors its
+dependencies, so it builds in GOPATH mode. Every package outside the standard
+library sits under `github.com/tidwall/summitdb`, the vendored Raft, FastLog
+store and `buntdb` packages among them, and each one is instrumented.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
@@ -741,6 +779,8 @@ container. Opt-in options:
 - A Tarantool write or `cas` that fails with `ER_READONLY`,
   `ER_TRANSACTION_CONFLICT` or `ER_NO_SUCH_PROC` is trusted never to reach the
   WAL.
+- A SummitDB write or `cas` that fails with `TRY`, `ERR leader not known` or
+  `ERR raft not ready` is trusted never to reach the Raft log.
 - A Redis-Raft write or `cas` that fails with `MOVED`, `NOLEADER`,
   `NOCLUSTER`, `LOADING` or `ERR not leader` is trusted never to reach the
   Raft log.
