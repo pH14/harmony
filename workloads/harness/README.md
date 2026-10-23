@@ -407,11 +407,12 @@ read errors are definite.
 A read pinned to node `nI` puts key `fence-nI`, then creates one consumer on
 `nI` that delivers the last message of every key in the bucket
 (`DeliverLastPerSubject` on `$KV.B.>`), and takes the read key and
-`fence-nI` from it. On NATS 2.15.1 a consumer filtered to the read key and the
-fence key with `FilterSubjects` delivered the fence and no message for a key
-the node's store held. The consumer is a
+`fence-nI` from it. The consumer is a
 one-replica consumer placed on `nI` the way the `targets/nats` pinned read
-places it, and it reads the messages pending at creation. The fence and the
+places it. A consumer with nothing pending at creation delivers nothing;
+otherwise the read takes messages until one reports nothing pending, the rule
+nats.go's key-value watcher uses. The pending count at creation is not the
+number of messages the consumer delivers. The fence and the
 value therefore come from one view of `nI`'s store, even when `nI` restarts
 between the put and the read. When the delivered fence sequence is below the
 put's revision, `nI` is not current: the read retries every 250 ms and, if

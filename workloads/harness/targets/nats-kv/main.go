@@ -267,21 +267,39 @@ func (c *client) lastMessages(ctx context.Context, node string, config jetstream
 		return nil, err
 	}
 	defer c.dropConsumer(last)
-	msgs := map[string]jetstream.Msg{}
-	initial := last.CachedInfo().NumPending
-	for received, pending := uint64(0), initial; received < initial && pending > 0; received++ {
+	return collectLast(last.CachedInfo().NumPending, func() (string, uint64, jetstream.Msg, error) {
 		msg, err := next(ctx, last)
 		if err != nil {
-			return nil, fmt.Errorf("keys on %s: %w", node, err)
+			return "", 0, nil, fmt.Errorf("keys on %s: %w", node, err)
 		}
 		meta, err := msg.Metadata()
 		if err != nil {
-			return nil, fmt.Errorf("keys on %s: %w", node, err)
+			return "", 0, nil, fmt.Errorf("keys on %s: %w", node, err)
 		}
-		pending = meta.NumPending
-		msgs[strings.TrimPrefix(msg.Subject(), keySubject)] = msg
+		return msg.Subject(), meta.NumPending, msg, nil
+	})
+}
+
+// A last-per-subject consumer is done when a delivered message reports
+// nothing pending, the rule nats.go's key-value watcher uses; the pending
+// count at creation only tells whether anything will arrive.
+func collectLast[M any](initial uint64, fetch func() (string, uint64, M, error)) (map[string]M, error) {
+	msgs := map[string]M{}
+	if initial == 0 {
+		return msgs, nil
 	}
-	return msgs, nil
+	for {
+		subject, pending, msg, err := fetch()
+		if err != nil {
+			return nil, err
+		}
+		if key, ok := strings.CutPrefix(subject, keySubject); ok {
+			msgs[key] = msg
+		}
+		if pending == 0 {
+			return msgs, nil
+		}
+	}
 }
 
 func (c *client) consumerOn(ctx context.Context, node string, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
