@@ -287,15 +287,10 @@ func decodeLocal(data []any) (map[string]family.Copy, error) {
 func (a adapter) Ready(ctx context.Context) error {
 	c := newClient(a)
 	defer c.Close()
-	var errs []error
-	for _, node := range a.names {
-		if _, err := c.change(ctx, node, "harness_write", "ready", "1"); err == nil {
-			return nil
-		} else {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return runner.AnyMember(ctx, a.names, func(ctx context.Context, node string) error {
+		_, err := c.change(ctx, node, "harness_write", "ready", "1")
+		return err
+	})
 }
 
 func main() {

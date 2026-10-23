@@ -30,6 +30,31 @@ type Readier interface {
 	Ready(ctx context.Context) error
 }
 
+func AnyMember[M any](ctx context.Context, members []M, try func(ctx context.Context, member M) error) error {
+	if len(members) == 0 {
+		return errors.New("no members to try")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		at  int
+		err error
+	}
+	results := make(chan result, len(members))
+	for at, member := range members {
+		go func() { results <- result{at, try(ctx, member)} }()
+	}
+	errs := make([]error, len(members))
+	for range members {
+		r := <-results
+		if r.err == nil {
+			return nil
+		}
+		errs[r.at] = r.err
+	}
+	return errors.Join(errs...)
+}
+
 type Pinner interface {
 	Nodes() []string
 }

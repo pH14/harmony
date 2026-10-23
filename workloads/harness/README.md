@@ -58,6 +58,12 @@ The binary serves the bundle lines `workload BINARY drive` and
 `--max-pause` (default 20ms), `--ops` (operations per process, default 0 for
 no limit).
 
+`ready` runs under one `--ready-timeout` deadline. A `Ready` that passes once
+any member accepts a write calls `runner.AnyMember`, which tries every member
+at once, returns on the first success and cancels the rest. A member that a
+fault has cut off then cannot use up the deadline before the healthy members
+get a turn. When every member fails, it returns all their errors joined.
+
 `Invoke` returns an error for an operation whose outcome is unknown. Wrap the
 error with `runner.Definite` only when the operation certainly had no effect.
 A side-effect-free read may always do so.
