@@ -83,3 +83,8 @@ satisfy every reachability assertion, including a successful read after a
 fault. Preserve the exact recording binary pair, kernel, initramfs, image and
 seed for every replay. Keep run evidence outside the repository and attach
 measurements to the pull request.
+
+## Related target
+
+The [HBase target](../hbase/README.md) composes this ZooKeeper ensemble with
+replicated HDFS, HMaster and two RegionServers.
