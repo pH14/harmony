@@ -558,8 +558,9 @@ and replaces it only when it holds the old value. Each operation goes to one
 instance drawn from the SDK stream. A follower answers a write with
 `ER_READONLY` before it has any effect, so the adapter asks that instance for
 `box.info.election.leader_name` and sends the write there once. `ER_READONLY`,
-`ER_TRANSACTION_CONFLICT`, a `cas` that finds another value and a failed
-connect are definite failures; other write errors are indeterminate. `read` is
+`ER_TRANSACTION_CONFLICT`, `ER_NO_SUCH_PROC` (an instance that has not loaded
+`harness.lua` yet), a `cas` that finds another value and a failed connect are
+definite failures; other write errors are indeterminate. `read` is
 a `get` in a transaction begun with `txn_isolation = 'linearizable'`. The
 [MVCC transaction mode](https://www.tarantool.io/en/doc/latest/platform/atomic/txn_mode_mvcc/)
 page defines a linearizable read as one that reflects every write whose
@@ -568,9 +569,10 @@ until the instance has heard from enough peers to be sure of that. Read errors
 are definite. The client registers go-tarantool's UUID extension, because an
 `ER_READONLY` error carries the leader's UUID.
 
-A read pinned to node `nI` writes key `fence-nI` with a fresh value through
-the leader, then reads the fence and the key on `nI` at the `read-confirmed`
-level until the fence value appears. That level shows only transactions the
+A read pinned to node `nI` writes a fresh key `fence-nI-<token>` through the
+leader, then reads the fence and the key on `nI` at the `read-confirmed` level
+until the fence appears. Each read uses its own key, because a check runs a
+pinned read and a `replicas` read on the same node at once. That level shows only transactions the
 quorum confirmed, from `nI`'s own copy, and an instance applies confirmed
 transactions in log order. A `replicas` read on `nI` reads every key the same
 way. Tuples carry no version, so copies hold values alone. `ready` passes once
@@ -651,8 +653,9 @@ container. Opt-in options:
   the put.
 - A Tarantool pinned read trusts `read-confirmed` to show only confirmed
   transactions from the instance's own copy.
-- A Tarantool write or `cas` that fails with `ER_READONLY` or
-  `ER_TRANSACTION_CONFLICT` is trusted never to reach the WAL.
+- A Tarantool write or `cas` that fails with `ER_READONLY`,
+  `ER_TRANSACTION_CONFLICT` or `ER_NO_SUCH_PROC` is trusted never to reach the
+  WAL.
 - A Redis-Raft write or `cas` that fails with `MOVED`, `NOLEADER`,
   `NOCLUSTER`, `LOADING` or `ERR not leader` is trusted never to reach the
   Raft log.
