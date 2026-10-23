@@ -114,10 +114,11 @@ func serverCode(err error) (iproto.Error, bool) {
 }
 
 // ER_READONLY and ER_TRANSACTION_CONFLICT abort the transaction before it
-// reaches the WAL.
+// reaches the WAL. ER_NO_SUCH_PROC comes from an instance that has not loaded
+// harness.lua yet, so no function ran.
 func notApplied(err error) bool {
 	code, ok := serverCode(err)
-	return ok && (code == iproto.ER_READONLY || code == iproto.ER_TRANSACTION_CONFLICT)
+	return ok && (code == iproto.ER_READONLY || code == iproto.ER_TRANSACTION_CONFLICT || code == iproto.ER_NO_SUCH_PROC)
 }
 
 // A write on a follower fails with ER_READONLY before it has any effect, so
@@ -218,10 +219,12 @@ func decodeRead(data []any) (bool, string, error) {
 
 // The fence write commits after the read starts. An instance applies
 // confirmed transactions in log order, so once its read-confirmed copy holds
-// the fence value, it holds every write acknowledged before the read started.
+// the fence, it holds every write acknowledged before the read started. Each
+// read writes its own fence key, so concurrent reads on one node cannot
+// overwrite each other's fence.
 func (c *client) pinned(ctx context.Context, node string, keys []string) (map[string]family.Copy, error) {
-	fence := "fence-" + node
 	value := fmt.Sprintf("%016x", sdk.Random())
+	fence := "fence-" + node + "-" + value
 	if _, err := c.change(ctx, node, "harness_write", fence, value); err != nil {
 		return nil, fmt.Errorf("fence on %s: %w", node, err)
 	}
