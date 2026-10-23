@@ -122,8 +122,8 @@ and `limit` messages, without rollout workers. Open
 `http://127.0.0.1:8790/?game=super-mario-bros&live` on the host, or forward the
 port over SSH and open the same address on another machine. Pause stops drawing
 new results and leaves the campaign running. The counters interpolate between
-the stream's 100 ms batches, and the camera target moves at most 2,400 px/s so
-far-ahead trails do not make the zoom swing. A live view cannot branch. Build
+the stream's 100 ms batches, and the camera keeps a fixed zoom, because trails
+start from many archived states and would otherwise make the zoom swing. A live view cannot branch. Build
 the page with `npm run build` and pass the `dist` directory, with a `roms`
 directory added beside `index.html`, as the request's `live_site`.
 [`workloads/nes`](../../workloads/nes/README.md#live-view) documents the request
@@ -294,6 +294,13 @@ loopback address, and starting or stopping a run takes a JSON POST. A run id is
 the start time, the game and a random suffix. Stopping a run that is still
 copying or building cancels its start, and a unit that starts during the stop is
 stopped once its start returns. A start that fails also stops its unit.
+
+A machine entry with `local = true` and a `dir`, and no `ssh`, runs the campaign
+on the computer that runs the launcher. The first run builds the core and
+`nes-eval` from the working tree with `cargo` into `<dir>/target`. The launcher
+starts `nes-eval` as a child process, reads its live port from the log and
+serves that port directly, with no tunnel. It enforces no `memory_max_mib`, and
+quitting the launcher stops its local runs.
 
 Tobu Tobu Girl runs on SameBoy and has no `nes-games` workload, so it uses the
 older `Explorer` in `rust/src/lib.rs`, with its decoder and archive key beside

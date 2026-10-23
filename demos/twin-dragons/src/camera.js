@@ -26,9 +26,13 @@ export function trackingGoal(held, point, points, now, progress, retreatMs = 150
   return !held.behind || now - held.behind < retreatMs ? goal : point;
 }
 
-export function followView(view, point, panel, viewport, targetZoom, seconds) {
+export function followView(view, point, panel, viewport, targetZoom, seconds, fixedZoom = false) {
   const dt = Math.max(0, Math.min(0.1, seconds));
   if (!dt) return { ...view };
+  if (fixedZoom) {
+    const zoom = view.zoom + (targetZoom - view.zoom) * (1 - Math.exp(-dt / 0.6)), ease = 1 - Math.exp(-dt / 0.5);
+    return { ...panelCenter(panel, zoom, { x: view.x + (point.x - view.x) * ease, y: view.y + (point.y - view.y) * ease }, viewport), zoom };
+  }
   const fit = Math.min(viewport.width / panel.width, viewport.height / panel.height);
   const distance = Math.hypot((point.x - view.x) * fit / viewport.width,
     (point.y - view.y) * fit / viewport.height);
@@ -53,12 +57,4 @@ export function followView(view, point, panel, viewport, targetZoom, seconds) {
     y: (view.y * oldScale + (center.y * nextScale - view.y * oldScale) * mix) / scale,
     zoom: scale / fit,
   };
-}
-
-export function slewPoint(target, point, seconds, speed) {
-  const from = target.slew;
-  if (!from) return (target.slew = { x: point.x, y: point.y });
-  const dx = point.x - from.x, dy = point.y - from.y, gap = Math.hypot(dx, dy), step = speed * Math.max(0, seconds);
-  target.slew = gap <= step ? { x: point.x, y: point.y } : { x: from.x + dx * step / gap, y: from.y + dy * step / gap };
-  return target.slew;
 }

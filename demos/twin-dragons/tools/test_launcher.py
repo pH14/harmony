@@ -177,6 +177,68 @@ class LauncherTest(unittest.TestCase):
         for run in (first, second):
             self.assertRegex(run.id, launcher.RUN_ID)
 
+    def local_config(self, directory: str) -> launcher.Config:
+        path = Path(directory) / "machines.toml"
+        path.write_text(f'[machines.mac]\nlocal=true\ndir="{directory}/arcade"\nworkers=4\nmemory_mib=2048\n')
+        return launcher.load_config(path)
+
+    def test_a_local_machine_needs_no_ssh_or_whole_memory_ceiling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            machine = self.local_config(directory).machines["mac"]
+        self.assertTrue(machine.local)
+        self.assertEqual((machine.ssh, machine.runs, machine.memory_max_mib), ("", (), 2048))
+
+    def test_a_local_run_starts_a_child_process_and_stops_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.local_config(directory)
+            target = Path(directory) / "arcade/target/release"
+            target.mkdir(parents=True)
+            fake = target / "nes-eval"
+            fake.write_text("#!/bin/sh\necho 'live view listening on 127.0.0.1:4321'\nexec sleep 60\n")
+            fake.chmod(0o755)
+            core = Path(directory) / "arcade/quicknes_libretro.dylib"
+            core.write_bytes(b"core")
+            launch = launcher.Launcher(config, Path("."))
+            run = launcher.Run.launched("20260101-000000-metroid-00000000", launcher.Settings(
+                "metroid", "mac", 2, 1024, 1, 1.0))
+            with (
+                mock.patch.object(launcher, "rom_path", return_value=EXAMPLE),
+                mock.patch.object(launcher, "build_logged") as build,
+                mock.patch.object(launcher.sys, "platform", "darwin"),
+            ):
+                launch.deploy(run)
+            self.assertEqual((run.state, run.local_port), ("running", 4321))
+            self.assertEqual(build.call_count, 1)
+            request = json.loads((Path(directory) / "arcade/runs" / run.id / "request.json").read_text())
+            self.assertEqual(request["live"], "127.0.0.1:0")
+            self.assertEqual(request["core"], str(core))
+            assert run.process is not None
+            self.assertIsNone(run.process.poll())
+            launch.stop(run)
+            self.assertEqual(run.state, "stopped")
+            self.assertIsNotNone(run.process.poll())
+
+    def test_a_local_run_that_exits_before_listening_fails_with_its_log(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.local_config(directory)
+            target = Path(directory) / "arcade/target/release"
+            target.mkdir(parents=True)
+            fake = target / "nes-eval"
+            fake.write_text("#!/bin/sh\necho 'bad request'\nexit 2\n")
+            fake.chmod(0o755)
+            (Path(directory) / "arcade/quicknes_libretro.dylib").write_bytes(b"core")
+            launch = launcher.Launcher(config, Path("."))
+            run = launcher.Run.launched("20260101-000000-metroid-00000000", launcher.Settings(
+                "metroid", "mac", 2, 1024, 1, 1.0))
+            with (
+                mock.patch.object(launcher, "rom_path", return_value=EXAMPLE),
+                mock.patch.object(launcher, "build_logged"),
+                mock.patch.object(launcher.sys, "platform", "darwin"),
+            ):
+                launch.deploy(run)
+        self.assertEqual(run.state, "failed")
+        self.assertIn("bad request", run.message)
+
     def test_a_run_stopped_while_copying_never_starts(self) -> None:
         launch = launcher.Launcher(self.config(), Path("."))
         run = launcher.Run.launched("20260101-000000-metroid-00000000", launcher.Settings(

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resumeFollowing, resetRetreat, trackingGoal, followView, slewPoint } from "../src/camera.js";
+import { resumeFollowing, resetRetreat, trackingGoal, followView } from "../src/camera.js";
 
 test("following a selected level clears the previous camera's interaction holds", () => {
   const camera = { follow: false, manual: 10000, held: 3000, only: 1,
@@ -100,4 +100,12 @@ test("a distant frontier becomes visible before close-up following settles", () 
     assert.ok(Math.abs(view.zoom - zoom) < 0.01);
     assert.deepEqual(followView(view, point, panel, viewport, zoom, 0), view);
   }
+});
+
+test("a fixed-zoom follow keeps the zoom and closes on a far point", () => {
+  const panel = { x: 0, y: 0, width: 15000, height: 480 }, viewport = { width: 1280, height: 320 };
+  let view = { x: 1000, y: 240, zoom: 14 };
+  for (let i = 0; i < 60; i++) view = followView(view, { x: 9000, y: 240 }, panel, viewport, 14, 1 / 60, true);
+  assert.ok(Math.abs(view.zoom - 14) < 1e-9);
+  assert.ok(view.x > 5000);
 });

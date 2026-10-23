@@ -9,7 +9,7 @@ import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { Swarm, ghosts, trailRoom, MOTION_STRIDE } from "./swarm.js";
-import { resumeFollowing, resetRetreat, trackingGoal, followView, slewPoint } from "./camera.js";
+import { resumeFollowing, resetRetreat, trackingGoal, followView } from "./camera.js";
 import { SmoothCounter } from "./counter.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, GRID_CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
@@ -473,8 +473,7 @@ const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3,
   PATH_STALL_MS = 8000,
   ROOM_DWELL_MS = 10000,
-  CAMERA_RETREAT_MS = 1500,
-  LIVE_CAMERA_SPEED = 2400;
+  CAMERA_RETREAT_MS = 1500;
 const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
@@ -857,8 +856,7 @@ function updateCamera(now) {
     const zoom = closeUpZoom(c) * (room === camera.introRoom ? scale : 1);
     if (reducedMotion.matches) steerCamera(room, c, point, zoom, 1, 1);
     else {
-      const aim = liveView ? slewPoint(target, point, dt, LIVE_CAMERA_SPEED) : point;
-      Object.assign(view, followView(view, aim, canvasPanel(c), c, zoom, dt));
+      Object.assign(view, followView(view, point, canvasPanel(c), c, zoom, dt, liveView));
       roomView(room).zoom = view.zoom;
     }
   }
