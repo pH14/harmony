@@ -562,8 +562,17 @@ may already have committed, so a redirected write is indeterminate. `write` and 
 `options.cas` set to the version that stored the old value, from the
 versions the client has seen or from a read. A `check-and-set parameter did
 not match` answer and a failed dial are definite failures, other write errors
-are indeterminate and read errors are definite. Reads go to the active node,
-so the adapter pins no reads and the check skips the replica comparison.
+are indeterminate and read errors are definite. The check also pins one read
+to each node. A standby forwards it to the node it takes for active, and a node
+that still takes itself for active answers from its own state, with no
+leadership check. The per-node stale-read property covers those reads. The
+check skips the replica comparison.
+
+`bundle-api` runs the same operations through the upstream Go client
+(`api/v2`) with its default retries and redirect handling, so the history
+shows what an application on that client observes. A check-and-set conflict
+is a definite failure there, and every other write error is indeterminate.
+Build it with `HARNESS_BUNDLE=bundle-api`.
 
 The image builds `bao` from the release source with Go 1.27 and the
 `openbao` build tag, without the web UI, through the Antithesis Go

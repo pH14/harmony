@@ -21,7 +21,7 @@ COPY workloads/harness/targets/openbao/go.mod workloads/harness/targets/openbao/
 COPY workloads/harness/targets/openbao/cpuid-xgetbv.sh /build/cpuid-xgetbv.sh
 RUN (cd kit && go mod download) && (cd targets/openbao && go mod download && bash /build/cpuid-xgetbv.sh /build/cpuid)
 COPY workloads/harness/kit kit
-COPY workloads/harness/targets/openbao/main.go targets/openbao/
+COPY workloads/harness/targets/openbao/main.go workloads/harness/targets/openbao/apiclient.go targets/openbao/
 RUN mkdir -p /out \
     && (cd kit && go test -mod=readonly ./...) \
     && (cd targets/openbao && go vet -mod=readonly ./... \
@@ -162,9 +162,9 @@ LABEL org.opencontainers.image.description="upstream OpenBao source built throug
 
 ARG HARNESS_BUNDLE=bundle
 COPY workloads/harness/targets/openbao/${HARNESS_BUNDLE} /etc/harmony/bundle
-COPY workloads/harness/targets/openbao/setup.sh workloads/harness/targets/openbao/node.sh workloads/harness/targets/openbao/ready.sh /opt/harmony/
+COPY workloads/harness/targets/openbao/setup.sh workloads/harness/targets/openbao/node.sh workloads/harness/targets/openbao/ready.sh workloads/harness/targets/openbao/bao-api.sh /opt/harmony/
 COPY workloads/harness/targets/openbao/bao.hcl.in /opt/bao/bao.hcl.in
 
-RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh /opt/harmony/ready.sh
+RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh /opt/harmony/ready.sh /opt/harmony/bao-api.sh
 
 CMD ["/opt/harmony/node.sh", "1"]

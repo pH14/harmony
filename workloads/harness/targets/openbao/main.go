@@ -28,7 +28,10 @@ var errNotFound = errors.New("not found")
 type adapter struct {
 	nodes []string
 	http  *http.Client
+	api   bool
 }
+
+func (a adapter) Nodes() []string { return a.nodes }
 
 func (adapter) Family() family.Family { return family.Register{} }
 
@@ -36,6 +39,9 @@ func (a adapter) Connect(context.Context, int) (runner.Client, error) {
 	token, err := readToken()
 	if err != nil {
 		return nil, err
+	}
+	if a.api {
+		return newAPIClient(a.nodes, token)
 	}
 	return &client{adapter: a, token: token, version: map[string]int64{}}, nil
 }
@@ -77,9 +83,11 @@ func (c *client) known(key, value string) (int64, bool) {
 }
 
 // Every node accepts every request: a standby forwards it to the active node,
-// so each operation goes to one node drawn from the SDK stream.
+// so each operation goes to one node drawn from the SDK stream. A pinned read
+// goes to its node, where a node that still takes itself for the active node
+// answers from its own state.
 func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
-	node := c.nodes[sdk.Below(uint64(len(c.nodes)))]
+	node := pick(c.nodes, op)
 	switch op.F {
 	case family.RegisterWrite:
 		value := op.V.(string)
@@ -223,6 +231,13 @@ func (a adapter) Ready(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+func pick(nodes []string, op family.Op) string {
+	if op.Node != "" {
+		return op.Node
+	}
+	return nodes[sdk.Below(uint64(len(nodes)))]
+}
+
 func main() {
 	nodes := make([]string, 3)
 	for i := range nodes {
@@ -237,5 +252,9 @@ func main() {
 	// node, and the forwarded request may already have committed. Following
 	// the redirect would resend it and report the second hop's dial error.
 	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	runner.Main(adapter{nodes: nodes, http: &http.Client{Transport: transport, CheckRedirect: noRedirect}})
+	runner.Main(adapter{
+		nodes: nodes,
+		http:  &http.Client{Transport: transport, CheckRedirect: noRedirect},
+		api:   os.Getenv("BAO_HARNESS_CLIENT") == "api",
+	})
 }
