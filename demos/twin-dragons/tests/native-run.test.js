@@ -6,10 +6,9 @@ import { nativeRuns } from "../src/native-run.js";
 test("Native Runs distinguishes archive selection from the chosen whole-run limit", async (t) => {
   class Node {
     constructor(tag) { this.tag = tag; this.children = []; this.value = ""; }
-    append(...children) {
-      this.children.push(...children);
-      if (this.tag === "select" && !this.value) this.value = children[0]?.value || "";
-    }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; }
+    setAttribute() {}
     addEventListener() {}
   }
   const original = Object.fromEntries(["document", "location", "fetch"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -33,23 +32,23 @@ test("Native Runs distinguishes archive selection from the chosen whole-run limi
     if (options?.method === "POST") posted = JSON.parse(options.body);
     return { ok: true, json: async () => ({ runs: [] }) };
   };
-  await nativeRuns("famidash", mount);
+  const catalog = [{ id: "famidash", title: "Famidash", rom: {} }];
+  await nativeRuns("famidash", mount, catalog);
   const all = (node) => [node, ...node.children.flatMap((child) => typeof child === "object" ? all(child) : [])];
   const nodes = all(body), form = nodes.find((node) => node.tag === "form");
-  const machine = nodes.find((node) => node.tag === "select");
-  const archiveLabel = nodes.find((node) => node.tag === "label" && node.children[0].textContent === "Archive budget (GiB)");
+  const archiveLabel = nodes.find((node) => node.tag === "label" && node.children[0].textContent === "Archive (GiB)");
   assert.ok(archiveLabel);
-  const archive = archiveLabel.children[1], whole = nodes.find((node) => node.className === "native-memory-limit");
+  const archive = archiveLabel.children[1], note = nodes.find((node) => node.className === "native-note");
   assert.equal(archive.max, 4);
-  assert.match(whole.textContent, /8\.0 GiB, swap disabled/);
-  machine.value = "large";
-  machine.onchange();
+  assert.match(note.textContent, /share 8 GiB/);
+  nodes.find((node) => node.tag === "button" && node.textContent === "large").onclick();
   assert.equal(archive.max, 64);
-  assert.match(whole.textContent, /80\.0 GiB, swap disabled/);
+  assert.match(note.textContent, /share 80 GiB/);
   archive.value = 16;
   form.onsubmit({ preventDefault() {} });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(posted.memory_mib, 16384);
   assert.equal(posted.machine, "large");
+  assert.equal(posted.game, "famidash");
   assert.equal(Object.hasOwn(posted, "memory_max_mib"), false);
 });
