@@ -36,12 +36,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     archive::{
-        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord,
+        DURATION_IDENTIFIER, DrawProfile, FaultArchiveKey, FaultArchiveReport, FaultBugRecord,
         FaultFailureRecord, FaultHangRecord, FaultInput, FaultMilestones, FaultProgressWatermark,
         KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS, MAX_RECORDED_FAILURES, MAX_RECORDED_HANGS,
         ParkThresholds, REPLACEMENT_IDENTIFIER, UndecidedChecks, action_cost, archive_key,
         bug_outcome, merge_milestones, merge_progress_watermark, milestone_key, milestones,
-        park_threshold_bucket, sample_action,
+        park_threshold_bucket, sample_action, sample_profiled_action,
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
@@ -825,6 +825,8 @@ fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
     }
 }
 
+const PROFILE_SEED_MIX: u64 = 0x5157_4152_4d5f_6b31;
+
 fn held_suffix(
     run: &FaultCampaignRun,
     state: &DrawTables<FaultAction>,
@@ -837,6 +839,9 @@ fn held_suffix(
     let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
         .ok_or("action duration must be positive")?;
     let event_ready = draw.context.event_ready;
+    let profile = DrawProfile::draw(&mut RomuDuoJrRand::with_seed(
+        mutation_seed ^ PROFILE_SEED_MIX,
+    ))?;
     let mut suffix =
         state.draw(before, replay, |view| {
             draw_suffix(
@@ -848,7 +853,16 @@ fn held_suffix(
                     Ok(biased_step(view, rand)?
                         .filter(|action| event_is_ready(action, event_ready)))
                 },
-                |_, rand| sample_action(rand, &run.vocabulary, event_ready, ticks, Some(view)),
+                |_, rand| {
+                    sample_profiled_action(
+                        rand,
+                        &run.vocabulary,
+                        event_ready,
+                        ticks,
+                        Some(view),
+                        profile,
+                    )
+                },
             )
         })?;
     for action in &mut suffix {
