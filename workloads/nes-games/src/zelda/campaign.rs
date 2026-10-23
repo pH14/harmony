@@ -727,4 +727,44 @@ mod tests {
                 .is_err()
         );
     }
+
+    #[test]
+    fn named_progress_records_the_first_execution_of_each_piece_sword_and_item() {
+        let mut evidence = ZeldaCampaignEvidence::default();
+        let input = ZeldaInput {
+            actions: vec![ButtonChord::new(0x10, 4)],
+        };
+        let first = ZeldaMilestones {
+            triforce: 0b100,
+            sword: 2,
+            items: 0b1,
+            ..ZeldaMilestones::default()
+        };
+        assert!(first_input_needed(&evidence.first_inputs, first));
+        update_first_inputs(
+            &mut evidence.first_reached,
+            &mut evidence.first_inputs,
+            first,
+            7,
+            &input,
+        );
+        assert!(!first_input_needed(&evidence.first_inputs, first));
+        let later = ZeldaMilestones { sword: 3, ..first };
+        update_first_inputs(
+            &mut evidence.first_reached,
+            &mut evidence.first_inputs,
+            later,
+            9,
+            &input,
+        );
+        let seen = &named_progress(&evidence)["first_seen"];
+        assert_eq!(seen["triforce_3"]["execution"], 7);
+        assert!(seen["triforce_1"].is_null());
+        assert_eq!(seen["wooden_sword"]["execution"], 7);
+        assert_eq!(seen["white_sword"]["execution"], 7);
+        assert_eq!(seen["magic_sword"]["execution"], 9);
+        assert_eq!(seen["raft"]["execution"], 7);
+        assert!(seen["ladder"].is_null());
+        assert_eq!(ZeldaGame::<QuickNesMachine>::checkpoint_marks(&evidence), 5);
+    }
 }
