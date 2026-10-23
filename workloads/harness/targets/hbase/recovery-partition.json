@@ -1,0 +1,32 @@
+[
+  {
+    "operation": {
+      "Wait": 3000
+    },
+    "coverage_quantum": 4096
+  },
+  {
+    "operation": {
+      "Hook": [
+        1,
+        500
+      ]
+    },
+    "coverage_quantum": 4096
+  },
+  {
+    "operation": {
+      "Hook": [
+        4,
+        1
+      ]
+    },
+    "coverage_quantum": 4096
+  },
+  {
+    "operation": {
+      "Wait": 20000
+    },
+    "coverage_quantum": 4096
+  }
+]

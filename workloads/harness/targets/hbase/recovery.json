@@ -1,0 +1,5 @@
+[
+  {"operation":{"Wait":1000},"coverage_quantum":4096},
+  {"operation":{"Kill":[8,100]},"coverage_quantum":4096},
+  {"operation":{"Wait":20000},"coverage_quantum":4096}
+]

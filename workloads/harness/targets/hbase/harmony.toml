@@ -1,0 +1,10 @@
+[workload]
+package = "faults"
+input = "harmony-hbase:local"
+[workload.options]
+setup_seconds = 600
+[runner]
+kind = "consonance"
+backend = "kvm"
+[runner.options]
+ram_mib = 8192

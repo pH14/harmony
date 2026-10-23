@@ -1,0 +1,19 @@
+Do not retry a mutation after an ambiguous RPC result.
+
+The harness journals one mutation per invocation. Repeating Put can apply the
+same logical write on both sides of another writer, and repeating a successful
+CAS after losing its reply can return false. Retain lookup and read retries,
+but expose the first mutation RPC result to the harness as success or unknown.
+
+--- a/rpc.go
++++ b/rpc.go
+@@ -114,6 +114,9 @@ func (c *client) SendRPC(rpc hrpc.Call) (msg proto.Message, err error) {
+ 			}
+ 			o.OnComplete(msg, err, retryable)
+ 		}
++		if rpc.Name() == "Mutate" {
++			return msg, err
++		}
+ 		switch err.(type) {
+ 		case region.RetryableError:
+ 			sp.AddEvent("retrySleep")

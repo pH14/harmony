@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package gohbase
+
+import (
+	"context"
+	"testing"
+
+	"github.com/tsuna/gohbase/hrpc"
+	"github.com/tsuna/gohbase/region"
+	"github.com/tsuna/gohbase/test"
+	"github.com/tsuna/gohbase/test/mock"
+	mockZk "github.com/tsuna/gohbase/test/mock/zk"
+	"github.com/tsuna/gohbase/zk"
+	"go.uber.org/mock/gomock"
+)
+
+func TestHarmonyMutationOneAttempt(t *testing.T) {
+	ctrl := test.NewController(t)
+	defer ctrl.Finish()
+	z := mockZk.NewMockClient(ctrl)
+	z.EXPECT().LocateResource(zk.Meta).Return("regionserver:1", nil).MinTimes(1)
+	c := newMockClient(z)
+	call := mock.NewMockCall(ctrl)
+	call.EXPECT().Context().Return(context.Background()).AnyTimes()
+	call.EXPECT().Description().AnyTimes()
+	call.EXPECT().Name().Return("Mutate").AnyTimes()
+	call.EXPECT().Table().Return([]byte("test")).AnyTimes()
+	call.EXPECT().Key().Return([]byte("key")).AnyTimes()
+	call.EXPECT().SetRegion(gomock.Any()).AnyTimes()
+	call.EXPECT().Region().Return(nil).AnyTimes()
+	result := make(chan hrpc.RPCResult, 1)
+	result <- hrpc.RPCResult{Error: region.RetryableError{}}
+	call.EXPECT().ResultChan().Return(result).Times(1)
+	_, err := c.SendRPC(call)
+	if _, ok := err.(region.RetryableError); !ok {
+		t.Fatalf("got %T %v, want first attempt's ambiguous error", err, err)
+	}
+}

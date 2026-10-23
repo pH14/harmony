@@ -1,0 +1,29 @@
+setup /opt/harmony/hbase-setup.sh
+node z1 /opt/harmony/node.sh 1 3
+node z2 /opt/harmony/node.sh 2 3
+node z3 /opt/harmony/node.sh 3 3
+node nn /opt/harmony/hbase-node.sh 4 namenode
+node d1 /opt/harmony/hbase-node.sh 5 datanode
+node d2 /opt/harmony/hbase-node.sh 6 datanode
+node d3 /opt/harmony/hbase-node.sh 7 datanode
+node hm /opt/harmony/hbase-node.sh 8 master
+node r1 /opt/harmony/hbase-node.sh 9 regionserver
+node r2 /opt/harmony/hbase-node.sh 10 regionserver
+log z1 /tmp/zookeeper/z1.log
+log z2 /tmp/zookeeper/z2.log
+log z3 /tmp/zookeeper/z3.log
+log nn /tmp/hbase/n4/*.log
+log d1 /tmp/hbase/n5/*.log
+log d2 /tmp/hbase/n6/*.log
+log d3 /tmp/hbase/n7/*.log
+log hm /tmp/hbase/n8/*.log
+log r1 /tmp/hbase/n9/*.log
+log r2 /tmp/hbase/n10/*.log
+hook 1 /opt/harmony/harness-net partition
+hook 2 /opt/harmony/harness-net isolate
+hook 3 /opt/harmony/harness-net delay
+hook 4 /opt/harmony/harness-net heal
+heal 4
+ready /opt/harmony/hbase-harness ready --ready-timeout 500s
+workload /opt/harmony/hbase-harness drive --timeout 10s
+check /opt/harmony/hbase-harness check --check-timeout 90s
