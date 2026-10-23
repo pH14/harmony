@@ -909,11 +909,9 @@ mod checkpoint_tests {
             SnapshotCheckpoint::<ZeldaSnapshot>::from_bytes(&bytes, &checkpoint.format).unwrap(),
             checkpoint
         );
-        let old = postcard::to_allocvec(&(
-            "zelda-quicknes-snapshot-checkpoint-v0",
-            &checkpoint.entries,
-        ))
-        .unwrap();
+        let old =
+            postcard::to_allocvec(&("zelda-quicknes-snapshot-checkpoint-v0", &checkpoint.entries))
+                .unwrap();
         assert!(SnapshotCheckpoint::<ZeldaSnapshot>::from_bytes(&old, &checkpoint.format).is_err());
     }
 }
