@@ -101,15 +101,17 @@ export function nativePanel(options, catalog, gameId) {
     element("div", { className: "native-submit" }, start, ceiling),
     message,
   );
-  const root = element("div", { className: "native-panel-body" }, form, element("h3", { className: "native-runs-title", textContent: "Runs" }), list);
+  const title = element("h3", { className: "native-runs-title", textContent: "Running now" });
+  const root = element("div", { className: "native-panel-body" }, form, title, list);
   let timer = 0, launched = null;
   const draw = (runs) => {
     const mine = runs.find((run) => run.id === launched);
     if (mine?.state === "running" && mine.watch) location.assign(mine.watch);
     if (mine?.state === "failed") message.textContent = mine.message;
+    const active = runs.filter((run) => run.state === "running" || run.state === "starting");
+    title.hidden = list.hidden = !active.length;
     list.replaceChildren(
-      ...(runs.length ? runs.slice(0, 8) : [{ empty: true }]).map((run) => {
-        if (run.empty) return element("li", { className: "native-empty", textContent: "No runs yet." });
+      ...active.map((run) => {
         const actions = element("span", { className: "native-actions" });
         if (run.watch && run.state === "running") actions.append(element("a", { className: "native-watch", href: run.watch, textContent: "Watch" }));
         if (!run.external && (run.state === "running" || run.state === "starting")) {

@@ -1459,7 +1459,6 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
 .native-actions { grid-column: 2; grid-row: 2; justify-self: end; display: flex; gap: 8px; align-items: center; }
 .native-actions button, .native-watch { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
 .native-watch { background: var(--play); color: var(--on-play); text-decoration: none; font-weight: 500; }
-.native-empty { color: var(--muted); font-size: 12px; }
 
 .recording-controls { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 8px; }
 #record-view[aria-pressed="true"] { color: #ff6c77; }
