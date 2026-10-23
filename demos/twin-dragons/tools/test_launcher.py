@@ -100,9 +100,16 @@ class LauncherTest(unittest.TestCase):
             {"game": "tobu-tobu-girl"},
             {"machine": "other"},
             {"hours": 0},
+            {"stage": -1},
+            {"game": "super-mario-bros", "stage": 2},
         ):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 launcher.parse_settings({**body, **change}, config)
+
+    def test_a_famidash_start_level_reaches_the_request(self) -> None:
+        body = {"game": "famidash-b", "machine": "example", "workers": 8, "memory_mib": 4096, "stage": 5}
+        settings = launcher.parse_settings(body, self.config())
+        self.assertEqual(launcher.run_request(settings, "/r.nes", "aa", "/c.so", "bb")["stage"], 5)
 
     def test_a_request_names_the_eval_game_and_its_own_live_port(self) -> None:
         settings = launcher.Settings("super-mario-bros", "example", 4, 2048, 7, 1.5)

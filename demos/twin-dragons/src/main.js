@@ -3496,11 +3496,14 @@ function offerTour() {
     beginTour();
 }
 $("tour-open").onclick = beginTour;
+function familyOf(choice) {
+  return choice.family ? [...GAMES.values()].filter((member) => member.family === choice.family) : [choice];
+}
 $("new-search").onclick = () => {
   const wasPlaying = playing;
   if (wasPlaying) { playing = false; music.stop(); $("play").textContent = "▶ Replay"; }
   const games = [...GAMES.values()].filter((choice) => !choice.family || choice.id === choice.family),
-    family = game.family ? [...GAMES.values()].filter((choice) => choice.family === game.family) : [game];
+    family = familyOf(game);
   pickerGames = [];
   const buttons = games.map((choice) => {
     const button = document.createElement("button");
@@ -3513,7 +3516,7 @@ $("new-search").onclick = () => {
       location.assign(url);
     };
     button.onclick = () => {
-      if (nativeTarget) showNativePanel(choice);
+      if (nativeTarget) showNativeLevels(choice);
       else if (choice.rom.upload && !bundled.has(choice.id) && (choice !== requested || missingRom)) showRomPanel(choice, play);
       else if (choice === game || (choice.family && choice.family === game.family)) showLevelGrid();
       else play();
@@ -3526,6 +3529,11 @@ $("new-search").onclick = () => {
   if (shown) showRomPanel(shown, () => location.reload());
   else showLevelGrid();
   applyTarget();
+  renderLevels(family);
+  if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
+  $("level-picker").showModal();
+};
+function renderLevels(family) {
   $("level-grid").replaceChildren();
   for (const member of family) {
     if (family.length > 1) {
@@ -3555,7 +3563,7 @@ $("new-search").onclick = () => {
       }
       caption.textContent = level.label;
       card.append(image, caption);
-      card.onclick = current
+      const open = current
         ? () => {
             $("level-picker").close();
             tour.finish();
@@ -3569,12 +3577,11 @@ $("new-search").onclick = () => {
             url.searchParams.set("level", level.id);
             location.assign(url);
           };
+      card.onclick = () => (nativeTarget ? showHardware(member, level, card) : open());
       $("level-grid").append(card);
     }
   }
-  if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
-  $("level-picker").showModal();
-};
+}
 $("close-level-picker").onclick = () => $("level-picker").close();
 let launcher = null, nativeTarget = null, pickerGames = [], nativeChoice = game;
 function renderTargetRow() {
@@ -3594,16 +3601,24 @@ function nativeGame(choice) {
 function applyTarget() {
   renderTargetRow();
   for (const { button, choice } of pickerGames) button.disabled = !!nativeTarget && !nativeGame(choice);
-  if (nativeTarget) showNativePanel(nativeGame(nativeChoice) ? nativeChoice : pickerGames.find(({ choice }) => nativeGame(choice))?.choice ?? game);
-  else if ($("rom-panel").hidden) showLevelGrid();
+  if (nativeTarget) showNativeLevels(nativeGame(nativeChoice) ? nativeChoice : pickerGames.find(({ choice }) => nativeGame(choice))?.choice ?? game);
+  else if ($("rom-panel").hidden) {
+    renderLevels(familyOf(game));
+    showLevelGrid();
+  }
 }
-function showNativePanel(choice) {
+function showNativeLevels(choice) {
   nativeChoice = choice;
-  pressGame(choice);
+  if (!choice.levels || !choice.assets) return showHardware(choice);
+  renderLevels(familyOf(choice));
+  showLevelGrid(choice);
+}
+function showHardware(member, level, card) {
+  pressGame(nativeChoice);
   $("rom-panel").hidden = true;
   $("level-grid").hidden = true;
   closePlaythrough();
-  launcher.setGame(choice.id);
+  launcher.setLevel(member.id, level, card?.querySelector("img, canvas"), () => showNativeLevels(nativeChoice));
   $("native-panel").hidden = false;
   launcher.activate();
 }
@@ -3611,8 +3626,8 @@ let playthroughPlayer = null;
 function pressGame(choice) {
   for (const button of $("game-choice").querySelectorAll("#homebrew-games button, #rom-games button")) button.setAttribute("aria-pressed", button.textContent === choice.title);
 }
-function showLevelGrid() {
-  pressGame(game);
+function showLevelGrid(choice = game) {
+  pressGame(choice);
   $("native-panel").hidden = true;
   launcher?.deactivate();
   $("rom-panel").hidden = true;

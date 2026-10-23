@@ -106,6 +106,7 @@ class Settings:
     memory_mib: int
     seed: int
     hours: float
+    stage: int | None = None
 
 
 @dataclass
@@ -128,6 +129,8 @@ class Run:
         return cls(run_id, settings.game, settings.machine, settings, **fields)
 
     def describe(self) -> dict[str, Any]:
+        stage = self.settings.stage if self.settings else None
+        level = "" if stage is None else f"&level={stage}"
         return {
             "id": self.id,
             "game": self.game,
@@ -137,7 +140,7 @@ class Run:
             "state": self.state,
             "message": self.message,
             "started": self.started,
-            "watch": f"/runs/{self.id}/?game={self.game}&live" if self.local_port else None,
+            "watch": f"/runs/{self.id}/?game={self.game}&live{level}" if self.local_port else None,
         }
 
 
@@ -183,7 +186,10 @@ def parse_settings(body: dict[str, Any], config: Config) -> Settings:
         raise ValueError(f"{machine} allows 256 to {limits.memory_mib} MiB")
     if seed < 0 or not 0 < hours <= 72:
         raise ValueError("the seed must be at least 0 and the time limit 72 hours or less")
-    return Settings(game, machine, workers, memory_mib, seed, hours)
+    stage = body.get("stage")
+    if stage is not None and not (game.startswith("famidash") and isinstance(stage, int) and stage >= 0):
+        raise ValueError("only Famidash runs take a starting level")
+    return Settings(game, machine, workers, memory_mib, seed, hours, stage)
 
 
 def rom_path(game: Game, site: Path, config: Config) -> Path | None:
@@ -215,6 +221,7 @@ def run_request(
         "wall_seconds": round(settings.hours * 3600),
         "verification": "witness",
         "live": "127.0.0.1:0",
+        **({} if settings.stage is None else {"stage": settings.stage}),
     }
 
 

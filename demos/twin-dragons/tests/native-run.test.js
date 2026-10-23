@@ -53,5 +53,10 @@ test("Native Runs distinguishes archive selection from the chosen whole-run limi
   assert.equal(posted.memory_mib, 16384);
   assert.equal(posted.machine, "large");
   assert.equal(posted.game, "famidash");
+  assert.equal(Object.hasOwn(posted, "stage"), false);
+  panel.setLevel("famidash", { id: 5, label: "Polargeist" }, null, () => {});
+  form.onsubmit({ preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(posted.stage, 5);
   assert.equal(Object.hasOwn(posted, "memory_max_mib"), false);
 });

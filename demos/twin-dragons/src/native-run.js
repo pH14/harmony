@@ -54,7 +54,7 @@ export function nativePanel(options, catalog, gameId) {
       const choice = byId.get(id);
       return choice?.group ? `${choice.title} · ${choice.group}` : (choice?.title ?? id);
     };
-  const state = { machine: options.machines[0].name, game: gameId };
+  const state = { machine: options.machines[0].name, game: gameId, stage: null };
   const workers = element("input", { type: "number", min: 1, value: 8 }),
     memory = element("input", { type: "number", min: 0.25, step: 0.25, value: 4 }),
     seed = element("input", { type: "number", min: 0, value: 1 }),
@@ -63,7 +63,9 @@ export function nativePanel(options, catalog, gameId) {
     ceiling = element("p", { className: "native-note" }),
     message = element("p", { className: "native-message", role: "status" }),
     list = element("ul", { className: "native-runs" }),
-    sectionPick = element("section", { className: "game-group" });
+    preview = element("div", { className: "native-preview" }),
+    summary = element("p", { className: "native-summary-text" }),
+    back = element("button", { type: "button", className: "native-back", textContent: "← Levels" });
   const limits = () => {
     const machine = options.machines.find((entry) => entry.name === state.machine);
     workers.max = machine.workers;
@@ -72,24 +74,11 @@ export function nativePanel(options, catalog, gameId) {
     memory.value = Math.min(Number(memory.value) || 1, machine.memory_mib / 1024);
     ceiling.textContent = `Up to ${machine.workers} workers and ${(machine.memory_mib / 1024).toFixed(0)} GiB of archive on ${machine.name}. The run, its workers and the live view share ${(machine.memory_max_mib / 1024).toFixed(0)} GiB.`;
   };
-  const sections = () => {
-    const family = byId.get(state.game)?.family;
-    return family ? catalog.filter((member) => member.family === family && available.has(member.id)) : [];
-  };
-  const renderSections = () => {
-    const members = sections();
-    sectionPick.hidden = members.length < 2;
-    sectionPick.replaceChildren(
-      element("h3", { textContent: "Section" }),
-      segments(members.map((member) => [member.id, member.group]), state.game, (id) => { state.game = id; renderSections(); }),
-    );
-  };
   limits();
-  renderSections();
   const form = element(
     "form",
     { className: "native-form" },
-    sectionPick,
+    element("div", { className: "native-summary" }, preview, element("div", {}, summary, back)),
     element(
       "div",
       { className: "native-fields" },
@@ -149,6 +138,7 @@ export function nativePanel(options, catalog, gameId) {
     post("/launcher/runs", {
       machine: state.machine,
       game: state.game,
+      ...(state.stage === null ? {} : { stage: state.stage }),
       workers: Number(workers.value),
       memory_mib: Math.round(Number(memory.value) * 1024),
       seed: Number(seed.value),
@@ -161,11 +151,13 @@ export function nativePanel(options, catalog, gameId) {
     element: root,
     machines: options.machines.map((machine) => machine.name),
     available: (id) => available.has(id),
-    setGame(id) {
-      const choice = byId.get(id),
-        member = catalog.find((entry) => entry.family === choice?.family && available.has(entry.id));
-      state.game = available.has(id) ? id : (member?.id ?? id);
-      renderSections();
+    setLevel(id, level, image, onBack) {
+      state.game = id;
+      state.stage = id.startsWith("famidash") && level ? level.id : null;
+      const picture = image?.toDataURL ? element("img", { src: image.toDataURL(), alt: "" }) : image?.cloneNode(true);
+      preview.replaceChildren(...(picture ? [picture] : []));
+      summary.textContent = level ? `${label(id)} · from ${level.label}` : label(id);
+      back.onclick = onBack;
     },
     setMachine(name) {
       state.machine = name;

@@ -276,10 +276,12 @@ tools/launcher.py
 
 and open `http://127.0.0.1:8790/`. On a loopback address the page asks
 `/launcher/machines`; when the launcher answers, the New search picker gains a
-Run on row: This browser, or one of the machines. A machine replaces the level
-grid with the game's section, workers, archive budget, seed and time limit, and
-lists the launcher's runs with Watch and Stop. Starting a run opens its live
-view once it is running. Without a launcher, such as on the published site, the
+Run on row: This browser, or one of the machines. With a machine chosen,
+the level grid stays and a level opens a second step with that level's preview,
+workers, archive budget, seed and time limit. A Famidash run starts at the chosen
+level through the end of its section (`stage` in the request); other games start
+from power-on. The dialog lists the active runs with Watch and Stop. Starting a
+run opens its live view once it is running. Without a launcher, such as on the published site, the
 picker shows only browser searches. A run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
 builds the QuickNES core with `scripts/build-quicknes-core.sh` and `nes-eval`
 there once per commit, uploads the ROM, and starts `nes-eval` with
