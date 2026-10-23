@@ -247,19 +247,22 @@ mod tests {
         let worker = GIB + GIB / 4;
         let faults = MemoryNeeds {
             transient: GIB,
-            ..needs(GIB / 2, worker, GIB + GIB / 2)
+            ..needs(GIB / 2, worker, GIB)
         };
         let fixed = RESERVE_BYTES + GIB / 2 + GIB;
         let headroom = cgroup_headroom(14 * GIB, 0, "file 0\n");
-        let plan = fit(headroom, 5, faults).expect("plan");
+        let plan = fit(headroom, 6, faults).expect("plan");
+        assert_eq!(plan.workers, 5);
+        assert_eq!(plan.budget as u64, 14 * GIB - fixed - 5 * worker);
+        let plan = fit(cgroup_headroom(14 * GIB - GIB / 2, 0, ""), 6, faults).expect("plan");
         assert_eq!(plan.workers, 4);
-        assert_eq!(plan.budget as u64, 14 * GIB - fixed - 4 * worker);
+        assert_eq!(plan.budget as u64, 14 * GIB - GIB / 2 - fixed - 4 * worker);
         let plan = fit(cgroup_headroom(12 * GIB, 0, ""), 5, faults).expect("plan");
+        assert_eq!(plan.workers, 4);
+        assert_eq!(plan.budget as u64, 12 * GIB - fixed - 4 * worker);
+        let plan = fit(cgroup_headroom(10 * GIB, 0, ""), 4, faults).expect("plan");
         assert_eq!(plan.workers, 3);
-        assert_eq!(plan.budget as u64, 12 * GIB - fixed - 3 * worker);
-        let plan = fit(cgroup_headroom(10 * GIB, 0, ""), 3, faults).expect("plan");
-        assert_eq!(plan.workers, 2);
-        assert_eq!(plan.budget as u64, 10 * GIB - fixed - 2 * worker);
+        assert_eq!(plan.budget as u64, 10 * GIB - fixed - 3 * worker);
     }
 
     #[test]
