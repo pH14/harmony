@@ -294,9 +294,12 @@ impl Chain {
     }
 
     #[must_use]
-    pub fn parent_for(&self, parent: Point) -> Option<(SnapId, &Lease)> {
-        let link = self.links.iter().find(|link| link.point == parent)?;
-        link.lease.as_ref().map(|lease| (link.point.snap, lease))
+    pub fn parent_for(&self, parent: Point) -> Option<(Point, &Lease)> {
+        let at = self.links.iter().position(|link| link.point == parent)?;
+        self.links[..=at]
+            .iter()
+            .rev()
+            .find_map(|link| link.lease.as_ref().map(|lease| (link.point, lease)))
     }
 }
 
@@ -436,7 +439,7 @@ mod tests {
                 .unwrap();
         }
         let (snapshot, parent) = chain.parent_for(point(1)).unwrap();
-        assert_eq!(snapshot, SnapId(1));
+        assert_eq!(snapshot.snap, SnapId(1));
         assert_eq!(parent, &leases[0]);
         assert_ne!(parent, &leases[1]);
         for lease in leases {

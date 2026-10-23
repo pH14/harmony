@@ -572,7 +572,7 @@ impl Reporting for FaultWorkload {
     }
 
     fn action_cost_unit(&self) -> &'static str {
-        "guest_ticks"
+        "guest_ticks_plus_host_ticks_per_action"
     }
 
     fn execution_work_unit(&self) -> &'static str {
