@@ -407,16 +407,24 @@ is unknown, it first reads the key and fails definitely unless the key holds
 are definite failures; other write and `cas` errors are indeterminate, and
 read errors are definite.
 
-A read pinned to node `nI` puts key `fence-nI` and waits for a consumer on
-`nI`, filtered to that key from the put's revision, to deliver a message. It
-then creates a consumer on `nI` that delivers the last message of the read
-key. Both are one-replica consumers placed on `nI` the way the `targets/nats`
-pinned read places them. A consumer that has nothing pending at creation means
-the key has no value on `nI`.
+A read pinned to node `nI` puts key `fence-nI`, then creates one consumer on
+`nI` that delivers the last message of every key in the bucket
+(`DeliverLastPerSubject` on `$KV.B.>`), and takes the read key and
+`fence-nI` from it. The consumer is a
+one-replica consumer placed on `nI` the way the `targets/nats` pinned read
+places it. A consumer with nothing pending at creation delivers nothing;
+otherwise the read takes messages until one reports nothing pending, the rule
+nats.go's key-value watcher uses. The pending count at creation is not the
+number of messages the consumer delivers. The fence and the
+value therefore come from one view of `nI`'s store, even when `nI` restarts
+between the put and the read. When the delivered fence sequence is below the
+put's revision, `nI` is not current: the read retries every 250 ms and, if
+`nI` never delivers the fence before the operation's deadline, fails as a
+definite error, which the checker drops. A key with no message in that view
+has no value on `nI`.
 
 A `replicas` read on `nI` writes the same fence, then creates one consumer on
-`nI` that delivers the last message of every subject in the bucket and reads
-the messages pending at creation. Each key's metadata is `revision`, the
+`nI` the same way and keeps every key, under the same fence rule. Each key's metadata is `revision`, the
 stream sequence of its last message, which is the same on every replica.
 
 A check against a cluster that a fault left without a leader can wait out the

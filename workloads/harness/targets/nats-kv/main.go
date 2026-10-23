@@ -27,6 +27,7 @@ const (
 	placementAttempts = 16
 	msgGetSubject     = "$JS.API.STREAM.MSG.GET." + stream
 	msgNotFound       = 10037
+	fenceRetry        = 250 * time.Millisecond
 )
 
 var servers = []string{
@@ -235,26 +236,19 @@ func (c *client) get(ctx context.Context, key string) (*string, uint64, error) {
 }
 
 // A one-replica consumer serves messages from the store of the server that
-// hosts it. The read first waits for that store to hold a fence written after
-// the read started, then takes the key's last message from it.
+// hosts it. A read writes a fence and then takes the last message of every
+// key in the bucket through one consumer, so the fence and the values come
+// from the same store. A store whose fence message is older
+// than the fence just written is not current; the read retries and, when the
+// node never catches up, fails without returning a value.
 func (c *client) readOn(ctx context.Context, kv jetstream.KeyValue, key, node string) (any, error) {
-	if err := c.fenceOn(ctx, kv, node); err != nil {
-		return nil, err
-	}
-	last, err := c.consumerOn(ctx, node, jetstream.ConsumerConfig{
-		FilterSubject: keySubject + key,
-		DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
-	})
+	msgs, err := c.lastOn(ctx, kv, node)
 	if err != nil {
 		return nil, err
 	}
-	defer c.dropConsumer(last)
-	if last.CachedInfo().NumPending == 0 {
+	msg, ok := msgs[key]
+	if !ok {
 		return nil, nil
-	}
-	msg, err := next(ctx, last)
-	if err != nil {
-		return nil, fmt.Errorf("key %s on %s: %w", key, node, err)
 	}
 	switch msg.Headers().Get("KV-Operation") {
 	case "DEL", "PURGE":
@@ -263,70 +257,105 @@ func (c *client) readOn(ctx context.Context, kv jetstream.KeyValue, key, node st
 	return string(msg.Data()), nil
 }
 
-func (c *client) fenceOn(ctx context.Context, kv jetstream.KeyValue, node string) error {
-	fenceKey := "fence-" + node
-	revision, err := kv.Put(ctx, fenceKey, []byte(fmt.Sprintf("%016x", sdk.Random())))
-	if err != nil {
-		return fmt.Errorf("fence: %w", err)
-	}
-	fence, err := c.consumerOn(ctx, node, jetstream.ConsumerConfig{
-		FilterSubject: keySubject + fenceKey,
-		DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
-		OptStartSeq:   revision,
-	})
-	if err != nil {
-		return err
-	}
-	defer c.dropConsumer(fence)
-	if _, err := next(ctx, fence); err != nil {
-		return fmt.Errorf("fence %d on %s: %w", revision, node, err)
-	}
-	return nil
-}
-
-// The consumer delivers the last message of every subject in the bucket from
-// the node's own store. The stream sequence of that message is the key's
-// revision, which is the same on every replica.
+// The stream sequence of each key's last message is the key's revision, which
+// is the same on every replica.
 func (c *client) replicasOn(ctx context.Context, kv jetstream.KeyValue, keys []string, node string) (map[string]family.Copy, error) {
-	if err := c.fenceOn(ctx, kv, node); err != nil {
-		return nil, err
-	}
-	last, err := c.consumerOn(ctx, node, jetstream.ConsumerConfig{
-		FilterSubject: keySubject + ">",
-		DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
-	})
+	msgs, err := c.lastOn(ctx, kv, node)
 	if err != nil {
 		return nil, err
 	}
-	defer c.dropConsumer(last)
 	copies := make(map[string]family.Copy, len(keys))
 	for _, key := range keys {
 		copies[key] = family.Copy{}
-	}
-	initial := last.CachedInfo().NumPending
-	for received, pending := uint64(0), initial; received < initial && pending > 0; received++ {
-		msg, err := next(ctx, last)
-		if err != nil {
-			return nil, fmt.Errorf("keys on %s: %w", node, err)
+		msg, ok := msgs[key]
+		if !ok {
+			continue
+		}
+		switch msg.Headers().Get("KV-Operation") {
+		case "DEL", "PURGE":
+			continue
 		}
 		meta, err := msg.Metadata()
 		if err != nil {
 			return nil, fmt.Errorf("keys on %s: %w", node, err)
 		}
-		pending = meta.NumPending
-		key := strings.TrimPrefix(msg.Subject(), keySubject)
-		if _, wanted := copies[key]; !wanted {
-			continue
-		}
-		switch msg.Headers().Get("KV-Operation") {
-		case "DEL", "PURGE":
-			copies[key] = family.Copy{}
-			continue
-		}
 		value := string(msg.Data())
 		copies[key] = family.Copy{Value: &value, Meta: map[string]uint64{"revision": meta.Sequence.Stream}}
 	}
 	return copies, nil
+}
+
+func (c *client) lastOn(ctx context.Context, kv jetstream.KeyValue, node string) (map[string]jetstream.Msg, error) {
+	fenceKey := "fence-" + node
+	revision, err := kv.Put(ctx, fenceKey, []byte(fmt.Sprintf("%016x", sdk.Random())))
+	if err != nil {
+		return nil, fmt.Errorf("fence: %w", err)
+	}
+	config := jetstream.ConsumerConfig{FilterSubject: keySubject + ">", DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy}
+	var seen uint64
+	for ctx.Err() == nil {
+		msgs, err := c.lastMessages(ctx, node, config)
+		if err != nil {
+			return nil, err
+		}
+		if fence, ok := msgs[fenceKey]; ok {
+			meta, err := fence.Metadata()
+			if err != nil {
+				return nil, fmt.Errorf("fence on %s: %w", node, err)
+			}
+			if meta.Sequence.Stream >= revision {
+				delete(msgs, fenceKey)
+				return msgs, nil
+			}
+			seen = meta.Sequence.Stream
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(fenceRetry):
+		}
+	}
+	return nil, fmt.Errorf("%s not current: fence %d, store has %d: %w", node, revision, seen, ctx.Err())
+}
+
+func (c *client) lastMessages(ctx context.Context, node string, config jetstream.ConsumerConfig) (map[string]jetstream.Msg, error) {
+	last, err := c.consumerOn(ctx, node, config)
+	if err != nil {
+		return nil, err
+	}
+	defer c.dropConsumer(last)
+	return collectLast(last.CachedInfo().NumPending, func() (string, uint64, jetstream.Msg, error) {
+		msg, err := next(ctx, last)
+		if err != nil {
+			return "", 0, nil, fmt.Errorf("keys on %s: %w", node, err)
+		}
+		meta, err := msg.Metadata()
+		if err != nil {
+			return "", 0, nil, fmt.Errorf("keys on %s: %w", node, err)
+		}
+		return msg.Subject(), meta.NumPending, msg, nil
+	})
+}
+
+// A last-per-subject consumer is done when a delivered message reports
+// nothing pending, the rule nats.go's key-value watcher uses; the pending
+// count at creation only tells whether anything will arrive.
+func collectLast[M any](initial uint64, fetch func() (string, uint64, M, error)) (map[string]M, error) {
+	msgs := map[string]M{}
+	if initial == 0 {
+		return msgs, nil
+	}
+	for {
+		subject, pending, msg, err := fetch()
+		if err != nil {
+			return nil, err
+		}
+		if key, ok := strings.CutPrefix(subject, keySubject); ok {
+			msgs[key] = msg
+		}
+		if pending == 0 {
+			return msgs, nil
+		}
+	}
 }
 
 func (c *client) consumerOn(ctx context.Context, node string, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
