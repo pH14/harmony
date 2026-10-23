@@ -570,6 +570,15 @@ server and the harness with a copy whose `XGETBV` clears ECX: admission
 accepts `XGETBV` only after a provable zero selector, and every caller passes
 0.
 
+`v0.16.11` and `v0.18.0-rc4` can report a `cas` that took effect as
+`ErrUnexpectedVersionId`. When a restarted coordinator fences the shard
+leader, the leader answers its pending writes with a retryable error, and the
+next term still commits them. The client then retries the conditional `Put`,
+and the retry fails its version check against the write it made itself. The
+WAL then holds the same `Put` twice, and the register check reports a
+linearizability violation. About 4 in 20 redrawn variants of the shrunk run
+fail on `v0.16.11` and 2 in 20 on `v0.18.0-rc4`.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
