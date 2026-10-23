@@ -186,6 +186,7 @@ impl Manifest {
             seed: self.config.seed,
             executions: self.config.execution_limit(),
             ram_mib: self.config.ram_mib,
+            setup_seconds: self.config.setup_seconds,
             knobs: self.config.knobs.clone(),
             wall_seconds: self.config.wall_seconds,
             output: path.to_path_buf(),

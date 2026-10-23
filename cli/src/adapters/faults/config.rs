@@ -172,6 +172,7 @@ pub struct Config {
     pub executions: Option<u64>,
     pub wall_seconds: Option<u64>,
     pub ram_mib: u32,
+    pub setup_seconds: u64,
     pub kernel: Option<PathBuf>,
     pub base_initramfs: Option<PathBuf>,
     pub uml_profile: Option<PathBuf>,
@@ -198,6 +199,7 @@ impl Default for Config {
             executions: None,
             wall_seconds: None,
             ram_mib: 1024,
+            setup_seconds: faults_workload::package::DEFAULT_SETUP_SECONDS,
             kernel: None,
             base_initramfs: None,
             uml_profile: None,
@@ -222,6 +224,9 @@ impl Config {
         crate::config::execution_limit(self.executions, self.wall_seconds)
     }
     pub fn validate(&self) -> Result<()> {
+        if self.setup_seconds == 0 || self.setup_seconds.checked_mul(1_000_000_000).is_none() {
+            return Err("setup_seconds must be positive and fit in guest nanoseconds".into());
+        }
         for (name, value) in [
             ("seed", self.seed),
             ("executions", self.executions.unwrap_or(0)),
@@ -490,6 +495,33 @@ mod tests {
         );
         std::fs::write(base, b"changed after resolution").unwrap();
         assert!(crate::runtime::read_pair(&restored.runtime()).is_err());
+    }
+
+    #[test]
+    fn setup_budget_is_validated_and_saved_with_the_workload() {
+        let shared: crate::config::Config = toml::from_str(
+            "[workload]\npackage = \"faults\"\n[workload.options]\nsetup_seconds = 300\n",
+        )
+        .unwrap();
+        let config = Config::from_shared(&shared).unwrap();
+        assert_eq!(config.setup_seconds, 300);
+        assert_eq!(
+            Config::from_shared(&config.shared().unwrap())
+                .unwrap()
+                .setup_seconds,
+            300
+        );
+        assert_eq!(Config::default().setup_seconds, 120);
+        for seconds in [0, u64::MAX / 1_000_000_000 + 1] {
+            assert!(
+                Config {
+                    setup_seconds: seconds,
+                    ..Config::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
     }
 
     #[test]

@@ -45,6 +45,17 @@ operate with some nodes down. Already-running hooks continue reporting their
 assertions across restarts; readiness only checks new launches. Bundles without
 a readiness command keep immediate hook launches.
 
+## Setup budget
+
+`workload.options.setup_seconds` declares the guest-time budget for booting the
+image, starting its nodes and passing readiness. It defaults to 120 seconds.
+Use a measured per-target value for expensive runtimes; it does not change the
+default for other targets or the wall-clock watchdog. Zero and values that
+cannot be represented in guest nanoseconds are rejected before execution.
+The budget is saved in the resolved workload configuration and participates in
+the VM and UML execution identities, so setup caches and saved executions do
+not silently cross budget changes. Setup is captured once for the search.
+
 ## Image admission
 
 Preparation scans every executable and shared library in the exact packed

@@ -1686,6 +1686,7 @@ mod tests {
         FaultConfig {
             knobs: knobs.iter().map(|knob| (*knob).to_owned()).collect(),
             ram_mib: DEFAULT_RAM_MIB,
+            setup_budget: crate::package::DEFAULT_SETUP_SECONDS * 1_000_000_000,
             backend: GuestBackend::Vm,
             root: None,
             boot_cache: None,
