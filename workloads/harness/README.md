@@ -22,6 +22,7 @@ generic operations onto the target's client API.
 | `targets/rqlite` | rqlite image and adapter |
 | `targets/etcd` | etcd image and adapter, three members or one |
 | `targets/redisraft` | Redis-Raft image and adapter |
+| `targets/oxia` | Oxia image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -533,6 +534,41 @@ consistency check never replaces them, and the cluster can lose acknowledged
 writes. A search with the default fault alphabet finds this as a
 linearizability violation on `dfd91d4` too, with a `DiskError` among the
 shrunk faults.
+
+## Oxia
+
+`targets/oxia` drives the `register` family against
+[Oxia](https://github.com/oxia-db/oxia) `v0.16.11`: three data servers `n1` to
+`n3` at 10.77.0.1-3 (public port 6648, internal port 6649) and one
+coordinator `c` at 10.77.0.4, each in its own `harness-net` namespace. The
+coordinator keeps the cluster status in `/tmp/oxia/c/cluster-status.json`
+(the `file` metadata provider) and reads `cluster.yaml`: namespace `default`
+with one shard and replication factor 3. Data servers keep their WAL and
+Pebble database under `/tmp/oxia/<node>` and run with the shipped defaults
+(WAL sync on) except a 16 MiB read cache. Each node directory is a node disk
+(256 MiB for data servers, 32 MiB for the coordinator), and each node logs to
+`/tmp/oxia/<node>.log`. Oxia documents that operations on a single key are
+linearizable and that a write is acknowledged only after a quorum of replicas
+has persisted it.
+
+Each process uses the upstream Go client (`oxia.NewSyncClient`) dialed to a
+data server drawn from the SDK stream. The client learns shard leaders from
+that server and retries unavailable, not-leader and closed-stream errors
+itself. After any other error the adapter closes the client and dials again on
+the next operation. `write` is `Put`, `read` is `Get` and `cas` is `Put` with
+`ExpectedVersionId`, using the version the client last saw for the old value,
+or a `Get` when it has none. `ErrUnexpectedVersionId` is a definite failure,
+`ErrKeyNotFound` reads as no value, other write errors are indeterminate and
+read errors are definite. The client reads only from shard leaders, so the
+adapter pins no reads and the check skips the replica comparison. `ready`
+passes once a `Put` succeeds through any data server.
+
+The image builds `oxia` from the release source with Go 1.26, which the
+`cockroachdb/swiss` dependency requires, through the Antithesis Go
+instrumentation. `cpuid-xgetbv.sh` replaces `klauspost/cpuid` in both the
+server and the harness with a copy whose `XGETBV` clears ECX: admission
+accepts `XGETBV` only after a provable zero selector, and every caller passes
+0.
 
 ## Native runner
 
