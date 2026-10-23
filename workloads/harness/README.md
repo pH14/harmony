@@ -590,6 +590,9 @@ on every start, and the supervisor reports an unexpected node death. The
 shrunk run has that one power loss. All 20 redrawn variants leave the file
 empty, and 19 of them fail.
 
+Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
+memory, and 1024 MiB cannot hold three full 256 MiB disks and Garage.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
