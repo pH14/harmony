@@ -22,6 +22,7 @@ generic operations onto the target's client API.
 | `targets/rqlite` | rqlite image and adapter |
 | `targets/etcd` | etcd image and adapter, three members or one |
 | `targets/redisraft` | Redis-Raft image and adapter |
+| `targets/zookeeper` | ZooKeeper ensemble, instrumented Java and Go log adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 

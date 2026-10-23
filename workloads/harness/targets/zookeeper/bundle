@@ -1,0 +1,15 @@
+setup /opt/harmony/setup.sh 3
+node z1 /opt/harmony/node.sh 1 3
+node z2 /opt/harmony/node.sh 2 3
+node z3 /opt/harmony/node.sh 3 3
+log z1 /tmp/zookeeper/z1.log
+log z2 /tmp/zookeeper/z2.log
+log z3 /tmp/zookeeper/z3.log
+hook 1 /opt/harmony/harness-net partition
+hook 2 /opt/harmony/harness-net isolate
+hook 3 /opt/harmony/harness-net delay
+hook 4 /opt/harmony/harness-net heal
+heal 4
+ready /opt/harmony/zookeeper-harness ready --ready-timeout 20s
+workload /opt/harmony/zookeeper-harness drive
+check /opt/harmony/zookeeper-harness check --check-timeout 20s
