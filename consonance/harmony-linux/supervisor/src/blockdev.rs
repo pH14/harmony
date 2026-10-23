@@ -333,6 +333,13 @@ impl Disk {
         Ok(disk::emergency_read_only(&mountinfo, &self.spec.path))
     }
 
+    fn sync_failed(&self) -> Result<bool, String> {
+        let root =
+            File::open(&self.spec.path).map_err(|error| format!("{}: {error}", self.spec.path))?;
+        disk::journal_failed(rustix::fs::syncfs(&root).map_err(io::Error::from))
+            .map_err(|error| format!("sync {}: {error}", self.spec.path))
+    }
+
     fn sync(&self) -> Result<(), String> {
         let root =
             File::open(&self.spec.path).map_err(|error| format!("{}: {error}", self.spec.path))?;
@@ -503,10 +510,13 @@ impl Disks {
         Ok(Some(Corruption { flip, unmountable }))
     }
 
-    pub fn read_only(&mut self, node: u16) -> Result<bool, String> {
+    pub fn failed(&mut self, node: u16, sync: bool) -> Result<bool, String> {
         let Some((_, disk)) = self.find(node) else {
             return Ok(false);
         };
+        if sync && disk.sync_failed()? {
+            return Ok(true);
+        }
         disk.read_only()
     }
 

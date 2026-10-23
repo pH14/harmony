@@ -258,6 +258,14 @@ pub fn plan(entries: &[LogEntry], choice: u64) -> Plan {
     )
 }
 
+pub fn journal_failed(sync: std::io::Result<()>) -> std::io::Result<bool> {
+    match sync {
+        Ok(()) => Ok(false),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EIO | libc::EROFS)) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
 #[must_use]
 pub fn emergency_read_only(mountinfo: &str, path: &str) -> bool {
     mountinfo
@@ -490,6 +498,16 @@ pub mod dm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sync_that_fails_with_eio_or_erofs_reports_a_failed_journal() {
+        use std::io::{Error, ErrorKind};
+        assert!(!journal_failed(Ok(())).unwrap());
+        assert!(journal_failed(Err(Error::from_raw_os_error(libc::EIO))).unwrap());
+        assert!(journal_failed(Err(Error::from_raw_os_error(libc::EROFS))).unwrap());
+        let other = journal_failed(Err(Error::from_raw_os_error(libc::ENOENT))).unwrap_err();
+        assert_eq!(other.kind(), ErrorKind::NotFound);
+    }
 
     #[test]
     fn the_last_mount_on_a_path_reports_ext4_emergency_read_only() {

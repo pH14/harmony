@@ -1254,7 +1254,10 @@ mod runtime {
             }
         }
         for (node, starting) in supervisor.remount_checks(actions) {
-            if !runtime.disks.read_only(node)? {
+            let closing = actions.iter().any(|action| {
+                matches!(action, Action::SetDiskMode { node: closed, mode: DiskMode::Normal } if *closed == node)
+            });
+            if !runtime.disks.failed(node, closing)? {
                 continue;
             }
             if kill_node(nodes, node, supervisor, tick)? && !starting {
@@ -1263,7 +1266,7 @@ mod runtime {
             if let Some(plan) = runtime.disks.remount(node)? {
                 log(
                     tick,
-                    &format!("node {node} read-only disk remounted: {}", plan.describe()),
+                    &format!("node {node} failed disk remounted: {}", plan.describe()),
                 );
             }
             supervisor.note_process_transition();

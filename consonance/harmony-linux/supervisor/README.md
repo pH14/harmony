@@ -251,15 +251,17 @@ Three more windows act on a node's disk:
   filesystem read-only. The 6.18 kernels set ext4's emergency read-only flag,
   which leaves `ST_RDONLY` clear in `statvfs` and shows as `emergency_ro` in
   the superblock options of `/proc/self/mountinfo`, so the supervisor checks
-  both. If the filesystem is read-only when the window closes,
-  the supervisor treats the close as a host reboot after a transient disk
-  fault. It kills the node if it still runs and cuts the disk as a corruption
+  both. ext4 may notice an aborted journal only at a later write, so when the
+  window closes the supervisor also opens the mount and calls `syncfs`, which
+  fails with `EIO` on an aborted journal. If the sync fails with `EIO` or
+  `EROFS`, or the filesystem is read-only, the supervisor treats the close as
+  a host reboot after a transient disk fault. A filesystem that syncs cleanly
+  keeps running, so the error stays transient. It kills the node if it still runs and cuts the disk as a corruption
   does, keeping every logged write and flipping no bit. It then remounts the
   disk and starts the node as a restart after a fault. Writes that failed
   during the window stay lost, as unwritten page cache is lost in a reboot.
-  ext4 may notice the aborted journal only at a later write, after the window
-  has closed. So before each start of a node whose disk had a fault, the
-  supervisor checks again and remounts a read-only filesystem the same way.
+  Before each start of a node whose disk had a fault, the supervisor checks the
+  read-only signals again and remounts a read-only filesystem the same way.
 - A disk stall window (`DiskStall { hold_nanos }`) loads a `dm-delay` table
   that holds every request for the window's length, at least 50 ms. dm-delay
   serves shorter delays from a polling kernel thread instead of a timer. When the window closes, the
