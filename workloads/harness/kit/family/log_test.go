@@ -131,9 +131,9 @@ func TestLogIndeterminateOpsNeverViolate(t *testing.T) {
 	b.appendValue(0, "a", 1, history.Info, nil, 0)
 	b.appendValue(1, "b", 1, history.Fail, nil, 2)
 	b.appendValue(2, "c", 1, "", nil, 0)
-	b.readValues(3, []string{"a"}, 3, 4)
-	b.readValues(3, nil, 5, 6)
-	b.readValues(3, []string{"c"}, 7, 8)
+	b.readValues(3, nil, 3, 4)
+	b.readValues(3, []string{"a"}, 5, 6)
+	b.readValues(3, []string{"a", "c"}, 7, 8)
 	b.op(drive, 0, LogRead, "", nil, 9, history.Info, nil, 0)
 	report := Log{}.Check(b.build())
 	expectKinds(t, report)
@@ -427,5 +427,75 @@ func TestLogRecorderChainsEachNodeToItsOwnReads(t *testing.T) {
 	seeded := Log{}.Recorder(h).(*logRecorder)
 	if seeded.chains["n2"].base.Index != indexes[3] || seeded.chains[""].base.Index != indexes[2] {
 		t.Fatalf("seeded chains %+v", seeded.chains)
+	}
+}
+
+func TestLogReadLosesValueAnEarlierReadReturned(t *testing.T) {
+	b := newBuilder(t)
+	b.appendValue(0, "a", 1, history.OK, 1, 2)
+	b.appendValue(1, "b", 1, history.Info, nil, 0)
+	b.appendValue(2, "c", 1, history.Info, nil, 0)
+	b.readValues(3, []string{"a", "b"}, 3, 4)
+	b.readValues(3, []string{"a", "c"}, 5, 6)
+	report := Log{}.Check(b.build())
+	expectKinds(t, report, LogReadLost)
+	details := report.Violations[0].Details
+	if details["value"] != "b" || details["position"] != 1 || details["missing"] != 1 {
+		t.Fatalf("details %+v", details)
+	}
+}
+
+func TestLogReadConcurrentWithEarlierReadIsNotLoss(t *testing.T) {
+	b := newBuilder(t)
+	b.appendValue(0, "a", 1, history.Info, nil, 0)
+	b.appendValue(1, "b", 1, history.Info, nil, 0)
+	b.readValues(2, []string{"a", "b"}, 2, 5)
+	b.readValues(3, []string{"a"}, 4, 6)
+	expectKinds(t, Log{}.Check(b.build()))
+}
+
+func TestLogNodeReadLosesValueAnEarlierReadReturned(t *testing.T) {
+	b := newBuilder(t)
+	b.appendValue(0, "a", 1, history.Info, nil, 0)
+	b.appendValue(1, "b", 1, history.Info, nil, 0)
+	b.readValues(2, []string{"a", "b"}, 2, 3)
+	b.readOn(3, "n2", []string{"a"}, 4, 5)
+	report := Log{}.Check(b.build())
+	expectKinds(t, report, LogNodeReadLost)
+	if report.Violations[0].Details["node"] != "n2" || report.Violations[0].Details["value"] != "b" {
+		t.Fatalf("details %+v", report.Violations[0].Details)
+	}
+}
+
+func TestLogNodeReadIsNotASourceOfReturnedValues(t *testing.T) {
+	b := newBuilder(t)
+	b.appendValue(0, "a", 1, history.Info, nil, 0)
+	b.appendValue(1, "b", 1, history.Info, nil, 0)
+	b.readOn(2, "n1", []string{"a", "b"}, 2, 3)
+	b.readValues(3, []string{"a"}, 4, 5)
+	expectKinds(t, Log{}.Check(b.build()))
+}
+
+func TestLogReadWithFailedValueIsNotASource(t *testing.T) {
+	b := newBuilder(t)
+	b.appendValue(0, "f", 1, history.Fail, nil, 2)
+	b.readValues(1, []string{"f"}, 3, 4)
+	b.readValues(1, nil, 5, 6)
+	expectKinds(t, Log{}.Check(b.build()), LogFailedRead)
+}
+
+func TestLogWidestEarlierReadIsTheSource(t *testing.T) {
+	b := newBuilder(t)
+	b.appendValue(0, "a", 1, history.Info, nil, 0)
+	b.appendValue(1, "b", 1, history.Info, nil, 0)
+	b.appendValue(2, "c", 1, history.Info, nil, 0)
+	b.readValues(3, []string{"a"}, 1, 2)
+	b.readValues(3, []string{"a", "b", "c"}, 3, 4)
+	b.readValues(3, []string{"a"}, 5, 6)
+	report := Log{}.Check(b.build())
+	expectKinds(t, report, LogReadLost)
+	details := report.Violations[0].Details
+	if details["value"] != "b" || details["missing"] != 2 {
+		t.Fatalf("details %+v", details)
 	}
 }
