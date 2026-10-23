@@ -2962,6 +2962,7 @@ $("sound").onclick = () => {
   updateSoundControl();
 };
 updateSoundControl();
+if (liveView) $("search-speed").closest(".search-speed").style.display = "none";
 $("search-speed").max = paceStops.length - 1;
 showPace();
 $("search-speed").oninput = () => {

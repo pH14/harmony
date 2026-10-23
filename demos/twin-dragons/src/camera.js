@@ -30,7 +30,7 @@ export function followView(view, point, panel, viewport, targetZoom, seconds, fi
   const dt = Math.max(0, Math.min(0.1, seconds));
   if (!dt) return { ...view };
   if (fixedZoom) {
-    const zoom = view.zoom + (targetZoom - view.zoom) * (1 - Math.exp(-dt / 0.6)), ease = 1 - Math.exp(-dt / 0.5);
+    const zoom = view.zoom + (targetZoom - view.zoom) * (1 - Math.exp(-dt / 0.6)), ease = 1 - Math.exp(-dt / 0.25);
     return { ...panelCenter(panel, zoom, { x: view.x + (point.x - view.x) * ease, y: view.y + (point.y - view.y) * ease }, viewport), zoom };
   }
   const fit = Math.min(viewport.width / panel.width, viewport.height / panel.height);
