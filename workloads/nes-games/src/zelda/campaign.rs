@@ -40,7 +40,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "zelda-quicknes-campaign-stream-v1";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "zelda-quicknes-snapshot-checkpoint-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "zelda-quicknes-snapshot-checkpoint-v1";
 pub const NAMED_PROGRESS_FORMAT: &str = "zelda-named-progress-v1";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";

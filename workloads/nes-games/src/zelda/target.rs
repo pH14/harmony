@@ -910,7 +910,7 @@ mod checkpoint_tests {
             checkpoint
         );
         let old = postcard::to_allocvec(&(
-            "punchout-quicknes-snapshot-checkpoint-v1",
+            "zelda-quicknes-snapshot-checkpoint-v0",
             &checkpoint.entries,
         ))
         .unwrap();
