@@ -574,11 +574,29 @@ shows what an application on that client observes. A check-and-set conflict
 is a definite failure there, and every other write error is indeterminate.
 Build it with `HARNESS_BUNDLE=bundle-api`.
 
+`v2.7.1` serves stale reads from a paused active node. After a pause longer
+than the election timeout, the other nodes elect a new leader and acknowledge
+newer writes, while the resumed node still takes itself for active for about
+3 s. It answers reads from its own state, which has no leadership check, and
+steps down only once in-flight requests finish. About 13 in 20 redrawn
+variants of a run that pauses the active node fail the per-node stale-read
+property. A network partition of the active node does not show it, because the
+partitioned leader's lease expires first.
+
+The upstream Go client reports `ErrSecretNotFound` for a secret that exists
+when a standby answers a second `307` during a leader change. The client
+follows one redirect, treats the second `307` as success, and parses its empty
+body as no secret. About 12 in 20 redrawn variants of a run with one power
+loss of every node fail under `bundle-api`.
+
 The image builds `bao` from the release source with Go 1.27 and the
 `openbao` build tag, without the web UI, through the Antithesis Go
 instrumentation. `cpuid-xgetbv.sh` replaces `klauspost/cpuid` with a copy whose `XGETBV`
 clears ECX: admission accepts `XGETBV` only after a provable zero selector,
 and every caller passes 0.
+
+Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
+memory, and the release image needs more than 1 GiB to unpack.
 
 ## Native runner
 
