@@ -105,6 +105,10 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for PunchOutGame<M> {
         observation.decoded.opponents_defeated()
     }
 
+    fn snapshot_frame_count(snapshot: &PunchOutSnapshot) -> u64 {
+        snapshot.observation.frame_count
+    }
+
     fn emulator_state(snapshot: &PunchOutSnapshot) -> &[u8] {
         &snapshot.emulator_state
     }
