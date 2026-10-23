@@ -31,6 +31,7 @@ generic operations onto the target's client API.
 | `targets/openbao` | OpenBao image and adapter |
 | `targets/xline` | Xline image and adapter |
 | `targets/minio` | MinIO image and adapter, four nodes with one drive each |
+| `targets/dgraph` | Dgraph image and adapter, three nodes with one Zero and one Alpha each |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -1073,6 +1074,68 @@ client history, in `xl.meta` on every drive (decoded with MinIO's
   MinIO renames `xl.meta` into place without a directory fsync unless
   `MINIO_FS_OSYNC` is set, and its documentation excludes ext4.
 
+## Dgraph
+
+`targets/dgraph` drives the `register` family against
+[Dgraph](https://github.com/dgraph-io/dgraph) `v25.5.1` through the Alpha
+HTTP API with Go's HTTP client, so no client library retries a request. Three
+nodes `n1` to `n3` run at 10.77.0.1-3 in `harness-net` namespaces. Each node
+runs one Zero (port 5080, `--replicas 3`) and one Alpha (HTTP port 8080,
+internal port 7080), so the three Alphas form one group with three replicas
+and the three Zeros form one Raft group. `node.sh` kills the other process when
+either exits, so the supervisor restarts both. Each node keeps both stores
+under `/tmp/dgraph/<node>` on a 512 MiB node disk and logs to
+`/tmp/dgraph/<node>.log`. The Alpha cache is 64 MiB in place of the 4 GiB
+default, the admin whitelist admits 10.77.0.0/24 so the driver can set the
+schema, and telemetry is off. Both processes run with `--survive filesystem`,
+which syncs the Raft logs after every write. The default `process` mode keeps
+data only across a process crash, and its help text leaves a file system crash
+undefined. Every other setting is the default.
+
+The Dgraph
+[README](https://github.com/dgraph-io/dgraph/blob/v25.5.1/README.md) states
+distributed ACID transactions, consistent replication and linearizable reads.
+The [DQL client docs](https://docs.dgraph.io/dql/) limit the read promise to
+queries that are not best-effort: a best-effort query takes its timestamp from
+the Alpha's memory.
+
+The schema is `k: string @index(exact) @upsert .` and `v: string .`. Each key
+is one node. `write` is an upsert block that finds the node by `k` and sets
+`k` and `v` (it creates the node when none exists), committed with
+`commitNow`. `cas` is an upsert block whose query filters on `v` equal to the
+old value and whose mutation runs under `@if(eq(len(u), 1))`; it succeeds
+when the response's query found one node. `read` is a read-only query
+(`ro=true`), which takes its timestamp from Zero. Each operation goes to one
+Alpha drawn from the SDK stream. Two nodes for one key would break the
+`@upsert` promise; the read then returns their values joined with `|`, a
+value no write produced, so the checker reports the key.
+
+Dgraph answers errors with status 200 and an `errors` list. A mutation that
+fails with `Transaction has been aborted` (Zero aborted it on a conflict) or
+`server is not ready to accept requests` (the Alpha refused it before it
+started) is a definite failure. A cas whose query found no node is a definite
+failure. A write is otherwise a definite failure only when the dial fails.
+Read errors are definite.
+
+A read pinned to node `nI` writes a fresh fence node with `k` set to
+`fence-nI-<token>` through `nI`, then polls that key with a best-effort query
+(`be=true`) on `nI` until it returns the fence. A best-effort query reads at
+the Alpha's own `MaxAssigned` timestamp and serves its group's predicates from
+its own store. The read is then a best-effort query on `nI`. A `replicas` read
+on `nI` takes the same fence and queries every key with one best-effort query.
+Each key's metadata is the node's uid, which every replica records the same,
+and the number of nodes that hold the key. `ready` sets the schema when it
+lacks the upsert index and passes once an upsert succeeds through any Alpha.
+An alter waits for every pending transaction, and a timed-out write stays
+pending until Zero aborts it, so `ready` alters only once. Operations in the
+guest take seconds, so the drive runs with `--timeout 5s` and `ready` with
+`--ready-timeout 30s`.
+
+The image builds `dgraph` from the release source with Go 1.27.3, the version
+its `go.mod` names, through the Antithesis Go instrumentation, without the
+optional jemalloc build tag. `cpuid-xgetbv.sh` rewrites `klauspost/cpuid` the
+way `targets/minio` does.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
@@ -1156,3 +1219,6 @@ container. Opt-in options:
 - A MinIO `cas` trusts the ETag of a value written in one PUT to be the MD5 of
   the value, and a `412` or `404` answer to `If-Match` to come before any drive
   write.
+- A Dgraph pinned read trusts Zero to issue every commit timestamp above
+  every timestamp it issued before, so a fence that commits after the read
+  started commits above every write acknowledged before it.
