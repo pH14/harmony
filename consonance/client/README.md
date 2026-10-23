@@ -774,16 +774,17 @@ number in `MIDR_EL1` on arm64, and `cpu_capacity` or the maximum frequency to
 rank the types. Linux then uses package/core identifiers and sibling lists to
 put one representative of each physical core before SMT siblings, retaining
 speed order within each pass. The quota applies to that order. The coordinator
-is the last included physical representative, reserved before worker assignment;
-it remains the same processor at every worker count. Workers use other physical
-cores before sharing those cores through SMT. A single physical core with
-multiple allowed threads necessarily shares that core with the coordinator.
+is the last included physical representative; it remains the same processor at
+every worker count. Workers use other physical cores before sharing those cores
+through SMT, and the last worker shares the coordinator's processor once every
+allowed CPU holds a worker. A faults search's coordinator waits on worker
+results almost all of the time, so a reserved core would sit idle.
 Missing topology falls back to package/core identifiers or individual logical
 CPUs; contradictory present sibling/core metadata is refused. `topology()`
 reports that knowledge, packages, highest data/unified shared cache and NUMA
 nodes. It never admits a CPU outside the original affinity and fastest class.
-`CorePool::plan` refuses more workers than the logical pool leaves room for.
-A pool of one logical CPU holds one worker and the coordinator together.
+`CorePool::max_workers` is the number of allowed logical CPUs, and
+`CorePool::plan` refuses more workers than that.
 `pin_current_thread` binds
 the calling thread to one core on Linux. A worker's guest runs on the thread
 that owns its session, so pinning that thread keeps the guest on one core. On
