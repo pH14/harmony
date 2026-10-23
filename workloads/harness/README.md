@@ -405,8 +405,11 @@ are definite failures; other write and `cas` errors are indeterminate, and
 read errors are definite.
 
 A read pinned to node `nI` puts key `fence-nI`, then creates one consumer on
-`nI` that delivers the last message of the read key and of `fence-nI`
-(`FilterSubjects` with `DeliverLastPerSubject`). The consumer is a
+`nI` that delivers the last message of every key in the bucket
+(`DeliverLastPerSubject` on `$KV.B.>`), and takes the read key and
+`fence-nI` from it. On NATS 2.15.1 a consumer filtered to the read key and the
+fence key with `FilterSubjects` delivered the fence and no message for a key
+the node's store held. The consumer is a
 one-replica consumer placed on `nI` the way the `targets/nats` pinned read
 places it, and it reads the messages pending at creation. The fence and the
 value therefore come from one view of `nI`'s store, even when `nI` restarts
@@ -417,8 +420,7 @@ definite error, which the checker drops. A key with no message in that view
 has no value on `nI`.
 
 A `replicas` read on `nI` writes the same fence, then creates one consumer on
-`nI` that delivers the last message of every subject in the bucket, the fence
-key included, under the same rule. Each key's metadata is `revision`, the
+`nI` the same way and keeps every key, under the same fence rule. Each key's metadata is `revision`, the
 stream sequence of its last message, which is the same on every replica.
 
 A check against a cluster that a fault left without a leader can wait out the

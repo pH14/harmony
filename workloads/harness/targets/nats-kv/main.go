@@ -180,13 +180,13 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 }
 
 // A one-replica consumer serves messages from the store of the server that
-// hosts it. A read writes a fence and then takes the last message of each
-// wanted subject and of the fence key through one consumer, so the fence and
-// the values come from the same store. A store whose fence message is older
+// hosts it. A read writes a fence and then takes the last message of every
+// key in the bucket through one consumer, so the fence and the values come
+// from the same store. A store whose fence message is older
 // than the fence just written is not current; the read retries and, when the
 // node never catches up, fails without returning a value.
 func (c *client) readOn(ctx context.Context, kv jetstream.KeyValue, key, node string) (any, error) {
-	msgs, err := c.lastOn(ctx, kv, node, []string{keySubject + key})
+	msgs, err := c.lastOn(ctx, kv, node)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +204,7 @@ func (c *client) readOn(ctx context.Context, kv jetstream.KeyValue, key, node st
 // The stream sequence of each key's last message is the key's revision, which
 // is the same on every replica.
 func (c *client) replicasOn(ctx context.Context, kv jetstream.KeyValue, keys []string, node string) (map[string]family.Copy, error) {
-	msgs, err := c.lastOn(ctx, kv, node, nil)
+	msgs, err := c.lastOn(ctx, kv, node)
 	if err != nil {
 		return nil, err
 	}
@@ -229,18 +229,13 @@ func (c *client) replicasOn(ctx context.Context, kv jetstream.KeyValue, keys []s
 	return copies, nil
 }
 
-func (c *client) lastOn(ctx context.Context, kv jetstream.KeyValue, node string, subjects []string) (map[string]jetstream.Msg, error) {
+func (c *client) lastOn(ctx context.Context, kv jetstream.KeyValue, node string) (map[string]jetstream.Msg, error) {
 	fenceKey := "fence-" + node
 	revision, err := kv.Put(ctx, fenceKey, []byte(fmt.Sprintf("%016x", sdk.Random())))
 	if err != nil {
 		return nil, fmt.Errorf("fence: %w", err)
 	}
-	config := jetstream.ConsumerConfig{DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy}
-	if subjects == nil {
-		config.FilterSubject = keySubject + ">"
-	} else {
-		config.FilterSubjects = append(append([]string{}, subjects...), keySubject+fenceKey)
-	}
+	config := jetstream.ConsumerConfig{FilterSubject: keySubject + ">", DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy}
 	var seen uint64
 	for ctx.Err() == nil {
 		msgs, err := c.lastMessages(ctx, node, config)
