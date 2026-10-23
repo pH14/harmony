@@ -93,14 +93,14 @@ impl CorePool {
 
     #[must_use]
     pub fn max_workers(&self) -> usize {
-        self.cpus.len().saturating_sub(1).max(1)
+        self.cpus.len()
     }
 
     pub fn plan(&self, workers: u32) -> Result<Placement, String> {
         let workers = workers as usize;
         if workers == 0 || workers > self.max_workers() {
             return Err(format!(
-                "{workers} workers do not fit {} cores of the fastest core type ({:?}), which leave room for {} workers and the coordinator",
+                "{workers} workers do not fit {} cores of the fastest core type ({:?}), which hold at most {} workers",
                 self.cpus.len(),
                 self.cpus,
                 self.max_workers()
