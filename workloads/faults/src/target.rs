@@ -386,7 +386,7 @@ pub struct FaultSnapshot {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ActionDelta {
-    pub standing: Option<StandingWindow>,
+    pub standing: Vec<StandingWindow>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -458,10 +458,10 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
     match action.operation {
         FaultOperation::Wait(_) => ActionDelta::default(),
         FaultOperation::EventKill { node, rarity, .. } => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(node, &Fault::ProcEventKill { rarity }),
                 (start, u64::MAX),
-            )),
+            )],
         },
         FaultOperation::EventPark {
             node,
@@ -470,7 +470,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             target,
             ..
         } => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(
                     node,
                     &Fault::ProcEventPark {
@@ -480,56 +480,65 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                     },
                 ),
                 (start, end),
-            )),
+            )],
         },
         FaultOperation::Kill(node, _) => ActionDelta {
-            standing: Some(standing(
-                process_target(node, &Fault::ProcKill),
+            standing: vec![standing(
+                process_target(node, &Fault::ProcRestart),
                 (start, end),
-            )),
+            )],
         },
         FaultOperation::KillAll(_) => ActionDelta {
-            standing: Some(standing(
-                process_target(EVERY_NODE, &Fault::ProcKill),
+            standing: vec![standing(
+                process_target(EVERY_NODE, &Fault::ProcRestart),
                 (start, end),
-            )),
+            )],
         },
         FaultOperation::PowerLoss(node, _) => ActionDelta {
-            standing: Some(standing(
-                process_target(
-                    node,
-                    &Fault::ProcPowerLoss {
-                        choice: action.choice,
-                    },
+            standing: vec![
+                standing(process_target(node, &Fault::ProcRestart), (start, end)),
+                standing(
+                    process_target(
+                        node,
+                        &Fault::ProcPowerLoss {
+                            choice: action.choice,
+                        },
+                    ),
+                    (start, end),
                 ),
-                (start, end),
-            )),
+            ],
         },
         FaultOperation::PowerLossAll(_) => ActionDelta {
-            standing: Some(standing(
-                process_target(
-                    EVERY_NODE,
-                    &Fault::ProcPowerLoss {
-                        choice: action.choice,
-                    },
+            standing: vec![
+                standing(
+                    process_target(EVERY_NODE, &Fault::ProcRestart),
+                    (start, end),
                 ),
-                (start, end),
-            )),
+                standing(
+                    process_target(
+                        EVERY_NODE,
+                        &Fault::ProcPowerLoss {
+                            choice: action.choice,
+                        },
+                    ),
+                    (start, end),
+                ),
+            ],
         },
         FaultOperation::DiskError(node, _) => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(node, &Fault::ProcDiskError),
                 (start, end),
-            )),
+            )],
         },
         FaultOperation::DiskStall(node, _) => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(node, &Fault::ProcDiskStall(Span(horizon))),
                 (start, end),
-            )),
+            )],
         },
         FaultOperation::DiskCorrupt(node, _) => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(
                     node,
                     &Fault::ProcDiskCorrupt {
@@ -537,25 +546,25 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                     },
                 ),
                 (start, restart_end(start, horizon)),
-            )),
+            )],
         },
         FaultOperation::Pause(node, _) => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(node, &Fault::ProcPause(Span(horizon))),
                 (start, end),
-            )),
+            )],
         },
         FaultOperation::Restart(node, _) => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(node, &Fault::ProcRestart),
                 (start, restart_end(start, horizon)),
-            )),
+            )],
         },
         FaultOperation::Hook(id, _) => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(0, &Fault::RunHook(id)),
                 (start, end),
-            )),
+            )],
         },
         FaultOperation::Clock {
             node,
@@ -563,20 +572,20 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             rate_ppm,
             ..
         } => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(node, &clock_fault(offset_ms, rate_ppm, 0)),
                 (start, end),
-            )),
+            )],
         },
         FaultOperation::ClockAll {
             offset_ms,
             rate_ppm,
             ..
         } => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(EVERY_NODE, &clock_fault(offset_ms, rate_ppm, action.choice)),
                 (start, end),
-            )),
+            )],
         },
     }
 }
@@ -606,7 +615,7 @@ pub fn standing_windows(
 ) -> Result<Vec<StandingWindow>, String> {
     Ok(action_deltas(windows, actions)?
         .into_iter()
-        .filter_map(|delta| delta.standing)
+        .flat_map(|delta| delta.standing)
         .collect())
 }
 
@@ -1531,7 +1540,11 @@ mod tests {
             target: None,
         };
         let window = WINDOWS.window(&[action.into()], 0).unwrap();
-        let fault = action_delta(action.into(), window).standing.unwrap();
+        let fault = action_delta(action.into(), window)
+            .standing
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(fault.start, ROOT);
         assert_eq!(fault.end, ROOT + 500 * TICK);
         assert_eq!(
@@ -1552,7 +1565,11 @@ mod tests {
             ticks: ticks(500),
             target: ParkTarget::new(0x1000, 0x1004),
         };
-        let fault = action_delta(aimed.into(), window).standing.unwrap();
+        let fault = action_delta(aimed.into(), window)
+            .standing
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(
             decode_process_target(&fault.target),
             Some((
@@ -1668,28 +1685,28 @@ mod tests {
     }
 
     #[test]
-    fn kill_holds_its_whole_window_for_its_node() {
+    fn kill_holds_its_node_down_for_its_window_and_brings_it_back() {
         let window = WINDOWS.window(&kills(4), 1).unwrap();
         let delta = action_delta(FaultOperation::Kill(2, ticks(50)).into(), window);
-        let fault = delta.standing.expect("kill installs a standing fault");
+        assert_eq!(delta.standing.len(), 1);
+        let fault = &delta.standing[0];
         assert_eq!(fault.class, DecisionClass::Process.as_u16());
         assert_eq!(
             decode_process_target(&fault.target),
-            Some((2, Fault::ProcKill))
+            Some((2, Fault::ProcRestart))
         );
         assert_eq!((fault.start, fault.end), window);
     }
 
     #[test]
-    fn a_whole_cluster_kill_holds_every_node_for_its_window() {
+    fn a_whole_cluster_kill_holds_every_node_down_for_its_window() {
         let window = WINDOWS.window(&kills(4), 1).unwrap();
         let delta = action_delta(FaultOperation::KillAll(ticks(50)).into(), window);
-        let fault = delta
-            .standing
-            .expect("a cluster kill installs a standing fault");
+        assert_eq!(delta.standing.len(), 1);
+        let fault = &delta.standing[0];
         assert_eq!(
             decode_process_target(&fault.target),
-            Some((EVERY_NODE, Fault::ProcKill))
+            Some((EVERY_NODE, Fault::ProcRestart))
         );
         assert_eq!((fault.start, fault.end), window);
         assert_ne!(
@@ -1699,21 +1716,29 @@ mod tests {
     }
 
     #[test]
-    fn a_power_loss_carries_its_choice_to_the_supervisor() {
+    fn a_power_loss_carries_its_choice_and_brings_the_node_back_at_window_end() {
         let window = WINDOWS.window(&kills(4), 1).unwrap();
         for (operation, node) in [
             (FaultOperation::PowerLoss(2, ticks(50)), 2),
             (FaultOperation::PowerLossAll(ticks(50)), EVERY_NODE),
         ] {
             let action = FaultAction::from(operation).with_choice(77);
-            let fault = action_delta(action, window)
-                .standing
-                .expect("a power loss installs a standing fault");
+            let delta = action_delta(action, window);
             assert_eq!(
-                decode_process_target(&fault.target),
-                Some((node, Fault::ProcPowerLoss { choice: 77 }))
+                delta
+                    .standing
+                    .iter()
+                    .map(|fault| (decode_process_target(&fault.target), fault.start, fault.end))
+                    .collect::<Vec<_>>(),
+                [
+                    (Some((node, Fault::ProcRestart)), window.0, window.1),
+                    (
+                        Some((node, Fault::ProcPowerLoss { choice: 77 })),
+                        window.0,
+                        window.1
+                    ),
+                ]
             );
-            assert_eq!((fault.start, fault.end), window);
         }
         assert_ne!(
             FaultOperation::PowerLoss(0, ticks(50)).key_bytes(),
@@ -1749,6 +1774,8 @@ mod tests {
             let action = FaultAction::from(operation).with_choice(77);
             let standing = action_delta(action, window)
                 .standing
+                .into_iter()
+                .next()
                 .expect("a disk fault installs a standing fault");
             assert_eq!(decode_process_target(&standing.target), Some((1, fault)));
             assert_eq!((standing.start, standing.end), (window.0, end));
@@ -1792,6 +1819,8 @@ mod tests {
             let action = FaultAction::from(operation).with_choice(77);
             let fault = action_delta(action, window)
                 .standing
+                .into_iter()
+                .next()
                 .expect("a clock shift installs a standing fault");
             assert_eq!(
                 decode_process_target(&fault.target),
@@ -1836,6 +1865,8 @@ mod tests {
             let (start, end) = WINDOWS.window(&actions, 0).unwrap();
             let fault = action_delta(actions[0], (start, end))
                 .standing
+                .into_iter()
+                .next()
                 .expect("pause installs a standing fault");
             assert_eq!(
                 decode_process_target(&fault.target),
@@ -1855,6 +1886,8 @@ mod tests {
             let (start, end) = WINDOWS.window(&actions, 0).unwrap();
             let fault = action_delta(actions[0], (start, end))
                 .standing
+                .into_iter()
+                .next()
                 .expect("restart installs a standing fault");
             assert_eq!(
                 decode_process_target(&fault.target),
@@ -1875,6 +1908,8 @@ mod tests {
             WINDOWS.window(&kills(4), 0).unwrap(),
         )
         .standing
+        .into_iter()
+        .next()
         .expect("hook installs a standing fault");
         assert_eq!(
             decode_process_target(&fault.target),
