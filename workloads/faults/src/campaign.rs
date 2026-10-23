@@ -770,7 +770,7 @@ impl InputPolicy for FaultWorkload {
         _run: &FaultCampaignRun,
         action: &FaultAction,
     ) -> Option<NonZeroU64> {
-        NonZeroU64::new(action.ticks())
+        Some(NonZeroU64::from(action.operation.hold()))
     }
 
     fn finish_stream_record(
@@ -1675,6 +1675,7 @@ mod tests {
             backend: GuestBackend::Vm,
             root: None,
             boot_cache: None,
+            vocabulary: crate::bundle::FaultVocabulary::new(3, vec![]).unwrap(),
         }
     }
 

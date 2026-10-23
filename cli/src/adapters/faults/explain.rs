@@ -566,6 +566,9 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
     let span = |ticks: NonZeroU16| seconds(u64::from(ticks.get()));
     match *operation {
         FaultOperation::Wait(ticks) => format!("wait {}", span(ticks)),
+        FaultOperation::Burst { faults, ticks, .. } => {
+            format!("burst of {faults} drawn faults, one every {}", span(ticks))
+        }
         FaultOperation::Kill(index, _) => {
             format!("kill {} (down until a later restart)", node(index))
         }

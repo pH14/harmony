@@ -294,25 +294,12 @@ pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Sav
     finish(&out, &mut manifest, result)
 }
 
-fn read_vocabulary(out: &Path, manifest: &Manifest) -> Result<FaultVocabulary> {
-    let bytes = fs::read(out.join("artifacts/vocabulary.json"))?;
-    let expected = manifest
-        .artifacts
-        .get("vocabulary.json")
-        .ok_or("recorded vocabulary.json artifact is missing")?;
-    if crate::runtime::digest(&bytes) != *expected {
-        return Err("recorded artifact vocabulary.json changed during load".into());
-    }
-    Ok(serde_json::from_slice(&bytes)?)
-}
-
 fn search_faults(
     out: &Path,
     manifest: &Manifest,
     start: &SearchStart,
 ) -> Result<faults_workload::Report> {
     let artifacts = manifest.fault_artifacts(out)?;
-    let vocabulary = read_vocabulary(out, manifest)?;
     let options = manifest.options(out)?;
     let resources = package::resources(&options)?;
     let worker = if manifest.config.backend == Backend::Uml {
@@ -322,7 +309,7 @@ fn search_faults(
             vec!["session-worker".into()],
         )?)
     };
-    let report = package::search(&artifacts, &vocabulary, &options, &resources, worker, start)?;
+    let report = package::search(&artifacts, &options, &resources, worker, start)?;
     println!(
         "{} executions; {} confirmed findings; {} unmet reachability assertions; {} hung jobs",
         report.executions,
@@ -1003,7 +990,8 @@ mod tests {
         .unwrap();
 
         assert!(
-            read_vocabulary(directory.path(), &manifest)
+            manifest
+                .vocabulary(directory.path())
                 .unwrap_err()
                 .to_string()
                 .contains("vocabulary.json changed during load")
@@ -1014,7 +1002,7 @@ mod tests {
             serde_json::to_vec(&saved).unwrap(),
         )
         .unwrap();
-        assert_eq!(read_vocabulary(directory.path(), &manifest).unwrap(), saved);
+        assert_eq!(manifest.vocabulary(directory.path()).unwrap(), saved);
     }
 
     #[test]

@@ -183,6 +183,7 @@ impl Manifest {
             .uml_profile_identity(path)?
             .map(|identity| (path.join("artifacts/uml"), identity));
         Ok(faults_workload::Options {
+            vocabulary: self.vocabulary(path)?,
             seed: self.config.seed,
             executions: self.config.execution_limit(),
             ram_mib: self.config.ram_mib,
@@ -194,6 +195,18 @@ impl Manifest {
             checkpoint_owner: self.record.checkpoint_owner.clone(),
             boot_cache: crate::runtime::cache_dir().map(|dir| dir.join("boot")),
         })
+    }
+
+    pub fn vocabulary(&self, path: &Path) -> Result<faults_workload::bundle::FaultVocabulary> {
+        let bytes = fs::read(path.join("artifacts/vocabulary.json"))?;
+        let expected = self
+            .artifacts
+            .get("vocabulary.json")
+            .ok_or("recorded vocabulary.json artifact is missing")?;
+        if crate::runtime::digest(&bytes) != *expected {
+            return Err("recorded artifact vocabulary.json changed during load".into());
+        }
+        Ok(serde_json::from_slice(&bytes)?)
     }
 
     pub fn uml_profile_identity(&self, path: &Path) -> Result<Option<String>> {
@@ -407,6 +420,14 @@ mod tests {
         shared.workload.package = "faults".into();
         let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
         record.store(dir.path(), "root", b"original root").unwrap();
+        record
+            .store(
+                dir.path(),
+                "vocabulary.json",
+                &serde_json::to_vec(&faults_workload::FaultVocabulary::new(1, vec![]).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
         record.payload = serde_json::json!({
             "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
         });

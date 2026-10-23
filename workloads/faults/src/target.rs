@@ -11,6 +11,7 @@ use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 
 use crate::assertion::{AssertionKind, AssertionOutcome, Assertions, decode_json_event};
+use crate::bundle::FaultVocabulary;
 
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
 pub const SUPERVISOR_TICK_MICROS: u64 = SUPERVISOR_TICK_NANOS / 1_000;
@@ -64,6 +65,12 @@ pub enum FaultOperation {
         rate_ppm: i32,
         ticks: NonZeroU16,
     },
+    Burst {
+        seed: u64,
+        faults: u8,
+        event_ready: u64,
+        ticks: NonZeroU16,
+    },
 }
 
 impl FaultOperation {
@@ -85,6 +92,29 @@ impl FaultOperation {
             | Self::Hook(_, ticks)
             | Self::Clock { ticks, .. }
             | Self::ClockAll { ticks, .. } => u64::from(ticks.get()),
+            Self::Burst { faults, ticks, .. } => u64::from(faults) * u64::from(ticks.get()),
+        }
+    }
+
+    #[must_use]
+    pub fn hold(&self) -> NonZeroU16 {
+        match *self {
+            Self::Wait(ticks)
+            | Self::Kill(_, ticks)
+            | Self::KillAll(ticks)
+            | Self::PowerLoss(_, ticks)
+            | Self::PowerLossAll(ticks)
+            | Self::DiskError(_, ticks)
+            | Self::DiskStall(_, ticks)
+            | Self::DiskCorrupt(_, ticks)
+            | Self::EventKill { ticks, .. }
+            | Self::EventPark { ticks, .. }
+            | Self::Pause(_, ticks)
+            | Self::Restart(_, ticks)
+            | Self::Hook(_, ticks)
+            | Self::Clock { ticks, .. }
+            | Self::ClockAll { ticks, .. }
+            | Self::Burst { ticks, .. } => ticks,
         }
     }
 
@@ -143,9 +173,32 @@ impl FaultOperation {
                 rate_ppm,
                 ticks,
             },
+            Self::Burst {
+                seed,
+                faults,
+                event_ready,
+                ..
+            } => Self::Burst {
+                seed,
+                faults: faults.min(burst_faults_within(ticks)),
+                event_ready,
+                ticks,
+            },
         }
     }
 }
+
+#[must_use]
+pub fn burst_faults_within(ticks: NonZeroU16) -> u8 {
+    let fit = u64::from(u16::MAX) / u64::from(ticks.get());
+    let mut faults = MAX_BURST_FAULTS;
+    while u64::from(faults) > fit {
+        faults /= 2;
+    }
+    faults.max(1)
+}
+
+pub const MAX_BURST_FAULTS: u8 = 64;
 
 const OPERATION_KEY_WIDTH: usize = 32;
 
@@ -259,6 +312,18 @@ impl FaultOperation {
                 put(&[14]);
                 put(&offset_ms.to_le_bytes());
                 put(&rate_ppm.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::Burst {
+                seed,
+                faults,
+                event_ready,
+                ticks,
+            } => {
+                put(&[15]);
+                put(&seed.to_le_bytes());
+                put(&[faults]);
+                put(&event_ready.to_le_bytes());
                 put(&ticks.get().to_le_bytes());
             }
         }
@@ -456,7 +521,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
     let (start, end) = window;
     let horizon = end.saturating_sub(start);
     match action.operation {
-        FaultOperation::Wait(_) => ActionDelta::default(),
+        FaultOperation::Wait(_) | FaultOperation::Burst { .. } => ActionDelta::default(),
         FaultOperation::EventKill { node, rarity, .. } => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcEventKill { rarity }),
@@ -589,22 +654,46 @@ fn clock_fault(offset_ms: i32, rate_ppm: i32, spread: u64) -> Fault {
     }
 }
 
+pub type TimedFault = (FaultAction, (u64, u64));
+
+pub fn fault_timeline(
+    windows: ActionWindows,
+    vocabulary: &FaultVocabulary,
+    actions: &[FaultAction],
+) -> Result<Vec<TimedFault>, String> {
+    let mut timeline = Vec::with_capacity(actions.len());
+    for (action, window) in actions.iter().zip(windows.iter(actions)) {
+        let (start, end) = window?;
+        if !matches!(action.operation, FaultOperation::Burst { .. }) {
+            timeline.push((*action, (start, end)));
+            continue;
+        }
+        let faults = crate::archive::burst_faults(vocabulary, action)?;
+        let inner = ActionWindows { root_seal: start };
+        for (fault, window) in faults.iter().zip(inner.iter(&faults)) {
+            timeline.push((*fault, window?));
+        }
+    }
+    Ok(timeline)
+}
+
 pub fn action_deltas(
     windows: ActionWindows,
+    vocabulary: &FaultVocabulary,
     actions: &[FaultAction],
 ) -> Result<Vec<ActionDelta>, String> {
-    actions
-        .iter()
-        .zip(windows.iter(actions))
-        .map(|(action, window)| window.map(|window| action_delta(*action, window)))
-        .collect()
+    Ok(fault_timeline(windows, vocabulary, actions)?
+        .into_iter()
+        .map(|(action, window)| action_delta(action, window))
+        .collect())
 }
 
 pub fn standing_windows(
     windows: ActionWindows,
+    vocabulary: &FaultVocabulary,
     actions: &[FaultAction],
 ) -> Result<Vec<StandingWindow>, String> {
-    Ok(action_deltas(windows, actions)?
+    Ok(action_deltas(windows, vocabulary, actions)?
         .into_iter()
         .filter_map(|delta| delta.standing)
         .collect())
@@ -1185,6 +1274,10 @@ impl FaultObservations {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vocabulary() -> FaultVocabulary {
+        FaultVocabulary::new(3, vec![1]).unwrap()
+    }
     use control_proto::Moment;
     use fault_policy::decode_process_target;
 
@@ -1516,8 +1609,8 @@ mod tests {
         let encoded = serde_json::to_string(&actions).unwrap();
         let replay: Vec<FaultAction> = serde_json::from_str(&encoded).unwrap();
         assert_eq!(
-            action_deltas(WINDOWS, &actions),
-            action_deltas(WINDOWS, &replay)
+            action_deltas(WINDOWS, &vocabulary(), &actions),
+            action_deltas(WINDOWS, &vocabulary(), &replay)
         );
     }
 
@@ -1657,6 +1750,7 @@ mod tests {
         assert!(
             standing_windows(
                 WINDOWS,
+                &vocabulary(),
                 &[
                     FaultOperation::Wait(NonZeroU16::MIN).into(),
                     FaultOperation::Wait(NonZeroU16::MIN).into()
@@ -1890,7 +1984,7 @@ mod tests {
             FaultOperation::Kill(0, ticks(50)),
         ]
         .map(FaultAction::from);
-        let faults = standing_windows(WINDOWS, &actions).unwrap();
+        let faults = standing_windows(WINDOWS, &vocabulary(), &actions).unwrap();
         assert_eq!(faults.len(), 2);
         assert_eq!(
             (faults[0].start, faults[0].end),
@@ -1914,7 +2008,7 @@ mod tests {
             FaultOperation::Hook(2, ticks(50)),
         ]
         .map(FaultAction::from);
-        let windows = standing_windows(WINDOWS, &actions).unwrap();
+        let windows = standing_windows(WINDOWS, &vocabulary(), &actions).unwrap();
         let bytes = fault_policy::encode_windows(&windows).expect("encode");
         assert_eq!(
             fault_policy::decode_windows(&bytes).expect("decode"),
@@ -1930,13 +2024,13 @@ mod tests {
         ]
         .map(FaultAction::from);
         assert_eq!(
-            standing_windows(WINDOWS, &actions),
-            standing_windows(WINDOWS, &actions)
+            standing_windows(WINDOWS, &vocabulary(), &actions),
+            standing_windows(WINDOWS, &vocabulary(), &actions)
         );
         let moved = ActionWindows { root_seal: 2_000 };
         assert_ne!(
-            standing_windows(WINDOWS, &actions),
-            standing_windows(moved, &actions)
+            standing_windows(WINDOWS, &vocabulary(), &actions),
+            standing_windows(moved, &vocabulary(), &actions)
         );
         let shorter = [
             FaultOperation::Restart(3, ticks(10)),
@@ -1944,8 +2038,8 @@ mod tests {
         ]
         .map(FaultAction::from);
         assert_ne!(
-            standing_windows(WINDOWS, &actions),
-            standing_windows(WINDOWS, &shorter)
+            standing_windows(WINDOWS, &vocabulary(), &actions),
+            standing_windows(WINDOWS, &vocabulary(), &shorter)
         );
     }
 
@@ -2262,5 +2356,68 @@ mod tests {
         let capture = decode_sdk_events(&[assert_event(4, DISP_VIOLATION)]).expect("decode");
         let observations = FaultObservations::new(0, &capture, FaultStop::Deadline);
         assert!(observations.is_bug());
+    }
+
+    fn burst(faults: u8, ticks: u16) -> FaultAction {
+        FaultOperation::Burst {
+            seed: 7,
+            faults,
+            event_ready: 0b111,
+            ticks: NonZeroU16::new(ticks).unwrap(),
+        }
+        .into()
+    }
+
+    #[test]
+    fn a_burst_expands_into_contiguous_faults_that_fill_its_window() {
+        let action = burst(8, 40);
+        let (start, end) = WINDOWS.window(&[action], 0).unwrap();
+        let timeline = fault_timeline(WINDOWS, &vocabulary(), &[action]).unwrap();
+        assert_eq!(timeline.len(), 8);
+        assert_eq!(timeline[0].1.0, start);
+        assert_eq!(timeline[7].1.1, end);
+        for pair in timeline.windows(2) {
+            assert_eq!(pair[0].1.1, pair[1].1.0);
+        }
+        assert!(
+            timeline
+                .iter()
+                .all(|(fault, _)| !matches!(fault.operation, FaultOperation::Burst { .. }))
+        );
+        assert_eq!(
+            timeline,
+            fault_timeline(WINDOWS, &vocabulary(), &[action]).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_burst_seed_selects_its_faults() {
+        let other = FaultAction::from(FaultOperation::Burst {
+            seed: 8,
+            faults: 8,
+            event_ready: 0b111,
+            ticks: NonZeroU16::new(40).unwrap(),
+        });
+        let faults = |action| {
+            fault_timeline(WINDOWS, &vocabulary(), &[action])
+                .unwrap()
+                .into_iter()
+                .map(|(fault, _)| fault)
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(faults(burst(8, 40)), faults(other));
+        assert_ne!(burst(8, 40).key_bytes(), other.key_bytes());
+        assert_ne!(burst(8, 40).key_bytes(), burst(4, 40).key_bytes());
+    }
+
+    #[test]
+    fn a_burst_window_stays_within_the_tick_range() {
+        assert_eq!(burst_faults_within(NonZeroU16::new(1).unwrap()), 64);
+        assert_eq!(burst_faults_within(NonZeroU16::new(2_000).unwrap()), 32);
+        assert_eq!(burst_faults_within(NonZeroU16::MAX), 1);
+        let held = burst(64, 10).with_ticks(NonZeroU16::new(2_000).unwrap());
+        assert_eq!(held.operation.hold().get(), 2_000);
+        assert_eq!(held.ticks(), 32 * 2_000);
+        assert_eq!(burst(64, 10).operation.hold().get(), 10);
     }
 }

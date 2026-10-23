@@ -632,6 +632,7 @@ mod tests {
         use faults_workload::{package::Report, target::FaultObservations};
 
         let options = faults_workload::Options {
+            vocabulary: faults_workload::bundle::FaultVocabulary::new(3, vec![]).unwrap(),
             seed: 0,
             executions: 1,
             ram_mib: 1024,
@@ -774,6 +775,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let options = faults_workload::Options {
+            vocabulary: faults_workload::bundle::FaultVocabulary::new(3, vec![]).unwrap(),
             seed: 0,
             executions: 1,
             ram_mib: 1024,
@@ -852,6 +854,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let options = faults_workload::Options {
+            vocabulary: faults_workload::bundle::FaultVocabulary::new(3, vec![]).unwrap(),
             seed: 0,
             executions: 1,
             ram_mib: 1024,

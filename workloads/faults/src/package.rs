@@ -5,6 +5,7 @@ use std::{error::Error, fs, path::PathBuf, sync::Arc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::bundle::FaultVocabulary;
 use crate::target::{FaultAction, FaultObservations, FaultOperation, FaultStop};
 
 pub const PACKAGE: &str = "faults";
@@ -20,6 +21,7 @@ pub struct Options {
     pub root: Option<Arc<Vec<u8>>>,
     pub checkpoint_owner: Option<String>,
     pub boot_cache: Option<PathBuf>,
+    pub vocabulary: FaultVocabulary,
 }
 
 impl Options {
@@ -374,7 +376,6 @@ mod live {
         StateHashEncoding, first_confirmed_bug, replay_confirms_bug, replay_needs_settle,
     };
     use crate::{
-        bundle::FaultVocabulary,
         campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_with_plan},
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
         report::{
@@ -461,6 +462,7 @@ mod live {
             backend,
             root: options.root.clone(),
             boot_cache: options.boot_cache.clone(),
+            vocabulary: options.vocabulary.clone(),
         })
     }
 
@@ -482,13 +484,13 @@ mod live {
 
     pub fn search(
         artifacts: &Artifacts,
-        vocabulary: &FaultVocabulary,
         options: &Options,
         resources: &Resources,
         session_worker: Option<WorkerLauncher>,
         start: &super::SearchStart,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
+        let vocabulary = &options.vocabulary;
         let workers = u32::try_from(resources.placement.workers.len())?;
         let config = config(options)?;
         #[cfg(target_os = "linux")]
@@ -592,8 +594,20 @@ mod live {
             .map(|root| crate::consonance::root_standing(root))
             .transpose()?
             .unwrap_or_default();
-        let written = write_bug_reports(windows, &inherited, &archive.bugs, &options.output)?;
-        let hangs = write_hang_reports(windows, &inherited, &archive.hangs, &options.output)?;
+        let written = write_bug_reports(
+            windows,
+            vocabulary,
+            &inherited,
+            &archive.bugs,
+            &options.output,
+        )?;
+        let hangs = write_hang_reports(
+            windows,
+            vocabulary,
+            &inherited,
+            &archive.hangs,
+            &options.output,
+        )?;
         for hang in &hangs {
             eprintln!(
                 "hung job at execution {} saved to {}",
@@ -601,8 +615,13 @@ mod live {
                 options.output.join(hang.file_name()).display()
             );
         }
-        let failures =
-            write_failure_reports(windows, &inherited, &archive.failures, &options.output)?;
+        let failures = write_failure_reports(
+            windows,
+            vocabulary,
+            &inherited,
+            &archive.failures,
+            &options.output,
+        )?;
         for failure in &failures {
             eprintln!(
                 "failed execution {} saved to {}",
@@ -1300,6 +1319,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            vocabulary: FaultVocabulary::new(3, vec![1]).unwrap(),
         }
     }
 

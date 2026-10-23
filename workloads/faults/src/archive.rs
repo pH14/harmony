@@ -180,6 +180,48 @@ pub fn sample_action(
     ticks: NonZeroU16,
     view: Option<DrawView<'_, FaultAction>>,
 ) -> Result<FaultAction, Box<dyn Error>> {
+    sample(rand, vocabulary, event_ready, ticks, view, true)
+}
+
+pub fn burst_faults(
+    vocabulary: &FaultVocabulary,
+    burst: &FaultAction,
+) -> Result<Vec<FaultAction>, String> {
+    let FaultOperation::Burst {
+        seed,
+        faults,
+        event_ready,
+        ticks,
+    } = burst.operation
+    else {
+        return Err("only a burst expands into faults".to_owned());
+    };
+    let mut rand = RomuDuoJrRand::with_seed(seed);
+    (0..faults)
+        .map(|_| {
+            sample(&mut rand, vocabulary, event_ready, ticks, None, false)
+                .map_err(|error| format!("expand a burst: {error}"))
+        })
+        .collect()
+}
+
+fn burst_size(rand: &mut RomuDuoJrRand, ticks: NonZeroU16) -> Result<u8, Box<dyn Error>> {
+    let half = (crate::target::burst_faults_within(ticks) / 2).max(1);
+    let drawn = searcher::search::duration::DurationPolicy::draw_without_history(
+        rand,
+        std::num::NonZeroU64::new(u64::from(half)).ok_or("empty burst size range")?,
+    );
+    Ok(u8::try_from(drawn * 2)?)
+}
+
+fn sample(
+    rand: &mut RomuDuoJrRand,
+    vocabulary: &FaultVocabulary,
+    event_ready: u64,
+    ticks: NonZeroU16,
+    view: Option<DrawView<'_, FaultAction>>,
+    bursts: bool,
+) -> Result<FaultAction, Box<dyn Error>> {
     let pick = |rand: &mut RomuDuoJrRand, len: usize| -> Result<usize, Box<dyn Error>> {
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
     };
@@ -214,6 +256,7 @@ pub fn sample_action(
                 ),
                 (FaultKind::EventKill, 5, events),
                 (FaultKind::EventPark, 6, events),
+                (FaultKind::Burst, 15, bursts),
             ]
             .into_iter()
             .filter(|&(kind, _, offered)| offered && vocabulary.draws(kind))
@@ -266,6 +309,12 @@ pub fn sample_action(
                 ticks,
             }
         }
+        15 => FaultOperation::Burst {
+            seed: rand.next_u64(),
+            faults: burst_size(rand, ticks)?,
+            event_ready,
+            ticks,
+        },
         5 => FaultOperation::EventKill {
             node: event_node(rand)?,
             rarity: u8::try_from(pick(rand, 64)?)?,
@@ -741,13 +790,17 @@ mod tests {
             FaultOperation::DiskCorrupt(..) => 12,
             FaultOperation::Clock { .. } => 13,
             FaultOperation::ClockAll { .. } => 14,
+            FaultOperation::Burst { .. } => 15,
         };
         for _ in 0..2_000 {
             let action =
                 sample_action(&mut rand, &vocabulary, 0, TICKS, None).expect("draw an action");
             kinds.insert(kind(&action));
-            assert_eq!(action.ticks(), u64::from(TICKS.get()));
+            assert_eq!(action.operation.hold(), TICKS);
             match action.operation {
+                FaultOperation::Burst { faults, .. } => {
+                    assert_eq!(action.ticks(), u64::from(faults) * u64::from(TICKS.get()));
+                }
                 FaultOperation::Wait(_)
                 | FaultOperation::KillAll(_)
                 | FaultOperation::PowerLossAll(_) => {}
@@ -789,7 +842,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds.len(), 5, "every available action kind is reachable");
+        assert_eq!(kinds.len(), 6, "every available action kind is reachable");
     }
 
     #[test]
@@ -1010,6 +1063,26 @@ mod tests {
     }
 
     #[test]
+    fn burst_sizes_span_two_to_sixty_four_faults() {
+        let vocabulary = FaultVocabulary::new(3, Vec::new()).unwrap();
+        let sizes = draw_operations(&vocabulary, 21)
+            .into_iter()
+            .filter_map(|operation| match operation {
+                FaultOperation::Burst { faults, ticks, .. } => Some((faults, ticks)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!sizes.is_empty());
+        assert!(sizes.iter().all(|&(faults, ticks)| {
+            (2..=crate::target::MAX_BURST_FAULTS).contains(&faults)
+                && faults % 2 == 0
+                && ticks == TICKS
+        }));
+        assert!(sizes.iter().any(|&(faults, _)| faults <= 4));
+        assert!(sizes.iter().any(|&(faults, _)| faults >= 32));
+    }
+
+    #[test]
     fn only_a_checksummed_disk_draws_a_corruption() {
         let vocabulary = |checksummed: Vec<u16>| {
             FaultVocabulary::new(3, Vec::new())
@@ -1065,6 +1138,7 @@ mod tests {
             FaultOperation::EventPark { .. } => Some(FaultKind::EventPark),
             FaultOperation::Clock { .. } => Some(FaultKind::Clock),
             FaultOperation::ClockAll { .. } => Some(FaultKind::ClockAll),
+            FaultOperation::Burst { .. } => Some(FaultKind::Burst),
         };
         let drawn = |vocabulary: &FaultVocabulary| {
             draw_operations(vocabulary, 13)

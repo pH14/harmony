@@ -65,6 +65,7 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
         )?)),
         root: None,
         boot_cache: None,
+        vocabulary: crate::bundle::FaultVocabulary::new(3, vec![1]).unwrap(),
     };
     let mut target = FaultTarget::fresh(&[], &initramfs, &config)?;
     let root = target

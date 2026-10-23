@@ -37,11 +37,12 @@ use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::bundle::FaultVocabulary;
 use crate::chain::{Chain, Hit, Point, Shared};
 use crate::history::{FaultHistory, HistoryReceipt};
 use crate::target::{
     ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultSnapshot,
-    FaultStop, ObservationCheckpoint, SdkDecoder, action_delta, standing_windows,
+    FaultStop, ObservationCheckpoint, SdkDecoder, action_delta, fault_timeline, standing_windows,
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
@@ -110,6 +111,7 @@ pub struct FaultConfig {
     pub backend: GuestBackend,
     pub root: Option<Arc<Vec<u8>>>,
     pub boot_cache: Option<PathBuf>,
+    pub vocabulary: FaultVocabulary,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -400,15 +402,15 @@ struct ActionPlan {
 impl ActionPlan {
     fn compile(
         windows: ActionWindows,
+        vocabulary: &FaultVocabulary,
         inherited: &[StandingWindow],
         actions: &[FaultAction],
     ) -> Result<Self, Box<dyn Error>> {
         let mut standing = inherited.to_vec();
         let mut coverage = Vec::with_capacity(actions.len());
         let mut deadline = windows.root_seal;
-        for (action, window) in actions.iter().zip(windows.iter(actions)) {
-            let (start, end) = window?;
-            standing.extend(action_delta(*action, (start, end)).standing);
+        for (action, (start, end)) in fault_timeline(windows, vocabulary, actions)? {
+            standing.extend(action_delta(action, (start, end)).standing);
             coverage.push((start, end, action.coverage_quantum));
             deadline = end;
         }
@@ -456,6 +458,7 @@ struct Config {
     worker: Option<WorkerLauncher>,
     uml: Option<UmlLaunch>,
     root: Option<Arc<Vec<u8>>>,
+    vocabulary: Arc<FaultVocabulary>,
 }
 
 fn uml_launch(
@@ -595,6 +598,7 @@ struct Live {
     base_identity: [u8; 32],
     setup: SnapId,
     windows: ActionWindows,
+    vocabulary: Arc<FaultVocabulary>,
     inherited: Vec<StandingWindow>,
     chain: Chain,
     horizons_run: u64,
@@ -767,7 +771,12 @@ impl FaultTarget {
         worker: Option<WorkerLauncher>,
     ) -> Result<Self, String> {
         let config = Arc::new(Config {
-            key: Sha256::digest(identity(kernel, initramfs, config)?).into(),
+            key: Sha256::new()
+                .chain_update(identity(kernel, initramfs, config)?)
+                .chain_update(config.vocabulary.identifier())
+                .finalize()
+                .into(),
+            vocabulary: Arc::new(config.vocabulary.clone()),
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             session: config.session_config(),
@@ -940,8 +949,13 @@ impl FaultTarget {
         }
         let (progress, observation) = with_live(&self.config, |live| {
             let (snapshot, at) = live.session.snapshot().map_err(|e| e.to_string())?;
-            let plan = ActionPlan::compile(live.windows, &live.inherited, self.actions())
-                .map_err(|e| e.to_string())?;
+            let plan = ActionPlan::compile(
+                live.windows,
+                &live.vocabulary,
+                &live.inherited,
+                self.actions(),
+            )
+            .map_err(|e| e.to_string())?;
             let service = debug_configuration(plan.handler.configuration(), message)
                 .map_err(|e| e.to_string())?;
             let mut handler =
@@ -1003,16 +1017,22 @@ impl FaultTarget {
     pub fn export_root(&self) -> Result<Vec<u8>, String> {
         with_live(&self.config, |live| {
             let (snapshot, moment) = live.session.snapshot().map_err(|e| e.to_string())?;
-            let result = active_root_windows(&live.inherited, live.windows, self.actions(), moment)
-                .and_then(|standing| {
-                    export_root(
-                        live.session.as_mut(),
-                        snapshot,
-                        live.base_identity,
-                        &standing,
-                    )
-                    .map_err(|e| e.to_string())
-                });
+            let result = active_root_windows(
+                &live.inherited,
+                live.windows,
+                &live.vocabulary,
+                self.actions(),
+                moment,
+            )
+            .and_then(|standing| {
+                export_root(
+                    live.session.as_mut(),
+                    snapshot,
+                    live.base_identity,
+                    &standing,
+                )
+                .map_err(|e| e.to_string())
+            });
             live.session
                 .drop_snapshot(snapshot)
                 .map_err(|e| e.to_string())?;
@@ -1614,6 +1634,7 @@ impl Live {
             session,
             setup,
             windows: ActionWindows { root_seal },
+            vocabulary: Arc::clone(&config.vocabulary),
             inherited,
             chain: Chain::new(
                 Point {
@@ -2221,7 +2242,7 @@ impl Live {
                     )
                 });
             }
-            let plan = ActionPlan::compile(self.windows, &self.inherited, prefix)
+            let plan = ActionPlan::compile(self.windows, &self.vocabulary, &self.inherited, prefix)
                 .map_err(|error| format!("branch configuration: {error}"))?;
             let ExecutedAction {
                 mut observation,
@@ -2304,7 +2325,7 @@ impl Live {
         };
         let mut next = history.actions();
         next.push(action);
-        let plan = ActionPlan::compile(self.windows, &self.inherited, &next)
+        let plan = ActionPlan::compile(self.windows, &self.vocabulary, &self.inherited, &next)
             .map_err(|error| format!("branch configuration: {error}"))?;
         let ExecutedAction {
             mut observation,
@@ -2602,6 +2623,10 @@ pub fn from_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    pub(super) fn test_vocabulary() -> FaultVocabulary {
+        FaultVocabulary::new(3, vec![1]).unwrap()
+    }
     use crate::target::{FaultOperation, decode_sdk_events};
     use consonance_client::cache::{
         LocalIndex,
@@ -2613,14 +2638,14 @@ mod tests {
         inherited: &[StandingWindow],
         actions: &[FaultAction],
     ) -> Result<ServiceConfig, Box<dyn Error>> {
-        Ok(ActionPlan::compile(windows, inherited, actions)?.service_config())
+        Ok(ActionPlan::compile(windows, &test_vocabulary(), inherited, actions)?.service_config())
     }
 
     fn test_coverage_schedule(
         windows: ActionWindows,
         actions: &[FaultAction],
     ) -> Result<CoverageSchedule, Box<dyn Error>> {
-        Ok(ActionPlan::compile(windows, &[], actions)?.coverage_schedule)
+        Ok(ActionPlan::compile(windows, &test_vocabulary(), &[], actions)?.coverage_schedule)
     }
 
     #[test]
@@ -2695,6 +2720,7 @@ mod tests {
             backend: GuestBackend::Uml(Box::new(guest.clone())),
             root: None,
             boot_cache: None,
+            vocabulary: test_vocabulary(),
         };
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
@@ -2736,6 +2762,7 @@ mod tests {
             backend: GuestBackend::Uml(Box::new(guest)),
             root: None,
             boot_cache: None,
+            vocabulary: test_vocabulary(),
         };
         let split = FaultConfig {
             knobs: vec!["foo=bar".into(), "root=/dev/ram0".into()],
@@ -2781,11 +2808,13 @@ mod tests {
                     backend: GuestBackend::Vm,
                     root: None,
                     boot_cache: None,
+                    vocabulary: test_vocabulary(),
                 }
                 .session_config(),
                 cache: None,
                 worker: None,
                 uml: None,
+                vocabulary: Arc::new(test_vocabulary()),
             }),
             actions: std::sync::OnceLock::new(),
             history: FaultHistory::fixture(
@@ -3504,6 +3533,7 @@ mod tests {
             base_identity: [0; 32],
             setup: SnapId(1),
             windows: ActionWindows { root_seal: 0 },
+            vocabulary: Arc::new(test_vocabulary()),
             inherited: Vec::new(),
             chain: Chain::new(
                 Point {
@@ -3682,6 +3712,7 @@ mod tests {
                 backend: GuestBackend::Vm,
                 root: None,
                 boot_cache: None,
+                vocabulary: test_vocabulary(),
             },
         );
         let run = crate::campaign::FaultCampaignRun {
@@ -4288,6 +4319,7 @@ mod tests {
                 backend,
                 root: None,
                 boot_cache: None,
+                vocabulary: test_vocabulary(),
             },
         )
     }
@@ -5522,6 +5554,7 @@ mod tests {
                 backend: GuestBackend::Vm,
                 root: None,
                 boot_cache: None,
+                vocabulary: test_vocabulary(),
             },
         );
         use searcher::search::campaign::Reporting;
@@ -5557,6 +5590,7 @@ mod tests {
                 backend: GuestBackend::Vm,
                 root: None,
                 boot_cache: None,
+                vocabulary: test_vocabulary(),
             },
         );
         let target = unbooted_target();
@@ -6155,7 +6189,8 @@ mod tests {
                 snap: SnapId(1),
                 moment: 7,
             },
-            &ActionPlan::compile(live.windows, &live.inherited, &[action]).unwrap(),
+            &ActionPlan::compile(live.windows, &live.vocabulary, &live.inherited, &[action])
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(live.cursor.decoder.as_ref().unwrap().offset(), 2);
@@ -6220,8 +6255,13 @@ mod tests {
         let mut importer = publishing_live(&index, namespace, SnapId(1), [17; 32]);
         let at = importer.find_path(receipt.path(), 1).unwrap().unwrap();
         let parent = importer.chain.point(at);
-        let plan =
-            ActionPlan::compile(importer.windows, &importer.inherited, &[action, action]).unwrap();
+        let plan = ActionPlan::compile(
+            importer.windows,
+            &importer.vocabulary,
+            &importer.inherited,
+            &[action, action],
+        )
+        .unwrap();
         importer.branch(parent, &plan).unwrap();
         assert!(importer.chain.pending_observation_checkpoint(at).is_none());
         assert!(importer.chain.observation_checkpoint(at).is_some());
@@ -6896,7 +6936,7 @@ mod tests {
                     snap: SnapId(1),
                     moment: 0,
                 },
-                &ActionPlan::compile(live.windows, &live.inherited, &[]).unwrap(),
+                &ActionPlan::compile(live.windows, &live.vocabulary, &live.inherited, &[]).unwrap(),
             )
             .unwrap_err();
         assert!(error.starts_with(WATCHDOG_CUTOFF));
@@ -7467,6 +7507,7 @@ mod tests {
             backend: GuestBackend::Vm,
             root: None,
             boot_cache: None,
+            vocabulary: test_vocabulary(),
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         let run = crate::campaign::FaultCampaignRun {
@@ -7609,7 +7650,8 @@ mod tests {
         let moment = |ticks| root.root_seal + ticks * SUPERVISOR_TICK_NANOS;
         for depth in 0..=actions.len() {
             TIMELINE_STEPS.with(|steps| steps.set(0));
-            let plan = ActionPlan::compile(root, &inherited, &actions[..depth]).unwrap();
+            let plan = ActionPlan::compile(root, &test_vocabulary(), &inherited, &actions[..depth])
+                .unwrap();
             assert_eq!(TIMELINE_STEPS.with(std::cell::Cell::get), depth);
             assert_eq!(plan.deadline, moment(ends[depth]));
             let (expected_config, expected_schedule) =
@@ -7652,7 +7694,7 @@ mod tests {
                 );
             }
         }
-        let full = ActionPlan::compile(root, &inherited, &actions).unwrap();
+        let full = ActionPlan::compile(root, &test_vocabulary(), &inherited, &actions).unwrap();
         assert_eq!(
             full.handler.0.coverage,
             [
@@ -7705,7 +7747,7 @@ mod tests {
         let root = ActionWindows {
             root_seal: u64::MAX,
         };
-        let empty = ActionPlan::compile(root, &[], &[]).unwrap();
+        let empty = ActionPlan::compile(root, &test_vocabulary(), &[], &[]).unwrap();
         assert_eq!(empty.deadline, u64::MAX);
         assert_eq!(empty.service_config(), reference_plan(root, &[], &[]).0);
         assert_eq!(
@@ -7716,11 +7758,13 @@ mod tests {
             root_seal: u64::MAX - SUPERVISOR_TICK_NANOS,
         };
         assert_eq!(
-            ActionPlan::compile(root, &[], &[action]).unwrap().deadline,
+            ActionPlan::compile(root, &test_vocabulary(), &[], &[action])
+                .unwrap()
+                .deadline,
             u64::MAX
         );
         assert_eq!(
-            ActionPlan::compile(root, &[], &[action, action])
+            ActionPlan::compile(root, &test_vocabulary(), &[], &[action, action])
                 .err()
                 .unwrap()
                 .to_string(),
@@ -7729,9 +7773,9 @@ mod tests {
         let limit = (environment::channel::MAX_CHANNEL_BYTES - 14) / 24;
         let actions = vec![action; limit + 1];
         let root = ActionWindows { root_seal: 1000 };
-        assert!(ActionPlan::compile(root, &[], &actions[..limit]).is_ok());
+        assert!(ActionPlan::compile(root, &test_vocabulary(), &[], &actions[..limit]).is_ok());
         assert_eq!(
-            ActionPlan::compile(root, &[], &actions)
+            ActionPlan::compile(root, &test_vocabulary(), &[], &actions)
                 .err()
                 .unwrap()
                 .to_string(),
@@ -7743,7 +7787,7 @@ mod tests {
             start: 0,
             end: u64::MAX,
         }];
-        assert!(ActionPlan::compile(root, &inherited, &[]).is_err());
+        assert!(ActionPlan::compile(root, &test_vocabulary(), &inherited, &[]).is_err());
     }
 
     #[test]
@@ -7936,7 +7980,7 @@ mod tests {
         })];
         let moment = root.window(&prefix, 0).unwrap().1;
         let original = test_branch_config(root, &[], &prefix).unwrap();
-        let active = active_root_windows(&[], root, &prefix, moment).unwrap();
+        let active = active_root_windows(&[], root, &test_vocabulary(), &prefix, moment).unwrap();
         let payload = encode_root_payload([7; 32], &active, b"snapshot", [9; 32]).unwrap();
         let decoded = decode_root_payload(&payload, [7; 32]).unwrap();
         assert_eq!(decoded.snapshot, b"snapshot");
@@ -7967,8 +8011,14 @@ mod tests {
             std::num::NonZeroU16::MIN,
         ))];
         let nested_moment = rooted.window(&suffix, 0).unwrap().1;
-        let nested_active =
-            active_root_windows(&decoded.standing, rooted, &suffix, nested_moment).unwrap();
+        let nested_active = active_root_windows(
+            &decoded.standing,
+            rooted,
+            &test_vocabulary(),
+            &suffix,
+            nested_moment,
+        )
+        .unwrap();
         let nested_payload =
             encode_root_payload([7; 32], &nested_active, b"nested", [9; 32]).unwrap();
         let nested = decode_root_payload(&nested_payload, [7; 32]).unwrap();
@@ -8165,6 +8215,7 @@ mod tests {
             backend: GuestBackend::Vm,
             root: None,
             boot_cache: None,
+            vocabulary: test_vocabulary(),
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         for terminal in [false, true] {
@@ -8263,11 +8314,12 @@ fn export_root(
 fn active_root_windows(
     inherited: &[StandingWindow],
     windows: ActionWindows,
+    vocabulary: &FaultVocabulary,
     actions: &[FaultAction],
     moment: u64,
 ) -> Result<Vec<StandingWindow>, String> {
     let mut standing = inherited.to_vec();
-    standing.extend(standing_windows(windows, actions)?);
+    standing.extend(standing_windows(windows, vocabulary, actions)?);
     standing.retain(|window| window.start <= moment);
     Ok(standing)
 }

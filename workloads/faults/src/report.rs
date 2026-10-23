@@ -6,6 +6,7 @@ use fault_policy::StandingWindow;
 use serde::{Deserialize, Serialize};
 
 use crate::archive::{FaultBugRecord, FaultFailureRecord, FaultHangRecord};
+use crate::bundle::FaultVocabulary;
 use crate::target::{ActionWindows, FaultAction, FaultObservations, standing_windows};
 
 pub const BUG_REPORT_STEM: &str = "bug-";
@@ -27,6 +28,7 @@ impl BugReport {
         bug: u64,
         execution: u64,
         windows: ActionWindows,
+        vocabulary: &FaultVocabulary,
         inherited: &[StandingWindow],
         actions: &[FaultAction],
         observations: &FaultObservations,
@@ -36,7 +38,7 @@ impl BugReport {
             execution,
             root_seal: windows.root_seal,
             actions: actions.to_vec(),
-            standing: standing_hex(windows, inherited, actions)?,
+            standing: standing_hex(windows, vocabulary, inherited, actions)?,
             observations: observations.clone(),
         })
     }
@@ -71,6 +73,7 @@ impl BugReport {
 
 pub fn write_bug_reports(
     windows: ActionWindows,
+    vocabulary: &FaultVocabulary,
     inherited: &[StandingWindow],
     bugs: &[FaultBugRecord],
     directory: &Path,
@@ -82,6 +85,7 @@ pub fn write_bug_reports(
             ordinal,
             bug.execution,
             windows,
+            vocabulary,
             inherited,
             &bug.input.actions,
             &bug.observations,
@@ -110,6 +114,7 @@ impl HangReport {
 
 pub fn write_hang_reports(
     windows: ActionWindows,
+    vocabulary: &FaultVocabulary,
     inherited: &[StandingWindow],
     hangs: &[FaultHangRecord],
     directory: &Path,
@@ -121,7 +126,7 @@ pub fn write_hang_reports(
             execution: hang.execution,
             root_seal: windows.root_seal,
             actions: hang.input.actions.clone(),
-            standing: standing_hex(windows, inherited, &hang.input.actions)?,
+            standing: standing_hex(windows, vocabulary, inherited, &hang.input.actions)?,
         };
         std::fs::write(
             directory.join(report.file_name()),
@@ -150,6 +155,7 @@ impl FailureReport {
 
 pub fn write_failure_reports(
     windows: ActionWindows,
+    vocabulary: &FaultVocabulary,
     inherited: &[StandingWindow],
     failures: &[FaultFailureRecord],
     directory: &Path,
@@ -161,7 +167,7 @@ pub fn write_failure_reports(
             execution: failure.execution,
             root_seal: windows.root_seal,
             actions: failure.input.actions.clone(),
-            standing: standing_hex(windows, inherited, &failure.input.actions)?,
+            standing: standing_hex(windows, vocabulary, inherited, &failure.input.actions)?,
         };
         std::fs::write(
             directory.join(report.file_name()),
@@ -174,11 +180,12 @@ pub fn write_failure_reports(
 
 fn standing_hex(
     windows: ActionWindows,
+    vocabulary: &FaultVocabulary,
     inherited: &[StandingWindow],
     actions: &[FaultAction],
 ) -> Result<String, Box<dyn Error>> {
     let mut standing = inherited.to_vec();
-    standing.extend(standing_windows(windows, actions)?);
+    standing.extend(standing_windows(windows, vocabulary, actions)?);
     Ok(hex(&fault_policy::encode_windows(&standing)?))
 }
 
@@ -195,6 +202,10 @@ mod tests {
     use crate::target::{FaultOperation, FaultStop};
     use std::num::NonZeroU16;
 
+    fn vocabulary() -> FaultVocabulary {
+        FaultVocabulary::new(3, vec![1]).unwrap()
+    }
+
     const WINDOWS: ActionWindows = ActionWindows { root_seal: 1_000 };
     const TICKS: NonZeroU16 = NonZeroU16::new(50).unwrap();
 
@@ -209,6 +220,7 @@ mod tests {
             1,
             42,
             WINDOWS,
+            &vocabulary(),
             &[],
             &[
                 FaultOperation::Hook(1, TICKS).into(),
@@ -227,7 +239,7 @@ mod tests {
         let bytes = report.standing_bytes().expect("hex round-trips");
         assert_eq!(
             fault_policy::decode_windows(&bytes).expect("the window list decodes"),
-            standing_windows(WINDOWS, &report.actions).unwrap(),
+            standing_windows(WINDOWS, &vocabulary(), &report.actions).unwrap(),
             "both faulting actions reach the window list"
         );
     }
@@ -240,7 +252,7 @@ mod tests {
             rarity: 1,
             ticks: TICKS,
         })];
-        let inherited = standing_windows(origin, &prefix).unwrap();
+        let inherited = standing_windows(origin, &vocabulary(), &prefix).unwrap();
         let rooted = ActionWindows {
             root_seal: origin.window(&prefix, 0).unwrap().1,
         };
@@ -248,6 +260,7 @@ mod tests {
             1,
             42,
             rooted,
+            &vocabulary(),
             &inherited,
             &[FaultOperation::Wait(NonZeroU16::MIN).into()],
             &FaultObservations::default(),
@@ -305,7 +318,8 @@ mod tests {
             bug(9, FaultOperation::Wait(NonZeroU16::MIN).into()),
         ];
         let windows = ActionWindows { root_seal: 7 };
-        let written = write_bug_reports(windows, &[], &bugs, directory.path()).expect("write");
+        let written =
+            write_bug_reports(windows, &vocabulary(), &[], &bugs, directory.path()).expect("write");
         assert_eq!(written.len(), 2);
         assert_eq!(written[0].bug, 1);
         assert_eq!(written[0].execution, 4);
@@ -329,7 +343,8 @@ mod tests {
                 actions: actions.clone(),
             },
         }];
-        let written = write_hang_reports(WINDOWS, &[], &hangs, directory.path()).expect("write");
+        let written = write_hang_reports(WINDOWS, &vocabulary(), &[], &hangs, directory.path())
+            .expect("write");
         assert_eq!(written.len(), 1);
         assert_eq!(written[0].file_name(), "hang-1.json");
         assert_eq!(written[0].execution, 12);
@@ -344,9 +359,17 @@ mod tests {
         assert_eq!(decoded, written[0]);
         assert_eq!(
             decoded.standing,
-            BugReport::new(1, 12, WINDOWS, &[], &actions, &FaultObservations::default())
-                .unwrap()
-                .standing
+            BugReport::new(
+                1,
+                12,
+                WINDOWS,
+                &vocabulary(),
+                &[],
+                &actions,
+                &FaultObservations::default()
+            )
+            .unwrap()
+            .standing
         );
     }
 
@@ -364,7 +387,8 @@ mod tests {
             },
         }];
         let written =
-            write_failure_reports(WINDOWS, &[], &failures, directory.path()).expect("write");
+            write_failure_reports(WINDOWS, &vocabulary(), &[], &failures, directory.path())
+                .expect("write");
         assert_eq!(written.len(), 1);
         assert_eq!(written[0].file_name(), "failure-1.json");
         assert_eq!(written[0].execution, 12);
@@ -379,9 +403,17 @@ mod tests {
         assert_eq!(decoded, written[0]);
         assert_eq!(
             decoded.standing,
-            BugReport::new(1, 12, WINDOWS, &[], &actions, &FaultObservations::default())
-                .unwrap()
-                .standing
+            BugReport::new(
+                1,
+                12,
+                WINDOWS,
+                &vocabulary(),
+                &[],
+                &actions,
+                &FaultObservations::default()
+            )
+            .unwrap()
+            .standing
         );
     }
 }
