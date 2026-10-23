@@ -247,15 +247,19 @@ Three more windows act on a node's disk:
 
 - A disk error window (`DiskError`) loads an `error` table. Every read, write
   and flush fails with `EIO` until the window closes and the linear table
-  returns. When a journal write fails, ext4 aborts the journal and marks the
-  filesystem read-only. If the filesystem is read-only when the window closes,
-  the supervisor treats the close as a host reboot after a transient disk
-  fault. It kills the node if it still runs and cuts the disk as a corruption
-  does, keeping every logged write and flipping no bit. It then remounts the
-  disk and starts the node as a restart after a fault. Writes that failed
-  during the window stay lost, as unwritten page cache is lost in a reboot.
-  ext4 may notice the aborted journal only at a later write, after the window
-  has closed. So before each start of a node whose disk had a fault, the
+  returns. The error target fails a request inside the guest without an exit,
+  so the guest kernels charge one execution tick (100 us of virtual time) for
+  each request it fails. A task that retries a failed read without bound, as a
+  page fault under `MAP_POPULATE` does, then still reaches its timer deadlines,
+  and the window closes on time. When a journal write fails, ext4 aborts the
+  journal and marks the filesystem read-only. If the filesystem is read-only
+  when the window closes, the supervisor treats the close as a host reboot
+  after a transient disk fault. It kills the node if it still runs and cuts the
+  disk as a corruption does, keeping every logged write and flipping no bit. It
+  then remounts the disk and starts the node as a restart after a fault. Writes
+  that failed during the window stay lost, as unwritten page cache is lost in a
+  reboot. ext4 may notice the aborted journal only at a later write, after the
+  window has closed. So before each start of a node whose disk had a fault, the
   supervisor checks again and remounts a read-only filesystem the same way.
 - A disk stall window (`DiskStall { hold_nanos }`) loads a `dm-delay` table
   that holds every request for the window's length, at least 50 ms. dm-delay
