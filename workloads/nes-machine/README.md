@@ -97,6 +97,17 @@ pinned reader fails on the second half of that block, so such states could not
 be restored. The patched reader reads the block in one call. States of other
 cartridges read the same bytes as before.
 
+A third patch changes how the CPU dispatches instructions. The pinned core
+dispatches every 6502 instruction through one `switch`, so the host branch
+predictor sees a single indirect jump and misses about once every four
+instructions. The patched core jumps through a table of handler addresses and
+repeats that jump at the end of every handler, so each handler has its own
+prediction history. GCC merges those copies back unless cross-jumping and GCSE
+are off, so the patched file turns both off. Operand reads from RAM and ROM
+index memory directly instead of calling the read function. Emulated state and
+timing are unchanged. The patch is about 1.08x faster on a Metroid tape built
+with gcc 11, and the core produces the same bytes on every frame.
+
 Snapshots contain a format marker, the QuickNES revision, core hash, prepared
 execution hash, fixed serialized-state length, and canonicalized core state.
 The current marker is `HQNESST3`; older snapshots are rejected. Restore rejects
