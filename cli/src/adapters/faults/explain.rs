@@ -566,10 +566,8 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
     let span = |ticks: NonZeroU16| seconds(u64::from(ticks.get()));
     match *operation {
         FaultOperation::Wait(ticks) => format!("wait {}", span(ticks)),
-        FaultOperation::Kill(index, _) => {
-            format!("kill {} (down until a later restart)", node(index))
-        }
-        FaultOperation::KillAll(_) => "kill every node (each down until a later restart)".into(),
+        FaultOperation::Kill(index, ticks) => format!("kill {} for {}", node(index), span(ticks)),
+        FaultOperation::KillAll(ticks) => format!("kill every node for {}", span(ticks)),
         FaultOperation::Pause(index, ticks) => format!("pause {} for {}", node(index), span(ticks)),
         FaultOperation::Restart(index, ticks) => format!(
             "restart {} (back after {})",
@@ -594,14 +592,15 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
             hold_us,
             ..
         } => format!("park {} after {edges} edges for {hold_us} us", node(index)),
-        FaultOperation::PowerLoss(index, _) => format!(
-            "cut power to {} (unflushed writes lost, down until a later restart)",
-            node(index)
+        FaultOperation::PowerLoss(index, ticks) => format!(
+            "cut power to {} for {} (unflushed writes lost)",
+            node(index),
+            span(ticks)
         ),
-        FaultOperation::PowerLossAll(_) => {
-            "cut power to every node (unflushed writes lost, each down until a later restart)"
-                .into()
-        }
+        FaultOperation::PowerLossAll(ticks) => format!(
+            "cut power to every node for {} (unflushed writes lost)",
+            span(ticks)
+        ),
         FaultOperation::DiskError(index, ticks) => {
             format!("fail {}'s disk I/O for {}", node(index), span(ticks))
         }
@@ -2048,13 +2047,9 @@ mod tests {
         assert_eq!(
             titles,
             vec![
-                ("Fault 1: kill n2 (down until a later restart)".into(), 0, 1),
+                ("Fault 1: kill n2 for 2.56 s".into(), 0, 1),
                 ("Between fault 1 and fault 2".into(), 1, 2),
-                (
-                    "Fault 2: kill every node (each down until a later restart)".into(),
-                    2,
-                    3
-                ),
+                ("Fault 2: kill every node for 2.56 s".into(), 2, 3),
                 ("Fault 3: restart n1 (back after 0.64 s)".into(), 3, 4),
                 ("From the last fault to the violation".into(), 4, 5),
             ]
@@ -2077,7 +2072,7 @@ mod tests {
         );
         assert_eq!(
             describe(&FaultOperation::Kill(7, ticks(1)), &names),
-            "kill node 7 (down until a later restart)"
+            "kill node 7 for 0.01 s"
         );
         assert_eq!(
             describe(&FaultOperation::DiskStall(0, ticks(64)), &names),
@@ -2208,7 +2203,7 @@ mod tests {
         let text = render(&explanation);
         for expected in [
             "# Explanation: log: every acknowledged append is in every later read",
-            "| 2 | 3 | kill every node (each down until a later restart) | 19.12 | 21.68 | 18.62 | n1 |",
+            "| 2 | 3 | kill every node for 2.56 s | 19.12 | 21.68 | 18.62 | n1 |",
             "\"missing\": 3",
             "+ [1] removed stream S",
             "removed `/tmp/n1/streams/` (1 files, 9 bytes)",
