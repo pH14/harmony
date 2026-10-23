@@ -288,7 +288,10 @@ heal 4
 ```
 
 The supervisor then holds the recovery check's 30-second clock while a cut or
-delay is still in force.
+delay is still in force, and runs the heal hook when the last open cut or
+delay window closes. A `kit/cmd/harness-net` test refuses a target bundle that
+declares a `partition`, `isolate` or `delay` hook without a `heal` line naming
+the `heal` hook, because the supervisor would then never lift the fault.
 
 Images that install `iptables` drop the xtables extensions whose names differ
 only in case, which `harmony prepare` rejects, and purge `libssl3`, which

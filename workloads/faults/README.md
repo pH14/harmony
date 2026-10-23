@@ -239,7 +239,7 @@ timing:
 | `DiskCorrupt(node, ticks)` | the node is killed, one bit flips in a block it wrote since its disk was last cut, and it comes back after a quarter of the window, as in `Restart`; drawn only for a node whose `disk` line has the `checksummed` flag |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
-| `Hook(id, ticks)` | the supervisor runs that hook once |
+| `Hook(id, ticks)` | the supervisor runs that hook once; in a bundle with a `heal` line, every other hook is a cut, and when the last open cut window closes the supervisor runs the heal hook if a cut is still in force |
 | `Clock(node, offset_ms, rate_ppm, ticks)` | the node's wall clock steps by the offset and then moves by the rate in parts per million of guest time for the window, then returns to guest time; drawn only for VM execution |
 | `ClockAll(offset_ms, rate_ppm, ticks)` | every node's wall clock shifts as in `Clock`, each by a factor in [-1, 1] that the action's `choice` sets per node; drawn only for VM execution with more than one node |
 
