@@ -3,6 +3,7 @@
 pub mod bundle;
 pub mod disk;
 pub mod evidence;
+pub mod memory;
 pub mod process;
 pub mod reconcile;
 pub mod recovery;
