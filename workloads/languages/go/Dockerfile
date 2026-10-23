@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install --yes --no-install-recommends gcc libc6-de
 RUN go install "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec@v${ANTITHESIS_SDK_VERSION}"
 COPY workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch /build/arm64.patch
 COPY workloads/languages/go/antithesis-go-toolexec-v0.8.0-stdlib.patch /build/stdlib.patch
-COPY workloads/languages/go/configure-stdlib.sh /build/configure-stdlib.sh
+COPY workloads/languages/go/configure-instrumentation.sh /build/configure-instrumentation.sh
 RUN sdk_cache_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
     && mkdir -p /build/sdk && cp -a "${sdk_cache_dir}/." /build/sdk/ && chmod -R u+w /build/sdk \
     && patch --batch --forward --fuzz=0 -d /build/sdk -p1 < /build/arm64.patch \
@@ -21,7 +21,7 @@ COPY consonance/harmony-linux/linux/go-runtime-guest/go.mod ./
 COPY consonance/harmony-linux/linux/go-runtime-guest/cmd/language-fixture ./cmd/language-fixture
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
 RUN mkdir -p /out/symbols /out/stdlib \
-    && bash /build/configure-stdlib.sh /build/sdk harmony-go-runtime-proof /out/stdlib > /out/stdlib/instrumentation.env \
+    && bash /build/configure-instrumentation.sh /build/sdk /out/stdlib ./cmd/language-fixture > /out/stdlib/instrumentation.env \
     && source /out/stdlib/instrumentation.env \
     && ANTITHESIS_SDK_MODULE_DIR=/build/sdk \
        ANTITHESIS_SYMBOLS_DIR=/out/symbols ANTITHESIS_SYMBOL_PREFIX=go-fixture \
