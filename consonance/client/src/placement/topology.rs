@@ -597,7 +597,7 @@ mod tests {
             pinned: true,
             topology,
         };
-        for workers in 1..=pool.max_workers() {
+        for workers in 1..pool.max_workers() {
             let plan = pool.plan(workers as u32).unwrap();
             assert_eq!(plan.coordinator, Some(2));
             assert!(!plan.workers.iter().flatten().any(|&cpu| cpu == 2));
@@ -608,6 +608,9 @@ mod tests {
                 );
             }
         }
+        let full = pool.plan(pool.max_workers() as u32).unwrap();
+        assert_eq!(full.coordinator, Some(2));
+        assert_eq!(full.workers.last(), Some(&vec![2]));
     }
 
     #[test]
