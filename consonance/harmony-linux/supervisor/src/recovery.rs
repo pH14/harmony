@@ -58,6 +58,10 @@ impl RecoveryReadiness {
         self.queued.drain(..).collect()
     }
 
+    pub fn cancel_queued(&mut self, cancel: impl Fn(u32) -> bool) {
+        self.queued.retain(|&id| !cancel(id));
+    }
+
     #[must_use]
     pub fn is_pending(&self) -> bool {
         !self.ready
@@ -84,6 +88,8 @@ pub struct HookFaults {
     heal: Option<u32>,
     launches: u64,
     unhealed: Option<u64>,
+    running_cuts: u64,
+    heal_due: bool,
 }
 
 impl HookFaults {
@@ -91,27 +97,50 @@ impl HookFaults {
     pub fn new(heal: Option<u32>) -> Self {
         Self {
             heal,
-            launches: 0,
-            unhealed: None,
+            ..Self::default()
         }
+    }
+
+    #[must_use]
+    pub fn is_cut(&self, id: u32) -> bool {
+        self.heal.is_some_and(|heal| heal != id)
     }
 
     pub fn launched(&mut self, id: u32) -> u64 {
         let launch = self.launches;
         self.launches = self.launches.saturating_add(1);
-        if self.heal.is_some_and(|heal| heal != id) {
+        if self.is_cut(id) {
             self.unhealed = Some(launch);
+            self.running_cuts = self.running_cuts.saturating_add(1);
+            self.heal_due = false;
         }
         launch
     }
 
-    pub fn finished(&mut self, id: u32, launch: u64, succeeded: bool) {
+    pub fn finished(&mut self, id: u32, launch: u64, succeeded: bool) -> bool {
+        if self.is_cut(id) {
+            self.running_cuts = self.running_cuts.saturating_sub(1);
+        }
         if succeeded
             && self.heal == Some(id)
             && self.unhealed.is_some_and(|unhealed| unhealed < launch)
         {
             self.unhealed = None;
+            return true;
         }
+        false
+    }
+
+    pub fn cut_windows_closed(&mut self) {
+        self.heal_due = self.heal.is_some();
+    }
+
+    pub fn due_heal(&mut self) -> Option<u32> {
+        if !self.heal_due || self.running_cuts > 0 {
+            return None;
+        }
+        self.heal_due = false;
+        self.heal.filter(|_| self.in_force())
     }
 
     #[must_use]
@@ -237,6 +266,79 @@ mod tests {
         assert!(!faults.in_force());
         faults.finished(1, launch, true);
         assert!(!faults.in_force());
+    }
+
+    #[test]
+    fn a_closed_cut_window_heals_after_the_cut_hook_exits() {
+        let mut faults = HookFaults::new(Some(4));
+        let cut = faults.launched(2);
+        faults.cut_windows_closed();
+        assert_eq!(faults.due_heal(), None);
+        assert!(!faults.finished(2, cut, true));
+        assert_eq!(faults.due_heal(), Some(4));
+        assert_eq!(faults.due_heal(), None);
+        let heal = faults.launched(4);
+        assert!(faults.in_force());
+        assert!(faults.finished(4, heal, true));
+        assert!(!faults.in_force());
+    }
+
+    #[test]
+    fn a_cut_already_healed_needs_no_heal_at_window_close() {
+        let mut faults = HookFaults::new(Some(4));
+        let cut = faults.launched(1);
+        faults.finished(1, cut, true);
+        let heal = faults.launched(4);
+        assert!(faults.finished(4, heal, true));
+        faults.cut_windows_closed();
+        assert_eq!(faults.due_heal(), None);
+    }
+
+    #[test]
+    fn a_new_cut_cancels_the_heal_a_closed_window_left_due() {
+        let mut faults = HookFaults::new(Some(4));
+        let first = faults.launched(1);
+        faults.cut_windows_closed();
+        let second = faults.launched(2);
+        faults.finished(1, first, true);
+        faults.finished(2, second, true);
+        assert_eq!(faults.due_heal(), None);
+        faults.cut_windows_closed();
+        assert_eq!(faults.due_heal(), Some(4));
+    }
+
+    #[test]
+    fn a_failed_heal_leaves_the_cut_in_force() {
+        let mut faults = HookFaults::new(Some(4));
+        let cut = faults.launched(2);
+        faults.finished(2, cut, true);
+        faults.cut_windows_closed();
+        assert_eq!(faults.due_heal(), Some(4));
+        let heal = faults.launched(4);
+        assert!(!faults.finished(4, heal, false));
+        assert!(faults.in_force());
+    }
+
+    #[test]
+    fn a_bundle_without_a_heal_hook_has_no_cuts_to_heal() {
+        let mut faults = HookFaults::new(None);
+        let hook = faults.launched(2);
+        assert!(!faults.is_cut(2));
+        faults.finished(2, hook, true);
+        faults.cut_windows_closed();
+        assert_eq!(faults.due_heal(), None);
+    }
+
+    #[test]
+    fn a_cut_still_queued_when_its_window_closes_is_dropped() {
+        let faults = HookFaults::new(Some(4));
+        let mut readiness = RecoveryReadiness::initially_ready();
+        readiness.restarted(true).unwrap();
+        assert!(readiness.request_hook(2).is_empty());
+        assert!(readiness.request_hook(4).is_empty());
+        assert!(readiness.request_hook(1).is_empty());
+        readiness.cancel_queued(|id| faults.is_cut(id));
+        assert_eq!(readiness.mark_ready(readiness.generation()), [4]);
     }
 
     #[test]

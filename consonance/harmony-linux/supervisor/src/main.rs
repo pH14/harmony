@@ -751,7 +751,7 @@ mod runtime {
             .map_err(|error| format!("setup_complete: {error}"))?;
         log(0, "setup complete");
 
-        let mut supervisor = Supervisor::new(nodes.len());
+        let mut supervisor = Supervisor::new(nodes.len()).with_heal(bundle.heal);
         let result = poll_loop(
             spec,
             &bundle,
@@ -848,7 +848,13 @@ mod runtime {
         supervisor.note_check_started();
         sdk.state_set(REG_CHECKS_STARTED, supervisor.counters().checks_started)
             .map_err(|error| format!("state_set({REG_CHECKS_STARTED}): {error}"))?;
-        let check = spawn_check(spec, argv, run, supervisor.disturbance_generation())?;
+        let check = spawn_check(
+            spec,
+            argv,
+            run,
+            supervisor.disturbance_generation(),
+            faults_in_force(supervisor, &runtime.hook_faults),
+        )?;
         runtime.check = Some(check);
         log(tick, &format!("check {run} started"));
         Ok(())
@@ -1048,10 +1054,7 @@ mod runtime {
                     tick,
                 )?;
             }
-            let disturbed = !supervisor.active().is_empty()
-                || supervisor.pending_faults() != 0
-                || supervisor.any_node_held_down()
-                || runtime.hook_faults.in_force();
+            let disturbed = faults_in_force(supervisor, &runtime.hook_faults);
             if let Some(quiet) = runtime
                 .recovery_watch
                 .observe(tick, disturbed, &runtime.recovery)
@@ -1077,6 +1080,21 @@ mod runtime {
                 supervisor,
                 tick,
             )?;
+            if let Some(heal) = runtime.hook_faults.due_heal() {
+                log(
+                    tick,
+                    &format!("run heal hook {heal} after the last cut window closed"),
+                );
+                launch_ready_hook(
+                    heal,
+                    spec,
+                    bundle,
+                    &mut runtime.hooks,
+                    &mut runtime.hook_faults,
+                    supervisor,
+                    tick,
+                )?;
+            }
             update_pending_faults(nodes, supervisor);
             let tracked: Vec<_> = nodes
                 .iter()
@@ -1095,6 +1113,13 @@ mod runtime {
                     .map_err(|error| format!("state_set({register}): {error}"))?;
             }
         }
+    }
+
+    fn faults_in_force(supervisor: &Supervisor, hook_faults: &HookFaults) -> bool {
+        !supervisor.active().is_empty()
+            || supervisor.pending_faults() != 0
+            || supervisor.any_node_held_down()
+            || hook_faults.in_force()
     }
 
     fn read_vmstat() -> Result<String, String> {
@@ -1407,6 +1432,11 @@ mod runtime {
             Action::SetClock { node, offset_nanos } => {
                 set_node_clock(nodes, node, offset_nanos)?;
             }
+            Action::HealCuts => {
+                let faults = &runtime.hook_faults;
+                runtime.recovery.cancel_queued(|id| faults.is_cut(id));
+                runtime.hook_faults.cut_windows_closed();
+            }
             Action::RunHook(id) => {
                 let ready_hooks = runtime.recovery.request_hook(id);
                 for ready in ready_hooks {
@@ -1548,7 +1578,7 @@ mod runtime {
             Some(hook) => {
                 let launch = faults.launched(id);
                 hooks.push(spawn_hook(spec, hook, launch)?);
-                supervisor.note_hook_started();
+                supervisor.note_hook_started(faults.is_cut(id));
             }
             None => log(tick, &format!("hook {id} is not declared")),
         }
@@ -1676,13 +1706,19 @@ mod runtime {
         argv: &[String],
         run: u64,
         start_generation: u64,
+        faults_in_force: bool,
     ) -> Result<Check, String> {
         let mut command = process::command(execution, argv)
             .map_err(|error| format!("check {:?}: {error}", argv[0]))?;
-        command.env(
-            "HARMONY_DISTURBANCE_GENERATION",
-            start_generation.to_string(),
-        );
+        command
+            .env(
+                "HARMONY_DISTURBANCE_GENERATION",
+                start_generation.to_string(),
+            )
+            .env(
+                "HARMONY_FAULTS_IN_FORCE",
+                u8::from(faults_in_force).to_string(),
+            );
         let child = command
             .stdout(Stdio::null())
             .spawn()
@@ -1710,7 +1746,9 @@ mod runtime {
             if let Some(signal) = status.signal() {
                 log(tick, &format!("hook {} died on signal {signal}", hook.id));
             }
-            faults.finished(hook.id, hook.launch, status.success());
+            if faults.finished(hook.id, hook.launch, status.success()) {
+                supervisor.note_process_transition();
+            }
             supervisor.note_hook_finished();
             finished.push(index);
         }
