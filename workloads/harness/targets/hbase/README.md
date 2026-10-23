@@ -151,15 +151,15 @@ measurements from different builds are not interchangeable.
 warms up the cluster, steps the first RegionServer's wall clock back one
 second, and checks for an acknowledged Put followed by a stale Get. It treats
 the consistency finding as the expected result and requires exact replay.
-The pinned Apache HBase 3.0.0 image reproduced the violation under a one-second
-backward step. Both the run and its exact replay had all ten services alive,
-no restarts, no pending faults, and no undecided keys. Its guest journal records
-a successful CAS on `k2` before the step, a later acknowledged Put after it,
-and two subsequent successful Gets returning the CAS value. These operations do not
-overlap, and the journal uses a monotonic clock. A different timing and
-coverage choice with the same one-second step completed without a violation,
-so this scenario establishes a reachable failure rather than a universal
-outcome.
+The final Apache HBase 3.0.0 image reproduced the violation with coverage
+quantum 256 and choices 201–203. Both the run and its exact replay had all ten
+services alive, no restarts, no pending faults, and no undecided keys. Its
+monotonic-clock guest journal records an acknowledged Put of the old `k4`
+value, a later Put of a new value that straddled the clock step and completed
+successfully, and a subsequent Get that returned the old value. Those three
+operations do not overlap. Other timing and coverage choices with the same
+one-second step completed without a violation, so this scenario establishes a
+reachable failure rather than a universal outcome.
 
 A matched no-clock scenario completed without a violation in run and exact
 replay. A temporary positive offset also produced a stale read, but only
@@ -171,8 +171,9 @@ HBase's [version semantics](https://hbase.apache.org/docs/single-page/) assign
 an implicit Put the RegionServer's current wall-clock time and make an
 ordinary Get return the highest timestamped version. A backward clock step
 can therefore make a later acknowledged write temporarily invisible to a
-normal Get. The master's default [skew warning and rejection thresholds](https://hbase.apache.org/devapidocs/src-html/org/apache/hadoop/hbase/master/ServerManager.FlushedSequenceIdFlusher.html)
-are 10 and 30 seconds, respectively; they do not prevent a one-second step.
+normal Get. The HBase 3.0.0 master's [skew check during RegionServer startup](https://github.com/apache/hbase/blob/rel/3.0.0/hbase-server/src/main/java/org/apache/hadoop/hbase/master/ServerManager.java)
+warns above 10 seconds and rejects above 30 seconds by default. It does not
+guard a running RegionServer against a later one-second step.
 Applications requiring read-after-write visibility should keep RegionServer
 clocks synchronized and avoid backward steps. This is a conditional clock
 fault, not evidence of stale reads under normal synchronized operation.

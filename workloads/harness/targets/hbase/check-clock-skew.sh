@@ -13,7 +13,10 @@ set +e
  --actions "$actions" --out "$evidence/run"
 run_status=$?
 set -e
-test "$run_status" -eq 1
+if [ "$run_status" -ne 1 ]; then
+  printf 'expected a consistency finding (exit 1); Harmony exited %s\n' "$run_status" >&2
+  exit 1
+fi
 python3 "$recipe/check-clock-skew.py" "$evidence/run/report.json" "$actions"
 "$binary" debug replay "$evidence/run" --out "$evidence/replay"
 python3 "$recipe/check-clock-skew.py" "$evidence/replay/report.json" "$actions"
