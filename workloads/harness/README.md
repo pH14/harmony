@@ -162,6 +162,21 @@ checks use the operations that are not pinned to a node. A pinned read gets
 the cheaper check alone, against every write, under
 `register: no node's read returns a value older than an acknowledged earlier write`.
 
+`Register.Reads` sets the read consistency the store promises. The default,
+`LinearizableReads`, runs the checks above. `MonotonicReads` is for a store
+that promises linearizable writes and monotonic reads but allows a read to
+miss a recent write. Porcupine then checks each key's writes and `cas`
+operations without the reads, under
+`register: each key's writes and compare-and-swaps are linearizable`, so a
+`cas` that succeeds against a value another `cas` already replaced is still a
+violation. Each client's consecutive reads of a key replace the stale-read
+check, under `register: no client reads a value older than one it read before`.
+A read violates it when it finds no value after the client read a value, or
+when it returns a value whose write completed before the write of the client's
+previous value started. Pinned reads and the replica comparison keep their
+checks, so a replica that has applied a fence but lacks an acknowledged write
+is still a violation.
+
 `register: every node holds the same value and metadata for each key`
 compares the nodes' copies from the check's `replicas` rounds. Each round reads
 every key from every node concurrently. A node that fails the read, because it
@@ -358,6 +373,12 @@ replica answers, with no read-after-write consistency. ADR-31 states that the
 non-direct message get routes to the stream leader and gives read-after-write
 coherency. `ready` therefore turns `AllowDirect` off on stream `KV_B`, and the
 client binds the bucket after ready, so `Get` uses the leader path.
+The adapter checks with `Register.Reads` set to `MonotonicReads`. NATS
+documents linearizable writes and monotonic reads for JetStream and no
+read-your-writes guarantee, and a stream leader answers a get from its own
+store without a quorum check, so a partitioned old leader can return an
+older value
+([nats-server #6557](https://github.com/nats-io/nats-server/issues/6557)).
 
 The image runs every node with `jetstream { sync_interval: always }`, which
 syncs each write before the acknowledgement, so a lost acknowledged write is a
@@ -405,9 +426,10 @@ put it on `PATH` and set:
 [workload.options.explain]
 logs = ["/tmp/nats/*.log"]
 data = ["/tmp/nats/n1", "/tmp/nats/n2", "/tmp/nats/n3"]
-host_history = "harness-check -family register @/tmp/harness/journal"
+host_history = "harness-check -family register -reads monotonic @/tmp/harness/journal"
 ```
 
+Pass `-reads monotonic` to check the history the way the nats-kv adapter does.
 `harness-check` checks the clients' operations without the check's final read.
 It prints the journal files, the operation count, the facts and the violations
 as JSON, and exits 3 when it finds violations.
