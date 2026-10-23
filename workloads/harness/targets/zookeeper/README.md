@@ -210,3 +210,21 @@ Hadoop native libraries, compression libraries, Netty native transports and
 all other executable paths before admission; ZooKeeper's module set does not
 qualify HBase's larger runtime. The ZooKeeper sizing evidence makes this next
 probe plausible, but does not prove HBase fits or passes a fault search.
+
+## Default-JVM shutdown regression
+
+`bash workloads/harness/targets/zookeeper/check-shutdown.sh IMAGE EVIDENCE CONFIG`
+boots the raw-default JVM measurement twice with seeds 17 and 18 and replays
+seed 17. It requires successful readiness and complete guest shutdown, so a
+run that reaches readiness and then stalls does not pass. `CONFIG` is optional;
+use it to select the exact kernel and initramfs under test. The dcache fix is
+in the common guest-kernel patches, not in ZooKeeper or its JVM flags.
+
+The production dcache patch passed the original default-JVM measurement on
+pnap-3 with seeds 17 and 18: readiness at 79.71 and 79.62 guest seconds,
+respectively, followed by successful shutdown (exit zero). Seed 17 replayed
+successfully. Evidence is in `dcache-final-17`, `dcache-final-18`, and
+`dcache-final-replay` beneath the evidence directory above. This fixes the
+observed shutdown starvation; it does not make default JVM startup as fast
+as the selected C1/Serial-GC configuration. The x86 kernel was tested;
+the arm64 conditional path was not executed on this host.
