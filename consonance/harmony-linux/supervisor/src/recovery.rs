@@ -69,6 +69,47 @@ impl RecoveryReadiness {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HookFaults {
+    heal: Option<u32>,
+    launches: u64,
+    unhealed: Option<u64>,
+}
+
+impl HookFaults {
+    #[must_use]
+    pub fn new(heal: Option<u32>) -> Self {
+        Self {
+            heal,
+            launches: 0,
+            unhealed: None,
+        }
+    }
+
+    pub fn launched(&mut self, id: u32) -> u64 {
+        let launch = self.launches;
+        self.launches = self.launches.saturating_add(1);
+        if self.heal.is_some_and(|heal| heal != id) {
+            self.unhealed = Some(launch);
+        }
+        launch
+    }
+
+    pub fn finished(&mut self, id: u32, launch: u64, succeeded: bool) {
+        if succeeded
+            && self.heal == Some(id)
+            && self.unhealed.is_some_and(|unhealed| unhealed < launch)
+        {
+            self.unhealed = None;
+        }
+    }
+
+    #[must_use]
+    pub fn in_force(&self) -> bool {
+        self.unhealed.is_some()
+    }
+}
+
 pub const RECOVERY_NANOS: u64 = 30_000_000_000;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -102,7 +143,7 @@ impl RecoveryWatch {
 
 #[cfg(test)]
 mod tests {
-    use super::{RecoveryError, RecoveryReadiness, RecoveryWatch};
+    use super::{HookFaults, RecoveryError, RecoveryReadiness, RecoveryWatch};
 
     const BOUND: u64 = super::RECOVERY_NANOS / crate::TICK_NANOS;
 
@@ -119,6 +160,60 @@ mod tests {
         assert_eq!(
             watch.observe(30 + BOUND, false, &readiness),
             Some(20 + BOUND)
+        );
+    }
+
+    #[test]
+    fn a_hook_fault_stays_in_force_until_a_later_heal_succeeds() {
+        let mut faults = HookFaults::new(Some(4));
+        assert!(!faults.in_force());
+        let early_heal = faults.launched(4);
+        assert!(!faults.in_force());
+        let partition = faults.launched(1);
+        assert!(faults.in_force());
+        faults.finished(1, partition, true);
+        faults.finished(4, early_heal, true);
+        assert!(faults.in_force());
+        let failed_heal = faults.launched(4);
+        faults.finished(4, failed_heal, false);
+        assert!(faults.in_force());
+        let heal = faults.launched(4);
+        faults.launched(3);
+        faults.finished(4, heal, true);
+        assert!(faults.in_force());
+        let heal = faults.launched(4);
+        faults.finished(4, heal, true);
+        assert!(!faults.in_force());
+    }
+
+    #[test]
+    fn hooks_leave_no_fault_in_force_without_a_heal_hook() {
+        let mut faults = HookFaults::new(None);
+        let launch = faults.launched(1);
+        assert!(!faults.in_force());
+        faults.finished(1, launch, true);
+        assert!(!faults.in_force());
+    }
+
+    #[test]
+    fn an_unhealed_hook_keeps_an_unready_workload_from_being_reported() {
+        let mut readiness = RecoveryReadiness::initially_ready();
+        let mut watch = RecoveryWatch::default();
+        let mut faults = HookFaults::new(Some(4));
+        faults.launched(1);
+        readiness.restarted(true).unwrap();
+        for tick in 0..3 * BOUND {
+            assert_eq!(watch.observe(tick, faults.in_force(), &readiness), None);
+        }
+        let heal = faults.launched(4);
+        faults.finished(4, heal, true);
+        assert_eq!(
+            watch.observe(4 * BOUND - 2, faults.in_force(), &readiness),
+            None
+        );
+        assert_eq!(
+            watch.observe(4 * BOUND - 1, faults.in_force(), &readiness),
+            Some(BOUND)
         );
     }
 

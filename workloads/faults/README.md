@@ -15,6 +15,7 @@ in the platform supervisor's bundle format:
 |---|---|
 | `node <name> <argv...>` | one workload process the supervisor supervises |
 | `hook <id> <argv...>` | a command the search can run at any moment |
+| `heal <id>` | names the declared hook that lifts every fault the other hooks leave in force, such as a network partition |
 | `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |

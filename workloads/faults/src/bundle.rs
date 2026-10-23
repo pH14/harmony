@@ -171,6 +171,7 @@ impl FaultVocabulary {
         let mut disk_names = Vec::new();
         let mut log_names = Vec::new();
         let mut hooks = Vec::new();
+        let mut heal = None;
         let mut lifecycle = std::collections::BTreeSet::new();
         for (number, line) in text.lines().enumerate() {
             let line = line.trim();
@@ -197,6 +198,17 @@ impl FaultVocabulary {
                     hooks.push(id.parse::<u32>().map_err(|error| {
                         format!("bundle line {line_number}: hook id {id:?} is not a u32: {error}")
                     })?);
+                }
+                "heal" => {
+                    let (Some(id), None) = (fields.next(), fields.next()) else {
+                        return Err(format!("bundle line {line_number}: heal needs one hook id"));
+                    };
+                    let id = id.parse::<u32>().map_err(|error| {
+                        format!("bundle line {line_number}: heal id {id:?} is not a u32: {error}")
+                    })?;
+                    if heal.replace((line_number, id)).is_some() {
+                        return Err(format!("bundle line {line_number}: duplicate heal"));
+                    }
                 }
                 "disk" => {
                     let (Some(node), Some(_path), Some(_size), flag, None) = (
@@ -267,6 +279,13 @@ impl FaultVocabulary {
         {
             return Err(format!(
                 "bundle line {line_number}: log names undeclared node {name:?}"
+            ));
+        }
+        if let Some((line_number, id)) = heal
+            && !hooks.contains(&id)
+        {
+            return Err(format!(
+                "bundle line {line_number}: heal names undeclared hook {id}"
             ));
         }
         let checksummed = disks
@@ -584,6 +603,21 @@ ready /usr/local/pgsql/bin/pg_isready
             "node a /a\nlog z /z.log\n",
             "node a /a\nlog a\n",
             "node a /a\nlog a /a.log extra\n",
+        ] {
+            assert!(FaultVocabulary::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_heal_line_leaves_the_alphabet_unchanged() {
+        let plain = FaultVocabulary::parse("node a /a\nhook 4 /heal\n").expect("parse");
+        let healed = FaultVocabulary::parse("node a /a\nhook 4 /heal\nheal 4\n").expect("parse");
+        assert_eq!(healed, plain);
+        for bad in [
+            "node a /a\nhook 4 /heal\nheal 3\n",
+            "node a /a\nhook 4 /heal\nheal\n",
+            "node a /a\nhook 4 /heal\nheal 4 4\n",
+            "node a /a\nhook 4 /heal\nheal 4\nheal 4\n",
         ] {
             assert!(FaultVocabulary::parse(bad).is_err(), "{bad}");
         }
