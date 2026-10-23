@@ -518,13 +518,19 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_keeps_one_core_for_the_coordinator_unless_only_one_is_allowed() {
+    fn every_core_holds_a_worker_and_the_coordinator_shares_the_last_one() {
         let pool = CorePool {
             cpus: vec![0, 1, 10, 11, 6, 7, 8, 9],
             pinned: true,
             topology: Vec::new(),
         };
-        assert_eq!(pool.max_workers(), 7);
+        assert_eq!(pool.max_workers(), 8);
+        let plan = pool.plan(8).expect("eight workers fit");
+        assert_eq!(plan.coordinator, Some(9));
+        assert_eq!(
+            plan.workers,
+            [0, 1, 10, 11, 6, 7, 8, 9].map(|cpu| vec![cpu]).to_vec()
+        );
         let plan = pool.plan(7).expect("seven workers fit");
         assert_eq!(plan.coordinator, Some(9));
         assert_eq!(
@@ -534,7 +540,7 @@ mod tests {
         let plan = pool.plan(3).expect("three workers fit");
         assert_eq!(plan.coordinator, Some(9));
         assert_eq!(plan.workers, [vec![0, 11, 8], vec![1, 6], vec![10, 7]]);
-        assert!(pool.plan(8).is_err());
+        assert!(pool.plan(9).is_err());
         assert!(pool.plan(0).is_err());
         let unpinned = CorePool {
             cpus: (0..8).collect(),
@@ -545,7 +551,7 @@ mod tests {
             unpinned.plan(4).expect("four workers fit").workers,
             vec![Vec::<usize>::new(); 4]
         );
-        assert!(unpinned.plan(8).is_err());
+        assert!(unpinned.plan(9).is_err());
         let single = CorePool {
             cpus: vec![3],
             pinned: true,
