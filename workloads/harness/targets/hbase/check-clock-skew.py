@@ -22,6 +22,7 @@ for replay in report['replays']:
     for i, expected in enumerate(actions, 1):
         assert timeline[i]['action']['operation'] == expected['operation'], 'wrong scenario'
     before = timeline[1]['observation']
+    during = timeline[2]['observation']
     after = timeline[-1]['observation']
     assert before['alive'] == after['alive'] == 1023, 'a service was unavailable'
     assert after['unexpected_deaths'] == 0 and after['restarts'] == 0, 'a service restarted'
@@ -29,9 +30,13 @@ for replay in report['replays']:
     assert replay['check']['pending_faults'] == 0
     assert replay['check']['undecided_keys'] == 0
     assert 'harness: a check read succeeded after a fault' in replay['check']['points']
-    violations = set(replay['violations'])
-    assert violations == {
+    expected_violations = {
         "register: each key's history is linearizable",
         'register: no read returns a value older than an acknowledged earlier write',
-    }, violations
+    }
+    violations = set(replay['violations'])
+    assert violations == expected_violations, violations
+    for violation in expected_violations:
+        assert not before['assertions'][violation]['failed'], 'violation preceded clock step'
+        assert during['assertions'][violation]['failed'], 'violation did not arise during clock step'
 print('HBase clock-skew witness passed: acknowledged write followed by a stale read')

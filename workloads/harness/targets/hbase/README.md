@@ -169,6 +169,12 @@ outcome. The diagnostic image used instrumented Java 21, while HBase 3.0.0's
 [documented supported runtime](https://hbase.apache.org/docs/configuration/basic-prerequisites/)
 is Java 17.
 
+A matched no-clock scenario completed without a violation in run and exact
+replay. A temporary positive offset also produced a stale read, but only
+after its scheduled expiration moved the clock backward. The clock witness
+checker requires the violation to appear within the backward-step action,
+before the later wait action begins.
+
 The pinned HBase revision and image `harmony-hbase:qualified-2c79c38`
 reproduced the finding without a service restart: an acknowledged CAS on `k0`
 completed, a later Put on `k0` was acknowledged, and two later successful
