@@ -232,15 +232,12 @@ func (c client) post(ctx context.Context, base, path string, body any) (reply, e
 
 func (a adapter) Ready(ctx context.Context) error {
 	c := client{http: newHTTP()}
-	var errs []error
-	for _, base := range a.members {
-		_, err := c.post(ctx, base, "/v3/kv/put", map[string]any{"key": enc("ready"), "value": enc("1")})
-		if err == nil {
-			return nil
+	return runner.AnyMember(ctx, a.members, func(ctx context.Context, base string) error {
+		if _, err := c.post(ctx, base, "/v3/kv/put", map[string]any{"key": enc("ready"), "value": enc("1")}); err != nil {
+			return fmt.Errorf("%s: %w", base, err)
 		}
-		errs = append(errs, fmt.Errorf("%s: %w", base, err))
-	}
-	return errors.Join(errs...)
+		return nil
+	})
 }
 
 func main() {

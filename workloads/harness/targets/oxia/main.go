@@ -173,21 +173,18 @@ func (c *client) get(ctx context.Context, key string) (*string, int64, error) {
 }
 
 func (a adapter) Ready(ctx context.Context) error {
-	var errs []error
-	for _, address := range a.servers {
+	return runner.AnyMember(ctx, a.servers, func(ctx context.Context, address string) error {
 		c := &client{servers: []string{address}, version: map[string]int64{}}
 		if err := c.dial(ctx); err != nil {
-			errs = append(errs, err)
-			continue
+			return err
 		}
 		_, _, err := c.oxia.Put(ctx, "ready", []byte("1"))
 		c.drop()
-		if err == nil {
-			return nil
+		if err != nil {
+			return fmt.Errorf("%s: %w", address, err)
 		}
-		errs = append(errs, fmt.Errorf("%s: %w", address, err))
-	}
-	return errors.Join(errs...)
+		return nil
+	})
 }
 
 func main() {

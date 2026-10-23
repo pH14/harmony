@@ -433,3 +433,32 @@ func TestDisturbanceBaseline(t *testing.T) {
 		t.Fatal("no generation means unknown")
 	}
 }
+
+func TestAnyMemberPassesWhileAnotherMemberBlocks(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := AnyMember(ctx, []string{"cut off", "healthy"}, func(ctx context.Context, member string) error {
+		if member == "cut off" {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("AnyMember waited %v for the blocked member", elapsed)
+	}
+}
+
+func TestAnyMemberJoinsEveryFailure(t *testing.T) {
+	first, second := errors.New("first"), errors.New("second")
+	err := AnyMember(context.Background(), []error{first, second}, func(_ context.Context, member error) error {
+		return member
+	})
+	if !errors.Is(err, first) || !errors.Is(err, second) {
+		t.Fatalf("got %v", err)
+	}
+}
