@@ -560,6 +560,8 @@ struct LiveTelemetry {
 }
 
 const OBSERVATION_CHECKPOINT_LIMIT: usize = 8 * 1024 * 1024;
+const PUBLISH_SPACING_WARMUP: u64 = 64;
+const MAX_PUBLISH_SPACING: usize = 16;
 const OBSERVATION_ATTACHMENT_DOMAIN: &[u8] = b"fault-observations-v1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1893,17 +1895,55 @@ impl Live {
         ObservationCheckpoint::capture(receipt, decoder.clone())
     }
 
+    fn publish_spacing(&self) -> usize {
+        let telemetry = &self.telemetry;
+        let captures = telemetry
+            .new
+            .host
+            .count
+            .saturating_add(telemetry.rebuild.host.count);
+        if captures < PUBLISH_SPACING_WARMUP || telemetry.publishes.count == 0 {
+            return 1;
+        }
+        let publish = u128::from(telemetry.publishes.nanos / telemetry.publishes.count);
+        let action = u128::from(
+            telemetry
+                .new
+                .host
+                .nanos
+                .saturating_add(telemetry.rebuild.host.nanos)
+                / captures,
+        )
+        .max(1);
+        let lookups = u128::from(
+            telemetry
+                .imports
+                .count
+                .saturating_add(telemetry.misses)
+                .saturating_add(1),
+        );
+        let bound = 2 * publish * u128::from(captures) / (lookups * action);
+        let mut spacing = 1_usize;
+        while spacing < MAX_PUBLISH_SPACING && ((2 * spacing) as u128).pow(2) <= bound {
+            spacing *= 2;
+        }
+        spacing
+    }
+
     fn publish(
         &mut self,
         parent: Point,
         snap: SnapId,
-        cost: u64,
+        moment: u64,
         receipt: &HistoryReceipt,
         checkpoint: &ObservationCheckpoint,
     ) -> Result<Option<Lease>, String> {
         let Some(shared) = self.chain.shared() else {
             return Ok(None);
         };
+        let ancestor = self.chain.parent_for(parent);
+        let cost = moment
+            .saturating_sub(ancestor.map_or(self.chain.point(0).moment, |(point, _)| point.moment));
         let publish_started = started();
         let attachment = consonance_client::session::SnapshotAttachment {
             domain: OBSERVATION_ATTACHMENT_DOMAIN.to_vec(),
@@ -1917,7 +1957,7 @@ impl Live {
             shared.index.as_ref(),
             shared.namespace,
             &receipt.path(),
-            self.chain.parent_for(parent),
+            ancestor.map(|(point, lease)| (point.snap, lease)),
             snap,
             &attachment,
             cost,
@@ -1945,17 +1985,15 @@ impl Live {
         moment: u64,
         receipt: HistoryReceipt,
     ) -> Result<Point, String> {
+        let spacing = self.publish_spacing();
         let captured = self
             .capture_observation_checkpoint(&receipt)
             .and_then(|checkpoint| {
-                self.publish(
-                    parent,
-                    snap,
-                    moment.saturating_sub(parent.moment),
-                    &receipt,
-                    &checkpoint,
-                )
-                .map(|lease| (lease, checkpoint))
+                if !receipt.depth().is_multiple_of(spacing) {
+                    return Ok((None, checkpoint));
+                }
+                self.publish(parent, snap, moment, &receipt, &checkpoint)
+                    .map(|lease| (lease, checkpoint))
             });
         let (lease, checkpoint) = match captured {
             Ok(captured) => captured,
