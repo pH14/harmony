@@ -259,6 +259,24 @@ pub fn plan(entries: &[LogEntry], choice: u64) -> Plan {
 }
 
 #[must_use]
+pub fn emergency_read_only(mountinfo: &str, path: &str) -> bool {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let mount_point = line.split(' ').nth(4)?;
+            let (_, tail) = line.split_once(" - ")?;
+            let options = tail.split(' ').nth(2)?;
+            (mount_point == path).then_some(options)
+        })
+        .next_back()
+        .is_some_and(|options| {
+            options
+                .split(',')
+                .any(|option| option == "emergency_ro" || option == "shutdown")
+        })
+}
+
+#[must_use]
 pub fn plan_all(entries: &[LogEntry]) -> Plan {
     keep(entries, durable(entries), usize::MAX)
 }
@@ -472,6 +490,25 @@ pub mod dm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_mount_on_a_path_reports_ext4_emergency_read_only() {
+        let healthy = "36 25 254:5 / /tmp/tarantool/n3 rw,relatime shared:12 - ext4 /dev/mapper/harmony-disk-2-0 rw,noinit_itable\n";
+        let aborted = "37 25 254:7 / /tmp/tarantool/n3 rw,relatime shared:13 - ext4 /dev/mapper/harmony-disk-2-1 rw,noinit_itable,emergency_ro\n";
+        let other = "38 25 254:9 / /tmp/tarantool/n2 rw,relatime shared:14 - ext4 /dev/mapper/harmony-disk-1-0 rw,shutdown\n";
+        assert!(!emergency_read_only(healthy, "/tmp/tarantool/n3"));
+        assert!(emergency_read_only(aborted, "/tmp/tarantool/n3"));
+        assert!(!emergency_read_only(
+            &format!("{aborted}{healthy}"),
+            "/tmp/tarantool/n3"
+        ));
+        assert!(emergency_read_only(
+            &format!("{healthy}{aborted}"),
+            "/tmp/tarantool/n3"
+        ));
+        assert!(!emergency_read_only(other, "/tmp/tarantool/n3"));
+        assert!(emergency_read_only(other, "/tmp/tarantool/n2"));
+    }
 
     struct Memory(Vec<u8>);
 

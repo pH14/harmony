@@ -325,7 +325,12 @@ impl Disk {
     fn read_only(&self) -> Result<bool, String> {
         let stat = rustix::fs::statvfs(Path::new(&self.spec.path))
             .map_err(|error| format!("statvfs {}: {error}", self.spec.path))?;
-        Ok(stat.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY))
+        if stat.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
+            return Ok(true);
+        }
+        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
+            .map_err(|error| format!("/proc/self/mountinfo: {error}"))?;
+        Ok(disk::emergency_read_only(&mountinfo, &self.spec.path))
     }
 
     fn sync(&self) -> Result<(), String> {

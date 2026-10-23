@@ -248,7 +248,10 @@ Three more windows act on a node's disk:
 - A disk error window (`DiskError`) loads an `error` table. Every read, write
   and flush fails with `EIO` until the window closes and the linear table
   returns. When a journal write fails, ext4 aborts the journal and marks the
-  filesystem read-only. If the filesystem is read-only when the window closes,
+  filesystem read-only. The 6.18 kernels set ext4's emergency read-only flag,
+  which leaves `ST_RDONLY` clear in `statvfs` and shows as `emergency_ro` in
+  the superblock options of `/proc/self/mountinfo`, so the supervisor checks
+  both. If the filesystem is read-only when the window closes,
   the supervisor treats the close as a host reboot after a transient disk
   fault. It kills the node if it still runs and cuts the disk as a corruption
   does, keeping every logged write and flipping no bit. It then remounts the
