@@ -14,7 +14,7 @@ fetch() {
   mv "$cache/downloads/$name.pending" "$cache/downloads/$name"
  fi
 }
-fetch https://codeload.github.com/apache/hbase/tar.gz/faa1c454c7bc9a6c29749b49218196ad4b7542d0 hbase-source.tar.gz
+fetch https://codeload.github.com/apache/hbase/tar.gz/2c79c38bea97027fc841e2cfe074e0aef93e6e19 hbase-2c79c38bea97027fc841e2cfe074e0aef93e6e19.tar.gz
 fetch https://archive.apache.org/dist/hadoop/common/hadoop-3.4.3/hadoop-3.4.3.tar.gz hadoop-3.4.3.tar.gz
 podman build "${limits[@]}" --ulimit nofile=65536:65536 --format docker -f "$recipe/source.Dockerfile" -t harmony-hbase-build:local "$cache"
 podman build "${limits[@]}" --format docker -f "$recipe/hadoop.Dockerfile" -t harmony-hadoop-build:local "$cache"

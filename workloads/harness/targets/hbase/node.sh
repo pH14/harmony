@@ -30,5 +30,5 @@ exec /opt/harmony/harness-net exec "$index" -- /opt/java/bin/java \
  -Dlog4j.configurationFile=$conf/log4j2.properties \
  -Dhbase.log.dir=/tmp/hbase/n$index -Dhbase.log.file=server.log \
  -Dhadoop.log.dir=/tmp/hbase/n$index -Dhadoop.log.file=hadoop.log \
- -cp "$conf:/opt/hbase/lib/*:/opt/hbase/lib/hadoop-3/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/hdfs/lib/*" \
+ -cp "$conf:/opt/hbase/lib/client-facing-thirdparty/*:/opt/hbase/lib/*:/opt/hbase/lib/hadoop-3/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/hdfs/lib/*" \
  "$main" "$@" >> /tmp/hbase/n$index/console.log 2>&1

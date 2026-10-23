@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+package hrpc
+
+import (
+	"context"
+	"fmt"
+	"github.com/tsuna/gohbase/pb"
+	"google.golang.org/protobuf/proto"
+	"math"
+	"testing"
+)
+
+func TestHarmonyReadTimeRanges(t *testing.T) {
+	for _, bounds := range [][2]uint64{{MinTimestamp, MaxTimestamp}, {1, MaxTimestamp}, {MinTimestamp, 30}, {10, 20}} {
+		for _, kind := range []string{"get", "scan"} {
+			t.Run(fmt.Sprintf("%s/%d/%d", kind, bounds[0], bounds[1]), func(t *testing.T) {
+				var encoded proto.Message
+				if kind == "get" {
+					r, e := NewGetStr(context.Background(), "table", "row", TimeRangeUint64(bounds[0], bounds[1]))
+					if e != nil {
+						t.Fatal(e)
+					}
+					r.SetRegion(mockRegionInfo("region"))
+					encoded = r.ToProto()
+				} else {
+					r, e := NewScanStr(context.Background(), "table", TimeRangeUint64(bounds[0], bounds[1]))
+					if e != nil {
+						t.Fatal(e)
+					}
+					r.SetRegion(mockRegionInfo("region"))
+					encoded = r.ToProto()
+				}
+				wire, e := proto.Marshal(encoded)
+				if e != nil {
+					t.Fatal(e)
+				}
+				var interval *pb.TimeRange
+				if kind == "get" {
+					r := new(pb.GetRequest)
+					if e := proto.Unmarshal(wire, r); e != nil {
+						t.Fatal(e)
+					}
+					interval = r.GetGet().GetTimeRange()
+				} else {
+					r := new(pb.ScanRequest)
+					if e := proto.Unmarshal(wire, r); e != nil {
+						t.Fatal(e)
+					}
+					interval = r.GetScan().GetTimeRange()
+				}
+				lo, hi := uint64(MinTimestamp), uint64(math.MaxInt64)
+				if interval != nil {
+					if interval.From != nil {
+						lo = interval.GetFrom()
+						if interval.To != nil {
+							hi = interval.GetTo()
+						}
+					} else {
+						hi = interval.GetTo()
+					}
+				}
+				expectedHi := bounds[1]
+				if expectedHi == MaxTimestamp {
+					expectedHi = math.MaxInt64
+				}
+				if lo != bounds[0] || hi != expectedHi {
+					t.Fatalf("HBase 4 decoder sees [%d,%d), want [%d,%d)", lo, hi, bounds[0], expectedHi)
+				}
+			})
+		}
+	}
+}

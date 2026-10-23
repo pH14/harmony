@@ -1,0 +1,160 @@
+Omit the optional time range for unrestricted Get and Scan requests.
+
+HBase 4 decodes an empty TimeRange as an empty interval. Absence retains
+the all-timestamps contract; explicit non-default bounds keep their wire
+representation. Update the upstream protobuf expectations accordingly.
+
+--- a/hrpc/get.go
++++ b/hrpc/get.go
+@@ -84,9 +84,8 @@
+ 	get := &pb.GetRequest{
+ 		Region: g.regionSpecifier(),
+ 		Get: &pb.Get{
+-			Row:       g.key,
+-			Column:    familiesToColumn(g.families),
+-			TimeRange: &pb.TimeRange{},
++			Row:    g.key,
++			Column: familiesToColumn(g.families),
+ 		},
+ 	}
+ 
+@@ -100,6 +99,9 @@
+ 
+ 	if g.maxVersions != DefaultMaxVersions {
+ 		get.Get.MaxVersions = &g.maxVersions
++	}
++	if g.fromTimestamp != MinTimestamp || g.toTimestamp != MaxTimestamp {
++		get.Get.TimeRange = &pb.TimeRange{}
+ 	}
+ 	if g.fromTimestamp != MinTimestamp {
+ 		get.Get.TimeRange.From = &g.fromTimestamp
+--- a/hrpc/scan.go
++++ b/hrpc/scan.go
+@@ -409,7 +409,6 @@
+ 		Column:        familiesToColumn(s.families),
+ 		StartRow:      s.startRow,
+ 		StopRow:       s.stopRow,
+-		TimeRange:     &pb.TimeRange{},
+ 		MaxResultSize: &s.maxResultSize,
+ 	}
+ 	if s.maxVersions != DefaultMaxVersions {
+@@ -424,6 +423,9 @@
+ 		scan.Scan.StoreOffset = &s.storeOffset
+ 	}
+ 
++	if s.fromTimestamp != MinTimestamp || s.toTimestamp != MaxTimestamp {
++		scan.Scan.TimeRange = &pb.TimeRange{}
++	}
+ 	if s.fromTimestamp != MinTimestamp {
+ 		scan.Scan.TimeRange.From = &s.fromTimestamp
+ 	}
+--- a/hrpc/hrpc_test.go
++++ b/hrpc/hrpc_test.go
+@@ -108,9 +108,8 @@
+ 			expProto: &pb.GetRequest{
+ 				Region: rs,
+ 				Get: &pb.Get{
+-					Row:       key,
+-					Column:    []*pb.Column{},
+-					TimeRange: &pb.TimeRange{},
++					Row:    key,
++					Column: []*pb.Column{},
+ 				},
+ 			},
+ 		},
+@@ -130,7 +129,6 @@
+ 				Get: &pb.Get{
+ 					Row:         key,
+ 					Column:      []*pb.Column{},
+-					TimeRange:   &pb.TimeRange{},
+ 					StoreLimit:  nil,
+ 					StoreOffset: nil,
+ 					MaxVersions: nil,
+@@ -181,7 +179,6 @@
+ 					Get: &pb.Get{
+ 						Row:           key,
+ 						Column:        familiesToColumn(fam),
+-						TimeRange:     &pb.TimeRange{},
+ 						ExistenceOnly: proto.Bool(true),
+ 						Filter:        pbFilter,
+ 					},
+@@ -294,7 +291,6 @@
+ 				Scan: &pb.Scan{
+ 					MaxResultSize: proto.Uint64(DefaultMaxResultSize),
+ 					Column:        []*pb.Column{},
+-					TimeRange:     &pb.TimeRange{},
+ 				},
+ 				TrackScanMetrics: proto.Bool(false),
+ 				Renew:            proto.Bool(false),
+@@ -324,7 +320,6 @@
+ 				Scan: &pb.Scan{
+ 					MaxResultSize: proto.Uint64(DefaultMaxResultSize),
+ 					Column:        []*pb.Column{},
+-					TimeRange:     &pb.TimeRange{},
+ 					StoreLimit:    nil,
+ 					StoreOffset:   nil,
+ 					MaxVersions:   nil,
+@@ -411,7 +406,6 @@
+ 				Scan: &pb.Scan{
+ 					MaxResultSize: proto.Uint64(DefaultMaxResultSize),
+ 					Column:        []*pb.Column{},
+-					TimeRange:     &pb.TimeRange{},
+ 					Reversed:      proto.Bool(true),
+ 				},
+ 				TrackScanMetrics: proto.Bool(false),
+@@ -435,7 +429,6 @@
+ 				Scan: &pb.Scan{
+ 					MaxResultSize: proto.Uint64(DefaultMaxResultSize),
+ 					Column:        []*pb.Column{},
+-					TimeRange:     &pb.TimeRange{},
+ 					Attribute: []*pb.NameBytesPair{
+ 						{Name: proto.String("key1"), Value: []byte("value1")},
+ 						{Name: proto.String("key2"), Value: []byte("value2")},
+@@ -459,7 +452,6 @@
+ 				Scan: &pb.Scan{
+ 					MaxResultSize: proto.Uint64(DefaultMaxResultSize),
+ 					Column:        []*pb.Column{},
+-					TimeRange:     &pb.TimeRange{},
+ 					StartRow:      startRow,
+ 					StopRow:       stopRow,
+ 				},
+@@ -483,7 +475,6 @@
+ 					Scan: &pb.Scan{
+ 						MaxResultSize: proto.Uint64(DefaultMaxResultSize),
+ 						Column:        familiesToColumn(fam),
+-						TimeRange:     &pb.TimeRange{},
+ 						Filter:        pbFilter,
+ 					},
+ 					TrackScanMetrics: proto.Bool(false),
+@@ -505,7 +496,6 @@
+ 				Scan: &pb.Scan{
+ 					MaxResultSize: proto.Uint64(DefaultMaxResultSize),
+ 					Column:        []*pb.Column{},
+-					TimeRange:     &pb.TimeRange{},
+ 				},
+ 				TrackScanMetrics: proto.Bool(false),
+ 				Renew:            proto.Bool(false),
+@@ -526,7 +516,6 @@
+ 					ClientHandlesHeartbeats: proto.Bool(true),
+ 					Scan: &pb.Scan{
+ 						MaxResultSize: proto.Uint64(DefaultMaxResultSize),
+-						TimeRange:     &pb.TimeRange{},
+ 					},
+ 					TrackScanMetrics: proto.Bool(true),
+ 					Renew:            proto.Bool(false),
+@@ -548,7 +537,6 @@
+ 					ClientHandlesHeartbeats: proto.Bool(true),
+ 					Scan: &pb.Scan{
+ 						MaxResultSize: proto.Uint64(DefaultMaxResultSize),
+-						TimeRange:     &pb.TimeRange{},
+ 					},
+ 					TrackScanMetrics: proto.Bool(false),
+ 					Renew:            proto.Bool(false),
+@@ -570,7 +558,6 @@
+ 					ClientHandlesHeartbeats: proto.Bool(true),
+ 					Scan: &pb.Scan{
+ 						MaxResultSize: proto.Uint64(DefaultMaxResultSize),
+-						TimeRange:     &pb.TimeRange{},
+ 					},
+ 					TrackScanMetrics: proto.Bool(false),
+ 					Renew:            proto.Bool(true),

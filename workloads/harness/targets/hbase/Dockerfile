@@ -5,15 +5,15 @@ ARG ZOOKEEPER_IMAGE=harmony-zookeeper:hbase
 ARG GO_IMAGE=docker.io/library/golang:1.27-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61
 FROM ${HADOOP_IMAGE} AS hadoop
 FROM ${HBASE_BUILD_IMAGE} AS distribution
-RUN mkdir /opt/hbase && tar -xzf /build/hbase-assembly/target/hbase-2.6.8-SNAPSHOT-bin.tar.gz -C /opt/hbase --strip-components=1
+RUN mkdir /opt/hbase && tar -xzf /build/hbase-assembly/target/hbase-4.0.0-alpha-1-SNAPSHOT-bin.tar.gz -C /opt/hbase --strip-components=1
 COPY --from=hadoop /opt/hadoop/share/hadoop/common /opt/hadoop/share/hadoop/common
 COPY --from=hadoop /opt/hadoop/share/hadoop/hdfs /opt/hadoop/share/hadoop/hdfs
 RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
 COPY workloads/harness/targets/hbase/strip-native.py /tmp/strip-native.py
 RUN python3 /tmp/strip-native.py /opt/hbase /opt/hadoop > /opt/native-libraries-removed.txt \
     && jdeps --ignore-missing-deps --multi-release 21 --print-module-deps \
-        --class-path '/opt/hbase/lib/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/hdfs/lib/*' \
-        /opt/hbase/lib/hbase-server-2.6.8-SNAPSHOT.jar > /opt/modules.txt
+        --class-path '/opt/hbase/lib/client-facing-thirdparty/*:/opt/hbase/lib/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/hdfs/lib/*' \
+        /opt/hbase/lib/hbase-server-4.0.0-alpha-1-SNAPSHOT.jar > /opt/modules.txt
 FROM ${GO_IMAGE} AS harness-build
 ARG ANTITHESIS_SDK_VERSION=0.8.0
 ENV CGO_ENABLED=1 GOFLAGS=-trimpath
@@ -34,13 +34,16 @@ COPY workloads/harness/targets/hbase/go.mod workloads/harness/targets/hbase/go.s
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
 WORKDIR /build/targets/hbase
 COPY workloads/harness/targets/hbase/gohbase-single-mutation.patch /build/gohbase-single-mutation.patch
+COPY workloads/harness/targets/hbase/gohbase-time-range.patch /build/gohbase-time-range.patch
 RUN go mod download \
     && client_dir="$(go list -m -f '{{.Dir}}' github.com/tsuna/gohbase)" \
     && cp -a "$client_dir" /build/gohbase && chmod -R u+w /build/gohbase \
     && patch --batch --forward --fuzz=0 -d /build/gohbase -p1 < /build/gohbase-single-mutation.patch \
+    && patch --batch --forward --fuzz=0 -d /build/gohbase -p1 < /build/gohbase-time-range.patch \
     && go mod edit -replace github.com/tsuna/gohbase=/build/gohbase
 COPY workloads/harness/targets/hbase/gohbase-single-mutation_test.go.in /build/gohbase/harmony_single_mutation_test.go
-RUN (cd /build/gohbase && go test -run '^TestHarmonyMutationOneAttempt$' .)
+COPY workloads/harness/targets/hbase/gohbase-time-range_test.go.in /build/gohbase/hrpc/harmony_time_range_test.go
+RUN (cd /build/gohbase && go test -run '^TestHarmonyMutationOneAttempt$' . && go test ./hrpc)
 RUN go mod download && go vet -mod=readonly ./... && go test -mod=readonly ./... \
     && mkdir -p /out/symbols /out/stdlib/harness /out/stdlib/net \
     && bash /build/configure-instrumentation.sh /build/sdk /out/stdlib/harness . > /out/stdlib/harness/instrumentation.env \

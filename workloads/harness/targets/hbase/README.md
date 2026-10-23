@@ -10,12 +10,12 @@ Go register adapter checks normal HBase routing and synchronous WAL writes.
 | --- | --- | --- | --- | --- |
 | Three ZooKeeper servers | Java 21, ZooKeeper 3.9.4 | Pinned Apache jars | `/opt/zookeeper/lib` | Instrumented HotSpot under `/symbols/native` |
 | HDFS NameNode and three DataNodes | Java 21, Hadoop 3.4.3 | Pinned Apache jars | `/opt/hadoop/share/hadoop` | Instrumented HotSpot under `/symbols/native` |
-| HMaster and two RegionServers | Java 21, HBase branch-2.6 at `faa1c454c7bc9a6c29749b49218196ad4b7542d0` | Maven | `/opt/hbase/lib` | Instrumented HotSpot under `/symbols/native` |
+| HMaster and two RegionServers | Java 21, HBase master at `2c79c38bea97027fc841e2cfe074e0aef93e6e19` | Maven | `/opt/hbase/lib` | Instrumented HotSpot under `/symbols/native` |
 | Harness client | Go, gohbase at `20216bdbc67df914b496844eb0a794186e7bc240` | Go + Harmony instrumentation | `/opt/harmony/hbase-harness` | `/symbols/hbase-go` |
 | Network helper | Go, repository harness kit | Go + Harmony instrumentation | `/opt/harmony/harness-net` | `/symbols/go` |
 
-The HBase source revision includes the Java 21 fixes targeted for 2.6.8;
-2.6.8 is not yet a published release. Native Hadoop, Netty and compression
+The pinned HBase master revision is 4.0.0-alpha-1-SNAPSHOT, built for Java 17
+or newer and run here on the instrumented Java 21 runtime. Native Hadoop, Netty and compression
 libraries must be disabled or instrumented before image admission. Every
 selected JDK module and application class uses the Java recipe's rewriting.
 
@@ -26,7 +26,7 @@ processor and a 32 MiB initial heap. Maximum heaps are 128 MiB for ZooKeeper,
 HDFS replication is three. Readiness must establish HMaster, two registered RegionServers, table
 creation, and a committed write/read. A single NameNode and HMaster exclude
 HA failover claims for those roles. Runtime commands are in `node.sh` and
-`bundle`; measured results are below.
+`bundle`; validation commands are below.
 
 ## Build
 
@@ -55,6 +55,10 @@ output and the native resources removed from dependency jars under
 resources and native-library resources are removed from the copied jars.
 Netty native transports are disabled and table compression is `NONE`.
 This qualifies the Java implementations, not native compression or transport.
+The launcher and `jdeps` classpath include HBase 4's
+`lib/client-facing-thirdparty` directory before the other libraries, matching
+upstream's dependency layout and logging precedence. Optional attach/debugger,
+SCTP and JDK HTTP-server tooling paths are not enabled or qualified.
 
 ## Workload contract
 
@@ -67,12 +71,19 @@ RegionServers, commits and reads a separate readiness row in each region, and
 checks cluster status for test-table ownership on both RegionServers;
 those rows are outside the checker's `k0`–`k4` keyspace.
 
-The pinned Go client has a small reviewed patch: mutation RPCs return after
+The pinned Go client has two reviewed patches. Mutation RPCs return after
 the first attempt. Region discovery and read retries remain intact. Without
 this boundary, a lost reply could cause a repeated Put to overwrite an
 intervening writer or a repeated successful CAS to report failure. The harness
 records mutation errors as unknown, and only an explicit negative CAS result
 as a definite failure. Reads are definite on error.
+
+Unrestricted Get and Scan requests omit the optional protobuf time range. An
+empty time-range message means an empty interval to HBase 4's decoder; emitting
+it would make metadata lookup incorrectly report missing tables. Explicit
+non-default bounds retain their representation. The image build runs the
+upstream RPC serialization tests and a regression that round-trips default,
+lower-bounded, upper-bounded and fully bounded ranges through the wire format.
 
 HBase regions are shards, not identical replicas on every RegionServer. The
 adapter therefore does not claim pinned-node reads or equality across servers.
@@ -82,60 +93,30 @@ faults; it does not yet declare disks or claim power-loss and disk-corruption
 coverage. The single NameNode and HMaster do not provide HA failover.
 
 HMaster waits for NameNode's RPC port before launching its JVM. This startup
-dependency gate avoids a measured pre-readiness HMaster abort when the
+dependency check avoids a measured pre-readiness HMaster abort when the
 NameNode is still loading. Setup adds the guest's hostname to `/etc/hosts`,
 and the JVM launcher carries HBase's upstream Java module-access flags.
 These are required in the isolated guest, which has no external DNS service.
 
-## Measurements and validation
+`python3 workloads/harness/targets/hbase/check-native.py NATIVE_LOG` validates
+a retained `native.py --no-faults` run: the final check must be decided, with
+no check failures or process deaths, and the journal must contain successful
+reads, writes and CAS operations. The check rejects clean-looking runs whose journal never acknowledges a CAS.
 
-On pnap-3, seed 17, one guest vCPU and 8 GiB RAM, the first successful guest
-probe formatted HDFS by uptime 28.90 seconds, launched the cluster at 28.91,
-and reached full readiness at 451.30: 422.39 guest seconds from launch.
-It completed twenty workload operations plus a check read with no violations,
-then shut down successfully. At readiness the guest had 5,666,308 KiB available
-memory. JVM RSS was about 83–86 MiB for ZooKeeper, 205 MiB for NameNode,
-181–184 MiB per DataNode, 223 MiB for HMaster, and 199–203 MiB per RegionServer.
-The total thread count was 684. This is a small bounded workload, not a
-production memory-sizing recommendation.
-
-The expanded Java runtime passed two-boot determinism, twenty ordered timer
-markers, park progress, two C2 boots and the generated method-handle loop on
-the patched kernel. The image passed admission with instrumentation symbols
-and no scan errors. A focused Go-client regression verifies that a mutation's
-first retryable result is returned without another RPC attempt. The native
-resource-removal test verifies class bytes survive while executable resources
-are removed. The final source-build recipe produced the expected distribution
-archive. With CI's Go 1.26.3 and `GOTOOLCHAIN=local`, harness-kit vet/tests and
-vet/build for every target module passed on pnap-3.
-
-An initial native baseline completed 8,959 operations and 222 checks in
-61.834 seconds with no checker failures, but one HMaster startup restart;
-that observation prompted the NameNode dependency gate. The first guest
-attempt failed on unresolved hostname lookup, before the configuration fix.
-These earlier images are not interchangeable with the final image for replay.
-
-Evidence and exact recording artifacts remain on pnap-3 under
-`/home/ubuntu/harmony-jvm-viability/evidence`: `hbase-probe2`, the subsequent
-`hbase-probe3`, `hbase-language-check`, native runs, and the recovery/search
-artifacts. Guest executions use the audited dcache-patched kernel and the
-retained paired CLI/host binaries. The final dependency-gated image reached
-readiness at guest uptime 463.03,
-434.12 seconds after cluster launch, with 5,675,904 KiB available and 686 JVM
-threads. Its twenty-operation guest workload and check passed, and all JVMs
-terminated successfully. The final native baseline completed 9,002 operations
-and 247 checks in 61.214 seconds with no check failures or process restarts.
-The requested 30-minute search uses three workers on cores 16–19 within a
-64 GiB unit; automatic sizing reserves about 27 GiB for snapshot/worker stores.
-The requested 30-minute search completed 94 executions with zero confirmed
-findings, unmet reachability assertions, hung jobs, watchdog cutoffs or execution
-failures. Including setup and completion, it took 2,129 wall seconds. The fixed
-recovery scenario passed exact replay using its recorded binary, kernel and image.
+## Recovery and replay
 
 `bash workloads/harness/targets/hbase/check-recovery.sh IMAGE EVIDENCE CONFIG`
 runs the fixed RegionServer scenario and exact replay. `recovery.json` waits
-10 guest seconds, kills bundle node 8 (`r1`) for one second, then waits 200
-seconds; each action uses coverage quantum 4,096. The initial qualification
-completed in 303 wall seconds with no violations, execution failures or
-watchdog cutoffs. All three reachability assertions passed, including a
-post-fault read. The final check had zero undecided keys and pending faults.
+ten guest seconds, kills bundle node 8 (`r1`) for one second, then waits 200
+seconds; each action uses coverage quantum 4,096. The check requires no
+violations, execution failures or watchdog cutoffs, all reachability
+assertions including a post-fault read, and zero undecided keys or pending
+faults at the final check.
+
+Use `probe.sh` to measure cluster launch and readiness, guest available memory,
+per-process RSS and thread counts, and a short workload followed by a decided
+check. Keep measurement output outside the repository and report the image
+revision, guest budget and observed results with the pull request. A longer
+fault-search qualification must also satisfy every reachability assertion.
+Replays use their exact recording binaries, kernel, initramfs and image;
+measurements from different builds are not interchangeable.
