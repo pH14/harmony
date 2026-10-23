@@ -37,7 +37,7 @@ series.
 ## Architecture series
 
 The x86 series supplies the paravirtual clock, counter confinement and
-emulation, syscall tick (skipped for the coverage ioctl), idle port, and x86-specific clock and trap plumbing.
+emulation, syscall tick (skipped for the coverage ioctl), idle port, retry ticks, and x86-specific clock and trap plumbing.
 Its KVM host-counter patch uses the outer VMM's intercepted TSC MSR for shared,
 LAPIC, PMU and nested-VMX counter reads, and disables the optional VMX hardware
 preemption timer by default. KVM hosting is compiled only in the nested-host
@@ -56,8 +56,8 @@ on the vendor its runner provides, VMX or SVM.
 
 The arm64 series supplies the exit-count clock page, LSE-only atomic contract,
 virtual clock event, fixed counter and cache topology, interrupt handling,
-canonical state, counter trap switch, idle register, and the syscall tick
-that skips the coverage ioctl. Its IRQ-unmask fence
+canonical state, counter trap switch, idle register, the syscall tick
+that skips the coverage ioctl, and the retry ticks. Its IRQ-unmask fence
 exits only while the clock page's `irq_pending` word says a due deadline waits
 for the unmask.
 The series moves alternative and unwind metadata after `__initdata_begin`, so
@@ -67,6 +67,11 @@ With the Harmony clock, the kernel's virtual timer shutdown uses only the MMIO
 clockevent, and the physical timer paths stop if reached. This removes all
 architected timer control instructions from the shipped arm64 image so the
 instruction scanner can reject them without exceptions.
+
+Both series ring the execution tick where the kernel can retry without an
+exit: once per request the device-mapper `error` target fails, and once per
+page-allocation retry. A disk error window or an allocation that reclaim cannot
+satisfy then still advances virtual time to the next timer deadline.
 
 The um series applies after the common series to the separate User-mode Linux
 source tree. It makes SECCOMP userspace the only UML mode, charges virtual
