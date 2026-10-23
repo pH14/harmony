@@ -64,7 +64,7 @@ func TestHarmonyReadTimeRanges(t *testing.T) {
 					expectedHi = math.MaxInt64
 				}
 				if lo != bounds[0] || hi != expectedHi {
-					t.Fatalf("HBase 4 decoder sees [%d,%d), want [%d,%d)", lo, hi, bounds[0], expectedHi)
+					t.Fatalf("server decoder sees [%d,%d), want [%d,%d)", lo, hi, bounds[0], expectedHi)
 				}
 			})
 		}

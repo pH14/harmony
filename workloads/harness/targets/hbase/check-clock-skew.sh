@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -euo pipefail
-image=${1:?usage: check-clock-skew.sh image evidence-directory [config.toml] [actions.json]}
+image=${1:?usage: check-clock-skew.sh image evidence-directory [config.toml]}
 evidence=${2:?evidence-directory required}
 recipe=$(cd "$(dirname "$0")" && pwd)
 config=${3:-$recipe/harmony.toml}
-actions=${4:-$recipe/clock-skew.json}
+actions=$recipe/clock-skew.json
 binary=${HARMONY_BINARY:-target/release/harmony}
 "$binary" prepare "$image" --config "$config"
 set +e

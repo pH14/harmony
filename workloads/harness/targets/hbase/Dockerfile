@@ -5,8 +5,7 @@ ARG ZOOKEEPER_IMAGE=harmony-zookeeper:hbase
 ARG GO_IMAGE=docker.io/library/golang:1.27-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61
 FROM ${HADOOP_IMAGE} AS hadoop
 FROM ${HBASE_BUILD_IMAGE} AS distribution
-ARG HBASE_VERSION=4.0.0-alpha-1-SNAPSHOT
-RUN mkdir /opt/hbase && tar -xzf /build/hbase-assembly/target/hbase-${HBASE_VERSION}-bin.tar.gz -C /opt/hbase --strip-components=1
+RUN mkdir /opt/hbase && tar -xzf /build/hbase-assembly/target/hbase-3.0.0-bin.tar.gz -C /opt/hbase --strip-components=1
 COPY --from=hadoop /opt/hadoop/share/hadoop/common /opt/hadoop/share/hadoop/common
 COPY --from=hadoop /opt/hadoop/share/hadoop/hdfs /opt/hadoop/share/hadoop/hdfs
 RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
@@ -14,7 +13,7 @@ COPY workloads/harness/targets/hbase/strip-native.py /tmp/strip-native.py
 RUN python3 /tmp/strip-native.py /opt/hbase /opt/hadoop > /opt/native-libraries-removed.txt \
     && jdeps --ignore-missing-deps --multi-release 21 --print-module-deps \
         --class-path '/opt/hbase/lib/client-facing-thirdparty/*:/opt/hbase/lib/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/hdfs/lib/*' \
-        /opt/hbase/lib/hbase-server-${HBASE_VERSION}.jar > /opt/modules.txt
+        /opt/hbase/lib/hbase-server-3.0.0.jar > /opt/modules.txt
 FROM ${GO_IMAGE} AS harness-build
 ARG ANTITHESIS_SDK_VERSION=0.8.0
 ENV CGO_ENABLED=1 GOFLAGS=-trimpath

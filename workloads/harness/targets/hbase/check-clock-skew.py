@@ -10,7 +10,7 @@ actions = json.loads(Path(sys.argv[2]).read_text())
 assert len(actions) == 3
 clock = actions[1]['operation']['Clock']
 assert clock['node'] == 8 and clock['offset_ms'] == -1000
-assert clock['rate_ppm'] == 0 and clock['ticks'] in (6000, 12000)
+assert clock['rate_ppm'] == 0 and clock['ticks'] == 12000
 assert report['bug_found'], 'expected a recorded stale-read finding'
 assert not report['never_satisfied'], report['never_satisfied']
 assert report['execution_failures'] == 0

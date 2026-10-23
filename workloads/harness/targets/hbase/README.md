@@ -10,14 +10,15 @@ Go register adapter checks normal HBase routing and synchronous WAL writes.
 | --- | --- | --- | --- | --- |
 | Three ZooKeeper servers | Java 21, ZooKeeper 3.9.4 | Pinned Apache jars | `/opt/zookeeper/lib` | Instrumented HotSpot under `/symbols/native` |
 | HDFS NameNode and three DataNodes | Java 21, Hadoop 3.4.3 | Pinned Apache jars | `/opt/hadoop/share/hadoop` | Instrumented HotSpot under `/symbols/native` |
-| HMaster and two RegionServers | Java 21, HBase master at `2c79c38bea97027fc841e2cfe074e0aef93e6e19` | Maven | `/opt/hbase/lib` | Instrumented HotSpot under `/symbols/native` |
+| HMaster and two RegionServers | Java 21, Apache HBase 3.0.0 | Checksum-pinned binary | `/opt/hbase/lib` | Instrumented HotSpot under `/symbols/native` |
 | Harness client | Go, gohbase at `20216bdbc67df914b496844eb0a794186e7bc240` | Go + Harmony instrumentation | `/opt/harmony/hbase-harness` | `/symbols/hbase-go` |
 | Network helper | Go, repository harness kit | Go + Harmony instrumentation | `/opt/harmony/harness-net` | `/symbols/go` |
 
-The pinned HBase master revision is 4.0.0-alpha-1-SNAPSHOT, built for Java 17
-or newer and run here on the instrumented Java 21 runtime. Native Hadoop, Netty and compression
-libraries must be disabled or instrumented before image admission. Every
-selected JDK module and application class uses the Java recipe's rewriting.
+The pinned HBase 3.0.0 release runs here on the instrumented Java 21 runtime.
+Its [documented supported runtime](https://hbase.apache.org/docs/configuration/basic-prerequisites/)
+is Java 17. Native Hadoop, Netty and compression libraries must be disabled
+or instrumented before image admission. Every selected JDK module and
+application class uses the Java recipe's rewriting.
 
 The topology uses one guest vCPU, 8 GiB guest RAM, and a declared 600-second
 setup budget. JVMs use C1 (`TieredStopAtLevel=1`), Serial GC, one active
@@ -39,21 +40,16 @@ target/release/harmony debug run harmony-hbase:local --config workloads/harness/
 target/release/harmony search --config workloads/harness/targets/hbase/harmony.toml --for 30m
 ```
 
-Set `HARMONY_HBASE_RELEASE=3.0.0` for the checksum-pinned Apache 3.0.0
-binary instead of the default source build. This produces
-`harmony-hbase:3.0.0` with the same harness and JVM instrumentation. The
-HBase 3.0.0 release-line witness can then be checked with:
+The clock-skew witness can then be checked with:
 
 ```sh
-bash workloads/harness/targets/hbase/check-clock-skew.sh harmony-hbase:3.0.0 \
-  /tmp/hbase3-clock-skew workloads/harness/targets/hbase/harmony.toml \
-  workloads/harness/targets/hbase/clock-skew-hbase-three.json
+bash workloads/harness/targets/hbase/check-clock-skew.sh harmony-hbase:local \
+  /tmp/hbase-clock-skew workloads/harness/targets/hbase/harmony.toml
 ```
 
-`HARMONY_HBASE_BUILD_CACHE` selects the persistent source-download cache. The
-recipe verifies downloaded archives against pinned hashes. The default HBase
-Maven build needs a file-descriptor limit of 65,536; the build script supplies
-it. It compiles upstream test sources but does not run the upstream test suite.
+`HARMONY_HBASE_BUILD_CACHE` selects the persistent download cache. The recipe
+verifies the official HBase binary and Hadoop source archives against pinned
+hashes. It runs the Go client's RPC serialization tests and the harness tests.
 `HARMONY_HBASE_BUILD_CPUS` and `HARMONY_HBASE_BUILD_MEMORY` bound container
 builds directly; Podman can place build containers outside a parent systemd
 unit. The memory default is 24 GiB.
@@ -66,9 +62,9 @@ output and the native resources removed from dependency jars under
 resources and native-library resources are removed from the copied jars.
 Netty native transports are disabled and table compression is `NONE`.
 This qualifies the Java implementations, not native compression or transport.
-The launcher and `jdeps` classpath include HBase 4's
-`lib/client-facing-thirdparty` directory before the other libraries, matching
-upstream's dependency layout and logging precedence. Optional attach/debugger,
+The launcher and `jdeps` classpath include
+`lib/client-facing-thirdparty` before the other libraries, matching upstream's
+dependency layout and logging precedence. Optional attach/debugger,
 SCTP and JDK HTTP-server tooling paths are not enabled or qualified.
 
 ## Workload contract
@@ -90,7 +86,7 @@ records mutation errors as unknown, and only an explicit negative CAS result
 as a definite failure. Reads are definite on error.
 
 Unrestricted Get and Scan requests omit the optional protobuf time range. An
-empty time-range message means an empty interval to HBase 4's decoder; emitting
+empty time-range message means an empty interval to the server decoder; emitting
 it would make metadata lookup incorrectly report missing tables. Explicit
 non-default bounds retain their representation. The image build runs the
 upstream RPC serialization tests and a regression that round-trips default,
@@ -155,31 +151,21 @@ measurements from different builds are not interchangeable.
 warms up the cluster, steps the first RegionServer's wall clock back one
 second, and checks for an acknowledged Put followed by a stale Get. It treats
 the consistency finding as the expected result and requires exact replay.
-Pass `clock-skew-hbase-three.json` as a fourth argument when testing the Apache
-HBase 3.0.0 binary image; its longer clock-fault window and coverage choices
-reproduced the same violation under a one-second backward step. Both the run
-and its exact replay had all ten services alive, no restarts, no pending
-faults, and no undecided keys. Its guest journal records a successful CAS on
-`k2` before the step, a later acknowledged Put after the step, and two
-subsequent successful Gets returning the CAS value. These operations do not
+The pinned Apache HBase 3.0.0 image reproduced the violation under a one-second
+backward step. Both the run and its exact replay had all ten services alive,
+no restarts, no pending faults, and no undecided keys. Its guest journal records
+a successful CAS on `k2` before the step, a later acknowledged Put after it,
+and two subsequent successful Gets returning the CAS value. These operations do not
 overlap, and the journal uses a monotonic clock. A different timing and
 coverage choice with the same one-second step completed without a violation,
 so this scenario establishes a reachable failure rather than a universal
-outcome. The diagnostic image used instrumented Java 21, while HBase 3.0.0's
-[documented supported runtime](https://hbase.apache.org/docs/configuration/basic-prerequisites/)
-is Java 17.
+outcome.
 
 A matched no-clock scenario completed without a violation in run and exact
 replay. A temporary positive offset also produced a stale read, but only
 after its scheduled expiration moved the clock backward. The clock witness
 checker requires the violation to appear within the backward-step action,
 before the later wait action begins.
-
-The pinned HBase revision and image `harmony-hbase:qualified-2c79c38`
-reproduced the finding without a service restart: an acknowledged CAS on `k0`
-completed, a later Put on `k0` was acknowledged, and two later successful
-reads returned the CAS value. The checker orders these operations with its
-monotonic journal clock, so the wall-clock step does not create a false order.
 
 HBase's [version semantics](https://hbase.apache.org/docs/single-page/) assign
 an implicit Put the RegionServer's current wall-clock time and make an

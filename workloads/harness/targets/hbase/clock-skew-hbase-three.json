@@ -1,5 +1,0 @@
-[
-  {"operation":{"Wait":3000},"coverage_quantum":64,"choice":501},
-  {"operation":{"Clock":{"node":8,"offset_ms":-1000,"rate_ppm":0,"ticks":12000}},"coverage_quantum":64,"choice":502},
-  {"operation":{"Wait":12000},"coverage_quantum":64,"choice":503}
-]

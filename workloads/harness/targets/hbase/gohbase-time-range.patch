@@ -1,6 +1,6 @@
 Omit the optional time range for unrestricted Get and Scan requests.
 
-HBase 4 decodes an empty TimeRange as an empty interval. Absence retains
+The server decodes an empty TimeRange as an empty interval. Absence retains
 the all-timestamps contract; explicit non-default bounds keep their wire
 representation. Update the upstream protobuf expectations accordingly.
 
