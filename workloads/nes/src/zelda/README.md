@@ -34,7 +34,7 @@ them yet.
 | Address | Meaning | Checked |
 | --- | --- | --- |
 | `$0010` | Level: 0 overworld, 1 to 9 the dungeons | 0 to 3 |
-| `$0012` | Game mode: `$00` title, `$01` file select, `$0E` name registration, `$03` and `$04` level load, `$05` play, `$06` and `$07` screen scroll, `$0B` cave interior, `$10` stairs, `$11` death, `$13` ending | all but `$13` |
+| `$0012` | Game mode: `$00` title, `$01` file select, `$0E` name registration, `$02` to `$04` level load, `$05` play, `$06` and `$07` screen scroll, `$0A` leaving a cave, `$0B` cave interior, `$10` stairs, `$11` death, `$12` Triforce pickup, `$13` ending | all but `$13` |
 | `$0070` | Link's x in pixels | yes |
 | `$0084` | Link's y in pixels; play spans about `$3D` to `$DD` | yes |
 | `$00EB` | Room: the overworld screen (row in the high nibble, column in the low) or the dungeon room | yes |
@@ -45,7 +45,7 @@ them yet.
 | `$066E` | Keys | no |
 | `$066F` | Hearts: high nibble heart containers minus one, low nibble full hearts minus one | yes |
 | `$0670` | Partial heart: 0 empty, 1 to `$7F` half, `$80` to `$FF` full | yes |
-| `$0671` | Triforce pieces, one bit per dungeon 1 to 8 | no |
+| `$0671` | Triforce pieces, one bit per dungeon 1 to 8 | yes, by poke |
 | `$0674`, `$0675` | Boomerang, magic boomerang | no |
 
 At the first screen `$066F` is `$22` and `$0670` is `$FF`: three containers
@@ -54,7 +54,10 @@ with `$0670` back above `$7F`. The game enters mode `$11` on the frame the
 last half heart goes, and mode `$08` after the death animation. The wooden
 sword sets `$0657` to 1 on the frame Link touches it in the cave of the first
 screen. During a scroll `$00EB` alternates between the two rooms for a few
-frames.
+frames. Writing `$05` to `$0671` shows two pieces on the item screen's
+Triforce. Writing `$12` to `$0012` in a dungeon-1 room shows Link holding up a
+piece for about 430 frames, then modes `$02`, `$03` and `$04` return him to
+the dungeon's entrance on the overworld in mode `$05`.
 
 ## Declared workload
 
@@ -71,8 +74,12 @@ where the directions choose the B item, so a tap is how the search equips
 bombs, the boomerang and the other B items.
 
 Mode `$11` is a terminal death, as the other adapters end a job at the first
-lost life. Mode `$13` is the victory: the ending after Ganon is defeated. No
-run has reached it, so that reading is unchecked against the ROM.
+lost life. Mode `$13` is the victory: the ending after Ganon is defeated. The
+ROM writes `$13` to `$0012` at one site only (bank 4, `$A9C5`), and a
+Triforce pickup is mode `$12`, which returns to play. No run has reached the
+ending, so the ending screen itself is unchecked. A test on the RAM image
+holds that only `$13` is victory and that `$12` is neither victory nor
+terminal.
 
 Key choices:
 
@@ -86,6 +93,11 @@ Key choices:
   hid the way out of a Metroid shaft, and 64 pixels is the coarsest size that
   still splits a room. The mode is in the place because a cave keeps the room
   byte of the overworld screen it opens from.
+- Only stable modes get a key. A state in a level load, scroll, stairs, cave
+  exit or Triforce pickup (`$02`, `$03`, `$04`, `$06`, `$07`, `$0A`, `$10`,
+  `$12`) gets no cell. These frames last a fixed time and accept no input, so
+  a cell there repeats the room it leaves or enters. In a 30-minute probe they
+  held 57% of all cells. Milestones still count on these frames.
 - The identity is empty and the capacity is one, so each cell keeps one state.
 - The one preference is heart containers, then health in half hearts, then
   rupees. Ties keep the state with fewer frames. A purchase spends rupees, so

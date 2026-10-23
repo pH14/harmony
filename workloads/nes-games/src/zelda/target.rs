@@ -35,7 +35,9 @@ pub const SWORDS: [&str; 3] = ["wooden_sword", "white_sword", "magic_sword"];
 
 pub const MODE_PLAY: u8 = 0x05;
 pub const MODE_DEATH: u8 = 0x11;
+pub const MODE_END_LEVEL: u8 = 0x12;
 pub const MODE_ENDING: u8 = 0x13;
+pub const TRANSITION_MODES: [u8; 8] = [0x02, 0x03, 0x04, 0x06, 0x07, 0x0a, 0x10, MODE_END_LEVEL];
 pub const OVERWORLD: u8 = 0;
 pub const START_ROOM: u8 = 0x77;
 pub const START_CONTAINERS: u8 = 3;
@@ -111,6 +113,11 @@ impl ZeldaMechanicalState {
     #[must_use]
     pub fn victory(self) -> bool {
         self.mode == MODE_ENDING
+    }
+
+    #[must_use]
+    pub fn in_transition(self) -> bool {
+        TRANSITION_MODES.contains(&self.mode)
     }
 
     #[must_use]
@@ -854,6 +861,40 @@ mod tests {
         assert!(won.victory() && won.terminal() && !won.dead());
         wram[MODE] = 0x0b;
         assert!(!decode_state(&wram).unwrap().terminal());
+    }
+
+    #[test]
+    fn only_the_ending_mode_is_victory_and_a_triforce_pickup_is_not() {
+        let mut wram = playing_wram();
+        wram[LEVEL] = 1;
+        wram[TRIFORCE] = 0x01;
+        wram[MODE] = MODE_END_LEVEL;
+        let pickup = decode_state(&wram).unwrap();
+        assert_eq!(pickup.triforce_pieces(), 1);
+        assert!(!pickup.victory() && !pickup.terminal() && pickup.in_transition());
+        for mode in (0..=0xff).filter(|mode| *mode != MODE_ENDING) {
+            wram[MODE] = mode;
+            assert!(!decode_state(&wram).unwrap().victory(), "mode {mode:#04x}");
+        }
+        wram[LEVEL] = 9;
+        wram[TRIFORCE] = 0xff;
+        wram[MODE] = MODE_ENDING;
+        let ending = decode_state(&wram).unwrap();
+        assert!(ending.victory() && ending.terminal());
+        assert_eq!(ending.triforce_pieces(), TRIFORCE_PIECES);
+    }
+
+    #[test]
+    fn play_and_cave_modes_are_stable_and_scrolls_and_loads_are_transitions() {
+        let mut wram = playing_wram();
+        for mode in [MODE_PLAY, 0x0b] {
+            wram[MODE] = mode;
+            assert!(!decode_state(&wram).unwrap().in_transition());
+        }
+        for mode in TRANSITION_MODES {
+            wram[MODE] = mode;
+            assert!(decode_state(&wram).unwrap().in_transition());
+        }
     }
 
     #[test]

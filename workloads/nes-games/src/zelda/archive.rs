@@ -19,8 +19,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "zelda_triforce_tier_mode_level_room_grid_64_place_containers_health_rupees_preference_v1";
+pub const KEY_POLICY_IDENTIFIER: &str = "zelda_triforce_tier_stable_mode_level_room_grid_64_place_containers_health_rupees_preference_v2";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -93,7 +92,7 @@ pub fn tier(state: ZeldaMechanicalState) -> ZeldaTier {
 
 #[must_use]
 pub fn archive_key(state: ZeldaMechanicalState) -> Option<ZeldaArchiveKey> {
-    if state.terminal() {
+    if state.terminal() || state.in_transition() {
         return None;
     }
     Some(ZeldaArchiveKey {
@@ -253,7 +252,7 @@ pub const CHORDS: ChordVocabulary = ChordVocabulary {
 mod tests {
     use super::*;
     use crate::search::rand::RomuDuoJrRand;
-    use crate::zelda::target::{MODE_DEATH, MODE_PLAY, START_ROOM};
+    use crate::zelda::target::{MODE_DEATH, MODE_END_LEVEL, MODE_PLAY, START_ROOM};
 
     fn state(x: u8, y: u8) -> ZeldaMechanicalState {
         ZeldaMechanicalState {
@@ -334,6 +333,22 @@ mod tests {
         dead.mode = MODE_DEATH;
         assert_eq!(archive_key(dead), None);
         assert!(milestones(dead).death);
+    }
+
+    #[test]
+    fn a_scroll_or_triforce_pickup_frame_has_no_key_but_keeps_its_milestones() {
+        let mut scroll = state(0x78, 0x8d);
+        scroll.mode = 0x07;
+        assert_eq!(archive_key(scroll), None);
+        let mut pickup = state(0x78, 0x8d);
+        pickup.mode = MODE_END_LEVEL;
+        pickup.level = 1;
+        pickup.triforce = 0x01;
+        assert_eq!(archive_key(pickup), None);
+        assert_eq!(milestones(pickup).triforce, 0x01);
+        let mut cave = state(0x78, 0x8d);
+        cave.mode = 0x0b;
+        assert_ne!(archive_key(cave), archive_key(state(0x78, 0x8d)));
     }
 
     #[test]
