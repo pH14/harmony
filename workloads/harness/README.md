@@ -90,6 +90,16 @@ that node's own copy under the same fence. `Copy.Value` is nil for a missing
 key, and `Copy.Meta` holds the per-key metadata the system exposes, such as a
 revision, or nothing when it exposes none.
 
+The check compares replicas only when the supervisor reports no fault in force
+at its start (`HARMONY_FAULTS_IN_FORCE` is not `1`). Otherwise it skips the
+comparison and journals no replica reads, so a member that a fault cuts off
+cannot answer from its lagging copy into a comparison. The read fence and this
+skip cover the same risk from two sides: a fence makes a cut-off member's pinned
+read fail, and the skip protects targets whose pinned reads answer from local
+state without a fence. A check that starts before a cut still compares. A
+violation needs every round to disagree, so only a cut that starts before the
+first round's reads can cause one.
+
 ## Randomness
 
 Every choice the driver makes comes from `sdk.Random()`: the operation, its
