@@ -1,0 +1,23 @@
+[
+  {
+    "operation": {
+      "Wait": 3000
+    },
+    "coverage_quantum": 4096
+  },
+  {
+    "operation": {
+      "Kill": [
+        3,
+        500
+      ]
+    },
+    "coverage_quantum": 4096
+  },
+  {
+    "operation": {
+      "Wait": 20000
+    },
+    "coverage_quantum": 4096
+  }
+]

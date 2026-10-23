@@ -105,13 +105,30 @@ reads, writes and CAS operations. The check rejects clean-looking runs whose jou
 
 ## Recovery and replay
 
-`bash workloads/harness/targets/hbase/check-recovery.sh IMAGE EVIDENCE CONFIG`
-runs the fixed RegionServer scenario and exact replay. `recovery.json` waits
+`bash workloads/harness/targets/hbase/check-recovery.sh IMAGE EVIDENCE CONFIG [ACTIONS]`
+runs a fixed scenario and exact replay. The default `recovery.json` waits
 ten guest seconds, kills bundle node 8 (`r1`) for one second, then waits 200
-seconds; each action uses coverage quantum 4,096. The check requires no
-violations, execution failures or watchdog cutoffs, all reachability
-assertions including a post-fault read, and zero undecided keys or pending
-faults at the final check.
+seconds; each action uses coverage quantum 4,096.
+
+Additional scenarios warm up for 30 guest seconds, apply a five-second fault,
+and allow 200 seconds for recovery:
+
+- `recovery-datanode.json` restarts the first DataNode (bundle node 4).
+- `recovery-hmaster.json` restarts HMaster (bundle node 7).
+- `recovery-namenode.json` restarts the single NameNode (bundle node 3).
+- `recovery-partition.json` partitions the network and invokes the heal hook.
+
+These are diagnostic scenarios, not a promise that each fault recovers. The
+single NameNode scenario can trigger secondary JVM exits. Network hook
+completion alone does not establish that connectivity or HBase has recovered.
+
+`check-recovery.py REPORT ACTIONS` also validates retained reports. It requires
+an acknowledged write before the fault, the requested action sequence, observed
+restarts or completed hooks, all ten services alive without unexpected exits,
+and a successful read in the final check. It rejects violations, missing
+reachability assertions, execution failures, watchdog cutoffs, undecided keys,
+and pending faults. A read recorded earlier in the timeline cannot substitute
+for a successful final check.
 
 Use `probe.sh` to measure cluster launch and readiness, guest available memory,
 per-process RSS and thread counts, and a short workload followed by a decided
