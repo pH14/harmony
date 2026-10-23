@@ -582,6 +582,14 @@ copy that `libsodium-sys` builds so that it clears ECX itself, and
 `cpuid-xgetbv.sh` does the same for `klauspost/cpuid` in the harness. Both
 callers request only XCR0.
 
+`v2.4.1` writes `node_key` and `cluster_layout` with a truncating
+`File::create` and no fsync or rename, so `metadata_fsync` does not cover
+them. A power loss within the ext4 writeback delay after a node first starts
+leaves `node_key` empty. The node then panics with `Corrupt node_key file`
+on every start, and the supervisor reports an unexpected node death. The
+shrunk run has that one power loss. All 20 redrawn variants leave the file
+empty, and 19 of them fail.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
