@@ -15,9 +15,10 @@ import (
 
 func main() {
 	name := flag.String("family", "log", "family checker to run: log or register")
+	reads := flag.String("reads", "linearizable", "register read consistency: linearizable or monotonic")
 	emit := flag.Bool("emit", false, "also write SDK assertion records to $ANTITHESIS_OUTPUT_DIR")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: harness-check [-family log|register] [-emit] JOURNAL_DIR")
+		fmt.Fprintln(os.Stderr, "usage: harness-check [-family log|register] [-reads linearizable|monotonic] [-emit] JOURNAL_DIR")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -29,6 +30,17 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
+	}
+	if register, ok := fam.(family.Register); ok {
+		switch *reads {
+		case "linearizable":
+		case "monotonic":
+			register.Reads = family.MonotonicReads
+			fam = register
+		default:
+			fmt.Fprintf(os.Stderr, "unknown read consistency %q\n", *reads)
+			os.Exit(2)
+		}
 	}
 	h, err := history.Load(flag.Arg(0))
 	if err != nil {
