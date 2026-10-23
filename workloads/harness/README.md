@@ -579,6 +579,9 @@ WAL then holds the same `Put` twice, and the register check reports a
 linearizability violation. About 4 in 20 redrawn variants of the shrunk run
 fail on `v0.16.11` and 2 in 20 on `v0.18.0-rc4`.
 
+Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
+memory, and 1024 MiB cannot hold the four full disks (800 MiB) and Oxia.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
