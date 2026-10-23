@@ -5798,6 +5798,7 @@ mod tests {
         live: std::sync::atomic::AtomicUsize,
         most: std::sync::atomic::AtomicUsize,
         objective_after_work: std::sync::atomic::AtomicU64,
+        jobs_started: std::sync::atomic::AtomicU64,
         action_hook: Mutex<Option<Arc<TestActionHook>>>,
         selections: std::sync::atomic::AtomicUsize,
         hang_divisor: std::sync::atomic::AtomicU8,
@@ -5852,6 +5853,8 @@ mod tests {
         static FINALIZATION: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, false)) };
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static JOB_CANCEL: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
+        static JOB_INDEX: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -6360,6 +6363,13 @@ mod tests {
             retention: RetentionPolicy,
             stop: crate::search::rollout::RolloutStop,
         ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
+            JOB_CANCEL.with(|cancel| *cancel.borrow_mut() = stop.cancellation().cloned());
+            let index = self.targets.as_ref().map_or(0, |targets| {
+                targets
+                    .jobs_started
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            });
+            JOB_INDEX.with(|job| job.set(index));
             let result = crate::search::rollout::execute_job(
                 self,
                 run,
@@ -9758,6 +9768,23 @@ mod tests {
         targets
     }
 
+    const BLOCKED_JOB_LIMIT: Duration = Duration::from_secs(120);
+
+    #[allow(clippy::disallowed_methods)]
+    fn block_until_cancelled() -> Result<(), String> {
+        let cancel = JOB_CANCEL
+            .with(|cancel| cancel.borrow().clone())
+            .ok_or("the job has no cancel flag")?;
+        let started = Instant::now();
+        while !cancel.load(std::sync::atomic::Ordering::Acquire) {
+            if started.elapsed() >= BLOCKED_JOB_LIMIT {
+                return Err("the blocked job was never cancelled".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok(())
+    }
+
     fn cancelled_reservations(stream: &[u8]) -> Vec<u64> {
         stream_records(stream)
             .into_iter()
@@ -9792,9 +9819,20 @@ mod tests {
 
     #[test]
     fn a_wall_budget_drops_the_jobs_in_flight_and_replays() {
+        let targets = Arc::new(LiveTargets {
+            suffix_actions: Some(64),
+            ..LiveTargets::default()
+        });
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(|_| {
+            if JOB_INDEX.with(std::cell::Cell::get) >= 2 {
+                block_until_cancelled()
+            } else {
+                Ok(())
+            }
+        }));
         let workload = TestWorkload {
             bootstrap_objective: false,
-            targets: Some(slow_targets(64, Duration::from_millis(10))),
+            targets: Some(targets),
         };
         let mut config = three_worker_config();
         config.workers = 2;
@@ -9813,7 +9851,7 @@ mod tests {
         )
         .expect("the campaign ends at its wall budget");
         let elapsed = started.elapsed();
-        assert!(elapsed < Duration::from_millis(1_300), "{elapsed:?}");
+        assert!(elapsed < BLOCKED_JOB_LIMIT / 2, "{elapsed:?}");
         let cancelled = cancelled_reservations(&stream);
         assert!(!cancelled.is_empty());
         assert_eq!(live.jobs_cancelled, u64::try_from(cancelled.len()).unwrap());
@@ -9889,10 +9927,10 @@ mod tests {
         });
         let counted = Arc::clone(&actions);
         *targets.action_hook.lock().unwrap() = Some(Arc::new(move |_| {
-            if counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 300 {
+            if counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 300 {
                 INTERRUPT.store(true, std::sync::atomic::Ordering::Release);
+                return block_until_cancelled();
             }
-            std::thread::sleep(Duration::from_millis(2));
             Ok(())
         }));
         let workload = TestWorkload {
@@ -9902,6 +9940,8 @@ mod tests {
         let mut config = three_worker_config();
         config.execution_budget = 1_000_000;
         let mut stream = Vec::new();
+        #[allow(clippy::disallowed_methods)]
+        let started = Instant::now();
         let (live, _) = run_campaign_checkpointed_with_options(
             &workload,
             &config,
@@ -9914,6 +9954,8 @@ mod tests {
             },
         )
         .expect("an interrupted campaign still reports");
+        let elapsed = started.elapsed();
+        assert!(elapsed < BLOCKED_JOB_LIMIT / 2, "{elapsed:?}");
         assert!(live.interrupted);
         assert!(actions.load(std::sync::atomic::Ordering::SeqCst) < 300 + 3 * 64);
         let cancelled = cancelled_reservations(&stream);
