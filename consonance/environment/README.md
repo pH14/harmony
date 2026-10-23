@@ -119,6 +119,10 @@ so repeated callbacks do not grow the answer tape. A custom contract without
 either answer stops as an explicit decision before the scheduler selection,
 threshold, or guest response commits. Generic opcode-3 service questions with
 numeric service ID 4 do not consult the coverage schedule.
+`decide_coverage` takes the callbacks until the guest's next timer deadline
+from the VM. With a runnable width of 1, `coverage_span` extends the next
+threshold to the last whole quantum before that deadline, capped at
+`COVERAGE_SKIP_LIMIT` callbacks.
 
 `ServiceHandler::local_services` declares at most 32 strictly increasing, unique
 namespace IDs above the core and coverage supplies (IDs 1–4). Empty means

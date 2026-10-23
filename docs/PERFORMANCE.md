@@ -177,7 +177,9 @@ between exits. Multiply the exit count by the cost per exit, then divide by
 guest time to get the overhead. At 2.5 µs per exit, exiting every 25 µs of
 guest work adds 10%; exiting every 2.5 µs doubles the total time. Attribute physical exits and SDK scheduling exchanges by operation before
 identifying a dominant cost. Coverage exchanges select scheduling decisions
-and the next threshold; they are distinct from logical kernel ticks. Callback
+and the next threshold; they are distinct from logical kernel ticks. With one
+runnable thread the next threshold sits just before the next guest timer
+deadline, so a busy thread exits about once per timer period at any quantum. Callback
 shape alone does not establish that register publication dominates.
 
 ## Pages

@@ -41,7 +41,9 @@ normalized machine events.
 
 Each normalized exit class has an advancement rule. A guest doorbell can carry
 a modeled duration. Device and architectural exits use configured class
-durations. Terminal events do not advance time. Raw substrate-only exits can be
+durations. An SDK coverage exchange advances time by its quantum times a fixed
+cost per coverage callback, so guest CPU speed does not depend on the quantum.
+Terminal events do not advance time. Raw substrate-only exits can be
 excluded from the portable event sequence, so a backend implementation detail
 does not become guest-visible time.
 
