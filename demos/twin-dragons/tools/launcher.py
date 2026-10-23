@@ -518,6 +518,7 @@ class Launcher:
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                preexec_fn=lambda: os.nice(10),
             )
             log.close()
             port = self.listening_port(run, directory / "nes-eval.log")
