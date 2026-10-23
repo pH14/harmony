@@ -246,6 +246,14 @@ installs a kill as a process restart window over the whole action window, and
 a power loss as a power-loss window plus a restart window over the same span.
 Two adjacent kills of one node join into one longer hold.
 
+Each drawn job also takes a draw profile from its mutation seed, as in swarm
+testing. The profile keeps each offered fault kind with probability one half,
+or every offered kind when it keeps none. It weighs `Wait` against each kept
+kind by a power of two from 1 through 64, drawn uniformly over the exponents.
+Every action of the job draws its kind from that profile. A job with a heavy
+`Wait` weight leaves quiet time between faults, so the check can run while the
+cluster recovers. A job with weight 1 draws `Wait` as one more kind.
+
 A drawn clock action changes either the offset or the rate. The offset is a
 power of two from 1 ms through 2^18 ms (about 4.4 minutes) with a random sign.
 The rate is 1,000 ppm times a power of two from 1 through 4,096, with a

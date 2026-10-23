@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v10";
+pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v11";
 pub const MAX_NODES: u16 = 64;
 pub const CHECKSUMMED: &str = "checksummed";
 
@@ -503,7 +503,7 @@ ready /usr/local/pgsql/bin/pg_isready
         assert!(vocabulary.checksummed().is_empty());
         assert_eq!(
             identifier,
-            "faultlab_bundle_v10;nodes=3;hooks=;disks=0,1;checksummed=;events=none;clock=none;exclude="
+            "faultlab_bundle_v11;nodes=3;hooks=;disks=0,1;checksummed=;events=none;clock=none;exclude="
         );
         assert_eq!(
             FaultVocabulary::from_identifier(&identifier).expect("resolve"),
@@ -531,7 +531,7 @@ ready /usr/local/pgsql/bin/pg_isready
         let identifier = vocabulary.identifier();
         assert_eq!(
             identifier,
-            "faultlab_bundle_v10;nodes=3;hooks=;disks=0,2;checksummed=2;events=none;clock=none;exclude="
+            "faultlab_bundle_v11;nodes=3;hooks=;disks=0,2;checksummed=2;events=none;clock=none;exclude="
         );
         assert_eq!(
             FaultVocabulary::from_identifier(&identifier).expect("resolve"),
@@ -558,7 +558,7 @@ ready /usr/local/pgsql/bin/pg_isready
         let identifier = vocabulary.identifier();
         assert_eq!(
             identifier,
-            "faultlab_bundle_v10;nodes=1;hooks=1,2;disks=;checksummed=;events=none;clock=none;exclude=kill,pause"
+            "faultlab_bundle_v11;nodes=1;hooks=1,2;disks=;checksummed=;events=none;clock=none;exclude=kill,pause"
         );
         assert_eq!(
             FaultVocabulary::from_identifier(&identifier).expect("resolve"),
@@ -671,7 +671,7 @@ ready /usr/local/pgsql/bin/pg_isready
         );
         assert_eq!(
             etcd.identifier(),
-            "faultlab_bundle_v10;nodes=1;hooks=1,2;disks=;checksummed=;events=none;clock=none;exclude="
+            "faultlab_bundle_v11;nodes=1;hooks=1,2;disks=;checksummed=;events=none;clock=none;exclude="
         );
         assert_ne!(
             etcd.identifier(),
@@ -680,7 +680,7 @@ ready /usr/local/pgsql/bin/pg_isready
         let clocked = etcd.clone().with_clock_faults(true);
         assert_eq!(
             clocked.identifier(),
-            "faultlab_bundle_v10;nodes=1;hooks=1,2;disks=;checksummed=;events=none;clock=time_namespace;exclude="
+            "faultlab_bundle_v11;nodes=1;hooks=1,2;disks=;checksummed=;events=none;clock=time_namespace;exclude="
         );
         assert_eq!(
             FaultVocabulary::from_identifier(&clocked.identifier()).expect("resolve"),
@@ -689,7 +689,7 @@ ready /usr/local/pgsql/bin/pg_isready
         let both = clocked.with_disks(vec![0]).expect("disks");
         assert_eq!(
             both.identifier(),
-            "faultlab_bundle_v10;nodes=1;hooks=1,2;disks=0;checksummed=;events=none;clock=time_namespace;exclude="
+            "faultlab_bundle_v11;nodes=1;hooks=1,2;disks=0;checksummed=;events=none;clock=time_namespace;exclude="
         );
         assert_eq!(
             FaultVocabulary::from_identifier(&both.identifier()).expect("resolve"),
@@ -708,21 +708,21 @@ ready /usr/local/pgsql/bin/pg_isready
             "faultlab_bundle_v8;nodes=1;hooks=1;disks=;events=none",
             "faultlab_bundle_v8;nodes=1;hooks=1;events=none;clock=none",
             "faultlab_bundle_v9;nodes=1;hooks=1;disks=;events=none",
-            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;events=none",
-            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;events=none;clock=none",
-            "faultlab_bundle_v10;nodes=0;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=",
-            "faultlab_bundle_v10;nodes=x;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=",
-            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;checksummed=;events=other;clock=none;exclude=",
-            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;checksummed=;events=none;clock=other;exclude=",
-            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=;extra=2",
-            "faultlab_bundle_v10;nodes=1;hooks=one;disks=;checksummed=;events=none;clock=none;exclude=",
-            "faultlab_bundle_v10;nodes=1;hooks=1;disks=1;checksummed=;events=none;clock=none;exclude=",
-            "faultlab_bundle_v10;nodes=2;hooks=1;disks=0,0;checksummed=;events=none;clock=none;exclude=",
-            "faultlab_bundle_v10;nodes=2;hooks=1;disks=0;checksummed=1;events=none;clock=none;exclude=",
-            "faultlab_bundle_v10;nodes=2;hooks=1;disks=0;checksummed=0,0;events=none;clock=none;exclude=",
-            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=wait",
-            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=kill,kill",
-            "faultlab_bundle_v10;nodes=1;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=pause,kill",
+            "faultlab_bundle_v11;nodes=1;hooks=1;disks=;events=none",
+            "faultlab_bundle_v11;nodes=1;hooks=1;disks=;events=none;clock=none",
+            "faultlab_bundle_v11;nodes=0;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=",
+            "faultlab_bundle_v11;nodes=x;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=",
+            "faultlab_bundle_v11;nodes=1;hooks=1;disks=;checksummed=;events=other;clock=none;exclude=",
+            "faultlab_bundle_v11;nodes=1;hooks=1;disks=;checksummed=;events=none;clock=other;exclude=",
+            "faultlab_bundle_v11;nodes=1;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=;extra=2",
+            "faultlab_bundle_v11;nodes=1;hooks=one;disks=;checksummed=;events=none;clock=none;exclude=",
+            "faultlab_bundle_v11;nodes=1;hooks=1;disks=1;checksummed=;events=none;clock=none;exclude=",
+            "faultlab_bundle_v11;nodes=2;hooks=1;disks=0,0;checksummed=;events=none;clock=none;exclude=",
+            "faultlab_bundle_v11;nodes=2;hooks=1;disks=0;checksummed=1;events=none;clock=none;exclude=",
+            "faultlab_bundle_v11;nodes=2;hooks=1;disks=0;checksummed=0,0;events=none;clock=none;exclude=",
+            "faultlab_bundle_v11;nodes=1;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=wait",
+            "faultlab_bundle_v11;nodes=1;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=kill,kill",
+            "faultlab_bundle_v11;nodes=1;hooks=1;disks=;checksummed=;events=none;clock=none;exclude=pause,kill",
         ] {
             assert!(
                 FaultVocabulary::from_identifier(identifier).is_err(),
@@ -730,7 +730,7 @@ ready /usr/local/pgsql/bin/pg_isready
             );
         }
         let no_hooks = FaultVocabulary::from_identifier(
-            "faultlab_bundle_v10;nodes=2;hooks=;disks=;checksummed=;events=antithesis;clock=none;exclude=",
+            "faultlab_bundle_v11;nodes=2;hooks=;disks=;checksummed=;events=antithesis;clock=none;exclude=",
         )
         .expect("resolve");
         assert_eq!(no_hooks.nodes(), 2);
