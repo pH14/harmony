@@ -28,6 +28,7 @@ generic operations onto the target's client API.
 | `targets/dqlite` | dqlite image, node program and adapter |
 | `targets/oxia` | Oxia image and adapter |
 | `targets/garage` | Garage image and adapter |
+| `targets/openbao` | OpenBao image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 | `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
@@ -860,6 +861,69 @@ empty, and 19 of them fail.
 
 Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
 memory, and 1024 MiB cannot hold three full 256 MiB disks and Garage.
+
+## OpenBao
+
+`targets/openbao` drives the `register` family against
+[OpenBao](https://github.com/openbao/openbao) `v2.7.1` with integrated
+storage (Raft) on three nodes `n1` to `n3` at 10.77.0.1-3 (API port 8200,
+cluster port 8201) in `harness-net` namespaces. `setup.sh` writes each node's
+configuration from `bao.hcl.in`: a `raft` storage path under `/tmp/bao/<node>`
+on a 256 MiB node disk, `retry_join` toward all three nodes, a `static` seal
+with a fixed test key so a restarted node unseals itself, and
+`disable_standby_reads`. Each node logs to `/tmp/bao/<node>.log`. OpenBao
+documents that integrated storage commits an entry once a quorum stores it
+durably and that writes return only after they are committed and applied.
+Standby reads are eventually consistent by default, so the target turns them
+off and every request reaches the active node.
+
+`ready.sh` initializes the cluster once per execution through `n1` with one
+recovery share, keeps the root token in `/tmp/bao/token`, mounts KV version 2
+at `secret/`, and then runs the adapter's `ready`, which passes once a write
+succeeds through any node.
+
+Each operation goes to a node drawn from the SDK stream over a new HTTP
+connection, and the client follows no redirects. A standby whose forwarded
+request fails answers `307` toward the active node, and the forwarded request
+may already have committed, so a redirected write is indeterminate. `write` and `read` use `secret/data/<key>`. `cas` writes with
+`options.cas` set to the version that stored the old value, from the
+versions the client has seen or from a read. A `check-and-set parameter did
+not match` answer and a failed dial are definite failures, other write errors
+are indeterminate and read errors are definite. The check also pins one read
+to each node. A standby forwards it to the node it takes for active, and a node
+that still takes itself for active answers from its own state, with no
+leadership check. The per-node stale-read property covers those reads. The
+check skips the replica comparison.
+
+`bundle-api` runs the same operations through the upstream Go client
+(`api/v2`) with its default retries and redirect handling, so the history
+shows what an application on that client observes. A check-and-set conflict
+is a definite failure there, and every other write error is indeterminate.
+Build it with `HARNESS_BUNDLE=bundle-api`.
+
+`v2.7.1` serves stale reads from a paused active node. After a pause longer
+than the election timeout, the other nodes elect a new leader and acknowledge
+newer writes, while the resumed node still takes itself for active for about
+3 s. It answers reads from its own state, which has no leadership check, and
+steps down only once in-flight requests finish. About 13 in 20 redrawn
+variants of a run that pauses the active node fail the per-node stale-read
+property. A network partition of the active node does not show it, because the
+partitioned leader's lease expires first.
+
+The upstream Go client reports `ErrSecretNotFound` for a secret that exists
+when a standby answers a second `307` during a leader change. The client
+follows one redirect, treats the second `307` as success, and parses its empty
+body as no secret. About 12 in 20 redrawn variants of a run with one power
+loss of every node fail under `bundle-api`.
+
+The image builds `bao` from the release source with Go 1.27 and the
+`openbao` build tag, without the web UI, through the Antithesis Go
+instrumentation. `cpuid-xgetbv.sh` replaces `klauspost/cpuid` with a copy whose `XGETBV`
+clears ECX: admission accepts `XGETBV` only after a provable zero selector,
+and every caller passes 0.
+
+Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
+memory, and the release image needs more than 1 GiB to unpack.
 
 ## Native runner
 

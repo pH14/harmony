@@ -1,0 +1,18 @@
+setup /opt/harmony/setup.sh
+node n1 /opt/harmony/node.sh 1
+node n2 /opt/harmony/node.sh 2
+node n3 /opt/harmony/node.sh 3
+disk n1 /tmp/bao/n1 256M
+disk n2 /tmp/bao/n2 256M
+disk n3 /tmp/bao/n3 256M
+log n1 /tmp/bao/n1.log
+log n2 /tmp/bao/n2.log
+log n3 /tmp/bao/n3.log
+hook 1 /opt/harmony/harness-net partition
+hook 2 /opt/harmony/harness-net isolate
+hook 3 /opt/harmony/harness-net delay
+hook 4 /opt/harmony/harness-net heal
+heal 4
+ready /opt/harmony/ready.sh
+workload /opt/harmony/bao-harness drive
+check /opt/harmony/bao-harness check
