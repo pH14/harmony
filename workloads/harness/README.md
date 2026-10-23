@@ -479,8 +479,7 @@ put succeeds through any member.
 
 The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
 (default), `v3.5.5`, `v3.5.27` and `v3.5.28`; pass `ETCD_SOURCE_SHA256` for
-other versions. It instruments `go.etcd.io/etcd` (server and raft) and
-`go.etcd.io/bbolt`. Build the single-member image with
+other versions. Build the single-member image with
 `--build-arg HARNESS_BUNDLE=bundle-single`.
 
 ## Redis-Raft
@@ -572,9 +571,7 @@ Consul records with the entry, which are the same on every server.
 `ready` passes once a put succeeds through any server.
 
 The Dockerfile knows the source SHA-256 of `v2.1.0` (default); pass
-`CONSUL_SOURCE_SHA256` for other versions. It instruments
-`github.com/hashicorp/consul`, `github.com/hashicorp/raft` (with
-`raft-boltdb` and `raft-wal`) and `go.etcd.io/bbolt`.
+`CONSUL_SOURCE_SHA256` for other versions.
 
 ## Native runner
 
