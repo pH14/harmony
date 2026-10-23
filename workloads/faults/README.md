@@ -209,6 +209,10 @@ before. Fault actions often do, because the edge bucket is part of the holder
 identity. With every fault kind, later actions of long jobs open fewer novel
 slots, and most jobs return to one action. A worker ends its job at the
 search's wall-time limit, as the searcher README describes.
+An action's planned cost is its guest ticks plus 256 ticks for the host work
+around it, so planned finishes follow wall time. On etcd with KVM, a job takes
+about 0.18 seconds of wall time per action plus 0.076 seconds per guest second,
+so an action's host work costs as much as about 240 ticks of guest time.
 Each action also records a coverage
 quantum: the number of coverage callbacks an instrumented thread makes between
 VM exits during the action's window. It is drawn log-uniform over powers of two
