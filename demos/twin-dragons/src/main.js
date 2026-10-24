@@ -1809,7 +1809,7 @@ function startSearch(level = bootLevel) {
         if (liveView) for (const [key, counter] of Object.entries(counters)) counter.push(batchStats[key] || 0, performance.now());
         gameWon ||= data.won;
         const now = performance.now();
-        heat.visitMotion(data.motion || [], maps, now);
+        heat.visitMotion(data.motion || [], maps, now, game.exactCellRows);
         for (const point of data.points) {
           const o = point.observation,
             map = maps.get(o.level),
