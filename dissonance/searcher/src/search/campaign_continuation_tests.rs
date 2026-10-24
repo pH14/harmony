@@ -164,7 +164,25 @@ impl Reporting for TestWorkload {
     }
 }
 
+thread_local! {
+    static RETIME_ORDINARY_DRAWS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl InputPolicy for TestWorkload {
+    fn refresh_selected_input_timing(
+        &self,
+        _run: &Self::Run,
+        _seed: u64,
+        suffix: &mut [Self::Action],
+    ) -> Result<(), Box<dyn Error>> {
+        if RETIME_ORDINARY_DRAWS.get() {
+            for action in suffix {
+                action.work_units = action.work_units.saturating_add(1);
+            }
+        }
+        Ok(())
+    }
+
     fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
         WorkloadPolicies::from([(
             PREFERENCE_POLICY_FIELD.to_owned(),
@@ -411,6 +429,31 @@ fn replay_rejects_duplicate_skip_for_taken_continuation() {
             .contains("skip before a taken continuation"),
         "{error}"
     );
+}
+
+#[test]
+fn retained_continuation_timing_is_not_refreshed_during_replay() {
+    RETIME_ORDINARY_DRAWS.set(true);
+    let config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    let (live, checkpoint) = run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    assert!(
+        std::str::from_utf8(&bytes)
+            .unwrap()
+            .contains("\"path\":\"continuation\"")
+    );
+    let (replayed, replay_checkpoint) =
+        replay_campaign_checkpointed(&TestWorkload, &bytes, None, None).unwrap();
+    assert_eq!(live, replayed);
+    assert_eq!(checkpoint, replay_checkpoint);
+    RETIME_ORDINARY_DRAWS.set(false);
 }
 
 #[test]

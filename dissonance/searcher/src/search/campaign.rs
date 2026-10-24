@@ -5177,7 +5177,7 @@ where
                         draw,
                     )?,
                 };
-                if duration_draw.is_none() {
+                if duration_draw.is_none() && job.selector.path != SelectorPath::Continuation {
                     workload.refresh_selected_input_timing(
                         &replay_run,
                         job.mutation_seed,
