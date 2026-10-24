@@ -23,8 +23,8 @@ pub struct View {
     mode: u8,
     level: u8,
     room: u8,
-    x: u8,
-    y: u8,
+    x: u16,
+    y: u16,
     health: u16,
     containers: u8,
     rupees: u8,
@@ -50,12 +50,13 @@ fn position(state: ZeldaMechanicalState) -> (u16, u16) {
 }
 
 fn view(state: ZeldaMechanicalState) -> View {
+    let (x, y) = position(state);
     View {
         mode: state.mode,
         level: state.level,
         room: state.room,
-        x: state.x,
-        y: state.y,
+        x,
+        y,
         health: state.health(),
         containers: state.containers(),
         rupees: state.rupees,
