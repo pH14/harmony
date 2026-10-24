@@ -164,6 +164,9 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn preference_cmp(self, _preference: usize, _other: Self) -> Ordering {
         Ordering::Equal
     }
+    fn carry(self, _donor: Self, leaf: Self, _weight: (u32, u32)) -> Self {
+        leaf
+    }
     type Lineage: Clone + Default + Serialize + DeserializeOwned;
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self;
     fn record(lineage: &mut Self::Lineage, key: Self);
