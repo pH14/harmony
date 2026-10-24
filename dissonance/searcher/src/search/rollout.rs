@@ -205,3 +205,21 @@ pub fn execute_suffix<G: Workload + ?Sized>(
         actions,
     })
 }
+
+pub fn execute_live_suffix<G: Workload>(
+    workload: &G,
+    run: &G::Run,
+    target: &mut G::Target,
+    milestones: G::Milestones,
+    suffix: &[G::Action],
+    retention: RetentionPolicy,
+    stop: bool,
+) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
+    execute_suffix(
+        &mut WorkloadRollout::new(workload, run, target),
+        milestones,
+        suffix,
+        retention,
+        stop,
+    )
+}

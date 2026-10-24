@@ -112,6 +112,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     duration_policies: DurationPolicies<G::Key>,
     checkpoints: Option<CheckpointPublisher<G::Snapshot, <G::Key as ArchiveKey>::Progress>>,
     failed: bool,
+    stop_requested: bool,
     reserved: u64,
     admitted: usize,
     planned_clock: u64,
@@ -315,6 +316,7 @@ where
             duration_policies,
             checkpoints,
             failed: false,
+            stop_requested: false,
             reserved,
             admitted,
             planned_clock,
@@ -381,6 +383,157 @@ where
             coordinator.pending.insert(job.reservation, job.pending);
         }
         Ok(coordinator)
+    }
+
+    pub fn run_alive_job(
+        &self,
+        target: &mut G::Target,
+        job: &JobSpec<G>,
+        repeat: bool,
+        work_limit: u64,
+    ) -> Result<(JobOutcome<G>, usize), Box<dyn Error>> {
+        if self.config.window != 1 {
+            return Err("alive rollout experiment requires one admission window".into());
+        }
+        let workload = self.workload;
+        let config = self.config;
+        let pending = self
+            .pending
+            .get(&job.reservation)
+            .ok_or("missing live reservation")?;
+        let parent = self
+            .core
+            .archive
+            .index_of_id(pending.parent_id)
+            .ok_or("missing parent")?;
+        let before = workload.execution_work(target);
+        let prepared = workload.execute_job_certified(
+            &config.run,
+            target,
+            &job.snapshot,
+            &job.replay,
+            &job.replay_certificates,
+            job.parent_milestones,
+            &[],
+            config.retention,
+            config.stop_rollout_on_objective,
+        )?;
+        if prepared.preparation_failure.is_some() {
+            let result_sha256 = workload.certified_result_sha256(&prepared, target)?;
+            return Ok((
+                JobOutcome {
+                    reservation: job.reservation,
+                    result: prepared,
+                    execution_work: workload.execution_work(target).saturating_sub(before),
+                    result_sha256,
+                },
+                0,
+            ));
+        }
+        let mut result = prepared;
+        let mut milestones = job.parent_milestones;
+        let mut previous_key = None;
+        let mut suffix = job.suffix.clone();
+        let block_len = suffix.len();
+        let repeated = suffix.first().copied();
+        let mut rand = RomuDuoJrRand::with_seed(pending.mutation_seed);
+        let mut blocks = 0;
+        let mut path = Vec::new();
+        loop {
+            if suffix.is_empty()
+                || workload
+                    .rollout_outcome(&config.run, target)?
+                    .should_stop(config.stop_rollout_on_objective)
+            {
+                break;
+            }
+            let initial = workload.snapshot(target)?;
+            let initial_identity = workload.snapshot_identity_sha256(&initial)?;
+            let initial_observations = workload.rollout_observations(target);
+            let initial_key = workload.rollout_key(target)?;
+            let mut retained = false;
+            if repeat {
+                suffix.fill(repeated.ok_or("empty repeated draw")?);
+            }
+            for action in &suffix {
+                let mut block = crate::search::rollout::execute_live_suffix(
+                    workload,
+                    &config.run,
+                    target,
+                    milestones,
+                    std::slice::from_ref(action),
+                    config.retention,
+                    config.stop_rollout_on_objective,
+                )?;
+                let Some(last) = block.actions.last() else {
+                    break;
+                };
+                milestones = last.milestones;
+                path.push(*action);
+                if let Some(candidate) = &last.candidate {
+                    let key =
+                        workload.complete_candidate_key(candidate.key, &candidate.snapshot)?;
+                    let (kept, completed) =
+                        self.core
+                            .archive
+                            .would_retain_after(parent, previous_key, &path, key)?;
+                    retained |= candidate.viable && kept;
+                    previous_key = Some(completed);
+                }
+                let stopped = last.outcome.should_stop(config.stop_rollout_on_objective);
+                result.actions.append(&mut block.actions);
+                if stopped || workload.execution_work(target).saturating_sub(before) >= work_limit {
+                    break;
+                }
+            }
+            blocks += 1;
+            if retained
+                || workload.execution_work(target).saturating_sub(before) >= work_limit
+                || workload
+                    .rollout_outcome(&config.run, target)?
+                    .should_stop(config.stop_rollout_on_objective)
+            {
+                break;
+            }
+            let final_snapshot = workload.snapshot(target)?;
+            let final_key = workload.rollout_key(target)?;
+            let preferences_changed = (0..G::Key::preferences())
+                .any(|p| initial_key.preference_cmp(p, final_key) != std::cmp::Ordering::Equal);
+            if initial_identity == workload.snapshot_identity_sha256(&final_snapshot)?
+                && initial_observations == workload.rollout_observations(target)
+                && !preferences_changed
+            {
+                break;
+            }
+            suffix = workload.expand_suffix(
+                &config.run,
+                &self.draw_state,
+                MixtureDraw {
+                    mixture: config.mixture,
+                    weight: pending.mixture_weight,
+                    splice_weight: pending.splice_weight,
+                },
+                rand.next_u64(),
+                path.last(),
+            )?;
+            suffix.truncate(block_len);
+        }
+        workload.verify_integrity()?;
+        let execution_work = workload.execution_work(target).saturating_sub(before);
+        let result_sha256 = workload.certified_result_sha256(&result, target)?;
+        Ok((
+            JobOutcome {
+                reservation: job.reservation,
+                result,
+                execution_work,
+                result_sha256,
+            },
+            blocks,
+        ))
+    }
+
+    pub fn stop_reservations(&mut self) {
+        self.stop_requested = true;
     }
 
     pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {
@@ -743,6 +896,9 @@ where
     }
 
     fn reserve(&mut self) -> Result<bool, Box<dyn Error>> {
+        if self.stop_requested {
+            return Ok(false);
+        }
         let selection_started = profile_now();
         let selected = self.select()?;
         self.profile.selection_ns = self
