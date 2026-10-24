@@ -19,7 +19,7 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 pub type DonkeyKongInput = crate::search::archive::Input<ButtonChord>;
 
 pub const STAGES_PER_ROUND: u8 = 3;
-pub const GOAL_ROUNDS: u8 = 8;
+pub const GOAL_ROUNDS: u8 = 10;
 pub const TRACKED_STAGES: usize = GOAL_ROUNDS as usize * STAGES_PER_ROUND as usize;
 pub const STAGE_BARRELS: u8 = 1;
 pub const STAGE_ELEVATORS: u8 = 3;
