@@ -132,6 +132,11 @@ impl ActiveWindows {
     }
 
     #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.hooks.is_empty() && self.event_kills.is_empty()
+    }
+
+    #[must_use]
     pub fn event_kill(&self, node: u16, fired: &[EventKillWindow]) -> Option<EventKillWindow> {
         self.event_kills
             .iter()

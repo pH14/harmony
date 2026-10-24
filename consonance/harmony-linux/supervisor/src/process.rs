@@ -282,6 +282,22 @@ pub fn node_exit_record(violation: Option<(u16, &str)>) -> String {
     ) + "\n"
 }
 
+pub const RECOVERY_ASSERTION: &str = "workload becomes ready within 30 seconds after faults end";
+
+#[must_use]
+pub fn recovery_record(violation: Option<(u64, u64)>) -> String {
+    let (hit, details) = match violation {
+        Some((generation, quiet_ticks)) => (
+            true,
+            format!(r#"{{"recovery_generation":{generation},"quiet_ticks":{quiet_ticks}}}"#),
+        ),
+        None => (false, "{}".to_owned()),
+    };
+    format!(
+        r#"{{"antithesis_assert":{{"assert_type":"always","display_type":"AlwaysOrUnreachable","id":"{RECOVERY_ASSERTION}","message":"{RECOVERY_ASSERTION}","hit":{hit},"must_hit":false,"condition":false,"location":{{"file":"harmony-supervisor","function":"recovery","class":"","begin_line":0,"begin_column":0}},"details":{details}}}}}"#
+    ) + "\n"
+}
+
 #[cfg(unix)]
 pub fn open_record_sink(path: &std::path::Path) -> io::Result<std::fs::File> {
     std::fs::OpenOptions::new().append(true).open(path)

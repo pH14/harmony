@@ -417,6 +417,11 @@ impl ProcessSupervisor {
         self.counters.pending_faults
     }
 
+    #[must_use]
+    pub fn any_node_held_down(&self) -> bool {
+        self.nodes.iter().any(|state| state.expected_down)
+    }
+
     pub fn set_pending_faults(&mut self, pending: u64) {
         self.counters.pending_faults = pending;
     }
@@ -577,9 +582,20 @@ mod tests {
         assert_eq!(sup.tick(&ActiveWindows::new(), &[]), []);
         assert_eq!(sup.tick(&ActiveWindows::new(), &[]), []);
         assert_eq!(sup.alive_bitmap(), 0b10);
+        assert!(sup.any_node_held_down());
         assert_eq!(sup.counters().unexpected_deaths, 0);
         assert_eq!(sup.counters().restarts, 0);
         assert_eq!(sup.counters().ticks, 5);
+        let restart = active(&[(0, ProcessAction::Restart)]);
+        assert_eq!(sup.tick(&restart, &[]), []);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
+        assert!(!sup.any_node_held_down());
     }
 
     #[test]
