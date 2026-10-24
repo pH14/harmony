@@ -3,8 +3,8 @@
 # NES game logic
 
 `nes-games` holds the game logic of the NES workloads: Super Mario Bros., Mega
-Man 2, Metroid, Castlevania, Super Tilt Bro, Twin Dragons, Famidash, Punch-Out!! and The Legend of
-Zelda. It builds for the
+Man 2, Metroid, Castlevania, Super Tilt Bro, Twin Dragons, Famidash, Punch-Out!!, The Legend of
+Zelda and Donkey Kong. It builds for the
 host and for `wasm32-unknown-unknown`, so the browser demo can run the same
 game logic as the native workload.
 
@@ -26,10 +26,10 @@ implementation for the Consonance machine. The `test-support` feature exposes
 test constructors and the scripted Super Tilt Bro machine to the tests of
 `nes-workload`.
 
-Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Punch-Out!! and Zelda
+Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Punch-Out!!, Zelda and Donkey Kong
 also have a `campaign` module with their `Workload` implementation.
 `CastlevaniaGame<M>`, `TwinDragonsGame<M>`, `FamidashGame<M, GROUP>`, `SmbGame<M, P>`, `Mm2Game<M>`,
-`MetroidGame<M>`, `PunchOutGame<M>` and `ZeldaGame<M>` are
+`MetroidGame<M>`, `PunchOutGame<M>`, `ZeldaGame<M>` and `DonkeyKongGame<M>` are
 generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
 native one passes a QuickNES or Consonance factory, and `demos/twin-dragons`
@@ -52,7 +52,7 @@ passes the hash of its core WASM module instead.
 native live campaign. `ArcadeGame` extends `Workload` with a view of each
 observation, the four-number motion sample of a frame, the cleared-level count
 and the emulator state of a snapshot. The `smb`, `metroid`, `mm2`, `castlevania`, `famidash`,
-`twin_dragons`, `punchout` and `zelda` submodules implement it for each campaign game over any
+`twin_dragons`, `punchout`, `zelda` and `donkey_kong` submodules implement it for each campaign game over any
 backend. `ArcadeGame` decodes RAM in static functions, so `FamidashGame` takes
 the index of a level group in `famidash::levels::GROUPS` as the const
 parameter `GROUP`. Each group is its own game type, with that group's side,
@@ -82,7 +82,7 @@ cargo check --manifest-path workloads/nes-games/Cargo.toml --target wasm32-unkno
 
 Snapshot checkpoint codecs live with these shared target types so native and
 browser callers use the same checksummed `HMSNAP02` envelope. The standalone
-formats are Castlevania v1, Famidash v2, Twin Dragons v2, Punch-Out!! v2, Zelda v1, Metroid v13, Mega Man 2 v4, SMB
+formats are Castlevania v1, Famidash v2, Twin Dragons v2, Punch-Out!! v2, Zelda v1, Donkey Kong v1, Metroid v13, Mega Man 2 v4, SMB
 QuickNES v4 and SMB Consonance v3; Super Tilt Bro's native campaign selects v5.
 These plain snapshots use the postcard payload codec inside the framed envelope.
 Previous flat envelopes are refused. Native `nes` target modules remain

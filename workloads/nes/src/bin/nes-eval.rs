@@ -3,6 +3,7 @@
 use nes_games::arcade::{ArcadeGame, famidash};
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
+    donkey_kong::campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
     eval::{Request, Result, evaluate, run_cli},
     famidash::{
         campaign::{FamidashCampaignRun, FamidashGame},
@@ -116,6 +117,9 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "zelda" => evaluate_live::<nes_games::zelda::campaign::ZeldaGame<NativeMachine>>(
             rom, request, out, started, "zelda",
         ),
+        "donkey-kong" => evaluate_live::<
+            nes_games::donkey_kong::campaign::DonkeyKongGame<NativeMachine>,
+        >(rom, request, out, started, "donkey-kong"),
         _ => Err("this game has no live view".into()),
     }
 }
@@ -171,7 +175,7 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "castlevania" | "punchout" | "zelda"
+            "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -314,6 +318,17 @@ fn main() -> Result<()> {
                 started,
                 "zelda",
                 <ZeldaGame>::memory_view,
+            ),
+            "donkey-kong" => evaluate_watching(
+                DonkeyKongGame::new(&rom, p, h, &execution_sha256),
+                DonkeyKongCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "donkey-kong",
+                <DonkeyKongGame>::memory_view,
             ),
             "famidash" => {
                 let stage = famidash_stage(&rom, request.stage, request.whole_game)?;

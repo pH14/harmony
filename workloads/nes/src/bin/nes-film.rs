@@ -9,6 +9,7 @@ use std::{
 
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
+    donkey_kong::campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
     famidash::{
         campaign::{FamidashCampaignRun, FamidashGame},
         levels::{Side, Stage},
@@ -328,8 +329,19 @@ fn main() -> Result<()> {
                 identity,
             )
         }
+        "donkey-kong" => {
+            if args.ai.is_some() {
+                return Err("Donkey Kong takes no ai option".into());
+            }
+            produce(
+                DonkeyKongGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                DonkeyKongCampaignRun,
+                &args,
+                identity,
+            )
+        }
         _ => Err(
-            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!! and Zelda scenarios"
+            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda and Donkey Kong scenarios"
                 .into(),
         ),
     }

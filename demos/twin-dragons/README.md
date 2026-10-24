@@ -4,7 +4,7 @@ A static demonstration of state-space exploration. Emulators compiled to
 WebAssembly run a game, and a Rust worker uses Dissonance to search it. The
 site plays the NES homebrew games Twin Dragons and Famidash on QuickNES, the
 Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and Super Mario Bros., Mega
-Man 2 and Metroid on QuickNES from ROMs the visitor supplies. The `game` URL
+Man 2, Metroid and Donkey Kong on QuickNES from ROMs the visitor supplies. The `game` URL
 parameter picks the game, and the level selector switches between them. The
 page opens the level selector and starts searching once a level is chosen, or
 from the first level if the selector is closed. A `level` URL parameter with a
@@ -85,7 +85,7 @@ workers import `emulator.js` dynamically and set their message handler first.
 The Famidash module waits for the Rust module when it loads, and a module
 worker drops messages that arrive before its handler is set.
 
-Twin Dragons, Famidash, Super Mario Bros., Mega Man 2 and Metroid run the
+Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid and Donkey Kong run the
 same search as their native workloads. `rust/src/campaign.rs` holds `JsMachine`,
 a `machine::Machine`, `NesBackend` and `NesMemory` that drives the browser
 QuickNES core through `globalThis.harmonyCores`, and a coordinator and rollout
@@ -893,6 +893,38 @@ a phone, and the strip beside the view draws a reduced copy.
 `tests/metroid.mjs` searches from the new game, replays the farthest state
 exactly, and branches from a played history that pauses and resumes with
 Start. It reads the ROM from `METROID_ROM` or `~/workspace/roms/Metroid (USA).nes` and
+skips when it is absent.
+
+### Donkey Kong
+
+The site ships nothing from Donkey Kong. The level selector accepts the ROM with
+SHA-256 `226c6f69…9d27`. A round has three stages, the barrels, the elevators
+and the rivets, and the selector offers each as a level. The levels start from
+power-on for the barrels and from a forced stage for the other two: the
+loader writes the stage byte `$53` 30 frames after Start. The observation's
+cleared count is the round times three plus the stage index, so clearing the
+rivets, and so round 1, marks the game finished.
+
+Each map is one 256 × 224 screen. The map builder boots the stage, hides every
+sprite and draws the frame, then blanks the score line, the bonus box and the
+Kong that the forced stage draws white. The sprite sheet is Mario's 16 × 16
+sprite, found by drawing the frame with and without him.
+
+| Address | Meaning |
+| --- | --- |
+| `$46`, `$47` | Mario's x and y; the top-left of his sprite is 5 less in each |
+| `$53` | stage: 1 barrels, 3 elevators, 4 rivets |
+| `$54` | round, counted from 0 |
+| `$55` | lives left after the one in play |
+| `$96` | posture: 1 standing, 2 on a ladder, 4 in the air, `$FF` dead |
+| `$200`–`$203` | Mario's first sprite entry; attribute bit 6 means facing left |
+
+The search is the `DonkeyKongGame` workload from `nes-games`, as `nes-eval`
+runs it. `workloads/nes/src/donkey_kong/README.md` lists the full memory map, the
+archive key and the terminal policy. `rust/src/donkey_kong.rs` roots a search at
+any in-play state. `tests/donkey-kong.mjs` boots the three stages, builds the
+maps and sprite sheet, and replays the highest state of a short search exactly.
+It reads the ROM from `DONKEY_KONG_ROM` or `~/workspace/roms/donkey-kong.nes` and
 skips when it is absent.
 
 ## Verification and publishing

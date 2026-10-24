@@ -4,6 +4,7 @@ pub use searcher::{search, target};
 pub mod arcade;
 pub mod castlevania;
 pub mod chord;
+pub mod donkey_kong;
 pub mod famidash;
 pub mod metroid;
 pub mod mm2;

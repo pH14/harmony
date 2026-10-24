@@ -5,6 +5,7 @@ pub use searcher::{search, target};
 pub mod admission;
 pub mod allocator;
 pub mod castlevania;
+pub mod donkey_kong;
 pub mod eval;
 pub mod famidash;
 pub mod film;
