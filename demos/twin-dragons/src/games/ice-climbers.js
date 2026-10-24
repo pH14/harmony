@@ -93,14 +93,39 @@ export function buildMap(engine, level) {
   return { width: MAP_WIDTH, height: MAP_HEIGHT, data, reached: MAP_HEIGHT };
 }
 
+const JUMP_TILE = 0x8c;
+const FLIP = 0x40;
+
+function climberSprites(ram) {
+  const x = ram[PLAYER_X], y = ram[PLAYER_Y], found = [];
+  for (let i = OAM; i < OAM + 0x100; i += 4) if (ram[i] + 1 >= y && ram[i] <= y + 23 && ram[i + 3] >= x && ram[i + 3] <= x + 8) found.push(i);
+  return found.sort((a, b) => ram[a + 1] - ram[b + 1]);
+}
+
+function climberFrame(engine, start, sprites, tile) {
+  const ram = engine.ramView();
+  engine.restore(start);
+  const base = tile === undefined ? null : sprites.map((_, rank) => tile + rank);
+  for (let frame = 0; frame < 2; frame++) {
+    if (base) sprites.forEach((at, rank) => (ram[at + 1] = base[rank]));
+    engine.run(0, 1, true);
+  }
+  return engine.pixels().data;
+}
+
 export function buildSprites(engine) {
   bootPlayable(engine, 0);
   const ram = engine.ramView(),
     start = engine.capture();
   engine.run(0, 2, true);
-  const shown = engine.pixels().data,
+  const sprites = climberSprites(ram),
     sx = ram[PLAYER_X],
-    sy = ram[PLAYER_Y] + 1 - CROP_TOP;
+    sy = ram[PLAYER_Y] + 1 - CROP_TOP,
+    startFlipped = sprites.length > 0 && (ram[sprites[0] + 2] & FLIP) !== 0;
+  engine.restore(start);
+  const shown = [climberFrame(engine, start, sprites)];
+  if (sprites.length === 6) shown.push(climberFrame(engine, start, sprites, JUMP_TILE));
+  else shown.push(shown[0]);
   engine.restore(start);
   for (let frame = 0; frame < 2; frame++) {
     hideSprites(ram);
@@ -109,16 +134,21 @@ export function buildSprites(engine) {
   const hidden = engine.pixels().data,
     width = 16,
     height = 24,
-    sheet = new Uint8ClampedArray(width * height * 2 * 4);
-  for (let y = 0; y < height; y++)
-    for (let x = 0; x < width; x++) {
-      const s = ((sy + y) * SCREEN_WIDTH + sx + x) * 4;
-      if (shown[s] === hidden[s] && shown[s + 1] === hidden[s + 1] && shown[s + 2] === hidden[s + 2]) continue;
-      sheet.set(shown.subarray(s, s + 4), (y * width + x) * 4);
-      sheet.set(shown.subarray(s, s + 4), ((height + y) * width + width - 1 - x) * 4);
-    }
+    columns = shown.length,
+    stride = width * columns,
+    sheet = new Uint8ClampedArray(stride * height * 2 * 4);
+  shown.forEach((frame, column) => {
+    for (let y = 0; y < height; y++)
+      for (let x = 0; x < width; x++) {
+        const s = ((sy + y) * SCREEN_WIDTH + sx + x) * 4;
+        if (frame[s] === hidden[s] && frame[s + 1] === hidden[s + 1] && frame[s + 2] === hidden[s + 2]) continue;
+        const plain = startFlipped ? width - 1 - x : x;
+        sheet.set(frame.subarray(s, s + 4), (y * stride + column * width + plain) * 4);
+        sheet.set(frame.subarray(s, s + 4), ((height + y) * stride + column * width + width - 1 - plain) * 4);
+      }
+  });
   engine.restore(start);
-  return { width, height: height * 2, data: sheet };
+  return { width: stride, height: height * 2, data: sheet };
 }
 
 export default {
@@ -141,6 +171,7 @@ export default {
   assets: "",
   screen: { width: SCREEN_WIDTH, height: SCREEN_HEIGHT },
   closeUp: { width: SCREEN_WIDTH, height: 300 },
+  tallViewport: { phone: { width: 432, height: 506 }, desktop: { width: 432, height: 506 } },
   sprite: { width: 16, height: 24, originX: 0, originY: 0, icon: [0, 0, 16, 24] },
   controls: { a: "Jump", b: "Hammer" },
   credits: `<span class="eyebrow">CREDITS & LICENSING</span><h2>Ice Climber</h2><p>Ice Climber is © Nintendo. This site does not include the game. It runs from a ROM you supply, which stays in this browser’s storage and is never uploaded. The mountain maps and the player sprite are drawn in your browser from that ROM. This demonstration is not endorsed by Nintendo.</p><p>QuickNES library sources: LGPL-2.1-or-later. The compiled libretro browser core, with Harmony’s <a href="licenses/quicknes-idle-loop.patch">idle-loop patch</a>, is distributed under GPL-2.0 terms with a GPL-2.0-or-later C++ shim. The separate Harmony browser interface and Rust search code: AGPL-3.0-or-later.</p><p><a href="licenses/CREDITS.md">Full credits</a> · <a href="licenses/quicknes-source.tar.gz">QuickNES source</a> · <a href="licenses/harmony-source.tar.gz">Harmony source</a> · <a href="licenses/rust-dependencies.tar.gz">Rust dependency sources and notices</a> · <a href="https://github.com/pH14/harmony">Repository and build instructions</a></p>`,
