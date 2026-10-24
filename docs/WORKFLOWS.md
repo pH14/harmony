@@ -229,7 +229,8 @@ Every job declares a trigger class.
   `Language Image — <Language>` builds each language workload image. Their
   consumers keep the 15-minute budget. The separate `C Investigation` job has
   a 35-minute exception for its bounded branch and search continuation under
-  sealed-host identity checks.
+  sealed-host identity checks. The `Harness Kit` job has a 30-minute
+  exception for building one instrumented target image from source.
   The selected `snapshot-store` Miri check has a 45-minute exception for the
   Store's full resident-verification suite. The selected `vmm-backend` and
   `consonance-client` Miri checks retain 30-minute exceptions for interpreted
@@ -576,6 +577,14 @@ ordinary user. It compares application and bridge evidence and rejects a
 planted divergence. Current Bookworm historical case images have the same
 reviewed sites, so the manually dispatched UML campaign refuses them at image
 admission until they are rebuilt without those instructions.
+
+The language workflow's `Harness Kit` job runs when a change reaches
+`workloads/harness/`, under the `harmony_harness` selection kind. It runs
+`go vet` and `go test` on the harness kit module and `go vet` and `go build`
+on every target module under `workloads/harness/targets/`, with a pinned Go
+release and `GOTOOLCHAIN=local`. It then builds the single-member etcd 3.5.5
+target image from pinned source and runs `native.py --no-faults` against it
+for 30 seconds, which must report `clean` with a decided check.
 
 ## Repository maintenance
 
