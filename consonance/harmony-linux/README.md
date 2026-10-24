@@ -17,8 +17,9 @@ make -C consonance/harmony-linux test
 ```
 
 `fetch` downloads and verifies the pinned platform kernel, generic userland,
-and static OCI runtime sources. Workload packages own their separate fetch
-entrypoints.
+and static OCI runtime sources. It tries a mirror when the upstream host fails:
+`mirrors.edge.kernel.org` for the kernel and Buildroot's source mirror for
+BusyBox and musl. Workload packages own their separate fetch entrypoints.
 `test-libvoidstar` runs the portable ABI and device-transaction checks.
 `test-linux` builds the Linux artifacts twice and runs the image check; it
 requires Linux, or a Linux/amd64 build container on macOS. Build output lives
