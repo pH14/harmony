@@ -74,6 +74,14 @@ position per cloud ride; an 8-pixel column keeps the positions that line up with
 setup tape, and the search starts from the state they reach with an empty archive. The root
 must end alive, with three lives, in play. The identity records a digest of the root actions.
 
+## Power-on results
+
+Three searches from power-on with the landed-floor tier, the 8 pixel column, the airborne place bit
+and the broken-block identity (seeds 21 to 23, 5 workers each) all clear mountain 32 and report
+victory after two witness replays: 6.9M, 10.1M and 11.3M executions, 29 to 50 minutes. A tape is
+the setup tape followed by the witness actions. Each tape replays from power-on in a fresh
+`castlevania-probe` process and ends with `$59` = 32 and `$20` = 3.
+
 ## Replay check
 
 `nes-eval` verifies each witness twice in its own process. `nes-film` replays the same input in a

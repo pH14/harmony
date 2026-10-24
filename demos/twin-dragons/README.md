@@ -903,7 +903,9 @@ mountain is a tall strip drawn from the ROM's intro camera pan: the loader pokes
 mountain byte at the title screen, hides the sprites by zeroing the object attribute
 memory, and stitches one 256-pixel-wide row band per scroll step into a 256 × 862
 bitmap that runs from the first floor to the bonus stage. The view uses the tall
-camera, as Tobu Tobu Girl does. The observation's cleared count is the number of
+camera, as Tobu Tobu Girl does, with the game's `tallViewport` of 432 × 506 so the main canvas shows one
+screen of the mountain and follows the climbers while the mini-map shows the whole mountain. A
+climber is drawn with the standing or the jumping frame, mirrored to its facing. The observation's cleared count is the number of
 mountains finished: it rises when the game advances its mountain byte after the results screen.
 `workloads/nes/src/ice_climbers/README.md` has the RAM map, the key and the setup
 tape. The `tape` URL parameter loads a saved winning input list, the `witness-input.json`
