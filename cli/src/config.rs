@@ -222,7 +222,8 @@ pub fn resolve_input(input: &mut Option<String>, base: &Path, file: bool) {
     }
 }
 
-#[cfg(all(test, feature = "frontend"))]
+#[cfg(test)]
+#[cfg(feature = "frontend")]
 mod tests {
     use super::*;
     #[test]
@@ -273,7 +274,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "frontend"))]
+#[cfg(test)]
+#[cfg(feature = "frontend")]
 mod override_tests {
     use super::*;
     #[test]

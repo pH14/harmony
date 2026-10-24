@@ -88,7 +88,8 @@ pub fn worker() -> Result<u8> {
     faults::worker()
 }
 
-#[cfg(all(test, feature = "frontend"))]
+#[cfg(test)]
+#[cfg(feature = "frontend")]
 mod tests {
     use super::*;
     use crate::{
