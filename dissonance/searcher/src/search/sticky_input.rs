@@ -28,6 +28,22 @@ impl StickyInput {
         self.denominator.get()
     }
 
+    pub fn block(&mut self, frames: usize, chunk_limit: NonZeroU64) -> Vec<(u8, u64)> {
+        let mut output: Vec<(u8, u64)> = Vec::new();
+        for _ in 0..frames {
+            let buttons = self.next_frame();
+            if let Some((previous, length)) = output.last_mut()
+                && *previous == buttons
+                && *length < chunk_limit.get()
+            {
+                *length += 1;
+            } else {
+                output.push((buttons, 1));
+            }
+        }
+        output
+    }
+
     pub fn next_frame(&mut self) -> u8 {
         let current = self.buttons;
         for bit in 0..u8::BITS {

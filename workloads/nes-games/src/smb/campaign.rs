@@ -516,6 +516,43 @@ where
         Ok(run)
     }
 
+    fn duration_of_action(
+        &self,
+        _run: &SmbCampaignRun,
+        action: &ButtonChord,
+    ) -> Option<std::num::NonZeroU64> {
+        std::num::NonZeroU64::new(u64::from(action.bounded_hold_frames()))
+    }
+
+    fn sticky_controller(
+        &self,
+        run: &SmbCampaignRun,
+        previous: Option<&ButtonChord>,
+    ) -> Option<(u8, u8, std::num::NonZeroU64)> {
+        Some((
+            previous.map_or(0, |action| action.buttons),
+            run.vocabulary
+                .masks()
+                .iter()
+                .fold(0, |mask, buttons| mask | buttons),
+            std::num::NonZeroU64::new(u64::from(run.vocabulary.chords().longest_hold()))?,
+        ))
+    }
+    fn sticky_actions(
+        &self,
+        run: &SmbCampaignRun,
+        input: &mut crate::search::sticky_input::StickyInput,
+        work: std::num::NonZeroU64,
+    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
+        let limit = std::num::NonZeroU64::new(u64::from(run.vocabulary.chords().longest_hold()))
+            .ok_or("empty controller hold support")?;
+        input
+            .block(usize::try_from(work.get())?, limit)
+            .into_iter()
+            .map(|(buttons, frames)| Ok(ButtonChord::new(buttons, u8::try_from(frames)?)))
+            .collect()
+    }
+
     fn refresh_selected_input_timing(
         &self,
         run: &SmbCampaignRun,

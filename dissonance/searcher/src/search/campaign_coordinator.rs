@@ -97,6 +97,20 @@ pub fn run_job<G: Workload>(
     })
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct InputBlockTrace {
+    pub work: u64,
+    pub before: Option<Vec<u64>>,
+    pub after: Option<Vec<u64>>,
+    pub would_retain: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InputJobTrace {
+    pub blocks: Vec<InputBlockTrace>,
+    pub stop_reason: String,
+}
+
 pub struct CampaignCoordinator<'a, G: Workload> {
     workload: &'a G,
     config: &'a CampaignConfig<G>,
@@ -385,13 +399,27 @@ where
         Ok(coordinator)
     }
 
-    pub fn run_alive_job(
+    pub fn run_input_job(
         &self,
         target: &mut G::Target,
         job: &JobSpec<G>,
-        repeat: bool,
+        sticky: bool,
+        chaining: bool,
         work_limit: u64,
-    ) -> Result<(JobOutcome<G>, usize), Box<dyn Error>> {
+    ) -> Result<(JobOutcome<G>, InputJobTrace), Box<dyn Error>> {
+        if !sticky && !chaining {
+            let outcome = run_job(self.workload, self.config, target, job)?;
+            let trace = InputJobTrace {
+                blocks: vec![InputBlockTrace {
+                    work: outcome.execution_work,
+                    before: None,
+                    after: None,
+                    would_retain: None,
+                }],
+                stop_reason: "ordinary_job".into(),
+            };
+            return Ok((outcome, trace));
+        }
         if self.config.window != 1 {
             return Err("alive rollout experiment requires one admission window".into());
         }
@@ -427,7 +455,10 @@ where
                     execution_work: workload.execution_work(target).saturating_sub(before),
                     result_sha256,
                 },
-                0,
+                InputJobTrace {
+                    blocks: Vec::new(),
+                    stop_reason: "preparation_failure".into(),
+                },
             ));
         }
         let mut result = prepared;
@@ -435,9 +466,45 @@ where
         let mut previous_key = None;
         let mut suffix = job.suffix.clone();
         let block_len = suffix.len();
-        let repeated = suffix.first().copied();
+        let minimum_work = if chaining {
+            workload.continuation_block_work(&config.run)
+        } else {
+            NonZeroU64::new(
+                job.suffix
+                    .iter()
+                    .map(|action| {
+                        workload
+                            .duration_of_action(&config.run, action)
+                            .map(NonZeroU64::get)
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or("sticky actions need explicit durations")?
+                    .into_iter()
+                    .sum(),
+            )
+            .ok_or("empty input job")?
+        };
+        let mut sticky_input = if sticky {
+            let (previous, mask, longest) = workload
+                .sticky_controller(&config.run, self.core.archive.last_action(parent))
+                .ok_or("workload has no sticky controller adapter")?;
+            Some(crate::search::sticky_input::StickyInput::new(
+                pending.mutation_seed ^ u64::from_le_bytes(*b"STICKY!!"),
+                previous,
+                mask,
+                longest,
+            ))
+        } else {
+            None
+        };
+        if let Some(input) = &mut sticky_input {
+            suffix = workload.sticky_actions(&config.run, input, minimum_work)?;
+        }
         let mut rand = RomuDuoJrRand::with_seed(pending.mutation_seed);
-        let mut blocks = 0;
+        let mut trace = InputJobTrace {
+            blocks: Vec::new(),
+            stop_reason: "empty_suffix".into(),
+        };
         let mut path = Vec::new();
         loop {
             if suffix.is_empty()
@@ -451,9 +518,6 @@ where
             let block_start = workload.execution_work(target);
             let mut retained = false;
             loop {
-                if repeat {
-                    suffix.fill(repeated.ok_or("empty repeated draw")?);
-                }
                 for action in &suffix {
                     let mut block = crate::search::rollout::execute_live_suffix(
                         workload,
@@ -489,14 +553,24 @@ where
                         break;
                     }
                 }
-                if workload.execution_work(target).saturating_sub(block_start)
-                    >= workload.continuation_block_work(&config.run).get()
+                if workload.execution_work(target).saturating_sub(block_start) >= minimum_work.get()
                     || workload.execution_work(target).saturating_sub(before) >= work_limit
                     || workload
                         .rollout_outcome(&config.run, target)?
                         .should_stop(config.stop_rollout_on_objective)
                 {
                     break;
+                }
+                if let Some(input) = &mut sticky_input {
+                    let remaining = minimum_work.get().saturating_sub(
+                        workload.execution_work(target).saturating_sub(block_start),
+                    );
+                    suffix = workload.sticky_actions(
+                        &config.run,
+                        input,
+                        NonZeroU64::new(remaining).ok_or("empty sticky refill")?,
+                    )?;
+                    continue;
                 }
                 let seed = rand.next_u64();
                 suffix = workload.expand_suffix(
@@ -516,17 +590,37 @@ where
                     break;
                 }
             }
-            blocks += 1;
-            if retained
-                || workload.execution_work(target).saturating_sub(before) >= work_limit
-                || workload
-                    .rollout_outcome(&config.run, target)?
-                    .should_stop(config.stop_rollout_on_objective)
-            {
+            let final_state = workload.continuation_state(target);
+            let changed = initial_state != final_state;
+            trace.blocks.push(InputBlockTrace {
+                work: workload.execution_work(target).saturating_sub(block_start),
+                before: Some(initial_state),
+                after: Some(final_state),
+                would_retain: Some(retained),
+            });
+            let stopped = workload
+                .rollout_outcome(&config.run, target)?
+                .should_stop(config.stop_rollout_on_objective);
+            let reason = if stopped {
+                Some("terminal_or_objective")
+            } else if workload.execution_work(target).saturating_sub(before) >= work_limit {
+                Some("work_budget")
+            } else if retained {
+                Some("retained")
+            } else if !chaining {
+                Some("single_block")
+            } else if !changed {
+                Some("unchanged")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                trace.stop_reason = reason.into();
                 break;
             }
-            if initial_state == workload.continuation_state(target) {
-                break;
+            if let Some(input) = &mut sticky_input {
+                suffix = workload.sticky_actions(&config.run, input, minimum_work)?;
+                continue;
             }
             let seed = rand.next_u64();
             suffix = workload.expand_suffix(
@@ -553,7 +647,7 @@ where
                 execution_work,
                 result_sha256,
             },
-            blocks,
+            trace,
         ))
     }
 

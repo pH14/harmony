@@ -209,6 +209,95 @@ mod tests {
     }
 
     #[test]
+    fn all_four_input_modes_execute_and_admit_one_job() {
+        use crate::search::archive::RetentionPolicy;
+        use crate::search::campaign::{CampaignCoordinator, CampaignExecutionOptions};
+        for (sticky, chaining) in [(false, false), (false, true), (true, false), (true, true)] {
+            let rom = synthetic_nrom();
+            let game = test_game(&rom);
+            let mut config = genesis_config(73, 1, 1).generic();
+            config.window = 1;
+            config.retention = RetentionPolicy::Unprobed;
+            config.materialize_final_artifacts = false;
+            let mut stream = Vec::new();
+            let mut coordinator = CampaignCoordinator::start(
+                &game,
+                &config,
+                &SmbCampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default(),
+            )
+            .unwrap();
+            coordinator.reserve_next().unwrap();
+            let mut job = coordinator.plan(1).pop().unwrap();
+            job.suffix = vec![ButtonChord::new(0x81, 4), ButtonChord::new(0x40, 5)];
+            let mut target = game.new_target().unwrap();
+            let (outcome, trace) = coordinator
+                .run_input_job(&mut target, &job, sticky, chaining, 480)
+                .unwrap();
+            if !chaining {
+                assert_eq!(outcome.execution_work, 9);
+                assert_eq!(trace.blocks.len(), 1);
+            } else {
+                assert!(trace.blocks[0].work >= 120);
+                assert!(
+                    trace
+                        .blocks
+                        .iter()
+                        .all(|block| block.before.is_some() && block.after.is_some())
+                );
+            }
+            assert!(!outcome.result.actions.is_empty());
+            coordinator.admit(outcome).unwrap();
+            let (report, _) = coordinator.finish(Vec::new()).unwrap();
+            assert_eq!(report.executions_completed, 1);
+            let text = String::from_utf8(stream).unwrap();
+            assert_eq!(
+                text.lines()
+                    .filter(|line| line.contains("\"event\":\"job\""))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn sticky_adapter_preserves_frames_across_chord_and_block_boundaries() {
+        use crate::search::sticky_input::StickyInput;
+        use std::num::NonZeroU64;
+        let rom = synthetic_nrom();
+        let game = test_game(&rom);
+        let run = SmbCampaignRun {
+            vocabulary: Default::default(),
+            terminal: None,
+        };
+        let previous = ButtonChord::new(0x81, 3);
+        let (start, mask, support) = game.sticky_controller(&run, Some(&previous)).unwrap();
+        assert_eq!(start, previous.buttons);
+        assert_eq!(mask & 0x0c, 0);
+        let mut input = StickyInput::new(73, start, mask, support);
+        let mut expected = StickyInput::new(73, start, mask, support);
+        let mut actual = Vec::new();
+        for length in [1, 17, 120, 900, 2] {
+            for action in game
+                .sticky_actions(&run, &mut input, NonZeroU64::new(length).unwrap())
+                .unwrap()
+            {
+                assert!((1..=120).contains(&action.hold_frames));
+                actual.extend(std::iter::repeat_n(
+                    action.buttons,
+                    usize::from(action.hold_frames),
+                ));
+            }
+        }
+        assert_eq!(
+            actual,
+            (0..1040).map(|_| expected.next_frame()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn selected_symbols_keep_buttons_but_do_not_inherit_short_holds() {
         let rom = synthetic_nrom();
         let game = test_game(&rom);

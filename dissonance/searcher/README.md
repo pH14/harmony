@@ -1173,7 +1173,7 @@ by that workload's codec, never by generic storage or routing.
 
 ## Experimental alive rollouts
 
-`CampaignCoordinator::run_alive_job` is an opt-in experiment for a single
+`CampaignCoordinator::run_input_job` is an opt-in experiment for a single
 admission window. It restores the planned parent once and executes additional
 blocks on that live target when the workload’s clock-free continuation vector
 changed. A terminal state, a retained candidate, an unchanged block, or the
@@ -1182,7 +1182,10 @@ there are no workload-specific predicates in the continuation rule.
 
 The caller selects chaining through `AliveEnergy`, which reuses the existing
 mixture's new-slot-per-work accounting, and admits the accumulated result once.
-The repeated-action variant fills every block with the initial action.
+The sticky variant carries its frame generator across blocks; the non-chaining
+sticky arm uses the original suffix duration. Chord chunk boundaries do not
+force a button transition. Workloads adapt controller bytes and durations; the
+generic runner contains no controller or game constants.
 `stop_reservations` lets an experiment stop admitting new jobs after its
 registered observation boundary while finishing already reserved work.
 
@@ -1199,8 +1202,8 @@ power-of-two flip probability from scales spanning one frame through the
 existing longest-hold support. The powers of two provide the requested
 log-spaced prior without fitting a game-specific rate. The selected rate stays
 fixed across blocks; run length has geometric support with no duration cap.
-The adapter supplies the controller's enabled-bit mask. This primitive is not
-yet connected to the campaign strategy or replay record.
+The adapter supplies the controller's enabled-bit mask. This primitive is connected to the opt-in live executor, but its campaign
+strategy and ordinary replay integration remain unfinished.
 
 Workloads without adaptive duration requests may refresh selected input timing
 after table/alphabet/splice selection and before suffix truncation and duplicate
@@ -1218,3 +1221,8 @@ unless terminal disposition or the experiment work budget ends execution first.
 SMB supplies its decoded mechanical observations and the vocabulary's longest
 hold as the block minimum; its sole archive preference is a clock, so it is
 excluded from activity without changing archive retention.
+
+`InputJobTrace` records each completed block's work, before/after clock-free
+vectors, retention preview and final stop reason. Ordinary jobs leave unavailable
+activity and retention fields empty. These diagnostic traces support the hold
+and chain validity gate; they do not substitute for ordinary stream replay.

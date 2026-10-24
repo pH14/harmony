@@ -49,7 +49,10 @@ use crate::search::telemetry::{
 #[path = "campaign_coordinator.rs"]
 mod coordinator;
 
-pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
+pub use coordinator::{
+    CampaignAdmission, CampaignCoordinator, InputBlockTrace, InputJobTrace, JobOutcome, JobSpec,
+    run_job,
+};
 
 pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
 
@@ -305,6 +308,22 @@ pub trait InputPolicy: CampaignTypes {
         previous: Option<&Self::Action>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<Self::Action, Box<dyn Error>>;
+
+    fn sticky_controller(
+        &self,
+        _run: &Self::Run,
+        _previous: Option<&Self::Action>,
+    ) -> Option<(u8, u8, NonZeroU64)> {
+        None
+    }
+    fn sticky_actions(
+        &self,
+        _run: &Self::Run,
+        _input: &mut crate::search::sticky_input::StickyInput,
+        _work: NonZeroU64,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        Err("workload has no sticky controller adapter".into())
+    }
 
     fn refresh_selected_input_timing(
         &self,
@@ -5807,6 +5826,11 @@ mod tests {
             mutation_seed: u64,
             _previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+            if ALIVE_TEST.get() > 0
+                && let Some(previous) = _previous
+            {
+                return Ok(vec![*previous]);
+            }
             if let Some(targets) = &self.targets {
                 let selection = targets
                     .selections
@@ -10621,10 +10645,21 @@ mod tests {
             let mut job = coordinator.plan(1).pop().unwrap();
             job.suffix = vec![TestAction::new(input, 1); block_len];
             let mut target = workload.new_target().unwrap();
-            let (outcome, blocks) = coordinator
-                .run_alive_job(&mut target, &job, true, budget)
+            let (outcome, trace) = coordinator
+                .run_input_job(&mut target, &job, false, true, budget)
                 .unwrap();
-            assert_eq!(blocks, expected);
+            assert_eq!(trace.blocks.len(), expected);
+            if mode == 5 {
+                assert_eq!(trace.stop_reason, "unchanged");
+                assert_eq!(trace.blocks[0].before, trace.blocks[0].after);
+            }
+            if mode == 6 {
+                assert_eq!(
+                    trace.blocks.iter().map(|b| b.work).collect::<Vec<_>>(),
+                    vec![3, 3, 1]
+                );
+                assert_eq!(trace.stop_reason, "work_budget");
+            }
             assert_eq!(outcome.result.actions.len(), actions);
             assert_eq!(outcome.execution_work, actions as u64);
             assert_eq!(
