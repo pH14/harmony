@@ -145,12 +145,42 @@ Checkpoint freezing accounts for owned emulator/work-RAM capacities before
 cloning. Portable Consonance state exposes its immutable shared page/sidecar
 allocations for the image's private ledger; retaining them does not keep an
 archive entry active or exempt imports from verification. Evidence checkpoint
-writers stream borrowed fields and preserve the existing postcard/JSON bytes,
-including on the synchronous staging-pressure path.
+writers stream borrowed fields with postcard, including on the synchronous
+staging-pressure path.
 
 Campaign recordings use the current Dissonance schedule policy version 6 and
 bounded progress policy. Replay rejects recordings from superseded policy
 namespaces before constructing a replay target.
+
+## Campaign evidence
+
+Every game keeps its campaign evidence in `NesCampaignEvidence` from the
+`evidence` module of [`nes-games`](../nes-games/README.md). It holds the aggregate milestones, the progress watermark,
+the first execution and input that reached each milestone, and the champion
+input with its milestones and ranking key. Each game implements `NesEvidence`
+to supply those types and rules. Its `Extras` type holds evidence only that
+game keeps. Mega Man 2 and Metroid keep named progress and the best-stocked
+arrival at each milestone, and Metroid also keeps map coverage. Each game's
+`Reporting` and `Evaluation` evidence methods call the shared type, so origins,
+imports and actions merge the same way in every game. An action rebuilds
+its input only when it reaches a new milestone, takes the champion, or changes
+the game's extra evidence.
+
+Search checkpoints store the evidence with postcard. `checkpoint_marks` counts
+the milestones that have a first execution plus the named progress a game
+reports. A search with `checkpoint_on_progress` therefore writes a checkpoint
+at each new milestone in every game. A checkpoint written with an older
+evidence layout fails to load.
+
+`src/evidence_tests.rs` runs a short campaign with checkpoints, resumes it
+from an interval checkpoint, and checks that both runs end with the same
+evidence and archive. It always runs SMB on the loopback core. Set
+`HARMONY_QUICKNES_CORE` and any of `HARMONY_SMB_ROM`, `HARMONY_MM2_ROM`,
+`HARMONY_METROID_ROM`, `HARMONY_STB_ROM`, `HARMONY_FAMIDASH_ROM` and
+`HARMONY_TWIN_DRAGONS_ROM` to run the same check on those games. Famidash runs
+its first main-side level. Without a ROM, each game's tests fill in its
+evidence and pass it to `evidence::assert_checkpoint_round_trip`, which checks
+the encoding, the rejection of truncated and padded bytes, and the mark count.
 
 ## Backend evidence matrix
 

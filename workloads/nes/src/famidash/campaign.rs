@@ -5,9 +5,9 @@ use std::{error::Error, io::Write};
 use machine::quicknes::QuickNesMachine;
 
 pub use nes_games::famidash::campaign::{
-    CAMPAIGN_STREAM_FORMAT, FamidashCampaignCheckpoint, FamidashCampaignEvidence,
-    FamidashCampaignModeReport, FamidashCampaignRun, FamidashCampaignStreamHeader,
-    FamidashSnapshotCheckpoint, FamidashTargets, SNAPSHOT_CHECKPOINT_FORMAT,
+    CAMPAIGN_STREAM_FORMAT, FamidashCampaignCheckpoint, FamidashCampaignModeReport,
+    FamidashCampaignRun, FamidashCampaignStreamHeader, FamidashSnapshotCheckpoint, FamidashTargets,
+    SNAPSHOT_CHECKPOINT_FORMAT,
 };
 
 use crate::{
@@ -17,6 +17,8 @@ use crate::{
 };
 
 pub type FamidashGame = nes_games::famidash::campaign::FamidashGame<QuickNesMachine>;
+pub type FamidashCampaignEvidence =
+    nes_games::famidash::campaign::FamidashCampaignEvidence<QuickNesMachine, 0>;
 pub type FamidashCampaignOrigin = CampaignOrigin<FamidashGame>;
 
 impl crate::film::Filmable for FamidashGame {

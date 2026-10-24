@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
+    evidence::{NesCampaignEvidence, NesEvidence},
     famidash::{
         archive::{
             DURATION_IDENTIFIER, FamidashArchiveKey, FamidashArchiveReport, FamidashChampionKey,
@@ -129,16 +130,8 @@ impl FamidashGame<QuickNesMachine> {
 #[derive(Clone, Copy, Debug)]
 pub struct FamidashCampaignRun;
 
-#[derive(Clone, Default)]
-pub struct FamidashCampaignEvidence {
-    aggregate: FamidashMilestones,
-    watermark: FamidashProgressWatermark,
-    first_reached: FamidashMilestoneTimes,
-    first_inputs: FamidashMilestoneInputs,
-    champion_input: FamidashInput,
-    champion_milestones: FamidashMilestones,
-    champion_key: Option<FamidashChampionKey>,
-}
+pub type FamidashCampaignEvidence<M, const GROUP: usize> =
+    NesCampaignEvidence<FamidashGame<M, GROUP>>;
 
 pub type FamidashCampaignCheckpoint = CampaignCheckpoint<FamidashSnapshot>;
 pub type FamidashSnapshotCheckpoint = SnapshotCheckpoint<FamidashSnapshot>;
@@ -268,28 +261,6 @@ fn execute_suffix<M: NesBackend<Vec<u8>>, const GROUP: usize>(
     })
 }
 
-fn update_first_inputs(
-    times: &mut FamidashMilestoneTimes,
-    inputs: &mut FamidashMilestoneInputs,
-    value: FamidashMilestones,
-    sequence: u64,
-    input: &FamidashInput,
-) {
-    if value.complete && times.first_complete.is_none() {
-        times.first_complete = Some(sequence);
-        inputs.first_complete = Some(input.clone());
-    }
-    if value.death && times.first_death.is_none() {
-        times.first_death = Some(sequence);
-        inputs.first_death = Some(input.clone());
-    }
-}
-
-fn first_input_needed(inputs: &FamidashMilestoneInputs, value: FamidashMilestones) -> bool {
-    (value.complete && inputs.first_complete.is_none())
-        || (value.death && inputs.first_death.is_none())
-}
-
 fn action_champion_key(observations: &[FamidashObservations]) -> Option<FamidashChampionKey> {
     observations.last().and_then(|observation| {
         archive_key(observation.decoded).map(FamidashArchiveKey::champion_key)
@@ -305,12 +276,74 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> CampaignTypes for FamidashGame<
     type Progress = FamidashProgressWatermark;
     type Snapshot = FamidashSnapshot;
     type Observations = FamidashObservations;
-    type Evidence = FamidashCampaignEvidence;
+    type Evidence = FamidashCampaignEvidence<M, GROUP>;
     type ArchiveReport = FamidashArchiveReport;
     type Run = FamidashCampaignRun;
 }
 
+impl<M: NesBackend<Vec<u8>>, const GROUP: usize> NesEvidence for FamidashGame<M, GROUP> {
+    type MilestoneTimes = FamidashMilestoneTimes;
+    type MilestoneInputs = FamidashMilestoneInputs;
+    type ChampionKey = FamidashChampionKey;
+    type Extras = ();
+
+    fn milestone_rank(milestones: FamidashMilestones) -> impl Ord {
+        milestone_key(milestones)
+    }
+
+    fn merge_watermark(
+        watermark: &mut FamidashProgressWatermark,
+        observations: &[FamidashObservations],
+    ) {
+        merge_progress_watermark(watermark, observations);
+    }
+
+    fn champion_key(
+        observations: &[FamidashObservations],
+        _milestones: FamidashMilestones,
+    ) -> Option<FamidashChampionKey> {
+        action_champion_key(observations)
+    }
+
+    fn record_first_reached(
+        times: &mut FamidashMilestoneTimes,
+        inputs: &mut FamidashMilestoneInputs,
+        _extras: &(),
+        milestones: FamidashMilestones,
+        sequence: u64,
+        input: &FamidashInput,
+    ) {
+        if milestones.complete && times.first_complete.is_none() {
+            times.first_complete = Some(sequence);
+            inputs.first_complete = Some(input.clone());
+        }
+        if milestones.death && times.first_death.is_none() {
+            times.first_death = Some(sequence);
+            inputs.first_death = Some(input.clone());
+        }
+    }
+
+    fn first_reached_count(times: &FamidashMilestoneTimes) -> usize {
+        usize::from(times.first_complete.is_some()) + usize::from(times.first_death.is_some())
+    }
+}
+
 impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Reporting for FamidashGame<M, GROUP> {
+    fn write_evidence_checkpoint(
+        evidence: &Self::Evidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        evidence.write_checkpoint(out)
+    }
+
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
+        NesCampaignEvidence::from_checkpoint(bytes)
+    }
+
+    fn checkpoint_marks(evidence: &Self::Evidence) -> usize {
+        evidence.checkpoint_marks()
+    }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -345,7 +378,7 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Reporting for FamidashGame<M, G
 
     fn archive_report(
         &self,
-        evidence: &FamidashCampaignEvidence,
+        evidence: &FamidashCampaignEvidence<M, GROUP>,
         state: ArchiveReportState<Self>,
     ) -> FamidashArchiveReport {
         FamidashArchiveReport {
@@ -526,25 +559,27 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Evaluation for FamidashGame<M, 
         merge_milestones(into, from);
     }
 
-    fn aggregate_milestones(evidence: &FamidashCampaignEvidence) -> FamidashMilestones {
+    fn aggregate_milestones(evidence: &FamidashCampaignEvidence<M, GROUP>) -> FamidashMilestones {
         evidence.aggregate
     }
 
-    fn aggregate_progress(evidence: &FamidashCampaignEvidence) -> FamidashProgressWatermark {
+    fn aggregate_progress(
+        evidence: &FamidashCampaignEvidence<M, GROUP>,
+    ) -> FamidashProgressWatermark {
         evidence.watermark
     }
 
     fn merge_origin_evidence(
         &self,
-        evidence: &mut FamidashCampaignEvidence,
+        evidence: &mut FamidashCampaignEvidence<M, GROUP>,
         source: &FamidashArchiveReport,
     ) {
-        evidence.watermark = evidence.watermark.max(source.progress_watermark);
+        evidence.merge_origin(source.progress_watermark);
     }
 
     fn merge_snapshot_root_evidence(
         &self,
-        evidence: &mut FamidashCampaignEvidence,
+        evidence: &mut FamidashCampaignEvidence<M, GROUP>,
         target: &FamidashTarget<M>,
     ) -> Result<(), Box<dyn Error>> {
         let observation = FamidashObservations {
@@ -558,27 +593,16 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Evaluation for FamidashGame<M, 
 
     fn merge_import_evidence(
         &self,
-        evidence: &mut FamidashCampaignEvidence,
+        evidence: &mut FamidashCampaignEvidence<M, GROUP>,
         value: FamidashMilestones,
         input: &FamidashInput,
     ) {
-        merge_milestones(&mut evidence.aggregate, value);
-        update_first_inputs(
-            &mut evidence.first_reached,
-            &mut evidence.first_inputs,
-            value,
-            0,
-            input,
-        );
-        if milestone_key(value) > milestone_key(evidence.champion_milestones) {
-            evidence.champion_milestones = value;
-            evidence.champion_input = input.clone();
-        }
+        evidence.merge_import(self, value, input);
     }
 
     fn merge_action_evidence<F>(
         &self,
-        evidence: &mut FamidashCampaignEvidence,
+        evidence: &mut FamidashCampaignEvidence<M, GROUP>,
         action: &FamidashCampaignActionResult<M, GROUP>,
         sequence: u64,
         input: F,
@@ -586,27 +610,7 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Evaluation for FamidashGame<M, 
     where
         F: FnOnce() -> Result<FamidashInput, Box<dyn Error>>,
     {
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
-        merge_milestones(&mut evidence.aggregate, action.milestones);
-        let first_input_needed = first_input_needed(&evidence.first_inputs, action.milestones);
-        let champion = action_champion_key(&action.observations)
-            .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() {
-            let input = input()?;
-            update_first_inputs(
-                &mut evidence.first_reached,
-                &mut evidence.first_inputs,
-                action.milestones,
-                sequence,
-                &input,
-            );
-            if let Some(key) = champion {
-                evidence.champion_key = Some(key);
-                evidence.champion_milestones = action.milestones;
-                evidence.champion_input = input;
-            }
-        }
-        Ok(())
+        evidence.merge_action(self, action, sequence, false, input, |_, _| Ok(()))
     }
 
     fn source_entries<'a>(
@@ -644,6 +648,54 @@ mod tests {
 
     fn game(execution: &str, stage: Stage) -> FamidashGame<QuickNesMachine> {
         FamidashGame::new(&[0], Path::new("core.so"), "core", execution, stage)
+    }
+
+    #[test]
+    fn populated_evidence_survives_a_checkpoint_and_counts_each_first_arrival() {
+        let input = FamidashInput {
+            actions: vec![ButtonChord::new(0x01, 4)],
+        };
+        let complete = FamidashMilestones {
+            cleared: 1,
+            percent: 100,
+            complete: true,
+            death: false,
+        };
+        let mut evidence = FamidashCampaignEvidence::<QuickNesMachine, 0>::default();
+        for (sequence, milestones) in [
+            (3, complete),
+            (5, complete),
+            (
+                8,
+                FamidashMilestones {
+                    death: true,
+                    ..complete
+                },
+            ),
+        ] {
+            FamidashGame::<QuickNesMachine>::record_first_reached(
+                &mut evidence.first_reached,
+                &mut evidence.first_inputs,
+                &(),
+                milestones,
+                sequence,
+                &input,
+            );
+        }
+        assert_eq!(evidence.first_reached.first_complete, Some(3));
+        evidence.aggregate = FamidashMilestones {
+            death: true,
+            ..complete
+        };
+        evidence.watermark = FamidashProgressWatermark {
+            cleared: 1,
+            percent: 100,
+            x: 4_000,
+        };
+        evidence.champion_input = input;
+        evidence.champion_milestones = complete;
+        evidence.champion_key = Some((1, 4_000));
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 2);
     }
 
     #[test]

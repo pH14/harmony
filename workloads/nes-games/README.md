@@ -12,9 +12,12 @@ setup tapes and the `Target` implementation, and an `archive` with the
 controller vocabulary, archive keys and milestones. Mega Man 2 and Metroid
 also have a `progress` module for named progress. Famidash has a `levels`
 module with each side's level names, lengths and groups. `chord` holds the
-controller chord draw. `nes_backend` holds the `NesBackend`, `NesMemory` and
-`SnapshotState` traits that every target uses to run, snapshot and read a
-machine.
+controller chord draw. `evidence` holds `NesEvidence` and
+`NesCampaignEvidence`, the campaign evidence that every NES game keeps,
+including Super Tilt Bro in `../nes`. The
+[`nes` README](../nes/README.md#campaign-evidence) describes it. `nes_backend`
+holds the `NesBackend`, `NesMemory` and `SnapshotState` traits that every
+target uses to run, snapshot and read a machine.
 
 Every target type is generic over its backend. The QuickNES parts are compiled
 only on Unix, because `machine::quicknes` exists only there: the `NesBackend`
@@ -22,8 +25,8 @@ and `NesMemory` implementations for `QuickNesMachine`, its LZ4 snapshot
 packing, and the constructors, capture and render methods of each target that
 take a ROM and a core path. The `consonance` feature adds the backend
 implementation for the Consonance machine. The `test-support` feature exposes
-test constructors and the scripted Super Tilt Bro machine to the tests of
-`nes-workload`.
+test constructors, the scripted Super Tilt Bro machine and
+`evidence::assert_checkpoint_round_trip` to the tests of `nes-workload`.
 
 Twin Dragons, Famidash, Super Mario Bros., Mega Man 2 and Metroid also have a
 `campaign` module with their `Workload` implementation. `TwinDragonsGame<M>`,
@@ -91,8 +94,9 @@ vector and the fixed snapshot/observation value. SMB also charges its backend's
 portable state and owned work-RAM copy. Shared Consonance pages and sidecar chunks
 use physical allocation identities; equivalent separately allocated states remain
 separate charges. Freeze clones owned buffers and retains immutable shared state.
-Metroid, Mega Man 2 and SMB stream evidence from borrowed fields, preserving the
-existing resume bytes without building another owned evidence graph. These shared
+Every game streams its `NesCampaignEvidence` into the checkpoint with
+`postcard::to_io`, which serializes borrowed fields without building another
+owned evidence graph. These shared
 implementations also serve native and browser consumers; file publication remains
 a native coordinator facility.
 

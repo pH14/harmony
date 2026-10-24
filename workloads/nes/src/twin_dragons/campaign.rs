@@ -6,8 +6,8 @@ use machine::quicknes::QuickNesMachine;
 
 pub use nes_games::twin_dragons::campaign::{
     CAMPAIGN_STREAM_FORMAT, SNAPSHOT_CHECKPOINT_FORMAT, TwinDragonsCampaignCheckpoint,
-    TwinDragonsCampaignEvidence, TwinDragonsCampaignModeReport, TwinDragonsCampaignRun,
-    TwinDragonsCampaignStreamHeader, TwinDragonsSnapshotCheckpoint, TwinDragonsTargets,
+    TwinDragonsCampaignModeReport, TwinDragonsCampaignRun, TwinDragonsCampaignStreamHeader,
+    TwinDragonsSnapshotCheckpoint, TwinDragonsTargets,
 };
 
 use crate::{
@@ -24,6 +24,8 @@ use crate::{
 };
 
 pub type TwinDragonsGame = nes_games::twin_dragons::campaign::TwinDragonsGame<QuickNesMachine>;
+pub type TwinDragonsCampaignEvidence =
+    nes_games::twin_dragons::campaign::TwinDragonsCampaignEvidence<QuickNesMachine>;
 pub type TwinDragonsCampaignOrigin = CampaignOrigin<TwinDragonsGame>;
 
 pub struct TwinDragonsCampaignConfig {

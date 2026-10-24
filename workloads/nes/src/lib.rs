@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-pub use nes_games::{chord, nes_backend};
+pub use nes_games::{chord, evidence, nes_backend};
 pub use searcher::{search, target};
 pub mod admission;
 pub mod allocator;
 pub mod eval;
+#[cfg(test)]
+mod evidence_tests;
 pub mod famidash;
 pub mod film;
 #[cfg(unix)]

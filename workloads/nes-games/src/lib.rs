@@ -3,6 +3,7 @@
 pub use searcher::{search, target};
 pub mod arcade;
 pub mod chord;
+pub mod evidence;
 pub mod famidash;
 pub mod metroid;
 pub mod mm2;

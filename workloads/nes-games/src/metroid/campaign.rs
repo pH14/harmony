@@ -9,11 +9,12 @@ use machine::MachineError;
 #[cfg(unix)]
 use machine::quicknes::QuickNesMachine;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use sha2::{Digest, Sha256};
 
 use crate::{
     chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
+    evidence::{NesCampaignEvidence, NesEvidence},
     metroid::{
         archive::{
             DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MetroidArchiveKey, MetroidArchiveReport,
@@ -22,7 +23,7 @@ use crate::{
             chord_time, merge_milestones, merge_progress_watermark, milestone_key, milestones,
             progress_watermark,
         },
-        progress::{FirstSeen, NamedProgress},
+        progress::NamedProgress,
         target::{
             ButtonChord, GenesisDepth, MetroidInput, MetroidObservations, MetroidSnapshot,
             MetroidTarget, MetroidTerminalPolicy, preference_tuple,
@@ -253,95 +254,74 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidGame<M> {
 #[derive(Clone, Copy, Debug)]
 pub struct MetroidCampaignRun;
 
-#[derive(Clone, Default)]
-pub struct MetroidCampaignEvidence {
+pub type MetroidCampaignEvidence<M> = NesCampaignEvidence<MetroidGame<M>>;
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub struct MetroidExtraEvidence {
     observed_map: MapCoverage,
     named_progress: NamedProgress,
-    aggregate: MetroidMilestones,
-    watermark: MetroidProgressWatermark,
-    first_reached: MetroidMilestoneTimes,
-    first_inputs: MetroidMilestoneInputs,
-    champion_input: MetroidInput,
-    champion_milestones: MetroidMilestones,
-    champion_key: Option<MetroidChampionKey>,
     genesis_area: Option<u8>,
+    #[serde(deserialize_with = "interned_names")]
     best_energy: BTreeMap<&'static str, (u16, u8)>,
+    #[serde(deserialize_with = "interned_names")]
     best_missiles: BTreeMap<&'static str, (u8, u16)>,
+    #[serde(deserialize_with = "interned_names")]
     best_boss: BTreeMap<&'static str, (Reverse<u16>, u8, u16)>,
 }
 
-#[derive(Deserialize, Serialize)]
-struct MetroidEvidenceCheckpoint {
-    observed_map: Vec<u64>,
-    first_seen: Vec<(String, Option<FirstSeen>)>,
-    max_missile_capacity: u8,
-    max_energy_tanks: u8,
-    aggregate: MetroidMilestones,
-    watermark: MetroidProgressWatermark,
-    first_reached: MetroidMilestoneTimes,
-    first_inputs: MetroidMilestoneInputs,
-    champion_input: MetroidInput,
-    champion_milestones: MetroidMilestones,
-    champion_key: Option<MetroidChampionKey>,
-    genesis_area: Option<u8>,
-    best_energy: Vec<(String, (u16, u8))>,
-    best_missiles: Vec<(String, (u8, u16))>,
-    best_boss: Vec<(String, (u16, u8, u16))>,
-}
-
-fn named_progress_name(name: &str) -> Result<&'static str, Box<dyn Error>> {
-    NamedProgress::default()
-        .first_seen
-        .keys()
-        .find(|known| **known == name)
-        .copied()
-        .ok_or_else(|| format!("search checkpoint names an unknown milestone {name}").into())
-}
-
-fn interned_names<V>(
-    entries: Vec<(String, V)>,
-) -> Result<BTreeMap<&'static str, V>, Box<dyn Error>> {
-    entries
+fn interned_names<'de, D, V>(deserializer: D) -> Result<BTreeMap<&'static str, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    V: Deserialize<'de>,
+{
+    let known = NamedProgress::default().first_seen;
+    BTreeMap::<String, V>::deserialize(deserializer)?
         .into_iter()
-        .map(|(name, value)| Ok((named_progress_name(&name)?, value)))
+        .map(|(name, value)| {
+            known
+                .get_key_value(name.as_str())
+                .map(|(known, _)| (*known, value))
+                .ok_or_else(|| {
+                    D::Error::custom(format!(
+                        "search checkpoint names an unknown milestone {name}"
+                    ))
+                })
+        })
         .collect()
 }
 
-impl MetroidCampaignEvidence {
-    fn from_checkpoint(checkpoint: MetroidEvidenceCheckpoint) -> Result<Self, Box<dyn Error>> {
-        let observed_map: Box<[u64; 4096]> = checkpoint
-            .observed_map
-            .into_boxed_slice()
-            .try_into()
-            .map_err(|_| "search checkpoint map coverage has the wrong size")?;
-        let mut named_progress = NamedProgress::default();
-        let first_seen = interned_names(checkpoint.first_seen)?;
-        if first_seen.len() != named_progress.first_seen.len() {
-            return Err("search checkpoint milestone names differ from this build".into());
+impl MetroidExtraEvidence {
+    fn stock(&mut self, last: &MetroidObservations) -> Vec<(&'static str, &'static str)> {
+        let mut improved = Vec::new();
+        let state = last.decoded;
+        for name in NamedProgress::reached(last) {
+            let by_energy = (state.health, state.missiles);
+            if self
+                .best_energy
+                .get(name)
+                .is_none_or(|best| by_energy > *best)
+            {
+                self.best_energy.insert(name, by_energy);
+                improved.push((name, "energy"));
+            }
+            let by_missiles = (state.missiles, state.health);
+            if self
+                .best_missiles
+                .get(name)
+                .is_none_or(|best| by_missiles > *best)
+            {
+                self.best_missiles.insert(name, by_missiles);
+                improved.push((name, "missiles"));
+            }
+            if state.boss_health > 0 {
+                let by_boss = (Reverse(state.boss_health), state.missiles, state.health);
+                if self.best_boss.get(name).is_none_or(|best| by_boss > *best) {
+                    self.best_boss.insert(name, by_boss);
+                    improved.push((name, "boss"));
+                }
+            }
         }
-        named_progress.first_seen = first_seen;
-        named_progress.max_missile_capacity = checkpoint.max_missile_capacity;
-        named_progress.max_energy_tanks = checkpoint.max_energy_tanks;
-        Ok(Self {
-            observed_map: MapCoverage(observed_map),
-            named_progress,
-            aggregate: checkpoint.aggregate,
-            watermark: checkpoint.watermark,
-            first_reached: checkpoint.first_reached,
-            first_inputs: checkpoint.first_inputs,
-            champion_input: checkpoint.champion_input,
-            champion_milestones: checkpoint.champion_milestones,
-            champion_key: checkpoint.champion_key,
-            genesis_area: checkpoint.genesis_area,
-            best_energy: interned_names(checkpoint.best_energy)?,
-            best_missiles: interned_names(checkpoint.best_missiles)?,
-            best_boss: interned_names(checkpoint.best_boss)?
-                .into_iter()
-                .map(|(name, (health, missiles, energy))| {
-                    (name, (Reverse(health), missiles, energy))
-                })
-                .collect(),
-        })
+        improved
     }
 }
 
@@ -351,6 +331,22 @@ struct MapCoverage(Box<[u64; 4096]>);
 impl Default for MapCoverage {
     fn default() -> Self {
         Self(Box::new([0; 4096]))
+    }
+}
+
+impl Serialize for MapCoverage {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.as_slice().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MapCoverage {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<u64>::deserialize(deserializer)?
+            .into_boxed_slice()
+            .try_into()
+            .map(Self)
+            .map_err(|_| D::Error::custom("search checkpoint map coverage has the wrong size"))
     }
 }
 
@@ -523,59 +519,85 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for MetroidGame<M> {
     type Progress = MetroidProgressWatermark;
     type Snapshot = MetroidSnapshot;
     type Observations = MetroidObservations;
-    type Evidence = MetroidCampaignEvidence;
+    type Evidence = MetroidCampaignEvidence<M>;
     type ArchiveReport = MetroidArchiveReport;
     type Run = MetroidCampaignRun;
 }
 
-impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
-    fn write_evidence_checkpoint(
-        evidence: &MetroidCampaignEvidence,
-        out: &mut dyn std::io::Write,
-    ) -> Result<(), Box<dyn Error>> {
-        use searcher::search::checkpoint::image::Sequence;
-        postcard::to_io(
-            &(
-                &evidence.observed_map.0[..],
-                Sequence(evidence.named_progress.first_seen.iter()),
-                evidence.named_progress.max_missile_capacity,
-                evidence.named_progress.max_energy_tanks,
-                evidence.aggregate,
-                evidence.watermark,
-                evidence.first_reached,
-                &evidence.first_inputs,
-                &evidence.champion_input,
-                evidence.champion_milestones,
-                evidence.champion_key,
-                evidence.genesis_area,
-                Sequence(evidence.best_energy.iter()),
-                Sequence(evidence.best_missiles.iter()),
-                Sequence(evidence.best_boss.iter().map(
-                    |(name, (Reverse(health), missiles, energy))| {
-                        (name, (health, missiles, energy))
-                    },
-                )),
-            ),
-            out,
-        )?;
-        Ok(())
+impl<M: NesBackend<Vec<u8>> + NesMemory> NesEvidence for MetroidGame<M> {
+    type MilestoneTimes = MetroidMilestoneTimes;
+    type MilestoneInputs = MetroidMilestoneInputs;
+    type ChampionKey = MetroidChampionKey;
+    type Extras = MetroidExtraEvidence;
+
+    fn milestone_rank(milestones: MetroidMilestones) -> impl Ord {
+        milestone_key(milestones)
     }
-    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<MetroidCampaignEvidence, Box<dyn Error>> {
-        MetroidCampaignEvidence::from_checkpoint(postcard::from_bytes(bytes)?)
+    fn merge_watermark(
+        watermark: &mut MetroidProgressWatermark,
+        observations: &[MetroidObservations],
+    ) {
+        merge_progress_watermark(watermark, observations);
     }
-    fn checkpoint_marks(evidence: &MetroidCampaignEvidence) -> usize {
-        evidence
+    fn champion_key(
+        observations: &[MetroidObservations],
+        _milestones: MetroidMilestones,
+    ) -> Option<MetroidChampionKey> {
+        action_champion_key(observations)
+    }
+    fn record_first_reached(
+        times: &mut MetroidMilestoneTimes,
+        inputs: &mut MetroidMilestoneInputs,
+        extras: &MetroidExtraEvidence,
+        milestones: MetroidMilestones,
+        sequence: u64,
+        input: &MetroidInput,
+    ) {
+        update_first_inputs(
+            times,
+            inputs,
+            milestones,
+            extras.genesis_area.unwrap_or(0),
+            sequence,
+            input,
+        );
+    }
+    fn first_reached_count(times: &MetroidMilestoneTimes) -> usize {
+        [times.first_new_area, times.first_gain]
+            .into_iter()
+            .flatten()
+            .count()
+    }
+    fn named_progress_count(extras: &MetroidExtraEvidence) -> usize {
+        extras
             .named_progress
             .first_seen
             .values()
             .filter(|seen| seen.is_some())
             .count()
     }
-    fn diagnostics(evidence: &MetroidCampaignEvidence) -> Option<serde_json::Value> {
+}
+
+impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
+    fn write_evidence_checkpoint(
+        evidence: &MetroidCampaignEvidence<M>,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        evidence.write_checkpoint(out)
+    }
+    fn evidence_from_checkpoint(
+        bytes: &[u8],
+    ) -> Result<MetroidCampaignEvidence<M>, Box<dyn Error>> {
+        NesCampaignEvidence::from_checkpoint(bytes)
+    }
+    fn checkpoint_marks(evidence: &MetroidCampaignEvidence<M>) -> usize {
+        evidence.checkpoint_marks()
+    }
+    fn diagnostics(evidence: &MetroidCampaignEvidence<M>) -> Option<serde_json::Value> {
         Some(serde_json::json!({
-            "map_cells_observed": evidence.observed_map.count(),
+            "map_cells_observed": evidence.extras.observed_map.count(),
             "coverage_bitmap_bytes": 32768,
-            "named_progress": evidence.named_progress,
+            "named_progress": evidence.extras.named_progress,
             "observation_filter": "live gameplay observations supplied to this accumulator"
         }))
     }
@@ -648,18 +670,20 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
         }))
     }
     fn merge_witness_diagnostics(
-        evidence: &mut MetroidCampaignEvidence,
+        evidence: &mut MetroidCampaignEvidence<M>,
         observations: &[MetroidObservations],
         sequence: u64,
     ) {
         let action_end = observations.last().map_or(0, |obs| obs.frame_count);
         for observation in observations {
             evidence
+                .extras
                 .named_progress
                 .observe(observation, sequence, action_end);
             let state = observation.decoded;
             if !observation.dead && state.in_play() {
                 evidence
+                    .extras
                     .observed_map
                     .observe(state.area, state.map_x, state.map_y);
             }
@@ -699,7 +723,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
 
     fn archive_report(
         &self,
-        evidence: &MetroidCampaignEvidence,
+        evidence: &MetroidCampaignEvidence<M>,
         state: ArchiveReportState<Self>,
     ) -> MetroidArchiveReport {
         MetroidArchiveReport {
@@ -885,65 +909,54 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for MetroidGame<M> {
         merge_milestones(into, from);
     }
 
-    fn aggregate_milestones(evidence: &MetroidCampaignEvidence) -> MetroidMilestones {
+    fn aggregate_milestones(evidence: &MetroidCampaignEvidence<M>) -> MetroidMilestones {
         evidence.aggregate
     }
 
-    fn aggregate_progress(evidence: &MetroidCampaignEvidence) -> MetroidProgressWatermark {
+    fn aggregate_progress(evidence: &MetroidCampaignEvidence<M>) -> MetroidProgressWatermark {
         evidence.watermark
     }
 
     fn merge_origin_evidence(
         &self,
-        evidence: &mut MetroidCampaignEvidence,
+        evidence: &mut MetroidCampaignEvidence<M>,
         source: &MetroidArchiveReport,
     ) {
-        evidence.watermark = evidence.watermark.max(source.progress_watermark);
+        evidence.merge_origin(source.progress_watermark);
     }
 
     fn merge_snapshot_root_evidence(
         &self,
-        evidence: &mut MetroidCampaignEvidence,
+        evidence: &mut MetroidCampaignEvidence<M>,
         target: &MetroidTarget<M>,
     ) -> Result<(), Box<dyn Error>> {
         let state = target.mechanical_state();
         evidence.watermark = evidence.watermark.max(progress_watermark(state));
         evidence
+            .extras
             .observed_map
             .observe(state.area, state.map_x, state.map_y);
         let observation = target.observe();
         evidence
+            .extras
             .named_progress
             .observe(&observation, 0, observation.frame_count);
-        evidence.genesis_area.get_or_insert(state.area);
+        evidence.extras.genesis_area.get_or_insert(state.area);
         Ok(())
     }
 
     fn merge_import_evidence(
         &self,
-        evidence: &mut MetroidCampaignEvidence,
+        evidence: &mut MetroidCampaignEvidence<M>,
         value: MetroidMilestones,
         input: &MetroidInput,
     ) {
-        merge_milestones(&mut evidence.aggregate, value);
-        let genesis_area = evidence.genesis_area.unwrap_or(0);
-        update_first_inputs(
-            &mut evidence.first_reached,
-            &mut evidence.first_inputs,
-            value,
-            genesis_area,
-            0,
-            input,
-        );
-        if milestone_key(value) > milestone_key(evidence.champion_milestones) {
-            evidence.champion_milestones = value;
-            evidence.champion_input = input.clone();
-        }
+        evidence.merge_import(self, value, input);
     }
 
     fn merge_action_evidence<F>(
         &self,
-        evidence: &mut MetroidCampaignEvidence,
+        evidence: &mut MetroidCampaignEvidence<M>,
         action: &MetroidCampaignActionResult<M>,
         sequence: u64,
         input: F,
@@ -951,11 +964,10 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for MetroidGame<M> {
     where
         F: FnOnce() -> Result<MetroidInput, Box<dyn Error>>,
     {
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
         let mut discoveries = Vec::new();
         let action_end_frame = action.observations.last().map_or(0, |obs| obs.frame_count);
         for observation in &action.observations {
-            discoveries.extend(evidence.named_progress.observe(
+            discoveries.extend(evidence.extras.named_progress.observe(
                 observation,
                 sequence,
                 action_end_frame,
@@ -963,77 +975,33 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for MetroidGame<M> {
             let state = observation.decoded;
             if !observation.dead && state.in_play() {
                 evidence
+                    .extras
                     .observed_map
                     .observe(state.area, state.map_x, state.map_y);
             }
         }
-        merge_milestones(&mut evidence.aggregate, action.milestones);
-        let genesis_area = evidence.genesis_area.unwrap_or(0);
-        let left_starting_area = action.milestones.areas & !(1_u8 << (genesis_area % 8)) != 0;
-        let first_input_needed = (left_starting_area
-            && evidence.first_inputs.first_new_area.is_none())
-            || (action.milestones.gained && evidence.first_inputs.first_gain.is_none());
-        let champion = action_champion_key(&action.observations)
-            .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        let mut improved = Vec::new();
-        if let Some(last) = action.observations.last().filter(|last| !last.dead) {
-            let state = last.decoded;
-            for name in NamedProgress::reached(last) {
-                let by_energy = (state.health, state.missiles);
-                if evidence
-                    .best_energy
-                    .get(name)
-                    .is_none_or(|best| by_energy > *best)
-                {
-                    evidence.best_energy.insert(name, by_energy);
-                    improved.push((name, "energy"));
+        let improved = action
+            .observations
+            .last()
+            .filter(|last| !last.dead)
+            .map(|last| evidence.extras.stock(last))
+            .unwrap_or_default();
+        let extras_need_input = !discoveries.is_empty() || !improved.is_empty();
+        evidence.merge_action(
+            self,
+            action,
+            sequence,
+            extras_need_input,
+            input,
+            |input, champion| {
+                self.publish_milestones(&discoveries, input)?;
+                self.publish_stocked(&improved, input)?;
+                if champion {
+                    self.publish_champion(input)?;
                 }
-                let by_missiles = (state.missiles, state.health);
-                if evidence
-                    .best_missiles
-                    .get(name)
-                    .is_none_or(|best| by_missiles > *best)
-                {
-                    evidence.best_missiles.insert(name, by_missiles);
-                    improved.push((name, "missiles"));
-                }
-                if state.boss_health > 0 {
-                    let by_boss = (Reverse(state.boss_health), state.missiles, state.health);
-                    if evidence
-                        .best_boss
-                        .get(name)
-                        .is_none_or(|best| by_boss > *best)
-                    {
-                        evidence.best_boss.insert(name, by_boss);
-                        improved.push((name, "boss"));
-                    }
-                }
-            }
-        }
-        if first_input_needed
-            || champion.is_some()
-            || !discoveries.is_empty()
-            || !improved.is_empty()
-        {
-            let input = input()?;
-            self.publish_milestones(&discoveries, &input)?;
-            self.publish_stocked(&improved, &input)?;
-            update_first_inputs(
-                &mut evidence.first_reached,
-                &mut evidence.first_inputs,
-                action.milestones,
-                genesis_area,
-                sequence,
-                &input,
-            );
-            if let Some(key) = champion {
-                evidence.champion_key = Some(key);
-                evidence.champion_milestones = action.milestones;
-                self.publish_champion(&input)?;
-                evidence.champion_input = input;
-            }
-        }
-        Ok(())
+                Ok(())
+            },
+        )
     }
 
     fn source_entries<'a>(
@@ -1064,66 +1032,6 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-
-    #[test]
-    fn streamed_evidence_preserves_the_owned_reference_bytes_and_resume_fields() {
-        let mut evidence = MetroidCampaignEvidence::default();
-        evidence.observed_map.0[17] = 19;
-        evidence.champion_input.actions.push(ButtonChord {
-            buttons: 3,
-            hold_frames: 7,
-        });
-        evidence.best_energy.insert("ridley_area", (3, 5));
-        evidence.best_missiles.insert("ridley_area", (9, 11));
-        evidence
-            .best_boss
-            .insert("ridley_area", (Reverse(13), 15, 17));
-        evidence.genesis_area = Some(4);
-        let names = |values: &BTreeMap<&'static str, _>| {
-            values
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), *value))
-                .collect()
-        };
-        let reference = MetroidEvidenceCheckpoint {
-            observed_map: evidence.observed_map.0.to_vec(),
-            first_seen: names(&evidence.named_progress.first_seen),
-            max_missile_capacity: evidence.named_progress.max_missile_capacity,
-            max_energy_tanks: evidence.named_progress.max_energy_tanks,
-            aggregate: evidence.aggregate,
-            watermark: evidence.watermark,
-            first_reached: evidence.first_reached,
-            first_inputs: evidence.first_inputs.clone(),
-            champion_input: evidence.champion_input.clone(),
-            champion_milestones: evidence.champion_milestones,
-            champion_key: evidence.champion_key,
-            genesis_area: evidence.genesis_area,
-            best_energy: evidence
-                .best_energy
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), *value))
-                .collect(),
-            best_missiles: evidence
-                .best_missiles
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), *value))
-                .collect(),
-            best_boss: evidence
-                .best_boss
-                .iter()
-                .map(|(name, (Reverse(health), missiles, energy))| {
-                    ((*name).to_owned(), (*health, *missiles, *energy))
-                })
-                .collect(),
-        };
-        let bytes = MetroidGame::<QuickNesMachine>::evidence_checkpoint(&evidence).unwrap();
-        assert_eq!(bytes, postcard::to_allocvec(&reference).unwrap());
-        let restored = MetroidGame::<QuickNesMachine>::evidence_from_checkpoint(&bytes).unwrap();
-        assert_eq!(
-            MetroidGame::<QuickNesMachine>::evidence_checkpoint(&restored).unwrap(),
-            bytes
-        );
-    }
 
     #[test]
     fn named_discovery_reconstructs_input_independently_of_output_configuration() {
@@ -1174,7 +1082,7 @@ mod tests {
             })
             .unwrap();
             assert_eq!(
-                evidence.named_progress.first_seen["ridley_area"]
+                evidence.extras.named_progress.first_seen["ridley_area"]
                     .unwrap()
                     .execution,
                 12
@@ -1270,6 +1178,7 @@ mod tests {
         .unwrap();
         assert_eq!(read("ridley_area-boss.json").actions.len(), 5);
         std::fs::remove_dir_all(directory).unwrap();
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 2);
     }
 
     #[test]
