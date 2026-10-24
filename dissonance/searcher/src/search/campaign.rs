@@ -306,6 +306,16 @@ pub trait InputPolicy: CampaignTypes {
         rand: &mut RomuDuoJrRand,
     ) -> Result<Self::Action, Box<dyn Error>>;
 
+    fn refresh_selected_input_timing(
+        &self,
+        run: &Self::Run,
+        mutation_seed: u64,
+        suffix: &mut [Self::Action],
+    ) -> Result<(), Box<dyn Error>> {
+        let _ = (run, mutation_seed, suffix);
+        Ok(())
+    }
+
     fn draw_table_parameters(&self, run: &Self::Run) -> EmpiricalStepParameters {
         let _ = run;
         DEFAULT_DRAW_TABLE_PARAMETERS
@@ -4905,6 +4915,13 @@ where
                         draw,
                     )?,
                 };
+                if duration_draw.is_none() {
+                    workload.refresh_selected_input_timing(
+                        &replay_run,
+                        skip.mutation_seed,
+                        &mut suffix,
+                    )?;
+                }
                 if let Some(limit) = suffix_limit {
                     suffix.truncate(usize::from(limit));
                 }
@@ -5073,6 +5090,13 @@ where
                         draw,
                     )?,
                 };
+                if duration_draw.is_none() {
+                    workload.refresh_selected_input_timing(
+                        &replay_run,
+                        job.mutation_seed,
+                        &mut suffix,
+                    )?;
+                }
                 if let Some(limit) = suffix_limit {
                     suffix.truncate(usize::from(limit));
                 }

@@ -64,7 +64,7 @@ pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v3";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v4";
 pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v3";
 
-pub const DURATION_IDENTIFIER: &str = "stratified";
+pub const DURATION_IDENTIFIER: &str = "selected_symbols_independent_uniform_holds_v1";
 
 pub const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 pub const KEY_POLICY_FIELD: &str = "key_policy";
@@ -514,6 +514,20 @@ where
             return Err(format!("campaign stream carries an unknown {field} policy").into());
         }
         Ok(run)
+    }
+
+    fn refresh_selected_input_timing(
+        &self,
+        run: &SmbCampaignRun,
+        mutation_seed: u64,
+        suffix: &mut [ButtonChord],
+    ) -> Result<(), Box<dyn Error>> {
+        let mut rand = RomuDuoJrRand::with_seed(mutation_seed ^ u64::from_le_bytes(*b"HOLDTIME"));
+        let vocabulary = run.vocabulary.chords();
+        for action in suffix {
+            action.hold_frames = vocabulary.uniform_hold(&mut rand)?;
+        }
+        Ok(())
     }
 
     fn sample_alphabet(

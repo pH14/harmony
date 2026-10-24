@@ -1431,6 +1431,9 @@ where
                     previous,
                 )?,
             };
+            if duration_draw.is_none() {
+                workload.refresh_selected_input_timing(&config.run, mutation_seed, &mut suffix)?;
+            }
             if let Some(limit) = suffix_limit {
                 suffix.truncate(usize::from(limit));
             }

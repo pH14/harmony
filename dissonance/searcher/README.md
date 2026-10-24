@@ -1201,3 +1201,10 @@ log-spaced prior without fitting a game-specific rate. The selected rate stays
 fixed across blocks; run length has geometric support with no duration cap.
 The adapter supplies the controller's enabled-bit mask. This primitive is not
 yet connected to the campaign strategy or replay record.
+
+Workloads without adaptive duration requests may refresh selected input timing
+after table/alphabet/splice selection and before suffix truncation and duplicate
+checks. The default `refresh_selected_input_timing` is identity. Live selection
+and replay call the same hook with the recorded mutation seed; workloads pin
+its meaning in their input policy identifiers. Adaptive duration requests bypass
+this hook so their learned duration and accounting remain authoritative.

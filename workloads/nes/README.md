@@ -406,3 +406,14 @@ See the [CLI README](../../cli/README.md) for named runs and investigation.
 Full campaign exports write `checkpoint.bin` using the generic framed snapshot
 codec. Snapshot artifacts use the same codec through fixture tools, package exports,
 and SMB stream readers/writers; flat JSON checkpoint files are no longer written.
+
+The experimental SMB input policy separates selected controller symbols from
+their recorded hold lengths. Table and splice selection otherwise copy short
+holds disproportionately. After selection, holds are sampled uniformly between
+the vocabulary's existing minimum and maximum (2–120 frames), including the gap
+between the former strata. This is a maximum-entropy bounded timing prior, with
+no new game-specific bound or fitted probability. The ASCII `HOLDTIME` seed
+domain separates timing randomness from symbol selection. The policy identifier
+is `selected_symbols_independent_uniform_holds_v1`; live selection and replay
+apply the same transformation. This is the common input repair for all four
+experimental arms, not a change to adaptive duration, retention or energy.

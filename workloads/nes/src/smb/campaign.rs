@@ -209,6 +209,37 @@ mod tests {
     }
 
     #[test]
+    fn selected_symbols_keep_buttons_but_do_not_inherit_short_holds() {
+        let rom = synthetic_nrom();
+        let game = test_game(&rom);
+        let run = SmbCampaignRun {
+            vocabulary: Default::default(),
+            terminal: None,
+        };
+        let original: Vec<_> = (0..4096)
+            .map(|i| ButtonChord::new(if i % 2 == 0 { 0x81 } else { 0x40 }, 3))
+            .collect();
+        let mut suffix = original.clone();
+        game.refresh_selected_input_timing(&run, 12345, &mut suffix)
+            .unwrap();
+        assert!(
+            suffix
+                .iter()
+                .zip(&original)
+                .all(|(a, b)| a.buttons == b.buttons)
+        );
+        let mut holds: Vec<_> = suffix.iter().map(|a| a.hold_frames).collect();
+        holds.sort_unstable();
+        assert!((55..=65).contains(&holds[holds.len() / 2]));
+        assert_eq!(holds[0], 2);
+        assert_eq!(*holds.last().unwrap(), 120);
+        let mut replay = original;
+        game.refresh_selected_input_timing(&run, 12345, &mut replay)
+            .unwrap();
+        assert_eq!(suffix, replay);
+    }
+
+    #[test]
     fn native_policy_rejects_a_changed_prepared_execution() {
         let first = SmbGame::new(&[0], std::path::Path::new("core.so"), "core", "first");
         let second = SmbGame::new(&[0], std::path::Path::new("core.so"), "core", "second");
@@ -994,7 +1025,7 @@ mod tests {
             "whole_tree",
             "nes_pressable_36",
             "frozen_area_span",
-            "stratified",
+            crate::smb::campaign::DURATION_IDENTIFIER,
         ] {
             assert!(header.contains(identifier), "header lacks {identifier}");
         }

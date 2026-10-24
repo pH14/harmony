@@ -117,6 +117,13 @@ impl ChordVocabulary {
         hold_in(rand, stratum)
     }
 
+    pub fn uniform_hold(&self, rand: &mut RomuDuoJrRand) -> Result<u8, Box<dyn Error>> {
+        hold_in(
+            rand,
+            (self.short_hold.0.min(self.long_hold.0), self.longest_hold()),
+        )
+    }
+
     #[must_use]
     pub fn longest_hold(&self) -> u8 {
         self.short_hold
