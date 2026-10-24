@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 use super::{MachineError, identity};
@@ -10,6 +11,11 @@ struct LoaderState {
     active: usize,
 }
 
+const STATUS_UNREGISTERED: u8 = 0;
+const STATUS_APPROVED: u8 = 1;
+const STATUS_POISONED: u8 = 2;
+
+static STATUS: AtomicU8 = AtomicU8::new(STATUS_UNREGISTERED);
 static LOADER_STATE: OnceLock<RwLock<LoaderState>> = OnceLock::new();
 
 fn state() -> &'static RwLock<LoaderState> {
@@ -28,11 +34,27 @@ fn changed_error() -> MachineError {
     )
 }
 
+fn unregistered_error() -> MachineError {
+    MachineError::Backend(
+        "QuickNES native core was not registered with the loader guard".to_owned(),
+    )
+}
+
+fn mark_poisoned(guard: &mut LoaderState) {
+    guard.poisoned = true;
+    STATUS.store(STATUS_POISONED, Ordering::Release);
+}
+
 fn poison() {
-    state()
-        .write()
-        .unwrap_or_else(|error| error.into_inner())
-        .poisoned = true;
+    mark_poisoned(&mut state().write().unwrap_or_else(|error| error.into_inner()));
+}
+
+fn status_check() -> Result<(), MachineError> {
+    match STATUS.load(Ordering::Acquire) {
+        STATUS_APPROVED => Ok(()),
+        STATUS_POISONED => Err(changed_error()),
+        _ => Err(unregistered_error()),
+    }
 }
 
 fn lifecycle_matches(
@@ -89,7 +111,7 @@ fn mutation<T>(
     let before = match identity::loader_generation() {
         Ok(value) => value,
         Err(error) => {
-            guard.poisoned = true;
+            mark_poisoned(&mut guard);
             if cleanup {
                 let _ = operation();
             }
@@ -97,7 +119,7 @@ fn mutation<T>(
         }
     };
     if guard.approved.is_some_and(|approved| approved != before) {
-        guard.poisoned = true;
+        mark_poisoned(&mut guard);
         if cleanup {
             let _ = operation();
         }
@@ -107,7 +129,7 @@ fn mutation<T>(
     let after = match identity::loader_generation() {
         Ok(value) => value,
         Err(error) => {
-            guard.poisoned = true;
+            mark_poisoned(&mut guard);
             drop(guard);
             return match result {
                 Err(original) => Err(MachineError::Backend(format!("{original}; {error}"))),
@@ -118,7 +140,7 @@ fn mutation<T>(
     if !lifecycle_matches(before, after, cleanup, result.is_ok(), guard.active)
         || (cleanup && result.is_err())
     {
-        guard.poisoned = true;
+        mark_poisoned(&mut guard);
         drop(guard);
         return match result {
             Err(error) if cleanup => Err(error),
@@ -137,6 +159,7 @@ fn mutation<T>(
             guard.active += 1;
         }
     }
+    STATUS.store(STATUS_APPROVED, Ordering::Release);
     drop(guard);
     result
 }
@@ -162,37 +185,9 @@ pub(super) fn call<T>(
 pub(super) fn call_checked<T>(
     operation: impl FnOnce(&dyn Fn() -> Result<(), MachineError>) -> Result<T, MachineError>,
 ) -> Result<T, MachineError> {
-    let guard = state().read().unwrap_or_else(|error| error.into_inner());
-    if guard.poisoned {
-        return Err(changed_error());
-    }
-    let Some(approved) = guard.approved else {
-        return Err(MachineError::Backend(
-            "QuickNES native core was not registered with the loader guard".to_owned(),
-        ));
-    };
-    let expected = (approved.adds, approved.removes);
-    let check = || {
-        let current = identity::loader_epoch()?;
-        if current == expected {
-            Ok(())
-        } else {
-            Err(changed_error())
-        }
-    };
-    let before = check();
-    if let Err(error) = before {
-        drop(guard);
-        poison();
-        return Err(error);
-    }
-    let result = operation(&check);
-    let after = check();
-    if let Err(error) = after {
-        drop(guard);
-        poison();
-        return Err(error);
-    }
+    status_check()?;
+    let result = operation(&status_check);
+    status_check()?;
     result
 }
 
@@ -200,10 +195,10 @@ pub(super) fn cleanup<T>(
     operation: impl FnOnce() -> Result<T, MachineError>,
 ) -> Result<T, MachineError> {
     let guard = state().read().unwrap_or_else(|error| error.into_inner());
-    let approved = guard.approved.map(|value| (value.adds, value.removes));
-    let before = identity::loader_epoch();
+    let approved = guard.approved;
+    let before = identity::loader_generation();
     let result = operation();
-    let after = identity::loader_epoch();
+    let after = identity::loader_generation();
     let changed = guard.poisoned
         || before.as_ref().ok() != approved.as_ref()
         || after.as_ref().ok() != approved.as_ref();

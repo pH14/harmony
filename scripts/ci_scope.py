@@ -46,7 +46,7 @@ def selected(paths):
             result["harmony_languages"] = True
         if path.startswith(("dissonance/", "cli/", "workloads/nes/", "workloads/nes-games/", "workloads/nes-machine/", "workloads/nes-protocol/", "workloads/nes-guest/")):
             result["dissonance_stb"] = True
-        if path == "scripts/build-quicknes-core.sh":
+        if path in ("scripts/build-quicknes-core.sh", "scripts/quicknes-translate.py"):
             result["dissonance_stb"] = True
         if path.startswith(".github/actions/stb-evaluation/"):
             result["dissonance_stb"] = True
