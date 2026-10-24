@@ -11,7 +11,7 @@ use std::fs;
 use crate::selection::Point;
 pub use crate::selection::Selection;
 
-fn recorded_report(manifest: &Manifest) -> Result<Report> {
+pub(super) fn recorded_report(manifest: &Manifest) -> Result<Report> {
     Ok(serde_json::from_value(
         manifest.record.payload["outcome"].clone(),
     )?)
@@ -54,11 +54,11 @@ fn report_witness(report: &Report, bug: Option<usize>) -> Result<ReplaySummary> 
     }
 }
 
-fn recorded_witness(manifest: &Manifest, bug: Option<usize>) -> Result<ReplaySummary> {
+pub(super) fn recorded_witness(manifest: &Manifest, bug: Option<usize>) -> Result<ReplaySummary> {
     report_witness(&recorded_report(manifest)?, bug)
 }
 
-fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
+pub(super) fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
     expected.state_hash_encoding != StateHashEncoding::Unavailable
         && actual.state_hash_encoding != StateHashEncoding::Unavailable
         && expected.state_hash == actual.state_hash

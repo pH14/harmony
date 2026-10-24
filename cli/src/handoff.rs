@@ -115,7 +115,7 @@ fn validate_request_inputs(request: &Request) -> Result<()> {
     if (request.operation == Operation::Run && saved)
         || (matches!(
             request.operation,
-            Operation::Replay | Operation::Branch | Operation::Resume
+            Operation::Replay | Operation::Branch | Operation::Resume | Operation::Shrink
         ) && !saved)
         || (request.operation == Operation::Resume
             && request
@@ -161,6 +161,12 @@ fn validate_request_inputs(request: &Request) -> Result<()> {
     {
         return Err("prepared operation does not accept these repeats".into());
     }
+    if request.operation == Operation::Shrink && !faults {
+        return Err("prepared shrink requires a fault recording".into());
+    }
+    if request.jobs == 0 || (request.jobs != 1 && request.operation != Operation::Shrink) {
+        return Err("prepared operation does not accept parallel replays".into());
+    }
     let budget = &request.budget;
     if (budget.seed.is_some() || budget.executions.is_some() || budget.wall_seconds.is_some())
         && !((faults || nes)
@@ -182,6 +188,7 @@ fn validate_request_config(request: &Request) -> Result<()> {
                 | Operation::Replay
                 | Operation::Branch
                 | Operation::Resume
+                | Operation::Shrink
         )
     {
         return Err("the guarded runtime accepts only prepared Consonance execution".into());
@@ -806,6 +813,7 @@ mod tests {
             (Operation::Search, "nes"),
             (Operation::Resume, "faults"),
             (Operation::Resume, "nes"),
+            (Operation::Shrink, "faults"),
         ] {
             let mut record = saved_record(operation, package);
             let mut request: Request = serde_json::from_slice(&record.request).unwrap();
@@ -828,6 +836,7 @@ mod tests {
                     request.budget.executions = Some(1);
                 }
                 Operation::Resume => request.budget.wall_seconds = Some(1),
+                Operation::Shrink => request.jobs = 4,
                 _ => unreachable!(),
             }
             record.request = serde_json::to_vec(&request).unwrap();
@@ -835,6 +844,10 @@ mod tests {
             record.write(file.path()).unwrap();
             let (request, prepared) = Record::read(file.path()).unwrap();
             assert_eq!(request.operation, operation);
+            assert_eq!(
+                request.jobs,
+                if operation == Operation::Shrink { 4 } else { 1 }
+            );
             assert!(request.selection.is_some() && prepared.execution.is_none());
             if let Some(path) = request.actions {
                 assert_eq!(fs::read(path).unwrap(), b"[]");
@@ -842,6 +855,26 @@ mod tests {
             if let Some(path) = request.exec_file {
                 assert_eq!(fs::read(path).unwrap(), b"true");
             }
+        }
+    }
+
+    #[test]
+    fn only_a_fault_shrink_accepts_parallel_replays() {
+        for (operation, package, jobs, refusal) in [
+            (Operation::Replay, "faults", 4, "parallel replays"),
+            (Operation::Shrink, "faults", 0, "parallel replays"),
+            (Operation::Shrink, "nes", 1, "fault recording"),
+        ] {
+            let mut record = saved_record(operation, package);
+            let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+            request.jobs = jobs;
+            record.request = serde_json::to_vec(&request).unwrap();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            let Err(error) = Record::read(file.path()) else {
+                panic!("{operation:?} {package} {jobs}");
+            };
+            assert!(error.to_string().contains(refusal), "{error}");
         }
     }
 

@@ -16,6 +16,7 @@ harmony list
 harmony show baseline
 harmony show baseline --finding 1 --timeline
 harmony show baseline --finding 1 --logs --contains ERROR
+harmony shrink baseline --finding 1 --jobs 4 --name minimal
 harmony branch baseline --finding 1 --rewind 10 --shell --name debugging
 harmony search --from debugging --name neighborhood
 ```
@@ -238,6 +239,9 @@ harmony
 │   ├── --exec-file LOCAL.sh              copy and execute a local script
 │   ├── --shell                           interactive guest terminal
 │   └── --stop                            save without the original suffix
+├── shrink NAME                          keep only the faults a finding needs
+│   ├── --finding N                      select a finding
+│   └── --jobs N                         replays to run at once
 └── diff NAME NAME                       compare configuration and outcomes
 ```
 
@@ -283,6 +287,34 @@ shell commands. Terminal output and submitted bytes are retained as evidence.
 Interactive timing is part of the new experiment. Faults branches with commands
 require the updated supervisor runtime; use `check` to provision matching assets.
 NES exposes typed controller actions and has no guest shell capability.
+
+`shrink` reduces a faults finding to the fault actions it needs. It replays the
+finding's actions up to the first observed violation, then replaces groups of
+fault actions with waits of the same length, halving the groups until no single
+fault can be replaced (delta debugging). A replacement keeps the action's
+recorded `choice`, which seeds guest randomness for that step, so the rest of
+the execution keeps its timing. A candidate counts when its replay reports one
+of the finding's violations.
+
+Each round accepts its lowest-numbered reproducing candidate. `--jobs N` runs up
+to N replays at once, fewer when free memory cannot hold N guests. The replays
+share one snapshot cache, the same cache a search uses. A candidate matches the
+accepted actions up to its first replaced fault, so its replay restores the
+snapshot an earlier replay recorded at that step and runs only the steps after
+it. A candidate counts as soon as the violation appears: the next round starts
+then, and the candidate's replay continues to the end for its report. Idle
+workers start every candidate of the current round. When a candidate reports
+the violation while lower-numbered candidates still run, idle workers also
+start the round that would follow its acceptance. A replay stops as soon as
+other results make it unnecessary. A candidate checked before is not replayed
+again. The accepted candidates, the
+attempt list and the final replay are the same for every N, because the attempt
+list holds the candidates in the order one job checks them.
+
+The output is a replay of the reduced actions that `show`, `show --timeline` and
+`branch` accept. `shrink.json` lists every attempt with the replaced steps and
+the violations it produced, the number of replays started, and the reduced
+actions in a form `debug run --actions` accepts. NES findings are not supported.
 
 `search --from` starts fresh exploration from a branch endpoint. `search --resume`
 restores the existing corpus, snapshots, scheduler and evidence from the latest
@@ -523,9 +555,10 @@ supervision must agree with the requested search, captured actions and configure
 nodes; a plain execution cannot discard requested actions or replace supervision.
 Execution-bearing fields are accepted only by operations that consume them:
 actions by Faults/NES runs and branches, guest commands by Faults branches,
-console output by plain Faults runs, and additional budgets by saved searches.
+console output by plain Faults runs, additional budgets by saved searches, and
+parallel replay counts by Faults shrinks.
 Raw command overrides must agree with the effective Faults run configuration.
-Saved replay, branch and resume require a selection; incompatible point selectors,
+Saved replay, branch, resume and shrink require a selection; incompatible point selectors,
 commands, captures and repeat counts are refused before execution.
 Captured action/script presence must match the request exactly, and ROM payloads
 belong only to fresh NES execution.
@@ -561,7 +594,7 @@ operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
 Saved runs also retain `cpu_provenance`, an advisory history of observed CPU
-implementation metadata. Replay, branching, and continued search print a warning
+implementation metadata. Replay, branching, shrinking and continued search print a warning
 to stderr if the recording and current CPU differ or either identity is unknown,
 incomplete, or heterogeneous. Older manifests without this field warn as unknown;
 derived runs retain that uncertainty. Standard math libraries remain supported,
