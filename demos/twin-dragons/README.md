@@ -907,12 +907,13 @@ mapping is approximate.
 The map for each level is built in the browser from the game's own loader. The
 loader sets the level and room, runs the game until play resumes, and reads the
 screen. Each level is a 16 by 8 grid of 256 × 168 rooms, which is 4096 × 1344.
-A room number `r` sits in column `r & 15` and row `r >> 4`. The build visits all
-128 cells. Cells that are not rooms in a dungeon draw as plain wall rooms,
-because the dungeon's room map is not yet decoded.
+A room number `r` sits in column `r & 15` and row `r >> 4`. The build visits only the
+cells that the dungeon marks as rooms. Each dungeon's level block has a submenu map
+mask: 16 column bytes, read as one bit per row, after the columns are rotated by the
+block's rotation byte. The other cells stay blank.
 
 Link's position is the room's cell plus his x and y inside the room. The y
-value is offset by the 56-pixel status bar at the top of the frame. The search
+value is offset by the status bar at the top of the frame. The search
 places Link's facing in the sprite's pose bit. The sprite sheet is cut from the
 ROM by drawing Link with the sprites hidden and with them shown, then keeping
 the pixels that changed.
