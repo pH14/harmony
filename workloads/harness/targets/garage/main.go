@@ -116,16 +116,17 @@ func classify(err error) error {
 }
 
 func (a adapter) Ready(ctx context.Context) error {
-	var errs []error
-	for i, s := range a.servers {
-		value := []byte("1")
-		_, err := s.PutObject(ctx, bucket, "ready", bytes.NewReader(value), int64(len(value)), minio.PutObjectOptions{DisableMultipart: true})
-		if err == nil {
-			return nil
-		}
-		errs = append(errs, fmt.Errorf("n%d: %w", i+1, err))
+	nodes := make([]int, len(a.servers))
+	for i := range nodes {
+		nodes[i] = i
 	}
-	return errors.Join(errs...)
+	return runner.AnyMember(ctx, nodes, func(ctx context.Context, i int) error {
+		value := []byte("1")
+		if _, err := a.servers[i].PutObject(ctx, bucket, "ready", bytes.NewReader(value), int64(len(value)), minio.PutObjectOptions{DisableMultipart: true}); err != nil {
+			return fmt.Errorf("n%d: %w", i+1, err)
+		}
+		return nil
+	})
 }
 
 func main() {

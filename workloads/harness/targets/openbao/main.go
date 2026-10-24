@@ -220,15 +220,12 @@ func (a adapter) Ready(ctx context.Context) error {
 		return err
 	}
 	c := &client{adapter: a, token: token, version: map[string]int64{}}
-	var errs []error
-	for _, node := range a.nodes {
-		_, err := c.put(ctx, node, "ready", "1", nil)
-		if err == nil {
-			return nil
+	return runner.AnyMember(ctx, a.nodes, func(ctx context.Context, node string) error {
+		if _, err := c.put(ctx, node, "ready", "1", nil); err != nil {
+			return fmt.Errorf("%s: %w", node, err)
 		}
-		errs = append(errs, fmt.Errorf("%s: %w", node, err))
-	}
-	return errors.Join(errs...)
+		return nil
+	})
 }
 
 func pick(nodes []string, op family.Op) string {

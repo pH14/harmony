@@ -219,15 +219,10 @@ func (adapter) Ready(ctx context.Context) error {
 			return err
 		}
 	}
-	var errs []error
-	for _, addr := range nodes {
-		if _, err := call(ctx, addr, "SET", "ready", "1"); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		return nil
-	}
-	return errors.Join(errs...)
+	return runner.AnyMember(ctx, nodes, func(ctx context.Context, addr string) error {
+		_, err := call(ctx, addr, "SET", "ready", "1")
+		return err
+	})
 }
 
 func member(err error) bool {

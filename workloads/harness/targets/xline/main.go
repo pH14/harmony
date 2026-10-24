@@ -183,21 +183,17 @@ func classify(err error) error {
 }
 
 func (a adapter) Ready(ctx context.Context) error {
-	var errs []error
-	for _, address := range a.members {
+	return runner.AnyMember(ctx, a.members, func(ctx context.Context, address string) error {
 		conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
-			errs = append(errs, err)
-			continue
+			return fmt.Errorf("%s: %w", address, err)
 		}
-		_, err = pb.NewKVClient(conn).Put(ctx, &pb.PutRequest{Key: []byte("ready"), Value: []byte("1")})
-		conn.Close()
-		if err == nil {
-			return nil
+		defer conn.Close()
+		if _, err := pb.NewKVClient(conn).Put(ctx, &pb.PutRequest{Key: []byte("ready"), Value: []byte("1")}); err != nil {
+			return fmt.Errorf("%s: %w", address, err)
 		}
-		errs = append(errs, fmt.Errorf("%s: %w", address, err))
-	}
-	return errors.Join(errs...)
+		return nil
+	})
 }
 
 func main() {

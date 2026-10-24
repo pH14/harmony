@@ -491,17 +491,15 @@ func (c *client) send(ctx context.Context, target string, body []byte) (response
 }
 
 func (adapter) Ready(ctx context.Context) error {
-	var errs []error
-	for _, base := range nodes {
+	return runner.AnyMember(ctx, nodes, func(ctx context.Context, base string) error {
 		c := newClient(base)
 		_, err := c.executeAll(ctx, readySQL)
 		c.Close()
-		if err == nil {
-			return nil
+		if err != nil {
+			return fmt.Errorf("%s: %w", base, err)
 		}
-		errs = append(errs, fmt.Errorf("%s: %w", base, err))
-	}
-	return errors.Join(errs...)
+		return nil
+	})
 }
 
 func main() {

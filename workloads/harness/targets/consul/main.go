@@ -266,15 +266,13 @@ func (c *client) request(ctx context.Context, method, target string, body []byte
 
 func (a adapter) Ready(ctx context.Context) error {
 	c := &client{http: newHTTP(), index: map[string]uint64{}}
-	var errs []error
-	for _, base := range a.servers {
+	return runner.AnyMember(ctx, a.servers, func(ctx context.Context, base string) error {
 		applied, err := c.put(ctx, base, "ready", "1", "")
 		if err == nil && applied {
 			return nil
 		}
-		errs = append(errs, fmt.Errorf("%s: applied=%v: %w", base, applied, err))
-	}
-	return errors.Join(errs...)
+		return fmt.Errorf("%s: applied=%v: %w", base, applied, err)
+	})
 }
 
 func main() {
