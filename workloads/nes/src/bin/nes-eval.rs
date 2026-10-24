@@ -19,6 +19,7 @@ use nes_workload::{
         campaign::{Mm2CampaignRun, Mm2Game},
         target::{Mm2Input, Mm2Stage},
     },
+    pac_man::campaign::{PacManCampaignRun, PacManGame},
     punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::campaign::TargetExecution,
     smb::campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
@@ -124,6 +125,9 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "ice-climbers" => evaluate_live::<
             nes_games::ice_climbers::campaign::IceClimbersGame<NativeMachine>,
         >(rom, request, out, started, "ice-climbers"),
+        "pac-man" => evaluate_live::<nes_games::pac_man::campaign::PacManGame<NativeMachine>>(
+            rom, request, out, started, "pac-man",
+        ),
         _ => Err("this game has no live view".into()),
     }
 }
@@ -180,7 +184,7 @@ fn main() -> Result<()> {
                 return Err("STB evaluation takes only an ai option".into());
             }
             "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
-            | "ice-climbers"
+            | "ice-climbers" | "pac-man"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -345,6 +349,17 @@ fn main() -> Result<()> {
                 started,
                 "ice-climbers",
                 <IceClimbersGame>::memory_view,
+            ),
+            "pac-man" => evaluate_watching(
+                PacManGame::new(&rom, p, h, &execution_sha256),
+                PacManCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "pac-man",
+                <PacManGame>::memory_view,
             ),
             "famidash" => {
                 let stage = famidash_stage(&rom, request.stage, request.whole_game)?;

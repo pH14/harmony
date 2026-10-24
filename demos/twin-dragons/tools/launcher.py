@@ -79,6 +79,7 @@ GAMES: dict[str, Game] = {
     "metroid": Game("metroid", "metroid.nes", False),
     "donkey-kong": Game("donkey-kong", "donkey-kong.nes", False),
     "ice-climbers": Game("ice-climbers", "ice-climbers.nes", False),
+    "pac-man": Game("pac-man", "pac-man.nes", False),
 }
 
 

@@ -13,6 +13,7 @@ use crate::{
     metroid::target::MetroidSnapshot,
     mm2::target::Mm2Snapshot,
     nes_backend::SnapshotState,
+    pac_man::target::PacManSnapshot,
     punchout::target::PunchOutSnapshot,
     search::{
         archive::{Input, RetentionPolicy},
@@ -43,6 +44,8 @@ impl EndpointIdentity for IceClimbersSnapshot {}
 impl EndpointIdentity for MetroidSnapshot {}
 
 impl EndpointIdentity for Mm2Snapshot {}
+
+impl EndpointIdentity for PacManSnapshot {}
 
 impl EndpointIdentity for PunchOutSnapshot {}
 

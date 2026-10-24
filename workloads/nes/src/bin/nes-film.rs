@@ -16,6 +16,7 @@ use nes_workload::{
     },
     film::{Capture, FilmMetadata, Filmable, Reel},
     ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
+    pac_man::campaign::{PacManCampaignRun, PacManGame},
     punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::archive::Input,
     stb::{
@@ -352,8 +353,19 @@ fn main() -> Result<()> {
                 identity,
             )
         }
+        "pac-man" => {
+            if args.ai.is_some() {
+                return Err("Pac-Man takes no ai option".into());
+            }
+            produce(
+                PacManGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                PacManCampaignRun,
+                &args,
+                identity,
+            )
+        }
         _ => Err(
-            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda and Donkey Kong scenarios"
+            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda, Donkey Kong, Ice Climbers and Pac-Man scenarios"
                 .into(),
         ),
     }

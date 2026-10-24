@@ -6,6 +6,7 @@ mod famidash;
 mod ice_climbers;
 mod mega_man;
 mod metroid;
+mod pac_man;
 mod smb;
 mod twin_dragons;
 

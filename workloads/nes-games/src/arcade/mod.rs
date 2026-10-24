@@ -7,6 +7,7 @@ pub mod feed;
 pub mod ice_climbers;
 pub mod mega_man;
 pub mod metroid;
+pub mod pac_man;
 pub mod punchout;
 pub mod smb;
 pub mod trail;

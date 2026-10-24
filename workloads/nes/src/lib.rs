@@ -12,6 +12,7 @@ pub mod film;
 pub mod ice_climbers;
 #[cfg(unix)]
 pub mod live;
+pub mod pac_man;
 pub mod prepare;
 pub mod punchout;
 pub mod smb;

@@ -14,7 +14,7 @@ use machine::{
 };
 use nes_workload::{
     castlevania, chord::ChordVocabulary, donkey_kong, famidash, ice_climbers, metroid, mm2,
-    punchout, search::rand::RomuDuoJrRand, smb, twin_dragons, zelda,
+    pac_man, punchout, search::rand::RomuDuoJrRand, smb, twin_dragons, zelda,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -80,6 +80,11 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
         "ice-climbers" => Game {
             setup: ice_climbers::target::setup_tape(),
             chords: ice_climbers::archive::CHORDS,
+            cartridge_ram: false,
+        },
+        "pac-man" => Game {
+            setup: pac_man::target::setup_tape(),
+            chords: pac_man::archive::CHORDS,
             cartridge_ram: false,
         },
         other => return Err(format!("unknown game {other}").into()),
