@@ -31,6 +31,13 @@ instruction-test controls, and the driver KUnit images exclude the clock at
 build time to isolate driver serialization on QEMU; neither is a deployable
 runtime profile.
 
+Both kernels build in RAM disks, device mapper with `dm-log-writes` and
+`dm-delay`, and ext4 for node disks in faults bundles. Sixteen 1 GiB `brd`
+devices allocate pages only when written. The supervisor replays the write log
+to cut a disk at a power loss, and loads `error` and `delay` tables for disk
+error and stall windows ([node disks](../supervisor/README.md#node-disks)). The
+kernel builders assert these options.
+
 The common kernel policy disables `RWSEM_SPIN_ON_OWNER` when either Harmony
 virtual clock is compiled in. Its reader-owner optimistic-spin timeout uses
 `sched_clock()`, which remains frozen during exit-free spinning. Contended
