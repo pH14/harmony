@@ -1191,3 +1191,13 @@ expanded actions are not integrated with checkpoint persistence or ordinary
 stream replay; experiment callers must preserve their actual job actions
 separately. Parallel dispatch and production replay integration remain outside
 this prototype. It must not be treated as a production search strategy.
+
+`sticky_input::StickyInput` is the frame-level input primitive for the revised
+experiment. It carries a controller byte across block boundaries and flips each
+enabled bit independently after emitting a frame. One job samples a reciprocal
+power-of-two flip probability from scales spanning one frame through the
+existing longest-hold support. The powers of two provide the requested
+log-spaced prior without fitting a game-specific rate. The selected rate stays
+fixed across blocks; run length has geometric support with no duration cap.
+The adapter supplies the controller's enabled-bit mask. This primitive is not
+yet connected to the campaign strategy or replay record.
