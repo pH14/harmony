@@ -82,7 +82,7 @@ impl Prepared {
 
 #[cfg(any(feature = "frontend", test))]
 struct RecordWriter {
-    inner: BufWriter<fs::File>,
+    inner: fs::File,
     digest: Sha256,
     bytes: u64,
 }
@@ -251,15 +251,19 @@ impl Record {
 
     #[cfg(any(feature = "frontend", test))]
     pub fn write(&self, path: &Path) -> Result<()> {
-        let mut writer = RecordWriter {
-            inner: BufWriter::new(fs::File::create(path)?),
-            digest: Sha256::new(),
-            bytes: 0,
-        };
+        let mut writer = BufWriter::with_capacity(
+            1 << 20,
+            RecordWriter {
+                inner: fs::File::create(path)?,
+                digest: Sha256::new(),
+                bytes: 0,
+            },
+        );
         postcard::to_io(self, &mut writer)?;
-        let checksum = writer.digest.clone().finalize();
-        writer.inner.write_all(&checksum)?;
-        writer.inner.flush()?;
+        let mut record = writer.into_inner().map_err(|error| error.into_error())?;
+        let checksum = record.digest.clone().finalize();
+        record.inner.write_all(&checksum)?;
+        record.inner.flush()?;
         Ok(())
     }
 

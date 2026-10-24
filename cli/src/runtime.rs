@@ -72,6 +72,21 @@ pub fn data_dir() -> Result<PathBuf> {
     }))
 }
 
+pub fn cache_dir() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("HARMONY_CACHE_DIR") {
+        return Some(path.into());
+    }
+    if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
+        return Some(PathBuf::from(path).join("harmony"));
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(if cfg!(target_os = "macos") {
+        "Library/Caches/Harmony"
+    } else {
+        ".cache/harmony"
+    }))
+}
+
 pub fn choose(c: &Consonance) -> Result<Backend> {
     choose_for(c, &Hypervisor::detect(), cfg!(target_os = "linux"))
 }

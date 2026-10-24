@@ -600,7 +600,6 @@ mod tests {
         use faults_workload::{package::Report, target::FaultObservations};
 
         let options = faults_workload::Options {
-            boot_cache: None,
             seed: 0,
             executions: 1,
             ram_mib: 1024,
@@ -610,6 +609,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "replay",
@@ -742,7 +742,6 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let options = faults_workload::Options {
-            boot_cache: None,
             seed: 0,
             executions: 1,
             ram_mib: 1024,
@@ -752,6 +751,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "search",
@@ -770,7 +770,7 @@ mod tests {
             violations: vec!["2".into()],
             sometimes: Vec::new(),
             state_hash: String::new(),
-            state_hash_encoding: StateHashEncoding::EngineDigest,
+            state_hash_encoding: StateHashEncoding::EnginePageDigest,
             confirmed: false,
             replay: Some(ReplaySummary::from_observation(
                 &FaultObservations::default(),
@@ -820,7 +820,6 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let options = faults_workload::Options {
-            boot_cache: None,
             seed: 0,
             executions: 1,
             ram_mib: 1024,
@@ -830,6 +829,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "search",
@@ -848,7 +848,7 @@ mod tests {
             violations: vec!["2".into()],
             sometimes: Vec::new(),
             state_hash: String::new(),
-            state_hash_encoding: StateHashEncoding::EngineDigest,
+            state_hash_encoding: StateHashEncoding::EnginePageDigest,
             confirmed: false,
             replay: Some(ReplaySummary::from_observation(
                 &FaultObservations::default(),

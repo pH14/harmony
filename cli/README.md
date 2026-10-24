@@ -124,6 +124,9 @@ Development artifacts are discovered under `consonance/harmony-linux/build/ARCH`
 and installed artifacts under `share/harmony/guest/ARCH`. The cache uses
 `HARMONY_DATA_DIR`, otherwise `XDG_DATA_HOME/harmony`, macOS
 `~/Library/Application Support/Harmony`, or Linux `~/.local/share/harmony`.
+Fault runs keep booted setup snapshots in `HARMONY_CACHE_DIR/boot`, otherwise
+`XDG_CACHE_HOME/harmony/boot`, macOS `~/Library/Caches/Harmony/boot`, or Linux
+`~/.cache/harmony/boot`.
 New release assets become available when their release is published.
 Automatic discovery selects the first directory containing a current-source
 `runtime-manifest.json`, the architecture's kernel, and

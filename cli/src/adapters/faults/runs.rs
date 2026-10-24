@@ -183,7 +183,6 @@ impl Manifest {
             .uml_profile_identity(path)?
             .map(|identity| (path.join("artifacts/uml"), identity));
         Ok(faults_workload::Options {
-            boot_cache: None,
             seed: self.config.seed,
             executions: self.config.executions,
             ram_mib: self.config.ram_mib,
@@ -193,6 +192,7 @@ impl Manifest {
             root,
             uml_profile,
             checkpoint_owner: self.record.checkpoint_owner.clone(),
+            boot_cache: crate::runtime::cache_dir().map(|dir| dir.join("boot")),
         })
     }
 
