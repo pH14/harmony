@@ -34,6 +34,7 @@ generic operations onto the target's client API.
 | `targets/nomad` | Nomad Variables image and adapter |
 | `targets/dgraph` | Dgraph image and adapter, three nodes with one Zero and one Alpha each |
 | `native.py` | runs an image in a container without Harmony |
+| `jepsen` | runs Jepsen's NATS test on the same NATS versions |
 
 ## Writing a target
 
