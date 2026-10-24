@@ -74,12 +74,13 @@ Session, worker reexec and failure recovery, UML shutdown, timeout, branch,
 handler, and root-import commitment tests, executable-map rejection and cache
 revocation, Recording, and terminal console limits through
 `scripts/linux-sealed-test-runner.py`, which copies each test binary into a
-fully sealed executable memfd before execution. All 18 exact tests require
+fully sealed executable memfd before execution. All 19 exact tests require
 one test to start and pass. The musl positive tests fail if strict host
 admission is unavailable, so a missing runner cannot produce a green skip.
 The list includes shared-launcher telemetry-owner isolation, exact executable
-read/hash/comparison bytes and their partial-failure accounting, and mapping
-refusal with publication revocation.
+read/hash/comparison bytes and their partial-failure accounting, mapping
+refusal with publication revocation, and refusal of a code or vDSO page
+rewritten with its own bytes.
 `Checks / Harmony Host Compatibility` also runs the Arm64-only direct leased-extent
 export regression in its existing macOS Arm64 workspace nextest suite, whose
 unified features enable the client mock backend. An exact-name PASS assertion
@@ -229,7 +230,8 @@ Every job declares a trigger class.
   `Language Image — <Language>` builds each language workload image. Their
   consumers keep the 15-minute budget. The separate `C Investigation` job has
   a 35-minute exception for its bounded branch and search continuation under
-  sealed-host identity checks.
+  sealed-host identity checks. The `Harness Kit` job has a 30-minute
+  exception for building one instrumented target image from source.
   The selected `snapshot-store` Miri check has a 45-minute exception for the
   Store's full resident-verification suite. The selected `vmm-backend` and
   `consonance-client` Miri checks retain 30-minute exceptions for interpreted
@@ -576,6 +578,15 @@ ordinary user. It compares application and bridge evidence and rejects a
 planted divergence. Current Bookworm historical case images have the same
 reviewed sites, so the manually dispatched UML campaign refuses them at image
 admission until they are rebuilt without those instructions.
+
+The language workflow's `Harness Kit` job runs when a change reaches
+`workloads/harness/`, under the `harmony_harness` selection kind. It runs
+`go vet` and `go test` on the harness kit module and `go vet` and `go build`
+on every target module under `workloads/harness/targets/`, with a pinned Go
+release and `GOTOOLCHAIN=local`. It then builds the single-member etcd 3.5.5
+target image from pinned source and runs `native.py --no-faults` against it
+for 30 seconds, which must report `clean` with a decided check over at least
+one operation and a workload driver that is still running.
 
 ## Repository maintenance
 
