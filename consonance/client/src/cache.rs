@@ -721,7 +721,7 @@ impl CacheIndex for LocalIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::extent::{HashedPage, extent_len, read_extent, resolve, write_extent};
+    use super::extent::{HashedPage, encode, read_extent, resolve};
     use super::segments::PAGE;
     use super::*;
 
@@ -811,16 +811,17 @@ mod tests {
             .iter()
             .map(|(gfn, hash, data)| (*gfn, hash, data))
             .collect();
-        let len = extent_len(rows.len(), reverted.len(), key.len()).unwrap();
-        let mut extent = index.extent(len)?;
-        write_extent(extent.bytes_mut(), &rows, reverted, key)?;
+        let encoded = encode(&rows, reverted, key)?;
+        let mut extent = index.extent(encoded.len())?;
+        encoded.write(extent.bytes_mut())?;
         let target_commitment = Sha256::digest(extent.bytes_mut()).into();
         index.publish(namespace, key, parent, extent, target_commitment, 1)
     }
 
     fn put_empty(index: &LocalIndex, key: &[u8], cost: u64) -> Result<Lease, CacheError> {
-        let mut extent = index.extent(extent_len(0, 0, key.len()).unwrap())?;
-        write_extent(extent.bytes_mut(), &[], &[], key).unwrap();
+        let encoded = encode(&[], &[], key).unwrap();
+        let mut extent = index.extent(encoded.len())?;
+        encoded.write(extent.bytes_mut()).unwrap();
         let target_commitment = Sha256::digest(extent.bytes_mut()).into();
         index.publish(ns("a"), key, None, extent, target_commitment, cost)
     }
@@ -872,7 +873,7 @@ mod tests {
         let resolved = resolve(&deltas).unwrap();
         (
             resolved
-                .pages
+                .pages()
                 .iter()
                 .map(|&(gfn, _, data)| (gfn, data[0]))
                 .collect(),
@@ -1072,8 +1073,9 @@ mod tests {
         let space = ns("a");
         let _b_root = put(&b, space, b"b", None, &[(0, 2)], &[]).unwrap();
         for key in [&b"a"[..], &b"b"[..]] {
-            let mut extent = a.extent(extent_len(0, 0, 0).unwrap()).unwrap();
-            write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+            let encoded = encode(&[], &[], &[]).unwrap();
+            let mut extent = a.extent(encoded.len()).unwrap();
+            encoded.write(extent.bytes_mut()).unwrap();
             assert!(matches!(
                 b.publish(space, key, None, extent, [0; 32], 1),
                 Err(CacheError::ForeignExtent)
@@ -1106,8 +1108,9 @@ mod tests {
         let existing_commitment =
             index.state(lock_work::Site::Stats).entries[&first.entry].target_commitment;
         let page = [2; PAGE];
-        let mut extent = index.extent(extent_len(1, 0, 1).unwrap()).unwrap();
-        write_extent(extent.bytes_mut(), &[(0, &[2; 32], &page)], &[], b"k").unwrap();
+        let encoded = encode(&[(0, &[2; 32], &page)], &[], b"k").unwrap();
+        let mut extent = index.extent(encoded.len()).unwrap();
+        encoded.write(extent.bytes_mut()).unwrap();
         let published_commitment = Sha256::digest(extent.bytes_mut()).into();
         let result = index.publish(space, b"k", None, extent, published_commitment, 1);
         assert!(matches!(
@@ -1125,16 +1128,16 @@ mod tests {
         let evidence = index.divergences();
         assert_eq!(evidence.len(), 1);
         assert_eq!(
-            read_extent(evidence[0].existing.chain[0].bytes())
+            resolve(&[read_extent(evidence[0].existing.chain[0].bytes()).unwrap()])
                 .unwrap()
-                .pages[0]
+                .pages()[0]
                 .2[0],
             1
         );
         assert_eq!(
-            read_extent(evidence[0].published.chain[0].bytes())
+            resolve(&[read_extent(evidence[0].published.chain[0].bytes()).unwrap()])
                 .unwrap()
-                .pages[0]
+                .pages()[0]
                 .2[0],
             2
         );
@@ -1149,8 +1152,8 @@ mod tests {
         let parent = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
         let first = put(&index, space, b"ab", Some(&parent), &[(1, 2)], &[]).unwrap();
         let descendant = put(&index, space, b"abc", Some(&first), &[(2, 3)], &[]).unwrap();
-        let pending = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
-        let pending_anchor = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+        let pending = index.extent(encode(&[], &[], &[]).unwrap().len()).unwrap();
+        let pending_anchor = index.extent(encode(&[], &[], &[]).unwrap().len()).unwrap();
         let healthy = put(&index, ns("healthy"), b"a", None, &[(0, 9)], &[]).unwrap();
         index.release(healthy);
         let error = put(&index, space, b"ab", Some(&parent), &[(1, 4)], &[]).unwrap_err();
@@ -1199,7 +1202,7 @@ mod tests {
             let resolved = resolve(&deltas).unwrap();
             assert_eq!(
                 resolved
-                    .pages
+                    .pages()
                     .iter()
                     .map(|&(gfn, _, data)| (gfn, data[0]))
                     .collect::<Vec<_>>(),
@@ -1224,8 +1227,9 @@ mod tests {
                 .iter()
                 .map(|(gfn, hash, data)| (*gfn, hash, data))
                 .collect();
-            let mut extent = index.extent(extent_len(rows.len(), 0, 0).unwrap()).unwrap();
-            write_extent(extent.bytes_mut(), &rows, &[], &[]).unwrap();
+            let encoded = encode(&rows, &[], &[]).unwrap();
+            let mut extent = index.extent(encoded.len()).unwrap();
+            encoded.write(extent.bytes_mut()).unwrap();
             index.publish(space, b"ab", parent, extent, target_commitment, 1)
         };
         let anchor = publish(None, &[(0, 1), (1, 2)]).unwrap();
@@ -1237,7 +1241,7 @@ mod tests {
 
     #[test]
     fn eviction_takes_an_unleased_leaf_and_refuses_when_all_are_held() {
-        let per_entry = extent_len(1, 0, 1).unwrap();
+        let per_entry = PAGE;
         let index = LocalIndex::with_segment_bytes(3 * per_entry, per_entry);
         let space = ns("a");
         let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
@@ -1270,7 +1274,7 @@ mod tests {
 
     #[test]
     fn eviction_takes_the_least_cost_per_byte_and_ages_what_stays() {
-        let per_entry = extent_len(0, 0, 1).unwrap();
+        let per_entry = PAGE;
         let index = LocalIndex::with_segment_bytes(2 * per_entry, per_entry);
         put_costing(&index, b"x", 10);
         put_costing(&index, b"y", 1);
@@ -1385,7 +1389,7 @@ mod tests {
 
     #[test]
     fn eviction_reclaims_the_open_segment_once_its_extents_are_gone() {
-        let per_entry = extent_len(1, 0, 1).unwrap();
+        let per_entry = PAGE;
         let index = LocalIndex::with_segment_bytes(2 * per_entry, 2 * per_entry);
         let space = ns("a");
         let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
@@ -1403,7 +1407,7 @@ mod tests {
 
     #[test]
     fn worker_stores_share_the_budget_and_the_largest_store_shrinks() {
-        let per_entry = extent_len(1, 0, 1).unwrap();
+        let per_entry = PAGE;
         let bytes = per_entry as u64;
         let index = LocalIndex::with_segment_bytes(4 * per_entry, per_entry);
         let space = ns("a");

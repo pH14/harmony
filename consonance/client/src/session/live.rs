@@ -14,7 +14,7 @@ use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
 use vmm_core::portable_snapshot::sparse_delta_target_commitment;
 
-use crate::cache::extent::{ExtentWrites, extent_len, read_extent, resolve, write_extent_measured};
+use crate::cache::extent::{ExtentWrites, encode, read_extent, resolve};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace, WritableExtent};
 use crate::watchdog::Watchdog;
 
@@ -473,17 +473,10 @@ impl Session {
         sidecar.extend_from_slice(&delta.sidecar);
         let machine = raw_target_commitment(&sidecar)?;
         let sidecar = super::attachment::encode(&sidecar, machine, attachment)?;
-        let len = extent_len(delta.pages.len(), delta.reverted.len(), sidecar.len())
-            .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
-        let mut out = allocate(len)?;
+        let encoded = encode(&delta.pages, &delta.reverted, &sidecar)?;
+        let mut out = allocate(encoded.len())?;
         let mut work = ExtentWrites::default();
-        let result = write_extent_measured(
-            bytes(&mut out),
-            &delta.pages,
-            &delta.reverted,
-            &sidecar,
-            &mut work,
-        );
+        let result = encoded.write_measured(bytes(&mut out), &mut work);
         let mut total = self.extent_writes.get();
         total.merge(work);
         self.extent_writes.set(total);
@@ -562,7 +555,7 @@ impl Session {
         let receipt = self
             .client
             .transport_mut()
-            .import_sparse_delta(self.setup, near, &resolved.pages, resolved.sidecar)
+            .import_sparse_delta(self.setup, near, &resolved.pages(), resolved.sidecar)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
         if let Err(error) = self.loaded_image_guard.check() {
             let _ = self.drop_handle(receipt.id);
@@ -1491,6 +1484,8 @@ mod tests {
             );
             assert_eq!(allocations.len(), 1);
             let actual = read_extent(extent.bytes_mut()).unwrap();
+            let stored: usize = actual.pages.iter().map(|page| page.2.len()).sum();
+            assert!(actual.pages.is_empty() || stored < actual.pages.len() * 4096);
             let after_writes = source.extent_writes.get();
             let reported = source
                 .telemetry_counters()
@@ -1510,25 +1505,18 @@ mod tests {
             );
             assert_eq!(
                 after_writes.page_copy_bytes - before_writes.page_copy_bytes,
-                (actual.pages.len() * 4096) as u64
+                stored as u64
             );
             assert_eq!(
                 after_writes.metadata_copy_bytes - before_writes.metadata_copy_bytes,
-                (64 + actual.pages.len() * 40 + actual.reverted.len() * 8 + actual.sidecar.len())
+                (72 + actual.pages.len() * 44 + actual.reverted.len() * 8 + actual.sidecar.len())
                     as u64
             );
             assert_eq!(
                 after_writes.encoded_bytes - before_writes.encoded_bytes,
                 allocations[0].1 as u64
             );
-            assert_eq!(
-                writes,
-                vec![(
-                    allocations[0].0,
-                    allocations[0].1,
-                    actual.pages.len() * 4096
-                )]
-            );
+            assert_eq!(writes, vec![(allocations[0].0, allocations[0].1, stored)]);
             let direct = source
                 .write_delta_attached(
                     parent,
@@ -1544,7 +1532,7 @@ mod tests {
             assert_eq!(actual.sidecar, expected.sidecar);
             assert_eq!(vmm_target_commitment(&mut extent).unwrap(), {
                 let mut direct_extent = index.extent(direct.len()).unwrap();
-                direct_extent.bytes_mut().copy_from_slice(&direct);
+                direct_extent.bytes_mut()[..direct.len()].copy_from_slice(&direct);
                 vmm_target_commitment(&mut direct_extent).unwrap()
             });
             chain.push(extent.bytes_mut().to_vec());

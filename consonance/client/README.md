@@ -329,7 +329,11 @@ Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
 `shm_open` on macOS. Committed extents are never written again. An extent holds
 the pages a snapshot changed over its parent with their BLAKE3 hashes, the pages
 that returned to the setup content, and the sparse sidecar, with a SHA-256
-checksum over everything except the page data. Every 32 entries along a chain
+checksum over everything except the page data. Each page is stored as an LZ4
+block, or raw when LZ4 does not shrink it, and its row records the stored
+length. Guest pages compress about 8x, so the same budget keeps about 8 times
+as many snapshots and the search rebuilds fewer prefixes. Pages of 1,024 or
+more compress and decompress on one thread per available CPU. Every 32 entries along a chain
 the next entry stores its full page list over setup and becomes an anchor, so
 an import reads at most 32 extents.
 
@@ -409,7 +413,8 @@ eviction asks the worker with the largest store to shrink.
 
 `Session::publish_snapshot` exports a delta straight into an extent and
 publishes it. `Session::import_cached` resolves a chain into one page list over
-setup and imports it; the store checks each page against its hash and the
+setup, decompresses only the pages that list keeps, and imports it; the store
+checks each decompressed page against its hash and the
 sparse sidecar's complete target-page commitment. Hardware
 session cache extents carry the publishing session's image identity beside the
 sparse sidecar. Import checks every extent's identity before changing the
@@ -443,14 +448,14 @@ one length-prefixed request and reply. Guest hangs, abandoned sessions and other
 errors come back as the matching `SessionError`; a closed socket or a dead child
 marks the session abandoned. The index and every lease stay in the parent. A
 publish starts one EXPORT conversation. The child computes the sparse delta once
-and sends NEED_EXTENT from its destination-allocation callback. The parent
+compresses its pages, and sends NEED_EXTENT with the encoded length from its
+destination-allocation callback. The parent
 allocates a unique writable extent and returns EXTENT_READY with exactly one
-descriptor and the exact checked range. The child writes changed pages directly
+descriptor and the exact checked range. The child writes the compressed pages
 into that mapping, drops its writer and borrowed slices, and then acknowledges
 completion. The parent reads the extent and computes its commitment only after
-that acknowledgement. No complete serialized payload buffer or subsequent
-full-extent copy is retained in the child; page payloads still copy once into
-the destination, and metadata and sidecar allocations remain. The loaded-image
+that acknowledgement. The child holds the compressed pages, metadata and sidecar
+until the write; compressed pages copy once into the destination. The loaded-image
 handshake requires matching workers.
 The version 5 host image hello identifies qualification-aware INIT, descriptor-table
 IMPORT and transactional execution-endpoint commands. Both incompatible version 4
@@ -917,9 +922,9 @@ copies; borrowing their slices records no copy. The parent currently creates no
 such mappings. `Session` reports `copy.session.extent.*` (renamed
 `copy.child.session.extent.*` through a worker) for the completed logical
 `encoded_bytes` and actual output `metadata_copy_bytes` / `page_copy_bytes` at its
-final extent writer. UML exports do not emit these extent-copy counters. Padding is
-part of encoded length but not copied metadata. No E-byte temporary output buffer
-or temporary-to-extent copy exists in direct export, and no such charge is inferred.
+final extent writer. `page_copy_bytes` counts stored, mostly compressed, page
+bytes. UML exports do not emit these extent-copy counters. Direct export
+compresses pages into one buffer and copies that buffer once into the extent.
 Sidecar/row allocations remain separate and are not estimated from output length.
 
 `snapshot.copy.*` counts Store interning and read-into-buffer copies, forwarded

@@ -743,10 +743,7 @@ mod strict_host_tests {
 ))]
 mod sealed_guard_tests {
     use super::*;
-    use crate::cache::{
-        CacheIndex, LocalIndex, Namespace,
-        extent::{extent_len, write_extent},
-    };
+    use crate::cache::{CacheIndex, LocalIndex, Namespace, extent::encode};
 
     #[test]
     fn unexpected_executable_mapping_revokes_a_published_lease() {
@@ -837,8 +834,9 @@ mod sealed_guard_tests {
         );
         let index = LocalIndex::new(1 << 20);
         let namespace = Namespace::new(&[b"live-code"]);
-        let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
-        write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+        let encoded = encode(&[], &[], &[]).unwrap();
+        let mut extent = index.extent(encoded.len()).unwrap();
+        encoded.write(extent.bytes_mut()).unwrap();
         let lease = index
             .publish(namespace, b"snapshot", None, extent, [9; 32], 1)
             .unwrap();

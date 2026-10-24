@@ -90,6 +90,7 @@ dependencies = [
  "host-code-identity",
  "hypercall-proto",
  "libc",
+ "lz4_flex",
  "serde",
  "sha2",
  "thiserror",

@@ -2574,7 +2574,7 @@ mod tests {
     use crate::target::{FaultOperation, decode_sdk_events};
     use consonance_client::cache::{
         LocalIndex,
-        extent::{extent_len, read_extent, write_extent},
+        extent::{encode, read_extent},
     };
 
     fn test_branch_config(
@@ -3109,8 +3109,9 @@ mod tests {
         ) -> Result<Lease, Box<dyn Error>> {
             let target_commitment = *self.snapshots.get(&target.0).ok_or("unknown snapshot")?;
             let sidecar = target.0.to_le_bytes();
-            let mut extent = index.extent(extent_len(0, 0, sidecar.len()).unwrap())?;
-            write_extent(extent.bytes_mut(), &[], &[], &sidecar)?;
+            let encoded = encode(&[], &[], &sidecar)?;
+            let mut extent = index.extent(encoded.len())?;
+            encoded.write(extent.bytes_mut())?;
             Ok(index.publish(
                 namespace,
                 key,
@@ -3188,8 +3189,9 @@ mod tests {
                 &attachment.bytes,
             ))?)
             .into();
-            let mut extent = index.extent(extent_len(0, 0, sidecar.len()).unwrap())?;
-            write_extent(extent.bytes_mut(), &[], &[], &sidecar)?;
+            let encoded = encode(&[], &[], &sidecar)?;
+            let mut extent = index.extent(encoded.len())?;
+            encoded.write(extent.bytes_mut())?;
             Ok(index.publish(
                 namespace,
                 key,
