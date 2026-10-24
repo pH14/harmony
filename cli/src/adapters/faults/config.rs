@@ -45,6 +45,124 @@ pub struct Node {
     pub command: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Explain {
+    pub logs: Vec<String>,
+    pub data: Vec<String>,
+    pub history: Option<String>,
+    pub host_history: Option<String>,
+}
+
+impl Explain {
+    #[must_use]
+    pub fn guest_paths(command: &str) -> Vec<std::ops::Range<usize>> {
+        let path = |byte: u8| byte.is_ascii_alphanumeric() || b"/._-+,:%~".contains(&byte);
+        let bytes = command.as_bytes();
+        let mut ranges = Vec::new();
+        let mut index = 0;
+        while index + 1 < bytes.len() {
+            if bytes[index] == b'@'
+                && bytes[index + 1] == b'/'
+                && (index == 0 || !(path(bytes[index - 1]) || bytes[index - 1] == b'@'))
+            {
+                let end = (index + 1..bytes.len())
+                    .find(|&at| !path(bytes[at]))
+                    .unwrap_or(bytes.len());
+                ranges.push(index + 1..end);
+                index = end;
+            } else {
+                index += 1;
+            }
+        }
+        ranges
+    }
+
+    #[must_use]
+    pub fn copies(&self) -> Vec<String> {
+        let mut paths = self
+            .host_history
+            .iter()
+            .flat_map(|command| {
+                Self::guest_paths(command)
+                    .into_iter()
+                    .map(|range| command[range].to_owned())
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        for path in self.logs.iter().chain(&self.data) {
+            if path.is_empty() || path.contains(['\n', '\r', '\0']) {
+                return Err(format!(
+                    "explain path {path:?} must be nonempty without newlines or NUL"
+                )
+                .into());
+            }
+        }
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|text| text.trim().is_empty() || text.contains('\0'))
+        {
+            return Err("explain history must be nonempty shell text without NUL".into());
+        }
+        if let Some(command) = &self.host_history {
+            if command.trim().is_empty() || command.contains('\0') {
+                return Err("explain host history must be nonempty shell text without NUL".into());
+            }
+            if self.copies().is_empty() {
+                return Err(
+                    "explain host history names no guest path; write one as @/guest/path".into(),
+                );
+            }
+            for path in self.copies() {
+                if path
+                    .split('/')
+                    .skip(1)
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+                    || path.contains(['\n', '\r'])
+                {
+                    return Err(format!(
+                        "explain host history path {path:?} must be a plain absolute guest path"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    #[must_use]
+    pub fn or(&self, saved: &Self) -> Self {
+        Self {
+            logs: if self.logs.is_empty() {
+                saved.logs.clone()
+            } else {
+                self.logs.clone()
+            },
+            data: if self.data.is_empty() {
+                saved.data.clone()
+            } else {
+                self.data.clone()
+            },
+            history: self.history.clone().or_else(|| saved.history.clone()),
+            host_history: self
+                .host_history
+                .clone()
+                .or_else(|| saved.host_history.clone()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -67,6 +185,7 @@ pub struct Config {
     pub workload: Vec<String>,
     pub check: Vec<String>,
     pub hooks: BTreeMap<String, Vec<String>>,
+    pub explain: Explain,
     pub exclude_faults: Vec<faults_workload::bundle::FaultKind>,
 }
 
@@ -92,6 +211,7 @@ impl Default for Config {
             workload: Vec::new(),
             check: Vec::new(),
             hooks: BTreeMap::new(),
+            explain: Explain::default(),
             exclude_faults: Vec::new(),
         }
     }
@@ -142,6 +262,7 @@ impl Config {
         {
             return Err("build.args names must be nonempty without '=', newlines or NUL".into());
         }
+        self.explain.validate()?;
         self.bundle()?;
         Ok(())
     }
@@ -394,5 +515,23 @@ mod tests {
         assert!(shared("[\"wait\"]").is_err());
         assert!(shared("[\"disk-corrupt\"]").is_err());
         assert!(Config::default().exclude_faults.is_empty());
+    }
+
+    #[test]
+    fn host_history_names_guest_paths_with_an_at_sign() {
+        let command = "check @/tmp/j; cat @/var/a.log|wc -l '@/x' user@/y @@/z";
+        let explain = Explain {
+            host_history: Some(command.into()),
+            ..Explain::default()
+        };
+        assert_eq!(explain.copies(), vec!["/tmp/j", "/var/a.log", "/x"]);
+        explain.validate().unwrap();
+        for bad in ["check", "check @/tmp/../etc", "check @/tmp/j/", "  "] {
+            let explain = Explain {
+                host_history: Some(bad.into()),
+                ..Explain::default()
+            };
+            assert!(explain.validate().is_err(), "{bad}");
+        }
     }
 }

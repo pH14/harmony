@@ -166,7 +166,7 @@ pub fn execute(mut request: Request) -> Result<u8> {
     let file = fs::File::open(&path)?;
     fs::remove_file(&path)?;
     drop(directory);
-    crate::host_boundary::enter_prepared_host(file)
+    crate::host_boundary::enter_prepared_host(file, request.operation == Operation::Explain)
 }
 
 pub(crate) fn collect_profile(

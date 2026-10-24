@@ -17,6 +17,7 @@ harmony show baseline
 harmony show baseline --finding 1 --timeline
 harmony show baseline --finding 1 --logs --contains ERROR
 harmony shrink baseline --finding 1 --jobs 4 --name minimal
+harmony explain baseline --finding 1 --jobs 4 --name why
 harmony branch baseline --finding 1 --rewind 10 --shell --name debugging
 harmony search --from debugging --name neighborhood
 ```
@@ -242,6 +243,13 @@ harmony
 ├── shrink NAME                          keep only the faults a finding needs
 │   ├── --finding N                      select a finding
 │   └── --jobs N                         replays to run at once
+├── explain NAME                         report what changed around each fault
+│   ├── --finding N                      select a finding
+│   ├── --jobs N                         replays to run at once
+│   ├── --log GUEST_PATH                 log file or glob to compare
+│   ├── --data GUEST_DIR                 directory or glob to compare
+│   ├── --history 'COMMAND'              guest command that prints client history
+│   └── --no-shrink                      probe the recorded actions as they are
 └── diff NAME NAME                       compare configuration and outcomes
 ```
 
@@ -315,6 +323,92 @@ The output is a replay of the reduced actions that `show`, `show --timeline` and
 `branch` accept. `shrink.json` lists every attempt with the replaced steps and
 the violations it produced, the number of replays started, and the reduced
 actions in a form `debug run --actions` accepts. NES findings are not supported.
+
+`explain` writes a report a maintainer can start a diagnosis from. It shrinks the
+finding first, unless NAME is already a shrink output and no `--finding` is
+given, or `--no-shrink` is given for a recorded run. A recording of a reduced
+`actions.json` made with `debug run --actions` plus `--no-shrink` skips a
+repeated shrink after a rebuild. It then replays the reduced actions and runs a guest script at the
+boundary before and after each remaining fault and at the violation. The script
+records the size of each configured log, checksums every file under each
+configured data directory, then prints each log up to its recorded size (the
+last 1 MiB of a larger file), and runs the history command once, at the
+violation. A window's new log lines are the lines after the longest common
+prefix of its two boundary captures. The guest keeps running while the
+script runs, without the next fault, so the report states how much guest time
+each probe took to record sizes and checksums. `--jobs N` runs N replays at once:
+one probe-free reference replay, and N - 1 replays that share the boundaries
+(with `--jobs 1`, the two run one after the other). Each action of a replay
+starts from the sealed snapshot of the previous boundary, so a probe does not
+change later actions. A replay summary also reads the live guest, such as its
+console and its final state, and a probe can change those. The check is
+therefore per boundary: the reference replay must match the reduced replay,
+and each probe must see the same whole-state certificate as the reference at
+its boundary. A failed check is reported as an
+error after the report is written.
+
+The output directory is a replay of the reduced actions that `show` and `branch`
+accept. It also holds:
+
+- `explain.md`: the promise that broke, the fault table with guest times and the
+  nodes left running, the history output, and one section per fault and per gap
+  between faults. When a remaining fault cuts power, the summary says so and
+  states that a system that acknowledges writes before syncing them loses them
+  this way, with a search of a build that syncs every write as the test;
+- `explain.json`: the same content as data;
+- `actions.json`: the reduced actions for `debug run --actions`;
+- `probes/STEP/`: each probe script and its raw terminal output;
+- `copied/`: the guest files `host_history` names, under their guest paths;
+- `probes/reference/replay.json` and `probes/replay-N/replay.json`: each
+  replay's probed steps, the certificate at each recorded boundary and its
+  summary;
+- `shrink.json` and `attempts/` when explain ran the shrink.
+
+Each section lists the log lines that first appeared in that window. A line
+whose pattern (the text with numbers and generated identifiers replaced) never
+appeared earlier in any log is marked new and ranked first. Other lines fill in,
+rarest first, when fewer than five are new. Data changes list added, removed and
+resized files, and collapse a directory that appeared or disappeared as a whole.
+The report ends with the replay command, the fix check (the same command with a
+fixed image) and a `branch --shell` command at the violation.
+
+The settings come from flags or from the recipe; flags replace the matching
+recipe field:
+
+```toml
+[workload.options.explain]
+logs = ["/tmp/app/*.log"]
+data = ["/tmp/app/data/*"]
+history = "/app/check --json"
+host_history = "app-check --json @/var/app/journal"
+```
+
+Paths are guest paths, and globs are expanded by the guest shell. When neither
+a flag nor the recipe sets `logs` or `data`, explain uses the paths the
+recorded bundle declares: every `log NODE PATH` line for logs and every
+`disk NODE PATH SIZE [checksummed]` line for data
+([supervisor bundle](../consonance/harmony-linux/supervisor/README.md)). The
+probe script needs `find -exec`, `cksum`, `wc`, and `head -c` and `tail -c` in
+the guest; a minimal BusyBox build needs those applets and options. The history
+command runs with `/bin/sh` in the workload's working directory. It counts
+against the five-minute host command limit of the debug terminal, and the
+report states when it did not finish and marks its output partial.
+
+`host_history` (`--host-history`) checks the client history on the host. Each
+`@/path` word names a guest file or directory. At the violation, before the
+logs and the history command, the probe copies every file under those paths
+(each up to 16 MiB) through the terminal with `find`, `wc`, `head -c` and
+`base64`. The guest keeps running during the probe, so a client can still
+append to its journal. Each copy holds the bytes the file had when `wc`
+measured it. After the replays, `explain` replaces each `@/path` with the
+path of its copy, `copied/path`, relative to the output directory, and runs the
+text with `sh -c` in that directory. The report holds the command, its exit status, and its
+combined stdout and stderr. The report names every file the probe could not
+copy and the reason: over the size limit, unreadable in the guest, a copy cut
+short, or a failed probe. The host check then ran on part of the history, so
+the report marks its output partial in the summary and beside the output.
+Use it when the system under test's history checker reads a journal it can
+check offline, or when a live read from the guest can outlast the limit.
 
 `search --from` starts fresh exploration from a branch endpoint. `search --resume`
 restores the existing corpus, snapshots, scheduler and evidence from the latest
@@ -539,7 +633,9 @@ Consonance execution and readiness checks. `harmony prepare` performs its build
 outside the guarded host. The frontend checks companion admission before implicit
 preparation, then unlinks the captured request file and execs the host with its
 held read-only descriptor. The execution keeps the command's original PID,
-process group and terminal, including for guest shells. The captured backing
+process group and terminal, including for guest shells. `explain` instead runs
+the host as a child in the same process group and waits for it, so the frontend
+can run `host_history` outside the guarded host afterwards. The captured backing
 remains held for the host's lifetime; no request pathname survives the handoff.
 
 The `harmony-prepared-execution-v1` handoff is a self-contained postcard file
@@ -556,9 +652,10 @@ nodes; a plain execution cannot discard requested actions or replace supervision
 Execution-bearing fields are accepted only by operations that consume them:
 actions by Faults/NES runs and branches, guest commands by Faults branches,
 console output by plain Faults runs, additional budgets by saved searches, and
-parallel replay counts by Faults shrinks.
+parallel replay counts by Faults shrinks and explanations, and explain
+settings by Faults explanations.
 Raw command overrides must agree with the effective Faults run configuration.
-Saved replay, branch, resume and shrink require a selection; incompatible point selectors,
+Saved replay, branch, resume, shrink and explain require a selection; incompatible point selectors,
 commands, captures and repeat counts are refused before execution.
 Captured action/script presence must match the request exactly, and ROM payloads
 belong only to fresh NES execution.

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pub mod config;
+pub(crate) mod explain;
 mod investigate;
 #[cfg(feature = "frontend")]
 pub(crate) mod prepare;
@@ -109,6 +110,7 @@ impl Package for Faults {
             ),
             Operation::Branch => investigate::branch(request),
             Operation::Shrink => shrink::shrink(request),
+            Operation::Explain => explain::explain(request),
             Operation::Inspect => investigate::inspect(
                 request.selection.ok_or("select a search or branch")?,
                 request.json,
@@ -181,6 +183,13 @@ pub fn execute_prepared(request: Request, mut prepared: crate::handoff::Prepared
                 .ok_or("missing resolved saved recording")?,
         ),
         Operation::Shrink => shrink::shrink_saved(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        ),
+        Operation::Explain => explain::explain_saved(
             request,
             prepared
                 .saved
