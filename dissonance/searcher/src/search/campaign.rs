@@ -948,6 +948,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub execution_work: u64,
     pub result_sha256: String,
     pub decisions: Vec<CampaignAdmissionDecision>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retained_keys: Vec<K>,
     pub mixture_weight: u8,
     pub splice_weight: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1347,6 +1349,25 @@ fn continuation_arrival<G: Workload>(
                 replaced || (arrived.is_some() && retained),
             )
         })
+}
+
+fn retained_keys<G: Workload>(
+    archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
+    decisions: &[CampaignAdmissionDecision],
+) -> Result<Vec<G::Key>, Box<dyn Error>> {
+    decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            CampaignAdmissionDecision::Retained { id } => Some(*id),
+            _ => None,
+        })
+        .map(|id| {
+            archive
+                .index_of_id(id)
+                .and_then(|index| archive.entry_key(index))
+                .ok_or_else(|| "retained archive entry has no key".into())
+        })
+        .collect()
 }
 
 fn retained_archive_indexes<G: Workload>(
@@ -5392,6 +5413,15 @@ where
                 if decisions != job.decisions {
                     return Err(format!(
                         "replayed job {} admission decisions diverged from the recorded stream",
+                        job.sequence
+                    )
+                    .into());
+                }
+                if !job.retained_keys.is_empty()
+                    && retained_keys::<G>(&core.archive, &decisions)? != job.retained_keys
+                {
+                    return Err(format!(
+                        "replayed job {} retained keys diverged from the recorded stream",
                         job.sequence
                     )
                     .into());

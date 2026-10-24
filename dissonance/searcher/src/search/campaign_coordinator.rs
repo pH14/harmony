@@ -25,7 +25,7 @@ use super::{
     execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
     mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
     progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
-    restore_search_checkpoint, retained_archive_indexes, search_checkpoint_header,
+    restore_search_checkpoint, retained_archive_indexes, retained_keys, search_checkpoint_header,
     stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
     with_coordinator_session, write_live_progress, write_search_checkpoint,
 };
@@ -1091,6 +1091,7 @@ where
             });
         }
         let stream_started = profile_now();
+        let retained_keys = retained_keys::<G>(&core.archive, &decisions)?;
         writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
             continuation_energy: pending_job.continuation_energy,
             sequence,
@@ -1100,6 +1101,7 @@ where
             execution_work,
             result_sha256,
             decisions,
+            retained_keys,
             mixture_weight: pending_job.mixture_weight,
             splice_weight: pending_job.splice_weight,
             splice: pending_job.splice,
