@@ -66,6 +66,10 @@ A state whose level numbers differ from the previous state's while its area
 States during area loading have progress 0 and screen column 0, because the
 scroll or Mario's position still belongs to the old area.
 
+Camera and player coordinates used by the key are signed 16-bit positions.
+Negative positions at the left boundary clamp to zero before conversion to
+columns, so an underflow cannot create a false deepest band.
+
 ## Snapshots
 
 A native snapshot stores the QuickNES state as an LZ4 block with its length in

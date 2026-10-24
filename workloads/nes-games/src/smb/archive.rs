@@ -31,7 +31,7 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
 
 const PROGRESS_BAND: u16 = 64;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_lineage_max_unless_warped_level_band_64_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area";
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_lineage_max_unless_warped_level_band_64_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -257,9 +257,8 @@ pub fn stamp_arrival_room_identity(
 }
 
 fn screen_x_bucket(wram: &[u8; 2_048]) -> u8 {
-    let screen_x = smb_player_position(wram)
-        .x
-        .saturating_sub(smb_camera_pixels(wram));
+    let player_x = (smb_player_position(wram).x as u16 as i16).max(0) as u32;
+    let screen_x = player_x.saturating_sub(smb_camera_pixels(wram));
     u8::try_from(screen_x.min(255) / 16).unwrap_or(15)
 }
 
@@ -344,6 +343,30 @@ mod tests {
     use super::{SmbArchiveKey, SmbRoomIdentity, archive_key, stamp_arrival_room};
     use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
     use crate::smb::target::{SmbObservations, SmbProgressWatermark};
+
+    #[test]
+    fn wrapped_coordinates_never_outrank_physical_progress() {
+        let mut ram = [0_u8; 2048];
+        ram[0x0770] = 1;
+        ram[0x0772] = 3;
+        ram[0x071a] = 2;
+        ram[0x0086] = 128;
+        ram[0x006d] = 2;
+        let real = archive_key(&ram);
+        for camera in 65408_u16..=65535 {
+            ram[0x071a] = (camera >> 8) as u8;
+            ram[0x071c] = camera as u8;
+            for player in [97_u16, 104, 65529, 65530, 65531, 65532, 65533, 65534, 65535] {
+                ram[0x006d] = (player >> 8) as u8;
+                ram[0x0086] = player as u8;
+                let wrapped = archive_key(&ram);
+                assert_eq!(wrapped.progress, 0);
+                assert!(wrapped.place() < real.place());
+                assert!(wrapped.progress() <= real.progress());
+                assert!(wrapped.room_x_bucket <= 6);
+            }
+        }
+    }
 
     #[test]
     fn progress_watermark_uses_action_interiors() {
