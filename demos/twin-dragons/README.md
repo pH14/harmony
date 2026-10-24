@@ -121,7 +121,9 @@ stream in place of the coordinator worker: the same `ready`, `batch`, `states`
 and `limit` messages, without rollout workers. Open
 `http://127.0.0.1:8790/?game=super-mario-bros&live` on the host, or forward the
 port over SSH and open the same address on another machine. Pause stops drawing
-new results and leaves the campaign running. A live view cannot branch. Build
+new results and leaves the campaign running. The counters interpolate between
+the stream's 100 ms batches, and the camera keeps a fixed zoom, because trails
+start from many archived states and would otherwise make the zoom swing. A live view cannot branch. Build
 the page with `npm run build` and pass the `dist` directory, with a `roms`
 directory added beside `index.html`, as the request's `live_site`.
 [`workloads/nes`](../../workloads/nes/README.md#live-view) documents the request
@@ -273,9 +275,14 @@ tools/launcher.py
 ```
 
 and open `http://127.0.0.1:8790/`. On a loopback address the page asks
-`/launcher/machines`; when the launcher answers, a Native runs button opens a
-dialog to pick the machine, game, workers, archive budget, seed and time limit. A
-run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
+`/launcher/machines`; when the launcher answers, the New search picker gains a
+Run on row: This browser, or one of the machines. With a machine chosen,
+the level grid stays and a level opens a second step with that level's preview,
+workers, archive budget, seed and time limit. A Famidash run starts at the chosen
+level through the end of its section (`stage` in the request); other games start
+from power-on. The dialog lists the active runs with Watch and Stop. Starting a
+run opens its live view once it is running. Without a launcher, such as on the published site, the
+picker shows only browser searches. A run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
 builds the QuickNES core with `scripts/build-quicknes-core.sh` and `nes-eval`
 there once per commit, uploads the ROM, and starts `nes-eval` with
 `live: 127.0.0.1:0` as a `systemd-run` unit named `harmony-arcade-<id>` with
@@ -292,6 +299,13 @@ loopback address, and starting or stopping a run takes a JSON POST. A run id is
 the start time, the game and a random suffix. Stopping a run that is still
 copying or building cancels its start, and a unit that starts during the stop is
 stopped once its start returns. A start that fails also stops its unit.
+
+A machine entry with `local = true` and a `dir`, and no `ssh`, runs the campaign
+on the computer that runs the launcher. The first run builds the core and
+`nes-eval` from the working tree with `cargo` into `<dir>/target`. The launcher
+starts `nes-eval` as a child process, reads its live port from the log and
+serves that port directly, with no tunnel. It enforces no `memory_max_mib`, and
+quitting the launcher stops its local runs.
 
 Tobu Tobu Girl runs on SameBoy and has no `nes-games` workload, so it uses the
 older `Explorer` in `rust/src/lib.rs`, with its decoder and archive key beside

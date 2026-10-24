@@ -1433,17 +1433,37 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
   .segments button { padding: 8px 6px; font-size: 10.5px; }
   .toggles button { gap: 4px; }
 }
-.native-open { box-sizing: border-box; height: var(--bar-height); padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); font-size: 12px; white-space: nowrap; }
-.native-open:hover { background: var(--hover); }
-.native-run { max-width: 640px; }
-.native-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; align-items: end; }
-.native-field { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
-.native-field input, .native-field select { width: 100%; box-sizing: border-box; }
-.native-message { min-height: 1.2em; margin: 12px 0 0; font-size: 12px; color: var(--muted); }
-.native-runs { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; font-size: 12px; }
-.native-runs li { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
-.native-state { grid-column: 1; color: var(--muted); overflow-wrap: anywhere; }
-.native-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 8px; align-items: center; }
+.native-panel { margin-top: 4px; }
+.native-form { display: grid; gap: 14px; }
+.native-form .game-group .segments, .native-form .game-choice .segments { display: flex; }
+.native-form .game-group button { flex: 1; font-size: 13px; padding: 9px 10px; }
+.native-summary { display: grid; grid-template-columns: 160px 1fr; gap: 14px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--background); }
+.native-preview { aspect-ratio: 8 / 3; overflow: hidden; border-radius: 8px; background: var(--line); }
+.native-preview img, .native-preview canvas { display: block; width: 100%; height: 100%; object-fit: cover; }
+.native-summary-text { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.native-back { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
+.native-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+.native-field { display: grid; gap: 4px; font-size: 12px; color: var(--text); }
+.native-field input { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--background); color: var(--text); font-variant-numeric: tabular-nums; }
+.native-field small { color: var(--muted); font-size: 11px; }
+.native-submit { display: grid; gap: 8px; }
+.native-start { padding: 11px 16px; font-size: 14px; background: var(--play); color: var(--on-play); }
+.native-start:hover { background: var(--play); filter: brightness(1.08); }
+.native-note { margin: 0; color: var(--muted); font-size: 11px; }
+.native-message { min-height: 1.2em; margin: 0; font-size: 12px; color: var(--muted); }
+.native-runs-title { margin: 18px 0 8px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.native-runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.native-run-card { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--background); font-size: 13px; }
+.native-run-name { font-weight: 600; }
+.native-run-meta { grid-column: 1; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.native-state { grid-column: 2; grid-row: 1; justify-self: end; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.native-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.native-state[data-state="running"] { color: var(--play); }
+.native-state[data-state="starting"] { color: var(--live); }
+.native-state[data-state="failed"] { color: #d9534f; }
+.native-actions { grid-column: 2; grid-row: 2; justify-self: end; display: flex; gap: 8px; align-items: center; }
+.native-actions button, .native-watch { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
+.native-watch { background: var(--play); color: var(--on-play); text-decoration: none; font-weight: 500; }
 
 .recording-controls { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 8px; }
 #record-view[aria-pressed="true"] { color: #ff6c77; }

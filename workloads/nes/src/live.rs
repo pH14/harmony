@@ -23,7 +23,7 @@ use machine::{
 };
 use nes_games::{
     arcade::{
-        ArcadeGame,
+        ArcadeGame, Machines,
         feed::{self, Batch, Feed, Note, Point, State, Stats, raw_state, run_noted},
         snapshot_digest,
         trail::Traced,
@@ -63,6 +63,7 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
     core_path: &Path,
     core_sha256: &str,
     execution_sha256: &str,
+    level: Option<u8>,
 ) -> G {
     let (machine_rom, path, sha256, execution) = (
         machine_image(rom, G::MEMORY_BYTES),
@@ -70,22 +71,23 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
         core_sha256.to_owned(),
         execution_sha256.to_owned(),
     );
-    G::arcade(
-        rom,
-        &machine::quicknes::core_identity(),
-        &native_identity_sha256(core_sha256, execution_sha256),
-        Arc::new(move || {
-            Ok(Traced::new(
-                QuickNesMachine::from_rom_bytes_with_identity(
-                    machine_rom.as_ref().map_err(Clone::clone)?,
-                    &path,
-                    &sha256,
-                    &execution,
-                )?,
-                G::probe(),
-            ))
-        }),
-    )
+    let machines: Machines<NativeMachine> = Arc::new(move || {
+        Ok(Traced::new(
+            QuickNesMachine::from_rom_bytes_with_identity(
+                machine_rom.as_ref().map_err(Clone::clone)?,
+                &path,
+                &sha256,
+                &execution,
+            )?,
+            G::probe(),
+        ))
+    });
+    let core = machine::quicknes::core_identity();
+    let identity = native_identity_sha256(core_sha256, execution_sha256);
+    match level {
+        Some(level) => G::arcade_from(rom, &core, &identity, machines, level),
+        None => G::arcade(rom, &core, &identity, machines),
+    }
 }
 
 fn machine_image(rom: &[u8], memory_bytes: usize) -> std::result::Result<Vec<u8>, MachineError> {
@@ -1178,7 +1180,13 @@ where
         view: G::memory_view,
     };
     watched.evaluate(
-        native_game::<G>(rom, &request.core, &request.core_sha256, &execution_sha256),
+        native_game::<G>(
+            rom,
+            &request.core,
+            &request.core_sha256,
+            &execution_sha256,
+            request.stage,
+        ),
         G::run(),
         |game, run, watch| evaluate(game, run, request, &execution_sha256, watch),
     )
