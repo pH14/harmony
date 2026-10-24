@@ -10,6 +10,8 @@ const MODE = 0x00,
   SCREEN_WIDTH = 256,
   SCREEN_HEIGHT = 224,
   FULL_HEALTH = 0x60,
+  TRACK_HEIGHT = 16,
+  TRACK_BOTTOM = 216,
   SPRITE_WIDTH = 32,
   SPRITE_HEIGHT = 66;
 
@@ -47,13 +49,16 @@ function scaled(lost, max) {
   return Math.min(max - 1, Math.max(0, Math.round((lost * max) / FULL_HEALTH)));
 }
 
+// The trail has no screen position for Mac, so a sample is placed by damage:
+// x is the opponent's damage across the screen and y is Mac's damage in a band
+// along the bottom edge. The Rust side uses the same mapping.
 export function motion(ram) {
   const state = JSON.parse(punchout_observation(ram));
   if (ram[MODE] !== FIGHT) return [NO_ROOM, 0, 0, 0];
   return [
     state.opponent,
     scaled(FULL_HEALTH - state.opponent_health, SCREEN_WIDTH),
-    scaled(FULL_HEALTH - state.mac_health, SCREEN_HEIGHT),
+    TRACK_BOTTOM - scaled(FULL_HEALTH - state.mac_health, TRACK_HEIGHT),
     0,
   ];
 }

@@ -914,10 +914,11 @@ A saved winning tape replays from power-on in the history panel. Copy the
 then open `?game=punch-out&tape=/tapes/punch-out.json`. Drag the history slider
 to the end to see the last state.
 
-The player trail and heatmap plot fight state, not the boxer's position. The
-x position is the opponent's health lost, and the y position is Mac's health
-lost, each scaled to the 256 by 224 map. The RAM address for Mac's position is
-not verified yet, so the trail does not follow the dodges.
+The trail and heatmap do not plot Mac's position, because its RAM address is not
+verified yet. A sample's x position is the opponent's health lost across the
+screen. Its y position is Mac's health lost, drawn as a band along the bottom
+edge (rows 201 to 216). The fight therefore reads left to right, and Mac's damage
+shows as the band rises. The Rust native trail uses the same mapping.
 
 The RAM map and the search are described in
 [`workloads/nes/src/punchout/README.md`](../../workloads/nes/src/punchout/README.md).
