@@ -610,6 +610,24 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
         )
         .collect();
     let header_tables = elf_header_tables(&elf)?;
+    for header in elf.elf_program_headers() {
+        if header.p_type(elf.endian()) != object::elf::PT_LOAD
+            || header.p_flags(elf.endian()) & object::elf::PF_X == 0
+        {
+            continue;
+        }
+        let segment_start = header.p_vaddr(elf.endian());
+        let segment_file_start = header.p_offset(elf.endian());
+        let segment_end = segment_start.saturating_add(header.p_filesz(elf.endian()));
+        for entry in entries.range(segment_start..segment_end) {
+            let file_offset = segment_file_start.saturating_add(entry - segment_start);
+            if header_tables.iter().any(|&(start, end)| {
+                usize::try_from(file_offset).is_ok_and(|offset| (start..end).contains(&offset))
+            }) {
+                return Err("ELF entry point inside the header tables".into());
+            }
+        }
+    }
     let writable_executable = object::elf::PF_W | object::elf::PF_X;
     let mut sites = Vec::new();
     let mut executable_segments = 0;
@@ -1049,21 +1067,34 @@ fn elf_header_tables(
 ) -> Result<Vec<(usize, usize)>, Box<dyn Error>> {
     let endian = elf.endian();
     let header = elf.elf_header();
-    let mut tables = vec![(0, usize::from(header.e_ehsize(endian)))];
-    for (offset, entry_size, entries) in [
+    if usize::from(header.e_ehsize(endian))
+        != size_of::<object::elf::FileHeader64<object::Endianness>>()
+    {
+        return Err("invalid ELF header size".into());
+    }
+    let mut tables = vec![(
+        0,
+        size_of::<object::elf::FileHeader64<object::Endianness>>(),
+    )];
+    for (offset, entry_size, entries, expected_entry_size) in [
         (
             header.e_phoff(endian),
             header.e_phentsize(endian),
             elf.elf_program_headers().len(),
+            size_of::<object::elf::ProgramHeader64<object::Endianness>>(),
         ),
         (
             header.e_shoff(endian),
             header.e_shentsize(endian),
             elf.elf_section_table().len(),
+            size_of::<object::elf::SectionHeader64<object::Endianness>>(),
         ),
     ] {
         if offset == 0 || entries == 0 {
             continue;
+        }
+        if usize::from(entry_size) != expected_entry_size {
+            return Err("invalid ELF header table entry size".into());
         }
         let start = usize::try_from(offset)?;
         let end = usize::from(entry_size)
@@ -1829,6 +1860,30 @@ mod tests {
         let report = inspect_root(root.path()).unwrap();
         assert!(report.scan_passed(), "{report:?}");
         assert!(report.require_for(ExecutionMode::Uml).is_ok(), "{report:?}");
+    }
+
+    #[test]
+    fn an_entry_point_inside_the_mapped_elf_header_tables_is_refused() {
+        let mut bytes = x86_elf_with_mapped_header_tables(&[0xc3], &[0x0f, 0x03, 0xc1, 0xc3]);
+        bytes[24..32].copy_from_slice(&0x400138_u64.to_le_bytes());
+        assert!(
+            scan_elf(&bytes, "")
+                .unwrap_err()
+                .to_string()
+                .contains("entry point inside the header tables")
+        );
+    }
+
+    #[test]
+    fn an_oversized_elf_header_cannot_hide_executable_instructions() {
+        let mut bytes = x86_elf_with_mapped_header_tables(&[0x0f, 0xc7, 0xf0, 0xc3], &[]);
+        bytes[52..54].copy_from_slice(&8192_u16.to_le_bytes());
+        assert!(
+            scan_elf(&bytes, "")
+                .unwrap_err()
+                .to_string()
+                .contains("invalid ELF header size")
+        );
     }
 
     #[test]
