@@ -9,7 +9,9 @@ const MODE = 0x00,
   NO_ROOM = 65535,
   SCREEN_WIDTH = 256,
   SCREEN_HEIGHT = 224,
-  FULL_HEALTH = 0x60;
+  FULL_HEALTH = 0x60,
+  SPRITE_WIDTH = 32,
+  SPRITE_HEIGHT = 66;
 
 export const OPPONENTS = [
   "Glass Joe",
@@ -68,17 +70,35 @@ export function buildMap(engine, id) {
   return { width: frame.width, height: frame.height, data: frame.data.slice() };
 }
 
-export function buildSprites() {
-  const size = 16,
-    data = new Uint8ClampedArray(size * size * 4);
-  for (let y = 0; y < size; y++)
-    for (let x = 0; x < size; x++) {
-      const d = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2);
-      if (d > size / 2) continue;
-      const at = (y * size + x) * 4;
-      data.set([0xea, 0xf6, 0xff, 255], at);
+// Mac's idle stance is in the same place on every fight camera, so one crop
+// of the boxer serves as the marker. Pixels that change when the sprites are
+// hidden belong to a sprite; the blue canvas is drawn by the background layer.
+const MAC_BOX = { x: 102, y: 146, width: SPRITE_WIDTH, height: SPRITE_HEIGHT },
+  RING_FLOOR = { x: 80, y: 200 };
+
+export function buildSprites(engine) {
+  engine.boot(0);
+  const ram = engine.ramView(),
+    start = engine.capture();
+  engine.run(0, 1, true);
+  const shown = engine.pixels().data.slice();
+  engine.restore(start);
+  for (let i = 0x200; i < 0x300; i += 4) ram[i] = 0xf8;
+  engine.run(0, 1, true);
+  const hidden = engine.pixels().data.slice();
+  engine.restore(start);
+  const data = new Uint8ClampedArray(MAC_BOX.width * MAC_BOX.height * 4),
+    floor = (RING_FLOOR.y * SCREEN_WIDTH + RING_FLOOR.x) * 4;
+  const same = (a, b) => shown[a] === b[0] && shown[a + 1] === b[1] && shown[a + 2] === b[2];
+  for (let y = 0; y < MAC_BOX.height; y++)
+    for (let x = 0; x < MAC_BOX.width; x++) {
+      const s = ((MAC_BOX.y + y) * SCREEN_WIDTH + MAC_BOX.x + x) * 4,
+        at = (y * MAC_BOX.width + x) * 4;
+      if (shown[s] === hidden[s] && shown[s + 1] === hidden[s + 1] && shown[s + 2] === hidden[s + 2]) continue;
+      if (same(s, shown.subarray(floor, floor + 3))) continue;
+      data.set(shown.subarray(s, s + 4), at);
     }
-  return { width: size, height: size, data };
+  return { width: MAC_BOX.width, height: MAC_BOX.height, data };
 }
 
 export default {
@@ -99,7 +119,7 @@ export default {
   system: "NES",
   assets: "",
   screen: { width: SCREEN_WIDTH, height: SCREEN_HEIGHT },
-  sprite: { width: 16, height: 16, originX: 8, originY: 8, icon: [0, 0, 16, 16] },
+  sprite: { width: SPRITE_WIDTH, height: SPRITE_HEIGHT, originX: 8, originY: SPRITE_HEIGHT - 16, icon: [0, 0, SPRITE_WIDTH, SPRITE_HEIGHT] },
   controls: { a: "Left punch", b: "Right punch" },
   decode,
   motion,
