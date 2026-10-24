@@ -601,18 +601,13 @@ impl Session {
     pub fn branch_with_service(
         &mut self,
         snapshot: SnapId,
+        seed: u64,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
         coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        let spec = service_branch_spec(
-            self.config.seed,
-            config,
-            payloads,
-            effects,
-            coverage_schedule,
-        )?;
+        let spec = service_branch_spec(seed, config, payloads, effects, coverage_schedule)?;
         self.branch_input(snapshot, &spec)
     }
 

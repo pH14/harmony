@@ -301,6 +301,7 @@ mod platform {
         let (setup, _) = session.setup_handle();
         session.branch_with_service(
             setup,
+            SessionConfig::default().seed,
             ServiceConfig {
                 local_services: Vec::new(),
                 identity: SERVICE_IDENTITY.to_vec(),

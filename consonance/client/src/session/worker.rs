@@ -165,6 +165,7 @@ pub trait SearchSession: std::fmt::Debug {
     fn branch_with_service(
         &mut self,
         snapshot: SnapId,
+        seed: u64,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
@@ -304,12 +305,21 @@ impl SearchSession for Session {
     fn branch_with_service(
         &mut self,
         snapshot: SnapId,
+        seed: u64,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
         coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        Session::branch_with_service(self, snapshot, config, payloads, effects, coverage_schedule)
+        Session::branch_with_service(
+            self,
+            snapshot,
+            seed,
+            config,
+            payloads,
+            effects,
+            coverage_schedule,
+        )
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
@@ -1203,7 +1213,6 @@ pub struct WorkerSession {
     owner: Option<Box<dyn crate::writer_lifetime::ExitOwner>>,
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
     setup: (SnapId, u64),
-    seed: u64,
     failed: Cell<bool>,
     counters: RefCell<Vec<(String, u64)>>,
     telemetry_queries: Cell<u64>,
@@ -1283,7 +1292,6 @@ impl WorkerSession {
             owner,
             loaded_image_guard,
             setup: (SnapId(0), 0),
-            seed: config.seed,
             failed: Cell::new(false),
             counters: RefCell::default(),
             exchanging: Cell::new(false),
@@ -1903,12 +1911,13 @@ impl SearchSession for WorkerSession {
     fn branch_with_service(
         &mut self,
         snapshot: SnapId,
+        seed: u64,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
         coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        let spec = service_branch_spec(self.seed, config, payloads, effects, coverage_schedule)?;
+        let spec = service_branch_spec(seed, config, payloads, effects, coverage_schedule)?;
         self.call_unit(
             Out::measured(BRANCH, &self.copies)
                 .u64(snapshot.0)
@@ -2633,6 +2642,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             _: SnapId,
+            _: u64,
             _: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, Effect)>,
@@ -4078,6 +4088,7 @@ mod tests {
         legacy
             .branch_with_service(
                 SnapId(1),
+                7,
                 ServiceConfig::default(),
                 Vec::new(),
                 Vec::new(),
@@ -4867,6 +4878,7 @@ mod tests {
         session
             .branch_with_service(
                 SnapId(1),
+                0,
                 ServiceConfig::default(),
                 Vec::new(),
                 Vec::new(),
@@ -5041,7 +5053,6 @@ mod tests {
                 owner: Some(Box::new(server.clone())),
                 retained_export: RefCell::new(Vec::new()),
                 setup: (SnapId(1), 10),
-                seed: 0,
                 counters: RefCell::new(Vec::new()),
                 exchanging: Cell::new(false),
                 copies: Arc::default(),
@@ -6213,7 +6224,6 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
             })),
             loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             setup: (SnapId(0), 0),
-            seed: 0,
             failed: Cell::new(false),
             counters: RefCell::new(Vec::new()),
             telemetry_queries: Cell::new(0),

@@ -146,7 +146,6 @@ pub struct UmlSession {
     profile: Option<VerifiedProfile>,
     launch: Launch,
     host: uml::HostIdentity,
-    seed: u64,
     root_identity: [u8; 32],
     cache_domain: [u8; 32],
     progress_limit: Duration,
@@ -285,7 +284,6 @@ impl UmlSession {
             profile: Some(profile),
             launch,
             host,
-            seed: config.seed,
             root_identity,
             cache_domain: [0; 32],
             progress_limit: config.progress_limit,
@@ -853,6 +851,7 @@ impl SearchSession for UmlSession {
     fn branch_with_service(
         &mut self,
         snapshot: SnapId,
+        seed: u64,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
@@ -871,7 +870,6 @@ impl SearchSession for UmlSession {
         self.verify_live_service_fingerprint(Some(&before))?;
         let handler = prepared?;
         self.restore(snapshot)?;
-        let seed = self.seed;
         self.live()?
             .branch(seed, handler, payloads, coverage_schedule)
             .map_err(|error| self.abandon(error))?;
@@ -1001,7 +999,6 @@ mod tests {
             profile: None,
             launch: Launch::new(PathBuf::new()),
             host: host(),
-            seed: 7,
             root_identity: [7; 32],
             cache_domain: [9; 32],
             progress_limit: Duration::ZERO,
@@ -1501,6 +1498,7 @@ mod tests {
         session
             .branch_with_service(
                 SnapId(1),
+                0,
                 ServiceConfig::default(),
                 Vec::new(),
                 Vec::new(),
@@ -1513,6 +1511,7 @@ mod tests {
         let error = session
             .branch_with_service(
                 SnapId(1),
+                0,
                 ServiceConfig::default(),
                 vec![vec![0; environment::channel::MAX_CHANNEL_BYTES + 1]],
                 Vec::new(),
@@ -1689,6 +1688,7 @@ mod tests {
                 });
                 session.branch_with_service(
                     SnapId(1),
+                    0,
                     ServiceConfig {
                         local_services: Vec::new(),
                         identity: b"aliased-uml-handler".to_vec(),

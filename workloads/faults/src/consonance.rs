@@ -933,6 +933,7 @@ impl FaultTarget {
             live.session
                 .branch_with_service(
                     snapshot,
+                    SEED,
                     service,
                     Vec::new(),
                     Vec::new(),
@@ -2304,6 +2305,7 @@ impl Live {
         self.cursor.invalidate();
         let result = self.session.branch_with_service(
             parent.snap,
+            SEED,
             config,
             Vec::new(),
             Vec::new(),
@@ -2940,6 +2942,7 @@ mod tests {
         fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
             self.branch_with_service(
                 parent,
+                input.seed(),
                 input.config().clone(),
                 input.payloads().unwrap_or_default().to_vec(),
                 Vec::new(),
@@ -3273,6 +3276,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             snapshot: SnapId,
+            _: u64,
             config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
@@ -3716,6 +3720,7 @@ mod tests {
         fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
             self.branch_with_service(
                 parent,
+                input.seed(),
                 input.config().clone(),
                 Vec::new(),
                 Vec::new(),
@@ -3836,6 +3841,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             _: SnapId,
+            _: u64,
             config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
