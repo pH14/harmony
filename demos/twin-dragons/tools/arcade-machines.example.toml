@@ -6,14 +6,36 @@
 roms = "~/arcade-roms"
 
 # One table per machine. `ssh` is any destination `ssh` accepts, such as a
-# Host alias from ~/.ssh/config. The machine needs Linux with systemd, Rust,
-# git, curl and a C++ compiler. `dir` holds the source, builds, ROMs and runs.
-# `workers` and `memory_mib` are the largest values the page offers. `runs`
+# Host alias from ~/.ssh/config. The machine needs Linux with systemd, the
+# repository-pinned Rust toolchain through rustup, git, curl, a C++ compiler,
+# make, patch, flock and sha256sum. The SSH account must be able to start
+# systemd user units (or system units as root) and write to `dir`.
+# `dir` holds the source, builds, ROMs and runs.
+# `workers` and `memory_mib` are the worker and archive ceilings the page offers.
+# `memory_max_mib` is the required whole-unit RAM ceiling, greater than the
+# archive ceiling, with swap disabled. Each simultaneous run gets this ceiling;
+# size aggregate runs plus host services within actual host RAM. `runs`
 # lists directories that hold other `nes-eval` campaigns; the page lists every
-# running campaign under them so it can be watched.
+# running campaign under them so it can be watched. Set workers = 128 to offer
+# that choice; select 128 in the dialog to use it. All games use window = 4
+# per worker with the established rollout campaign runner. The whole-unit ceiling
+# includes workers, pending reservations/results, stream/live buffers and transients;
+# no universal archive-to-overhead formula is assumed.
+# This config sets limits, not a throughput or resource-adequacy guarantee.
 [machines.example]
 ssh = "builder.example.com"
 dir = "/srv/harmony-arcade"
 workers = 8
 memory_mib = 16384
+memory_max_mib = 24576
 runs = ["/srv/campaigns"]
+
+# A machine with `local = true` runs `nes-eval` on the computer that runs the
+# launcher, with no SSH or systemd. `dir` holds the build output and runs.
+# `workers` and `memory_mib` are the ceilings the page offers; `memory_max_mib`
+# is not used. The launcher builds the core and `nes-eval` from this working tree.
+# [machines.this-mac]
+# local = true
+# dir = "~/harmony-arcade"
+# workers = 8
+# memory_mib = 16384

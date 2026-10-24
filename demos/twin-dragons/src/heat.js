@@ -15,6 +15,7 @@ export class Heatmap {
     this.runningSince = 0;
     this.work = 0;
     this.peaks = null;
+    this.pins = new Map();
   }
   clock(now) {
     return (
@@ -41,24 +42,61 @@ export class Heatmap {
         visits: 0,
         ids: [],
         routes: new Map(),
+        nextRoute: 0,
       };
       this.cells.set(key, cell);
     }
     if (point.retained !== null && !cell.ids.includes(point.retained)) {
       if (!cell.routes.has(point.retained))
-        cell.routes.set(point.retained, cell.routes.size + 1);
+        cell.routes.set(point.retained, ++cell.nextRoute);
       cell.ids.unshift(point.retained);
       cell.ids = cell.ids.slice(0, 12);
+      this.trimRoutes(cell);
     }
     return cell;
   }
-  forget(ids) {
+  trimRoutes(cell) {
+    const keep = new Set(cell.ids);
+    for (const pin of this.pins.values()) if (pin.cell === cell) keep.add(pin.id);
+    for (const id of cell.routes.keys()) if (!keep.has(id)) cell.routes.delete(id);
+  }
+  setPin(kind, cell, id, request, ordinal) {
+    if (cell && this.cells.get(cell.key) !== cell) return;
+    if (cell && Number.isSafeInteger(ordinal) && ordinal >= 1 && ordinal <= cell.nextRoute)
+      cell.routes.set(id, ordinal);
+    const previous = this.pins.get(kind);
+    if (cell?.routes.has(id)) this.pins.set(kind, { cell, id, request });
+    else this.pins.delete(kind);
+    if (previous) this.trimRoutes(previous.cell);
+    if (cell) this.trimRoutes(cell);
+  }
+  select(cell, id, ordinal) {
+    this.setPin("selected", cell, id, undefined, ordinal);
+  }
+  pending(cell, id, request, ordinal) {
+    this.setPin("pending", cell, id, request, ordinal);
+  }
+  releasePending(request) {
+    const pin = this.pins.get("pending");
+    if (pin && (request === undefined || request === pin.request))
+      this.setPin("pending", null);
+  }
+  clearPins() {
+    const cells = [...this.pins.values()].map((pin) => pin.cell);
+    this.pins.clear();
+    for (const cell of cells) this.trimRoutes(cell);
+  }
+  forget(ids, request) {
     const gone = new Set(ids), replacements = new Map();
+    const pending = this.pins.get("pending");
+    if (pending && pending.request === request && gone.has(pending.id))
+      this.releasePending(request);
     for (const cell of this.cells.values()) {
       const dropped = cell.ids.filter((id) => gone.has(id));
       if (!dropped.length) continue;
       cell.ids = cell.ids.filter((id) => !gone.has(id));
       for (const id of dropped) replacements.set(id, cell.ids[0] ?? null);
+      this.trimRoutes(cell);
     }
     return replacements;
   }

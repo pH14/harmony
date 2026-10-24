@@ -602,6 +602,11 @@ impl Mm2Snapshot {
     }
 
     #[must_use]
+    pub fn frame_count(&self) -> u64 {
+        self.observation.frame_count
+    }
+
+    #[must_use]
     pub fn emulator_state(&self) -> &[u8] {
         &self.emulator_state
     }

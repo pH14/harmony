@@ -315,13 +315,24 @@ directory. To watch from another machine, forward the port over SSH, for
 example `ssh -L 8790:127.0.0.1:PORT HOST`, or use the arcade launcher in
 [`demos/twin-dragons`](../../demos/twin-dragons/README.md#native-runs).
 
-The view costs nothing per job while no viewer is connected: workers skip the
-trail and per-action records, and the coordinator turns off admission records.
-Six paired one-worker runs of Famidash and Twin Dragons at 30,000 executions
-differed by 0.2% on average, within run-to-run noise. A connected viewer turns
-the records back on. A viewer that connects first gets a sample of the archive,
-up to 1,000 states with the newest 250 among them, decoded from their
-snapshots, so a long run shows where it has reached without keeping a history.
+Without a connected viewer, workers skip motion trails and detailed observation
+records. With viewers, the service bounds detailed trails per 100 ms tick and
+retains level-completion points even when transport sampling omits the trail.
+Archive sampling selects a bounded set of states without scanning the whole
+archive, and decodes one selected state at a time. These are observation limits;
+they do not change search selection, admission order or retained search state.
+
+Completion sends retained progress before the terminal event, including to a
+late viewer, and drains active event streams for a bounded interval. State
+lookups racing shutdown receive explicit missing-state replies instead of
+waiting on a coordinator that has exited. Root and lookup states retain their
+actual archived identity, replay input and game-frame count.
+
+The viewing browser renders the event stream and records the same camera and
+mini-map to 1920×1080 video at display cadence. Encoding runs on the viewing
+machine; the native server needs no display or video encoder. Recording controls,
+file streaming limits and qualification checks are documented in the
+[arcade README](../../demos/twin-dragons/README.md#record-the-search-view).
 
 A request with `live` set to a loopback address such as `127.0.0.1:8790` runs
 the arcade game from genesis with its own draw mixture and a `Traced` core, as

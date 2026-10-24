@@ -37,6 +37,16 @@ pub trait ArcadeGame:
         machines: Machines<Self::Machine>,
     ) -> Self;
 
+    fn arcade_from(
+        rom: &[u8],
+        identity: &str,
+        identity_sha256: &str,
+        machines: Machines<Self::Machine>,
+        _level: u8,
+    ) -> Self {
+        Self::arcade(rom, identity, identity_sha256, machines)
+    }
+
     fn run() -> Self::Run;
 
     fn mixture() -> DrawMixture;
@@ -54,6 +64,8 @@ pub trait ArcadeGame:
     fn cleared(observation: &Self::Observations) -> u8;
 
     fn emulator_state(snapshot: &Self::Snapshot) -> &[u8];
+
+    fn snapshot_frame_count(snapshot: &Self::Snapshot) -> u64;
 
     fn probe() -> trail::Probe {
         trail::Probe {

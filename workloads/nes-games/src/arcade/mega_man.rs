@@ -230,6 +230,10 @@ impl<M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for Mm2Game<M> {
         cleared(observation.decoded)
     }
 
+    fn snapshot_frame_count(snapshot: &Mm2Snapshot) -> u64 {
+        snapshot.frame_count()
+    }
+
     fn emulator_state(snapshot: &Mm2Snapshot) -> &[u8] {
         snapshot.emulator_state()
     }

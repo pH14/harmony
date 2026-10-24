@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resumeFollowing, resetRetreat, trackingGoal } from "../src/camera.js";
+import { resumeFollowing, resetRetreat, trackingGoal, followView } from "../src/camera.js";
 
 test("following a selected level clears the previous camera's interaction holds", () => {
   const camera = { follow: false, manual: 10000, held: 3000, only: 1,
@@ -49,4 +49,63 @@ test("rooms off screen cannot retain retreat evidence between visits", () => {
   assert.equal(second.behind, 200);
   resetRetreat(camera, 0);
   assert.equal(second.behind, 0);
+});
+
+function cornerMotion(before, after, panel, viewport) {
+  const fit = Math.min(viewport.width / panel.width, viewport.height / panel.height);
+  const oldScale = fit * before.zoom, scale = fit * after.zoom;
+  return Math.max(...[-0.5, 0.5].flatMap(x => [-0.5, 0.5].map(y => {
+    const worldX = before.x + x * viewport.width / oldScale;
+    const worldY = before.y + y * viewport.height / oldScale;
+    return Math.hypot(((worldX - after.x) * scale - x * viewport.width) / viewport.width,
+      ((worldY - after.y) * scale - y * viewport.height) / viewport.height);
+  })));
+}
+
+test("rapid frontiers and retreats bound the complete viewport transform at60 and120Hz", () => {
+  const cases = [
+    { panel: { x: 0, y: 0, width: 14283, height: 305 }, viewport: { width: 1280, height: 320 }, zoom: 16 },
+    { panel: { x: 50, y: 100, width: 768, height: 6000 }, viewport: { width: 432, height: 900 }, zoom: 8 },
+    { panel: { x: 100, y: 200, width: 5000, height: 4000 }, viewport: { width: 960, height: 720 }, zoom: 6 },
+  ];
+  for (const { panel, viewport, zoom } of cases) for (const hz of [60, 120]) {
+    let view = { x: panel.x + panel.width * 0.1, y: panel.y + panel.height * 0.1, zoom };
+    for (let i = 0; i < hz * 4; i++) {
+      const side = i < hz * 2 ? 0.9 : 0.1;
+      const next = followView(view, { x: panel.x + panel.width * side, y: panel.y + panel.height * side }, panel, viewport, zoom, 1 / hz);
+      assert.ok(cornerMotion(view, next, panel, viewport) <= 2 / hz + 1e-12,
+        "Previously visible landmarks include zoom motion in their speed bound");
+      assert.ok(Object.values(next).every(Number.isFinite));
+      assert.ok(next.zoom >= 1 && next.zoom <= zoom);
+      assert.ok(next.x >= panel.x && next.x <= panel.x + panel.width);
+      assert.ok(next.y >= panel.y && next.y <= panel.y + panel.height);
+      view = next;
+    }
+  }
+});
+
+test("a distant frontier becomes visible before close-up following settles", () => {
+  const panel = { x: 0, y: 0, width: 14283, height: 305 }, viewport = { width: 1280, height: 320 };
+  const point = { x: 12000, y: 193 }, zoom = 16;
+  for (const hz of [60, 120]) {
+    let view = { x: 600, y: 193, zoom }, seen = false;
+    for (let i = 0; i < hz * 12; i++) {
+      view = followView(view, point, panel, viewport, zoom, 1 / hz);
+      const scale = Math.min(viewport.width / panel.width, viewport.height / panel.height) * view.zoom;
+      if (i < hz * 2 && Math.abs(point.x - view.x) * scale <= viewport.width / 2 &&
+          Math.abs(point.y - view.y) * scale <= viewport.height / 2) seen = true;
+    }
+    assert.ok(seen, "Widening keeps the new work visible instead of chasing it through an empty close-up");
+    assert.ok(Math.abs(view.x - point.x) < 0.1);
+    assert.ok(Math.abs(view.zoom - zoom) < 0.01);
+    assert.deepEqual(followView(view, point, panel, viewport, zoom, 0), view);
+  }
+});
+
+test("a fixed-zoom follow keeps the zoom and closes on a far point", () => {
+  const panel = { x: 0, y: 0, width: 15000, height: 480 }, viewport = { width: 1280, height: 320 };
+  let view = { x: 1000, y: 240, zoom: 14 };
+  for (let i = 0; i < 60; i++) view = followView(view, { x: 9000, y: 240 }, panel, viewport, 14, 1 / 60, true);
+  assert.ok(Math.abs(view.zoom - 14) < 1e-9);
+  assert.ok(view.x > 5000);
 });
