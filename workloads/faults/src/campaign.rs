@@ -1640,6 +1640,7 @@ mod tests {
                 execution_work: 1,
                 result_sha256: "result".to_owned(),
                 decisions: Vec::new(),
+                retained_keys: Vec::new(),
                 mixture_weight: 0,
                 splice_weight: 0,
                 splice: None,
