@@ -362,7 +362,7 @@ read and write timeouts, and the server holds at most 64 connections. Open
 `http://127.0.0.1:8790/?game=GAME&live` to watch. The page ids are
 `super-mario-bros`, `mega-man-2`, `metroid`, `castlevania`, `twin-dragons` and the five
 Famidash groups `famidash`, `famidash-community`, `famidash-b`, `famidash-c` and
-`famidash-d`; a Famidash campaign reports the group that holds its stage.
+`famidash-d`; `punch-out` is the Punch-Out!! page; a Famidash campaign reports the group that holds its stage.
 
 ## Product CLI adapter
 
