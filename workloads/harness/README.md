@@ -302,6 +302,17 @@ dropped a late delivery, and the read starts a new consumer after the last
 sequence it has. A node that misses acknowledged messages shows up as
 `log: every node's read includes every acknowledged append` with its name.
 
+Node logs are `/tmp/nats/<node>.log`. The bundle declares them with `log`
+lines and the node stores with `disk` lines, so `harmony explain` compares
+both without `--log` or `--data`. The check prints its result as JSON on
+stdout, so it also serves as the explain history command. An empty
+`ANTITHESIS_OUTPUT_DIR` keeps that extra check out of the assertion stream:
+
+```toml
+[workload.options.explain]
+history = "ANTITHESIS_OUTPUT_DIR= /opt/harmony/nats-harness check"
+```
+
 The image builds `nats-server` from pinned source through the Antithesis Go
 instrumentation like the
 [etcd case](../bugs/historical/etcd-3.5-inconsistency/image/README.md). The
@@ -320,12 +331,21 @@ podman build --format docker --platform=linux/amd64 \
 
 Podman needs `--format docker`; the OCI format ignores `SHELL`.
 
+Each node's store directory is a 128 MiB node disk (`disk` lines in the
+bundle), so `PowerLoss` and `PowerLossAll` drop the writes the node had not
+flushed ([node disks](../../consonance/harmony-linux/supervisor/README.md#node-disks)).
+JetStream syncs its files every two minutes by default, so an append it
+acknowledged can be lost to a power cut on every replica. Build with
+`--build-arg NATS_SYNC=always` to add a server config with
+`jetstream { sync_interval: always }`, which syncs every write before the
+acknowledgement. `native.py` ignores `disk` lines.
+
 ## NATS key-value
 
 `targets/nats-kv` drives the `register` family against bucket `B` (three file
-replicas, history 1) on the same three nodes, scripts and network hooks as
-`targets/nats`. `write` is `Put`, `read` is `Get` and `cas` is `Update` with a
-revision. NATS ADR-8 states that key-value gets use direct get, which any
+replicas, history 1) on the same three nodes, scripts, network hooks, 128 MiB
+node disks and log lines as `targets/nats`. `write` is `Put`, `read` is `Get`
+and `cas` is `Update` with a revision. NATS ADR-8 states that key-value gets use direct get, which any
 replica answers, with no read-after-write consistency. ADR-31 states that the
 non-direct message get routes to the stream leader and gives read-after-write
 coherency. `ready` therefore turns `AllowDirect` off on stream `KV_B`, and the
@@ -357,6 +377,9 @@ namespaces, with HTTP ports 4001, 4003 and 4005, Raft ports 4002, 4004 and
 4006 and data under `/tmp/rqlite/<node>`. The setup script forwards the HTTP
 ports on 127.0.0.1 to the nodes, and the adapter dials 127.0.0.1. `ready`
 creates the tables through the first node that accepts the statements.
+Each node's data directory is a 256 MiB node disk in both bundles, so the
+search draws power-loss and disk faults for every node. Both bundles declare
+the node logs `/tmp/rqlite/<node>.log` with `log` lines.
 
 The default `bundle` drives the `register` family on table `kv`. `write` is an
 upsert, `cas` is an `UPDATE` that matches the old value and fails definitely
@@ -394,7 +417,10 @@ client library retries a request. The default `bundle` runs three members at
 10.77.0.1-3 (client port 2379, peer port 2380) in `harness-net` namespaces
 with the four network hooks. `bundle-single` sets `HARNESS_ETCD_MEMBERS=1` and
 runs one member on 127.0.0.1 without `harness-net`, which needs two nodes.
-Data lives under `/tmp/etcd/<member>`. Members use etcd's default flags.
+Data lives under `/tmp/etcd/<member>` and logs in `/tmp/etcd/<member>.log`,
+which both bundles declare with `log` lines. `bundle-single` also makes the
+member's data directory a 256 MiB node disk: etcd preallocates a 64 MiB WAL
+file. Members use etcd's default flags.
 
 `write` is a put, `read` is a range on one key with etcd's default
 linearizable consistency, and `cas` is a transaction that compares the value
