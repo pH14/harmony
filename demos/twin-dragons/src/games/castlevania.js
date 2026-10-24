@@ -25,14 +25,19 @@ const MODE = 0x18,
   HUD_ROWS = 40,
   MAP_HEIGHT = IMAGE_HEIGHT - HUD_ROWS,
   CROP_TOP = 8,
-  SPRITE_SIZE = 32;
+  SPRITE_SIZE = 32,
+  FACING = 0x15,
+  FACING_RIGHT = 1,
+  TURN_FRAMES = 20,
+  STILL_POSE_FRAMES = 2;
 
 const MAP_CAPACITY = 4096,
   MAX_FRAMES = 8000,
   STILL_FRAMES = 240,
   BLOCKED_FRAMES = 24,
   NUDGE = 8,
-  RIGHT = 0x80;
+  RIGHT = 0x80,
+  LEFT = 0x40;
 
 // Stage map widths in image pixels, measured by walking each stage once.
 export const MAP_WIDTHS = [1536, 512, 768, 256, 256, 256, 256, 768, 1536, 1015, 1536, 408, 512, 256, 256, 256, 256, 256];
@@ -137,29 +142,37 @@ export function buildMap(engine, level) {
 export function buildSprites(engine) {
   boot(engine, 0);
   const ram = engine.ramView(),
-    start = engine.capture();
-  engine.run(0, 2, true);
-  const shown = engine.pixels().data,
-    sx = position(ram) - scrollOf(position(ram), ram[SCROLL]),
-    sy = ram[SIMON_Y] - CROP_TOP;
-  engine.restore(start);
-  for (let frame = 0; frame < 2; frame++) {
-    hideSprites(ram);
-    engine.run(0, 1, true);
-  }
-  const hidden = engine.pixels().data,
+    start = engine.capture(),
     size = SPRITE_SIZE,
     sheet = new Uint8ClampedArray(size * size * 2 * 4);
-  for (let y = 0; y < size; y++)
-    for (let x = 0; x < size; x++) {
-      const px = sx - size / 2 + x,
-        py = sy - size / 2 + y;
-      if (px < 0 || px >= SCREEN_WIDTH || py < 0 || py >= IMAGE_HEIGHT) continue;
-      const s = (py * SCREEN_WIDTH + px) * 4;
-      if (shown[s] === hidden[s] && shown[s + 1] === hidden[s + 1] && shown[s + 2] === hidden[s + 2]) continue;
-      sheet.set(shown.subarray(s, s + 4), (y * size + x) * 4);
-      sheet.set(shown.subarray(s, s + 4), ((size + y) * size + size - 1 - x) * 4);
+  const pose = (buttons, hide) => {
+    engine.restore(start);
+    for (let frame = 0; frame < TURN_FRAMES; frame++) {
+      if (hide) hideSprites(ram);
+      engine.run(buttons, 1, true);
     }
+    for (let frame = 0; frame < STILL_POSE_FRAMES; frame++) {
+      if (hide) hideSprites(ram);
+      engine.run(0, 1, true);
+    }
+    return engine.pixels().data;
+  };
+  for (const buttons of [RIGHT, LEFT]) {
+    const shown = pose(buttons, false),
+      sx = position(ram) - scrollOf(position(ram), ram[SCROLL]),
+      sy = ram[SIMON_Y] - CROP_TOP,
+      hidden = pose(buttons, true),
+      half = ram[FACING] & FACING_RIGHT ? 0 : 1;
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) {
+        const px = sx - size / 2 + x,
+          py = sy - size / 2 + y;
+        if (px < 0 || px >= SCREEN_WIDTH || py < 0 || py >= IMAGE_HEIGHT) continue;
+        const s = (py * SCREEN_WIDTH + px) * 4;
+        if (shown[s] === hidden[s] && shown[s + 1] === hidden[s + 1] && shown[s + 2] === hidden[s + 2]) continue;
+        sheet.set(shown.subarray(s, s + 4), (half * size * size + y * size + x) * 4);
+      }
+  }
   engine.restore(start);
   return { width: size, height: size * 2, data: sheet };
 }
