@@ -637,6 +637,8 @@ pub struct SdkCapture {
     pub assertions: Assertions,
     pub setup_complete: bool,
     pub completed_check: Option<CompletedCheck>,
+    #[serde(default)]
+    pub undecided_keys: u64,
     pub parks: Vec<ParkLanding>,
     pub park_reads: Vec<ParkRead>,
 }
@@ -661,8 +663,6 @@ pub struct CompletedCheck {
     pub start_generation: u64,
     pub end_generation: u64,
     pub points: Vec<String>,
-    #[serde(default)]
-    pub undecided_keys: u64,
 }
 
 impl SdkCapture {
@@ -674,6 +674,7 @@ impl SdkCapture {
     ) {
         let register = |id: u32| self.registers.get(&id).copied().unwrap_or_default();
         let pid = register(reg::COMPLETED_CHECK_PID);
+        self.undecided_keys = check_undecided.get(&pid).copied().unwrap_or_default();
         let Some(points) = check_passes.get(&pid).filter(|points| !points.is_empty()) else {
             return;
         };
@@ -682,7 +683,6 @@ impl SdkCapture {
             start_generation: register(reg::COMPLETED_CHECK_START_GENERATION),
             end_generation: register(reg::COMPLETED_CHECK_END_GENERATION),
             points: points.iter().cloned().collect(),
-            undecided_keys: check_undecided.get(&pid).copied().unwrap_or_default(),
         });
     }
 
@@ -1147,7 +1147,7 @@ impl FaultObservations {
                     start_generation: completed.start_generation,
                     end_generation: completed.end_generation,
                     points: completed.points,
-                    undecided_keys: completed.undecided_keys,
+                    undecided_keys: capture.undecided_keys,
                     pending_faults: value(reg::PENDING_FAULTS),
                 }
             }),
@@ -2207,6 +2207,27 @@ mod tests {
         events.extend(completion(40, 2, 1));
         let next = check(&events);
         assert_eq!((next.run, next.undecided_keys), (2, 0));
+    }
+
+    #[test]
+    fn a_fully_undecided_check_still_reports_its_undecided_keys() {
+        let mut events = vec![
+            state_event(reg::CHECK_ENABLED, STATE_SET, 1),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+            json_pass(40, "checked"),
+        ];
+        events.extend(completion(40, 1, 1));
+        events.extend([
+            state_event(reg::CHECKS_STARTED, STATE_SET, 2),
+            json_undecided(40, 3),
+        ]);
+        events.extend(completion(40, 2, 2));
+        let capture = decode_sdk_events(&events).unwrap();
+        assert_eq!(capture, decode_sdk_events_reference(&events).unwrap());
+        let check = FaultObservations::new(1, &capture, FaultStop::Deadline)
+            .check
+            .unwrap();
+        assert_eq!((check.run, check.undecided_keys), (1, 3));
     }
 
     #[test]
