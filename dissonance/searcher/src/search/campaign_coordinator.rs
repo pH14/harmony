@@ -358,8 +358,10 @@ where
                 .archive
                 .index_of_id(job.pending.parent_id)
                 .ok_or("search checkpoint in-flight job names a missing parent entry")?;
-            let (_, expected_replay, expected_certificates) =
-                coordinator.core.archive.job_origin(parent_index)?;
+            let (expected_replay, expected_certificates) = coordinator
+                .core
+                .archive
+                .pinned_job_replay(parent_index, job.pending.snapshot_id)?;
             if job.spec.replay != expected_replay
                 || job.spec.replay_certificates != expected_certificates
             {
