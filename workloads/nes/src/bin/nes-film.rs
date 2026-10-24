@@ -13,6 +13,7 @@ use nes_workload::{
         levels::{Side, Stage},
     },
     film::{Capture, FilmMetadata, Filmable, Reel},
+    punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::archive::Input,
     stb::{
         campaign::{StbCampaignRun, StbGame},
@@ -272,6 +273,17 @@ fn main() -> Result<()> {
                 identity,
             )
         }
+        "punchout" => {
+            if args.ai.is_some() {
+                return Err("Punch-Out!! takes no ai option".into());
+            }
+            produce(
+                PunchOutGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                PunchOutCampaignRun,
+                &args,
+                identity,
+            )
+        }
         "famidash" => {
             if args.ai.is_some() {
                 return Err("Famidash takes no ai option".into());
@@ -292,7 +304,9 @@ fn main() -> Result<()> {
                 identity,
             )
         }
-        _ => Err("nes-film renders the STB, Twin Dragons and Famidash scenarios".into()),
+        _ => {
+            Err("nes-film renders the STB, Twin Dragons, Famidash and Punch-Out!! scenarios".into())
+        }
     }
 }
 

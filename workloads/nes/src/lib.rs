@@ -10,6 +10,7 @@ pub mod film;
 #[cfg(unix)]
 pub mod live;
 pub mod prepare;
+pub mod punchout;
 pub mod smb;
 pub mod witness;
 

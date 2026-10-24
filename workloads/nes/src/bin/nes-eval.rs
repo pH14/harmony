@@ -16,6 +16,7 @@ use nes_workload::{
         campaign::{Mm2CampaignRun, Mm2Game},
         target::{Mm2Input, Mm2Stage},
     },
+    punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::campaign::TargetExecution,
     smb::campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
     stb::{
@@ -101,6 +102,9 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "famidash-b" => evaluate_live::<LiveFamidash<2>>(rom, request, out, started, "famidash-b"),
         "famidash-c" => evaluate_live::<LiveFamidash<3>>(rom, request, out, started, "famidash-c"),
         "famidash-d" => evaluate_live::<LiveFamidash<4>>(rom, request, out, started, "famidash-d"),
+        "punchout" => evaluate_live::<nes_games::punchout::campaign::PunchOutGame<NativeMachine>>(
+            rom, request, out, started, "punchout",
+        ),
         "twin-dragons" => evaluate_live::<
             nes_games::twin_dragons::campaign::TwinDragonsGame<NativeMachine>,
         >(rom, request, out, started, "twin-dragons"),
@@ -159,7 +163,7 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons"
+            "twin-dragons" | "punchout"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -268,6 +272,17 @@ fn main() -> Result<()> {
                 started,
                 "twin-dragons",
                 <TwinDragonsGame>::memory_view,
+            ),
+            "punchout" => evaluate_watching(
+                PunchOutGame::new(&rom, p, h, &execution_sha256),
+                PunchOutCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "punchout",
+                <PunchOutGame>::memory_view,
             ),
             "famidash" => {
                 let stage = famidash_stage(&rom, request.stage, request.whole_game)?;
