@@ -37,7 +37,7 @@ pub struct View {
 const CARTRIDGE_BYTES: usize = 0x2000;
 const SCREEN_WIDTH: i32 = 256;
 const SCREEN_HEIGHT: i32 = 168;
-const PLAY_TOP: i32 = 64;
+const PLAY_TOP: i32 = 53;
 const LINK_DIRECTION: usize = 0x98;
 const FACING_LEFT: u8 = 0x02;
 
