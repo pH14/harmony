@@ -320,7 +320,17 @@ fn main() -> Result<()> {
                 <ZeldaGame>::memory_view,
             ),
             "ice-climbers" => evaluate_watching(
-                IceClimbersGame::new(&rom, p, h, &execution_sha256),
+                match root_actions::<nes_games::ice_climbers::target::IceClimbersInput>(
+                    request.root_input.as_deref(),
+                )? {
+                    Some(input) if input.actions.is_empty() => {
+                        return Err("root input carries no actions".into());
+                    }
+                    Some(input) => {
+                        IceClimbersGame::new_rooted(&rom, p, h, &execution_sha256, input.actions)
+                    }
+                    None => IceClimbersGame::new(&rom, p, h, &execution_sha256),
+                },
                 IceClimbersCampaignRun,
                 &rom,
                 &request,

@@ -40,6 +40,10 @@ const LEVEL: usize = 0x59;
 const PHASE: usize = 0x5a;
 const PLAYER_X: usize = 0x64;
 const PLAYER_Y: usize = 0x66;
+const AIRBORNE: usize = 0xe0;
+const BLOCK_ROWS: [std::ops::Range<usize>; 2] = [0x400..0x4c0, 0x500..0x5c0];
+const EMPTY_BLOCK: u8 = 0xff;
+pub const JUMP_MARGIN: u16 = 4;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct IceClimbersMechanicalState {
@@ -49,6 +53,8 @@ pub struct IceClimbersMechanicalState {
     pub x: u8,
     pub y: u8,
     pub camera: u8,
+    pub airborne: bool,
+    pub holes: u8,
 }
 
 impl IceClimbersMechanicalState {
@@ -92,7 +98,12 @@ impl IceClimbersMechanicalState {
 
     #[must_use]
     pub fn floor(self) -> u8 {
-        u8::try_from(self.altitude() / FLOOR_HEIGHT)
+        let altitude = if self.airborne && !self.bonus() {
+            self.altitude().saturating_sub(JUMP_MARGIN)
+        } else {
+            self.altitude()
+        };
+        u8::try_from(altitude / FLOOR_HEIGHT)
             .unwrap_or(u8::MAX)
             .min(FLOORS)
     }
@@ -167,10 +178,17 @@ pub struct IceClimbersTarget<M: NesBackend<Vec<u8>>> {
 }
 
 impl<M: NesBackend<Vec<u8>>> IceClimbersTarget<M> {
-    pub fn from_machine(mut machine: M) -> Result<Self, MachineError> {
+    pub fn from_machine(machine: M) -> Result<Self, MachineError> {
+        Self::with_genesis(machine, validate_genesis)
+    }
+
+    fn with_genesis(
+        mut machine: M,
+        validate: fn(IceClimbersMechanicalState) -> Result<(), MachineError>,
+    ) -> Result<Self, MachineError> {
         let wram = read_wram(&machine)?;
         let state = decode_state(&wram)?;
-        validate_genesis(state)?;
+        validate(state)?;
         let genesis = machine.snapshot()?;
         let observation = IceClimbersObservations {
             frame_count: 0,
@@ -192,9 +210,23 @@ impl<M: NesBackend<Vec<u8>>> IceClimbersTarget<M> {
         })
     }
 
-    pub fn from_power_on(mut machine: M) -> Result<Self, MachineError> {
+    pub fn from_power_on(machine: M) -> Result<Self, MachineError> {
+        Self::power_on_through(machine, &[], validate_genesis)
+    }
+
+    pub fn from_power_on_rooted(machine: M, prefix: &[ButtonChord]) -> Result<Self, MachineError> {
+        Self::power_on_through(machine, prefix, validate_rooted)
+    }
+
+    fn power_on_through(
+        mut machine: M,
+        prefix: &[ButtonChord],
+        validate: fn(IceClimbersMechanicalState) -> Result<(), MachineError>,
+    ) -> Result<Self, MachineError> {
         let power_on = machine.snapshot()?;
-        machine.branch(power_on, &nes::reproducer(&setup_tape()))?;
+        let mut tape = setup_tape();
+        tape.extend_from_slice(prefix);
+        machine.branch(power_on, &nes::reproducer(&tape))?;
         let run = machine.run(StopConditions::default(), None)?;
         if !matches!(run, machine::StopReason::Quiescent { .. }) {
             return Err(MachineError::Backend(
@@ -202,7 +234,7 @@ impl<M: NesBackend<Vec<u8>>> IceClimbersTarget<M> {
             ));
         }
         machine.drop_snapshot(power_on)?;
-        Self::from_machine(machine)
+        Self::with_genesis(machine, validate)
     }
 
     #[must_use]
@@ -380,6 +412,24 @@ impl IceClimbersTarget<QuickNesMachine> {
             core_sha256,
             execution_sha256,
         )?)
+    }
+
+    pub fn from_rom_bytes_headless_rooted_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        prefix: &[ButtonChord],
+    ) -> Result<Self, MachineError> {
+        Self::from_power_on_rooted(
+            QuickNesMachine::from_rom_bytes_with_identity(
+                rom,
+                core_path,
+                core_sha256,
+                execution_sha256,
+            )?,
+            prefix,
+        )
     }
 
     pub fn from_rom_bytes_headless(
@@ -566,6 +616,8 @@ impl<M: NesBackend<Vec<u8>>> Target for IceClimbersTarget<M> {
             | (u64::from(state.phase) << 40)
             | (u64::from(state.x) << 32)
             | (u64::from(state.y) << 24)
+            | (u64::from(state.holes) << 16)
+            | (u64::from(state.airborne) << 8)
             | u64::from(state.camera)
     }
 
@@ -668,7 +720,20 @@ pub fn decode_state(wram: &[u8]) -> Result<IceClimbersMechanicalState, MachineEr
         x: byte(wram, PLAYER_X)?,
         y: byte(wram, PLAYER_Y)?,
         camera: byte(wram, CAMERA)?,
+        airborne: byte(wram, AIRBORNE)? != 0,
+        holes: count_holes(wram)?,
     })
+}
+
+fn count_holes(wram: &[u8]) -> Result<u8, MachineError> {
+    let mut holes = 0_usize;
+    for rows in BLOCK_ROWS {
+        let window = wram.get(rows.clone()).ok_or_else(|| {
+            MachineError::Backend(format!("Ice Climbers block map {rows:?} is absent"))
+        })?;
+        holes += window.iter().filter(|&&block| block == EMPTY_BLOCK).count();
+    }
+    Ok(u8::try_from(holes).unwrap_or(u8::MAX))
 }
 
 fn read_wram<M: Machine>(machine: &M) -> Result<[u8; WRAM_SIZE], MachineError> {
@@ -692,10 +757,20 @@ fn validate_genesis(state: IceClimbersMechanicalState) -> Result<(), MachineErro
     }
 }
 
-pub const GRID_SHIFT: u8 = 5;
+fn validate_rooted(state: IceClimbersMechanicalState) -> Result<(), MachineError> {
+    if state.lives == START_LIVES && !state.terminal() && !state.in_transition() {
+        Ok(())
+    } else {
+        Err(MachineError::Backend(format!(
+            "Ice Climbers root input did not end in a live climbing state: {state:?}"
+        )))
+    }
+}
+
+pub const GRID_SHIFT: u8 = 3;
 
 #[must_use]
-pub fn boundary_fields(state: IceClimbersMechanicalState) -> [u16; 6] {
+pub fn boundary_fields(state: IceClimbersMechanicalState) -> [u16; 8] {
     [
         u16::from(state.level),
         u16::from(state.lives),
@@ -703,6 +778,8 @@ pub fn boundary_fields(state: IceClimbersMechanicalState) -> [u16; 6] {
         state.altitude() / 16,
         u16::from(state.x >> GRID_SHIFT),
         u16::from(state.floor()),
+        u16::from(state.airborne),
+        u16::from(state.holes),
     ]
 }
 
@@ -774,6 +851,40 @@ mod tests {
         wram[PLAYER_Y] = 0x31;
         let bonus = decode_state(&wram).unwrap();
         assert!(bonus.altitude() > 384 && bonus.floor() == 8);
+    }
+
+    #[test]
+    fn the_apex_of_a_jump_does_not_count_as_the_next_floor() {
+        let mut wram = start_wram();
+        wram[PLAYER_Y] = START_Y - 51;
+        assert_eq!(decode_state(&wram).unwrap().floor(), 1);
+        wram[AIRBORNE] = 1;
+        let apex = decode_state(&wram).unwrap();
+        assert!(apex.airborne);
+        assert_eq!(apex.floor(), 0);
+        wram[PLAYER_Y] = START_Y - 48 - JUMP_MARGIN as u8;
+        assert_eq!(decode_state(&wram).unwrap().floor(), 1);
+    }
+
+    #[test]
+    fn the_hole_count_is_the_empty_cells_of_the_block_map() {
+        let mut wram = start_wram();
+        assert_eq!(decode_state(&wram).unwrap().holes, 0);
+        wram[0x452] = EMPTY_BLOCK;
+        wram[0x536] = EMPTY_BLOCK;
+        wram[0x4c5] = EMPTY_BLOCK;
+        assert_eq!(decode_state(&wram).unwrap().holes, 2);
+    }
+
+    #[test]
+    fn a_root_input_must_end_alive_and_in_play() {
+        assert!(validate_rooted(decode_state(&start_wram()).unwrap()).is_ok());
+        let mut wram = start_wram();
+        wram[LIVES] = 2;
+        assert!(validate_rooted(decode_state(&wram).unwrap()).is_err());
+        let mut wram = start_wram();
+        wram[PHASE] = 0;
+        assert!(validate_rooted(decode_state(&wram).unwrap()).is_err());
     }
 
     #[test]
