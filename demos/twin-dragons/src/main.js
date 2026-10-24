@@ -473,8 +473,12 @@ const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3,
   PATH_STALL_MS = 8000,
   ROOM_DWELL_MS = 10000,
-  CAMERA_RETREAT_MS = 1500;
-const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map() };
+  CAMERA_RETREAT_MS = 1500,
+  CALM_HOLD_MS = 4000,
+  CALM_REANCHOR_MS = 20000,
+  CALM_PAN_PX_PER_S = 300,
+  CALM_PAN_SECONDS = 1.5;
+const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), calm: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
   const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
@@ -545,6 +549,28 @@ function reachedFrontier(level) {
 }
 function cameraProgress(level, point) {
   return game.grid ? game.route(level, point.x, point.y + 8) : game.vertical ? -point.y : point.x;
+}
+// Calm games keep a frontier point for a few seconds. The point moves on only to a deeper
+// frontier, or after a long hold so the camera cannot stay on a stale point forever.
+function calmGoal(room, point, now) {
+  const state = camera.calm.get(room);
+  if (!state) {
+    if (point) camera.calm.set(room, { goal: point, since: now });
+    return point;
+  }
+  if (!point) return state.goal;
+  const held = now - state.since;
+  if (held >= CALM_HOLD_MS && (cameraProgress(room, point) > cameraProgress(room, state.goal) || held >= CALM_REANCHOR_MS)) {
+    state.goal = point;
+    state.since = now;
+  }
+  return state.goal;
+}
+function calmAim(view, point, dt) {
+  const dx = point.x - view.x, dy = point.y - view.y, distance = Math.hypot(dx, dy);
+  if (!distance) return point;
+  const step = Math.min(distance * (1 - Math.exp(-dt / CALM_PAN_SECONDS)), CALM_PAN_PX_PER_S * dt);
+  return { x: view.x + (dx * step) / distance, y: view.y + (dy * step) / distance };
 }
 function steerCamera(level, c, target, zoom, zoomRate, panRate) {
   const view = roomView(level, c);
@@ -799,7 +825,7 @@ function followStalledPath(now) {
 function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
   resumeFollowing(camera);
   const introRoom = intro ? mapLevel : null;
-  Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
+  Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), calm: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
   for (const room of drivenRooms()) {
     const c = mapCanvas(room);
     if (c) steerCamera(room, c, game.grid ? game.entry(room) : { x: 0, y: maps.get(room).height }, closeUpZoom(c) * (room === introRoom ? INTRO_SCALE : 1), 1, 1);
@@ -844,7 +870,8 @@ function updateCamera(now) {
   }
   for (const room of drivenRooms()) {
     const held = camera.targets.get(room);
-    const point = trackingGoal(held, frontier(room), swarmRooms.get(room) || [], now,
+    const next = frontier(room);
+    const point = game.calmCamera ? calmGoal(room, next, now) : trackingGoal(held, next, swarmRooms.get(room) || [], now,
       (point) => cameraProgress(room, point), CAMERA_RETREAT_MS);
     if (!point || !steer) continue;
     const c = mapCanvas(room, point);
@@ -856,7 +883,8 @@ function updateCamera(now) {
     const zoom = closeUpZoom(c) * (room === camera.introRoom ? scale : 1);
     if (reducedMotion.matches) steerCamera(room, c, point, zoom, 1, 1);
     else {
-      Object.assign(view, followView(view, point, canvasPanel(c), c, zoom, dt, liveView));
+      const calm = game.calmCamera;
+      Object.assign(view, followView(view, calm ? calmAim(view, point, dt) : point, canvasPanel(c), c, zoom, dt, liveView || calm));
       roomView(room).zoom = view.zoom;
     }
   }
@@ -1806,7 +1834,8 @@ function startSearch(level = bootLevel) {
             bestStates.set(o.level, point.retained);
             if (o.level === mapLevel || first) latestBest = point.retained;
           }
-          heat.retain({ ...point, observation: project(o, map) }, now);
+          // Exact-row games draw a cell from its raw row, so the cell key uses the raw y.
+          heat.retain({ ...point, observation: game.exactCellRows ? { ...project(o, map), y: o.y } : project(o, map) }, now);
         }
         (finishes || []).forEach((index, i) => {
           const from = roomLevel(trailRoom(motion[index]));

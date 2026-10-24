@@ -7,6 +7,7 @@ import { campaignSearch, campaignWorker, coreIdentity, runCampaign } from "../sr
 import { snapshotDigest } from "../src/media.js";
 import { chromium } from "@playwright/test";
 import { TOUR_KEY } from "../src/tour.js";
+import { showOnMap } from "./map-point.mjs";
 
 const path = process.env.ZELDA_ROM || "/Users/phemberger/workspace/harmony/.arcade-local/roms/zelda.nes";
 let rom;
@@ -62,7 +63,21 @@ const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_C
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } }),
   errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
-await page.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
+await page.addInitScript((key) => {
+  localStorage.setItem(key, "seen");
+  const WorkerClass = window.Worker;
+  window.Worker = class extends WorkerClass {
+    constructor(...args) {
+      super(...args);
+      this.addEventListener("message", ({ data }) => {
+        if (data.type !== "batch") return;
+        for (const point of data.points)
+          if (point.retained !== null && !point.observation.loading && point.observation.health > 0)
+            (window.tdStates ??= []).push(point.observation);
+      });
+    }
+  };
+}, TOUR_KEY);
 await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?game=zelda&pace=0&workers=1`);
 await page.locator("#level-picker[open]").waitFor({ timeout: 30000 });
 const chooser = page.waitForEvent("filechooser");
@@ -74,4 +89,19 @@ await page.waitForFunction(() => document.documentElement.dataset.game === "zeld
 assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Nothing scrolls sideways");
 assert.deepEqual(errors, []);
 console.log("Choosing the ROM in the game picker starts a Zelda search with the overworld map.");
+
+await page.waitForFunction(() => (window.tdStates?.length ?? 0) >= 60, null, { timeout: 120000 });
+const states = await page.evaluate(() => {
+  const unique = new Map(window.tdStates.map((o) => [`${o.level}:${o.x}:${o.y}`, o]));
+  return [...unique.values()].map((o) => ({ level: o.level, x: o.x, y: o.y }));
+});
+const edge = states.find((o) => ((o.y % 32) + 32) % 32 < 8), inner = states.find((o) => ((o.y % 32) + 32) % 32 >= 16);
+for (const state of [edge, inner].filter(Boolean)) {
+  await page.evaluate(() => { document.querySelector("#inspector").dataset.empty = "unset"; });
+  const at = await showOnMap(page, state.level, state.x + 8, state.y);
+  await page.mouse.click(at.x, at.y);
+  await page.waitForFunction(() => document.querySelector("#inspector").dataset.empty !== "unset", null, { timeout: 15000 });
+  assert.equal(await page.evaluate(() => document.querySelector("#inspector").dataset.empty), "false", `Clicking the Zelda state at ${state.x},${state.y} selects its cell`);
+}
+console.log("Clicking a Zelda trail point selects the cell it sits in.");
 await browser.close();
