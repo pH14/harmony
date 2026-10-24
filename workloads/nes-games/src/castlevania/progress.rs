@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::target::{BOSSES, CastlevaniaObservations, FINAL_STAGE};
+use super::target::{BOSSES, CastlevaniaMechanicalState, CastlevaniaObservations, FINAL_STAGE};
 
 pub const NAMED_PROGRESS_FORMAT: &str = "castlevania-named-progress-v3";
 const SECTION_MARK: &str = "_section_";
@@ -44,6 +44,14 @@ pub fn route_milestones() -> Vec<String> {
     }
     names.push("ending".to_owned());
     names
+}
+
+#[must_use]
+pub fn stages_cleared(state: CastlevaniaMechanicalState) -> u8 {
+    if state.victory() {
+        return FINAL_STAGE;
+    }
+    state.stage.min(FINAL_STAGE).saturating_sub(1) + u8::from(state.boss_down())
 }
 
 #[must_use]

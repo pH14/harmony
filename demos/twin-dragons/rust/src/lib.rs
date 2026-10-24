@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 mod campaign;
+mod castlevania;
 mod famidash;
 mod mega_man;
 mod metroid;

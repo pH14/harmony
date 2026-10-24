@@ -585,7 +585,7 @@ its `*_observation` export and searches with its `nes-games` workload through
 `ended`, `motion`, `levelComplete` and `transition`, and `tests/tobu.mjs` checks
 that its JavaScript and Rust decoders agree. `maxActionFrames` and
 `menuButtons` bound the controller actions an imported history may hold;
-Mega Man 2, Metroid and Tobu Tobu Girl allow Start and Select.
+Mega Man 2, Metroid, Castlevania and Tobu Tobu Girl allow Start and Select.
 
 ### Tobu Tobu Girl Deluxe
 
@@ -894,6 +894,33 @@ a phone, and the strip beside the view draws a reduced copy.
 exactly, and branches from a played history that pauses and resumes with
 Start. It reads the ROM from `METROID_ROM` or `~/workspace/roms/Metroid (USA).nes` and
 skips when it is absent.
+
+### Castlevania
+
+The site ships nothing from Castlevania. The level selector accepts the ROM with
+SHA-256 `5e859d77…7800` and 131,088 bytes, and the page keeps it in IndexedDB as
+for the other ROM games. The 18 levels are the numbered stages. Stage 1 starts
+after the courtyard, which the game loads first.
+
+The search is the `CastlevaniaGame` workload from `nes-games`, as `nes-eval`
+runs it. `workloads/nes/src/castlevania/README.md` describes its RAM map and
+milestones. `rust/src/castlevania.rs` decodes the page's observation, and
+`arcade/castlevania.rs` gives the picker and trail their stage and position.
+
+The map builder loads each stage by writing its stage number and the door
+mode, then walks Simon right with health full and his height held. It tracks the
+camera from the change in the scroll byte at `$FD` on each frame, and copies the
+play area below the 40-row status bar into a strip. A stage ends its map when
+Simon stops moving, when the camera stops, or at the edge of the strip. Some
+stages stop at a locked room or a staircase, so their maps are partial. Stages
+4 to 7 and 14 to 18 come out one screen wide for that reason.
+
+The sprite sheet holds Simon's frame as the game draws it. The left-facing half
+is a mirror of the right-facing half, because the facing byte is not read yet.
+`tests/castlevania.mjs` boots the game, checks the stage map widths and draws
+the sprite sheet. It reads the ROM from `CASTLEVANIA_ROM` or
+`~/workspace/harmony/.arcade-local/roms/castlevania.nes` and skips when it is
+absent.
 
 ## Verification and publishing
 

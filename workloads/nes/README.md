@@ -318,8 +318,9 @@ directory. To watch from another machine, forward the port over SSH, for
 example `ssh -L 8790:127.0.0.1:PORT HOST`, or use the arcade launcher in
 [`demos/twin-dragons`](../../demos/twin-dragons/README.md#native-runs).
 
-The arcade page has no client definition for Castlevania, Punch-Out!! or
-Zelda, so their live views are served but not drawn.
+The arcade page has no client definition for Punch-Out!! or Zelda, so their
+live views are served but not drawn. Castlevania has one in
+`demos/twin-dragons/src/games/castlevania.js`.
 
 Without a connected viewer, workers skip motion trails and detailed observation
 records. With viewers, the service bounds detailed trails per 100 ms tick and

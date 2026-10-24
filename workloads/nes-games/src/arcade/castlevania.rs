@@ -4,11 +4,11 @@ use std::error::Error;
 
 use crate::{
     castlevania::{
-        archive::bosses_down,
         campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
+        progress::stages_cleared,
         target::{
             CastlevaniaMechanicalState, CastlevaniaObservations, CastlevaniaSnapshot,
-            CastlevaniaTarget, decode_state,
+            CastlevaniaTarget, FINAL_STAGE, decode_state,
         },
     },
     nes_backend::NesBackend,
@@ -18,6 +18,8 @@ use machine::nes::WRAM_SIZE;
 use serde::{Deserialize, Serialize};
 
 use super::{ArcadeGame, HIDDEN, Machines};
+
+const MAP_ROW_OFFSET: u16 = 48;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 pub struct View {
@@ -48,7 +50,7 @@ fn view(state: CastlevaniaMechanicalState) -> View {
         whip: state.whip,
         subweapon: state.subweapon,
         boss_health: state.boss_health,
-        cleared: bosses_down(state),
+        cleared: stages_cleared(state),
     }
 }
 
@@ -78,18 +80,18 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for CastlevaniaGame<M> {
 
     fn motion(wram: &[u8; WRAM_SIZE]) -> [u16; 4] {
         match decode_state(wram) {
-            Ok(state) if state.playing() => [
-                u16::from(state.stage) << 8 | u16::from(state.section),
+            Ok(state) if state.playing() && (1..=FINAL_STAGE).contains(&state.stage) => [
+                u16::from(state.stage - 1),
                 state.x,
-                u16::from(state.y),
-                0,
+                u16::from(state.y).saturating_sub(MAP_ROW_OFFSET),
+                u16::from(state.section),
             ],
             _ => [HIDDEN, 0, 0, 0],
         }
     }
 
     fn memory_cleared(memory: &[u8]) -> u8 {
-        decode_state(memory).map_or(0, bosses_down)
+        decode_state(memory).map_or(0, stages_cleared)
     }
 
     fn memory_view(memory: &[u8]) -> Result<View, Box<dyn Error>> {
@@ -105,7 +107,7 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for CastlevaniaGame<M> {
     }
 
     fn cleared(observation: &CastlevaniaObservations) -> u8 {
-        bosses_down(observation.decoded)
+        stages_cleared(observation.decoded)
     }
 
     fn snapshot_frame_count(snapshot: &CastlevaniaSnapshot) -> u64 {

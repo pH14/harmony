@@ -9,9 +9,10 @@ import tobuTobuGirl from "./games/tobu-tobu-girl.js";
 import superMarioBros from "./games/super-mario-bros.js";
 import megaMan2 from "./games/mega-man-2.js";
 import metroid from "./games/metroid.js";
+import castlevania from "./games/castlevania.js";
 
 const CORES = { quicknes: loadQuickNES, sameboy: loadSameBoy };
-export const GAMES = new Map([twinDragons, ...FAMIDASH, tobuTobuGirl, superMarioBros, megaMan2, metroid].map((game) => [game.id, game]));
+export const GAMES = new Map([twinDragons, ...FAMIDASH, tobuTobuGirl, superMarioBros, megaMan2, metroid, castlevania].map((game) => [game.id, game]));
 
 export async function sha256Hex(bytes) {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]

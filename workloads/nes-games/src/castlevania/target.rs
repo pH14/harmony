@@ -262,6 +262,29 @@ impl<M: NesBackend<Vec<u8>>> CastlevaniaTarget<M> {
         &self.action_observations
     }
 
+    pub fn snapshot_of_state(
+        &mut self,
+        state: &Vec<u8>,
+        frame_count: u64,
+    ) -> Result<CastlevaniaSnapshot, Box<dyn Error>> {
+        let imported = self
+            .machine
+            .import_nes(state)
+            .map_err(|error| error.to_string())?;
+        let wram = self
+            .machine
+            .replay(imported)
+            .and_then(|()| read_wram(&self.machine));
+        let _ = self.machine.drop_snapshot(imported);
+        let decoded = decode_state(&wram.map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        Ok(CastlevaniaSnapshot {
+            emulator_state: state.clone(),
+            observation: Self::make_observation(frame_count, decoded),
+            failed: false,
+        })
+    }
+
     fn make_observation(
         frame_count: u64,
         state: CastlevaniaMechanicalState,
