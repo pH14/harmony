@@ -2233,18 +2233,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if response.encode().len() > hypercall_proto::MAX_PAYLOAD {
             return Ok(Err(ControlError::MalformedEnvironment));
         }
-        let mut recorded = self.recorded.clone();
-        recorded.record_bound_answer(
-            at,
-            question.service(),
-            question.request_id(),
-            Sha256::digest(question.payload()).into(),
-            response.clone(),
-        )?;
+        let key = (at, question.service(), question.request_id());
         if self
-            .project_pending_recorded(&recorded)
-            .try_encode_reproducer_with_binding_reserve()
-            .is_err()
+            .recorded
+            .projected_reproducer_len_with_binding_reserve(
+                &self.schedule,
+                &self.reseed_schedule,
+                key,
+                &response,
+            )?
+            > EnvSpec::MAX_REPRODUCER_BYTES
         {
             return Ok(Err(ControlError::MalformedEnvironment));
         }
@@ -2261,12 +2259,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .vmm
             .as_mut()
             .ok_or(ServeError::Poisoned)?
-            .resolve_service_answer(response, local)
+            .resolve_service_answer(response.clone(), local)
         {
             self.retire_failed_vmm();
             return Err(error.into());
         }
-        self.recorded = recorded;
+        self.recorded.record_bound_answer(
+            key.0,
+            key.1,
+            key.2,
+            Sha256::digest(question.payload()).into(),
+            response,
+        )?;
         Ok(Ok(()))
     }
 
