@@ -71,6 +71,62 @@ pub struct MixtureDraw {
     pub mixture: DrawMixture,
     pub weight: u8,
     pub splice_weight: u8,
+    pub profile: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExperimentArm {
+    pub short_horizon: bool,
+    pub persistent_profile: bool,
+}
+
+pub fn experiment_arm() -> ExperimentArm {
+    static ARM: std::sync::OnceLock<ExperimentArm> = std::sync::OnceLock::new();
+    *ARM.get_or_init(|| {
+        let arm = std::env::var("HARMONY_HZP_ARM").unwrap_or_default();
+        ExperimentArm {
+            short_horizon: arm.contains("H1"),
+            persistent_profile: arm.contains("P1"),
+        }
+    })
+}
+
+pub const PROFILE_MUTATION_ODDS: usize = 16;
+
+const PROFILE_MIX: u64 = 0x6c69_6e65_6167_6531;
+
+pub fn job_profile(parent_profile: u64, parent_dry: bool, mutation_seed: u64) -> u64 {
+    if !experiment_arm().persistent_profile {
+        return 0;
+    }
+    let mut rand = RomuDuoJrRand::with_seed(mutation_seed ^ PROFILE_MIX);
+    let mutate = rand.below(NonZeroUsize::new(PROFILE_MUTATION_ODDS).expect("positive odds")) == 0;
+    let dry_redraw = parent_dry
+        && !std::env::var("HARMONY_HZP_ARM")
+            .unwrap_or_default()
+            .contains("P1a");
+    if parent_profile == 0 || mutate || dry_redraw {
+        rand.next_u64() | 1
+    } else {
+        parent_profile
+    }
+}
+
+pub fn favored_choice(
+    profile: u64,
+    salt: u64,
+    choices: usize,
+    rand: &mut RomuDuoJrRand,
+) -> Option<usize> {
+    if profile == 0 || rand.next_u64() & 1 == 0 {
+        return None;
+    }
+    Some(profile_choice(profile, salt, choices))
+}
+
+pub fn profile_choice(profile: u64, salt: u64, choices: usize) -> usize {
+    let mut rand = RomuDuoJrRand::with_seed(profile ^ salt);
+    rand.below(NonZeroUsize::new(choices.max(1)).expect("positive choices"))
 }
 
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -145,6 +201,9 @@ impl Default for SuffixReach {
 
 impl SuffixReach {
     pub(crate) fn length(&self) -> u8 {
+        if experiment_arm().short_horizon {
+            return 1;
+        }
         (1_u8 << self.doublings).min(SUFFIX_DOUBLING_LIMIT)
     }
 

@@ -755,8 +755,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for Mm2Game<M> {
         _run: &Mm2CampaignRun,
         previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
+        profile: u64,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        crate::mm2::archive::CHORDS.draw(rand, previous)
+        crate::mm2::archive::CHORDS.draw_in_profile(rand, previous, profile)
     }
 }
 

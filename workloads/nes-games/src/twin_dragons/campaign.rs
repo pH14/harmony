@@ -415,8 +415,9 @@ impl<M: NesBackend<Vec<u8>>> InputPolicy for TwinDragonsGame<M> {
         _run: &TwinDragonsCampaignRun,
         previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
+        profile: u64,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        crate::twin_dragons::archive::CHORDS.draw(rand, previous)
+        crate::twin_dragons::archive::CHORDS.draw_in_profile(rand, previous, profile)
     }
 }
 

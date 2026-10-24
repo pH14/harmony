@@ -51,13 +51,26 @@ impl ChordVocabulary {
         rand: &mut RomuDuoJrRand,
         previous: Option<&ButtonChord>,
     ) -> Result<ButtonChord, Box<dyn Error>> {
+        self.draw_in_profile(rand, previous, 0)
+    }
+
+    pub fn draw_in_profile(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        previous: Option<&ButtonChord>,
+        profile: u64,
+    ) -> Result<ButtonChord, Box<dyn Error>> {
         match previous {
-            Some(previous) => self.change_one_control(rand, previous),
-            None => self.sample(rand),
+            Some(previous) => self.change_one_control(rand, previous, profile),
+            None => self.sample(rand, profile),
         }
     }
 
-    pub fn sample(&self, rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Error>> {
+    pub fn sample(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        profile: u64,
+    ) -> Result<ButtonChord, Box<dyn Error>> {
         if let Some(tap) = self.tap
             && below(rand, tap.odds)? == 0
         {
@@ -67,17 +80,21 @@ impl ChordVocabulary {
             ));
         }
         let buttons = self.held[below(rand, self.held.len())?];
-        Ok(ButtonChord::new(buttons, self.stratified_hold(rand)?))
+        Ok(ButtonChord::new(
+            buttons,
+            self.stratified_hold(rand, profile)?,
+        ))
     }
 
     pub fn change_one_control(
         &self,
         rand: &mut RomuDuoJrRand,
         previous: &ButtonChord,
+        profile: u64,
     ) -> Result<ButtonChord, Box<dyn Error>> {
         let base = previous.buttons & !self.tap.map_or(0, |tap| tap.buttons);
         if !self.held.contains(&base) {
-            return self.sample(rand);
+            return self.sample(rand, profile);
         }
         if let Some(tap) = self.tap
             && below(rand, tap.odds)? == 0
@@ -105,11 +122,22 @@ impl ChordVocabulary {
             2 => held(base ^ B_BUTTON).unwrap_or(base),
             _ => base,
         };
-        Ok(ButtonChord::new(buttons, self.stratified_hold(rand)?))
+        Ok(ButtonChord::new(
+            buttons,
+            self.stratified_hold(rand, profile)?,
+        ))
     }
 
-    pub fn stratified_hold(&self, rand: &mut RomuDuoJrRand) -> Result<u8, Box<dyn Error>> {
-        let stratum = if below(rand, 2)? == 0 {
+    pub fn stratified_hold(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        profile: u64,
+    ) -> Result<u8, Box<dyn Error>> {
+        let short = match crate::search::draw::favored_choice(profile, PROFILE_HOLD_SALT, 2, rand) {
+            Some(stratum) => stratum == 0,
+            None => below(rand, 2)? == 0,
+        };
+        let stratum = if short {
             self.short_hold
         } else {
             self.long_hold
@@ -125,6 +153,8 @@ impl ChordVocabulary {
             .max(self.tap.map_or(0, |tap| tap.hold_frames.1))
     }
 }
+
+const PROFILE_HOLD_SALT: u64 = 0x6e65_7363_686f_7264;
 
 fn below(rand: &mut RomuDuoJrRand, choices: usize) -> Result<usize, Box<dyn Error>> {
     Ok(rand.below(NonZeroUsize::new(choices).ok_or("empty chord draw")?))
@@ -187,7 +217,7 @@ mod tests {
         for &previous in &NES_PRESSABLE_BUTTON_MASKS {
             for _ in 0..400 {
                 let next = chords
-                    .change_one_control(&mut rand, &ButtonChord::new(previous, 30))
+                    .change_one_control(&mut rand, &ButtonChord::new(previous, 30), 0)
                     .expect("change");
                 assert!(NES_PRESSABLE_BUTTON_MASKS.contains(&next.buttons));
                 assert!(

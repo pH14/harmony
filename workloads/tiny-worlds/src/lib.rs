@@ -464,9 +464,10 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
         _: &(),
         _: Option<&u8>,
         rand: &mut RomuDuoJrRand,
+        profile: u64,
     ) -> Result<u8, Box<dyn Error>> {
         if let World::PassiveClock(w) = &self.config {
-            return Ok(w.sample(rand));
+            return Ok(w.sample(rand, profile));
         }
         if let World::Crossing(w) = &self.config {
             return Ok(w.sample(rand));

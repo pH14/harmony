@@ -976,6 +976,7 @@ where
         let admission_started = profile_now();
         core.archive
             .set_admission_wave(pending_job.continuation_wave);
+        core.archive.set_admission_profile(pending_job.profile);
         core.finish_suffix_job(pending_job.parent_id, pending_job.suffix_limit);
         let (sequence, decisions, duration_admission) = core.admit_job_tracking(
             workload,
@@ -1286,6 +1287,7 @@ where
                     continuation_wave: continuation.wave.saturating_add(1),
                     continuation_edge: Some((continuation.source, continuation.destination)),
                     mutation_seed,
+                    profile: core.archive.profile(parent_index),
                     mixture_weight,
                     splice_weight,
                     splice,
@@ -1354,7 +1356,15 @@ where
                 )
             });
             let mut duration_checkpoint_at_draw = None;
-            let lineage_duration = core.lineage_duration(workload, &config.run, parent_index);
+            let lineage_duration =
+                core.lineage_duration(workload, &config.run, parent_index, mutation_seed);
+            let job_profile = core.job_profile(parent_index, mutation_seed);
+            if job_profile != 0 {
+                eprintln!(
+                    "hzp-profile parent={parent_id} parent_profile={:x} profile={job_profile:x}",
+                    core.archive.profile(parent_index)
+                );
+            }
             let duration_draw = if spliced.is_none() {
                 workload
                     .duration_request(
@@ -1391,6 +1401,7 @@ where
                         mixture: config.mixture,
                         weight: mixture_weight,
                         splice_weight,
+                        profile: job_profile,
                     },
                     mutation_seed,
                     previous,
@@ -1403,6 +1414,7 @@ where
                         mixture: config.mixture,
                         weight: mixture_weight,
                         splice_weight,
+                        profile: job_profile,
                     },
                     mutation_seed,
                     previous,
@@ -1466,6 +1478,7 @@ where
                     continuation_wave: 0,
                     continuation_edge: None,
                     mutation_seed,
+                    profile: job_profile,
                     mixture_weight,
                     splice_weight,
                     splice,

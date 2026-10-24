@@ -610,6 +610,10 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     portfolio_cross_improvements: u64,
     replacement_preferences: Vec<u8>,
     in_place_lengths: Vec<u8>,
+    #[serde(skip)]
+    profiles: Vec<u64>,
+    #[serde(skip)]
+    admission_profile: u64,
     lineages: Vec<K::Lineage>,
     deepest_leaf: Vec<(K, usize)>,
     #[serde(skip, default = "unset_action_cost::<A>")]
@@ -1219,6 +1223,8 @@ where
             portfolio_cross_improvements: 0,
             replacement_preferences: Vec::new(),
             in_place_lengths: Vec::new(),
+            profiles: Vec::new(),
+            admission_profile: 0,
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
             action_cost,
@@ -1717,6 +1723,8 @@ where
         self.replacement_preferences =
             retain_marked(std::mem::take(&mut self.replacement_preferences), &keep);
         self.in_place_lengths = retain_marked(std::mem::take(&mut self.in_place_lengths), &keep);
+        self.profiles.resize(keep.len(), 0);
+        self.profiles = retain_marked(std::mem::take(&mut self.profiles), &keep);
         self.lineages = retain_marked(std::mem::take(&mut self.lineages), &keep);
         self.snapshot_selectable =
             retain_marked(std::mem::take(&mut self.snapshot_selectable), &keep);
@@ -2865,6 +2873,8 @@ where
         self.cost_in_group.push(candidate_cost_in_group);
         self.replacement_preferences.push(replacement_preferences);
         self.in_place_lengths.push(0);
+        self.profiles.resize(id, 0);
+        self.profiles.push(self.admission_profile);
         match &mut self.live_progress {
             Some((deepest, cheapest)) => match key.progress().cmp(&deepest.progress()) {
                 Ordering::Greater => {
@@ -3426,6 +3436,15 @@ where
 
     pub(crate) fn set_admission_wave(&mut self, wave: u32) {
         self.continuation_wave = wave;
+    }
+
+    pub(crate) fn set_admission_profile(&mut self, profile: u64) {
+        self.admission_profile = profile;
+    }
+
+    #[must_use]
+    pub(crate) fn profile(&self, id: usize) -> u64 {
+        self.profiles.get(id).copied().unwrap_or(0)
     }
 
     pub(crate) fn pop_continuation(

@@ -521,8 +521,11 @@ where
         run: &SmbCampaignRun,
         previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
+        profile: u64,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        run.vocabulary.chords().draw(rand, previous)
+        run.vocabulary
+            .chords()
+            .draw_in_profile(rand, previous, profile)
     }
 }
 

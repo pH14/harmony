@@ -169,6 +169,7 @@ impl InputPolicy for TimingWorkload {
         _run: &Self::Run,
         _previous: Option<&Self::Action>,
         _rand: &mut RomuDuoJrRand,
+        _profile: u64,
     ) -> Result<Self::Action, Box<dyn Error>> {
         Ok(TimedAction {
             context: 0,

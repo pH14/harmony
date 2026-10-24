@@ -523,6 +523,7 @@ mod tests {
                     mixture: DrawMixture::BiasedHalf,
                     weight: 128,
                     splice_weight: 0,
+                    profile: 0,
                 },
                 0x5eed_ca02,
                 None,

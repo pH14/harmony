@@ -435,8 +435,9 @@ impl InputPolicy for StbGame {
         _run: &StbCampaignRun,
         previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
+        profile: u64,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        crate::stb::archive::CHORDS.draw(rand, previous)
+        crate::stb::archive::CHORDS.draw_in_profile(rand, previous, profile)
     }
 }
 

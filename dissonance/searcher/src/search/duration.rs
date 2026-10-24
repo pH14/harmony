@@ -16,6 +16,7 @@ pub const MAX_DURATION_CONTEXTS: usize = 256;
 const RECENT_OBSERVATIONS: usize = 128;
 const CONTEXT_NODE_OVERHEAD: usize = 128;
 
+const PROFILE_DURATION_SALT: u64 = 0x686f_6c64_7363_616c;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Observation {
     duration: NonZeroU64,
@@ -207,6 +208,16 @@ impl DurationPolicy {
     ) -> u64 {
         let scales = (u64::BITS - max_duration.get().leading_zeros()) as usize;
         let scale_bound = NonZeroUsize::new(scales).expect("positive duration has a scale");
+        if crate::search::draw::experiment_arm().persistent_profile
+            && let Some(profile) = lineage
+        {
+            return 1_u64
+                << crate::search::draw::profile_choice(
+                    profile.get(),
+                    PROFILE_DURATION_SALT,
+                    scales,
+                );
+        }
         if rand.next_u64() & 1 == 0 {
             return 1_u64 << rand.below(scale_bound);
         }

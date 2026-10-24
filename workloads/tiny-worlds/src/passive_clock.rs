@@ -77,8 +77,19 @@ impl Config {
             .unwrap_or(0)
     }
 
-    pub fn sample(&self, rand: &mut RomuDuoJrRand) -> u8 {
+    pub fn sample(&self, rand: &mut RomuDuoJrRand, profile: u64) -> u8 {
         let total: usize = self.holds.iter().map(|b| usize::from(b.weight)).sum();
+        if let Some(band) = searcher::search::draw::favored_choice(
+            profile,
+            0x7061_7373_6976_6531,
+            self.holds.len(),
+            rand,
+        ) {
+            let band = self.holds[band];
+            let width = usize::from(band.maximum) - usize::from(band.minimum) + 1;
+            return band.minimum
+                + rand.below(NonZeroUsize::new(width).expect("validated hold interval")) as u8;
+        }
         let mut choice = rand.below(NonZeroUsize::new(total).expect("validated positive bands"));
         for band in &self.holds {
             if choice < usize::from(band.weight) {
@@ -235,7 +246,7 @@ mod tests {
         let mut rand = searcher::search::rand::RomuDuoJrRand::with_seed(crate::test_seed());
         let mut long = 0;
         for _ in 0..6000 {
-            let duration = w.sample(&mut rand);
+            let duration = w.sample(&mut rand, 0);
             assert!(w.valid_action(duration));
             long += usize::from(duration >= 48);
         }

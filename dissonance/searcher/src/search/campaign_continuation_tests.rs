@@ -179,6 +179,7 @@ impl InputPolicy for TestWorkload {
         _run: &Self::Run,
         _previous: Option<&Self::Action>,
         rand: &mut RomuDuoJrRand,
+        _profile: u64,
     ) -> Result<Self::Action, Box<dyn Error>> {
         Ok(TestAction::new(rand.next_u64() as u8, 1))
     }

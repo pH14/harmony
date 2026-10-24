@@ -699,6 +699,7 @@ impl InputPolicy for FaultWorkload {
         run: &FaultCampaignRun,
         _previous: Option<&FaultAction>,
         rand: &mut RomuDuoJrRand,
+        _profile: u64,
     ) -> Result<FaultAction, Box<dyn Error>> {
         sample_action(rand, &run.vocabulary, 0, std::num::NonZeroU16::MIN, None)
     }
@@ -840,8 +841,13 @@ fn held_suffix(
     let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
         .ok_or("action duration must be positive")?;
     let event_ready = draw.context.event_ready;
+    let profile_seed = if mixture.profile == 0 {
+        mutation_seed
+    } else {
+        mixture.profile
+    };
     let profile = DrawProfile::draw(&mut RomuDuoJrRand::with_seed(
-        mutation_seed ^ PROFILE_SEED_MIX,
+        profile_seed ^ PROFILE_SEED_MIX,
     ))?;
     let mut suffix =
         state.draw(before, replay, |view| {
@@ -2046,6 +2052,7 @@ mod tests {
             mixture: DrawMixture::AlphabetOnly,
             weight: 0,
             splice_weight: 0,
+            profile: 0,
         };
         let draw = DurationDraw {
             context: FaultArchiveKey {

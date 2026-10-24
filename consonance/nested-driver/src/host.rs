@@ -401,6 +401,7 @@ impl InputPolicy for NestedWorkload {
         _: &(),
         _: Option<&u64>,
         rand: &mut RomuDuoJrRand,
+        _profile: u64,
     ) -> Result<u64, Box<dyn Error>> {
         Ok(rand.next_u64())
     }

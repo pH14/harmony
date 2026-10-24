@@ -270,12 +270,13 @@ fn below(rand: &mut RomuDuoJrRand, n: usize) -> Result<usize, Box<dyn Error>> {
     Ok(rand.below(NonZeroUsize::new(n).ok_or("empty draw")?))
 }
 
-fn stratified_hold(rand: &mut RomuDuoJrRand) -> Result<u8, Box<dyn Error>> {
-    let (low, high) = if below(rand, 2)? == 0 {
-        SHORT_HOLD
-    } else {
-        LONG_HOLD
-    };
+fn stratified_hold(rand: &mut RomuDuoJrRand, profile: u64) -> Result<u8, Box<dyn Error>> {
+    let short =
+        match searcher::search::draw::favored_choice(profile, 0x6e65_7363_686f_7264, 2, rand) {
+            Some(stratum) => stratum == 0,
+            None => below(rand, 2)? == 0,
+        };
+    let (low, high) = if short { SHORT_HOLD } else { LONG_HOLD };
     Ok(low + u8::try_from(below(rand, usize::from(high - low) + 1)?)?)
 }
 
@@ -363,6 +364,7 @@ impl InputPolicy for HeldWorkload {
         _: &(),
         previous: Option<&Chord>,
         rand: &mut RomuDuoJrRand,
+        profile: u64,
     ) -> Result<Chord, Box<dyn Error>> {
         let buttons = match (self.chords, previous) {
             (ChordDraw::ChangeOneControl, Some(previous)) => {
@@ -372,7 +374,7 @@ impl InputPolicy for HeldWorkload {
         };
         Ok(Chord {
             buttons,
-            hold: stratified_hold(rand)?,
+            hold: stratified_hold(rand, profile)?,
         })
     }
 }

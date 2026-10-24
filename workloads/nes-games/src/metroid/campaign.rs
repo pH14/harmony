@@ -768,8 +768,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for MetroidGame<M> {
         _run: &MetroidCampaignRun,
         previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
+        profile: u64,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        crate::metroid::archive::CHORDS.draw(rand, previous)
+        crate::metroid::archive::CHORDS.draw_in_profile(rand, previous, profile)
     }
 }
 

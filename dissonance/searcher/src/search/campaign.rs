@@ -327,6 +327,7 @@ pub trait InputPolicy: CampaignTypes {
         run: &Self::Run,
         previous: Option<&Self::Action>,
         rand: &mut RomuDuoJrRand,
+        _profile: u64,
     ) -> Result<Self::Action, Box<dyn Error>>;
 
     fn draw_table_parameters(&self, run: &Self::Run) -> EmpiricalStepParameters {
@@ -463,7 +464,7 @@ pub trait InputPolicy: CampaignTypes {
                 mutation_seed,
                 previous,
                 |rand| biased_step(view, rand),
-                |previous, rand| self.sample_alphabet(run, previous, rand),
+                |previous, rand| self.sample_alphabet(run, previous, rand, mixture.profile),
             )
         })
     }
@@ -1676,12 +1677,24 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         self.suffix_limit_excluding(parent_id, parent_index, &BTreeMap::new())
     }
 
+    pub(crate) fn job_profile(&self, parent_index: usize, mutation_seed: u64) -> u64 {
+        crate::search::draw::job_profile(
+            self.archive.profile(parent_index),
+            self.archive.suffix_limit(parent_index) > 1,
+            mutation_seed,
+        )
+    }
+
     pub(crate) fn lineage_duration(
         &self,
         workload: &G,
         run: &G::Run,
         parent_index: usize,
+        mutation_seed: u64,
     ) -> Option<NonZeroU64> {
+        if crate::search::draw::experiment_arm().persistent_profile {
+            return NonZeroU64::new(self.job_profile(parent_index, mutation_seed));
+        }
         if self.archive.suffix_limit(parent_index) > 1 {
             return None;
         }
@@ -3124,6 +3137,8 @@ struct PendingJob<G: Workload + ?Sized> {
     continuation_wave: u32,
     continuation_edge: Option<Edge<G::Key>>,
     mutation_seed: u64,
+    #[serde(default)]
+    profile: u64,
     mixture_weight: u8,
     splice_weight: u8,
     #[serde(with = "crate::search::checkpoint::json_bytes")]
@@ -4890,6 +4905,7 @@ where
     let mut replay_job_weights = BTreeMap::<usize, (u8, u8)>::new();
     let mut replay_job_tier_limits = BTreeMap::<usize, usize>::new();
     let mut replay_job_lineage_durations = BTreeMap::<usize, Option<NonZeroU64>>::new();
+    let mut replay_job_profiles = BTreeMap::<usize, u64>::new();
     let mut replay_selections = BTreeMap::<usize, (u64, u64)>::new();
     let mut replay_planned_clock = 0_u64;
     let mut last_admitted = None::<(u64, usize)>;
@@ -4922,11 +4938,19 @@ where
         {
             return Err("replayed job suffix limit diverged at reservation".into());
         }
+        let (mutation_seed, selector_path, splice) = &replay_job_splices[job_slot];
         replay_job_lineage_durations.insert(
             job_slot,
-            core.lineage_duration(workload, &replay_run, parent_index),
+            core.lineage_duration(workload, &replay_run, parent_index, *mutation_seed),
         );
-        let (mutation_seed, selector_path, splice) = &replay_job_splices[job_slot];
+        replay_job_profiles.insert(
+            job_slot,
+            if actual_continuation {
+                core.archive.profile(parent_index)
+            } else {
+                core.job_profile(parent_index, *mutation_seed)
+            },
+        );
         verify_splice_selection(
             &mut core,
             parent_index,
@@ -5064,7 +5088,12 @@ where
                         &draw,
                         expected_checkpoint.as_ref(),
                         skip.mutation_seed,
-                        core.lineage_duration(workload, &replay_run, parent_index),
+                        core.lineage_duration(
+                            workload,
+                            &replay_run,
+                            parent_index,
+                            skip.mutation_seed,
+                        ),
                     )?;
                 } else if skip.duration_checkpoint_at_draw.is_some() {
                     return Err("recorded stream carries duration state without a choice".into());
@@ -5108,6 +5137,7 @@ where
                             mixture: replay_mixture,
                             weight: skip.mixture_weight,
                             splice_weight: skip.splice_weight,
+                            profile: core.job_profile(parent_index, skip.mutation_seed),
                         },
                         draw_checkpoint_before.as_ref(),
                         skip.mutation_seed,
@@ -5165,6 +5195,9 @@ where
                 let lineage_duration = replay_job_lineage_durations
                     .remove(&replay_job_slot)
                     .ok_or("recorded job has no rebuilt lineage duration")?;
+                let replay_profile = replay_job_profiles
+                    .remove(&replay_job_slot)
+                    .ok_or("recorded job has no rebuilt profile")?;
                 if (job.mixture_weight, job.splice_weight)
                     != replay_job_weights
                         .remove(&replay_job_slot)
@@ -5284,6 +5317,7 @@ where
                             mixture: replay_mixture,
                             weight: job.mixture_weight,
                             splice_weight: job.splice_weight,
+                            profile: replay_profile,
                         },
                         draw_checkpoint_before.as_ref(),
                         job.mutation_seed,
@@ -5349,6 +5383,7 @@ where
                     .as_ref()
                     .map_or(0, |taken| taken.wave.saturating_add(1));
                 core.archive.set_admission_wave(continuation_wave);
+                core.archive.set_admission_profile(replay_profile);
                 core.finish_suffix_job(job.parent_id, suffix_limit);
                 let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                     workload,
@@ -5547,11 +5582,19 @@ where
                     }) {
                         return Err("replayed job suffix limit diverged at reservation".into());
                     }
+                    let (mutation_seed, selector_path, splice) = &replay_job_splices[next_slot];
                     replay_job_lineage_durations.insert(
                         next_slot,
-                        core.lineage_duration(workload, &replay_run, parent_index),
+                        core.lineage_duration(workload, &replay_run, parent_index, *mutation_seed),
                     );
-                    let (mutation_seed, selector_path, splice) = &replay_job_splices[next_slot];
+                    replay_job_profiles.insert(
+                        next_slot,
+                        if replay_continuations.contains_key(&next_slot) {
+                            core.archive.profile(parent_index)
+                        } else {
+                            core.job_profile(parent_index, *mutation_seed)
+                        },
+                    );
                     verify_splice_selection(
                         &mut core,
                         parent_index,
@@ -6028,6 +6071,7 @@ mod tests {
             _run: &Self::Run,
             _previous: Option<&Self::Action>,
             rand: &mut RomuDuoJrRand,
+            _profile: u64,
         ) -> Result<Self::Action, Box<dyn Error>> {
             Ok(TestAction::new(rand.next_u64() as u8, 1))
         }
