@@ -1021,6 +1021,7 @@ where
                 .record_selection(parent_index, &pending_job.selector);
         }
         let retained_ids = retained_archive_indexes(core, &decisions);
+        let retained_keys = retained_keys::<G>(&core.archive, &decisions)?;
         let new_cell_descendant = retained_ids
             .iter()
             .any(|id| core.archive.opened_new_cell(*id));
@@ -1091,7 +1092,6 @@ where
             });
         }
         let stream_started = profile_now();
-        let retained_keys = retained_keys::<G>(&core.archive, &decisions)?;
         writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
             continuation_energy: pending_job.continuation_energy,
             sequence,
