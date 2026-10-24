@@ -17,8 +17,9 @@ make -C consonance/harmony-linux test
 ```
 
 `fetch` downloads and verifies the pinned platform kernel, generic userland,
-and static OCI runtime sources. Workload packages own their separate fetch
-entrypoints.
+and static OCI runtime sources. It tries a mirror when the upstream host fails:
+`mirrors.edge.kernel.org` for the kernel and Buildroot's source mirror for
+BusyBox and musl. Workload packages own their separate fetch entrypoints.
 `test-libvoidstar` runs the portable ABI and device-transaction checks.
 `test-linux` builds the Linux artifacts twice and runs the image check; it
 requires Linux, or a Linux/amd64 build container on macOS. Build output lives
@@ -59,8 +60,8 @@ therefore does not change the accepted source bytes.
 
 - `linux/` builds the pinned kernels, direct platform fixtures, and the
   workload-free OCI runtime. Kernel patches provide the guest device,
-  paravirtual clock, observation, and task-park interfaces; build scripts
-  verify source and artifact hashes.
+  paravirtual clock, observation, task-park and per-node clock-offset
+  interfaces; build scripts verify source and artifact hashes.
 - `uml/` builds the User-mode Linux profile: the pinned kernel as a static
   host executable, a fixture initramfs, and the profile that hashes them. It
   applies `linux/patches/common` and `linux/patches/um`.

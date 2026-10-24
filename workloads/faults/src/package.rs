@@ -339,7 +339,7 @@ mod live {
     };
 
     use consonance_client::{
-        cache::{CacheIndex, LocalIndex, plan_memory, segments},
+        cache::{CacheIndex, LocalIndex, MemoryNeeds, plan_memory, segments},
         placement::{CorePool, Placement, pin_current_thread},
         session::WorkerLauncher,
     };
@@ -374,17 +374,22 @@ mod live {
         pub budget: usize,
     }
 
+    fn memory_needs(ram_mib: u32) -> MemoryNeeds {
+        let guest = u64::from(ram_mib) << 20;
+        MemoryNeeds {
+            coordinator: (MEMORY_BUDGET_MIB as u64) << 20,
+            worker: guest.saturating_add(WORKER_OVERHEAD_MIB << 20),
+            store_floor: guest,
+            transient: guest,
+        }
+    }
+
     pub fn resources(options: &Options) -> Result<Resources, String> {
         let pool = CorePool::detect()?;
         let cores = pool.max_workers();
         #[cfg(target_os = "macos")]
         let cores = cores.min(VM_WORKER_LIMIT);
-        let guest = u64::from(options.ram_mib) << 20;
-        let memory = plan_memory(
-            cores,
-            guest.saturating_add(WORKER_OVERHEAD_MIB << 20),
-            guest,
-        )?;
+        let memory = plan_memory(cores, memory_needs(options.ram_mib))?;
         let workers = u32::try_from(memory.workers).map_err(|error| error.to_string())?;
         let placement = pool.plan(workers)?;
         eprintln!(
@@ -401,13 +406,19 @@ mod live {
 
     fn pinned(plan: Placement) -> ThreadPlacement {
         ThreadPlacement::new(move |thread| {
-            let cpu = match thread {
-                PlacedThread::Coordinator => plan.coordinator,
-                PlacedThread::Worker(worker) => {
-                    plan.workers.get(worker as usize).copied().flatten()
-                }
+            let cpus = match thread {
+                PlacedThread::Coordinator => plan.coordinator.into_iter().collect(),
+                PlacedThread::Worker(worker) => plan
+                    .workers
+                    .get(worker as usize)
+                    .cloned()
+                    .unwrap_or_default(),
             };
-            cpu.map_or(Ok(()), pin_current_thread)
+            if cpus.is_empty() {
+                Ok(())
+            } else {
+                pin_current_thread(&cpus)
+            }
         })
     }
 

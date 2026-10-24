@@ -933,6 +933,7 @@ impl FaultTarget {
             live.session
                 .branch_with_service(
                     snapshot,
+                    SEED,
                     service,
                     Vec::new(),
                     Vec::new(),
@@ -2304,6 +2305,7 @@ impl Live {
         self.cursor.invalidate();
         let result = self.session.branch_with_service(
             parent.snap,
+            SEED,
             config,
             Vec::new(),
             Vec::new(),
@@ -2574,7 +2576,7 @@ mod tests {
     use crate::target::{FaultOperation, decode_sdk_events};
     use consonance_client::cache::{
         LocalIndex,
-        extent::{extent_len, read_extent, write_extent},
+        extent::{encode, read_extent},
     };
 
     fn test_branch_config(
@@ -2940,6 +2942,7 @@ mod tests {
         fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
             self.branch_with_service(
                 parent,
+                input.seed(),
                 input.config().clone(),
                 input.payloads().unwrap_or_default().to_vec(),
                 Vec::new(),
@@ -3109,8 +3112,9 @@ mod tests {
         ) -> Result<Lease, Box<dyn Error>> {
             let target_commitment = *self.snapshots.get(&target.0).ok_or("unknown snapshot")?;
             let sidecar = target.0.to_le_bytes();
-            let mut extent = index.extent(extent_len(0, 0, sidecar.len()).unwrap())?;
-            write_extent(extent.bytes_mut(), &[], &[], &sidecar)?;
+            let encoded = encode(&[], &[], &sidecar)?;
+            let mut extent = index.extent(encoded.len())?;
+            encoded.write(extent.bytes_mut())?;
             Ok(index.publish(
                 namespace,
                 key,
@@ -3188,8 +3192,9 @@ mod tests {
                 &attachment.bytes,
             ))?)
             .into();
-            let mut extent = index.extent(extent_len(0, 0, sidecar.len()).unwrap())?;
-            write_extent(extent.bytes_mut(), &[], &[], &sidecar)?;
+            let encoded = encode(&[], &[], &sidecar)?;
+            let mut extent = index.extent(encoded.len())?;
+            encoded.write(extent.bytes_mut())?;
             Ok(index.publish(
                 namespace,
                 key,
@@ -3271,6 +3276,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             snapshot: SnapId,
+            _: u64,
             config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
@@ -3714,6 +3720,7 @@ mod tests {
         fn branch(&mut self, parent: SnapId, input: &InputSpec) -> Result<(), Box<dyn Error>> {
             self.branch_with_service(
                 parent,
+                input.seed(),
                 input.config().clone(),
                 Vec::new(),
                 Vec::new(),
@@ -3834,6 +3841,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             _: SnapId,
+            _: u64,
             config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,

@@ -393,6 +393,10 @@ impl StrictMacosExecutableGuard {
         crate::guard_work::measured(work, |work| self.check_inner(work))
     }
 
+    pub fn check_code_measured(self, work: &mut GuardMeasurement) -> io::Result<()> {
+        self.check_measured(work)
+    }
+
     fn check_inner(self, work: &mut GuardMeasurement) -> io::Result<()> {
         work.bytes = None;
         work.kernel_state_checks = work.kernel_state_checks.saturating_add(1);

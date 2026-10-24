@@ -314,10 +314,7 @@ impl Drop for Chain {
 mod tests {
     use super::*;
     use crate::target::{FaultEndpointCertificate, FaultObservations, FaultOperation};
-    use consonance_client::cache::{
-        LocalIndex,
-        extent::{extent_len, write_extent},
-    };
+    use consonance_client::cache::{LocalIndex, extent::encode};
 
     fn point(snap: u64) -> Point {
         Point {
@@ -420,8 +417,9 @@ mod tests {
         let mut leases = Vec::new();
         for (snap, ticks) in [(1, 1), (2, 2)] {
             let receipt = child(&root(), ticks);
-            let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
-            write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+            let encoded = encode(&[], &[], &[]).unwrap();
+            let mut extent = index.extent(encoded.len()).unwrap();
+            encoded.write(extent.bytes_mut()).unwrap();
             let lease = index
                 .publish(
                     namespace,
@@ -466,8 +464,9 @@ mod tests {
         let mut receipt = root();
         for depth in 1..=40 {
             receipt = child(&receipt, 1);
-            let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
-            write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+            let encoded = encode(&[], &[], &[]).unwrap();
+            let mut extent = index.extent(encoded.len()).unwrap();
+            encoded.write(extent.bytes_mut()).unwrap();
             let lease = index
                 .publish(
                     namespace,

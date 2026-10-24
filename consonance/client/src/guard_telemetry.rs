@@ -26,12 +26,11 @@ pub(crate) enum GuardSite {
     PublicationAfter,
     ControlBefore,
     ControlAfter,
-    SdkRequest,
     SdkResponse,
 }
 
 impl GuardSite {
-    const ALL: [Self; 22] = [
+    const ALL: [Self; 21] = [
         Self::Admission,
         Self::SessionBoundary,
         Self::ParentRpcBefore,
@@ -52,7 +51,6 @@ impl GuardSite {
         Self::PublicationAfter,
         Self::ControlBefore,
         Self::ControlAfter,
-        Self::SdkRequest,
         Self::SdkResponse,
     ];
     fn name(self) -> &'static str {
@@ -78,7 +76,6 @@ impl GuardSite {
             Self::PublicationAfter => "publication_after",
             Self::ControlBefore => "control_before",
             Self::ControlAfter => "control_after",
-            Self::SdkRequest => "sdk_request",
             Self::SdkResponse => "sdk_response",
         }
     }
@@ -204,6 +201,7 @@ impl GuardTelemetry {
                     ("comparison_input_bytes", bytes.comparison_input_bytes),
                     ("sealed_file_read_bytes", bytes.sealed_file_read_bytes),
                     ("sealed_file_hashed_bytes", bytes.sealed_file_hashed_bytes),
+                    ("code_page_entries", bytes.code_page_entries),
                 ] {
                     out.push((format!("{key}.{name}"), value));
                 }

@@ -324,15 +324,6 @@ impl OriginalWitness {
     }
 }
 
-fn memory_prefix(memory: &[u8]) -> sha2::Sha256 {
-    use sha2::Digest;
-    let mut hash = sha2::Sha256::new();
-    hash.update(b"MEM\0");
-    hash.update((memory.len() as u64).to_le_bytes());
-    hash.update(memory);
-    hash
-}
-
 fn retain_original_witness(
     root: &std::path::Path,
     boot: u64,
@@ -341,22 +332,18 @@ fn retain_original_witness(
     context: &NormalizedEvent,
     memory: &[u8],
 ) -> Result<(), String> {
-    use sha2::Digest;
-    let prefix = memory_prefix(memory);
-    let prefix_digest: [u8; 32] = prefix.clone().finalize().into();
-    if actual.memory_length != memory.len() || prefix_digest != actual.memory_prefix_hash {
+    let prefix_digest = vmm_core::state_digest::memory_digest_of(memory);
+    if actual.memory_length != memory.len() || prefix_digest != actual.memory_digest {
         return Err("actual stopped RAM differs from retained checkpoint memory digest".into());
     }
     let reconstruct = |suffix: &[u8]| -> [u8; 32] {
-        let mut hash = prefix.clone();
-        hash.update(suffix);
-        hash.finalize().into()
+        vmm_core::state_digest::state_hash_of(&prefix_digest, suffix)
     };
     if reconstruct(&actual.state_blob_suffix) != actual.state_hash {
         return Err("actual checkpoint hash reconstruction failed".into());
     }
     let mut report = format!(
-        "kind=original-sequential-witness\nboot={boot}\nevent={}\noriginal_ram=unavailable\nram_equivalence=cryptographic-digest-strength-only\nactual_state_hash={}\nactual_memory_prefix_hash={}\nmemory_bytes={}\nactual_event={context:?}\n",
+        "kind=original-sequential-witness\nboot={boot}\nevent={}\noriginal_ram=unavailable\nram_equivalence=cryptographic-digest-strength-only\nactual_state_hash={}\nactual_memory_digest={}\nmemory_bytes={}\nactual_event={context:?}\n",
         actual.event_index,
         hex(&actual.state_hash),
         hex(&prefix_digest),
@@ -369,13 +356,13 @@ fn retain_original_witness(
         right.state_hash = None;
         let aligned = left == right;
         let same_memory = reference.preimage.memory_length == memory.len()
-            && reference.preimage.memory_prefix_hash == prefix_digest;
+            && reference.preimage.memory_digest == prefix_digest;
         let original_reconstructed = same_memory
             && reconstruct(&reference.preimage.state_blob_suffix) == reference.preimage.state_hash;
         if same_memory && !original_reconstructed {
             return Err("original hash reconstruction failed with matching memory digest".into());
         }
-        writeln!(report, "event_context_equal={aligned}\nmemory_digest_equal={same_memory}\noriginal_hash_reconstructed={original_reconstructed}\noriginal_state_hash={}\noriginal_memory_prefix_hash={}\noriginal_event={:?}\nsuffix_only_attribution={}\n", hex(&reference.preimage.state_hash), hex(&reference.preimage.memory_prefix_hash), reference.context, aligned && same_memory && original_reconstructed).unwrap();
+        writeln!(report, "event_context_equal={aligned}\nmemory_digest_equal={same_memory}\noriginal_hash_reconstructed={original_reconstructed}\noriginal_state_hash={}\noriginal_memory_digest={}\noriginal_event={:?}\nsuffix_only_attribution={}\n", hex(&reference.preimage.state_hash), hex(&reference.preimage.memory_digest), reference.context, aligned && same_memory && original_reconstructed).unwrap();
         std::fs::write(
             root.join("original-state-suffix.bin"),
             &reference.preimage.state_blob_suffix,
@@ -893,20 +880,16 @@ fn x2_component_diff_first_checkpoint() {
 #[cfg(test)]
 mod original_witness_tests {
     use super::*;
-    use sha2::Digest;
 
     fn record(memory: &[u8], suffix: &[u8], event_index: u64) -> WitnessRecord {
-        let prefix = memory_prefix(memory);
-        let memory_prefix_hash = prefix.clone().finalize().into();
-        let mut hash = prefix;
-        hash.update(suffix);
-        let state_hash = hash.finalize().into();
+        let memory_digest = vmm_core::state_digest::memory_digest_of(memory);
+        let state_hash = vmm_core::state_digest::state_hash_of(&memory_digest, suffix);
         WitnessRecord {
             preimage: vmm_core::vmm::CheckpointHashPreimage {
                 event_index,
                 state_hash,
                 state_blob_suffix: suffix.to_vec(),
-                memory_prefix_hash,
+                memory_digest,
                 memory_length: memory.len(),
             },
             context: NormalizedEvent {

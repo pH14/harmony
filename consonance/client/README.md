@@ -87,7 +87,7 @@ whole worker/session, so ambiguous transferred ownership cannot remain in a
 reusable session.
 
 The worker extension preserves every existing inner control-before/after and
-SDK request/response guard; it initially amortizes only outer exchanges.
+SDK response guard; it initially amortizes only outer exchanges.
 Execute plus Commit is the common two-exchange path, with bounded page exchanges
 when needed. New frame bounds must be checked after an opcode prefix and before
 allocating an endpoint request body. Page, commit, abort and Decision
@@ -123,9 +123,16 @@ from a write-sealed memfd. Admission rejects a program interpreter, dependent
 libraries, writable executable segments, unsupported executable mappings, and
 ambient loader overrides. It binds the sealed executable to the kernel-loaded
 mapping and measures the complete executable-map census, including the vDSO,
-each time the guard is checked. The full sealed-file digest is measured at
-admission and reused only while the file identity and seals remain stable;
-each recheck still compares every live executable byte with that file. An
+each time the guard is checked. Admission compares every live executable byte
+with the sealed file and measures the full file. Each recheck requires every
+live code and vDSO page to be unwritten, so a code write since admission fails
+the check even after its bytes are restored. `host-code-identity` describes
+this check. Session, cache, artifact and control boundaries run the full
+recheck, which also requires the same sealed file and executable mappings. The
+VMM's SDK response site runs only the page check on Linux and the full recheck
+on macOS, once per SDK exchange. Every recorded
+outcome is produced inside a control request, which full rechecks bracket, and
+a code write leaves a copied page that the next full recheck refuses. An
 ordinary GNU executable and a dynamic library whose constructor clears its
 loader variable are refused.
 
@@ -220,6 +227,23 @@ reserves SIGUSR1 process-wide, so every composition that arms a host bound
 shares this one guard. A request that returns as the bound expires claims the
 run and keeps its reply.
 
+`SessionConfig::with_boot_cache(dir)` keeps the setup snapshot of a booted
+session in `dir` and lets a later session with the same key restore it instead
+of booting. The key is SHA-256 over the session image identity (assurance,
+loaded executable, kernel, initramfs, RAM, seed, run budget, command line,
+identity tag, guest contract and setup payloads), the checkpoint-hash deferral
+flag, and the host: the `vendor_id`, `cpu family`, `model`, `stepping`,
+`microcode` and `flags` of every CPU in the thread's affinity mask, and the
+kernel `osrelease` and `version`. An entry holds the setup V-time, the sparse
+setup snapshot relative to the genesis snapshot, and a SHA-256 over its header
+and sidecar; the sidecar commits to the pages. A hit takes the genesis snapshot,
+imports the entry with the ordinary sparse-import checks, including the genesis
+RAM digest, and replays it, so the session's genesis and setup handles are the
+same as after a fresh boot. A missing, damaged or refused entry falls back to a
+fresh boot, which then rewrites the entry. Writes are atomic renames, and the
+directory keeps the four newest entries. The cache is used only on Linux x86
+and travels neither in the worker protocol nor in any identity.
+
 `SparseSnapshot` is the explicit `consonance-whole-vm-v2` archive shape used
 by adapters that need page and sidecar sharing across related checkpoints.
 Its serde fields remain `base`, `image_identity`, `pages`, and `sidecar`; the
@@ -249,7 +273,7 @@ Completed service exchanges contribute records in addition to normalized
 transport events; this count is not a guest-exit or diagnostic-log count.
 
 Embedded complete portable snapshots use format version 11; sparse sidecars use
-version 13. Older embedded versions are rejected. The outer sparse archive layout
+version 15. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
@@ -305,9 +329,19 @@ Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
 `shm_open` on macOS. Committed extents are never written again. An extent holds
 the pages a snapshot changed over its parent with their BLAKE3 hashes, the pages
 that returned to the setup content, and the sparse sidecar, with a SHA-256
-checksum over everything except the page data. Every 32 entries along a chain
+checksum over everything except the page data. Each page is stored as an LZ4
+block, or raw when LZ4 does not shrink it, and its row records the stored
+length. Guest pages compress about 8x, so the same budget keeps about 8 times
+as many snapshots and the search rebuilds fewer prefixes. Pages of 1,024 or
+more compress and decompress on one thread per available CPU. Every 32 entries along a chain
 the next entry stores its full page list over setup and becomes an anchor, so
 an import reads at most 32 extents.
+
+Extents cross a process boundary. The reader checks the extent checksum, and
+the VMM checks every imported page against its BLAKE3 hash before the snapshot
+store accepts it. The store hashes a page once, when it is written or
+imported, and later exports and restores read the stored hash without
+hashing the page again.
 
 `PageSegments::free` consumes a writable extent; callers cannot reclaim raw
 coordinates while retaining a slice of that range. Abandonment transfers a
@@ -325,8 +359,8 @@ sidecar with only the established logical CPU-state projections: init-valued
 x86 XSAVE restore presence and the Arm virtual timer's captured counter.
 Every other sidecar field stays in the commitment, and the original sidecar
 bytes remain in the extent for restore. Sparse delta export derives the
-sidecar's target-pages digest from all target pages that differ from setup,
-independently of the selected parent;
+sidecar's target-pages digest from the hashes of all target pages that differ
+from setup, independently of the selected parent;
 the sidecar also carries the setup RAM digest, canonical state suffix, VM
 state, SDK state, policy, control state and the separate ordered event-history
 commitment/count. Equal logical endpoints reached through different normalized
@@ -375,11 +409,18 @@ new segment at that limit evicts entries until a segment dies, or is refused. Th
 each worker's local snapshot store reports, so the cache gets what the stores
 leave. When nothing can be evicted the index refuses the extent and the worker
 keeps its snapshot local. A report that leaves the total over budget after
-eviction asks the worker with the largest store to shrink.
+eviction asks the worker with the largest store to shrink. It also asks any
+worker to shrink whose store is larger than at its last report that fit the
+budget. A busy worker with the largest store can go a minute or more without a
+report, and the other stores must not grow meanwhile.
+
+`Session::store_bytes` reports the snapshot store's page and VM-state bytes
+plus its index bytes, which include each layer's page table and lookup cache.
 
 `Session::publish_snapshot` exports a delta straight into an extent and
 publishes it. `Session::import_cached` resolves a chain into one page list over
-setup and imports it; the store checks each page against its hash and the
+setup, decompresses only the pages that list keeps, and imports it; the store
+checks each decompressed page against its hash and the
 sparse sidecar's complete target-page commitment. Hardware
 session cache extents carry the publishing session's image identity beside the
 sparse sidecar. Import checks every extent's identity before changing the
@@ -387,11 +428,33 @@ snapshot store, including when a caller passes a lease from another namespace.
 User-mode Linux root extents bind the launch identity, and later cache extents
 also bind the setup checkpoint digest. Their imports check the binding before
 creating a checkpoint, even when a caller passes a foreign lease.
-`cache::plan_memory` takes the free memory (the lower of `MemAvailable`
-and each enclosing cgroup's limit minus usage on Linux; free, file-backed and
-purgeable pages on macOS) less a 1 GiB reserve, fits as many workers as the
-cores allow with room for each guest and a minimum store, and gives the rest,
-after the guests, to the budget. It fails when one worker does not fit.
+`cache::plan_memory` takes the free memory less a 1 GiB reserve, the
+coordinator's need and one worker's transient need, fits as many workers as the cores allow with room for each
+worker and a minimum store, and gives the rest, after the workers, to the
+budget. It fails when one worker does not fit. `MemoryNeeds` names the
+coordinator, worker, minimum store and transient sizes; the caller derives them from the
+guest's configured memory. The transient need is memory one worker holds
+briefly beyond its share, such as an import's decompressed pages, and the plan
+keeps room for one. The coordinator's need is the memory it will still
+allocate, because its running process is already part of the usage. On Linux the free memory is the lower of
+`MemAvailable` and, for each enclosing cgroup, the lower of `memory.max` and
+`memory.high` minus usage. Usage is `memory.current` less clean page cache:
+the `file` count in `memory.stat` minus `shmem`, `file_dirty` and
+`file_writeback`. A build or file copy in the same cgroup therefore leaves the
+plan unchanged. On macOS the free memory is free, file-backed and purgeable
+pages.
+
+`LocalIndex::measured` also checks memory while the search runs. Before each
+extent allocation and store report it reads the free memory again, outside the
+index lock. Memory the index does not count (guests, worker processes, the
+coordinator, and the kernel) is the usage minus the cache and store bytes, so
+the budget that keeps the reserve free is the counted bytes plus the free
+memory, less the reserve, and never above the planned one. The index sets its
+budget to that value at each check and evicts entries or asks the largest store
+to shrink to fit it. A worker that briefly needs more memory, for example to
+decompress a long chain for an import, lowers the budget until that memory is
+free again. `CacheStats::lowest_budget` reports the lowest budget of the
+search.
 
 `WorkerSession` runs a `Session` in a child process, because Hypervisor.framework
 allows one VM per process. `WorkerLauncher` starts the child with one end of a
@@ -413,14 +476,14 @@ one length-prefixed request and reply. Guest hangs, abandoned sessions and other
 errors come back as the matching `SessionError`; a closed socket or a dead child
 marks the session abandoned. The index and every lease stay in the parent. A
 publish starts one EXPORT conversation. The child computes the sparse delta once
-and sends NEED_EXTENT from its destination-allocation callback. The parent
+compresses its pages, and sends NEED_EXTENT with the encoded length from its
+destination-allocation callback. The parent
 allocates a unique writable extent and returns EXTENT_READY with exactly one
-descriptor and the exact checked range. The child writes changed pages directly
+descriptor and the exact checked range. The child writes the compressed pages
 into that mapping, drops its writer and borrowed slices, and then acknowledges
 completion. The parent reads the extent and computes its commitment only after
-that acknowledgement. No complete serialized payload buffer or subsequent
-full-extent copy is retained in the child; page payloads still copy once into
-the destination, and metadata and sidecar allocations remain. The loaded-image
+that acknowledgement. The child holds the compressed pages, metadata and sidecar
+until the write; compressed pages copy once into the destination. The loaded-image
 handshake requires matching workers.
 The version 5 host image hello identifies qualification-aware INIT, descriptor-table
 IMPORT and transactional execution-endpoint commands. Both incompatible version 4
@@ -443,7 +506,7 @@ registration, mapping or additional pin survives the import. Namespace, pinned
 object commitment, actual pages/sidecar/state and post-reply lease checks remain
 mandatory on every call. Grouping uses bounded O(N*U) comparisons. Numeric wire
 metadata grows by `8 + 8*N` bytes per import versus the former envelope, even if U=N;
-U=N saves no descriptors. Store intern copies, per-use integrity verification,
+U=N saves no descriptors. Store intern copies,
 guest materialization and SDK guard work are unchanged. Existing physical I/O
 counters report actual U handles and copy counters retain actual N mappings;
 backing-reuse counters retain their original N/U per accepted operation meaning.
@@ -629,7 +692,7 @@ retains refused admission work when that boundary needs observation.
 
 Sites are `admission`, `session_boundary`, `launcher_before/after`,
 `rpc_before/after`, `receive`, `handled`, `sent`, `publication_before/after`,
-`control_before/after`, and `sdk_request/response`. Direct export uses four
+`control_before/after`, and `sdk_response`. Direct export uses four
 parent sites: `export_before` before EXPORT, `extent_requested` after the first
 reply (NEED_EXTENT or FAILED),
 `extent_allocated` after the allocator callback before FD handoff, and
@@ -653,7 +716,8 @@ checks or callbacks. Snapshot/replay does not rewind these host-work totals.
 
 Linux byte fields report actual live-code/vDSO reads, sealed executable code reads,
 SHA-256 input and comparison input, with admission-only full-file reads/hashes
-separate. Successful partial reads remain counted on refusal. ELF/proc metadata,
+separate. `code_page_entries` counts the code and vDSO pages checked.
+Successful partial reads remain counted on refusal. ELF/proc metadata,
 digest framing and cross-process child identity work are excluded. macOS exports
 no Linux byte leaves, while reporting its kernel signing state, static-signing
 and image-census stage attempts. A telemetry query replaces
@@ -710,16 +774,17 @@ number in `MIDR_EL1` on arm64, and `cpu_capacity` or the maximum frequency to
 rank the types. Linux then uses package/core identifiers and sibling lists to
 put one representative of each physical core before SMT siblings, retaining
 speed order within each pass. The quota applies to that order. The coordinator
-is the last included physical representative, reserved before worker assignment;
-it remains the same processor at every worker count. Workers use other physical
-cores before sharing those cores through SMT. A single physical core with
-multiple allowed threads necessarily shares that core with the coordinator.
+is the last included physical representative; it remains the same processor at
+every worker count. Workers use other physical cores before sharing those cores
+through SMT, and the last worker shares the coordinator's processor once every
+allowed CPU holds a worker. A faults search's coordinator waits on worker
+results almost all of the time, so a reserved core would sit idle.
 Missing topology falls back to package/core identifiers or individual logical
 CPUs; contradictory present sibling/core metadata is refused. `topology()`
 reports that knowledge, packages, highest data/unified shared cache and NUMA
 nodes. It never admits a CPU outside the original affinity and fastest class.
-`CorePool::plan` refuses more workers than the logical pool leaves room for.
-A pool of one logical CPU holds one worker and the coordinator together.
+`CorePool::max_workers` is the number of allowed logical CPUs, and
+`CorePool::plan` refuses more workers than that.
 `pin_current_thread` binds
 the calling thread to one core on Linux. A worker's guest runs on the thread
 that owns its session, so pinning that thread keeps the guest on one core. On
@@ -885,9 +950,9 @@ copies; borrowing their slices records no copy. The parent currently creates no
 such mappings. `Session` reports `copy.session.extent.*` (renamed
 `copy.child.session.extent.*` through a worker) for the completed logical
 `encoded_bytes` and actual output `metadata_copy_bytes` / `page_copy_bytes` at its
-final extent writer. UML exports do not emit these extent-copy counters. Padding is
-part of encoded length but not copied metadata. No E-byte temporary output buffer
-or temporary-to-extent copy exists in direct export, and no such charge is inferred.
+final extent writer. `page_copy_bytes` counts stored, mostly compressed, page
+bytes. UML exports do not emit these extent-copy counters. Direct export
+compresses pages into one buffer and copies that buffer once into the extent.
 Sidecar/row allocations remain separate and are not estimated from output length.
 
 `snapshot.copy.*` counts Store interning and read-into-buffer copies, forwarded
