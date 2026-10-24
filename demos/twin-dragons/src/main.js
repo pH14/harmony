@@ -1761,7 +1761,8 @@ function startSearch(level = bootLevel) {
           $("branch-tree").querySelector(`[data-search="${activeSearch}"]`).focus({ preventScroll: true });
 
         }
-        if (engine) selectState(state, initial).catch(fail);
+        if (tapeUrl) startTape();
+        else if (engine) selectState(state, initial).catch(fail);
         updateStats();
         drawMap(performance.now());
       } else if (data.type === "batch") {
@@ -3726,6 +3727,33 @@ async function acceptRom(choice, file, play) {
   else play();
 }
 
+const tapeUrl = params.get("tape");
+let tapeStarted = false;
+function startTape() {
+  if (tapeStarted || !engine || !ready) return;
+  tapeStarted = true;
+  watchTape().catch(fail);
+}
+async function watchTape() {
+  const tape = await (await fetch(new URL(tapeUrl, location.href))).json();
+  if (!Array.isArray(tape.actions) || !tape.actions.length || tape.actions.length > 10000) throw new Error("Unsupported tape");
+  const actions = tape.actions.map((a) => ({ buttons: a.buttons, frames: a.frames ?? a.hold_frames }));
+  for (const a of actions)
+    if (!Number.isInteger(a.buttons) || a.buttons < 0 || a.buttons > 255 || !Number.isInteger(a.frames) || a.frames < 1 || a.frames > game.maxActionFrames)
+      throw new Error("Invalid controller action");
+  const frames = actions.reduce((total, a) => total + a.frames, 0);
+  engine.restore(origin);
+  for (const a of actions) engine.run(a.buttons, a.frames);
+  const observation = engine.observation();
+  engine.restore(origin);
+  userSelected = true;
+  paused = true;
+  worker?.postMessage({ type: "pause" });
+  updateSearchControl();
+  mergeProgress(cleared, levelProgress(observation), bootLevel);
+  openInspector();
+  await selectState({ id: "tape", boot_level: bootLevel, actions, frames, observation }, true);
+}
 requestAnimationFrame(animate);
 createEngine(base, game, engineInputs)
   .then((e) => {
@@ -3734,13 +3762,14 @@ createEngine(base, game, engineInputs)
     originPixels = e.pixels();
     drawFilm();
     $("verification").textContent = "Original game";
+    if (tapeUrl) return startTape();
     const state = stateCache.get(0);
     if (state) selectState(state, true).catch(fail);
   })
   .catch(fail);
 const linkedLevel = params.has("level") ? Number(params.get("level")) : null;
 if (catalog.levels.some((level) => level.id === linkedLevel)) startSearch(linkedLevel);
-else if (liveView) startSearch(catalog.levels[0].id);
+else if (liveView || tapeUrl) startSearch(catalog.levels[0].id);
 else {
   askedForRom = true;
   $("new-search").onclick();

@@ -905,6 +905,13 @@ loader writes the stage byte `$53` 30 frames after Start. The observation's
 cleared count is the round times three plus the stage index, so clearing the
 rivets, and so round 1, marks the game finished.
 
+The `tape` URL parameter loads a saved winning input list, the `witness-input.json`
+that `nes-eval` writes, and replays it in the history panel with the search paused:
+`?game=donkey-kong&tape=/tapes/round1.json` after copying the file to
+`public/tapes/round1.json`. The replay starts at power-on for the first stage,
+so drag the history slider to the end to see round 1 beaten. The page checks that
+every action is a valid controller input before it runs the tape.
+
 Each map is one 256 × 224 screen. The map builder boots the stage, hides every
 sprite and draws the frame, then blanks the score line, the bonus box and the
 Kong that the forced stage draws white. The sprite sheet is Mario's 16 × 16
