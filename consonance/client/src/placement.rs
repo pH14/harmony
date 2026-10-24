@@ -254,7 +254,7 @@ fn fastest_pool(
 }
 
 #[cfg(target_os = "linux")]
-fn allowed_cpus() -> Result<BTreeSet<usize>, String> {
+pub(crate) fn allowed_cpus() -> Result<BTreeSet<usize>, String> {
     // SAFETY: cpu_set_t is a plain bit array for which all zero bits is the empty set.
     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
     // SAFETY: set is a live cpu_set_t of the size passed; pid 0 names the calling thread.

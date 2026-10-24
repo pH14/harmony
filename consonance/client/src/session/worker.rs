@@ -1160,6 +1160,7 @@ fn put_config(out: &mut Out, config: &SessionConfig) {
 
 fn take_config(input: &mut In<'_>) -> io::Result<SessionConfig> {
     Ok(SessionConfig {
+        boot_cache: None,
         guest_contract: match input.u8()? {
             0 => super::GuestContract::Ordinary,
             1 => super::GuestContract::NestedHost,
@@ -2734,7 +2735,7 @@ mod tests {
             sidecar.extend_from_slice(b"HMSESS01");
             sidecar.extend_from_slice(&[0; 32]);
             sidecar.extend_from_slice(b"HMSSNAP1");
-            sidecar.extend_from_slice(&13u16.to_le_bytes());
+            sidecar.extend_from_slice(&14u16.to_le_bytes());
             sidecar.extend_from_slice(&4u16.to_le_bytes());
             for len in [vm_state.len() as u64, 0, policy.len() as u64, 1, 0] {
                 sidecar.extend_from_slice(&len.to_le_bytes());

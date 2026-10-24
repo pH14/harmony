@@ -55,6 +55,14 @@ impl<'store> SnapshotReadTransaction<'store> {
         Ok(self.transaction.read_page(snap, gfn)?)
     }
 
+    pub(crate) fn page_hash(
+        &mut self,
+        snap: SnapshotId,
+        gfn: u64,
+    ) -> Result<&'store snapshot_store::PageHash, SnapshotError> {
+        Ok(self.transaction.page_hash(snap, gfn)?)
+    }
+
     pub(crate) fn verify_snapshots(&mut self, snaps: &[SnapshotId]) -> Result<(), SnapshotError> {
         Ok(self.transaction.verify_snapshots(snaps)?)
     }

@@ -138,14 +138,29 @@ mod platform {
         let at = repeated.setup_at();
         assert_eq!(continuation(&mut repeated, at)?, expected);
         drop(repeated);
+        let cache = tempfile::tempdir()?;
+        let cached_config = config.clone().with_boot_cache(cache.path());
+        let mut stored = None;
+        for _ in 0..2 {
+            let mut cached = Session::new_with_config(&kernel, &initramfs, cached_config.clone())?;
+            let entries = fs::read_dir(cache.path())?.collect::<std::io::Result<Vec<_>>>()?;
+            assert_eq!(entries.len(), 1);
+            let entry = (entries[0].path(), entries[0].metadata()?.modified()?);
+            assert!(stored.as_ref().is_none_or(|first| *first == entry));
+            stored = Some(entry);
+            assert_eq!(capture(&mut cached, 0)?, setup);
+            let at = cached.setup_at();
+            assert_eq!(continuation(&mut cached, at)?, expected);
+        }
         let mut varied = Session::new_with_config(
             &kernel,
             &initramfs,
             SessionConfig {
                 seed: 7,
-                ..config.clone()
+                ..cached_config.clone()
             },
         )?;
+        assert_eq!(fs::read_dir(cache.path())?.count(), 2);
         let varied_setup = capture(&mut varied, 0)?;
         assert_ne!(varied_setup.observation[..8], setup.observation[..8]);
         assert_ne!(varied_setup.observation[8..16], setup.observation[8..16]);

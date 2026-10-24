@@ -56,6 +56,8 @@ pub struct SessionConfig {
     pub wall_limit: Option<Duration>,
     #[serde(default)]
     pub defer_virtual_time_checkpoint_hashes: bool,
+    #[serde(default)]
+    pub boot_cache: Option<std::path::PathBuf>,
 }
 
 impl Default for SessionConfig {
@@ -70,6 +72,7 @@ impl Default for SessionConfig {
             identity_tag: String::new(),
             wall_limit: None,
             defer_virtual_time_checkpoint_hashes: false,
+            boot_cache: None,
         }
     }
 }
@@ -87,6 +90,7 @@ impl SessionConfig {
             identity_tag: String::new(),
             wall_limit: None,
             defer_virtual_time_checkpoint_hashes: false,
+            boot_cache: None,
         }
     }
 
@@ -117,6 +121,12 @@ impl SessionConfig {
     #[must_use]
     pub fn with_deferred_virtual_time_checkpoint_hashes(mut self) -> Self {
         self.defer_virtual_time_checkpoint_hashes = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_boot_cache(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.boot_cache = Some(dir.into());
         self
     }
 
@@ -922,7 +932,7 @@ pub fn identity_with_config_and_payloads(
 
 fn format_session_identity(image_identity: [u8; 32], config: &SessionConfig) -> String {
     format!(
-        "consonance-session-v5;assurance=ordinary-unqualified-v1;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v4",
+        "consonance-session-v5;assurance=ordinary-unqualified-v1;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v5",
         bytes_hex(&image_identity),
         config.ram_bytes,
         config.seed,

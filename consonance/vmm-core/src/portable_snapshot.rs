@@ -28,7 +28,7 @@ const MAX_CONTROL_LEN: usize = MAX_SDK_LEN;
 #[cfg(test)]
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
-const SPARSE_VERSION: u16 = 13;
+const SPARSE_VERSION: u16 = 14;
 const SPARSE_FLAG_SDK: u16 = 1;
 const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
 const SPARSE_FLAG_TARGET_PAGES: u16 = 1 << 2;
@@ -1467,7 +1467,7 @@ mod tests {
         assert_eq!(MAX_CONTROL_LEN, MAX_SDK_LEN);
         assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
         assert_eq!(SPARSE_MAGIC, *b"HMSSNAP1");
-        assert_eq!(SPARSE_VERSION, 13);
+        assert_eq!(SPARSE_VERSION, 14);
         assert_eq!(
             (
                 SPARSE_FLAG_SDK,
