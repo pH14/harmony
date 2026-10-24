@@ -5,6 +5,7 @@ pub mod arcade;
 pub mod castlevania;
 pub mod chord;
 pub mod famidash;
+pub mod ice_climbers;
 pub mod metroid;
 pub mod mm2;
 pub mod nes_backend;

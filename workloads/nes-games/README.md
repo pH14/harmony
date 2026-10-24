@@ -3,8 +3,8 @@
 # NES game logic
 
 `nes-games` holds the game logic of the NES workloads: Super Mario Bros., Mega
-Man 2, Metroid, Castlevania, Super Tilt Bro, Twin Dragons, Famidash, Punch-Out!! and The Legend of
-Zelda. It builds for the
+Man 2, Metroid, Castlevania, Super Tilt Bro, Twin Dragons, Famidash, Punch-Out!!, The Legend of
+Zelda and Ice Climber. It builds for the
 host and for `wasm32-unknown-unknown`, so the browser demo can run the same
 game logic as the native workload.
 
@@ -29,7 +29,7 @@ test constructors and the scripted Super Tilt Bro machine to the tests of
 Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Punch-Out!! and Zelda
 also have a `campaign` module with their `Workload` implementation.
 `CastlevaniaGame<M>`, `TwinDragonsGame<M>`, `FamidashGame<M, GROUP>`, `SmbGame<M, P>`, `Mm2Game<M>`,
-`MetroidGame<M>`, `PunchOutGame<M>` and `ZeldaGame<M>` are
+`MetroidGame<M>`, `PunchOutGame<M>`, `ZeldaGame<M>` and `IceClimbersGame<M>` are
 generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
 native one passes a QuickNES or Consonance factory, and `demos/twin-dragons`

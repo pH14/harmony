@@ -198,7 +198,7 @@ cargo clippy --manifest-path workloads/nes/Cargo.toml --all-features --all-targe
 ```
 
 The [Mega Man 2](src/mm2/README.md),
-[Metroid](src/metroid/README.md), [Castlevania](src/castlevania/README.md), [Punch-Out!!](src/punchout/README.md) and [Zelda](src/zelda/README.md) READMEs document their input and observation maps. Campaign streams
+[Metroid](src/metroid/README.md), [Castlevania](src/castlevania/README.md), [Punch-Out!!](src/punchout/README.md), [Zelda](src/zelda/README.md) and [Ice Climber](src/ice_climbers/README.md) READMEs document their input and observation maps. Campaign streams
 and checkpoints retain their versioned workload identities across crate moves.
 
 The `tools` directory contains NES movie conversion and trace utilities.

@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     castlevania::target::CastlevaniaSnapshot,
     famidash::target::FamidashSnapshot,
+    ice_climbers::target::IceClimbersSnapshot,
     metroid::target::MetroidSnapshot,
     mm2::target::Mm2Snapshot,
     nes_backend::SnapshotState,
@@ -33,6 +34,8 @@ pub trait EndpointIdentity: Serialize {
 impl EndpointIdentity for CastlevaniaSnapshot {}
 
 impl EndpointIdentity for FamidashSnapshot {}
+
+impl EndpointIdentity for IceClimbersSnapshot {}
 
 impl EndpointIdentity for MetroidSnapshot {}
 

@@ -8,6 +8,7 @@ pub mod castlevania;
 pub mod eval;
 pub mod famidash;
 pub mod film;
+pub mod ice_climbers;
 #[cfg(unix)]
 pub mod live;
 pub mod prepare;
