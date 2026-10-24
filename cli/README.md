@@ -8,9 +8,9 @@ search budgets, named searches and branches and command dispatch.
 ## Start an application
 
 ```sh
-harmony init
-harmony prepare
+harmony init path/to/Dockerfile
 harmony check
+harmony prepare
 harmony search --name baseline --for 10m
 harmony list
 harmony show baseline
@@ -22,10 +22,25 @@ harmony search --from debugging --name neighborhood
 
 `init` infers a language from recognized project files when unambiguous. Use
 `--language c|rust|go|python|java` when needed. It never overwrites a recipe.
-`init IMAGE` sets the application image name. `search` prepares configured builds
-automatically. `prepare` builds and validates without executing; `check` checks
-runner availability, provisions runtime artifacts and reports admission.
-Neither command infers application readiness or correctness.
+`init IMAGE` sets the application image name and uses the image's bundle.
+`init DOCKERFILE` (a file named `Dockerfile`, `Containerfile`, `Dockerfile.*`,
+`*.Dockerfile` or `*.Containerfile`, in any case) writes a recipe that builds the image
+`harmony-DIRECTORY:local`, where DIRECTORY is the Dockerfile's directory. The
+build context is the root of the Git repository that holds the Dockerfile, or
+the Dockerfile's directory outside a repository. With no input and no
+recognized language, `init` uses a `Dockerfile` or `Containerfile` in the
+configuration directory. `search` prepares configured builds automatically.
+`prepare` builds and validates without executing; `check` checks runner
+availability, provisions runtime artifacts and reports admission. When a
+configured build has not run yet, `check` says so and skips admission. Neither
+command infers application readiness or correctness.
+
+A Dockerfile build runs `docker build`, or `podman build --format docker`
+because the OCI format ignores `SHELL`. When the Dockerfile declares
+`ARG HARMONY_RUNTIME_IMAGE`, `prepare` first builds the language runtime image
+with `workloads/languages/build-runtime.sh` and passes its tag as that build
+argument. `workload.options.build.args` adds build arguments to a Dockerfile
+build, for example `args = { NATS_VERSION = "v2.10.23" }`.
 
 An OCI image selects the faults workload. A `.nes` input selects the NES workload.
 Use `--package` to override inference. This is convenience dispatch owned by the
