@@ -909,6 +909,11 @@ the opponent index (`$0001`) before the fight starts. The fight then runs with
 the game's own round logic. The cleared count is the opponent index, so it
 counts the opponents beaten before the current fight.
 
+A saved winning tape replays from power-on in the history panel. Copy the
+`witness-input.json` that `nes-eval` writes to `public/tapes/punch-out.json`,
+then open `?game=punch-out&tape=/tapes/punch-out.json`. Drag the history slider
+to the end to see the last state.
+
 The player trail and heatmap plot fight state, not the boxer's position. The
 x position is the opponent's health lost, and the y position is Mac's health
 lost, each scaled to the 256 by 224 map. The RAM address for Mac's position is
