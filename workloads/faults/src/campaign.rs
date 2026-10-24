@@ -314,7 +314,7 @@ impl FaultCampaignConfig {
             stop_rollout_on_objective: true,
             stop_campaign_on_objective: true,
             archive_entry_limit: self.archive_entry_limit,
-            window: 16 * default_window(self.workers),
+            window: default_window(self.workers),
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: FaultCampaignRun {
@@ -1976,6 +1976,28 @@ mod tests {
                 keys: 5,
             }
         );
+    }
+
+    #[test]
+    fn search_reserves_one_job_per_worker() {
+        for workers in [1, 3, 7] {
+            let config = FaultCampaignConfig {
+                campaign_seed: 1,
+                vocabulary: FaultVocabulary::new(3, vec![]).unwrap(),
+                workers,
+                execution_budget: 10,
+                host: "host".to_owned(),
+                wall_budget: None,
+                archive_entry_limit: 16,
+                memory_budget_mib: None,
+                materialize_final_artifacts: false,
+                retention: RetentionPolicy::Unprobed,
+                mixture: DrawMixture::AlphabetOnly,
+                objective_witness_path: None,
+                placement: None,
+            };
+            assert_eq!(config.generic().window, default_window(workers));
+        }
     }
 
     #[test]

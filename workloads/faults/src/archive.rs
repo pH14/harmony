@@ -229,10 +229,6 @@ pub fn sample_profiled_action(
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
     };
     let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
-    let mut alternatives = vec![0, 1, 2, 3];
-    if !vocabulary.hooks().is_empty() {
-        alternatives.push(4);
-    }
     let node_mask = u64::MAX >> (64 - vocabulary.nodes());
     let event_ready = event_ready & node_mask;
     let several = vocabulary.nodes() > 1;
@@ -1311,7 +1307,6 @@ mod tests {
             action_cost(&FaultOperation::Kill(4, TICKS).into()),
             50 + ACTION_HOST_TICKS
         );
-        assert_eq!(action_cost(&FaultOperation::Kill(4, TICKS).into()), 50);
         assert_eq!(
             action_cost(&FaultOperation::Wait(std::num::NonZeroU16::new(8192).unwrap()).into()),
             8192 + ACTION_HOST_TICKS

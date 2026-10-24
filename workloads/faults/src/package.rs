@@ -950,6 +950,7 @@ mod live {
             console: target.console_evidence()?,
             settlement: false,
         }];
+        visit(0, target)?;
         for (index, action) in actions.iter().enumerate() {
             target.apply_replayed(*action);
             timeline.push(super::ReplayStep {
@@ -992,6 +993,7 @@ mod live {
             if target.actions().len() == before {
                 break;
             }
+            visit(target.actions().len() as u64, target)?;
             settle_actions = settle_actions.saturating_add(1);
             settle_ticks = settle_ticks.saturating_add(u64::from(ticks));
             if !watch(target.observation()) {
