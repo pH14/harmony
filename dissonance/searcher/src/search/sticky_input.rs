@@ -44,12 +44,40 @@ impl StickyInput {
         output
     }
 
+    pub fn block_with(
+        &mut self,
+        frames: usize,
+        chunk_limit: NonZeroU64,
+        mut step: impl FnMut(&mut RomuDuoJrRand, u8) -> Result<u8, Box<dyn std::error::Error>>,
+    ) -> Result<Vec<(u8, u64)>, Box<dyn std::error::Error>> {
+        let mut output: Vec<(u8, u64)> = Vec::new();
+        for _ in 0..frames {
+            let buttons = self.buttons;
+            if self.random.below_u64(self.denominator) == 0 {
+                self.buttons = step(&mut self.random, self.buttons)?;
+            }
+            if let Some((previous, length)) = output.last_mut()
+                && *previous == buttons
+                && *length < chunk_limit.get()
+            {
+                *length += 1;
+            } else {
+                output.push((buttons, 1));
+            }
+        }
+        Ok(output)
+    }
+
     pub fn next_frame(&mut self) -> u8 {
         let current = self.buttons;
-        for bit in 0..u8::BITS {
-            let mask = 1_u8 << bit;
-            if self.mask & mask != 0 && self.random.below_u64(self.denominator) == 0 {
-                self.buttons ^= mask;
+        if self.random.below_u64(self.denominator) == 0 {
+            let choices = self.mask.count_ones() as usize + 1;
+            let chosen = self.random.below(NonZeroUsize::new(choices).unwrap());
+            if let Some(bit) = (0..u8::BITS)
+                .filter(|bit| self.mask & (1 << bit) != 0)
+                .nth(chosen)
+            {
+                self.buttons ^= 1 << bit;
             }
         }
         current
@@ -65,8 +93,13 @@ mod tests {
     fn preserves_initial_byte_and_changes_only_enabled_buttons() {
         let mut input = StickyInput::new(17, 0b1010_0000, 0b0000_0011, NonZeroU64::MIN);
         assert_eq!(input.next_frame(), 0b1010_0000);
-        assert_eq!(input.next_frame(), 0b1010_0011);
-        assert_eq!(input.next_frame(), 0b1010_0000);
+        let mut previous = 0b1010_0000;
+        for _ in 0..4096 {
+            let next = input.next_frame();
+            assert_eq!(next & !3, 0b1010_0000);
+            assert!((next ^ previous).count_ones() <= 1);
+            previous = next;
+        }
     }
 
     #[test]
@@ -83,6 +116,46 @@ mod tests {
             })
             .collect();
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn adapter_transition_preserves_control_groups_across_chunks() {
+        fn step(
+            random: &mut super::RomuDuoJrRand,
+            previous: u8,
+        ) -> Result<u8, Box<dyn std::error::Error>> {
+            Ok(
+                match random.below(std::num::NonZeroUsize::new(3).unwrap()) {
+                    0 => previous ^ 1,
+                    1 => previous ^ 2,
+                    _ => previous,
+                },
+            )
+        }
+        let mut a = StickyInput::new(51, 0, 3, NonZeroU64::new(120).unwrap());
+        let mut b = StickyInput::new(51, 0, 3, NonZeroU64::new(120).unwrap());
+        let expand = |chunks: Vec<(u8, u64)>| {
+            chunks
+                .into_iter()
+                .flat_map(|(buttons, n)| std::iter::repeat_n(buttons, n as usize))
+                .collect::<Vec<_>>()
+        };
+        let whole = expand(
+            a.block_with(4096, NonZeroU64::new(120).unwrap(), step)
+                .unwrap(),
+        );
+        let mut parts = Vec::new();
+        for n in [17, 103, 1, 3975] {
+            parts.extend(expand(
+                b.block_with(n, NonZeroU64::new(64).unwrap(), step).unwrap(),
+            ));
+        }
+        assert_eq!(whole, parts);
+        assert!(
+            whole
+                .windows(2)
+                .all(|pair| (pair[0] ^ pair[1]).count_ones() <= 1)
+        );
     }
 
     #[test]

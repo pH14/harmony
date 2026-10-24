@@ -1205,14 +1205,19 @@ unsupported for these modes. These explicit limits keep the experiment from
 silently dropping state or telemetry; parallel execution and checkpoint resume
 remain unfinished.
 
-`sticky_input::StickyInput` is the frame-level input primitive for the revised
-experiment. It carries a controller byte across block boundaries and flips each
-enabled bit independently after emitting a frame. One job samples a reciprocal
-power-of-two flip probability from scales spanning one frame through the
-existing longest-hold support. The powers of two provide the requested
-log-spaced prior without fitting a game-specific rate. The selected rate stays
-fixed across blocks; run length has geometric support with no duration cap.
-The adapter supplies the controller's enabled-bit mask. This primitive is shared by live execution and ordinary stream replay.
+`sticky_input::StickyInput` carries a controller byte across block boundaries.
+At a geometric hold boundary it calls the workload's ordinary stateful control
+transition; it never flips controller bits independently. One job samples a
+reciprocal power-of-two boundary probability from scales spanning one frame
+through the existing longest-hold support. The rate stays fixed across blocks,
+and holds have no duration cap. Chunk limits affect serialization only. SMB
+uses its existing D-pad/A/B/no-change transition, so only hold persistence
+changes. Live execution and ordinary replay share this primitive.
+
+Mainline suffix doubling already restarts barren, surviving, in-place jobs
+with longer suffixes, from one action through 64. Chaining instead continues
+from the endpoint before restoring the selected snapshot. Long jobs are
+expected under doubling and are not evidence of an invalid control.
 
 Workloads without adaptive duration requests may refresh selected input timing
 after table/alphabet/splice selection and before suffix truncation and duplicate

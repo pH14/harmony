@@ -440,7 +440,7 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
             if matches!(self.config, World::PassiveClock(_)) {
                 "weighted_hold_bands_v1".into()
             } else if matches!(self.config, World::Vertical(_)) {
-                "vertical-two-bit-uniform-holds-2-64-v1".into()
+                "vertical-one-control-uniform-holds-2-64-v2".into()
             } else if let World::Crossing(w) = &self.config
                 && w.action_denominator.is_some()
             {
@@ -486,10 +486,11 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
             return Err("sticky adapter requires vertical world".into());
         }
         input
-            .block(
+            .block_with(
                 usize::try_from(work.get())?,
                 std::num::NonZeroU64::new(u64::from(vertical::LONGEST_HOLD)).unwrap(),
-            )
+                |rand, previous| Ok(vertical::step_buttons(rand, previous)),
+            )?
             .into_iter()
             .map(|(buttons, frames)| Ok(vertical::action(buttons, u8::try_from(frames)?)))
             .collect()
@@ -518,7 +519,7 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
     fn sample_alphabet(
         &self,
         _: &(),
-        _: Option<&u8>,
+        previous: Option<&u8>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<u8, Box<dyn Error>> {
         if let World::PassiveClock(w) = &self.config {
@@ -528,7 +529,10 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
             return Ok(w.sample(rand));
         }
         if matches!(self.config, World::Vertical(_)) {
-            let buttons = rand.below(NonZeroUsize::new(4).unwrap()) as u8;
+            let buttons = vertical::step_buttons(
+                rand,
+                previous.copied().unwrap_or(0) & vertical::CONTROLLER_MASK,
+            );
             return Ok(vertical::action(buttons, vertical::sample_hold(rand)));
         }
         Ok(self

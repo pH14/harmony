@@ -17,6 +17,14 @@ pub fn duration(action: u8) -> u8 {
     (action >> 2) + 1
 }
 
+pub fn step_buttons(rand: &mut searcher::search::rand::RomuDuoJrRand, previous: u8) -> u8 {
+    match rand.below(std::num::NonZeroUsize::new(3).unwrap()) {
+        0 => previous ^ UP,
+        1 => previous ^ RIGHT,
+        _ => previous,
+    }
+}
+
 pub fn sample_hold(rand: &mut searcher::search::rand::RomuDuoJrRand) -> u8 {
     2 + rand.below(std::num::NonZeroUsize::new(usize::from(LONGEST_HOLD - 1)).unwrap()) as u8
 }

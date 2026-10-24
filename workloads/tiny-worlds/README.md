@@ -822,3 +822,8 @@ Chaining can be selected for every panel family with `search.input_mode` set to
 family exposes only event phase and goal, excluding elapsed time. A block spans
 the longest available hold (one action for unit-cost worlds). Sticky controller
 input remains specific to the vertical family.
+
+The vertical experiment uses one-control transitions: UP, RIGHT, or no change
+with equal odds. Ordinary and sticky input share this transition. Ordinary
+holds keep the world's 2–64-frame support; sticky holds use geometric persistence.
+The earlier independent-bit sticky scores are historical and require rescoring.

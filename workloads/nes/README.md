@@ -407,13 +407,10 @@ Full campaign exports write `checkpoint.bin` using the generic framed snapshot
 codec. Snapshot artifacts use the same codec through fixture tools, package exports,
 and SMB stream readers/writers; flat JSON checkpoint files are no longer written.
 
-The experimental SMB input policy separates selected controller symbols from
-their recorded hold lengths. Table and splice selection otherwise copy short
-holds disproportionately. After selection, holds are sampled uniformly between
-the vocabulary's existing minimum and maximum (2–120 frames), including the gap
-between the former strata. This is a maximum-entropy bounded timing prior, with
-no new game-specific bound or fitted probability. The ASCII `HOLDTIME` seed
-domain separates timing randomness from symbol selection. The policy identifier
-is `selected_symbols_independent_uniform_holds_v1`; live selection and replay
-apply the same transformation. This is the common input repair for all four
-experimental arms, not a change to adaptive duration, retention or energy.
+Experimental sticky SMB input preserves the chord transition described above
+and replaces only hold persistence with geometric holds. Ordinary and chaining
+arms keep the mainline two-mode hold draw. The earlier uniform 2–120 timing
+refresh was removed; short medians at wrapped-coordinate roots did not establish
+that the duration draw had collapsed. Job length also depends on parent suffix
+doubling, which does not grow on terminal jobs and resets after retention or
+leaving the place.
