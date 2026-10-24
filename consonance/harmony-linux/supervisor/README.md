@@ -124,6 +124,9 @@ digest change to the edge-crossings and edge-digest registers. These are
 coverage evidence only: they do not advance the disturbance generation or the
 pending-fault fence.
 
+A process window addressed to node `EVERY_NODE` (`u16::MAX`) applies its
+kill, pause or restart to every node at once.
+
 The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the
 generic process actions and event protocol and does not depend on that workload.

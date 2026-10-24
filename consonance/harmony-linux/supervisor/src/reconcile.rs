@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use process_proto::events::ParkTarget;
-use process_proto::{ProcessAction, ProcessWindow, WireError, decode_process_windows};
+use process_proto::{EVERY_NODE, ProcessAction, ProcessWindow, WireError, decode_process_windows};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EventPark {
@@ -120,6 +120,17 @@ impl ActiveWindows {
 
     #[must_use]
     pub fn node(&self, node: u16) -> NodeActions {
+        let own = self.entry(node);
+        let every = self.entry(EVERY_NODE);
+        NodeActions {
+            kill: own.kill || every.kill,
+            pause: own.pause || every.pause,
+            restart: own.restart || every.restart,
+            event_park: own.event_park,
+        }
+    }
+
+    fn entry(&self, node: u16) -> NodeActions {
         self.nodes
             .binary_search_by_key(&node, |entry| entry.0)
             .map(|index| self.nodes[index].1)
@@ -173,6 +184,18 @@ impl ActiveWindows {
 mod tests {
     use super::*;
     use process_proto::{PROCESS_CLASS, Window, encode_standing, encode_target};
+
+    #[test]
+    fn a_window_for_every_node_applies_to_each_node() {
+        let mut active = ActiveWindows::new();
+        active.insert(EVERY_NODE, &ProcessAction::Kill, 0);
+        active.insert(1, &ProcessAction::Pause(5), 0);
+        assert!(active.node(0).kill);
+        assert!(active.node(1).kill);
+        assert!(active.node(1).pause);
+        assert!(!active.node(0).pause);
+        assert_eq!(active.pending_process_faults(&[]), 2);
+    }
 
     #[test]
     fn process_windows_decode_into_per_node_flags() {
