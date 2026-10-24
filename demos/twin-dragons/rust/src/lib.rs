@@ -4,6 +4,7 @@ mod campaign;
 mod famidash;
 mod mega_man;
 mod metroid;
+mod punchout;
 mod smb;
 mod twin_dragons;
 

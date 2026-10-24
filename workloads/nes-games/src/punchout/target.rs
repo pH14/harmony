@@ -234,6 +234,24 @@ impl<M: NesBackend<Vec<u8>>> PunchOutTarget<M> {
         }
     }
 
+    pub fn snapshot_of_state(
+        &mut self,
+        state: &Vec<u8>,
+        frame_count: u64,
+    ) -> Result<PunchOutSnapshot, Box<dyn Error>> {
+        self.machine
+            .restore_nes(state)
+            .map_err(|error| error.to_string())?;
+        let wram = read_wram(&self.machine).map_err(|error| error.to_string())?;
+        let decoded = decode_state(&wram).map_err(|error| error.to_string())?;
+        self.failed = false;
+        self.current_wram = wram;
+        self.observation = Self::make_observation(frame_count, decoded);
+        self.action_observations = vec![self.observation.clone()];
+        self.snapshot()
+            .ok_or_else(|| "failed to snapshot the restored state".into())
+    }
+
     fn fail(&mut self) {
         self.failed = true;
     }
