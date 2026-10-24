@@ -3735,7 +3735,9 @@ function startTape() {
   watchTape().catch(fail);
 }
 async function watchTape() {
-  const tape = await (await fetch(new URL(tapeUrl, location.href))).json();
+  const response = await fetch(new URL(tapeUrl, location.href));
+  if (!response.ok) throw new Error("Tape not found");
+  const tape = await response.json();
   if (!Array.isArray(tape.actions) || !tape.actions.length || tape.actions.length > 10000) throw new Error("Unsupported tape");
   const actions = tape.actions.map((a) => ({ buttons: a.buttons, frames: a.frames ?? a.hold_frames }));
   for (const a of actions)
