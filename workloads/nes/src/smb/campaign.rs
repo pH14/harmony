@@ -1271,7 +1271,7 @@ mod tests {
             .filter_map(|record| match record {
                 SmbCampaignStreamRecord::Job(job) => job.draw_checkpoint_before,
                 SmbCampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
-                SmbCampaignStreamRecord::End(_) => None,
+                SmbCampaignStreamRecord::Cancel(_) | SmbCampaignStreamRecord::End(_) => None,
             })
             .collect::<Vec<_>>();
         assert!(

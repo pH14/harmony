@@ -50,9 +50,7 @@ use crate::search::telemetry::{
 mod coordinator;
 
 use coordinator::WorkerResult;
-pub use coordinator::{
-    CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, WallDeadline, run_job,
-};
+pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
 
 pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
 
@@ -105,6 +103,8 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a determini
      campaign state; the same seed, configuration, origin, and workload bytes produce the same \
      recorded stream";
 
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
 const EXECUTOR_MODE: &str = "snapshot_resume_archive";
 const SELECTION_SEED_DERIVATION: &str = "sha256(campaign_seed_le)[0..8] as u64 le";
@@ -118,6 +118,7 @@ pub struct CampaignExecutionOptions {
     pub work_budget: Option<u64>,
     pub checkpoints: Option<CheckpointPlan>,
     pub placement: Option<ThreadPlacement>,
+    pub interrupt: Option<&'static std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -960,8 +961,6 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub duration_checkpoint_after: Option<DurationCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suffix_limit: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deadline_actions: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -997,10 +996,26 @@ pub struct CampaignSkipRecord<C, K = ()> {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignCancelRecord {
+    pub reservation: u64,
+    pub parent_id: u64,
+    pub mutation_seed: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub splice: Option<CampaignSpliceRecord>,
+    pub selector: SelectorDraw,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix_limit: Option<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CampaignEndRecord {
     pub jobs: u64,
     pub skips: u64,
     pub executions_completed: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub jobs_cancelled: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1009,6 +1024,7 @@ pub struct CampaignEndRecord {
 pub enum CampaignStreamRecord<C, K = ()> {
     Job(CampaignJobRecord<C, K>),
     Skip(CampaignSkipRecord<C, K>),
+    Cancel(CampaignCancelRecord),
     End(CampaignEndRecord),
 }
 
@@ -1064,6 +1080,10 @@ pub struct CampaignModeReport<A: Ord, R> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_budget: Option<u64>,
     pub executions_completed: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub jobs_cancelled: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executions_to_first_objective: Option<u64>,
     pub wall_budget_seconds: Option<u64>,
@@ -2857,6 +2877,8 @@ fn build_report<G: Workload>(
         stop_campaign_on_objective: header.stop_campaign_on_objective,
         work_budget: header.work_budget,
         executions_completed,
+        jobs_cancelled: 0,
+        interrupted: false,
         executions_to_first_objective: counters.executions_to_first_objective,
         wall_budget_seconds: header.wall_budget_seconds,
         archive_entry_limit: header.archive_entry_limit,
@@ -3631,7 +3653,7 @@ where
     let placement = placement.as_ref();
     let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
     let first_worker_start = Mutex::new(first_worker_start);
-    let wall_deadline = std::sync::OnceLock::new();
+    let cancel = std::sync::OnceLock::new();
     let mut coordinator = None;
     let pool_outcome = with_worker_pool_routed(
         config.workers,
@@ -3651,13 +3673,7 @@ where
             let reservation = job.reservation;
             let outcome = watch
                 .run(&job, || {
-                    run_job(
-                        workload,
-                        config,
-                        target,
-                        &job,
-                        wall_deadline.get().copied().flatten(),
-                    )
+                    run_job(workload, config, target, &job, cancel.get().cloned())
                 })
                 .map_err(|error| error.to_string());
             Ok((reservation, outcome))
@@ -3679,9 +3695,9 @@ where
                 progress.map(|sink| -> &mut dyn Write { sink }),
                 options,
             )?);
-            wall_deadline
-                .set(campaign.wall_deadline())
-                .map_err(|_| "the campaign wall deadline was set twice")?;
+            cancel
+                .set(campaign.cancellation())
+                .map_err(|_| "the campaign cancel flag was set twice")?;
             watch.start(campaign)?;
             bootstrapped.send(())?;
             drop(bootstrapped);
@@ -3705,8 +3721,12 @@ where
                     break;
                 }
                 let receive_started = profile_now();
-                let reply = match pool.receive() {
-                    Ok(reply) => reply,
+                let reply = match pool.receive_timeout(STOP_POLL_INTERVAL) {
+                    Ok(Some(reply)) => reply,
+                    Ok(None) => {
+                        campaign.stop_if_due()?;
+                        continue;
+                    }
                     Err(WorkerPoolError::RepliesClosed) => {
                         let reservation = campaign
                             .next_admission()
@@ -3796,6 +3816,9 @@ where
                         Err(error) => return Err(error.into()),
                     };
                 }
+            }
+            if campaign.stopped() {
+                pool.discard_queued();
             }
             pool.close();
             Ok(())
@@ -4536,10 +4559,33 @@ where
             Option<CampaignSpliceRecord>,
         ),
     >::new();
+    let mut replay_cancelled = 0_u64;
     for (index, line) in record_lines.iter().enumerate() {
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
+        if replay_cancelled > 0 && !matches!(record, CampaignStreamRecord::Cancel(_)) {
+            return Err("campaign stream records work after its cancelled jobs".into());
+        }
         let before = match record {
+            CampaignStreamRecord::Cancel(cancel) => {
+                if replay_job_reservations
+                    .insert(
+                        cancel.reservation,
+                        (
+                            cancel.parent_id,
+                            cancel.suffix_limit,
+                            cancel.mutation_seed,
+                            cancel.selector.path,
+                            cancel.splice.clone(),
+                        ),
+                    )
+                    .is_some()
+                {
+                    return Err("campaign stream records one reservation twice".into());
+                }
+                replay_cancelled = replay_cancelled.saturating_add(1);
+                None
+            }
             CampaignStreamRecord::Job(job) => {
                 if replay_job_reservations
                     .insert(
@@ -4788,8 +4834,10 @@ where
     {
         return Err("campaign replay selected work after its work budget".into());
     }
+    let interrupted = end.as_ref().is_some_and(|end| end.interrupted);
     if require_terminal
         && header.wall_budget_seconds.is_none()
+        && !interrupted
         && !stop_reservations_after_objective(
             header.stop_campaign_on_objective,
             core.objective_witness.is_some(),
@@ -5219,17 +5267,6 @@ where
                 }
                 last_admitted = Some((finish, replay_job_slot));
                 replay_planned_clock = finish;
-                if let Some(actions) = job.deadline_actions {
-                    let actions = usize::try_from(actions)?;
-                    if actions == 0 || actions >= suffix.len() {
-                        return Err(format!(
-                            "replayed job {} stopped at its deadline outside its suffix",
-                            job.sequence
-                        )
-                        .into());
-                    }
-                    suffix.truncate(actions);
-                }
                 let job_execution_work_before = workload.execution_work(&target);
                 let result = workload.execute_job_certified(
                     &replay_run,
@@ -5424,6 +5461,7 @@ where
                 }
                 if require_terminal
                     && header.wall_budget_seconds.is_none()
+                    && !interrupted
                     && u64::try_from(next_slot)? < header.execution_budget
                     && !stop_reservations_after_objective(
                         header.stop_campaign_on_objective,
@@ -5518,15 +5556,55 @@ where
                     counters.note_first_objective(sequence);
                 }
             }
+            CampaignStreamRecord::Cancel(cancel) => {
+                let slot = usize::try_from(cancel.reservation)?;
+                let (_, _, _, snapshot_id) = replay_job_snapshots
+                    .remove(&slot)
+                    .ok_or("recorded cancelled job was never selected or was admitted")?;
+                let selector_tier_limit = replay_job_tier_limits
+                    .remove(&slot)
+                    .ok_or("recorded cancelled job has no rebuilt selection tier bound")?;
+                verify_selector_annotation(&cancel.selector, header.archive_entry_limit)?;
+                verify_selector_observed_tiers(&cancel.selector, selector_tier_limit)?;
+                verify_selector_preference::<G::Key>(&cancel.selector)?;
+                replay_selections.remove(&slot);
+                replay_continuations.remove(&slot);
+                core.finish_suffix_job(cancel.parent_id, replay_job_suffix_limits[slot]);
+                core.archive.unpin_job_origin(snapshot_id);
+                core.archive.unpin_metadata(cancel.parent_id);
+                for metadata_id in &replay_job_metadata[slot] {
+                    if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
+                        *uses = uses.saturating_sub(1);
+                        if *uses == 0 {
+                            replay_metadata_uses.remove(metadata_id);
+                        }
+                    }
+                }
+                core.archive
+                    .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
+            }
             CampaignStreamRecord::End(_) => {
                 return Err("campaign stream has a premature terminal record".into());
             }
         }
     }
-    if let Some(end) = end
+    if require_terminal
+        && replay_cancelled > 0
+        && !interrupted
+        && header.wall_budget_seconds.is_none()
+        && !stop_reservations_after_objective(
+            header.stop_campaign_on_objective,
+            core.objective_witness.is_some(),
+        )
+    {
+        return Err("campaign stream cancelled jobs without a stop that drops them".into());
+    }
+    if let Some(end) = &end
         && (end.jobs != u64::try_from(replay_job_parents.len())?
             || end.skips != counters.duplicates_skipped
-            || end.executions_completed != core.sequence)
+            || end.executions_completed != core.sequence
+            || end.jobs_cancelled != replay_cancelled
+            || !replay_job_snapshots.is_empty())
     {
         return Err("campaign stream terminal counts diverged".into());
     }
@@ -5559,6 +5637,8 @@ where
     if !require_terminal {
         outcome.0.mode = "campaign-prefix".to_owned();
     }
+    outcome.0.jobs_cancelled = replay_cancelled;
+    outcome.0.interrupted = interrupted;
     Ok(outcome)
 }
 
@@ -5680,6 +5760,7 @@ mod tests {
         live: std::sync::atomic::AtomicUsize,
         most: std::sync::atomic::AtomicUsize,
         objective_after_work: std::sync::atomic::AtomicU64,
+        jobs_started: std::sync::atomic::AtomicU64,
         action_hook: Mutex<Option<Arc<TestActionHook>>>,
         selections: std::sync::atomic::AtomicUsize,
         hang_divisor: std::sync::atomic::AtomicU8,
@@ -5734,6 +5815,8 @@ mod tests {
         static FINALIZATION: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, false)) };
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static JOB_CANCEL: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
+        static JOB_INDEX: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -6242,6 +6325,13 @@ mod tests {
             retention: RetentionPolicy,
             stop: crate::search::rollout::RolloutStop,
         ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
+            JOB_CANCEL.with(|cancel| *cancel.borrow_mut() = stop.cancellation().cloned());
+            let index = self.targets.as_ref().map_or(0, |targets| {
+                targets
+                    .jobs_started
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            });
+            JOB_INDEX.with(|job| job.set(index));
             let result = crate::search::rollout::execute_job(
                 self,
                 run,
@@ -6626,6 +6716,32 @@ mod tests {
         .expect("failed parent is a reportable preparation failure");
         assert!(result.actions.is_empty());
         assert_eq!(result.preparation_failure, Some(vec![()]));
+    }
+
+    #[test]
+    fn a_cancelled_job_stops_replaying_its_prefix() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut target = TestTarget::default();
+        let snapshot = workload.snapshot(&mut target).expect("snapshot");
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let stop = crate::search::rollout::RolloutStop::new(false).with_cancel(Some(cancel));
+        let result = crate::search::rollout::execute_job(
+            &workload,
+            &(),
+            &mut target,
+            &snapshot,
+            &[TestAction::new(1, 1), TestAction::new(2, 1)],
+            (),
+            &[TestAction::new(4, 1)],
+            RetentionPolicy::Unprobed,
+            stop,
+        )
+        .expect("a cancelled job returns without error");
+        assert!(result.actions.is_empty());
+        assert_eq!(target.value, 0);
     }
 
     #[test]
@@ -7082,7 +7198,7 @@ mod tests {
         assert!(records.iter().all(|record| match record {
             CampaignStreamRecord::Job(job) => job.decisions.is_empty(),
             CampaignStreamRecord::End(_) => true,
-            CampaignStreamRecord::Skip(_) => false,
+            CampaignStreamRecord::Skip(_) | CampaignStreamRecord::Cancel(_) => false,
         }));
         assert_eq!(live.hung_jobs, u64::try_from(jobs).unwrap());
         assert_eq!(u64::from(live.archive.marker), live.hung_jobs);
@@ -7268,11 +7384,12 @@ mod tests {
             None,
         )
         .expect("live objective-stop campaign");
-        assert_eq!(stopped.executions_completed, 2);
+        assert_eq!(stopped.executions_completed, 1);
+        assert_eq!(stopped.jobs_cancelled, 1);
         let (replayed_stopped, _) =
             replay_campaign_checkpointed(&workload, &stopped_stream, None, None)
-                .expect("in-flight job remains replayable after an objective stop");
-        assert_eq!(replayed_stopped.executions_completed, 2);
+                .expect("a cancelled job stays replayable after an objective stop");
+        assert_eq!(replayed_stopped, stopped);
         let mut lines = std::str::from_utf8(&stream)
             .unwrap()
             .lines()
@@ -9215,7 +9332,6 @@ mod tests {
                 },
                 0,
                 String::new(),
-                None,
             ))
         };
         let mut buffer =
@@ -9617,39 +9733,101 @@ mod tests {
                     .expect("stream record parses")
                 {
                     CampaignStreamRecord::Job(job) => Some((index, job)),
-                    CampaignStreamRecord::Skip(_) => None,
-                    CampaignStreamRecord::End(_) => None,
+                    CampaignStreamRecord::Skip(_)
+                    | CampaignStreamRecord::Cancel(_)
+                    | CampaignStreamRecord::End(_) => None,
                 }
             })
             .collect()
     }
 
+    fn slow_targets(suffix_actions: usize, pause: Duration) -> Arc<LiveTargets> {
+        let targets = Arc::new(LiveTargets {
+            suffix_actions: Some(suffix_actions),
+            ..LiveTargets::default()
+        });
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |_| {
+            std::thread::sleep(pause);
+            Ok(())
+        }));
+        targets
+    }
+
+    const BLOCKED_JOB_LIMIT: Duration = Duration::from_secs(120);
+
+    #[allow(clippy::disallowed_methods)]
+    fn block_until_cancelled() -> Result<(), String> {
+        let cancel = JOB_CANCEL
+            .with(|cancel| cancel.borrow().clone())
+            .ok_or("the job has no cancel flag")?;
+        let started = Instant::now();
+        while !cancel.load(std::sync::atomic::Ordering::Acquire) {
+            if started.elapsed() >= BLOCKED_JOB_LIMIT {
+                return Err("the blocked job was never cancelled".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok(())
+    }
+
+    fn cancelled_reservations(stream: &[u8]) -> Vec<u64> {
+        stream_records(stream)
+            .into_iter()
+            .filter_map(|record| match record {
+                CampaignStreamRecord::Cancel(cancel) => Some(cancel.reservation),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn replaying(objective_after_work: u64) -> TestWorkload {
+        let targets = slow_targets(64, Duration::ZERO);
+        targets
+            .objective_after_work
+            .store(objective_after_work, std::sync::atomic::Ordering::SeqCst);
+        TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        }
+    }
+
+    fn assert_replay_matches(
+        live: &super::CampaignModeReport<TestAction, TestArchiveReport>,
+        stream: &[u8],
+        objective_after_work: u64,
+    ) {
+        let replayed =
+            replay_campaign_checkpointed(&replaying(objective_after_work), stream, None, None)
+                .expect("a stream with cancelled jobs replays");
+        assert_eq!(&replayed.0, live);
+    }
+
     #[test]
-    fn a_wall_budget_ends_the_running_job_and_replay_follows_the_cut() {
+    fn a_wall_budget_drops_the_jobs_in_flight_and_replays() {
         let targets = Arc::new(LiveTargets {
             suffix_actions: Some(64),
             ..LiveTargets::default()
         });
         *targets.action_hook.lock().unwrap() = Some(Arc::new(|_| {
-            std::thread::sleep(Duration::from_millis(40));
-            Ok(())
+            if JOB_INDEX.with(std::cell::Cell::get) >= 2 {
+                block_until_cancelled()
+            } else {
+                Ok(())
+            }
         }));
         let workload = TestWorkload {
             bootstrap_objective: false,
-            targets: Some(Arc::clone(&targets)),
+            targets: Some(targets),
         };
         let mut config = three_worker_config();
         config.workers = 2;
         config.window = 2;
         config.execution_budget = 1_000_000;
         config.wall_budget = Some(Duration::from_secs(1));
-        workload
-            .executable_identity()
-            .expect("the test executable has an identity");
         let mut stream = Vec::new();
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
-        run_campaign_checkpointed(
+        let (live, _) = run_campaign_checkpointed(
             &workload,
             &config,
             &CampaignOrigin::Genesis,
@@ -9658,48 +9836,233 @@ mod tests {
         )
         .expect("the campaign ends at its wall budget");
         let elapsed = started.elapsed();
-        assert!(elapsed < Duration::from_millis(1_500), "{elapsed:?}");
+        assert!(elapsed < BLOCKED_JOB_LIMIT / 2, "{elapsed:?}");
+        let cancelled = cancelled_reservations(&stream);
+        assert!(!cancelled.is_empty());
+        assert_eq!(live.jobs_cancelled, u64::try_from(cancelled.len()).unwrap());
+        assert!(!live.interrupted);
         let jobs = job_lines(&stream);
-        let (cut_line, cut) = jobs
-            .iter()
-            .find(|(_, job)| job.deadline_actions.is_some())
-            .expect("a job ran past the wall budget");
-        let cut_actions = cut.deadline_actions.expect("cut length");
-        assert!(cut_actions > 0 && cut_actions < 64, "{cut_actions}");
-        let replaying = TestWorkload {
-            bootstrap_objective: false,
-            targets: Some(Arc::new(LiveTargets {
-                suffix_actions: Some(64),
-                ..LiveTargets::default()
-            })),
-        };
-        replay_campaign_checkpointed(&replaying, &stream, None, None)
-            .expect("replay follows the recorded cut");
-        let forge = |deadline_actions: serde_json::Value| -> Vec<u8> {
-            let lines = std::str::from_utf8(&stream)
-                .expect("stream is text")
-                .lines()
-                .enumerate()
-                .map(|(index, line)| {
-                    if index != *cut_line {
-                        return line.to_owned();
-                    }
-                    let mut record: serde_json::Value =
-                        serde_json::from_str(line).expect("job record parses");
-                    record["deadline_actions"] = deadline_actions.clone();
-                    serde_json::to_string(&record).expect("job record encodes")
-                })
-                .collect::<Vec<_>>();
-            format!("{}\n", lines.join("\n")).into_bytes()
-        };
-        for forged in [serde_json::json!(0), serde_json::json!(64)] {
-            let error = replay_campaign_checkpointed(&replaying, &forge(forged), None, None)
-                .expect_err("a cut outside the suffix must break replay");
-            assert!(error.to_string().contains("outside its suffix"), "{error}");
-        }
+        assert!(!jobs.is_empty());
+        assert_eq!(
+            live.executions_completed,
+            u64::try_from(jobs.len()).unwrap()
+        );
         assert!(
-            replay_campaign_checkpointed(&replaying, &forge(serde_json::Value::Null), None, None)
-                .is_err()
+            jobs.iter()
+                .all(|(_, job)| !cancelled.contains(&job.reservation))
+        );
+        assert_replay_matches(&live, &stream, 0);
+    }
+
+    fn objective_stop_config() -> CampaignConfig<TestWorkload> {
+        let mut config = three_worker_config();
+        config.execution_budget = 1_000_000;
+        config.stop_rollout_on_objective = true;
+        config.stop_campaign_on_objective = true;
+        config
+    }
+
+    fn objective_stop_run_with(
+        options: CampaignExecutionOptions,
+    ) -> (
+        super::CampaignModeReport<TestAction, TestArchiveReport>,
+        Vec<u8>,
+    ) {
+        let targets = slow_targets(64, Duration::from_millis(2));
+        targets
+            .objective_after_work
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed_with_options(
+            &workload,
+            &objective_stop_config(),
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            options,
+        )
+        .expect("the campaign stops at its first objective");
+        (live, stream)
+    }
+
+    fn objective_stop_run() -> (
+        super::CampaignModeReport<TestAction, TestArchiveReport>,
+        Vec<u8>,
+    ) {
+        objective_stop_run_with(CampaignExecutionOptions::default())
+    }
+
+    #[test]
+    fn a_search_stopped_with_jobs_in_flight_leaves_a_checkpoint_that_resumes() {
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-stopped-checkpoint-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let (live, _) = objective_stop_run_with(CampaignExecutionOptions {
+            checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                directory: directory.clone(),
+                every: std::num::NonZeroU64::new(1_000_000),
+                on_marks: false,
+                on_top_progress: false,
+                checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
+            }),
+            ..CampaignExecutionOptions::default()
+        });
+        assert!(live.jobs_cancelled > 0);
+        let mut checkpoints = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "ckpt")
+            })
+            .collect::<Vec<_>>();
+        checkpoints.sort();
+        let path = checkpoints
+            .pop()
+            .expect("the stopped search wrote a checkpoint");
+        let mut config = objective_stop_config();
+        config.execution_budget = live.executions_completed + 8;
+        run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            },
+            &config,
+            &CampaignOrigin::SearchCheckpoint {
+                path,
+                expected_sha256: None,
+            },
+            &mut Vec::new(),
+            None,
+        )
+        .expect("the checkpoint of a stopped search resumes");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn the_first_objective_drops_the_jobs_in_flight_deterministically() {
+        let (live, stream) = objective_stop_run();
+        assert_eq!(live.objectives_reached, 1);
+        let cancelled = cancelled_reservations(&stream);
+        assert!(!cancelled.is_empty());
+        assert_eq!(live.jobs_cancelled, u64::try_from(cancelled.len()).unwrap());
+        let jobs = job_lines(&stream);
+        let (_, last) = jobs.last().expect("an admitted job");
+        assert!(
+            last.decisions
+                .contains(&CampaignAdmissionDecision::Objective)
+        );
+        assert_eq!(
+            live.executions_completed,
+            u64::try_from(jobs.len()).unwrap()
+        );
+        assert_eq!(cancelled.len(), 2);
+        assert_replay_matches(&live, &stream, 1);
+        let (again, again_stream) = objective_stop_run();
+        assert_eq!(again_stream, stream);
+        assert_eq!(again, live);
+    }
+
+    #[test]
+    fn replay_rejects_a_cancelled_selector_outside_the_selection_history() {
+        let (_, stream) = objective_stop_run();
+        let text = String::from_utf8(stream).unwrap();
+        let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+        let cancel = lines
+            .iter()
+            .position(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "cancel"
+            })
+            .expect("a cancel record");
+        let mut record: serde_json::Value = serde_json::from_str(&lines[cancel]).unwrap();
+        record["selector"]["tier_rank"] = serde_json::json!(255);
+        lines[cancel] = serde_json::to_string(&record).unwrap();
+        let error =
+            replay_campaign_checkpointed(&replaying(1), lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified a cancelled selector outside the selection history")
+                .to_string();
+        assert!(error.contains("tier rank"), "{error}");
+    }
+
+    #[test]
+    fn an_interrupt_drops_the_jobs_in_flight_and_marks_the_stream() {
+        static INTERRUPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let actions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let targets = Arc::new(LiveTargets {
+            suffix_actions: Some(64),
+            ..LiveTargets::default()
+        });
+        let counted = Arc::clone(&actions);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |_| {
+            if counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 300 {
+                INTERRUPT.store(true, std::sync::atomic::Ordering::Release);
+                return block_until_cancelled();
+            }
+            Ok(())
+        }));
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let mut config = three_worker_config();
+        config.execution_budget = 1_000_000;
+        let mut stream = Vec::new();
+        #[allow(clippy::disallowed_methods)]
+        let started = Instant::now();
+        let (live, _) = run_campaign_checkpointed_with_options(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                interrupt: Some(&INTERRUPT),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .expect("an interrupted campaign still reports");
+        let elapsed = started.elapsed();
+        assert!(elapsed < BLOCKED_JOB_LIMIT / 2, "{elapsed:?}");
+        assert!(live.interrupted);
+        assert!(actions.load(std::sync::atomic::Ordering::SeqCst) < 300 + 3 * 64);
+        let cancelled = cancelled_reservations(&stream);
+        assert!(!cancelled.is_empty());
+        assert_eq!(live.jobs_cancelled, u64::try_from(cancelled.len()).unwrap());
+        assert_eq!(
+            live.executions_completed,
+            u64::try_from(job_lines(&stream).len()).unwrap()
+        );
+        assert_replay_matches(&live, &stream, 0);
+        let mut unterminated = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>();
+        unterminated.pop();
+        replay_campaign_prefix_checkpointed(
+            &replaying(0),
+            unterminated.join("\n").as_bytes(),
+            None,
+            None,
+        )
+        .expect("a prefix that ends in cancelled jobs replays");
+        let unmarked = std::str::from_utf8(&stream)
+            .unwrap()
+            .replace(",\"interrupted\":true", "");
+        let error = replay_campaign_checkpointed(&replaying(0), unmarked.as_bytes(), None, None)
+            .expect_err("an unmarked early end does not replay");
+        assert!(
+            error
+                .to_string()
+                .contains("cancelled jobs without a stop that drops them"),
+            "{error}"
         );
     }
 

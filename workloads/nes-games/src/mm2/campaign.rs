@@ -500,7 +500,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop) {
+        if outcome.should_stop(&stop) {
             break;
         }
     }

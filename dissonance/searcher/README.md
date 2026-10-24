@@ -104,9 +104,10 @@ reads the identity once before writing the stream and uses the same value for it
 checkpoints. Replay reconstructs adaptive mixture weights from each admitted
 result at the original reservation boundary and rejects job or skip weights
 that the recorded policy could not have produced. When the recorded policy
-stops the campaign on an objective, replay rejects work selected after it while allowing jobs
-already reserved in the admission window to finish. The same admission-window
-rule applies when cumulative work reaches the recorded work budget. Schema version 14
+stops the campaign on an objective, replay rejects work selected after it and
+expects the jobs reserved in the admission window at that point as `cancel`
+records. When cumulative work reaches the recorded work budget, replay allows
+the jobs already reserved in the admission window to finish. Schema version 14
 requires the loaded executable identity and records the reservation that owns each
 duplicate skip. Replay checks that skips follow
 selection order, stay within the admission window, and do not exceed the live
@@ -190,13 +191,22 @@ received results and reports the first missing planned reservation. Target
 recreation failure is an external failure, so its timing can change which
 outstanding jobs complete before the failure is reported.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
-At the wall-time limit the coordinator stops reserving and admits the jobs
-already in its window. Each worker checks the limit after every action and
-ends its job there. The job record keeps the job's planned finish for the whole
-suffix and adds `deadline_actions`, the number of actions the job ran. Replay
-cuts the redrawn suffix to that number and rejects a number that is zero or
-reaches the suffix length. A search ends within its limit plus one action, plus
-the restore and replay of a job dispatched just before the limit. Every
+The coordinator stops at once at the wall-time limit, after admitting the first
+objective when the policy stops the campaign on objectives, and when
+`CampaignExecutionOptions::interrupt` is set. It checks for a stop at least
+every 50 ms. It sets the cancel flag that `RolloutStop::cancelled` reads, so a
+worker ends its job at the next action boundary, and a workload with long
+actions can also end the running action. It drops every job in flight or held
+for ordered admission. A dropped job is never admitted and counts as neither an
+execution nor a finding. The stream records each dropped reservation as a
+`cancel` record, after every job and skip record, with the parent, mutation
+seed, selector draw, splice and suffix limit that replay needs to redraw it.
+The end record carries `jobs_cancelled`, and `interrupted` for an interrupt.
+Replay redraws the same selections, checks the count and admits only the
+recorded jobs, so a finding's actions come only from admitted jobs. An
+interrupted stream may end before the reservations a budget or objective stop
+would require. A hang stop and an execution or work budget still let the jobs
+in flight finish. Every
 workload searches with `default_window(workers)`, one reservation per worker.
 A wider window also makes each selection miss the results of more jobs in
 flight, which slows how fast lineages grow.
