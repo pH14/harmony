@@ -3726,6 +3726,24 @@ where
         self.selector_accounting.clone()
     }
 
+    pub(crate) fn entry_selector_counters(&self, index: usize) -> Option<EntrySelectorCounters> {
+        Some(EntrySelectorCounters {
+            selected: *self.selected.get(index)?,
+            productive: *self.productive.get(index)?,
+        })
+    }
+
+    pub(crate) fn inspection_selector(&self) -> SelectorAccounting {
+        let mut accounting = self.selector_counters();
+        accounting.draws_by_cell = self
+            .cells
+            .iter()
+            .filter(|(_, state)| state.draws_total > 0)
+            .map(|(cell, state)| (format!("{cell:?}"), state.draws_total))
+            .collect();
+        accounting
+    }
+
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_counters();
         accounting.draws_by_cell = self
