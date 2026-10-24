@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+use std::error::Error;
+
+use crate::{
+    nes_backend::NesBackend,
+    search::draw::DrawMixture,
+    zelda::{
+        campaign::{ZeldaCampaignRun, ZeldaGame},
+        target::{
+            MODE_PLAY, ZeldaMechanicalState, ZeldaObservations, ZeldaSnapshot, ZeldaTarget,
+            decode_state,
+        },
+    },
+};
+use machine::nes::WRAM_SIZE;
+use serde::{Deserialize, Serialize};
+
+use super::{ArcadeGame, HIDDEN, Machines};
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub struct View {
+    mode: u8,
+    level: u8,
+    room: u8,
+    x: u8,
+    y: u8,
+    health: u16,
+    containers: u8,
+    rupees: u8,
+    sword: u8,
+    items: u16,
+    triforce: u8,
+    cleared: u8,
+}
+
+fn view(state: ZeldaMechanicalState) -> View {
+    View {
+        mode: state.mode,
+        level: state.level,
+        room: state.room,
+        x: state.x,
+        y: state.y,
+        health: state.health(),
+        containers: state.containers(),
+        rupees: state.rupees,
+        sword: state.sword,
+        items: state.items,
+        triforce: state.triforce,
+        cleared: state.triforce_pieces(),
+    }
+}
+
+impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for ZeldaGame<M> {
+    type Machine = M;
+    type View = View;
+
+    fn arcade(rom: &[u8], identity: &str, identity_sha256: &str, machines: Machines<M>) -> Self {
+        Self::with_targets(
+            rom,
+            identity,
+            identity_sha256,
+            Box::new(move || {
+                ZeldaTarget::from_power_on(machines().map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())
+            }),
+        )
+    }
+
+    fn run() -> ZeldaCampaignRun {
+        ZeldaCampaignRun
+    }
+
+    fn mixture() -> DrawMixture {
+        DrawMixture::EnergySplice { scale: 6 }
+    }
+
+    fn motion(wram: &[u8; WRAM_SIZE]) -> [u16; 4] {
+        match decode_state(wram) {
+            Ok(state) if state.mode == MODE_PLAY => [
+                u16::from(state.level) << 8 | u16::from(state.room),
+                u16::from(state.x),
+                u16::from(state.y),
+                state.health(),
+            ],
+            _ => [HIDDEN, 0, 0, 0],
+        }
+    }
+
+    fn memory_cleared(memory: &[u8]) -> u8 {
+        decode_state(memory).map_or(0, ZeldaMechanicalState::triforce_pieces)
+    }
+
+    fn memory_view(memory: &[u8]) -> Result<View, Box<dyn Error>> {
+        Ok(view(decode_state(memory)?))
+    }
+
+    fn view(observation: &ZeldaObservations) -> View {
+        view(observation.decoded)
+    }
+
+    fn frame_count(observation: &ZeldaObservations) -> u64 {
+        observation.frame_count
+    }
+
+    fn cleared(observation: &ZeldaObservations) -> u8 {
+        observation.decoded.triforce_pieces()
+    }
+
+    fn snapshot_frame_count(snapshot: &ZeldaSnapshot) -> u64 {
+        snapshot.observation.frame_count
+    }
+
+    fn emulator_state(snapshot: &ZeldaSnapshot) -> &[u8] {
+        &snapshot.emulator_state
+    }
+}

@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+pub mod castlevania;
 pub mod famidash;
 pub mod feed;
 pub mod mega_man;
 pub mod metroid;
+pub mod punchout;
 pub mod smb;
 pub mod trail;
 pub mod twin_dragons;
+pub mod zelda;
 
 use std::{error::Error, sync::Arc};
 

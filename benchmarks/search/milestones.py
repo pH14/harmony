@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect executions to each Metroid or Mega Man 2 milestone per build, seed and cell.
+"""Collect executions to each Metroid, Mega Man 2, Punch-Out!!, Zelda or Castlevania milestone per build, seed and cell.
 
 Each source is either a matrix directory written by `eval.py run` or a results
 JSON written by `eval.py` holding cell summaries under `rows`. For every
@@ -63,7 +63,63 @@ MM2_MILESTONES = (
     + ["ending"]
 )
 
-MILESTONES = {"metroid": METROID_MILESTONES, "mm2": MM2_MILESTONES}
+PUNCHOUT_OPPONENTS = [
+    "glass_joe",
+    "von_kaiser",
+    "piston_honda",
+    "don_flamenco",
+    "king_hippo",
+    "great_tiger",
+    "bald_bull",
+    "piston_honda_2",
+    "soda_popinski",
+    "bald_bull_2",
+    "don_flamenco_2",
+    "mr_sandman",
+    "super_macho_man",
+    "mr_dream",
+]
+PUNCHOUT_MILESTONES = [f"{opponent}_defeated" for opponent in PUNCHOUT_OPPONENTS]
+
+ZELDA_MILESTONES = (
+    ["wooden_sword", "white_sword", "magic_sword"]
+    + [
+        "raft",
+        "ladder",
+        "bow",
+        "candle",
+        "recorder",
+        "power_bracelet",
+        "magic_key",
+        "magic_rod",
+        "boomerang",
+        "book",
+    ]
+    + [f"triforce_{level}" for level in range(1, 9)]
+    + ["ending"]
+)
+
+CASTLEVANIA_BOSSES = {3: "phantom_bat", 6: "medusa", 9: "mummies", 12: "frankenstein", 15: "death", 18: "dracula"}
+CASTLEVANIA_MILESTONES = [
+    name
+    for stage in range(1, 19)
+    for name in [f"stage_{stage:02}_entered"]
+    + (
+        [f"{CASTLEVANIA_BOSSES[stage]}_engaged"]
+        + (["dracula_second_form"] if stage == 18 else [])
+        + [f"{CASTLEVANIA_BOSSES[stage]}_defeated"]
+        if stage in CASTLEVANIA_BOSSES
+        else []
+    )
+] + ["ending"]
+
+MILESTONES = {
+    "metroid": METROID_MILESTONES,
+    "mm2": MM2_MILESTONES,
+    "punchout": PUNCHOUT_MILESTONES,
+    "zelda": ZELDA_MILESTONES,
+    "castlevania": CASTLEVANIA_MILESTONES,
+}
 
 
 def last_line(path, window=1 << 20):
@@ -194,7 +250,7 @@ def main():
     for source in arguments.sources:
         name, rows = collect(source)
         if not rows:
-            print(f"== {name}: no Metroid or Mega Man 2 cells", file=sys.stderr)
+            print(f"== {name}: no Metroid, Mega Man 2, Punch-Out!! or Zelda cells", file=sys.stderr)
             continue
         for game in sorted({row["game"] for row in rows}):
             game_rows = [row for row in rows if row["game"] == game]

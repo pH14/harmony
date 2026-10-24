@@ -7,10 +7,12 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    castlevania::target::CastlevaniaSnapshot,
     famidash::target::FamidashSnapshot,
     metroid::target::MetroidSnapshot,
     mm2::target::Mm2Snapshot,
     nes_backend::SnapshotState,
+    punchout::target::PunchOutSnapshot,
     search::{
         archive::{Input, RetentionPolicy},
         campaign::Workload,
@@ -19,6 +21,7 @@ use crate::{
     smb::target::SmbSnapshot,
     stb::target::StbSnapshot,
     twin_dragons::target::TwinDragonsSnapshot,
+    zelda::target::ZeldaSnapshot,
 };
 
 pub trait EndpointIdentity: Serialize {
@@ -27,15 +30,21 @@ pub trait EndpointIdentity: Serialize {
     }
 }
 
+impl EndpointIdentity for CastlevaniaSnapshot {}
+
 impl EndpointIdentity for FamidashSnapshot {}
 
 impl EndpointIdentity for MetroidSnapshot {}
 
 impl EndpointIdentity for Mm2Snapshot {}
 
+impl EndpointIdentity for PunchOutSnapshot {}
+
 impl EndpointIdentity for StbSnapshot {}
 
 impl EndpointIdentity for TwinDragonsSnapshot {}
+
+impl EndpointIdentity for ZeldaSnapshot {}
 
 impl<P: SnapshotState> EndpointIdentity for SmbSnapshot<P> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
