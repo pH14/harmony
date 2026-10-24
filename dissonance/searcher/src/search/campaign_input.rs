@@ -93,7 +93,6 @@ pub(crate) fn execute_input_job<G: Workload>(
     let mut milestones = job.parent_milestones;
     let mut previous_key = None;
     let mut suffix = job.suffix.clone();
-    let block_len = suffix.len();
     let minimum_work = if chaining {
         workload.continuation_block_work(&config.run)
     } else {
@@ -212,7 +211,7 @@ pub(crate) fn execute_input_job<G: Workload>(
                 path.last(),
             )?;
             workload.refresh_selected_input_timing(&config.run, seed, &mut suffix)?;
-            suffix.truncate(block_len);
+            suffix.truncate(1);
             if suffix.is_empty() {
                 break;
             }
@@ -265,7 +264,7 @@ pub(crate) fn execute_input_job<G: Workload>(
             path.last(),
         )?;
         workload.refresh_selected_input_timing(&config.run, seed, &mut suffix)?;
-        suffix.truncate(block_len);
+        suffix.truncate(1);
     }
     workload.finish_live_job(target, before, &mut result)?;
     workload.verify_integrity()?;
