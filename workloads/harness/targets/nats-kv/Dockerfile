@@ -161,4 +161,14 @@ COPY workloads/harness/targets/nats/setup.sh workloads/harness/targets/nats/node
 
 RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh
 
+# NATS_SYNC=always (the default) makes JetStream fsync every write
+# (`sync_interval: always`). NATS_SYNC=default keeps the server's periodic sync.
+ARG NATS_SYNC=always
+RUN case "${NATS_SYNC}" in \
+        default) ;; \
+        always) printf 'jetstream {\n  sync_interval: always\n}\n' > /opt/harmony/nats.conf ;; \
+        *) echo "unsupported NATS_SYNC: ${NATS_SYNC}" >&2; exit 1 ;; \
+    esac \
+    && command -v mkfs.ext4
+
 CMD ["/opt/harmony/node.sh", "n1", "1"]
