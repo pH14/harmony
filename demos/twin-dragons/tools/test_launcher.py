@@ -218,7 +218,7 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual(build.call_count, 1)
             request = json.loads((Path(directory) / "arcade/runs" / run.id / "request.json").read_text())
             self.assertEqual(request["live"], "127.0.0.1:0")
-            self.assertEqual(request["core"], str(core))
+            self.assertEqual(request["core"], str(core.resolve()))
             assert run.process is not None
             self.assertIsNone(run.process.poll())
             launch.stop(run)
