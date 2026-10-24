@@ -437,6 +437,10 @@ power cut is outside the documented loss. A replay of `actions.json` on the
 default image can diverge from the run, so search the default image to check a
 finding that needs a power cut.
 
+NATS 2.11 and later depend on the Antithesis SDK's no-op module. The build
+moves that dependency to the instrumentation's SDK version, so any release from
+2.10 to 2.15 builds with `NATS_VERSION` and `NATS_SOURCE_SHA256`.
+
 Each client maps every value it has written or read to that value's
 revision. A `cas` from `old` updates with `old`'s revision. When the revision
 is unknown, it first reads the key and fails definitely unless the key holds
