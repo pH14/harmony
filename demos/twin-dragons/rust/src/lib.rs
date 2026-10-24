@@ -6,6 +6,7 @@ mod mega_man;
 mod metroid;
 mod smb;
 mod twin_dragons;
+mod zelda;
 
 use nes_games::arcade::snapshot_digest;
 use searcher::search::{

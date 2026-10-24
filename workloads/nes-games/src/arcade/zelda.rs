@@ -34,6 +34,21 @@ pub struct View {
     cleared: u8,
 }
 
+const CARTRIDGE_BYTES: usize = 0x2000;
+const SCREEN_WIDTH: i32 = 256;
+const SCREEN_HEIGHT: i32 = 168;
+const PLAY_TOP: i32 = 64;
+const LINK_DIRECTION: usize = 0x98;
+const FACING_LEFT: u8 = 0x02;
+
+fn position(state: ZeldaMechanicalState) -> (u16, u16) {
+    let column = i32::from(state.room & 15);
+    let row = i32::from(state.room >> 4);
+    let x = column * SCREEN_WIDTH + i32::from(state.x);
+    let y = row * SCREEN_HEIGHT + (i32::from(state.y) - PLAY_TOP).clamp(0, SCREEN_HEIGHT - 1);
+    (u16::try_from(x).unwrap_or(0), u16::try_from(y).unwrap_or(0))
+}
+
 fn view(state: ZeldaMechanicalState) -> View {
     View {
         mode: state.mode,
@@ -54,6 +69,7 @@ fn view(state: ZeldaMechanicalState) -> View {
 impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for ZeldaGame<M> {
     type Machine = M;
     type View = View;
+    const MEMORY_BYTES: usize = WRAM_SIZE + CARTRIDGE_BYTES;
 
     fn arcade(rom: &[u8], identity: &str, identity_sha256: &str, machines: Machines<M>) -> Self {
         Self::with_targets(
@@ -77,12 +93,15 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for ZeldaGame<M> {
 
     fn motion(wram: &[u8; WRAM_SIZE]) -> [u16; 4] {
         match decode_state(wram) {
-            Ok(state) if state.mode == MODE_PLAY => [
-                u16::from(state.level) << 8 | u16::from(state.room),
-                u16::from(state.x),
-                u16::from(state.y),
-                state.health(),
-            ],
+            Ok(state) if state.mode == MODE_PLAY => {
+                let (x, y) = position(state);
+                [
+                    u16::from(state.level),
+                    x,
+                    y,
+                    u16::from(wram[LINK_DIRECTION] & FACING_LEFT != 0),
+                ]
+            }
             _ => [HIDDEN, 0, 0, 0],
         }
     }
