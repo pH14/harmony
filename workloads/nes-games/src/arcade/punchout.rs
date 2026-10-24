@@ -57,6 +57,8 @@ pub struct View {
     x: u16,
     y: u16,
     health: u8,
+    level: u8,
+    loading: bool,
 }
 
 fn view(state: PunchOutMechanicalState) -> View {
@@ -66,6 +68,8 @@ fn view(state: PunchOutMechanicalState) -> View {
         x,
         y,
         health: if fighting { state.mac_health } else { 0 },
+        level: state.opponent,
+        loading: !fighting,
         mode: state.mode,
         opponent: state.opponent,
         screen: state.screen,
