@@ -767,6 +767,17 @@ impl Store {
         }
     }
 
+    pub fn index_bytes(&self) -> u64 {
+        let row = std::mem::size_of::<(u64, PageRef)>();
+        self.layers
+            .values()
+            .map(|layer| {
+                (layer.pages.len() * row + layer.resolve_cache.borrow().capacity() * (row + 1))
+                    as u64
+            })
+            .sum()
+    }
+
     #[cfg(feature = "test-utils")]
     pub fn corrupt_vm_state_for_test(
         &mut self,
@@ -1717,6 +1728,29 @@ mod tests {
         }
         store.read_page(base, 7, &mut out).unwrap();
         assert_eq!(out, [9; PAGE_SIZE]);
+    }
+
+    #[test]
+    fn index_bytes_count_layer_tables_and_lookup_caches() {
+        let pages = if cfg!(miri) { 16 } else { 1024 };
+        let mut store = Store::new(cfg(pages));
+        let empty = store.index_bytes();
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let leaf = store.derive(base).unwrap().seal(vec![]);
+        let sealed = store.index_bytes();
+        assert!(sealed > empty);
+        let mut out = [0; PAGE_SIZE];
+        for gfn in 0..pages {
+            store.read_page(leaf, gfn, &mut out).unwrap();
+        }
+        let cached = store.index_bytes();
+        let row = std::mem::size_of::<(u64, PageRef)>() as u64;
+        assert!(cached >= sealed + pages * row);
+        store.release(leaf).unwrap();
+        store.gc();
+        assert!(store.index_bytes() < cached);
     }
 
     #[test]

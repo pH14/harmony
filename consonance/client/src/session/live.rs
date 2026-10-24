@@ -724,10 +724,11 @@ impl Session {
 
     #[must_use]
     pub fn store_bytes(&self) -> u64 {
-        self.client
-            .transport()
+        let transport = self.client.transport();
+        transport
             .snapshot_store_stats()
             .bytes_resident
+            .saturating_add(transport.snapshot_index_bytes())
     }
 
     pub fn last_seal_dirty_gfns(&self) -> Option<Vec<u64>> {

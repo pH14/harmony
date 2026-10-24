@@ -582,6 +582,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.engine.store_stats()
     }
 
+    pub fn snapshot_index_bytes(&self) -> u64 {
+        self.engine.store().index_bytes()
+    }
+
     pub fn snapshot_stats(&self, snap: SnapId) -> Option<snapshot_store::SnapStats> {
         self.snaps
             .get(&snap.0)

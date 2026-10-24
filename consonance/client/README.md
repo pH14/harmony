@@ -409,7 +409,13 @@ new segment at that limit evicts entries until a segment dies, or is refused. Th
 each worker's local snapshot store reports, so the cache gets what the stores
 leave. When nothing can be evicted the index refuses the extent and the worker
 keeps its snapshot local. A report that leaves the total over budget after
-eviction asks the worker with the largest store to shrink.
+eviction asks the worker with the largest store to shrink. It also asks any
+worker to shrink whose store is larger than at its last report that fit the
+budget. A busy worker with the largest store can go a minute or more without a
+report, and the other stores must not grow meanwhile.
+
+`Session::store_bytes` reports the snapshot store's page and VM-state bytes
+plus its index bytes, which include each layer's page table and lookup cache.
 
 `Session::publish_snapshot` exports a delta straight into an extent and
 publishes it. `Session::import_cached` resolves a chain into one page list over
@@ -422,11 +428,33 @@ snapshot store, including when a caller passes a lease from another namespace.
 User-mode Linux root extents bind the launch identity, and later cache extents
 also bind the setup checkpoint digest. Their imports check the binding before
 creating a checkpoint, even when a caller passes a foreign lease.
-`cache::plan_memory` takes the free memory (the lower of `MemAvailable`
-and each enclosing cgroup's limit minus usage on Linux; free, file-backed and
-purgeable pages on macOS) less a 1 GiB reserve, fits as many workers as the
-cores allow with room for each guest and a minimum store, and gives the rest,
-after the guests, to the budget. It fails when one worker does not fit.
+`cache::plan_memory` takes the free memory less a 1 GiB reserve, the
+coordinator's need and one worker's transient need, fits as many workers as the cores allow with room for each
+worker and a minimum store, and gives the rest, after the workers, to the
+budget. It fails when one worker does not fit. `MemoryNeeds` names the
+coordinator, worker, minimum store and transient sizes; the caller derives them from the
+guest's configured memory. The transient need is memory one worker holds
+briefly beyond its share, such as an import's decompressed pages, and the plan
+keeps room for one. The coordinator's need is the memory it will still
+allocate, because its running process is already part of the usage. On Linux the free memory is the lower of
+`MemAvailable` and, for each enclosing cgroup, the lower of `memory.max` and
+`memory.high` minus usage. Usage is `memory.current` less clean page cache:
+the `file` count in `memory.stat` minus `shmem`, `file_dirty` and
+`file_writeback`. A build or file copy in the same cgroup therefore leaves the
+plan unchanged. On macOS the free memory is free, file-backed and purgeable
+pages.
+
+`LocalIndex::measured` also checks memory while the search runs. Before each
+extent allocation and store report it reads the free memory again, outside the
+index lock. Memory the index does not count (guests, worker processes, the
+coordinator, and the kernel) is the usage minus the cache and store bytes, so
+the budget that keeps the reserve free is the counted bytes plus the free
+memory, less the reserve, and never above the planned one. The index sets its
+budget to that value at each check and evicts entries or asks the largest store
+to shrink to fit it. A worker that briefly needs more memory, for example to
+decompress a long chain for an import, lowers the budget until that memory is
+free again. `CacheStats::lowest_budget` reports the lowest budget of the
+search.
 
 `WorkerSession` runs a `Session` in a child process, because Hypervisor.framework
 allows one VM per process. `WorkerLauncher` starts the child with one end of a

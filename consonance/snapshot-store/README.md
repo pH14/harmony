@@ -112,7 +112,10 @@ Live snapshot counts and resident VM-state bytes
 are maintained at seal, release, and collection, making `store_stats` constant
 time. Its `bytes_resident` remains a payload measure: page buffers and VM-state
 bytes, excluding allocator overhead, indexes, lookup caches, and materialized
-mappings. An empty content pool releases its index and slot allocations; each
+mappings. `index_bytes` estimates the layer page tables and lookup caches from their
+allocated capacity. It visits every live layer. A layer restored many times can hold a lookup entry for most guest
+frames, so a store with many layers can hold as much in lookup caches as in
+pages. An empty content pool releases its index and slot allocations; each
 collected layer releases its lookup cache.
 
 ## Mappings
