@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "donkey_kong_stage_rivet_height_tier_stable_stage_grid_16_status_place_bonus_lives_score_preference_v2";
+pub const KEY_POLICY_IDENTIFIER: &str = "donkey_kong_stage_rivet_height_tier_stable_stage_grid_16_status_place_bonus_lives_score_preference_v3";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 

@@ -59,7 +59,8 @@ bottom girder with no route injected.
 
 The controller vocabulary is the shared set of pressable chords, without Start
 and Select. The archive key orders states by the number of stages cleared, then
-rivets pulled, then height above the start. The place is the stage, the stages
+rivets pulled, then height above the start; height does not count on the rivet
+stage, where the last rivet can be below the highest girder. The place is the stage, the stages
 cleared, Mario's 16-pixel cell and his posture. A cell keeps one state, and
 more bonus time, then more lives, then a higher score is preferred.
 
