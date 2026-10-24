@@ -277,7 +277,7 @@ impl<G: ArcadeGame> LiveWatch<G> {
         let index = archive
             .index_of_id(id)
             .ok_or("the live root metadata disappeared")?;
-        let input = archive.entry_input(index)?.actions;
+        let input = archive.inspect_entry_input(index)?.actions;
         let root = live_state(
             self.workload.as_ref(),
             id,
@@ -345,7 +345,7 @@ impl<G: ArcadeGame> LiveWatch<G> {
                         frames_at: feed
                             .and_then(|feed| feed.frames_at(id))
                             .or_else(|| archive.entry_snapshot(index).map(G::snapshot_frame_count)),
-                        input: archive.entry_input(index).ok()?.actions,
+                        input: archive.inspect_entry_input(index).ok()?.actions,
                         packed: archive
                             .entry_snapshot(index)
                             .map(|snapshot| G::emulator_state(snapshot).to_vec()),

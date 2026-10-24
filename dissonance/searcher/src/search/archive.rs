@@ -1916,6 +1916,10 @@ where
     pub(crate) fn materialize_input(&self, id: usize) -> Result<Input<A>, &'static str> {
         self.input_reconstructions
             .set(self.input_reconstructions.get().saturating_add(1));
+        self.inspect_entry_input(id)
+    }
+
+    pub fn inspect_entry_input(&self, id: usize) -> Result<Input<A>, &'static str> {
         let entry = self.entries.get(id).ok_or("archive input id is missing")?;
         let actions = self
             .input_index
@@ -8149,6 +8153,11 @@ mod tests {
                 .materialize_input(leaf)
                 .expect("materialize leaf")
                 .actions,
+            [1, 2, 3]
+        );
+        assert_eq!(archive.input_reconstructions(), 1);
+        assert_eq!(
+            archive.inspect_entry_input(leaf).unwrap().actions,
             [1, 2, 3]
         );
         assert_eq!(archive.input_reconstructions(), 1);
