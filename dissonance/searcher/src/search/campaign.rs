@@ -25,8 +25,9 @@ use crate::search::checkpoint::{
 };
 use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::draw::{
-    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT,
-    draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
+    DrawMixture, EnergyStrategy, InputDecision, InputEnergy, InputMode, MixtureDraw, MixtureEnergy,
+    SUFFIX_DOUBLING_LIMIT, draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix,
+    energy_strategy, input_energy_scale,
 };
 use crate::search::draw_tables::{
     DEFAULT_DRAW_TABLE_PARAMETERS, DRAW_TABLE_POLICY_FIELD, DrawTableHeader, DrawTables,
@@ -48,11 +49,11 @@ use crate::search::telemetry::{
 
 #[path = "campaign_coordinator.rs"]
 mod coordinator;
+#[path = "campaign_input.rs"]
+mod input;
+pub use input::{InputBlockTrace, InputJobTrace};
 
-pub use coordinator::{
-    CampaignAdmission, CampaignCoordinator, InputBlockTrace, InputJobTrace, JobOutcome, JobSpec,
-    run_job,
-};
+pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
 
 pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
 
@@ -96,7 +97,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 15;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 16;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window; each job's planned finish is the planned finish of the admission before its \
@@ -115,6 +116,7 @@ const ORIGIN_SEARCH_CHECKPOINT: &str = "search_checkpoint";
 
 #[derive(Clone, Debug, Default)]
 pub struct CampaignExecutionOptions {
+    pub input_mode: InputMode,
     pub work_budget: Option<u64>,
     pub checkpoints: Option<CheckpointPlan>,
     pub placement: Option<ThreadPlacement>,
@@ -862,6 +864,8 @@ pub struct CampaignConfig<G: Workload + ?Sized> {
 #[serde(bound = "T: Serialize + DeserializeOwned")]
 pub struct CampaignStreamHeader<T> {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "InputMode::is_current")]
+    pub input_mode: InputMode,
     pub format: String,
     pub campaign_seed: u64,
     pub schedule_policy: String,
@@ -928,6 +932,8 @@ pub enum CampaignAdmissionDecision {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
 pub struct CampaignJobRecord<C, K = ()> {
+    #[serde(default, skip_serializing_if = "InputDecision::is_current")]
+    pub input_decision: InputDecision,
     pub sequence: u64,
     pub reservation: u64,
     pub parent_id: u64,
@@ -2412,6 +2418,7 @@ fn stream_header<G: Workload>(
 ) -> CampaignStreamHeader<DrawTableHeader> {
     CampaignStreamHeader {
         schema_version: CAMPAIGN_SCHEMA_VERSION,
+        input_mode: InputMode::Current,
         format: workload.stream_format().to_owned(),
         campaign_seed: config.campaign_seed,
         schedule_policy: schedule_policy_identifier(config.window),
@@ -3538,7 +3545,7 @@ fn run_campaign<G: Workload, W: CampaignWatch<G>>(
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
-    progress: Option<&mut dyn Write>,
+    mut progress: Option<&mut dyn Write>,
     options: CampaignExecutionOptions,
     watch: &W,
     mut observer: Option<crate::search::job_observation::JobObserver<'_, G::JobObservation>>,
@@ -3546,6 +3553,37 @@ fn run_campaign<G: Workload, W: CampaignWatch<G>>(
 where
     G::ArchiveReport: Serialize,
 {
+    if !options.input_mode.is_current() {
+        if observer.is_some() {
+            return Err("input-mode job observation is not supported".into());
+        }
+        let placement = options.placement.clone();
+        ThreadPlacement::place(placement.as_ref(), PlacedThread::Coordinator)?;
+        let mut coordinator = CampaignCoordinator::start(
+            workload,
+            config,
+            origin,
+            stream,
+            progress
+                .as_mut()
+                .map(|writer| &mut **writer as &mut dyn Write),
+            options,
+        )?;
+        watch.start(&mut coordinator)?;
+        ThreadPlacement::place(placement.as_ref(), PlacedThread::Worker(0))?;
+        let mut target = workload.new_target()?;
+        coordinator.reserve_next()?;
+        while let Some(job) = coordinator.plan(1).pop() {
+            let (outcome, note) = watch.run(&job, || {
+                coordinator
+                    .run_selected_input_job(&mut target, &job)
+                    .map(|(outcome, _)| outcome)
+            })?;
+            coordinator.admit(outcome)?;
+            watch.admitted(note, &mut coordinator);
+        }
+        return coordinator.finish(Vec::new());
+    }
     crate::search::job_observation::bounded::<G::JobObservation>();
     let mut sink_disabled = false;
     workload.verify_integrity()?;
@@ -4563,6 +4601,30 @@ where
     }
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = resolve_recorded_policies(workload, &header.workload_policies)?;
+    let mut replay_input_energy = InputEnergy::default();
+    let replay_input_config = CampaignConfig::<G> {
+        campaign_seed: header.campaign_seed,
+        workers: 1,
+        execution_budget: header.execution_budget,
+        host: header.host.clone(),
+        wall_budget: header.wall_budget_seconds.map(Duration::from_secs),
+        stop_rollout_on_objective: header.stop_rollout_on_objective,
+        stop_campaign_on_objective: header.stop_campaign_on_objective,
+        archive_entry_limit: header.archive_entry_limit,
+        window: 1,
+        memory_budget_mib: header.memory_budget_mib,
+        materialize_final_artifacts: false,
+        run: replay_run.clone(),
+        mixture: replay_mixture,
+        retention: replay_retention,
+        objective_witness_path: None,
+    };
+    if !header.input_mode.is_current() {
+        input_energy_scale(replay_mixture)?;
+        if schedule_policy_window(&header.schedule_policy) != Some(1) {
+            return Err("input-mode replay requires one admission window".into());
+        }
+    }
     let action_cost = workload.action_cost_fn();
     if let Some(checkpoint) = origin_checkpoint {
         if header.origin_kind == ORIGIN_ARCHIVE {
@@ -5140,17 +5202,67 @@ where
                 last_admitted = Some((finish, replay_job_slot));
                 replay_planned_clock = finish;
                 let job_execution_work_before = workload.execution_work(&target);
-                let result = workload.execute_job_certified(
-                    &replay_run,
-                    &mut target,
-                    &snapshot,
-                    &replay,
-                    &replay_certificates,
-                    parent_milestones,
-                    &suffix,
-                    replay_retention,
-                    header.stop_rollout_on_objective,
-                )?;
+                let expected_input = if header.input_mode.is_current() {
+                    InputDecision::default()
+                } else {
+                    replay_input_energy.choose(
+                        header.input_mode,
+                        job.mutation_seed,
+                        input_energy_scale(replay_mixture)?,
+                    )?
+                };
+                if expected_input != job.input_decision {
+                    return Err("recorded input decision differs from adaptive policy".into());
+                }
+                let result = if header.input_mode.is_current() {
+                    workload.execute_job_certified(
+                        &replay_run,
+                        &mut target,
+                        &snapshot,
+                        &replay,
+                        &replay_certificates,
+                        parent_milestones,
+                        &suffix,
+                        replay_retention,
+                        header.stop_rollout_on_objective,
+                    )?
+                } else {
+                    let remaining = header.work_budget.map_or(u64::MAX, |budget| {
+                        budget.saturating_sub(
+                            counters
+                                .bootstrap_execution_work
+                                .saturating_add(counters.job_execution_work),
+                        )
+                    });
+                    let spec = JobSpec {
+                        reservation: replay_job_slot,
+                        planned_finish: finish,
+                        snapshot: snapshot.clone(),
+                        replay: replay.clone(),
+                        replay_certificates: replay_certificates.clone(),
+                        parent_milestones,
+                        suffix: suffix.clone(),
+                    };
+                    input::execute_input_job(
+                        &input::InputExecutionContext {
+                            workload,
+                            config: &replay_input_config,
+                            archive: &core.archive,
+                            draw_state: &draw_state,
+                            parent: parent_index,
+                            mutation_seed: job.mutation_seed,
+                            mixture_weight: job.mixture_weight,
+                            splice_weight: job.splice_weight,
+                        },
+                        &mut target,
+                        &spec,
+                        expected_input.sticky,
+                        expected_input.chaining,
+                        remaining,
+                    )?
+                    .0
+                    .result
+                };
                 let execution_work = execution_work_delta(
                     job_execution_work_before,
                     workload.execution_work(&target),
@@ -5291,6 +5403,12 @@ where
                 let new_slot_descendant = retained_archive_indexes(&core, &decisions)
                     .iter()
                     .any(|id| core.archive.opened_new_slot(*id));
+                replay_input_energy.record(
+                    header.input_mode,
+                    expected_input,
+                    new_slot_descendant,
+                    execution_work,
+                );
                 record_mixture_outcome(
                     &mut core.mixture_energy,
                     replay_mixture,
@@ -5896,7 +6014,12 @@ mod tests {
         }
 
         fn continuation_block_work(&self, _run: &Self::Run) -> std::num::NonZeroU64 {
-            std::num::NonZeroU64::new(if ALIVE_TEST.get() == 6 { 3 } else { 1 }).unwrap()
+            std::num::NonZeroU64::new(match ALIVE_TEST.get() {
+                6 => 3,
+                7 => 2,
+                _ => 1,
+            })
+            .unwrap()
         }
         fn worker_locality(&self, target: &TestTarget) -> crate::search::locality::WorkerLocality {
             use crate::search::locality::{LocalityKey, WorkerLocality};
@@ -6172,13 +6295,17 @@ mod tests {
         }
 
         fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
-            Ok(TestKey(
-                if ALIVE_TEST.get() > 0 && (ALIVE_TEST.get() != 1 || target.value < 4) {
-                    0
-                } else {
+            Ok(TestKey(if ALIVE_TEST.get() == 7 {
+                if target.value % 2 == 1 {
                     target.value
-                },
-            ))
+                } else {
+                    0
+                }
+            } else if ALIVE_TEST.get() > 0 && (ALIVE_TEST.get() != 1 || target.value < 4) {
+                0
+            } else {
+                target.value
+            }))
         }
 
         fn complete_candidate_key(
@@ -7618,7 +7745,7 @@ mod tests {
         assert!(error.contains("suffix limit"), "{error}");
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":15,"format":"campaign-v1","campaign_seed":7,
+    const RECORDED_HEADER: &str = r#"{"schema_version":16,"format":"campaign-v1","campaign_seed":7,
 "schedule_policy":"planned_finish_window_2_v6","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -9157,6 +9284,7 @@ mod tests {
                     &mut stream,
                     None,
                     CampaignExecutionOptions {
+                        input_mode: Default::default(),
                         placement: Some(ThreadPlacement::new(|thread| {
                             LOCALITY_WORKER.with(|slot| {
                                 slot.set(match thread {
@@ -9529,6 +9657,7 @@ mod tests {
                         &mut stream,
                         None,
                         CampaignExecutionOptions {
+                            input_mode: Default::default(),
                             checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
                                 directory: directory_for_run,
                                 every: std::num::NonZeroU64::new(1),
@@ -9841,6 +9970,7 @@ mod tests {
             &mut stream,
             None,
             CampaignExecutionOptions {
+                input_mode: Default::default(),
                 checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
                     directory: directory.clone(),
                     every: std::num::NonZeroU64::new(1),
@@ -10330,6 +10460,7 @@ mod tests {
             &mut Vec::new(),
             None,
             CampaignExecutionOptions {
+                input_mode: Default::default(),
                 placement: Some(placement),
                 ..CampaignExecutionOptions::default()
             },
@@ -10584,6 +10715,7 @@ mod tests {
                     &mut stream,
                     None,
                     CampaignExecutionOptions {
+                        input_mode: Default::default(),
                         placement: Some(placement),
                         ..CampaignExecutionOptions::default()
                     },
@@ -10619,6 +10751,7 @@ mod tests {
             (2, 0, 100, 1, 1, 1),
             (5, 1, 100, 1, 1, 1),
             (6, 1, 7, 3, 1, 7),
+            (7, 1, 4, 2, 1, 4),
             (3, 1, 100, 2, 1, 2),
             (4, 1, 3, 3, 1, 3),
             (1, 4, 100, 1, 2, 2),
@@ -10795,6 +10928,7 @@ mod tests {
                     &mut stream,
                     None,
                     CampaignExecutionOptions {
+                        input_mode: Default::default(),
                         checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
                             directory: directory.clone(),
                             every: std::num::NonZeroU64::new(1),
@@ -10865,6 +10999,7 @@ mod tests {
             &mut stream,
             None,
             CampaignExecutionOptions {
+                input_mode: Default::default(),
                 checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
                     directory: directory.clone(),
                     every: std::num::NonZeroU64::new(1),
@@ -10940,6 +11075,7 @@ mod tests {
                     &mut stream,
                     None,
                     CampaignExecutionOptions {
+                        input_mode: Default::default(),
                         checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
                             directory: directory.clone(),
                             every: std::num::NonZeroU64::new(1),
@@ -11027,6 +11163,7 @@ mod tests {
             &mut stream,
             None,
             CampaignExecutionOptions {
+                input_mode: Default::default(),
                 checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
                     directory: directory.clone(),
                     every: std::num::NonZeroU64::new(1),
@@ -11094,6 +11231,7 @@ mod tests {
             &mut stream,
             None,
             CampaignExecutionOptions {
+                input_mode: Default::default(),
                 checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
                     directory: directory.clone(),
                     every: std::num::NonZeroU64::new(1),
@@ -11161,6 +11299,7 @@ mod tests {
             &mut stream,
             None,
             CampaignExecutionOptions {
+                input_mode: Default::default(),
                 checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
                     directory: directory.clone(),
                     every: std::num::NonZeroU64::new(1),
@@ -11260,6 +11399,7 @@ mod tests {
                 &mut control_stream,
                 None,
                 CampaignExecutionOptions {
+                    input_mode: Default::default(),
                     checkpoints: Some(make_plan(synchronous.clone(), 1)),
                     ..CampaignExecutionOptions::default()
                 },
@@ -11287,6 +11427,7 @@ mod tests {
                         later_admission: later_sender,
                     };
                     let options = CampaignExecutionOptions {
+                        input_mode: Default::default(),
                         checkpoints: Some(delayed_plan),
                         ..CampaignExecutionOptions::default()
                     };
@@ -11366,6 +11507,7 @@ mod tests {
             &mut stream,
             None,
             CampaignExecutionOptions {
+                input_mode: Default::default(),
                 checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
                     directory: directory.clone(),
                     every: None,

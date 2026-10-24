@@ -355,7 +355,7 @@ mod tests {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct AliveEnergy(MixtureEnergy);
 
 impl AliveEnergy {
@@ -374,4 +374,143 @@ impl AliveEnergy {
             work,
         );
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputMode {
+    #[default]
+    Current,
+    Chaining,
+    Sticky,
+    StickyChaining,
+}
+
+impl InputMode {
+    pub fn is_current(&self) -> bool {
+        *self == Self::Current
+    }
+    pub fn sticky(self) -> bool {
+        matches!(self, Self::Sticky | Self::StickyChaining)
+    }
+    pub fn chaining(self) -> bool {
+        matches!(self, Self::Chaining | Self::StickyChaining)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct InputDecision {
+    pub sticky: bool,
+    pub chaining: bool,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+pub struct InputEnergy {
+    sticky: AliveEnergy,
+    chaining: AliveEnergy,
+}
+
+impl InputEnergy {
+    pub fn choose(
+        &self,
+        mode: InputMode,
+        seed: u64,
+        scale: std::num::NonZeroU64,
+    ) -> Result<InputDecision, Box<dyn Error>> {
+        Ok(InputDecision {
+            sticky: mode.sticky()
+                && self
+                    .sticky
+                    .choose(seed ^ u64::from_le_bytes(*b"INPUTGEN"), scale.get())?,
+            chaining: mode.chaining()
+                && self
+                    .chaining
+                    .choose(seed ^ u64::from_le_bytes(*b"INPUTLEN"), scale.get())?,
+        })
+    }
+    pub fn record(&mut self, mode: InputMode, decision: InputDecision, new_slot: bool, work: u64) {
+        if mode.sticky() {
+            self.sticky.record(decision.sticky, new_slot, work);
+        }
+        if mode.chaining() {
+            self.chaining.record(decision.chaining, new_slot, work);
+        }
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::{InputDecision, InputEnergy, InputMode};
+    use std::num::NonZeroU64;
+
+    #[test]
+    fn disabled_inputs_preserve_the_current_draw() {
+        let energy = InputEnergy::default();
+        for seed in 0..1000 {
+            let decision = energy
+                .choose(InputMode::Current, seed, NonZeroU64::new(6).unwrap())
+                .unwrap();
+            assert_eq!(decision, InputDecision::default());
+        }
+    }
+
+    #[test]
+    fn barren_work_reduces_share_and_serialization_preserves_choices() {
+        let mut energy = InputEnergy::default();
+        let scale = NonZeroU64::new(6).unwrap();
+        let count = |energy: &InputEnergy| {
+            (0..4096)
+                .filter(|seed| {
+                    energy
+                        .choose(InputMode::Chaining, *seed, scale)
+                        .unwrap()
+                        .chaining
+                })
+                .count()
+        };
+        let before = count(&energy);
+        for _ in 0..512 {
+            energy.record(
+                InputMode::Chaining,
+                InputDecision {
+                    sticky: false,
+                    chaining: true,
+                },
+                false,
+                100,
+            );
+            energy.record(InputMode::Chaining, InputDecision::default(), true, 100);
+        }
+        let after = count(&energy);
+        assert!(
+            after > 0 && after < before / 4,
+            "before {before}, after {after}"
+        );
+        let restored: InputEnergy =
+            serde_json::from_slice(&serde_json::to_vec(&energy).unwrap()).unwrap();
+        for seed in 0..4096 {
+            assert_eq!(
+                energy
+                    .choose(InputMode::StickyChaining, seed, scale)
+                    .unwrap(),
+                restored
+                    .choose(InputMode::StickyChaining, seed, scale)
+                    .unwrap()
+            );
+        }
+    }
+}
+
+impl InputDecision {
+    pub fn is_current(&self) -> bool {
+        !self.sticky && !self.chaining
+    }
+}
+
+pub fn input_energy_scale(mixture: DrawMixture) -> Result<std::num::NonZeroU64, Box<dyn Error>> {
+    let scale = match mixture {
+        DrawMixture::Energy { scale } | DrawMixture::EnergySplice { scale } => scale,
+        _ => return Err("adaptive input modes require the existing energy mixture".into()),
+    };
+    std::num::NonZeroU64::new(scale).ok_or_else(|| "zero input energy scale".into())
 }

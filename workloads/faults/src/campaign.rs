@@ -1212,6 +1212,7 @@ pub fn run_fault_campaign_with_plan(
         stream,
         progress,
         CampaignExecutionOptions {
+            input_mode: Default::default(),
             placement: config.placement.clone(),
             checkpoints,
             ..CampaignExecutionOptions::default()

@@ -1176,12 +1176,14 @@ by that workload's codec, never by generic storage or routing.
 `CampaignCoordinator::run_input_job` is an opt-in experiment for a single
 admission window. It restores the planned parent once and executes additional
 blocks on that live target when the workload’s clock-free continuation vector
-changed. A terminal state, a retained candidate, an unchanged block, or the
+changed. A terminal state, a retained block endpoint, an unchanged block, or the
 caller's work limit ends the chain. Retention is checked against the archive;
 there are no workload-specific predicates in the continuation rule.
 
-The caller selects chaining through `AliveEnergy`, which reuses the existing
-mixture's new-slot-per-work accounting, and admits the accumulated result once.
+`InputEnergy` selects generation and chaining through `AliveEnergy`, which
+reuses the existing mixture's new-slot-per-work accounting. The coordinator
+admits the accumulated result once. Intermediate retention previews do not
+stop a block whose endpoint is rejected.
 The sticky variant carries its frame generator across blocks; the non-chaining
 sticky arm uses the original suffix duration. Chord chunk boundaries do not
 force a button transition. Workloads adapt controller bytes and durations; the
@@ -1189,11 +1191,19 @@ generic runner contains no controller or game constants.
 `stop_reservations` lets an experiment stop admitting new jobs after its
 registered observation boundary while finishing already reserved work.
 
-This API is not enabled in ordinary campaign execution. Its energy state and
-expanded actions are not integrated with checkpoint persistence or ordinary
-stream replay; experiment callers must preserve their actual job actions
-separately. Parallel dispatch and production replay integration remain outside
-this prototype. It must not be treated as a production search strategy.
+`CampaignExecutionOptions::input_mode` enables current, chaining, sticky, or
+sticky-with-chaining experiments. `run_selected_input_job` makes generation and
+continuation choices through two independent gates using the existing energy
+formula and scale. Admissions update each enabled gate with new-slot yield and
+execution work. The stream records its mode and each decision; ordinary replay
+reconstructs the energy choices and executes the same shared input routine.
+
+Experimental modes require one worker and one admission window. Whole-search
+checkpoint origins and checkpoint persistence are rejected because the new
+energy state is not yet saved in those checkpoints. Job observers are also
+unsupported for these modes. These explicit limits keep the experiment from
+silently dropping state or telemetry; parallel execution and checkpoint resume
+remain unfinished.
 
 `sticky_input::StickyInput` is the frame-level input primitive for the revised
 experiment. It carries a controller byte across block boundaries and flips each
@@ -1202,8 +1212,7 @@ power-of-two flip probability from scales spanning one frame through the
 existing longest-hold support. The powers of two provide the requested
 log-spaced prior without fitting a game-specific rate. The selected rate stays
 fixed across blocks; run length has geometric support with no duration cap.
-The adapter supplies the controller's enabled-bit mask. This primitive is connected to the opt-in live executor, but its campaign
-strategy and ordinary replay integration remain unfinished.
+The adapter supplies the controller's enabled-bit mask. This primitive is shared by live execution and ordinary stream replay.
 
 Workloads without adaptive duration requests may refresh selected input timing
 after table/alphabet/splice selection and before suffix truncation and duplicate

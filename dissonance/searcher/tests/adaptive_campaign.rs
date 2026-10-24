@@ -514,6 +514,7 @@ fn fixture_stream(workload: &TimingWorkload) -> Vec<u8> {
         &mut stream,
         None,
         CampaignExecutionOptions {
+            input_mode: Default::default(),
             work_budget: Some(4_096),
             checkpoints: None,
             placement: None,
@@ -571,6 +572,7 @@ fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
         &mut stream,
         None,
         CampaignExecutionOptions {
+            input_mode: Default::default(),
             work_budget: Some(4_096),
             checkpoints: None,
             placement: None,
@@ -711,6 +713,7 @@ fn failed_duration_actions_do_not_train_the_policy() {
         &mut stream,
         None,
         CampaignExecutionOptions {
+            input_mode: Default::default(),
             work_budget: Some(4_096),
             checkpoints: None,
             placement: None,
@@ -749,6 +752,7 @@ fn preparation_failure_continues_campaign_and_is_hashed_once() {
         &mut stream,
         None,
         CampaignExecutionOptions {
+            input_mode: Default::default(),
             work_budget: Some(4_096),
             checkpoints: None,
             placement: None,

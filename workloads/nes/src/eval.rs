@@ -225,6 +225,7 @@ where
         &mut stream,
         Some(&mut progress),
         CampaignExecutionOptions {
+            input_mode: Default::default(),
             work_budget: request.frames,
             checkpoints,
             placement: None,

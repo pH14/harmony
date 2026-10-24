@@ -959,6 +959,7 @@ pub fn run_scaled(
         &mut stream,
         Some(progress),
         CampaignExecutionOptions {
+ input_mode: Default::default(),
             work_budget: Some(budget),
             checkpoints: None,
             placement: None,
@@ -1067,6 +1068,7 @@ fn campaign<const CAPACITY_TWO: bool>(
         &mut stream,
         None,
         CampaignExecutionOptions {
+ input_mode: Default::default(),
             work_budget: Some(budget),
             ..Default::default()
         },
@@ -1085,6 +1087,7 @@ fn campaign<const CAPACITY_TWO: bool>(
             &mut again,
             None,
             CampaignExecutionOptions {
+ input_mode: Default::default(),
                 work_budget: Some(budget),
                 ..Default::default()
             },

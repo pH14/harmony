@@ -660,6 +660,7 @@ pub fn run(request: &Request) -> Result<serde_json::Value, Box<dyn Error>> {
         objective_witness_path: None,
     };
     let options = || CampaignExecutionOptions {
+ input_mode: Default::default(),
         work_budget: Some(request.work_budget),
         ..Default::default()
     };

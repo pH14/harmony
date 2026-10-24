@@ -209,6 +209,70 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_input_modes_round_trip_through_ordinary_replay() {
+        use crate::search::campaign::{
+            CampaignExecutionOptions, replay_campaign_checkpointed,
+            run_campaign_checkpointed_with_options,
+        };
+        use crate::search::draw::InputMode;
+        for mode in [
+            InputMode::Current,
+            InputMode::Chaining,
+            InputMode::Sticky,
+            InputMode::StickyChaining,
+        ] {
+            let rom = synthetic_nrom();
+            let game = test_game(&rom);
+            let mut config = genesis_config(73, 1, 48).generic();
+            config.window = 1;
+            config.mixture = DrawMixture::EnergySplice { scale: 6 };
+            config.retention = crate::search::archive::RetentionPolicy::Unprobed;
+            let mut stream = Vec::new();
+            let live = run_campaign_checkpointed_with_options(
+                &game,
+                &config,
+                &SmbCampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions {
+                    input_mode: mode,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let replay = replay_campaign_checkpointed(&game, &stream, None, None)
+                .unwrap_or_else(|error| panic!("{mode:?}: {error}"));
+            assert_eq!(live, replay, "{mode:?}");
+            if mode != InputMode::Current {
+                let text = String::from_utf8(stream).unwrap();
+                assert!(
+                    text.contains("input_decision"),
+                    "{mode:?} never selected an experimental input"
+                );
+                let mut records: Vec<serde_json::Value> = text
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                let record = records
+                    .iter_mut()
+                    .find(|record| record.get("input_decision").is_some())
+                    .unwrap();
+                let before = record["input_decision"]["sticky"].as_bool().unwrap();
+                record["input_decision"]["sticky"] = serde_json::Value::Bool(!before);
+                let corrupt = records
+                    .iter()
+                    .map(|record| serde_json::to_string(record).unwrap())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n";
+                assert!(
+                    replay_campaign_checkpointed(&game, corrupt.as_bytes(), None, None).is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn all_four_input_modes_execute_and_admit_one_job() {
         use crate::search::archive::RetentionPolicy;
         use crate::search::campaign::{CampaignCoordinator, CampaignExecutionOptions};

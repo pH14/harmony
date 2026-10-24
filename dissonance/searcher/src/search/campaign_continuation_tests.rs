@@ -882,6 +882,7 @@ fn run_with_checkpoints(
         &mut stream,
         Some(&mut progress),
         CampaignExecutionOptions {
+            input_mode: Default::default(),
             checkpoints,
             ..CampaignExecutionOptions::default()
         },
@@ -975,6 +976,7 @@ fn a_campaign_and_checkpoint_reject_another_loaded_executable() {
         &mut stream,
         None,
         CampaignExecutionOptions {
+            input_mode: Default::default(),
             checkpoints: Some(CheckpointPlan {
                 directory: directory.clone(),
                 every: NonZeroU64::new(1),
@@ -1051,6 +1053,7 @@ fn unavailable_loaded_executable_fails_before_campaign_output() {
         &mut stream,
         None,
         CampaignExecutionOptions {
+            input_mode: Default::default(),
             checkpoints: Some(CheckpointPlan {
                 directory: directory.clone(),
                 every: NonZeroU64::new(1),

@@ -236,6 +236,7 @@ where
         &mut stream,
         None,
         searcher::search::campaign::CampaignExecutionOptions {
+            input_mode: Default::default(),
             checkpoints: Some(searcher::search::checkpoint::CheckpointPlan {
                 directory: options.output.join("checkpoints"),
                 every: std::num::NonZeroU64::new(100),
