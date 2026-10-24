@@ -182,7 +182,7 @@ fn recipe(language: Language, context: &Path, command: &[String]) -> Result<Stri
                 if !binary.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)) { return Err("invalid Rust package name".into()); }
                 format!("RUN cargo add antithesis-instrumentation@=0.1.0 && printf '\\nuse antithesis_instrumentation as _;\\n' >> src/main.rs && target=\"$(rustc -vV | sed -n 's/^host: //p')\" && cargo build --release --locked --target \"$target\" && cp \"target/$target/release/{binary}\" /out/application\n")
             },
-            Language::Go => "RUN mkdir -p /out/app-symbols /out/app-stdlib && bash /build/configure-stdlib.sh /build/sdk \"$(go list -m)\" /out/app-stdlib > /out/app-stdlib/instrumentation.env && source /out/app-stdlib/instrumentation.env && ANTITHESIS_SDK_MODULE_DIR=/build/sdk ANTITHESIS_SYMBOLS_DIR=/out/app-symbols ANTITHESIS_SYMBOL_PREFIX=application go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/application .\n".into(),
+            Language::Go => "RUN mkdir -p /out/app-symbols /out/app-stdlib && bash /build/configure-instrumentation.sh /build/sdk /out/app-stdlib . > /out/app-stdlib/instrumentation.env && source /out/app-stdlib/instrumentation.env && ANTITHESIS_SDK_MODULE_DIR=/build/sdk ANTITHESIS_SYMBOLS_DIR=/out/app-symbols ANTITHESIS_SYMBOL_PREFIX=application go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/application .\n".into(),
             _ => unreachable!(),
         }
     };
