@@ -368,7 +368,12 @@ fn replay_rejects_duplicate_skip_for_taken_continuation() {
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .collect::<Vec<_>>();
     replay_campaign_checkpointed(&TestWorkload, &stream, None, None).unwrap();
-    let reservation = 18_u64;
+    let reservation = records
+        .iter()
+        .find(|record| record["event"] == "job" && record["selector"]["path"] == "continuation")
+        .expect("taken continuation")["reservation"]
+        .as_u64()
+        .unwrap();
     let job = records
         .iter()
         .find(|record| record["event"] == "job" && record["reservation"] == reservation)
@@ -1728,7 +1733,19 @@ fn replay_rejects_forged_post_admission_skip_suffix_limits() {
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let index = 555;
+    let index = lines
+        .iter()
+        .enumerate()
+        .skip_while(|(_, line)| {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            value["event"] != "job"
+        })
+        .find(|(_, line)| {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            value["event"] == "skip" && value["suffix_limit"] == 1
+        })
+        .expect("post-admission skip with unit suffix")
+        .0;
     let mut skip: serde_json::Value = serde_json::from_str(&lines[index]).unwrap();
     assert_eq!(skip["event"], "skip");
     assert_eq!(skip["suffix_limit"], 1);
@@ -1758,29 +1775,31 @@ fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let job_at = |reservation| {
-        lines
-            .iter()
-            .enumerate()
-            .find(|(_, line)| {
-                let record: serde_json::Value = serde_json::from_str(line).unwrap();
-                record["event"] == "job" && record["reservation"] == reservation
-            })
-            .map(|(index, line)| {
-                (
-                    index,
-                    serde_json::from_str::<serde_json::Value>(line).unwrap(),
-                )
-            })
-            .unwrap()
-    };
-    let (_, sibling) = job_at(75);
-    let (index, mut selected) = job_at(79);
-    assert_eq!(sibling["parent_id"], selected["parent_id"]);
-    assert_eq!(sibling["suffix_limit"], 2);
-    assert_eq!(selected["suffix_limit"], 1);
-    assert!(75 + config.window > 79);
-    assert!(sibling["sequence"].as_u64().unwrap() > 79 - config.window as u64);
+    let jobs = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            (record["event"] == "job").then_some((index, record))
+        })
+        .collect::<Vec<_>>();
+    let (index, mut selected) = jobs
+        .iter()
+        .find_map(|(index, selected)| {
+            let reservation = selected["reservation"].as_u64().unwrap();
+            (selected["suffix_limit"] == 1
+                && jobs.iter().any(|(_, sibling)| {
+                    let earlier = sibling["reservation"].as_u64().unwrap();
+                    earlier < reservation
+                        && earlier + config.window as u64 > reservation
+                        && sibling["parent_id"] == selected["parent_id"]
+                        && sibling["suffix_limit"] == 2
+                        && sibling["sequence"].as_u64().unwrap()
+                            > reservation.saturating_sub(config.window as u64)
+                }))
+            .then(|| (*index, selected.clone()))
+        })
+        .expect("unit suffix with doubled same-parent sibling still in flight");
     selected["suffix_limit"] = serde_json::json!(2);
     lines[index] = serde_json::to_string(&selected).unwrap();
     let error =

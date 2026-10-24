@@ -249,6 +249,10 @@ pub enum SmbTerminalPredicate {
         world: u8,
         level: u8,
     },
+    LevelAfter {
+        world: u8,
+        level: u8,
+    },
 }
 
 impl SmbTerminalPredicate {
@@ -256,6 +260,7 @@ impl SmbTerminalPredicate {
     pub fn identifier(self) -> String {
         match self {
             Self::GameVictory => "game_victory".to_owned(),
+            Self::LevelAfter { world, level } => format!("level_after:{world},{level}"),
             Self::LevelTransition { world, level } => {
                 format!("level_transition:{world},{level}")
             }
@@ -265,6 +270,15 @@ impl SmbTerminalPredicate {
     pub fn from_identifier(identifier: &str) -> Result<Self, Box<dyn Error>> {
         if identifier == "game_victory" {
             return Ok(Self::GameVictory);
+        }
+        if let Some(fields) = identifier.strip_prefix("level_after:") {
+            let (world, level) = fields
+                .split_once(',')
+                .ok_or("level-after predicate is missing world or level")?;
+            return Ok(Self::LevelAfter {
+                world: world.parse()?,
+                level: level.parse()?,
+            });
         }
         let fields = identifier
             .strip_prefix("level_transition:")
@@ -294,6 +308,10 @@ impl SmbTerminalPredicate {
         }
         Ok(match self {
             Self::GameVictory => false,
+            Self::LevelAfter { world, level } => {
+                let state = target.mechanical_state();
+                (state.world, state.level) > (world, level)
+            }
             Self::LevelTransition { world, level } => {
                 let state = target.mechanical_state();
                 (state.world, state.level) != (world, level)

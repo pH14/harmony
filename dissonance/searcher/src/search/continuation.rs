@@ -185,7 +185,16 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
         }
     }
 
+    #[cfg(test)]
     pub fn pop(&mut self, from_highest_preference: bool) -> Option<Continuation<P, A>> {
+        self.pop_accepted(from_highest_preference, |_| true)
+    }
+
+    pub fn pop_accepted(
+        &mut self,
+        from_highest_preference: bool,
+        mut accepts: impl FnMut(u64) -> bool,
+    ) -> Option<Continuation<P, A>> {
         loop {
             let (key, source) = self.next_pending(from_highest_preference)?;
             let Some(held) = self.pending_source.get(&source).copied() else {
@@ -210,6 +219,16 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
                 self.drop_pending(source);
                 continue;
             };
+            if !accepts(held.parent) {
+                self.pending.remove(&key);
+                let refreshed = self.next_sequence;
+                self.next_sequence = self.next_sequence.saturating_add(1);
+                self.pending.insert((held.preference, refreshed), source);
+                if let Some(entry) = self.pending_source.get_mut(&source) {
+                    entry.sequence = refreshed;
+                }
+                return None;
+            }
             let continuation = Continuation {
                 source,
                 parent: held.parent,
@@ -367,6 +386,20 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn survival_skip_preserves_the_untried_continuation() {
+        let mut bank = ContinuationBank::<u64, u8>::new(8);
+        bank.record(1, 2, 3, 4, &[5], 1, 0);
+        bank.improved(1, 7, 0, 0);
+        assert!(bank.pop_accepted(false, |_| false).is_none());
+        assert_eq!(bank.pending_count(), 1);
+        let taken = bank
+            .pop_accepted(false, |parent| parent == 7)
+            .expect("still queued");
+        assert_eq!(taken.actions, vec![5]);
+        assert_eq!(taken.destination, 2);
+    }
 
     #[test]
     fn pending_entry_updates_preserve_serialized_bank_and_dispatches() {

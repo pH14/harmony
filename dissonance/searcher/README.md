@@ -1247,3 +1247,17 @@ blocks and before hashing the result. It must preserve execution and archive
 decisions; it only finalizes recorded workload observations. The tiny-world
 adapter uses it to attach job work and convert cumulative work to job-relative
 work, matching its ordinary job executor.
+
+### Learned survival weighting
+
+Each admitted job contributes a draw and, if it ends terminal without
+an objective, a death to its source entry. The same outcome reaches retained
+ancestors with the existing inverse-square count decay applied to lineage
+distance. Counts use the existing fixed-point scale; priors are one survivor
+and two draws. Ordinary parent selection uses rejection sampling over the full
+existing selector, multiplying each entry probability by `(survivors + 1) /
+(draws + 2)`. This includes recent and best-holder paths and single-holder cells.
+Continuation sources receive the same acceptance factor; skipped sources move
+to the back of their preference queue without advancing their edge cursor.
+Counts persist and compact with entries and are included in memory accounting.
+No additional workload execution, admission change, or hard exclusion occurs.
