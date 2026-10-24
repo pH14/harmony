@@ -39,12 +39,25 @@ changes between 0 and 1 during play and is not used.
 Setup waits 200 frames, presses Start for 3 frames, waits 60 frames, presses
 Start again and waits 200 frames. The genesis check requires play mode, wave 1,
 four reserve lives, no score and no enemies defeated. The game has no ending, so
-the search target is a wave count, `TARGET_WAVE`, and the game-over screen is
+the search target is a wave count, `TARGET_WAVE` (50), and the game-over screen is
 terminal.
 
 The controller vocabulary is the six held chords of Left, Right and neutral,
 each with or without A, and a tap of A. A tap is a flap. Short holds are 1 to
 10 frames and long holds 12 to 40.
+
+## Search results
+
+Each run used one QuickNES worker on a Linux host, the `energy_splice:6` draw mixture and witness verification. `nes-eval` replays the winning tape twice in its own process. A separate `joust-probe` process replays each tape from power-on and ends on the same wave and score.
+
+| Target wave | Seed | Executions | Search time | Waves cleared | Score |
+| --- | --- | --- | --- | --- | --- |
+| 26 | 1 | 4,501,240 | 2,316 s | 25 | 205,000 |
+| 26 | 2 | 3,783,429 | 1,237 s | 25 | 217,000 |
+| 50 | 1 | 6,471,287 | 3,024 s | 49 | 528,000 |
+| 50 | 2 | 7,153,717 | 3,086 s | 49 | 540,500 |
+
+A 900 s run with two workers and seed 1 reached wave 11 with score 74,500.
 
 ## Archive key
 
