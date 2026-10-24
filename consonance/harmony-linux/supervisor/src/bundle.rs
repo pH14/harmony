@@ -37,6 +37,7 @@ pub struct Bundle {
     pub setup: Option<Vec<String>>,
     pub workload: Option<Vec<String>>,
     pub check: Option<Vec<String>>,
+    pub heal: Option<u32>,
 }
 
 impl Bundle {
@@ -78,6 +79,10 @@ pub enum BundleError {
     DuplicateWorkload { line: usize },
     #[error("line {line}: a second check command")]
     DuplicateCheck { line: usize },
+    #[error("line {line}: a second heal hook")]
+    DuplicateHeal { line: usize },
+    #[error("line {line}: heal names undeclared hook {id}")]
+    HealHook { line: usize, id: u32 },
     #[error("line {line}: unterminated quote")]
     UnterminatedQuote { line: usize },
     #[error("line {line}: a command word contains NUL")]
@@ -111,6 +116,7 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
     let mut bundle = Bundle::default();
     let mut disks = Vec::new();
     let mut logs = Vec::new();
+    let mut heal = None;
     for (index, raw) in text.lines().enumerate() {
         let line = index + 1;
         let trimmed = raw.trim();
@@ -213,11 +219,33 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
                 }
                 bundle.check = Some(argv);
             }
+            "heal" => {
+                let words: Vec<String> = words.collect();
+                let [word] =
+                    <[String; 1]>::try_from(words).map_err(|_| BundleError::Incomplete {
+                        line,
+                        item: "heal",
+                        need: 1,
+                    })?;
+                let id = word
+                    .parse::<u32>()
+                    .map_err(|_| BundleError::BadHookId { line, word })?;
+                if heal.is_some() {
+                    return Err(BundleError::DuplicateHeal { line });
+                }
+                heal = Some((line, id));
+            }
             _ => return Err(BundleError::UnknownItem { line, word: item }),
         }
     }
     if bundle.nodes.is_empty() {
         return Err(BundleError::NoNodes);
+    }
+    if let Some((line, id)) = heal {
+        if !bundle.hooks.iter().any(|hook| hook.id == id) {
+            return Err(BundleError::HealHook { line, id });
+        }
+        bundle.heal = Some(id);
     }
     for (line, name, path, size) in disks {
         parse_disk(&mut bundle, line, name, path, size)?;
@@ -419,6 +447,25 @@ ready /usr/bin/servicectl endpoint health
             bundle.ready.unwrap(),
             ["/usr/bin/servicectl", "endpoint", "health"]
         );
+    }
+
+    #[test]
+    fn a_heal_line_names_one_declared_hook() {
+        let bundle = parse_bundle("node a /a\nhook 1 /cut\nhook 4 /heal\nheal 4\n").unwrap();
+        assert_eq!(bundle.heal, Some(4));
+        assert_eq!(parse_bundle("node a /a\nhook 1 /cut\n").unwrap().heal, None);
+        assert_eq!(
+            parse_bundle("node a /a\nhook 1 /cut\nheal 4\n"),
+            Err(BundleError::HealHook { line: 3, id: 4 })
+        );
+        assert_eq!(
+            parse_bundle("node a /a\nhook 4 /heal\nheal 4\nheal 4\n"),
+            Err(BundleError::DuplicateHeal { line: 4 })
+        );
+        assert!(matches!(
+            parse_bundle("node a /a\nhook 4 /heal\nheal 4 5\n"),
+            Err(BundleError::Incomplete { line: 3, .. })
+        ));
     }
 
     #[test]

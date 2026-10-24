@@ -15,6 +15,7 @@ pub enum Action {
     Cont(u16),
     Start { node: u16, after_fault: bool },
     RunHook(u32),
+    HealCuts,
     ArmEventKill(u16, u8, u64),
     DisarmEventKill(u16),
     ArmEventPark(u16, EventPark),
@@ -40,6 +41,7 @@ impl Action {
             Action::Cont(node) => format!("resume node {node}"),
             Action::Start { node, .. } => format!("start node {node}"),
             Action::RunHook(id) => format!("run hook {id}"),
+            Action::HealCuts => "heal closed cut windows".to_owned(),
             Action::ArmEventKill(node, rarity, _) => {
                 format!("arm event kill node {node} rarity {rarity}")
             }
@@ -112,6 +114,7 @@ pub struct ProcessSupervisor {
     recovery_pending: bool,
     clocks: Vec<i64>,
     moment: Option<u64>,
+    heal: Option<u32>,
 }
 
 pub type Supervisor = ProcessSupervisor;
@@ -141,7 +144,19 @@ impl ProcessSupervisor {
             recovery_pending: false,
             clocks: vec![0; node_count],
             moment: None,
+            heal: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_heal(mut self, heal: Option<u32>) -> Self {
+        self.heal = heal;
+        self
+    }
+
+    fn cut_window_active(&self, active: &ActiveWindows) -> bool {
+        self.heal
+            .is_some_and(|heal| active.hooks().iter().any(|window| window.id != heal))
     }
 
     pub fn take_natural_deaths(&mut self) -> Vec<u16> {
@@ -332,6 +347,9 @@ impl ProcessSupervisor {
                 actions.push(Action::RunHook(window.id));
             }
         }
+        if self.cut_window_active(&self.previous) && !self.cut_window_active(active) {
+            actions.push(Action::HealCuts);
+        }
 
         for index in 0..self.nodes.len() {
             let node = index as u16;
@@ -376,6 +394,11 @@ impl ProcessSupervisor {
     }
 
     #[must_use]
+    pub fn clock_offset(&self, node: u16) -> i64 {
+        self.clocks.get(usize::from(node)).copied().unwrap_or(0)
+    }
+
+    #[must_use]
     pub fn remount_checks(&self, actions: &[Action]) -> Vec<(u16, bool)> {
         let mut checks: Vec<(u16, bool)> = Vec::new();
         for action in actions {
@@ -403,13 +426,11 @@ impl ProcessSupervisor {
         }
     }
 
-    #[must_use]
-    pub fn clock_offset(&self, node: u16) -> i64 {
-        self.clocks.get(usize::from(node)).copied().unwrap_or(0)
-    }
-
-    pub fn note_hook_started(&mut self) {
+    pub fn note_hook_started(&mut self, cut: bool) {
         self.counters.hooks_started += 1;
+        if cut {
+            self.bump_disturbance(1);
+        }
     }
 
     pub fn note_hook_finished(&mut self) {
@@ -1577,9 +1598,48 @@ mod tests {
         assert_eq!(sup.tick(&two, &[]), [Action::RunHook(1)]);
         assert_eq!(sup.counters().hooks_started, 0);
         for _ in 0..4 {
-            sup.note_hook_started();
+            sup.note_hook_started(false);
         }
         assert_eq!(sup.counters().hooks_started, 4);
+        assert_eq!(sup.counters().disturbance_generation, 0);
+    }
+
+    #[test]
+    fn the_last_closing_cut_window_heals_once() {
+        let mut sup = Supervisor::new(1).with_heal(Some(4));
+        let windows = [
+            (0, ProcessAction::RunHook(2), 10, 20),
+            (0, ProcessAction::RunHook(1), 15, 30),
+            (0, ProcessAction::RunHook(4), 40, 50),
+            (0, ProcessAction::RunHook(3), 60, 61),
+        ];
+        assert_eq!(sup.poll(&standing(12, &windows), &[]), [Action::RunHook(2)]);
+        assert_eq!(sup.poll(&standing(25, &windows), &[]), [Action::RunHook(1)]);
+        assert_eq!(sup.poll(&standing(35, &windows), &[]), [Action::HealCuts]);
+        assert_eq!(sup.poll(&standing(45, &windows), &[]), [Action::RunHook(4)]);
+        assert_eq!(
+            sup.poll(&standing(70, &windows), &[]),
+            [Action::RunHook(3), Action::HealCuts]
+        );
+        assert_eq!(sup.poll(&standing(80, &windows), &[]), []);
+    }
+
+    #[test]
+    fn hooks_without_a_heal_hook_never_heal() {
+        let mut sup = Supervisor::new(1);
+        let windows = [(0, ProcessAction::RunHook(2), 10, 20)];
+        assert_eq!(sup.poll(&standing(12, &windows), &[]), [Action::RunHook(2)]);
+        assert_eq!(sup.poll(&standing(30, &windows), &[]), []);
+    }
+
+    #[test]
+    fn starting_a_cut_hook_advances_the_disturbance_generation() {
+        let mut sup = Supervisor::new(1).with_heal(Some(4));
+        sup.note_hook_started(false);
+        assert_eq!(sup.counters().disturbance_generation, 0);
+        sup.note_hook_started(true);
+        assert_eq!(sup.counters().disturbance_generation, 1);
+        assert_eq!(sup.counters().hooks_started, 2);
     }
 
     #[test]
@@ -1592,7 +1652,7 @@ mod tests {
         assert_eq!(sup.counters().hooks_started, 0);
         assert_eq!(sup.counters().hooks_finished, 0);
 
-        sup.note_hook_started();
+        sup.note_hook_started(false);
         assert_eq!(sup.counters().hooks_started, 1);
         assert_eq!(sup.counters().hooks_finished, 0);
         sup.note_hook_finished();
@@ -1605,11 +1665,11 @@ mod tests {
         let mut first = ActiveWindows::new();
         first.insert(0, &ProcessAction::RunHook(2), 0);
         assert_eq!(sup.tick(&first, &[]), [Action::RunHook(2)]);
-        sup.note_hook_started();
+        sup.note_hook_started(false);
         let mut second = ActiveWindows::new();
         second.insert(0, &ProcessAction::RunHook(2), 500);
         assert_eq!(sup.tick(&second, &[]), [Action::RunHook(2)]);
-        sup.note_hook_started();
+        sup.note_hook_started(false);
         assert_eq!(sup.tick(&second, &[]), []);
         assert_eq!(sup.counters().hooks_started, 2);
     }
@@ -1650,7 +1710,7 @@ mod tests {
         let mut sup = Supervisor::new(2);
         sup.tick(&active(&[(1, ProcessAction::RunHook(2))]), &[0]);
         assert_eq!(sup.counters().hooks_started, 0);
-        sup.note_hook_started();
+        sup.note_hook_started(false);
         sup.note_hook_finished();
         let snap = sup.snapshot();
         assert_eq!(snap.ticks, 1);

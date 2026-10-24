@@ -76,10 +76,29 @@ built-in Always assertion covers that case:
 `workload becomes ready within 30 seconds after faults end`. Once no fault
 window is active and no injected fault is pending for 30 seconds of virtual
 time, a readiness generation that has still not passed its `ready` probe
-violates it, once per generation. A node that a kill or power-loss window left
-down counts as a fault still in effect: both keep their node down until a later
-restart window, so the 30 seconds start only once every node is meant to run. The details give the generation and the quiet
-ticks. A node that crash-loops after an injected kill, or a cluster that never
+violates it, once per generation. The 30 seconds count from the later of the
+end of faults and the restart that last made a ready workload unready. A
+restart long after faults end therefore gets its own 30 seconds, and a node
+that keeps restarting before the probe passes keeps the earlier start. A node
+that a kill or power-loss window left down counts as a fault still in effect:
+both keep their node down until a later restart window, so the 30 seconds
+start only once every node is meant to run.
+A bundle's `heal` line names the hook that lifts the faults its other hooks
+leave in force. In such a bundle every other hook is a cut, and each cut launch
+counts as a fault still in effect until a heal hook launched after it exits
+successfully, so a cluster still partitioned by a hook does not start the 30
+seconds. Without a `heal` line, a hook counts only while its window is active.
+
+The supervisor heals a cut when its window closes, as it restarts a killed node
+when the kill window closes. When the last open cut window closes, it drops cut
+requests still queued for readiness, waits for running cut hooks to exit, and
+then runs the heal hook if a cut is still in force. The heal does not wait for
+readiness, because a cut can be what keeps the workload unready. The supervisor
+sees only standing windows and no end of faults, so window close is the
+point it can act on, and each `Hook` action then holds its cut for its own
+window. A shrunk input that keeps a cut and drops the heal action still heals.
+The 30 seconds above start only after the heal succeeds. The details give
+the generation and the quiet ticks. A node that crash-loops after an injected kill, or a cluster that never
 regains readiness after a restart, reports through this assertion.
 
 After initial readiness, an optional `workload` command starts once and remains
@@ -91,9 +110,14 @@ spanned. The host treats the Sometimes and Reachable assertions that pid passed
 after that start as the check's evidence; a check that passed none leaves the
 prior evidence intact. Process transitions and accepted instrumentation reports
 advance the disturbance generation, which keeps stale pre-fault evidence
-distinct from a check completed after recovery. Each check receives its starting
-generation in `HARMONY_DISTURBANCE_GENERATION`, allowing a stateful checker to
-invalidate cached results without importing process-fault semantics.
+distinct from a check completed after recovery. Starting a cut hook and the heal that lifts it
+also advance it. Each check receives its starting generation in
+`HARMONY_DISTURBANCE_GENERATION`, allowing a stateful checker to invalidate
+cached results without importing process-fault semantics. Each check also
+receives `HARMONY_FAULTS_IN_FORCE`: `1` when, at the check's start, a fault
+window is active, an injected fault is pending, a node is held down or a cut is
+unhealed, and `0` otherwise. This is the condition that holds the recovery
+clock, so a convergence check can wait for the same end of faults.
 
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges
