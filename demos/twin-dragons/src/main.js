@@ -76,7 +76,7 @@ ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Saved paths</h2></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
 <footer><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><button id="credits">Credits & source</button><button id="theme" class="theme-button" aria-label="Switch color theme">Dark mode</button></footer>
 <div id="error" role="alert" hidden></div>
-<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Pick a game</h2></div><div id="game-choice" class="game-choice"><section id="run-target" class="game-group" hidden></section><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="segments" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring Your Own ROM</h3><div id="rom-games" class="segments" role="group" aria-labelledby="byo-rom-title"></div></section></div><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><section id="native-panel" class="native-panel" hidden></section><div id="level-grid" class="level-grid"></div></dialog>
+<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><h2 id="level-picker-title">New search</h2><button id="close-level-picker" class="close" aria-label="Close level selector">×</button></div><div id="picker-body" class="picker-body" data-view="detail"><nav id="game-choice" class="game-choice" aria-label="Games"><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="game-list" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring your own ROM</h3><div id="rom-games" class="game-list" role="group" aria-labelledby="byo-rom-title"></div></section><section id="runs-entry" class="game-group" aria-labelledby="runs-title" hidden><h3 id="runs-title">Your machines</h3><div class="game-list"><button id="runs-open" class="game-row" type="button" aria-pressed="false">Runs</button></div></section></nav><div class="picker-detail"><div class="picker-detail-head"><button id="picker-back" class="picker-back" type="button">‹ Games</button><div class="picker-detail-title"><h3 id="detail-title"></h3><p id="detail-meta"></p></div><section id="run-target" class="run-target" hidden></section></div><div class="picker-detail-body"><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><section id="native-panel" class="native-panel" hidden></section><section id="runs-panel" class="native-panel" hidden></section><div id="level-grid" class="level-grid"></div></div></div></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 const recordingCanvas = document.createElement("canvas");
 recordingCanvas.width = 1920;
@@ -3505,6 +3505,21 @@ $("tour-open").onclick = beginTour;
 function familyOf(choice) {
   return choice.family ? [...GAMES.values()].filter((member) => member.family === choice.family) : [choice];
 }
+function needsRom(choice) {
+  return choice.rom.upload && !bundled.has(choice.id) && (choice !== requested || !!missingRom);
+}
+function levelCount(choice) {
+  const total = familyOf(choice).reduce(
+    (sum, member) => sum + (member === game ? catalog.levels.length : (member.catalog?.levels ?? member.levels ?? []).length),
+    0,
+  );
+  return total ? `${total} ${total === 1 ? "level" : "levels"}` : "";
+}
+function gameMeta(choice) {
+  if (needsRom(choice)) return "Needs ROM";
+  if (choice === game || (choice.family && choice.family === game.family)) return "Playing";
+  return levelCount(choice);
+}
 $("new-search").onclick = () => {
   const wasPlaying = playing;
   if (wasPlaying) { playing = false; music.stop(); $("play").textContent = "▶ Replay"; }
@@ -3513,7 +3528,10 @@ $("new-search").onclick = () => {
   pickerGames = [];
   const buttons = games.map((choice) => {
     const button = document.createElement("button");
+    button.className = "game-row";
+    button.type = "button";
     button.textContent = choice.title;
+    button.dataset.meta = gameMeta(choice);
     button.setAttribute("aria-pressed", choice === game);
     pickerGames.push({ button, choice });
     const play = () => {
@@ -3523,7 +3541,7 @@ $("new-search").onclick = () => {
     };
     button.onclick = () => {
       if (nativeTarget) showNativeLevels(choice);
-      else if (choice.rom.upload && !bundled.has(choice.id) && (choice !== requested || missingRom)) showRomPanel(choice, play);
+      else if (needsRom(choice)) showRomPanel(choice, play);
       else if (choice === game || (choice.family && choice.family === game.family)) showLevelGrid();
       else play();
     };
@@ -3538,6 +3556,7 @@ $("new-search").onclick = () => {
   applyTarget();
   if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
   $("level-picker").showModal();
+  launcher?.activate();
 };
 function renderLevels(family) {
   $("level-grid").replaceChildren();
@@ -3589,10 +3608,12 @@ function renderLevels(family) {
   }
 }
 $("close-level-picker").onclick = () => $("level-picker").close();
+$("picker-back").onclick = () => ($("picker-body").dataset.view = "games");
+$("runs-open").onclick = () => showRuns();
 let launcher = null, nativeTarget = null, pickerGames = [], nativeChoice = game;
 function renderTargetRow() {
-  $("run-target").hidden = !launcher;
-  if (!launcher) return;
+  $("run-target").hidden = !launcher || !$("rom-panel").hidden || !$("runs-panel").hidden;
+  if (!launcher) return $("run-target").replaceChildren();
   const heading = document.createElement("h3");
   heading.textContent = "Run on";
   $("run-target").replaceChildren(heading, segmentButtons([["", "This browser"], ...launcher.machines.map((name) => [name, name])], nativeTarget ?? "", (name) => {
@@ -3608,7 +3629,7 @@ function applyTarget() {
   renderTargetRow();
   for (const { button, choice } of pickerGames) button.disabled = !!nativeTarget && !nativeGame(choice);
   if (nativeTarget) showNativeLevels(nativeGame(nativeChoice) ? nativeChoice : pickerGames.find(({ choice }) => nativeGame(choice))?.choice ?? game);
-  else if ($("rom-panel").hidden) {
+  else if ($("rom-panel").hidden && $("runs-panel").hidden) {
     renderLevels(familyOf(game));
     showLevelGrid();
   }
@@ -3621,31 +3642,39 @@ function showNativeLevels(choice) {
 }
 function showHardware(member, level, card) {
   pressGame(nativeChoice);
-  $("rom-panel").hidden = true;
-  $("level-grid").hidden = true;
-  closePlaythrough();
+  $("detail-meta").textContent = `Set up a run on ${nativeTarget}`;
   launcher.setLevel(member.id, level, card?.querySelector("img, canvas"), () => showNativeLevels(nativeChoice));
-  $("native-panel").hidden = false;
-  launcher.activate();
+  showPanel("hardware");
 }
 let playthroughPlayer = null;
 function pressGame(choice) {
   for (const button of $("game-choice").querySelectorAll("#homebrew-games button, #rom-games button")) button.setAttribute("aria-pressed", button.textContent === choice.title);
+  $("detail-title").textContent = choice.title;
+}
+const PANELS = { levels: "level-grid", rom: "rom-panel", hardware: "native-panel", runs: "runs-panel" };
+function showPanel(name) {
+  for (const [key, id] of Object.entries(PANELS)) $(id).hidden = key !== name;
+  closePlaythrough();
+  $("runs-open").setAttribute("aria-pressed", name === "runs");
+  $("run-target").hidden = !launcher || name === "rom" || name === "runs";
+  $("picker-body").dataset.view = "detail";
 }
 function showLevelGrid(choice = game) {
   pressGame(choice);
-  $("native-panel").hidden = true;
-  launcher?.deactivate();
-  $("rom-panel").hidden = true;
-  $("level-grid").hidden = false;
-  closePlaythrough();
+  const count = levelCount(choice);
+  $("detail-meta").textContent = [count, nativeTarget ? `Pick a level to set up a run on ${nativeTarget}` : "Pick a level to start a search"].filter(Boolean).join(" · ");
+  showPanel("levels");
+}
+function showRuns() {
+  pressGame({ title: "" });
+  $("detail-title").textContent = "Runs";
+  $("detail-meta").textContent = "Searches running on your machines";
+  showPanel("runs");
 }
 function showRomPanel(choice, play) {
   pressGame(choice);
-  $("native-panel").hidden = true;
-  launcher?.deactivate();
-  $("level-grid").hidden = true;
-  $("rom-panel").hidden = false;
+  $("detail-meta").textContent = "This game’s ROM is not bundled with the demo";
+  showPanel("rom");
   $("rom-panel").dataset.game = choice.id;
   $("rom-title").textContent = `To explore ${choice.title} please supply the game’s ROM`;
   $("rom-message").hidden = true;
@@ -3783,6 +3812,11 @@ detectLauncher()
     if (!options) return;
     launcher = nativePanel(options, [...GAMES.values()], game.id);
     $("native-panel").replaceChildren(launcher.element);
+    $("runs-panel").replaceChildren(launcher.runsElement);
+    $("runs-entry").hidden = false;
+    launcher.onActive = (count) => ($("runs-open").dataset.meta = count ? `${count} running` : "");
+    launcher.onStarted = showRuns;
     renderTargetRow();
+    if ($("level-picker").open) launcher.activate();
   })
   .catch(() => {});

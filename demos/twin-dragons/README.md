@@ -278,13 +278,15 @@ tools/launcher.py
 
 and open `http://127.0.0.1:8790/`. On a loopback address the page asks
 `/launcher/machines`; when the launcher answers, the New search picker gains a
-Run on row: This browser, or one of the machines. With a machine chosen,
-the level grid stays and a level opens a second step with that level's preview,
-workers, archive budget, seed and time limit. A Famidash run starts at the chosen
-level through the end of its section (`stage` in the request); other games start
-from power-on. The dialog lists the active runs with Watch and Stop. Starting a
-run opens its live view once it is running. Without a launcher, such as on the published site, the
-picker shows only browser searches. A run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
+Run on control in the game's header: This browser, or one of the machines. With a
+machine chosen, the level grid stays and a level opens a second step with that
+level's preview, workers, archive budget, seed and time limit. A Famidash run starts
+at the chosen level through the end of its section (`stage` in the request); other
+games start from power-on. Starting a run switches the picker to its Runs page, which
+lists the active runs with Watch and Stop and opens the live view once the run is
+running. The Runs entry sits at the bottom of the game list under Your machines and
+shows the number of active runs. Without a launcher, such as on the published site,
+the picker shows only browser searches. A run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
 builds the QuickNES core with `scripts/build-quicknes-core.sh` and `nes-eval`
 there once per commit, uploads the ROM, and starts `nes-eval` with
 `live: 127.0.0.1:0` as a `systemd-run` unit named `harmony-arcade-<id>` with
@@ -740,9 +742,12 @@ ROM with SHA-256 `0b3d9e1f…6dea`, the same ROM as `workloads/nes`. The page
 keeps it in IndexedDB and never uploads it. A visit without a stored ROM shows
 Twin Dragons and asks for the file.
 
-The game picker lists the games the site ships under Homebrew and the games
-that need a visitor's ROM under Bring Your Own ROM. Choosing a game that
-needs a ROM opens a page that takes
+The New search picker has two panes. The left pane lists the games the site
+ships under Homebrew and the games that need a visitor's ROM under Bring Your Own
+ROM, each with its level count, "Playing" for the current game or "Needs ROM". The
+right pane shows the chosen game's header and its levels as preview cards. On a phone
+the panes become two pages with a Games button to go back. Choosing a game that
+needs a ROM opens a page in the right pane that takes
 the file by drag and drop or a file picker. A game with a `playthrough` entry
 also shows that YouTube video below, embedded from youtube-nocookie.com
 through the IFrame Player API, which sets the playback rate to 2. Super Mario
