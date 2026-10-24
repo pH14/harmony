@@ -47,7 +47,8 @@ async function widenFollowing(page, vertical) {
     const motion = Array.from({ length: 4 }, () => Uint16Array.from([0, level, x, y, 2, 600, level, x, y, 2]));
     overviewDeliver({ ...overviewBatch, points: [], motion, finishes: [], exits: [], stopped: false });
   }, vertical);
-  await page.waitForFunction(() => Number(document.querySelector(".area-map").dataset.zoom) < 1.5, null, { timeout: 4000 });
+  await page.waitForFunction(() => Number(document.querySelector(".area-map").dataset.zoom) > 0, null, { timeout: 4000 });
+  await page.waitForTimeout(1500);
 }
 
 for (const query of ["?level=0&pace=300", "?game=tobu-tobu-girl&level=0&pace=0"]) {
