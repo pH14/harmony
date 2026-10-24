@@ -35,6 +35,7 @@ use crate::search::draw_tables::{DrawTableHeader, DrawTables};
 use crate::search::duration::DurationPolicies;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::rand::RomuDuoJrRand;
+use crate::search::rollout::RolloutStop;
 use crate::search::telemetry::{
     CampaignTelemetry, HostTimes, IdleClock, IdleReason, Moment, WorkerTelemetry, nanos_since, now,
     thread_schedstat,
@@ -59,6 +60,7 @@ pub struct JobOutcome<G: CampaignTypes + ?Sized> {
     pub result: CampaignJobResult<G>,
     pub execution_work: u64,
     pub result_sha256: String,
+    pub deadline_actions: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -72,7 +74,10 @@ pub fn run_job<G: Workload>(
     config: &CampaignConfig<G>,
     target: &mut G::Target,
     job: &JobSpec<G>,
+    deadline: Option<WallDeadline>,
 ) -> Result<JobOutcome<G>, Box<dyn Error>> {
+    let stop = RolloutStop::new(config.stop_rollout_on_objective)
+        .with_deadline(deadline.map(|deadline| (deadline.started, deadline.budget)));
     let work_before = workload.execution_work(target);
     let result = workload.execute_job_certified(
         &config.run,
@@ -83,18 +88,36 @@ pub fn run_job<G: Workload>(
         job.parent_milestones,
         &job.suffix,
         config.retention,
-        config.stop_rollout_on_objective,
+        stop,
     )?;
     workload.verify_integrity()?;
     let result_sha256 = workload.certified_result_sha256(&result, target)?;
     let execution_work =
         execution_work_delta(work_before, workload.execution_work(target), "worker")?;
+    let deadline_actions = (result.preparation_failure.is_none()
+        && result.actions.len() < job.suffix.len()
+        && result
+            .actions
+            .last()
+            .is_some_and(|action| !action.outcome.ends_rollout(stop))
+        && stop.deadline_passed())
+    .then_some(result.actions.len());
     Ok(JobOutcome {
         reservation: job.reservation,
         result,
         execution_work,
         result_sha256,
+        deadline_actions,
     })
+}
+
+pub(crate) type WorkerResult<G> =
+    Result<(CampaignJobResult<G>, u64, String, Option<usize>), String>;
+
+#[derive(Clone, Copy, Debug)]
+pub struct WallDeadline {
+    started: Moment,
+    budget: std::time::Duration,
 }
 
 pub struct CampaignCoordinator<'a, G: Workload> {
@@ -383,6 +406,13 @@ where
         Ok(coordinator)
     }
 
+    #[must_use]
+    pub fn wall_deadline(&self) -> Option<WallDeadline> {
+        self.wall_started
+            .zip(self.config.wall_budget)
+            .map(|(started, budget)| WallDeadline { started, budget })
+    }
+
     pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {
         let result = (|| {
             self.ensure_active()?;
@@ -423,8 +453,12 @@ where
             result,
             execution_work,
             result_sha256,
+            deadline_actions,
         } = outcome;
-        self.receive(reservation, Ok((result, execution_work, result_sha256)))
+        self.receive(
+            reservation,
+            Ok((result, execution_work, result_sha256, deadline_actions)),
+        )
     }
 
     pub fn fail(&mut self, reservation: usize, error: String) -> Result<(), Box<dyn Error>> {
@@ -445,7 +479,7 @@ where
     fn receive(
         &mut self,
         reservation: usize,
-        outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+        outcome: WorkerResult<G>,
     ) -> Result<(), Box<dyn Error>> {
         let result = (|| {
             self.ensure_active()?;
@@ -840,7 +874,7 @@ where
         *planned_clock = finish;
         spec_records.remove(&reservation);
         let pending_job = completed_job.pending;
-        let (result, execution_work, result_sha256) =
+        let (result, execution_work, result_sha256, deadline_actions) =
             completed_job.outcome.map_err(|error| -> Box<dyn Error> {
                 format!("campaign reservation {reservation} failed: {error}").into()
             })?;
@@ -998,6 +1032,7 @@ where
             duration_checkpoint_before,
             duration_checkpoint_after,
             suffix_limit: pending_job.suffix_limit,
+            deadline_actions: deadline_actions.map(u64::try_from).transpose()?,
         }))?;
         coordinator_profile.stream_write_ns = coordinator_profile
             .stream_write_ns

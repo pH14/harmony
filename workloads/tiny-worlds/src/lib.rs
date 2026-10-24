@@ -544,7 +544,7 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         parent_milestones: <Self as CampaignTypes>::Milestones,
         suffix: &[<Self as CampaignTypes>::Action],
         retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: searcher::search::rollout::RolloutStop,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
         let start_work = target.work;
         let mut result = searcher::search::rollout::execute_job(
@@ -556,7 +556,7 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
             parent_milestones,
             suffix,
             retention,
-            stop_rollout_on_objective,
+            stop,
         )?;
         let work = target.work - start_work;
         for observation in result

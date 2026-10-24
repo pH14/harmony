@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::error::Error;
+use std::{error::Error, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
 use super::{
     archive::RetentionPolicy,
     campaign::{CampaignActionResult, CampaignCandidate, CampaignJobResult, Workload},
+    telemetry::Moment,
 };
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -35,8 +36,43 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    pub const fn should_stop(self, stop_rollout_on_objective: bool) -> bool {
-        self.disposition.is_terminal() || (stop_rollout_on_objective && self.objective_reached)
+    pub fn should_stop(self, stop: RolloutStop) -> bool {
+        self.ends_rollout(stop) || stop.deadline_passed()
+    }
+
+    pub const fn ends_rollout(self, stop: RolloutStop) -> bool {
+        self.disposition.is_terminal() || (stop.objective && self.objective_reached)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RolloutStop {
+    objective: bool,
+    deadline: Option<(Moment, Duration)>,
+}
+
+impl RolloutStop {
+    pub const fn new(stop_on_objective: bool) -> Self {
+        Self {
+            objective: stop_on_objective,
+            deadline: None,
+        }
+    }
+
+    pub(crate) const fn with_deadline(self, deadline: Option<(Moment, Duration)>) -> Self {
+        Self {
+            objective: self.objective,
+            deadline,
+        }
+    }
+
+    pub const fn stops_on_objective(self) -> bool {
+        self.objective
+    }
+
+    pub fn deadline_passed(self) -> bool {
+        self.deadline
+            .is_some_and(|(started, budget)| started.elapsed() >= budget)
     }
 }
 
@@ -112,7 +148,7 @@ pub fn execute_job<G: Workload + ?Sized>(
     parent_milestones: G::Milestones,
     suffix: &[G::Action],
     retention: RetentionPolicy,
-    stop_rollout_on_objective: bool,
+    stop: RolloutStop,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
     workload.verify_integrity()?;
     workload.reset(target);
@@ -140,7 +176,7 @@ pub fn execute_job<G: Workload + ?Sized>(
         parent_milestones,
         suffix,
         retention,
-        stop_rollout_on_objective,
+        stop,
     )
 }
 
@@ -149,7 +185,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
     parent_milestones: G::Milestones,
     suffix: &[G::Action],
     retention: RetentionPolicy,
-    stop_rollout_on_objective: bool,
+    stop: RolloutStop,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
     let mut milestones = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -197,7 +233,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop_rollout_on_objective) {
+        if outcome.should_stop(stop) {
             break;
         }
     }

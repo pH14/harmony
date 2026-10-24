@@ -191,10 +191,15 @@ recreation failure is an external failure, so its timing can change which
 outstanding jobs complete before the failure is reported.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 At the wall-time limit the coordinator stops reserving and admits the jobs
-already in its window, so a search runs past its limit by the slowest of those
-jobs. Every workload searches with `default_window(workers)`, one reservation
-per worker. A wider window also makes each selection miss the results of more
-jobs in flight, which slows how fast lineages grow.
+already in its window. Each worker checks the limit after every action and
+ends its job there. The job record keeps the job's planned finish for the whole
+suffix and adds `deadline_actions`, the number of actions the job ran. Replay
+cuts the redrawn suffix to that number and rejects a number that is zero or
+reaches the suffix length. A search ends within its limit plus one action, plus
+the restore and replay of a job dispatched just before the limit. Every
+workload searches with `default_window(workers)`, one reservation per worker.
+A wider window also makes each selection miss the results of more jobs in
+flight, which slows how fast lineages grow.
 
 A workload reports a job that hung by returning a result whose `hang` field
 holds the actions it attempted. The coordinator counts it in `hung_jobs`,
