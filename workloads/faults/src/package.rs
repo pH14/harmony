@@ -19,6 +19,7 @@ pub struct Options {
     pub uml_profile: Option<(PathBuf, String)>,
     pub root: Option<Arc<Vec<u8>>>,
     pub checkpoint_owner: Option<String>,
+    pub boot_cache: Option<PathBuf>,
 }
 
 impl Options {
@@ -62,6 +63,7 @@ pub struct BugSummary {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateHashEncoding {
+    EnginePageDigest,
     EngineDigest,
     Unavailable,
     #[default]
@@ -153,7 +155,7 @@ impl ReplaySummary {
                 .map(state_digest_hex)
                 .unwrap_or_default(),
             state_hash_encoding: if state_digest.is_some() {
-                StateHashEncoding::EngineDigest
+                StateHashEncoding::EnginePageDigest
             } else {
                 StateHashEncoding::Unavailable
             },
@@ -359,11 +361,11 @@ mod live {
         campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_with_plan},
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
         report::{BugReport, write_bug_reports},
-        target::{ActionWindows, FaultAction, FaultOperation},
+        target::{ActionWindows, FaultAction, FaultObservations, FaultOperation},
     };
 
     const MEMORY_BUDGET_MIB: usize = 512;
-    const WORKER_OVERHEAD_MIB: u64 = 512;
+    const WORKER_OVERHEAD_MIB: u64 = 256;
     #[cfg(target_os = "macos")]
     const VM_WORKER_LIMIT: usize = 4;
 
@@ -438,6 +440,7 @@ mod live {
             ram_mib: options.ram_mib,
             backend,
             root: options.root.clone(),
+            boot_cache: options.boot_cache.clone(),
         })
     }
 
@@ -480,7 +483,7 @@ mod live {
         let mut report = Report::new("search", artifacts, identity, options, workers);
         std::fs::create_dir_all(&options.output)?;
         segments::raise_descriptor_limit();
-        let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::new(resources.budget));
+        let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(resources.budget));
         let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
             .with_snapshot_cache(Some(Arc::clone(&cache)))
             .with_session_worker(session_worker);
@@ -625,13 +628,14 @@ mod live {
         report.execution_ticks = campaign_report.campaign.execution_work;
         for bug in &written {
             let violations: Vec<String> = bug.observations.violations().into_iter().collect();
-            let witness = match replay_once(artifacts, &config, &bug.actions, true) {
-                Ok(summary) => Some(summary),
-                Err(error) => {
-                    eprintln!("bug {} did not replay: {error}", bug.bug);
-                    None
-                }
-            };
+            let witness =
+                match replay_once(artifacts, &config, &bug.actions, true, &mut |_, _| Ok(())) {
+                    Ok(summary) => Some(summary),
+                    Err(error) => {
+                        eprintln!("bug {} did not replay: {error}", bug.bug);
+                        None
+                    }
+                };
             let confirmed = witness.as_ref().is_some_and(|witness| {
                 replay_confirms_bug(bug.observations.stop, &violations, witness)
             });
@@ -705,16 +709,11 @@ mod live {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
-            let mut summary = replay_once(artifacts, &config, actions, settle)?;
+            let mut summary = replay_once(artifacts, &config, actions, settle, &mut |_, _| Ok(()))?;
             summary.run = run;
-            report.execution_ticks = report.execution_ticks.saturating_add(
-                actions
-                    .iter()
-                    .take(summary.actions_applied as usize)
-                    .map(crate::target::action_ticks)
-                    .sum::<u64>()
-                    .saturating_add(summary.settle_ticks),
-            );
+            report.execution_ticks = report
+                .execution_ticks
+                .saturating_add(replayed_ticks(actions, &summary));
             report.bug_found |= summary.bug;
             report.replays.push(summary);
         }
@@ -723,13 +722,159 @@ mod live {
         Ok(report)
     }
 
+    pub type Visit<'a> = dyn FnMut(u64, &mut FaultTarget) -> Result<(), Box<dyn Error>> + 'a;
+
+    pub fn execute_visiting(
+        artifacts: &Artifacts,
+        actions: &[FaultAction],
+        options: &Options,
+        settle: bool,
+        visit: &mut Visit<'_>,
+    ) -> Result<ReplaySummary, Box<dyn Error>> {
+        let mut summary = replay_once(artifacts, &config(options)?, actions, settle, visit)?;
+        summary.run = 1;
+        Ok(summary)
+    }
+
+    pub struct Replayer {
+        artifacts: Artifacts,
+        config: FaultConfig,
+        cache: Arc<dyn CacheIndex>,
+        identity: String,
+        options: Options,
+        settle: bool,
+        workers: usize,
+    }
+
+    pub struct ReplayWorker<'a> {
+        replayer: &'a Replayer,
+        target: FaultTarget,
+    }
+
+    impl Replayer {
+        pub fn new(
+            artifacts: &Artifacts,
+            options: &Options,
+            settle: bool,
+            jobs: usize,
+        ) -> Result<Self, Box<dyn Error>> {
+            let config = config(options)?;
+            let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config)?;
+            let memory = plan_memory(jobs.max(1), memory_needs(options.ram_mib))?;
+            segments::raise_descriptor_limit();
+            Ok(Self {
+                artifacts: Artifacts {
+                    kernel: artifacts.kernel.clone(),
+                    initramfs: artifacts.initramfs.clone(),
+                },
+                config,
+                cache: Arc::new(LocalIndex::measured(memory.budget)),
+                identity,
+                options: options.clone(),
+                settle,
+                workers: memory.workers,
+            })
+        }
+
+        #[must_use]
+        pub fn workers(&self) -> usize {
+            self.workers
+        }
+
+        pub fn worker(&self) -> Result<ReplayWorker<'_>, Box<dyn Error>> {
+            let target = FaultTarget::new(
+                &self.artifacts.kernel,
+                &self.artifacts.initramfs,
+                &self.config,
+                Some(Arc::clone(&self.cache)),
+                None,
+            )?;
+            Ok(ReplayWorker {
+                replayer: self,
+                target,
+            })
+        }
+    }
+
+    impl ReplayWorker<'_> {
+        pub fn replay(
+            &mut self,
+            actions: &[FaultAction],
+            mut watch: impl FnMut(&FaultObservations) -> bool,
+        ) -> Result<Option<Report>, Box<dyn Error>> {
+            let replayer = self.replayer;
+            #[allow(clippy::disallowed_methods)]
+            let started = Instant::now();
+            self.target.reset();
+            if self.target.failed() {
+                return Err("the replay guest could not return to its setup snapshot".into());
+            }
+            let Some(summary) = replay_on(
+                &mut self.target,
+                replayer.config.uml().is_some(),
+                actions,
+                replayer.settle,
+                &mut watch,
+                &mut |_, _| Ok(()),
+            )?
+            else {
+                return Ok(None);
+            };
+            replayer.cache.verify_integrity()?;
+            let mut report = Report::new(
+                "replay",
+                &replayer.artifacts,
+                replayer.identity.clone(),
+                &replayer.options,
+                1,
+            );
+            report.execution_ticks = replayed_ticks(actions, &summary);
+            report.bug_found = summary.bug;
+            report.replays.push(summary);
+            report.wall_seconds = started.elapsed().as_secs();
+            Ok(Some(report))
+        }
+    }
+
+    fn replayed_ticks(actions: &[FaultAction], summary: &ReplaySummary) -> u64 {
+        actions
+            .iter()
+            .take(summary.actions_applied as usize)
+            .map(crate::target::action_ticks)
+            .sum::<u64>()
+            .saturating_add(summary.settle_ticks)
+    }
+
     fn replay_once(
         artifacts: &Artifacts,
         config: &FaultConfig,
         actions: &[FaultAction],
         settle: bool,
+        visit: &mut Visit<'_>,
     ) -> Result<ReplaySummary, Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
+        replay_on(
+            &mut target,
+            config.uml().is_some(),
+            actions,
+            settle,
+            &mut |_| true,
+            visit,
+        )?
+        .ok_or_else(|| "the replay stopped before its last action".into())
+    }
+
+    fn replay_on(
+        target: &mut FaultTarget,
+        uml: bool,
+        actions: &[FaultAction],
+        settle: bool,
+        watch: &mut dyn FnMut(&FaultObservations) -> bool,
+        visit: &mut Visit<'_>,
+    ) -> Result<Option<ReplaySummary>, Box<dyn Error>> {
+        if !watch(target.observation()) {
+            return Ok(None);
+        }
         let mut timeline = vec![super::ReplayStep {
             step: 0,
             action: None,
@@ -748,6 +893,10 @@ mod live {
             });
             if target.actions().len() != index + 1 {
                 break;
+            }
+            visit(index as u64 + 1, target)?;
+            if !watch(target.observation()) {
+                return Ok(None);
             }
         }
         let actions_applied = target.actions().len() as u64;
@@ -777,6 +926,9 @@ mod live {
             }
             settle_actions = settle_actions.saturating_add(1);
             settle_ticks = settle_ticks.saturating_add(u64::from(ticks));
+            if !watch(target.observation()) {
+                return Ok(None);
+            }
         }
         if target.failed() {
             return Err(format!(
@@ -788,7 +940,7 @@ mod live {
         let observation = target.observation();
         let mut summary = ReplaySummary::from_observation(
             observation,
-            if config.uml().is_some() {
+            if uml {
                 None
             } else {
                 Some(target.state_hash()?)
@@ -799,7 +951,7 @@ mod live {
         summary.timeline = timeline;
         summary.settle_actions = settle_actions;
         summary.settle_ticks = settle_ticks;
-        Ok(summary)
+        Ok(Some(summary))
     }
 
     fn copy_evidence_file(
@@ -1074,7 +1226,10 @@ mod live {
     ),
     not(miri)
 ))]
-pub use live::{Resources, execute_actions, prepare_debug, replay, resources, search};
+pub use live::{
+    ReplayWorker, Replayer, Resources, Visit, execute_actions, execute_visiting, prepare_debug,
+    replay, resources, search,
+};
 
 #[cfg(test)]
 mod tests {
@@ -1091,6 +1246,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         }
     }
 
@@ -1417,7 +1573,7 @@ mod tests {
         assert_eq!(report.replays[0].state_hash, expected);
         assert_eq!(
             report.replays[0].state_hash_encoding,
-            StateHashEncoding::EngineDigest
+            StateHashEncoding::EnginePageDigest
         );
         assert_ne!(report.replays[0].state_hash, sha256_hex(&state_digest));
 
@@ -1428,7 +1584,7 @@ mod tests {
         assert_eq!(decoded.replays[0].state_hash, expected);
         assert_eq!(
             decoded.replays[0].state_hash_encoding,
-            StateHashEncoding::EngineDigest
+            StateHashEncoding::EnginePageDigest
         );
     }
 

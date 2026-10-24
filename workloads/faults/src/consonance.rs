@@ -45,7 +45,8 @@ use crate::target::{
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
-pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v3";
+pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v5";
+const LOCAL_SERVICES: [u16; 2] = [STANDING_NAMESPACE, process_proto::debug::NAMESPACE];
 pub const SESSION_SERVICE: &str = "faults";
 const SEED: u64 = 0x4661_756c_744c_6162;
 const SETUP_BUDGET: u64 = 120_000_000_000;
@@ -108,6 +109,7 @@ pub struct FaultConfig {
     pub ram_mib: u32,
     pub backend: GuestBackend,
     pub root: Option<Arc<Vec<u8>>>,
+    pub boot_cache: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -212,10 +214,14 @@ impl FaultConfig {
         let ram = usize::try_from(self.ram_mib)
             .unwrap_or(usize::MAX / (1024 * 1024))
             .saturating_mul(1024 * 1024);
-        SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
+        let config = SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
             .with_identity_tag(IDENTITY_TAG)
             .with_wall_limit(WALL_LIMIT)
-            .with_deferred_virtual_time_checkpoint_hashes()
+            .with_deferred_virtual_time_checkpoint_hashes();
+        match &self.boot_cache {
+            Some(dir) => config.with_boot_cache(dir),
+            None => config,
+        }
     }
 }
 
@@ -285,7 +291,7 @@ impl StandingHandler {
 
 impl ServiceHandler for StandingHandler {
     fn local_services(&self) -> &[u16] {
-        &[process_proto::debug::NAMESPACE]
+        &LOCAL_SERVICES
     }
     fn identity(&self) -> &[u8] {
         SERVICE_IDENTITY
@@ -371,7 +377,7 @@ pub fn service_factory() -> ServiceFactory {
         if config.identity != SERVICE_IDENTITY {
             return nominal(config);
         }
-        if config.local_services != [process_proto::debug::NAMESPACE] {
+        if config.local_services != LOCAL_SERVICES {
             return Err(ChannelError::Malformed);
         }
         Ok(
@@ -385,6 +391,7 @@ struct ActionPlan {
     handler: StandingHandler,
     coverage_schedule: CoverageSchedule,
     deadline: u64,
+    entropy_seed: u64,
 }
 
 impl ActionPlan {
@@ -417,16 +424,23 @@ impl ActionPlan {
             })),
             coverage_schedule,
             deadline,
+            entropy_seed: action_entropy_seed(actions),
         })
     }
 
     fn service_config(&self) -> ServiceConfig {
         ServiceConfig {
-            local_services: vec![process_proto::debug::NAMESPACE],
+            local_services: LOCAL_SERVICES.to_vec(),
             identity: SERVICE_IDENTITY.to_vec(),
             configuration: self.handler.0.configuration.clone(),
         }
     }
+}
+
+fn action_entropy_seed(actions: &[FaultAction]) -> u64 {
+    actions
+        .last()
+        .map_or(SEED, |action| action.entropy_seed(SEED))
 }
 
 #[derive(Debug)]
@@ -933,7 +947,7 @@ impl FaultTarget {
             live.session
                 .branch_with_service(
                     snapshot,
-                    SEED,
+                    action_entropy_seed(self.actions()),
                     service,
                     Vec::new(),
                     Vec::new(),
@@ -969,6 +983,18 @@ impl FaultTarget {
         })?;
         self.observation = observation;
         Ok(progress)
+    }
+
+    #[must_use]
+    pub fn endpoint_certificate(&self) -> Option<[u8; 32]> {
+        self.history.receipt().certificate()
+    }
+
+    pub fn probe<T>(&mut self, inspect: impl FnOnce(&mut Self) -> T) -> T {
+        let observation = self.observation.clone();
+        let result = inspect(self);
+        self.observation = observation;
+        result
     }
 
     pub fn export_root(&self) -> Result<Vec<u8>, String> {
@@ -2305,7 +2331,7 @@ impl Live {
         self.cursor.invalidate();
         let result = self.session.branch_with_service(
             parent.snap,
-            SEED,
+            plan.entropy_seed,
             config,
             Vec::new(),
             Vec::new(),
@@ -2339,7 +2365,7 @@ impl Live {
             checkpoint.validate_binding(&parent_receipt)?;
             self.cursor.decoder = Some(checkpoint.decoder().clone());
             self.telemetry.observation_checkpoint_hits += 1;
-            let mut input = InputSpec::seeded(SEED);
+            let mut input = InputSpec::seeded(plan.entropy_seed);
             input.set_config(plan.service_config());
             input.set_payloads(Some(Vec::new()));
             input.set_coverage_schedule(Some(plan.coverage_schedule.clone()));
@@ -2665,6 +2691,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Uml(Box::new(guest.clone())),
             root: None,
+            boot_cache: None,
         };
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
@@ -2705,6 +2732,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Uml(Box::new(guest)),
             root: None,
+            boot_cache: None,
         };
         let split = FaultConfig {
             knobs: vec!["foo=bar".into(), "root=/dev/ram0".into()],
@@ -2749,6 +2777,7 @@ mod tests {
                     ram_mib: DEFAULT_RAM_MIB,
                     backend: GuestBackend::Vm,
                     root: None,
+                    boot_cache: None,
                 }
                 .session_config(),
                 cache: None,
@@ -2887,7 +2916,7 @@ mod tests {
         static AFTER_RUN_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
     }
 
-    type PlannedBranch = (ServiceConfig, Option<CoverageSchedule>);
+    type PlannedBranch = (u64, ServiceConfig, Option<CoverageSchedule>);
 
     thread_local! {
         static PLANNED_BRANCHES: RefCell<Option<Vec<PlannedBranch>>> = const { RefCell::new(None) };
@@ -3276,7 +3305,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             snapshot: SnapId,
-            _: u64,
+            seed: u64,
             config: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
@@ -3285,7 +3314,7 @@ mod tests {
             self.branch_calls += 1;
             PLANNED_BRANCHES.with(|branches| {
                 if let Some(branches) = branches.borrow_mut().as_mut() {
-                    branches.push((config, coverage));
+                    branches.push((seed, config, coverage));
                 }
             });
             if self.hash.is_some() {
@@ -3649,6 +3678,7 @@ mod tests {
                 ram_mib: DEFAULT_RAM_MIB,
                 backend: GuestBackend::Vm,
                 root: None,
+                boot_cache: None,
             },
         );
         let run = crate::campaign::FaultCampaignRun {
@@ -3980,7 +4010,7 @@ mod tests {
     fn coordinator_retired_telemetry_refuses_live_before_session_query() {
         let _fixture = ResidencyFixture;
         let counters =
-            BTreeMap::from([("vmm.sdk_dispatch.event.request_guard_calls".to_owned(), 17)]);
+            BTreeMap::from([("vmm.sdk_dispatch.event.response_guard_calls".to_owned(), 17)]);
         RETIRED.with(|retired| *retired.borrow_mut() = counters.clone());
         assert_eq!(coordinator_retired_work_telemetry().unwrap(), counters);
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
@@ -4254,6 +4284,7 @@ mod tests {
                 ram_mib: DEFAULT_RAM_MIB,
                 backend,
                 root: None,
+                boot_cache: None,
             },
         )
     }
@@ -7382,6 +7413,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Vm,
             root: None,
+            boot_cache: None,
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         let run = crate::campaign::FaultCampaignRun {
@@ -7473,7 +7505,7 @@ mod tests {
         }
         (
             ServiceConfig {
-                local_services: vec![process_proto::debug::NAMESPACE],
+                local_services: LOCAL_SERVICES.to_vec(),
                 identity: SERVICE_IDENTITY.to_vec(),
                 configuration,
             },
@@ -7665,9 +7697,14 @@ mod tests {
     fn executed_and_rebuilt_prefixes_compile_once_and_cached_children_do_no_planning() {
         use crate::target::TIMELINE_STEPS;
         let actions = [
-            FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into(),
-            FaultOperation::Kill(3, std::num::NonZeroU16::new(3).unwrap()).into(),
-            FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
+            FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()))
+                .with_choice(1),
+            FaultAction::from(FaultOperation::Kill(
+                3,
+                std::num::NonZeroU16::new(3).unwrap(),
+            ))
+            .with_choice(2),
+            FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN)).with_choice(3),
         ];
         let inherited = vec![StandingWindow {
             class: 1,
@@ -7686,9 +7723,10 @@ mod tests {
             history = history.push(receipt.unwrap()).unwrap();
         }
         let original = PLANNED_BRANCHES.with(|branches| branches.borrow_mut().take().unwrap());
-        for (index, (config, schedule)) in original.iter().enumerate() {
+        for (index, (seed, config, schedule)) in original.iter().enumerate() {
             let (expected_config, expected_schedule) =
                 reference_plan(source.windows, &inherited, &actions[..=index]);
+            assert_eq!(*seed, actions[index].entropy_seed(SEED));
             assert_eq!(config, &expected_config);
             assert_eq!(
                 schedule.as_ref().unwrap().encode(),
@@ -7852,15 +7890,12 @@ mod tests {
         let config = test_branch_config(ActionWindows { root_seal: 0 }, &[], &[]).unwrap();
         let factory = service_factory();
         let mut standing = factory(&config).unwrap();
-        assert_eq!(
-            standing.local_services(),
-            &[process_proto::debug::NAMESPACE]
-        );
+        assert_eq!(standing.local_services(), &LOCAL_SERVICES);
         let active = debug_configuration(&config.configuration, None).unwrap();
         let mut debug = factory(&active).unwrap();
         assert!(debug.local_services().is_empty());
         let mut forged_active = active.clone();
-        forged_active.local_services = vec![process_proto::debug::NAMESPACE];
+        forged_active.local_services = LOCAL_SERVICES.to_vec();
         assert!(factory(&forged_active).is_err());
         let status = process_proto::debug::Status {
             acknowledged: 3,
@@ -7902,7 +7937,7 @@ mod tests {
         let handler = factory(&ServiceConfig::default()).expect("nominal service");
         assert_eq!(handler.identity(), ServiceConfig::default().identity);
         let own = factory(&ServiceConfig {
-            local_services: vec![process_proto::debug::NAMESPACE],
+            local_services: LOCAL_SERVICES.to_vec(),
             identity: SERVICE_IDENTITY.to_vec(),
             configuration: encode_configuration(
                 &encode_windows(&[]).expect("an empty standing list encodes"),
@@ -8023,6 +8058,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Vm,
             root: None,
+            boot_cache: None,
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         for terminal in [false, true] {

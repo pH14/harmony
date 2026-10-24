@@ -191,8 +191,13 @@ search draws one duration per suffix from the adaptive duration policy, and
 every action in the suffix takes it. Each action also records a coverage
 quantum: the number of coverage callbacks an instrumented thread makes between
 VM exits during the action's window. It is drawn log-uniform over powers of two
-from 1 through 32768, and it is part of the action's archive key. Replay serves
-the same quantum, so busy-loop scheduling replays along with fault timing:
+from 1 through 32768, and it is part of the action's archive key. Virtual time
+per callback is the same at every quantum, so the quantum sets how soon after a
+timer deadline a busy thread exits, and leaves CPU speed unchanged. A thread
+with no scheduling choice exits only near its next timer deadline, so a small
+quantum costs no more wall time than a large one. Replay
+serves the same quantum, so busy-loop scheduling replays along with fault
+timing:
 
 | action | effect |
 |---|---|
@@ -202,7 +207,61 @@ the same quantum, so busy-loop scheduling replays along with fault timing:
 | `Kill(node, ticks)` | the node stays down for the window |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
-| `Hook(id, ticks)` | the supervisor runs that hook once |
+| `Hook(id, ticks)` | the supervisor runs that hook once; in a bundle with a `heal` line, every other hook is a cut, and when the last open cut window closes the supervisor runs the heal hook if a cut is still in force |
+| `Clock(node, offset_ms, rate_ppm, ticks)` | the node's wall clock steps by the offset and then moves by the rate in parts per million of guest time for the window, then returns to guest time; drawn only for VM execution |
+| `ClockAll(offset_ms, rate_ppm, ticks)` | every node's wall clock shifts as in `Clock`, each by a factor in [-1, 1] that the action's `choice` sets per node; drawn only for VM execution with more than one node |
+
+Every fault that takes a node down brings it back when its window closes, so
+one action holds the fault, its hold and the heal, and the next action starts
+with every such node running or starting. The hold is
+the action's duration, which the adaptive duration policy draws. The package
+installs a kill as a process restart window over the whole action window, and
+a power loss as a power-loss window plus a restart window over the same span.
+Two adjacent kills of one node join into one longer hold.
+
+Each drawn job also takes a draw profile from its mutation seed, as in swarm
+testing. The profile keeps each offered fault kind with probability one half,
+or every offered kind when it keeps none. It weighs `Wait` against each kept
+kind by a power of two from 1 through 64, drawn uniformly over the exponents.
+Every action of the job draws its kind from that profile. A job with a heavy
+`Wait` weight leaves quiet time between faults, so the check can run while the
+cluster recovers. A job with weight 1 draws `Wait` as one more kind.
+
+A drawn clock action changes either the offset or the rate. The offset is a
+power of two from 1 ms through 2^18 ms (about 4.4 minutes) with a random sign.
+The rate is 1,000 ppm times a power of two from 1 through 4,096, with a
+random sign. A negative rate at or below -1,000,000 ppm becomes a stopped
+clock. The
+shift covers CLOCK_REALTIME, CLOCK_REALTIME_COARSE and CLOCK_TAI, which Go's
+`time.Now` wall reading, `gettimeofday` and `time` use. CLOCK_MONOTONIC stays
+on guest time, so Go's monotonic durations and timers are unchanged. The
+platform supervisor applies the shift through a per-node time namespace with a
+realtime offset (see [`patches`](../../consonance/harmony-linux/linux/patches)).
+UML kernels have no time namespaces, so a UML vocabulary has the clock
+capability off and the search never draws a clock action there.
+
+A search can leave out fault kinds. The faults package option
+`exclude_faults` (in `[workload.options]` of `harmony.toml`) lists them by
+name: `kill`, `kill_all`, `pause`, `restart`, `hook`, `power_loss`,
+`power_loss_all`, `disk_error`, `disk_stall`, `disk_corrupt`, `event_kill`,
+`event_park`, `clock` and `clock_all`. The search then never draws them. `Wait` is always drawn. The
+search records the excluded kinds in its vocabulary identifier, so a resumed
+search keeps them. A replay of recorded actions runs every action it is given.
+
+Every action also records a 64-bit `choice`, drawn when the search draws the
+action and kept when a retained action is reused. Each action starts with a
+branch, and the branch reseeds the host-served SDK entropy stream
+(`fuzz_get_random`, read through `/dev/harmony`) from the campaign's guest
+seed mixed with that choice. A workload driver that takes its decisions from
+that stream therefore makes different decisions in each continuation of a
+snapshot, and replay installs the same choices. The choice is part of the
+action's key, so two choices never share a cached snapshot. A choice of zero
+keeps the unmixed seed. A power-loss action also uses its choice to pick how
+many unflushed writes each disk keeps; a choice of zero keeps none. A
+`DiskCorrupt` action uses its choice to pick the write, byte and bit it
+corrupts. The guest kernel's `getrandom` state is restored with
+the snapshot and is not reseeded, so decisions drawn from it repeat across
+continuations.
 
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a
@@ -266,14 +325,26 @@ prefix in the shared cache, and only the remaining actions run again. Chain
 bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a
 missing prefix is rebuilt from the chain's longest matching link.
 One memory budget covers the shared cache and every worker's local snapshot
-store. It is the free memory left after a 1 GiB reserve and each worker's guest
-RAM plus 512 MiB; the worker count drops until each worker also has room for a
-store as large as its guest RAM. On macOS a search runs at most four workers.
+store. It is the free memory left after a 1 GiB reserve, the coordinator's 512 MiB
+search state, one guest RAM for a worker's import (its decompressed pages and
+the pages it adds to the store before the next report), and each worker's guest
+RAM plus 256 MiB for the rest of the worker process. The worker count drops
+until each worker also has room for a store as large as its guest RAM. With a
+1 GiB guest and four workers on etcd in a 14 GiB cgroup, a store holds about
+330 MiB once it has the setup snapshot, and a median of 0.85 to 1.2 GiB during a
+search. On macOS a search runs at most four workers.
+During the search the cache measures free memory again. The budget falls when
+memory it does not count, such as the pages a snapshot import or export holds,
+grows past this plan, and rises back toward the plan when that memory is free
+(see the [client README](../../consonance/client/README.md)).
 Before each execution and after each sealed prefix, a worker reports its
-store's resident bytes to the cache, which evicts entries to keep the total in
+store's page, VM-state and index bytes to the cache, which evicts entries to keep the total in
 budget. When eviction cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
-its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and
+its newest prefix, and then drops back to the setup snapshot. While the total
+is over budget, every other worker also drops prefix snapshots until its store
+is no larger than at its last report that fit the budget, so the stores stop
+growing while the largest store's worker is busy. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
 and `shrinks`, under `snapshot_cache`. It samples the shared index once under
 `snapshot_cache_locks` for per-operation acquisition attempts, acquired/completed
@@ -496,7 +567,13 @@ image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
-lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
+lowercase hex and mark it with `state_hash_encoding: "engine_page_digest"`.
+That digest is the page-digest state hash that `vmm-core` describes: BLAKE3
+over per-page BLAKE3 digests of guest RAM, then the VM-state suffix.
+`"engine_digest"` marks reports from earlier versions, whose engine digest was
+SHA-256 over all of guest RAM and the same suffix. The two encodings never
+compare equal, so replay checks refuse to match a report against one written
+with the other encoding.
 UML outcomes instead have an empty `state_hash` and
 `state_hash_encoding: "unavailable"`: their guest memory has no canonical
 cross-process state digest. Search still confirms a bug when the fresh replay
@@ -773,9 +850,12 @@ retained-input table. The continuous client and oracle remain image-owned
 commands; the oracle decides when its observations are conclusive, including
 when some nodes are down.
 
-Every replay run boots a session no earlier run has touched, so no snapshot
-another run cached can stand in for guest execution: each run reaches the
-sealed setup point and executes the recorded actions itself. Each run records
+Every replay run starts from a session no earlier run has touched, and executes
+the recorded actions itself, so no snapshot another run cached can stand in for
+an action. The setup point comes from the host boot cache
+(`SessionConfig::with_boot_cache`, under `HARMONY_CACHE_DIR/boot`) when an
+earlier boot with the same image, executable, configuration and host stored
+it, and from a fresh boot otherwise; both give the same setup state hash. Each run records
 the actions it applied beside the horizons it ran in the guest, and the two are
 equal when nothing came from a cache. A search replays every bug it records the
 same way, and reports the bug as confirmed only when the replay reproduced the
@@ -885,16 +965,19 @@ result. macOS target Drop defers to that active scope, preserving session reuse
 inside it. The faults CLI's own replay commands use FaultTarget directly and do
 not enter this generic replay scope.
 
-The standing service declares inactive debug questions local to the installed
-deterministic handler. The attached debug handler declares them external even
-when no message is supplied. The supervisor still makes each actual debug SDK
-request: attachment after a standing reply is delivered at the same next debug
-request, without a dormant flag or an extra tick. Local answering removes only
-an external Decision/resolution exchange; guest doorbells and mandatory guards
-remain. Both handlers decode debug Status before answering. Rejecting malformed
-inactive Status is an intentional tightening: the prior standing handler returned
-empty bytes without decoding it. Standing and debug identities are respectively
-faults-standing-coverage-v3 and faults-debug-terminal-v2.
+The standing service declares standing questions and inactive debug questions
+local to the installed deterministic handler, so the VMM answers them without a
+Decision stop and a resolution round trip to the coordinator. A question asked
+at or after the run deadline still stops the run unanswered, and the next
+action's handler answers it. The attached debug handler declares no local
+services, so standing and debug questions both take the external path while it
+is installed. The supervisor still makes each actual debug SDK request:
+attachment after a standing reply is delivered at the same next debug request,
+without a dormant flag or an extra tick. Local answering removes only the
+external Decision/resolution exchange; guest doorbells and mandatory guards
+remain. Both handlers decode debug Status before answering. Standing and debug
+identities are respectively faults-standing-coverage-v5 and
+faults-debug-terminal-v2.
 
 The generic local-answer capability requires unchanged captured handler state;
 the inactive standing debug response satisfies it. Stateful local responses are
