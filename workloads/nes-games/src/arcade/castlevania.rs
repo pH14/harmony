@@ -19,15 +19,17 @@ use serde::{Deserialize, Serialize};
 
 use super::{ArcadeGame, HIDDEN, Machines};
 
-const MAP_ROW_OFFSET: u16 = 48;
+const MAP_ROW_OFFSET: u16 = 40;
+const FACING: usize = 0x15;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 pub struct View {
+    level: u8,
     stage: u8,
     section: u8,
     mode: u8,
     x: u16,
-    y: u8,
+    y: u16,
     health: u8,
     lives: u8,
     hearts: u8,
@@ -39,11 +41,12 @@ pub struct View {
 
 fn view(state: CastlevaniaMechanicalState) -> View {
     View {
+        level: state.stage.saturating_sub(1),
         stage: state.stage,
         section: state.section,
         mode: state.mode,
         x: state.x,
-        y: state.y,
+        y: u16::from(state.y).saturating_sub(MAP_ROW_OFFSET),
         health: state.health,
         lives: state.lives,
         hearts: state.hearts,
@@ -84,7 +87,7 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for CastlevaniaGame<M> {
                 u16::from(state.stage - 1),
                 state.x,
                 u16::from(state.y).saturating_sub(MAP_ROW_OFFSET),
-                u16::from(state.section),
+                u16::from(wram[FACING] & 1 == 0),
             ],
             _ => [HIDDEN, 0, 0, 0],
         }
