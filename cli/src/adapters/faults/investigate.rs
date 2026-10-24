@@ -600,6 +600,7 @@ mod tests {
         use faults_workload::{package::Report, target::FaultObservations};
 
         let options = faults_workload::Options {
+            boot_cache: None,
             seed: 0,
             executions: 1,
             ram_mib: 1024,
@@ -741,6 +742,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let options = faults_workload::Options {
+            boot_cache: None,
             seed: 0,
             executions: 1,
             ram_mib: 1024,
@@ -818,6 +820,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let options = faults_workload::Options {
+            boot_cache: None,
             seed: 0,
             executions: 1,
             ram_mib: 1024,

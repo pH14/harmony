@@ -19,6 +19,7 @@ pub struct Options {
     pub uml_profile: Option<(PathBuf, String)>,
     pub root: Option<Arc<Vec<u8>>>,
     pub checkpoint_owner: Option<String>,
+    pub boot_cache: Option<PathBuf>,
 }
 
 impl Options {
@@ -62,6 +63,7 @@ pub struct BugSummary {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateHashEncoding {
+    EnginePageDigest,
     EngineDigest,
     Unavailable,
     #[default]
@@ -153,7 +155,7 @@ impl ReplaySummary {
                 .map(state_digest_hex)
                 .unwrap_or_default(),
             state_hash_encoding: if state_digest.is_some() {
-                StateHashEncoding::EngineDigest
+                StateHashEncoding::EnginePageDigest
             } else {
                 StateHashEncoding::Unavailable
             },
@@ -208,12 +210,29 @@ pub struct Report {
     pub bugs: Vec<BugSummary>,
     #[serde(default)]
     pub never_satisfied: Vec<String>,
+    #[serde(default)]
+    pub undecided_checks: crate::archive::UndecidedChecks,
     pub replays: Vec<ReplaySummary>,
     pub execution_ticks: u64,
     pub wall_seconds: u64,
     #[serde(default)]
     pub watchdog_cutoffs: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hang_reports: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_reports: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hang_stop: Option<String>,
     pub execution_failures: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub jobs_cancelled: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl Report {
@@ -239,11 +258,17 @@ impl Report {
             first_bug_execution: None,
             bugs: Vec::new(),
             never_satisfied: Vec::new(),
+            undecided_checks: crate::archive::UndecidedChecks::default(),
             replays: Vec::new(),
             execution_ticks: 0,
             wall_seconds: 0,
             watchdog_cutoffs: 0,
+            hang_reports: Vec::new(),
+            failure_reports: Vec::new(),
+            hang_stop: None,
             execution_failures: 0,
+            jobs_cancelled: 0,
+            interrupted: false,
         }
     }
 
@@ -305,6 +330,11 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
             {
                 return Err("event park hold must fit its window".into());
             }
+            FaultOperation::Clock { rate_ppm, .. } | FaultOperation::ClockAll { rate_ppm, .. }
+                if *rate_ppm < fault_policy::CLOCK_RATE_STOPPED_PPM =>
+            {
+                return Err("a clock cannot run slower than stopped".into());
+            }
             _ => {}
         }
     }
@@ -358,12 +388,15 @@ mod live {
         bundle::FaultVocabulary,
         campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_with_plan},
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
-        report::{BugReport, write_bug_reports},
-        target::{ActionWindows, FaultAction, FaultOperation},
+        report::{
+            BugReport, FailureReport, HangReport, write_bug_reports, write_failure_reports,
+            write_hang_reports,
+        },
+        target::{ActionWindows, FaultAction, FaultObservations, FaultOperation},
     };
 
     const MEMORY_BUDGET_MIB: usize = 512;
-    const WORKER_OVERHEAD_MIB: u64 = 512;
+    const WORKER_OVERHEAD_MIB: u64 = 256;
     #[cfg(target_os = "macos")]
     const VM_WORKER_LIMIT: usize = 4;
 
@@ -438,6 +471,7 @@ mod live {
             ram_mib: options.ram_mib,
             backend,
             root: options.root.clone(),
+            boot_cache: options.boot_cache.clone(),
         })
     }
 
@@ -464,6 +498,7 @@ mod live {
         resources: &Resources,
         session_worker: Option<WorkerLauncher>,
         start: &super::SearchStart,
+        interrupt: Option<&'static std::sync::atomic::AtomicBool>,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
         let workers = u32::try_from(resources.placement.workers.len())?;
@@ -480,7 +515,7 @@ mod live {
         let mut report = Report::new("search", artifacts, identity, options, workers);
         std::fs::create_dir_all(&options.output)?;
         segments::raise_descriptor_limit();
-        let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::new(resources.budget));
+        let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(resources.budget));
         let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
             .with_snapshot_cache(Some(Arc::clone(&cache)))
             .with_session_worker(session_worker);
@@ -545,6 +580,7 @@ mod live {
                 checkpoint_owner: options.checkpoint_owner.clone(),
                 max_image_bytes: 64 << 20,
             }),
+            interrupt,
         );
         if let Err(error) = stream.flush() {
             if cache.verify_integrity().is_ok() {
@@ -570,6 +606,23 @@ mod live {
             .transpose()?
             .unwrap_or_default();
         let written = write_bug_reports(windows, &inherited, &archive.bugs, &options.output)?;
+        let hangs = write_hang_reports(windows, &inherited, &archive.hangs, &options.output)?;
+        for hang in &hangs {
+            eprintln!(
+                "hung job at execution {} saved to {}",
+                hang.execution,
+                options.output.join(hang.file_name()).display()
+            );
+        }
+        let failures =
+            write_failure_reports(windows, &inherited, &archive.failures, &options.output)?;
+        for failure in &failures {
+            eprintln!(
+                "failed execution {} saved to {}",
+                failure.execution,
+                options.output.join(failure.file_name()).display()
+            );
+        }
         if let Some(first) = written.first() {
             std::fs::write(
                 options.output.join("first-bug-input.json"),
@@ -597,6 +650,7 @@ mod live {
             "milestones": archive.milestones,
             "assertions": archive.assertions,
             "never_satisfied": archive.assertions.never_satisfied(),
+            "undecided_checks": archive.undecided_checks,
             "park_sites": archive.park_sites,
             "park_reads": archive.park_reads,
             "park_thresholds": archive.park_thresholds,
@@ -604,7 +658,13 @@ mod live {
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
             "watchdog_cutoffs": archive.watchdog_cutoffs,
+            "hung_jobs": campaign_report.campaign.hung_jobs,
+            "hang_reports": hangs.iter().map(HangReport::file_name).collect::<Vec<_>>(),
+            "hang_stop": campaign_report.campaign.hang_stop,
+            "jobs_cancelled": campaign_report.campaign.jobs_cancelled,
+            "interrupted": campaign_report.campaign.interrupted,
             "execution_failures": campaign_report.campaign.execution_failures,
+            "failure_reports": failures.iter().map(FailureReport::file_name).collect::<Vec<_>>(),
             "telemetry": campaign_report.campaign.telemetry,
             "snapshot_cache_locks": cache.lock_counters().into_iter().collect::<std::collections::BTreeMap<_, _>>(),
             "snapshot_cache": cache
@@ -621,17 +681,19 @@ mod live {
         for id in &report.never_satisfied {
             eprintln!("FAIL: assertion never satisfied: {id}");
         }
+        report.undecided_checks = archive.undecided_checks;
         report.executions = campaign_report.campaign.executions_completed;
         report.execution_ticks = campaign_report.campaign.execution_work;
         for bug in &written {
             let violations: Vec<String> = bug.observations.violations().into_iter().collect();
-            let witness = match replay_once(artifacts, &config, &bug.actions, true) {
-                Ok(summary) => Some(summary),
-                Err(error) => {
-                    eprintln!("bug {} did not replay: {error}", bug.bug);
-                    None
-                }
-            };
+            let witness =
+                match replay_once(artifacts, &config, &bug.actions, true, &mut |_, _| Ok(())) {
+                    Ok(summary) => Some(summary),
+                    Err(error) => {
+                        eprintln!("bug {} did not replay: {error}", bug.bug);
+                        None
+                    }
+                };
             let confirmed = witness.as_ref().is_some_and(|witness| {
                 replay_confirms_bug(bug.observations.stop, &violations, witness)
             });
@@ -675,8 +737,18 @@ mod live {
         }
         report.wall_seconds = started.elapsed().as_secs();
         report.watchdog_cutoffs = archive.watchdog_cutoffs;
+        report.hang_reports = hangs.iter().map(HangReport::file_name).collect();
+        report.failure_reports = failures.iter().map(FailureReport::file_name).collect();
+        report
+            .hang_stop
+            .clone_from(&campaign_report.campaign.hang_stop);
         report.execution_failures = campaign_report.campaign.execution_failures;
+        report.jobs_cancelled = campaign_report.campaign.jobs_cancelled;
+        report.interrupted = campaign_report.campaign.interrupted;
         report.write(&options.output)?;
+        if let Some(stop) = &report.hang_stop {
+            eprintln!("{stop}");
+        }
         Ok(report)
     }
 
@@ -705,16 +777,11 @@ mod live {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
-            let mut summary = replay_once(artifacts, &config, actions, settle)?;
+            let mut summary = replay_once(artifacts, &config, actions, settle, &mut |_, _| Ok(()))?;
             summary.run = run;
-            report.execution_ticks = report.execution_ticks.saturating_add(
-                actions
-                    .iter()
-                    .take(summary.actions_applied as usize)
-                    .map(crate::target::action_ticks)
-                    .sum::<u64>()
-                    .saturating_add(summary.settle_ticks),
-            );
+            report.execution_ticks = report
+                .execution_ticks
+                .saturating_add(replayed_ticks(actions, &summary));
             report.bug_found |= summary.bug;
             report.replays.push(summary);
         }
@@ -723,13 +790,159 @@ mod live {
         Ok(report)
     }
 
+    pub type Visit<'a> = dyn FnMut(u64, &mut FaultTarget) -> Result<(), Box<dyn Error>> + 'a;
+
+    pub fn execute_visiting(
+        artifacts: &Artifacts,
+        actions: &[FaultAction],
+        options: &Options,
+        settle: bool,
+        visit: &mut Visit<'_>,
+    ) -> Result<ReplaySummary, Box<dyn Error>> {
+        let mut summary = replay_once(artifacts, &config(options)?, actions, settle, visit)?;
+        summary.run = 1;
+        Ok(summary)
+    }
+
+    pub struct Replayer {
+        artifacts: Artifacts,
+        config: FaultConfig,
+        cache: Arc<dyn CacheIndex>,
+        identity: String,
+        options: Options,
+        settle: bool,
+        workers: usize,
+    }
+
+    pub struct ReplayWorker<'a> {
+        replayer: &'a Replayer,
+        target: FaultTarget,
+    }
+
+    impl Replayer {
+        pub fn new(
+            artifacts: &Artifacts,
+            options: &Options,
+            settle: bool,
+            jobs: usize,
+        ) -> Result<Self, Box<dyn Error>> {
+            let config = config(options)?;
+            let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config)?;
+            let memory = plan_memory(jobs.max(1), memory_needs(options.ram_mib))?;
+            segments::raise_descriptor_limit();
+            Ok(Self {
+                artifacts: Artifacts {
+                    kernel: artifacts.kernel.clone(),
+                    initramfs: artifacts.initramfs.clone(),
+                },
+                config,
+                cache: Arc::new(LocalIndex::measured(memory.budget)),
+                identity,
+                options: options.clone(),
+                settle,
+                workers: memory.workers,
+            })
+        }
+
+        #[must_use]
+        pub fn workers(&self) -> usize {
+            self.workers
+        }
+
+        pub fn worker(&self) -> Result<ReplayWorker<'_>, Box<dyn Error>> {
+            let target = FaultTarget::new(
+                &self.artifacts.kernel,
+                &self.artifacts.initramfs,
+                &self.config,
+                Some(Arc::clone(&self.cache)),
+                None,
+            )?;
+            Ok(ReplayWorker {
+                replayer: self,
+                target,
+            })
+        }
+    }
+
+    impl ReplayWorker<'_> {
+        pub fn replay(
+            &mut self,
+            actions: &[FaultAction],
+            mut watch: impl FnMut(&FaultObservations) -> bool,
+        ) -> Result<Option<Report>, Box<dyn Error>> {
+            let replayer = self.replayer;
+            #[allow(clippy::disallowed_methods)]
+            let started = Instant::now();
+            self.target.reset();
+            if self.target.failed() {
+                return Err("the replay guest could not return to its setup snapshot".into());
+            }
+            let Some(summary) = replay_on(
+                &mut self.target,
+                replayer.config.uml().is_some(),
+                actions,
+                replayer.settle,
+                &mut watch,
+                &mut |_, _| Ok(()),
+            )?
+            else {
+                return Ok(None);
+            };
+            replayer.cache.verify_integrity()?;
+            let mut report = Report::new(
+                "replay",
+                &replayer.artifacts,
+                replayer.identity.clone(),
+                &replayer.options,
+                1,
+            );
+            report.execution_ticks = replayed_ticks(actions, &summary);
+            report.bug_found = summary.bug;
+            report.replays.push(summary);
+            report.wall_seconds = started.elapsed().as_secs();
+            Ok(Some(report))
+        }
+    }
+
+    fn replayed_ticks(actions: &[FaultAction], summary: &ReplaySummary) -> u64 {
+        actions
+            .iter()
+            .take(summary.actions_applied as usize)
+            .map(crate::target::action_ticks)
+            .sum::<u64>()
+            .saturating_add(summary.settle_ticks)
+    }
+
     fn replay_once(
         artifacts: &Artifacts,
         config: &FaultConfig,
         actions: &[FaultAction],
         settle: bool,
+        visit: &mut Visit<'_>,
     ) -> Result<ReplaySummary, Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
+        replay_on(
+            &mut target,
+            config.uml().is_some(),
+            actions,
+            settle,
+            &mut |_| true,
+            visit,
+        )?
+        .ok_or_else(|| "the replay stopped before its last action".into())
+    }
+
+    fn replay_on(
+        target: &mut FaultTarget,
+        uml: bool,
+        actions: &[FaultAction],
+        settle: bool,
+        watch: &mut dyn FnMut(&FaultObservations) -> bool,
+        visit: &mut Visit<'_>,
+    ) -> Result<Option<ReplaySummary>, Box<dyn Error>> {
+        if !watch(target.observation()) {
+            return Ok(None);
+        }
         let mut timeline = vec![super::ReplayStep {
             step: 0,
             action: None,
@@ -737,6 +950,7 @@ mod live {
             console: target.console_evidence()?,
             settlement: false,
         }];
+        visit(0, target)?;
         for (index, action) in actions.iter().enumerate() {
             target.apply_replayed(*action);
             timeline.push(super::ReplayStep {
@@ -748,6 +962,10 @@ mod live {
             });
             if target.actions().len() != index + 1 {
                 break;
+            }
+            visit(index as u64 + 1, target)?;
+            if !watch(target.observation()) {
+                return Ok(None);
             }
         }
         let actions_applied = target.actions().len() as u64;
@@ -775,8 +993,12 @@ mod live {
             if target.actions().len() == before {
                 break;
             }
+            visit(target.actions().len() as u64, target)?;
             settle_actions = settle_actions.saturating_add(1);
             settle_ticks = settle_ticks.saturating_add(u64::from(ticks));
+            if !watch(target.observation()) {
+                return Ok(None);
+            }
         }
         if target.failed() {
             return Err(format!(
@@ -788,7 +1010,7 @@ mod live {
         let observation = target.observation();
         let mut summary = ReplaySummary::from_observation(
             observation,
-            if config.uml().is_some() {
+            if uml {
                 None
             } else {
                 Some(target.state_hash()?)
@@ -799,7 +1021,7 @@ mod live {
         summary.timeline = timeline;
         summary.settle_actions = settle_actions;
         summary.settle_ticks = settle_ticks;
-        Ok(summary)
+        Ok(Some(summary))
     }
 
     fn copy_evidence_file(
@@ -1074,7 +1296,10 @@ mod live {
     ),
     not(miri)
 ))]
-pub use live::{Resources, execute_actions, prepare_debug, replay, resources, search};
+pub use live::{
+    ReplayWorker, Replayer, Resources, Visit, execute_actions, execute_visiting, prepare_debug,
+    replay, resources, search,
+};
 
 #[cfg(test)]
 mod tests {
@@ -1091,6 +1316,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         }
     }
 
@@ -1102,6 +1328,7 @@ mod tests {
             start_generation: 7,
             end_generation: 7,
             points: ids(&[11]),
+            undecided_keys: 0,
             pending_faults: 0,
         };
         let observation = |check| FaultObservations {
@@ -1222,6 +1449,16 @@ mod tests {
         assert!(parse_recorded_input(&park(20_000)).is_ok());
         assert!(parse_recorded_input(&park(20_001)).is_err());
         assert!(parse_recorded_input(&park(0)).is_err());
+        let clock = |rate_ppm| {
+            serde_json::to_string(&[FaultAction::from(FaultOperation::ClockAll {
+                offset_ms: 0,
+                rate_ppm,
+                ticks,
+            })])
+            .expect("serialize")
+        };
+        assert!(parse_recorded_input(&clock(fault_policy::CLOCK_RATE_STOPPED_PPM)).is_ok());
+        assert!(parse_recorded_input(&clock(fault_policy::CLOCK_RATE_STOPPED_PPM - 1)).is_err());
     }
 
     fn ids(values: &[u32]) -> Vec<String> {
@@ -1417,7 +1654,7 @@ mod tests {
         assert_eq!(report.replays[0].state_hash, expected);
         assert_eq!(
             report.replays[0].state_hash_encoding,
-            StateHashEncoding::EngineDigest
+            StateHashEncoding::EnginePageDigest
         );
         assert_ne!(report.replays[0].state_hash, sha256_hex(&state_digest));
 
@@ -1428,7 +1665,7 @@ mod tests {
         assert_eq!(decoded.replays[0].state_hash, expected);
         assert_eq!(
             decoded.replays[0].state_hash_encoding,
-            StateHashEncoding::EngineDigest
+            StateHashEncoding::EnginePageDigest
         );
     }
 

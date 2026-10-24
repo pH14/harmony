@@ -183,6 +183,7 @@ impl Manifest {
             .uml_profile_identity(path)?
             .map(|identity| (path.join("artifacts/uml"), identity));
         Ok(faults_workload::Options {
+            boot_cache: None,
             seed: self.config.seed,
             executions: self.config.executions,
             ram_mib: self.config.ram_mib,

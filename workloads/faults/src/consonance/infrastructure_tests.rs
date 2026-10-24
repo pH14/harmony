@@ -64,6 +64,7 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
             directory.path().join("guests"),
         )?)),
         root: None,
+        boot_cache: None,
     };
     let mut target = FaultTarget::fresh(&[], &initramfs, &config)?;
     let root = target

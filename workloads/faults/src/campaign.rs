@@ -36,11 +36,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     archive::{
-        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultInput,
-        FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS,
-        ParkThresholds, REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome,
-        merge_milestones, merge_progress_watermark, milestone_key, milestones,
-        park_threshold_bucket, sample_action,
+        DURATION_IDENTIFIER, DrawProfile, FaultArchiveKey, FaultArchiveReport, FaultBugRecord,
+        FaultFailureRecord, FaultHangRecord, FaultInput, FaultMilestones, FaultProgressWatermark,
+        KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS, MAX_RECORDED_FAILURES, MAX_RECORDED_HANGS,
+        ParkThresholds, REPLACEMENT_IDENTIFIER, UndecidedChecks, action_cost, archive_key,
+        bug_outcome, merge_milestones, merge_progress_watermark, milestone_key, milestones,
+        park_threshold_bucket, sample_action, sample_profiled_action,
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
@@ -53,9 +54,9 @@ use crate::{
     },
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v11";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v12";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v10";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v8";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v9";
 pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v6";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
@@ -66,7 +67,7 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const HOST_FAILURE_POLICY_FIELD: &str = "host_failure_policy";
-const HOST_FAILURE_POLICY: &str = "host_incomplete_v2";
+const HOST_FAILURE_POLICY: &str = "host_incomplete_v3";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
 const ACTION_FORMAT: &str = "fault-action-duration-coverage-v5-event-history";
@@ -135,10 +136,32 @@ pub struct FaultCampaignEvidence {
     champion_input: FaultInput,
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
+    hangs: Vec<FaultHangRecord>,
+    #[serde(default)]
+    failures: Vec<FaultFailureRecord>,
     assertions: Assertions,
     park_sites: BTreeMap<u64, u64>,
     park_reads: BTreeMap<u64, u64>,
     park_thresholds: BTreeMap<u32, ParkThresholds>,
+    undecided_checks: UndecidedChecks,
+    undecided_execution: Option<(u64, u64)>,
+}
+
+impl FaultCampaignEvidence {
+    fn note_undecided_keys(&mut self, sequence: u64, keys: u64) {
+        let counted = match self.undecided_execution {
+            Some((execution, counted)) if execution == sequence => counted,
+            _ => 0,
+        };
+        let totals = &mut self.undecided_checks;
+        totals.keys = totals.keys.saturating_sub(counted).saturating_add(keys);
+        match (counted > 0, keys > 0) {
+            (false, true) => totals.executions = totals.executions.saturating_add(1),
+            (true, false) => totals.executions = totals.executions.saturating_sub(1),
+            _ => {}
+        }
+        self.undecided_execution = Some((sequence, keys));
+    }
 }
 
 pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
@@ -188,8 +211,9 @@ fn fault_result_sha256(result: &FaultCampaignJobResult) -> Result<String, Box<dy
         })
         .collect::<Result<Vec<_>, _>>()?;
     postcard_value_sha256(&(
-        "fault-result-history-v1",
+        "fault-result-history-v2",
         &result.preparation_failure,
+        &result.hang,
         actions,
     ))
 }
@@ -290,7 +314,7 @@ impl FaultCampaignConfig {
             stop_rollout_on_objective: true,
             stop_campaign_on_objective: true,
             archive_entry_limit: self.archive_entry_limit,
-            window: 16 * default_window(self.workers),
+            window: default_window(self.workers),
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: FaultCampaignRun {
@@ -367,6 +391,24 @@ pub(crate) fn require_completed_attempt(
     Ok(())
 }
 
+fn job_hung(target: &FaultTarget, phase: &'static str) -> Result<bool, Box<dyn Error>> {
+    if target.infrastructure_failure() {
+        return Err(Box::new(AttemptIncomplete {
+            phase,
+            cause: "host infrastructure failure",
+        }));
+    }
+    Ok(target.watchdog_cutoffs() != 0)
+}
+
+fn hung_job(attempted: &[FaultAction]) -> FaultCampaignJobResult {
+    CampaignJobResult {
+        preparation_failure: None,
+        hang: Some(attempted.to_vec()),
+        actions: Vec::new(),
+    }
+}
+
 pub(crate) fn capture_replayed_prefix(
     target: &mut FaultTarget,
     actions: &[FaultAction],
@@ -408,8 +450,11 @@ pub(crate) fn execute_job(
     if replay.len() != replay_certificates.len() {
         return Err("fault replay certificate count does not match its action path".into());
     }
+    let _cancel = crate::consonance::JobCancel::install(stop.cancellation().cloned());
     target.restore(origin_snapshot)?;
-    require_completed_attempt(target, "parent reconstruction")?;
+    if job_hung(target, "parent reconstruction")? {
+        return Ok(hung_job(&[]));
+    }
     for (action, certificate) in replay.iter().zip(replay_certificates) {
         if outcome(target).disposition.is_terminal() {
             return Err("fault replay stopped before its archived parent endpoint".into());
@@ -417,7 +462,9 @@ pub(crate) fn execute_job(
         crate::job_observation::tail(false);
         let checked = target.apply_replayed_certified(*action, *certificate);
         target.verify_integrity()?;
-        require_completed_attempt(target, "parent replay")?;
+        if job_hung(target, "parent replay")? {
+            return Ok(hung_job(&[]));
+        }
         checked?;
         crate::job_observation::tail(true);
     }
@@ -428,10 +475,12 @@ pub(crate) fn execute_job(
     if parent_outcome.disposition.is_terminal() {
         return Err("fault parent reconstruction stopped before its archived endpoint".into());
     }
-    for action in suffix {
+    for (index, action) in suffix.iter().enumerate() {
         let captured = target.apply_and_snapshot(*action);
         target.verify_integrity()?;
-        require_completed_attempt(target, "suffix execution")?;
+        if job_hung(target, "suffix execution")? {
+            return Ok(hung_job(&suffix[..=index]));
+        }
         let captured = captured?;
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
@@ -524,7 +573,7 @@ impl Reporting for FaultWorkload {
     }
 
     fn action_cost_unit(&self) -> &'static str {
-        "guest_ticks"
+        "guest_ticks_plus_host_ticks_per_action"
     }
 
     fn execution_work_unit(&self) -> &'static str {
@@ -540,7 +589,13 @@ impl Reporting for FaultWorkload {
         result: &FaultCampaignJobResult,
         target: &Self::Target,
     ) -> Result<String, Box<dyn Error>> {
-        require_completed_attempt(target, "result certification")?;
+        match result.hang {
+            Some(_) if !job_hung(target, "result certification")? => {
+                return Err("a hung job result names a target that did not hang".into());
+            }
+            Some(_) => {}
+            None => require_completed_attempt(target, "result certification")?,
+        }
         let endpoint = if self.config.uml().is_some() {
             FaultEndpointCertificate::UmlWholeStateUnavailable
         } else if target.failed() {
@@ -585,13 +640,16 @@ impl Reporting for FaultWorkload {
             deaths: state
                 .terminal_endpoints
                 .saturating_sub(state.terminal_objectives),
-            watchdog_cutoffs: 0,
+            watchdog_cutoffs: state.hung_jobs,
             bugs: evidence.bugs.clone(),
+            hangs: evidence.hangs.clone(),
+            failures: evidence.failures.clone(),
             selector: state.selector,
             assertions: evidence.assertions.clone(),
             park_sites: evidence.park_sites.clone(),
             park_reads: evidence.park_reads.clone(),
             park_thresholds: evidence.park_thresholds.clone(),
+            undecided_checks: evidence.undecided_checks,
         }
     }
 }
@@ -768,6 +826,8 @@ fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
     }
 }
 
+const PROFILE_SEED_MIX: u64 = 0x5157_4152_4d5f_6b31;
+
 fn held_suffix(
     run: &FaultCampaignRun,
     state: &DrawTables<FaultAction>,
@@ -780,6 +840,9 @@ fn held_suffix(
     let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
         .ok_or("action duration must be positive")?;
     let event_ready = draw.context.event_ready;
+    let profile = DrawProfile::draw(&mut RomuDuoJrRand::with_seed(
+        mutation_seed ^ PROFILE_SEED_MIX,
+    ))?;
     let mut suffix =
         state.draw(before, replay, |view| {
             draw_suffix(
@@ -791,7 +854,16 @@ fn held_suffix(
                     Ok(biased_step(view, rand)?
                         .filter(|action| event_is_ready(action, event_ready)))
                 },
-                |_, rand| sample_action(rand, &run.vocabulary, event_ready, ticks, Some(view)),
+                |_, rand| {
+                    sample_profiled_action(
+                        rand,
+                        &run.vocabulary,
+                        event_ready,
+                        ticks,
+                        Some(view),
+                        profile,
+                    )
+                },
             )
         })?;
     for action in &mut suffix {
@@ -1131,6 +1203,13 @@ impl Evaluation for FaultWorkload {
             for read in &observation.park_reads {
                 *evidence.park_reads.entry(read.site).or_default() += 1;
             }
+            evidence.note_undecided_keys(
+                sequence,
+                observation
+                    .check
+                    .as_ref()
+                    .map_or(0, |check| check.undecided_keys),
+            );
         }
         let bug = action
             .observations
@@ -1140,11 +1219,19 @@ impl Evaluation for FaultWorkload {
         let champion = (milestone_key(action.milestones)
             > milestone_key(evidence.champion_milestones))
         .then_some(action.milestones);
-        if bug.is_some() || champion.is_some() {
+        let failed = action.outcome.disposition.is_failed()
+            && evidence.failures.len() < MAX_RECORDED_FAILURES;
+        if bug.is_some() || champion.is_some() || failed {
             let mut input = input()?;
             input
                 .actions
                 .splice(0..0, evidence.root_actions.iter().copied());
+            if failed {
+                evidence.failures.push(FaultFailureRecord {
+                    execution: sequence,
+                    input: input.clone(),
+                });
+            }
             if let Some(observations) = bug {
                 evidence.bugs.push(FaultBugRecord {
                     execution: sequence,
@@ -1157,6 +1244,29 @@ impl Evaluation for FaultWorkload {
                 evidence.champion_input = input;
             }
         }
+        Ok(())
+    }
+
+    fn merge_hang_evidence<F>(
+        &self,
+        evidence: &mut FaultCampaignEvidence,
+        sequence: u64,
+        input: F,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        F: FnOnce() -> Result<FaultInput, Box<dyn Error>>,
+    {
+        if evidence.hangs.len() >= MAX_RECORDED_HANGS {
+            return Ok(());
+        }
+        let mut input = input()?;
+        input
+            .actions
+            .splice(0..0, evidence.root_actions.iter().copied());
+        evidence.hangs.push(FaultHangRecord {
+            execution: sequence,
+            input,
+        });
         Ok(())
     }
 
@@ -1190,7 +1300,7 @@ pub fn run_fault_campaign_checkpointed(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
-    run_fault_campaign_with_plan(game, config, origin, stream, progress, None)
+    run_fault_campaign_with_plan(game, config, origin, stream, progress, None, None)
 }
 
 pub fn run_fault_campaign_with_plan(
@@ -1200,6 +1310,7 @@ pub fn run_fault_campaign_with_plan(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
     checkpoints: Option<searcher::search::checkpoint::CheckpointPlan>,
+    interrupt: Option<&'static std::sync::atomic::AtomicBool>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
     let mut generic = config.generic();
     if let CampaignOrigin::SearchCheckpoint { path, .. } = origin {
@@ -1215,6 +1326,7 @@ pub fn run_fault_campaign_with_plan(
         CampaignExecutionOptions {
             placement: config.placement.clone(),
             checkpoints,
+            interrupt,
             ..CampaignExecutionOptions::default()
         },
     )?;
@@ -1578,6 +1690,7 @@ mod tests {
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Vm,
             root: None,
+            boot_cache: None,
         }
     }
 
@@ -1653,6 +1766,107 @@ mod tests {
     }
 
     #[test]
+    fn hang_evidence_records_the_rooted_input_and_stops_at_its_bound() {
+        let game = game();
+        let root = FaultAction::from(FaultOperation::Kill(0, std::num::NonZeroU16::MIN));
+        let attempted = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
+        let mut evidence = FaultCampaignEvidence {
+            root_actions: vec![root],
+            ..FaultCampaignEvidence::default()
+        };
+        game.merge_hang_evidence(&mut evidence, 7, || {
+            Ok(FaultInput {
+                actions: vec![attempted],
+            })
+        })
+        .unwrap();
+        assert_eq!(
+            evidence.hangs,
+            vec![FaultHangRecord {
+                execution: 7,
+                input: FaultInput {
+                    actions: vec![root, attempted],
+                },
+            }]
+        );
+        assert!(evidence.bugs.is_empty());
+        for sequence in 8..u64::try_from(MAX_RECORDED_HANGS).unwrap() + 20 {
+            game.merge_hang_evidence(&mut evidence, sequence, || Ok(FaultInput::default()))
+                .unwrap();
+        }
+        assert_eq!(evidence.hangs.len(), MAX_RECORDED_HANGS);
+        game.merge_hang_evidence(&mut evidence, 0, || Err("not materialized".into()))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_failed_execution_records_its_rooted_input_up_to_its_bound() {
+        let game = game();
+        let root = FaultAction::from(FaultOperation::Kill(0, std::num::NonZeroU16::MIN));
+        let failing = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
+        let mut evidence = FaultCampaignEvidence {
+            root_actions: vec![root],
+            ..FaultCampaignEvidence::default()
+        };
+        let result = |disposition| FaultCampaignActionResult {
+            action: failing,
+            observations: Vec::new(),
+            milestones: FaultMilestones::default(),
+            outcome: Outcome {
+                objective_reached: false,
+                disposition,
+            },
+            candidate: None,
+        };
+        game.merge_action_evidence(
+            &mut evidence,
+            &result(ExecutionDisposition::Runnable),
+            3,
+            || Err("a runnable action needs no input".into()),
+        )
+        .unwrap();
+        assert!(evidence.failures.is_empty());
+        game.merge_action_evidence(
+            &mut evidence,
+            &result(ExecutionDisposition::Failed),
+            4,
+            || {
+                Ok(FaultInput {
+                    actions: vec![failing],
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            evidence.failures,
+            vec![FaultFailureRecord {
+                execution: 4,
+                input: FaultInput {
+                    actions: vec![root, failing],
+                },
+            }]
+        );
+        assert!(evidence.bugs.is_empty());
+        for sequence in 5..u64::try_from(MAX_RECORDED_FAILURES).unwrap() + 20 {
+            game.merge_action_evidence(
+                &mut evidence,
+                &result(ExecutionDisposition::Failed),
+                sequence,
+                || Ok(FaultInput::default()),
+            )
+            .unwrap();
+        }
+        assert_eq!(evidence.failures.len(), MAX_RECORDED_FAILURES);
+        game.merge_action_evidence(
+            &mut evidence,
+            &result(ExecutionDisposition::Failed),
+            0,
+            || Err("not materialized".into()),
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn park_evidence_counts_parks_the_guest_ran_and_each_landing_and_read_once() {
         let game = game();
         let mut evidence = FaultCampaignEvidence::default();
@@ -1718,6 +1932,72 @@ mod tests {
         );
         assert_eq!(evidence.park_sites.get(&9), Some(&1));
         assert_eq!(evidence.park_reads.get(&9), Some(&1));
+    }
+
+    #[test]
+    fn undecided_keys_count_the_latest_check_of_each_execution() {
+        let game = game();
+        let mut evidence = FaultCampaignEvidence::default();
+        let checked = |keys| FaultObservations {
+            check: Some(crate::target::CheckEvidence {
+                run: 1,
+                undecided_keys: keys,
+                ..crate::target::CheckEvidence::default()
+            }),
+            ..FaultObservations::default()
+        };
+        let result = |observations| FaultCampaignActionResult {
+            action: FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
+            observations,
+            milestones: FaultMilestones::default(),
+            outcome: Outcome {
+                objective_reached: false,
+                disposition: ExecutionDisposition::Runnable,
+            },
+            candidate: None,
+        };
+        for (sequence, observations) in [
+            (1, vec![checked(2)]),
+            (1, vec![checked(3), checked(4)]),
+            (2, vec![checked(0)]),
+            (3, vec![checked(5)]),
+            (3, vec![FaultObservations::default()]),
+            (4, vec![checked(1)]),
+        ] {
+            game.merge_action_evidence(&mut evidence, &result(observations), sequence, || {
+                Err("no input".into())
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            evidence.undecided_checks,
+            UndecidedChecks {
+                executions: 2,
+                keys: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn search_reserves_one_job_per_worker() {
+        for workers in [1, 3, 7] {
+            let config = FaultCampaignConfig {
+                campaign_seed: 1,
+                vocabulary: FaultVocabulary::new(3, vec![]).unwrap(),
+                workers,
+                execution_budget: 10,
+                host: "host".to_owned(),
+                wall_budget: None,
+                archive_entry_limit: 16,
+                memory_budget_mib: None,
+                materialize_final_artifacts: false,
+                retention: RetentionPolicy::Unprobed,
+                mixture: DrawMixture::AlphabetOnly,
+                objective_witness_path: None,
+                placement: None,
+            };
+            assert_eq!(config.generic().window, default_window(workers));
+        }
     }
 
     #[test]
