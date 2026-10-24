@@ -85,6 +85,7 @@ dependencies = [
  "hypercall-proto",
  "libc",
  "lz4_flex",
+ "rustix",
  "serde",
  "sha2",
  "thiserror",
