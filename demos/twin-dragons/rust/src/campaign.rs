@@ -615,7 +615,7 @@ impl<G: BrowserGame> WorkerApi for Worker<G> {
     fn run(&mut self, job: &[u8]) -> Result<Vec<u8>, JsValue> {
         let job: JobSpec<G> = postcard::from_bytes(job).map_err(js_error)?;
         let (outcome, note) = run_noted(&job, || {
-            run_job(self.game, &self.config, &mut self.target, &job)
+            run_job(self.game, &self.config, &mut self.target, &job, None)
         })
         .map_err(js_error)?;
         self.note = Some(postcard::to_allocvec(&note).map_err(js_error)?);
