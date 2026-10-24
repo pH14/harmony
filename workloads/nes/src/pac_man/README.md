@@ -93,6 +93,10 @@ evaluator. Mazes counts completed mazes in the witness.
 | seed 3, index capped at 23 | 1 | 1800 s | 2.89 M | 22 | 56,210 |
 | seed 2, repeat clears counted | 1 | 1800 s | 2.72 M | 24 | 63,050 |
 | seed 3, repeat clears counted | 1 | 1800 s | 2.51 M | 22 | 56,210 |
+| seed 6, repeat clears counted | 2 | 9000 s | 25.2 M | 40 | 98,270 |
+
+The seed 6 run reached 30 mazes in 21 minutes and 40 in 52 minutes, then
+stayed at 40 for the remaining 98 minutes.
 
 The first 13 mazes fall in about a minute. Progress then comes in steps: the
 search sits at the last few dots of one maze for several minutes and then
