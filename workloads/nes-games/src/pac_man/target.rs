@@ -19,6 +19,7 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 pub type PacManInput = crate::search::archive::Input<ButtonChord>;
 
 pub const MAZES: u8 = 32;
+pub const MAZE_LIMIT: u8 = 200;
 pub const DOTS: u8 = 192;
 pub const START_LIVES: u8 = 3;
 pub const MAZES_PER_LEVEL: u8 = 4;
@@ -87,11 +88,11 @@ impl PacManMechanicalState {
                 .level
                 .saturating_add(self.repeat_clears)
                 .saturating_add(u8::from(self.repeat_clears == 0 && self.dots == 0))
-                .min(MAZES);
+                .min(MAZE_LIMIT);
         }
         self.level
             .saturating_add(u8::from(self.dots == 0))
-            .min(MAZES)
+            .min(MAZE_LIMIT)
     }
 
     #[must_use]
@@ -163,7 +164,7 @@ impl PacManMechanicalState {
 
     #[must_use]
     pub fn level_group(self) -> u8 {
-        (self.mazes_cleared().min(MAZES.saturating_sub(1)) / MAZES_PER_LEVEL).min(LEVELS - 1)
+        (self.mazes_cleared() / MAZES_PER_LEVEL).min(LEVELS - 1)
     }
 }
 
