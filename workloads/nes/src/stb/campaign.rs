@@ -219,6 +219,7 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
     if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions,
         });
     }
@@ -290,6 +291,7 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }
@@ -752,6 +754,7 @@ mod tests {
             .expect("shared-state wire representation");
         CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],

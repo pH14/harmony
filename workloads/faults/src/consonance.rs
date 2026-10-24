@@ -3666,6 +3666,7 @@ mod tests {
         assert!(error.to_string().contains("campaign incomplete"), "{error}");
         let result = CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions: Vec::new(),
         };
         assert!(
@@ -7409,6 +7410,7 @@ mod tests {
         assert!(target.snapshot().unwrap().is_none());
         let result = CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions: Vec::new(),
         };
         for error in [
@@ -8027,6 +8029,7 @@ mod tests {
             let mut target = unbooted_target();
             let mut result = CampaignJobResult::<crate::campaign::FaultWorkload> {
                 preparation_failure: None,
+                hang: None,
                 actions: Vec::new(),
             };
             if terminal {

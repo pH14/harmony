@@ -465,6 +465,7 @@ pub(crate) fn execute_job(
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }
@@ -1268,6 +1269,7 @@ mod tests {
     fn endpoint_certificate_distinguishes_state_and_unavailability() {
         let result = FaultCampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions: Vec::new(),
         };
         let first = endpoint_result_sha256(
@@ -1360,6 +1362,7 @@ mod tests {
         };
         let result = FaultCampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions: vec![FaultCampaignActionResult {
                 action,
                 observations: vec![FaultObservations::default()],
@@ -1385,6 +1388,7 @@ mod tests {
         let fresh = kvm_result_endpoint(
             &FaultCampaignJobResult {
                 preparation_failure: None,
+                hang: None,
                 actions: Vec::new(),
             },
             &[action],
