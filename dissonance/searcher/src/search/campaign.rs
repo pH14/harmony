@@ -9296,7 +9296,7 @@ mod tests {
 "draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
 "draw_checkpoint_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
             .replace('\n', "");
-        let record: CampaignStreamRecord<EmpiricalStepCheckpoint> =
+        let record: CampaignStreamRecord<EmpiricalStepCheckpoint, TestKey> =
             serde_json::from_str(&line).expect("record parses");
         let CampaignStreamRecord::Job(job) = record else {
             panic!("expected a job record");
@@ -9324,7 +9324,7 @@ mod tests {
             .filter(|field| field.as_str() != "event")
             .collect();
         assert_eq!(object.keys().collect::<BTreeSet<_>>(), recorded_fields);
-        let round_trip: CampaignJobRecord<EmpiricalStepCheckpoint> =
+        let round_trip: CampaignJobRecord<EmpiricalStepCheckpoint, TestKey> =
             serde_json::from_value(written).expect("job round-trips");
         assert_eq!(round_trip, job);
         let _ = SelectorDraw {
@@ -9342,7 +9342,7 @@ mod tests {
 "splice":{"outcome":"tail","donor_id":4,"leaf_id":9,"tail_postcard":[1,2]},
 "selector":{"path":"tiers","tier_rank":1}}"#
             .replace('\n', "");
-        let record: CampaignStreamRecord<EmpiricalStepCheckpoint> =
+        let record: CampaignStreamRecord<EmpiricalStepCheckpoint, TestKey> =
             serde_json::from_str(&line).expect("record parses");
         let CampaignStreamRecord::Job(job) = record else {
             panic!("expected a job record");
@@ -9356,7 +9356,7 @@ mod tests {
             })
         );
         let written = serde_json::to_vec(&job).expect("job serializes");
-        let round_trip: CampaignJobRecord<EmpiricalStepCheckpoint> =
+        let round_trip: CampaignJobRecord<EmpiricalStepCheckpoint, TestKey> =
             serde_json::from_slice(&written).expect("job round-trips");
         assert_eq!(round_trip, job);
     }
@@ -9913,14 +9913,16 @@ mod tests {
         }
     }
 
-    fn job_lines(stream: &[u8]) -> Vec<(usize, CampaignJobRecord<EmpiricalStepCheckpoint>)> {
+    fn job_lines(
+        stream: &[u8],
+    ) -> Vec<(usize, CampaignJobRecord<EmpiricalStepCheckpoint, TestKey>)> {
         std::str::from_utf8(stream)
             .expect("stream is text")
             .lines()
             .enumerate()
             .skip(1)
             .filter_map(|(index, line)| {
-                match serde_json::from_str::<CampaignStreamRecord<EmpiricalStepCheckpoint>>(line)
+                match serde_json::from_str::<CampaignStreamRecord<EmpiricalStepCheckpoint, TestKey>>(line)
                     .expect("stream record parses")
                 {
                     CampaignStreamRecord::Job(job) => Some((index, job)),
@@ -10385,8 +10387,10 @@ mod tests {
                 .lines()
                 .skip(1)
                 .any(|line| matches!(
-                    serde_json::from_str::<CampaignStreamRecord<EmpiricalStepCheckpoint>>(line)
-                        .unwrap(),
+                    serde_json::from_str::<CampaignStreamRecord<EmpiricalStepCheckpoint, TestKey>>(
+                        line
+                    )
+                    .unwrap(),
                     CampaignStreamRecord::End(_)
                 ))
         );
