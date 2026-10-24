@@ -75,7 +75,8 @@ recovering, so a node that never recovers would go unreported. A second
 built-in Always assertion covers that case:
 `workload becomes ready within 30 seconds after faults end`. Once no fault
 window is active and no injected fault is pending for 30 seconds of virtual
-time, measured on the standing answer's moment rather than by counting polls, a readiness generation that has still not passed its `ready` probe
+time, measured on the standing answer's moment rather than by counting polls, with a
+fault replayed in one catch-up poll restarting the count at its end, a readiness generation that has still not passed its `ready` probe
 violates it, once per generation. The 30 seconds count from the later of the
 end of faults and the restart that last made a ready workload unready. A
 restart long after faults end therefore gets its own 30 seconds, and a node
@@ -87,8 +88,9 @@ A bundle's `heal` line names the hook that lifts the faults its other hooks
 leave in force. In such a bundle every other hook is a cut, and each cut launch
 counts as a fault still in effect until a heal hook launched after it exits
 successfully, so a cluster still partitioned by a hook does not start the 30
-seconds. A heal that exits while a cut hook still runs does not count, because
-the cut can install its fault after the heal. Without a `heal` line, a hook counts only while its window is active.
+seconds. A heal launched while a cut hook still runs never counts, because the cut can
+install its fault after the heal; the heal that runs when the last cut window
+closes does. Without a `heal` line, a hook counts only while its window is active.
 
 The supervisor heals a cut when its window closes, as it restarts a killed node
 when the kill window closes. When the last open cut window closes, it drops cut

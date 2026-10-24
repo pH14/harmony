@@ -121,6 +121,7 @@ pub struct ProcessSupervisor {
     recovery_pending: bool,
     clocks: Vec<i64>,
     start_clocks: Vec<Vec<i64>>,
+    disturbed_until: Option<u64>,
     moment: Option<u64>,
     heal: Option<u32>,
 }
@@ -152,6 +153,7 @@ impl ProcessSupervisor {
             recovery_pending: false,
             clocks: vec![0; node_count],
             start_clocks: vec![Vec::new(); node_count],
+            disturbed_until: None,
             moment: None,
             heal: None,
         }
@@ -188,6 +190,11 @@ impl ProcessSupervisor {
 
     pub fn poll(&mut self, standing: &Standing, deaths: &[u16]) -> Vec<Action> {
         let steps = standing.steps(self.moment);
+        for pair in steps.windows(2) {
+            if !pair[0].is_empty() {
+                self.disturbed_until = self.disturbed_until.max(Some(pair[1].moment()));
+            }
+        }
         self.moment = Some(standing.moment);
         self.tick_steps(&steps, deaths)
     }
@@ -409,6 +416,10 @@ impl ProcessSupervisor {
         self.clocks.get(usize::from(node)).copied().unwrap_or(0)
     }
 
+    pub fn take_disturbed_until(&mut self) -> Option<u64> {
+        self.disturbed_until.take()
+    }
+
     pub fn take_start_clock(&mut self, node: u16) -> i64 {
         match self.start_clocks.get_mut(usize::from(node)) {
             Some(queue) if !queue.is_empty() => queue.remove(0),
@@ -431,13 +442,15 @@ impl ProcessSupervisor {
             }),
             Action::Start { node, .. }
                 if self.disk_faulted(node)
-                    && !actions[..index].iter().any(|earlier| {
-                        matches!(
-                            earlier,
-                            Action::SetDiskMode { node: closed, mode: DiskMode::Normal }
-                                if *closed == node
-                        )
-                    }) =>
+                    && !matches!(
+                        actions[..index].iter().rev().find_map(|earlier| match earlier {
+                            Action::SetDiskMode { node: changed, mode } if *changed == node => {
+                                Some(*mode)
+                            }
+                            _ => None,
+                        }),
+                        Some(DiskMode::Normal)
+                    ) =>
             {
                 Some(RemountCheck {
                     node,
@@ -1275,6 +1288,46 @@ mod tests {
                 starting: false
             })
         );
+    }
+
+    #[test]
+    fn a_later_disk_fault_in_the_batch_makes_a_restart_check_the_disk_again() {
+        let sup = Supervisor::new(1);
+        let actions = [
+            Action::SetDiskMode {
+                node: 0,
+                mode: DiskMode::Normal,
+            },
+            Action::SetDiskMode {
+                node: 0,
+                mode: DiskMode::Error,
+            },
+            Action::Start {
+                node: 0,
+                after_fault: true,
+            },
+        ];
+        let mut faulted = sup.clone();
+        faulted.nodes[0].disk_faulted = true;
+        assert_eq!(
+            faulted.remount_check(&actions, 2).map(|check| check.node),
+            Some(0)
+        );
+        let settled = [actions[0], actions[2]];
+        assert_eq!(faulted.remount_check(&settled, 1), None);
+    }
+
+    #[test]
+    fn faults_replayed_between_polls_are_reported_up_to_their_end() {
+        let mut sup = Supervisor::new(1);
+        assert_eq!(sup.poll(&standing(29, &[]), &[]), []);
+        let pause = [(0, ProcessAction::Pause(5), 30, 31)];
+        sup.poll(&standing(35, &pause), &[]);
+        assert_eq!(sup.take_disturbed_until(), Some(31));
+        assert_eq!(sup.take_disturbed_until(), None);
+        let open = [(0, ProcessAction::Pause(5), 32, 90)];
+        sup.poll(&standing(40, &open), &[]);
+        assert_eq!(sup.take_disturbed_until(), None);
     }
 
     #[test]

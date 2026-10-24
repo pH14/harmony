@@ -89,6 +89,7 @@ pub struct HookFaults {
     launches: u64,
     unhealed: Option<u64>,
     running_cuts: u64,
+    blocked_heals: Vec<u64>,
     heal_due: bool,
 }
 
@@ -113,6 +114,8 @@ impl HookFaults {
             self.unhealed = Some(launch);
             self.running_cuts = self.running_cuts.saturating_add(1);
             self.heal_due = false;
+        } else if self.heal == Some(id) && self.running_cuts > 0 {
+            self.blocked_heals.push(launch);
         }
         launch
     }
@@ -121,9 +124,16 @@ impl HookFaults {
         if self.is_cut(id) {
             self.running_cuts = self.running_cuts.saturating_sub(1);
         }
+        let blocked = self.heal == Some(id)
+            && self
+                .blocked_heals
+                .iter()
+                .position(|&blocked| blocked == launch)
+                .map(|index| self.blocked_heals.swap_remove(index))
+                .is_some();
         if succeeded
+            && !blocked
             && self.heal == Some(id)
-            && self.running_cuts == 0
             && self.unhealed.is_some_and(|unhealed| unhealed < launch)
         {
             self.unhealed = None;
@@ -160,6 +170,10 @@ pub struct RecoveryWatch {
 }
 
 impl RecoveryWatch {
+    pub fn note_disturbed_until(&mut self, moment: u64) {
+        self.quiet_since = self.quiet_since.max(moment);
+    }
+
     pub fn observe(
         &mut self,
         moment: u64,
@@ -217,6 +231,22 @@ mod tests {
         assert_eq!(
             watch.observe((30 + BOUND) * STEP, false, &readiness),
             Some((20 + BOUND) * STEP)
+        );
+    }
+
+    #[test]
+    fn a_fault_replayed_between_polls_restarts_the_quiet_time_at_its_end() {
+        let mut readiness = RecoveryReadiness::initially_ready();
+        let mut watch = RecoveryWatch::default();
+        readiness.restarted(true).unwrap();
+        assert_eq!(watch.observe(0, true, &readiness), None);
+        assert_eq!(watch.observe(29 * 1_000_000_000, false, &readiness), None);
+        let ended = 29_900_000_000;
+        watch.note_disturbed_until(ended);
+        assert_eq!(watch.observe(30_200_000_000, false, &readiness), None);
+        assert_eq!(
+            watch.observe(ended + super::RECOVERY_NANOS, false, &readiness),
+            Some(super::RECOVERY_NANOS)
         );
     }
 
@@ -351,6 +381,21 @@ mod tests {
         assert!(!faults.finished(2, cut, true));
         faults.cut_windows_closed();
         assert_eq!(faults.due_heal(), Some(4));
+    }
+
+    #[test]
+    fn a_heal_launched_while_a_cut_runs_never_clears_it_whatever_the_exit_order() {
+        let mut faults = HookFaults::new(Some(4));
+        let cut = faults.launched(2);
+        let heal = faults.launched(4);
+        assert!(!faults.finished(2, cut, true));
+        assert!(!faults.finished(4, heal, true));
+        assert!(faults.in_force());
+        faults.cut_windows_closed();
+        assert_eq!(faults.due_heal(), Some(4));
+        let late = faults.launched(4);
+        assert!(faults.finished(4, late, true));
+        assert!(!faults.in_force());
     }
 
     #[test]

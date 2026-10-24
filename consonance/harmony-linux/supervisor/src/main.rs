@@ -1059,6 +1059,9 @@ mod runtime {
                     tick,
                 )?;
             }
+            if let Some(moment) = supervisor.take_disturbed_until() {
+                runtime.recovery_watch.note_disturbed_until(moment);
+            }
             let disturbed = faults_in_force(supervisor, &runtime.hook_faults);
             if let Some(quiet) =
                 runtime
