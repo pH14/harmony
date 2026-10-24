@@ -141,6 +141,19 @@ generation, and an active clock window counts toward the pending-fault fence.
 A clock window on a kernel without time namespaces is an infrastructure
 failure. Hooks, the workload and the check stay on guest time.
 
+Each standing poll sends the moment of the previous answer
+(`encode_standing_question` in `process-proto`). The host answers with the
+windows open at the new moment and the windows that closed after the previous
+one. The supervisor ([`Standing::steps`](src/reconcile.rs)) then takes every
+window start and end between the two moments in time order and applies the
+changes at each one as a separate poll would. A slow loop iteration, such as a
+power loss that rebuilds a disk for two seconds of guest time, therefore drops
+no window: a restart, a kill or another node's fault that opened and closed
+meanwhile takes effect in order when the loop returns. Such a window lasts only
+as long as the supervisor takes to apply the changes after it. The first poll
+has no previous moment and sees only the open windows. The actions depend only
+on the answers and the poll moments, so the same execution repeats them.
+
 The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the
 generic process actions and event protocol and does not depend on that workload.
@@ -264,6 +277,12 @@ node may stop on purpose when its disk fails. A node that exits during an
 error or stall window stays down until the window closes, then restarts after
 a fault. For a node without a disk, error and stall windows do nothing and a
 corruption window only restarts the node.
+
+A power loss, corruption or read-only remount runs inside the supervisor's
+poll loop and takes from about 200 ms to a few seconds of guest time, growing
+with the log. Windows
+that open and close in that time take effect in order when it ends, as the
+standing poll description above explains.
 
 ## Investigation terminal
 

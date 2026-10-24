@@ -192,6 +192,19 @@ pub fn decode_standing(bytes: &[u8]) -> Result<(u64, Vec<Window>), WireError> {
     }
 }
 
+#[must_use]
+pub fn encode_standing_question(after: Option<u64>) -> Vec<u8> {
+    after.map_or_else(Vec::new, |after| after.to_le_bytes().to_vec())
+}
+
+pub fn decode_standing_question(bytes: &[u8]) -> Result<Option<u64>, WireError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let bytes: [u8; 8] = bytes.try_into().map_err(|_| WireError::Malformed)?;
+    Ok(Some(u64::from_le_bytes(bytes)))
+}
+
 pub fn encode_process_windows(
     moment: u64,
     windows: &[ProcessWindow],
@@ -652,6 +665,21 @@ mod tests {
                     end: 10,
                 }]
             )
+        );
+    }
+
+    #[test]
+    fn standing_questions_round_trip() {
+        assert_eq!(encode_standing_question(None), Vec::<u8>::new());
+        assert_eq!(decode_standing_question(&[]), Ok(None));
+        let question = encode_standing_question(Some(0x0102_0304_0506_0708));
+        assert_eq!(
+            decode_standing_question(&question),
+            Ok(Some(0x0102_0304_0506_0708))
+        );
+        assert_eq!(
+            decode_standing_question(&question[..7]),
+            Err(WireError::Malformed)
         );
     }
 
