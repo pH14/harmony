@@ -16,6 +16,7 @@ const LEVEL_COUNT = 50,
   OAM = 0x200,
   OAM_SPRITES = 64,
   HIDDEN_Y = 0xf8,
+  SCREEN_TOP_CROP = 7,
   PLAY_TOP = 0x10,
   PLAY_BOTTOM = 0xc0,
   FLIP = 0x40,
@@ -40,7 +41,7 @@ function playerSprites(ram) {
   const sprites = [];
   for (let i = 0; i < OAM_SPRITES; i++) {
     const at = OAM + i * 4, y = ram[at];
-    if (y >= PLAY_TOP && y < PLAY_BOTTOM && (ram[at + 2] & 3) === 0) sprites.push({ y: y + 1, x: ram[at + 3], flip: !!(ram[at + 2] & FLIP) });
+    if (y >= PLAY_TOP && y < PLAY_BOTTOM && (ram[at + 2] & 3) === 0) sprites.push({ y: y - SCREEN_TOP_CROP, x: ram[at + 3], flip: !!(ram[at + 2] & FLIP) });
   }
   return sprites;
 }
@@ -99,10 +100,11 @@ export function buildSprites(engine) {
       if (shown[s] === hidden[s] && shown[s + 1] === hidden[s + 1] && shown[s + 2] === hidden[s + 2]) continue;
       const same = (y * PLAYER_WIDTH + x) * 4,
         mirrored = (y * PLAYER_WIDTH + PLAYER_WIDTH - 1 - x) * 4,
-        rowRight = flipped ? PLAYER_HEIGHT * PLAYER_WIDTH * 4 : 0,
-        rowLeft = flipped ? 0 : PLAYER_HEIGHT * PLAYER_WIDTH * 4;
-      sheet.set(shown.subarray(s, s + 4), (flipped ? rowLeft : rowRight) + same);
-      sheet.set(shown.subarray(s, s + 4), (flipped ? rowRight : rowLeft) + mirrored);
+        rowLeft = PLAYER_HEIGHT * PLAYER_WIDTH * 4,
+        shownRow = flipped ? rowLeft : 0,
+        mirroredRow = flipped ? 0 : rowLeft;
+      sheet.set(shown.subarray(s, s + 4), shownRow + same);
+      sheet.set(shown.subarray(s, s + 4), mirroredRow + mirrored);
     }
   engine.restore(start);
   return { width: PLAYER_WIDTH, height: PLAYER_HEIGHT * 2, data: sheet };
