@@ -1105,7 +1105,7 @@ mod tests {
     #[test]
     fn recorded_prefix_rebuilds_without_a_live_checkpoint() {
         let rom = synthetic_nrom();
-        let config = genesis_config(0x5eed_ca04, 4, 32);
+        let config = genesis_config(0x5eed_ca04, 2, 32);
         let mut stream = Vec::new();
         run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("live campaign");

@@ -25,7 +25,7 @@ use crate::search::checkpoint::{
 };
 use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::draw::{
-    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT,
+    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT, SuffixReach,
     draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
 };
 use crate::search::draw_tables::{
@@ -1625,6 +1625,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     sequence: u64,
     probe_refused: u64,
     pub(crate) mixture_energy: MixtureEnergy,
+    suffix_reach: SuffixReach,
     suffix_jobs_in_flight: BTreeMap<(u64, u8), u32>,
 }
 
@@ -1666,6 +1667,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             sequence: 0,
             probe_refused: 0,
             mixture_energy: MixtureEnergy::default(),
+            suffix_reach: SuffixReach::default(),
             suffix_jobs_in_flight: BTreeMap::new(),
         }
     }
@@ -1674,13 +1676,30 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         self.suffix_limit_excluding(parent_id, parent_index, &BTreeMap::new())
     }
 
+    pub(crate) fn lineage_duration(
+        &self,
+        workload: &G,
+        run: &G::Run,
+        parent_index: usize,
+    ) -> Option<NonZeroU64> {
+        if self.archive.suffix_limit(parent_index) > 1 {
+            return None;
+        }
+        self.archive
+            .last_action(parent_index)
+            .and_then(|action| workload.duration_of_action(run, action))
+    }
+
     fn suffix_limit_excluding(
         &self,
         parent_id: u64,
         parent_index: usize,
         excluded: &BTreeMap<(u64, u8), u32>,
     ) -> u8 {
-        let limit = self.archive.suffix_limit(parent_index);
+        let limit = self
+            .archive
+            .suffix_limit(parent_index)
+            .max(self.suffix_reach.length());
         if self
             .suffix_jobs_in_flight
             .range((parent_id, limit)..=(parent_id, u8::MAX))
@@ -1740,6 +1759,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 self.sequence,
                 self.probe_refused,
                 self.mixture_energy,
+                &self.suffix_reach,
             ),
             out,
         )?;
@@ -1765,6 +1785,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         self.sequence = state.sequence;
         self.probe_refused = state.probe_refused;
         self.mixture_energy = state.mixture_energy;
+        self.suffix_reach = state.suffix_reach;
         Ok(())
     }
 
@@ -2150,6 +2171,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         let parent_place = self.archive.entries[parent_index].key.place();
         let retained_at_start = self.archive.retained;
         let mut left_place = false;
+        let mut novel_slots = 0_usize;
         for action in actions {
             let tracked = tracked_action(&action.action) && !action.outcome.disposition.is_failed();
             duration.applied |= tracked;
@@ -2228,6 +2250,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
                         duration.useful |= tracked;
+                        novel_slots += usize::from(self.archive.opened_novel_slot(id));
                         decisions.push(CampaignAdmissionDecision::Retained {
                             id: self
                                 .archive
@@ -2266,6 +2289,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 left_place,
                 terminal,
             );
+            self.suffix_reach.record_outcome(actions_run, novel_slots);
         }
         if sequence.is_multiple_of(self.curve_interval) {
             self.push_curve_point();
@@ -2675,13 +2699,14 @@ fn verify_duration_draw(
     draw: &DurationDraw<impl Copy>,
     checkpoint: Option<&DurationCheckpoint>,
     mutation_seed: u64,
+    lineage: Option<NonZeroU64>,
 ) -> Result<(), Box<dyn Error>> {
     let policy = match checkpoint {
         Some(checkpoint) => DurationPolicy::from_checkpoint(checkpoint.clone())?,
         None => DurationPolicy::new(),
     };
     let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
-    let expected = policy.draw(&mut rand, draw.max_duration);
+    let expected = policy.draw_in_lineage(&mut rand, draw.max_duration, lineage);
     if expected != draw.duration.get() {
         return Err("recorded duration choice diverges from its draw-time policy state".into());
     }
@@ -3081,6 +3106,7 @@ struct CoreCheckpoint<G: Workload + ?Sized> {
     sequence: u64,
     probe_refused: u64,
     mixture_energy: MixtureEnergy,
+    suffix_reach: SuffixReach,
 }
 
 struct SearchResume<G: Workload + ?Sized> {
@@ -4866,6 +4892,7 @@ where
     let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
     let mut replay_job_weights = BTreeMap::<usize, (u8, u8)>::new();
     let mut replay_job_tier_limits = BTreeMap::<usize, usize>::new();
+    let mut replay_job_lineage_durations = BTreeMap::<usize, Option<NonZeroU64>>::new();
     let mut replay_selections = BTreeMap::<usize, (u64, u64)>::new();
     let mut replay_planned_clock = 0_u64;
     let mut last_admitted = None::<(u64, usize)>;
@@ -4898,6 +4925,10 @@ where
         {
             return Err("replayed job suffix limit diverged at reservation".into());
         }
+        replay_job_lineage_durations.insert(
+            job_slot,
+            core.lineage_duration(workload, &replay_run, parent_index),
+        );
         let (mutation_seed, selector_path, splice) = &replay_job_splices[job_slot];
         verify_splice_selection(
             &mut core,
@@ -5032,7 +5063,12 @@ where
                     if expected_checkpoint != skip.duration_checkpoint_at_draw {
                         return Err("recorded skip duration state diverged at selection".into());
                     }
-                    verify_duration_draw(&draw, expected_checkpoint.as_ref(), skip.mutation_seed)?;
+                    verify_duration_draw(
+                        &draw,
+                        expected_checkpoint.as_ref(),
+                        skip.mutation_seed,
+                        core.lineage_duration(workload, &replay_run, parent_index),
+                    )?;
                 } else if skip.duration_checkpoint_at_draw.is_some() {
                     return Err("recorded stream carries duration state without a choice".into());
                 }
@@ -5129,6 +5165,9 @@ where
                 let selector_tier_limit = replay_job_tier_limits
                     .remove(&replay_job_slot)
                     .ok_or("recorded job has no rebuilt selection tier bound")?;
+                let lineage_duration = replay_job_lineage_durations
+                    .remove(&replay_job_slot)
+                    .ok_or("recorded job has no rebuilt lineage duration")?;
                 if (job.mixture_weight, job.splice_weight)
                     != replay_job_weights
                         .remove(&replay_job_slot)
@@ -5224,7 +5263,12 @@ where
                     if expected_checkpoint != job.duration_checkpoint_at_draw {
                         return Err("recorded job duration state diverged at selection".into());
                     }
-                    verify_duration_draw(&draw, expected_checkpoint.as_ref(), job.mutation_seed)?;
+                    verify_duration_draw(
+                        &draw,
+                        expected_checkpoint.as_ref(),
+                        job.mutation_seed,
+                        lineage_duration,
+                    )?;
                 } else if job.duration_checkpoint_at_draw.is_some() {
                     return Err("recorded stream carries duration state without a choice".into());
                 }
@@ -5506,6 +5550,10 @@ where
                     }) {
                         return Err("replayed job suffix limit diverged at reservation".into());
                     }
+                    replay_job_lineage_durations.insert(
+                        next_slot,
+                        core.lineage_duration(workload, &replay_run, parent_index),
+                    );
                     let (mutation_seed, selector_path, splice) = &replay_job_splices[next_slot];
                     verify_splice_selection(
                         &mut core,
@@ -8054,8 +8102,8 @@ mod tests {
             })
             .unwrap();
         let mut job: serde_json::Value = serde_json::from_str(&lines[first_job]).unwrap();
-        assert_eq!(job["suffix_limit"], 1);
-        job["suffix_limit"] = serde_json::json!(2);
+        assert_eq!(job["suffix_limit"], 64);
+        job["suffix_limit"] = serde_json::json!(32);
         lines[first_job] = serde_json::to_string(&job).unwrap();
         let error =
             replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
@@ -8379,6 +8427,9 @@ mod tests {
     fn a_parent_with_a_job_in_flight_at_its_suffix_limit_draws_one_action() {
         let (_workload, _run, mut core, _target) = test_core();
         let parent = core.archive.stable_id(0).expect("the root has an id");
+        while core.suffix_reach.length() > 1 {
+            core.suffix_reach.record_outcome(64, 0);
+        }
         core.archive
             .record_suffix_outcome(0, 1, false, false, false);
         assert_eq!(core.suffix_limit(parent, 0), 2);
@@ -11083,22 +11134,30 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         let jobs = job_lines(&stream);
-        let refused = jobs.windows(2).filter(|pair| {
-            let mut tampered = lines.clone();
-            tampered[pair[0].0] = lines[pair[0].0].replacen(
-                &format!("\"reservation\":{},", pair[0].1.reservation),
-                &format!("\"reservation\":{},", pair[1].1.reservation),
-                1,
-            );
-            tampered[pair[1].0] = lines[pair[1].0].replacen(
-                &format!("\"reservation\":{},", pair[1].1.reservation),
-                &format!("\"reservation\":{},", pair[0].1.reservation),
-                1,
-            );
-            replay_campaign_checkpointed(&workload, tampered.join("\n").as_bytes(), None, None)
-                .is_err_and(|error| error.to_string().contains("out of planned-finish order"))
-        });
-        assert!(refused.count() > jobs.len() / 2);
+        let errors = jobs
+            .windows(2)
+            .map(|pair| {
+                let mut tampered = lines.clone();
+                tampered[pair[0].0] = lines[pair[0].0].replacen(
+                    &format!("\"reservation\":{},", pair[0].1.reservation),
+                    &format!("\"reservation\":{},", pair[1].1.reservation),
+                    1,
+                );
+                tampered[pair[1].0] = lines[pair[1].0].replacen(
+                    &format!("\"reservation\":{},", pair[1].1.reservation),
+                    &format!("\"reservation\":{},", pair[0].1.reservation),
+                    1,
+                );
+                replay_campaign_checkpointed(&workload, tampered.join("\n").as_bytes(), None, None)
+                    .expect_err("replay accepted swapped admissions")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        let out_of_order = errors
+            .iter()
+            .filter(|error| error.contains("out of planned-finish order"))
+            .count();
+        assert!(3 * out_of_order > jobs.len(), "{errors:?}");
     }
 
     fn run_placed(placement: ThreadPlacement) -> Result<CampaignOutcome<TestWorkload>, String> {
@@ -11470,6 +11529,7 @@ mod tests {
             sequence: core.sequence,
             probe_refused: core.probe_refused,
             mixture_energy: core.mixture_energy,
+            suffix_reach: core.suffix_reach.clone(),
         };
         let expected = postcard::to_allocvec(&reference).unwrap();
         let mut streamed = Vec::new();
@@ -12209,9 +12269,9 @@ mod tests {
             checkpoint: None,
         };
         let config = CampaignConfig {
-            campaign_seed: 196,
+            campaign_seed: 954,
             workers: 3,
-            execution_budget: 8,
+            execution_budget: 300,
             host: "test".to_owned(),
             wall_budget: None,
             stop_rollout_on_objective: true,
@@ -12233,11 +12293,12 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(records[1]["event"], "skip");
-        assert_eq!(records[1]["reservation"], 1);
-        assert_eq!(records[1]["suffix_limit"], 1);
-        assert_eq!(records[2]["event"], "job");
-        records[1]["suffix_limit"] = serde_json::json!(2);
+        let skip = records
+            .iter()
+            .position(|record| record["event"] == "skip" && record["suffix_limit"].is_u64())
+            .expect("the campaign records a drawn skip");
+        let limit = records[skip]["suffix_limit"].as_u64().unwrap();
+        records[skip]["suffix_limit"] = serde_json::json!(if limit == 64 { 32 } else { limit * 2 });
         let forged = records
             .iter()
             .map(serde_json::to_string)

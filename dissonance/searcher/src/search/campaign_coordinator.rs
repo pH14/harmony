@@ -1354,6 +1354,7 @@ where
                 )
             });
             let mut duration_checkpoint_at_draw = None;
+            let lineage_duration = core.lineage_duration(workload, &config.run, parent_index);
             let duration_draw = if spliced.is_none() {
                 workload
                     .duration_request(
@@ -1369,6 +1370,7 @@ where
                             request.context,
                             &mut duration_rand,
                             request.max_duration,
+                            lineage_duration,
                         )
                     })
             } else {

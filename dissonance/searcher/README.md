@@ -515,9 +515,17 @@ no preparation-failure report.
 
 Choices are powers of two from one through the greatest power of two that fits
 the requested bound. Half of draws explore scales uniformly. The other half
-selects the greatest observed useful-outcome count per unit of logical work,
-breaking ties with the seeded generator. With no useful observations both
-halves explore. The exploration share and history sizes are fixed algorithm
+continues the parent's lineage when it can: if the parent's last action carried
+a duration that fits the bound, and no job from the parent has since run
+without keeping a state or leaving its place (its suffix length is still one
+action), the draw repeats that duration. A lineage then holds one scale over
+many jobs, as swarm testing holds one configuration per test, so a schedule
+that needs a long run of slow faults is reached once instead of being redrawn
+every job. Otherwise the draw selects the greatest observed useful-outcome
+count per unit of logical work, breaking ties with the seeded generator. With
+no useful observations both halves explore. Replay reads the parent's last
+action and suffix length at the job's reservation, so it repeats the same
+choice. The exploration share and history sizes are fixed algorithm
 constants, not workload knobs. Scores use integer cross-products and logical
 work, never host timings. A maximum of one admits only a duration of one.
 Changing duration or cost units requires a new workload policy identity and
@@ -729,7 +737,36 @@ kept a state or left the place resets it to one action. A job that
 ended in a terminal state without either leaves it unchanged. The archive holds
 the length per entry, so checkpoints carry it and compaction drops it with its
 entry. Splices and continuations run their recorded tails and leave it
-unchanged. The coordinator reads the length when it dispatches the job and
+unchanged.
+
+The campaign also keeps one reach length, `SuffixReach`, shared by every
+parent. A drawn job runs the longer of its parent's length and the reach
+length. The reach length starts at 64 actions. The archive remembers every
+slot that has held a state, so a kept state that opens a slot no state has held
+before (a novel slot) differs from one that replaces a holder or refills a slot
+that memory pressure emptied. The reach counts actions run and novel slots
+opened by drawn jobs over about the last 1,024 actions. Once it has counted 64
+actions, each drawn job moves the reach length: it doubles, up to 64 actions,
+when at least half of the counted actions opened novel slots, and halves, down
+to one action, otherwise. When most actions open novel slots, every action of
+a long job adds a new state, so a long job wastes little and extends a lineage
+by many actions per draw. When few actions do, one-action jobs spread over
+many parents find the rare new state at less cost. Starting long gives the
+first jobs from the root deep lineages, and a failing start costs about 126
+actions, because each job moves the length one step. Fault actions often open
+a novel slot, because the edge bucket is part of the holder identity. In NATS
+searches with the clock and kill faults left out, 57% to 88% of drawn jobs
+ran 64 actions in four of five 30-minute searches; with every fault kind about
+20% did. Those searches found the NATS bug in 64-action jobs that ended 20 to
+160 seconds of guest time after power-on. Tiny worlds open novel slots with at most about one action in eight, so the
+reach length falls to one action within the first few jobs and the per-parent
+length decides. The fall costs those first jobs: crossing a fresh room in 16
+tiny-world layouts takes a median of 118 units of work. The reach counts and
+the slot set change only at admission. The core checkpoint carries the counts, the
+archive checkpoint carries the slot set, and the slot set counts toward the
+archive's history memory.
+
+The coordinator reads the length when it dispatches the job and
 records it as `suffix_limit` in the job or skip record. While a job of that
 length or longer from the same parent is still in flight, the next job runs one
 action instead. The job in flight already tests that length, and admission in
