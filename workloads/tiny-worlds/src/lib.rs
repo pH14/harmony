@@ -594,11 +594,45 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
     fn continuation_state(&self, target: &Target) -> Vec<u64> {
         match (&self.config, target.state) {
             (World::Vertical(w), State::Vertical(state)) => w.observation(state),
-            _ => Vec::new(),
+            (World::PassiveClock(w), State::PassiveClock(state)) => {
+                vec![w.phase(state) as u64, u64::from(w.goal(state))]
+            }
+            _ => {
+                fn values(value: serde_json::Value, output: &mut Vec<u64>) {
+                    match value {
+                        serde_json::Value::Bool(value) => output.push(u64::from(value)),
+                        serde_json::Value::Number(value) => {
+                            output.push(value.as_u64().expect("unsigned world observation"))
+                        }
+                        serde_json::Value::Array(items) => {
+                            for item in items {
+                                values(item, output);
+                            }
+                        }
+                        serde_json::Value::Object(fields) => {
+                            for (_, field) in fields {
+                                values(field, output);
+                            }
+                        }
+                        serde_json::Value::Null | serde_json::Value::String(_) => {}
+                    }
+                }
+                let mut output = Vec::new();
+                values(
+                    serde_json::to_value(target.state).expect("serializable world observation"),
+                    &mut output,
+                );
+                output
+            }
         }
     }
     fn continuation_block_work(&self, _: &()) -> std::num::NonZeroU64 {
-        std::num::NonZeroU64::new(u64::from(vertical::LONGEST_HOLD)).unwrap()
+        let longest = match &self.config {
+            World::Vertical(_) => u64::from(vertical::LONGEST_HOLD),
+            World::PassiveClock(w) => w.maximum_hold(),
+            _ => 1,
+        };
+        std::num::NonZeroU64::new(longest).unwrap()
     }
     fn finish_live_job(
         &self,
@@ -1021,8 +1055,13 @@ fn validate_input_mode<const CAPACITY_TWO: bool>(
     workload: &Workload<CAPACITY_TWO>,
     settings: SearchSettings,
 ) -> Result<(), Box<dyn Error>> {
-    if !settings.input_mode.is_current() && !matches!(workload.config, World::Vertical(_)) {
-        return Err("experimental input modes currently require the vertical world".into());
+    if matches!(
+        settings.input_mode,
+        searcher::search::draw::InputMode::Sticky
+            | searcher::search::draw::InputMode::StickyChaining
+    ) && !matches!(workload.config, World::Vertical(_))
+    {
+        return Err("sticky input modes require the vertical world".into());
     }
     Ok(())
 }
@@ -2096,5 +2135,73 @@ mod tests {
         .unwrap();
         assert_eq!(snapshot.payload.len(), 100);
         assert!(snapshot.payload.iter().any(|&b| b != 0));
+    }
+}
+
+#[cfg(test)]
+mod chaining_panel_tests {
+    use super::*;
+
+    #[test]
+    fn passive_clock_continuation_ignores_elapsed_time_inside_an_event() {
+        let workload: Workload = Workload {
+            config: World::PassiveClock(passive_clock::Config {
+                events: vec![33, 41],
+                holds: vec![passive_clock::HoldBand {
+                    minimum: 8,
+                    maximum: 8,
+                    weight: 1,
+                }],
+            }),
+            broken: false,
+            scale: None,
+        };
+        let mut target = workload.new_target().unwrap();
+        let start = workload.continuation_state(&target);
+        let mut milestone = false;
+        workload
+            .apply_action(&mut target, &8, &mut milestone)
+            .unwrap();
+        assert_eq!(workload.continuation_state(&target), start);
+        for _ in 0..4 {
+            workload
+                .apply_action(&mut target, &8, &mut milestone)
+                .unwrap();
+        }
+        assert_ne!(workload.continuation_state(&target), start);
+        assert_eq!(workload.continuation_block_work(&()).get(), 8);
+    }
+
+    #[test]
+    fn unit_action_panel_family_runs_and_replays_selected_chaining_jobs() {
+        let workload: Workload = Workload {
+            config: World::Route(route::Config {
+                length: 16,
+                pattern: 0,
+                attack: 2,
+                shifted: false,
+                upgrade_required: false,
+                ranked_upgrade: false,
+            }),
+            broken: false,
+            scale: None,
+        };
+        assert_eq!(workload.continuation_block_work(&()).get(), 1);
+        let report = run_kept(
+            &workload,
+            Keep::Portfolio,
+            26103201,
+            2000,
+            true,
+            1,
+            SearchSettings {
+                input_mode: searcher::search::draw::InputMode::Chaining,
+                mixture: Some(searcher::search::draw::DrawMixture::EnergySplice { scale: 6 }),
+                stop_on_objective: Some(false),
+            },
+        )
+        .unwrap();
+        assert_eq!(report["verified"], true);
+        assert!(report["input_strategy_jobs"][2].as_u64().unwrap() > 0);
     }
 }

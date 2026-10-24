@@ -816,3 +816,9 @@ and completion. The report counts ordinary, sticky, chaining, and combined
 jobs in `input_strategy_jobs`, in that order. Verified runs replay and repeat
 the whole campaign, account for work and replay any objective witness. This
 world is not yet calibrated and does not constitute a rung-2 result.
+
+Chaining can be selected for every panel family with `search.input_mode` set to
+`chaining`. Continuation compares semantic world state; the passive-clock
+family exposes only event phase and goal, excluding elapsed time. A block spans
+the longest available hold (one action for unit-cost worlds). Sticky controller
+input remains specific to the vertical family.
