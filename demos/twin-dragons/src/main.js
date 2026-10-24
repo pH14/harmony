@@ -10,6 +10,7 @@ import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { Swarm, ghosts, trailRoom, MOTION_STRIDE } from "./swarm.js";
 import { resumeFollowing, resetRetreat, trackingGoal, followView } from "./camera.js";
+import { SmoothCounter } from "./counter.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, GRID_CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
@@ -22,7 +23,7 @@ import {
 } from "./branch.js";
 import { StateCache, memoryBudget } from "./memory.js";
 import { liveSearch } from "./live-source.js";
-import { nativeRuns } from "./native-run.js";
+import { detectLauncher, nativePanel, segments as segmentButtons } from "./native-run.js";
 import {
   project,
   completedLevels,
@@ -75,7 +76,7 @@ ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Saved paths</h2></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
 <footer><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><button id="credits">Credits & source</button><button id="theme" class="theme-button" aria-label="Switch color theme">Dark mode</button></footer>
 <div id="error" role="alert" hidden></div>
-<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Pick a game</h2></div><div id="game-choice" class="game-choice"><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="segments" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring Your Own ROM</h3><div id="rom-games" class="segments" role="group" aria-labelledby="byo-rom-title"></div></section></div><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><div id="level-grid" class="level-grid"></div></dialog>
+<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Pick a game</h2></div><div id="game-choice" class="game-choice"><section id="run-target" class="game-group" hidden></section><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="segments" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring Your Own ROM</h3><div id="rom-games" class="segments" role="group" aria-labelledby="byo-rom-title"></div></section></div><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><section id="native-panel" class="native-panel" hidden></section><div id="level-grid" class="level-grid"></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 const recordingCanvas = document.createElement("canvas");
 recordingCanvas.width = 1920;
@@ -213,6 +214,7 @@ let stateCache = new StateCache(),
   wins = new Map(),
   path = { level: 0, levels: [0], since: 0, idle: 0 },
   stats = {};
+const counters = { executions: new SmoothCounter(), states: new SmoothCounter(), frames: new SmoothCounter() };
 const views = new Map(),
   controller = new Controller();
 let playSession = null,
@@ -854,7 +856,7 @@ function updateCamera(now) {
     const zoom = closeUpZoom(c) * (room === camera.introRoom ? scale : 1);
     if (reducedMotion.matches) steerCamera(room, c, point, zoom, 1, 1);
     else {
-      Object.assign(view, followView(view, point, canvasPanel(c), c, zoom, dt));
+      Object.assign(view, followView(view, point, canvasPanel(c), c, zoom, dt, liveView));
       roomView(room).zoom = view.zoom;
     }
   }
@@ -1638,6 +1640,7 @@ function startSearch(level = bootLevel) {
   latestBest = null;
   lastAuto = 0;
   stats = {};
+  for (const counter of Object.values(counters)) counter.reset();
   for (const id of ["play", "scrub"]) $(id).disabled = true;
   $("details").replaceChildren();
   $("state-list").replaceChildren();
@@ -1775,6 +1778,7 @@ function startSearch(level = bootLevel) {
           if (++traillessBatches === 20 && visualization === "movement") setVisualization("heat");
         }
         stats = batchStats;
+        if (liveView) for (const [key, counter] of Object.entries(counters)) counter.push(batchStats[key] || 0, performance.now());
         gameWon ||= data.won;
         const now = performance.now();
         heat.visitMotion(data.motion || [], maps, now);
@@ -1952,10 +1956,19 @@ function setTitle(id, text) {
   const node = $(id);
   if (node.title !== text) node.title = text;
 }
-function updateStats() {
+function shown(key) {
+  return liveView && !paused ? counters[key].read(performance.now()) : stats[key];
+}
+function updateCounters() {
   const others = [...searchViews].filter(([id]) => id !== activeSearch).map(([, view]) => view.stats || {});
-  const total = (key) => others.reduce((sum, other) => sum + (other[key] || 0), stats[key] || 0);
+  const total = (key) => others.reduce((sum, other) => sum + (other[key] || 0), shown(key) || 0);
   setText("hero-timelines", fmt(total("executions")));
+  setText("attempts", fmt(shown("executions")));
+  setText("states", fmt(shown("states")));
+  setText("work", fmt(shown("frames")));
+}
+function updateStats() {
+  updateCounters();
   const anyVisited = !!$("room-tabs").querySelector(".visited");
   for (const tab of $("room-tabs").children) {
     const seen = seenMaps.has(Number(tab.dataset.map));
@@ -1966,15 +1979,12 @@ function updateStats() {
     }
     tab.classList.toggle("visited", seen);
   }
-  setText("attempts", fmt(stats.executions));
-  setText("states", fmt(stats.states));
   setText("cells", fmt(heat.cells.size));
   renderLevelStrip();
   const witness = completionWitness();
   $("completion").hidden = !witness;
   if (witness) setText("completion", witness.label);
   setTitle("states", `Shared snapshot memory: ${fmt(stats.snapshot_bytes / 1048576)} MiB; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`);
-  setText("work", fmt(stats.frames));
   setText("memory", `${((stats.snapshot_bytes || 0) / 1000000).toFixed(1)} MB`);
   setTitle("memory", "Retained snapshots across all search branches");
   setText("workers", fmt(stats.workers ?? budget.workers));
@@ -2952,6 +2962,7 @@ $("sound").onclick = () => {
   updateSoundControl();
 };
 updateSoundControl();
+if (liveView) $("search-speed").closest(".search-speed").style.display = "none";
 $("search-speed").max = paceStops.length - 1;
 showPace();
 $("search-speed").oninput = () => {
@@ -3146,7 +3157,7 @@ function animate(now) {
   if (statsDirty) {
     statsDirty = false;
     updateStats();
-  }
+  } else if (liveView && !paused) updateCounters();
   if (mapMoving || now - lastMapPaint >= 1000 / 30) {
     drawMap(now);
     lastMapPaint = now;
@@ -3485,22 +3496,28 @@ function offerTour() {
     beginTour();
 }
 $("tour-open").onclick = beginTour;
+function familyOf(choice) {
+  return choice.family ? [...GAMES.values()].filter((member) => member.family === choice.family) : [choice];
+}
 $("new-search").onclick = () => {
   const wasPlaying = playing;
   if (wasPlaying) { playing = false; music.stop(); $("play").textContent = "▶ Replay"; }
   const games = [...GAMES.values()].filter((choice) => !choice.family || choice.id === choice.family),
-    family = game.family ? [...GAMES.values()].filter((choice) => choice.family === game.family) : [game];
+    family = familyOf(game);
+  pickerGames = [];
   const buttons = games.map((choice) => {
     const button = document.createElement("button");
     button.textContent = choice.title;
     button.setAttribute("aria-pressed", choice === game);
+    pickerGames.push({ button, choice });
     const play = () => {
       const url = new URL(location.href);
       url.searchParams.set("game", choice.id);
       location.assign(url);
     };
     button.onclick = () => {
-      if (choice.rom.upload && !bundled.has(choice.id) && (choice !== requested || missingRom)) showRomPanel(choice, play);
+      if (nativeTarget) showNativeLevels(choice);
+      else if (choice.rom.upload && !bundled.has(choice.id) && (choice !== requested || missingRom)) showRomPanel(choice, play);
       else if (choice === game || (choice.family && choice.family === game.family)) showLevelGrid();
       else play();
     };
@@ -3508,9 +3525,15 @@ $("new-search").onclick = () => {
   });
   $("homebrew-games").replaceChildren(...buttons.filter((_, i) => !games[i].rom.upload));
   $("rom-games").replaceChildren(...buttons.filter((_, i) => games[i].rom.upload));
+  renderLevels(family);
   const shown = missingRom && [...GAMES.values()].find((choice) => choice === missingRom);
   if (shown) showRomPanel(shown, () => location.reload());
   else showLevelGrid();
+  applyTarget();
+  if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
+  $("level-picker").showModal();
+};
+function renderLevels(family) {
   $("level-grid").replaceChildren();
   for (const member of family) {
     if (family.length > 1) {
@@ -3540,7 +3563,7 @@ $("new-search").onclick = () => {
       }
       caption.textContent = level.label;
       card.append(image, caption);
-      card.onclick = current
+      const open = current
         ? () => {
             $("level-picker").close();
             tour.finish();
@@ -3554,25 +3577,67 @@ $("new-search").onclick = () => {
             url.searchParams.set("level", level.id);
             location.assign(url);
           };
+      card.onclick = () => (nativeTarget ? showHardware(member, level, card) : open());
       $("level-grid").append(card);
     }
   }
-  if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
-  $("level-picker").showModal();
-};
+}
 $("close-level-picker").onclick = () => $("level-picker").close();
+let launcher = null, nativeTarget = null, pickerGames = [], nativeChoice = game;
+function renderTargetRow() {
+  $("run-target").hidden = !launcher;
+  if (!launcher) return;
+  const heading = document.createElement("h3");
+  heading.textContent = "Run on";
+  $("run-target").replaceChildren(heading, segmentButtons([["", "This browser"], ...launcher.machines.map((name) => [name, name])], nativeTarget ?? "", (name) => {
+    nativeTarget = name || null;
+    if (nativeTarget) launcher.setMachine(nativeTarget);
+    applyTarget();
+  }));
+}
+function nativeGame(choice) {
+  return [...GAMES.values()].some((member) => (member.family ?? member.id) === (choice.family ?? choice.id) && launcher.available(member.id));
+}
+function applyTarget() {
+  renderTargetRow();
+  for (const { button, choice } of pickerGames) button.disabled = !!nativeTarget && !nativeGame(choice);
+  if (nativeTarget) showNativeLevels(nativeGame(nativeChoice) ? nativeChoice : pickerGames.find(({ choice }) => nativeGame(choice))?.choice ?? game);
+  else if ($("rom-panel").hidden) {
+    renderLevels(familyOf(game));
+    showLevelGrid();
+  }
+}
+function showNativeLevels(choice) {
+  nativeChoice = choice;
+  if (!choice.levels || !choice.assets) return showHardware(choice);
+  renderLevels(familyOf(choice));
+  showLevelGrid(choice);
+}
+function showHardware(member, level, card) {
+  pressGame(nativeChoice);
+  $("rom-panel").hidden = true;
+  $("level-grid").hidden = true;
+  closePlaythrough();
+  launcher.setLevel(member.id, level, card?.querySelector("img, canvas"), () => showNativeLevels(nativeChoice));
+  $("native-panel").hidden = false;
+  launcher.activate();
+}
 let playthroughPlayer = null;
 function pressGame(choice) {
-  for (const button of $("game-choice").querySelectorAll("button")) button.setAttribute("aria-pressed", button.textContent === choice.title);
+  for (const button of $("game-choice").querySelectorAll("#homebrew-games button, #rom-games button")) button.setAttribute("aria-pressed", button.textContent === choice.title);
 }
-function showLevelGrid() {
-  pressGame(game);
+function showLevelGrid(choice = game) {
+  pressGame(choice);
+  $("native-panel").hidden = true;
+  launcher?.deactivate();
   $("rom-panel").hidden = true;
   $("level-grid").hidden = false;
   closePlaythrough();
 }
 function showRomPanel(choice, play) {
   pressGame(choice);
+  $("native-panel").hidden = true;
+  launcher?.deactivate();
   $("level-grid").hidden = true;
   $("rom-panel").hidden = false;
   $("rom-panel").dataset.game = choice.id;
@@ -3645,6 +3710,7 @@ function youtubeApi() {
 }
 $("level-picker").addEventListener("close", () => {
   closePlaythrough();
+  launcher?.deactivate();
   if (!worker) startSearch();
 });
 async function acceptRom(choice, file, play) {
@@ -3676,4 +3742,11 @@ else {
   askedForRom = true;
   $("new-search").onclick();
 }
-nativeRuns(game.id, document.querySelector(".view-tools")).catch(() => {});
+detectLauncher()
+  .then((options) => {
+    if (!options) return;
+    launcher = nativePanel(options, [...GAMES.values()], game.id);
+    $("native-panel").replaceChildren(launcher.element);
+    renderTargetRow();
+  })
+  .catch(() => {});

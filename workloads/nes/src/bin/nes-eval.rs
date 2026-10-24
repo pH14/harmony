@@ -74,7 +74,7 @@ type LiveFamidash<const GROUP: usize> =
     nes_games::famidash::campaign::FamidashGame<NativeMachine, GROUP>;
 
 fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<()> {
-    if request.stage.is_some()
+    if (request.stage.is_some() && !request.game.starts_with("famidash"))
         || request.ai.is_some()
         || request.root_input.is_some()
         || request.metroid_terminal.is_some()
@@ -82,7 +82,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || !request.mixture.is_empty()
     {
         return Err(
-            "a live view runs the arcade game from genesis with its own mixture, without stage, ai, root, resume or mixture options"
+            "a live view runs the arcade game from genesis with its own mixture, without ai, root, resume or mixture options"
                 .into(),
         );
     }
