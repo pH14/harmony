@@ -26,14 +26,29 @@
 #ifndef HARMONY_WRITE
 #define HARMONY_WRITE(fd, buf, len) write((fd), (buf), (len))
 #endif
+#ifndef HARMONY_IOCTL
+#include <sys/ioctl.h>
+#define HARMONY_IOCTL(fd, command, arg) ioctl((fd), (command), (arg))
+#endif
 static pthread_mutex_t harmony_device_lock = PTHREAD_MUTEX_INITIALIZER;
 
 enum {
     HARMONY_CMD_ENTROPY = 0,
-    HARMONY_CMD_COVERAGE = 1,
-    HARMONY_COVERAGE_REQUEST_SIZE = 17,
+    HARMONY_COVERAGE_REQUEST_SIZE = 16,
     HARMONY_COVERAGE_RESPONSE_SIZE = 12
 };
+
+/* Matches struct harmony_ioc_coverage in the guest kernel's uapi/linux/harmony.h. */
+struct harmony_ioc_coverage {
+    unsigned char request[HARMONY_COVERAGE_REQUEST_SIZE];
+    unsigned char response[HARMONY_COVERAGE_RESPONSE_SIZE];
+    uint32_t reserved;
+};
+
+_Static_assert(sizeof(struct harmony_ioc_coverage) == 32,
+               "coverage ioctl layout");
+
+#define HARMONY_IOC_COVERAGE 0xC0204803UL
 
 struct harmony_coverage_state {
     uint32_t thread;
@@ -47,6 +62,7 @@ static _Thread_local struct harmony_coverage_state harmony_coverage = {
     0, 1, 0, 0, 1
 };
 static _Thread_local volatile sig_atomic_t harmony_device_held;
+static int harmony_coverage_fd = -1;
 static uint64_t harmony_next_edge;
 static const uint64_t harmony_lease_generation = 1;
 
@@ -248,44 +264,56 @@ uint32_t harmony_coverage_selected(void)
     return harmony_coverage.selected;
 }
 
+static int coverage_ioctl(struct harmony_ioc_coverage *coverage)
+{
+    int result;
+
+    do
+        result = HARMONY_IOCTL(harmony_coverage_fd, HARMONY_IOC_COVERAGE, coverage);
+    while (result < 0 && errno == EINTR);
+    return result;
+}
+
+static int coverage_open(void)
+{
+    harmony_coverage_fd = HARMONY_OPEN(harmony_device_path, O_RDWR | O_CLOEXEC);
+    if (harmony_coverage_fd >= 0)
+        return 0;
+    return errno == ENOENT ? 1 : -1;
+}
+
 static int coverage_exchange(uint64_t observed)
 {
-    unsigned char request[HARMONY_COVERAGE_REQUEST_SIZE];
-    unsigned char response[HARMONY_COVERAGE_RESPONSE_SIZE];
+    struct harmony_ioc_coverage coverage = {{0}, {0}, 0};
     uint64_t next;
     uint32_t selected;
-    int fd;
+    int status = 0;
 
-    request[0] = HARMONY_CMD_COVERAGE;
-    put_u32(request + 1, harmony_coverage.thread);
-    put_u64(request + 5, observed);
-    put_u32(request + 13, harmony_coverage.ready);
+    put_u32(coverage.request, harmony_coverage.thread);
+    put_u64(coverage.request + 4, observed);
+    put_u32(coverage.request + 12, harmony_coverage.ready);
     if (pthread_mutex_lock(&harmony_device_lock) != 0)
         return -1;
-    fd = HARMONY_OPEN(harmony_device_path, O_RDWR | O_CLOEXEC);
-    if (fd < 0) {
-        int unavailable = errno == ENOENT;
-        (void)pthread_mutex_unlock(&harmony_device_lock);
-        return unavailable ? 1 : -1;
+    if (harmony_coverage_fd < 0)
+        status = coverage_open();
+    if (status == 0 && coverage_ioctl(&coverage) != 0) {
+        status = -1;
+        if (errno == EBADF || errno == ENOTTY) {
+            status = coverage_open();
+            if (status == 0 && coverage_ioctl(&coverage) != 0)
+                status = -1;
+        }
     }
-    if (write_all(fd, request, sizeof(request)) != 0 ||
-        read_all(fd, response, sizeof(response)) != 0) {
-        (void)HARMONY_CLOSE(fd);
-        goto fail_locked;
-    }
-    (void)HARMONY_CLOSE(fd);
     (void)pthread_mutex_unlock(&harmony_device_lock);
-    next = get_u64(response);
-    selected = get_u32(response + 8);
+    if (status != 0)
+        return status;
+    next = get_u64(coverage.response);
+    selected = get_u32(coverage.response + 8);
     if (next <= observed || selected >= harmony_coverage.ready)
         return -1;
     harmony_coverage.threshold = next;
     harmony_coverage.selected = selected;
     return 0;
-
-fail_locked:
-    (void)pthread_mutex_unlock(&harmony_device_lock);
-    return -1;
 }
 
 uint64_t init_coverage_module(size_t edges, const char *symbols)
