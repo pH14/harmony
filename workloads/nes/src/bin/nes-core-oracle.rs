@@ -13,8 +13,8 @@ use machine::{
     quicknes::{QuickNesMachine, STATE_HEADER_LEN},
 };
 use nes_workload::{
-    castlevania, chord::ChordVocabulary, donkey_kong, famidash, ice_climbers, metroid, mm2,
-    joust, pac_man, punchout, search::rand::RomuDuoJrRand, smb, twin_dragons, zelda,
+    castlevania, chord::ChordVocabulary, donkey_kong, famidash, ice_climbers, joust, metroid, mm2,
+    pac_man, punchout, search::rand::RomuDuoJrRand, smb, twin_dragons, zelda,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};

@@ -16,8 +16,8 @@ use nes_workload::{
     },
     film::{Capture, FilmMetadata, Filmable, Reel},
     ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
-    pac_man::campaign::{PacManCampaignRun, PacManGame},
     joust::campaign::{JoustCampaignRun, JoustGame},
+    pac_man::campaign::{PacManCampaignRun, PacManGame},
     punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::archive::Input,
     stb::{
