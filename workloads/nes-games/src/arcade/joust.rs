@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ArcadeGame, HIDDEN, Machines};
 
-const LEVEL_COUNT: u8 = 50;
+const LEVEL_COUNT: u8 = 49;
 const SCREEN_TOP_CROP: u8 = 7;
 
 fn level(state: JoustMechanicalState) -> u8 {

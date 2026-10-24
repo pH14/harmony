@@ -1001,7 +1001,7 @@ search from the picker. It reads the ROM from `PAC_MAN_ROM` or
 ### Joust
 
 The site ships nothing from Joust. The level selector accepts the ROM with
-SHA-256 `9c47a479…ee4e`. Joust has no ending, so each of the 50 levels is a wave
+SHA-256 `9c47a479…ee4e`. Joust has no ending, so each of the 49 levels is a wave and wave 50 is the victory bar
 and the cleared count is the number of waves cleared. The search starts from a
 new game with four lives. The page builds a wave's map by playing to that wave
 with the enemy counter set to zero, waiting for the banner to clear and hiding
