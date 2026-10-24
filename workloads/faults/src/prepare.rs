@@ -110,8 +110,9 @@ pub fn admit_prepared(
                 .to_vec(),
         )?,
     };
-    let vocabulary =
-        FaultVocabulary::parse(&bundle)?.with_instrumented_events(admission.instrumented_events());
+    let vocabulary = FaultVocabulary::parse(&bundle)?
+        .with_instrumented_events(admission.instrumented_events())
+        .with_clock_faults(mode == ExecutionMode::Vm);
     Ok((bundle, vocabulary))
 }
 
@@ -195,7 +196,7 @@ ready /usr/bin/servicectl endpoint health
         );
         assert_eq!(
             prepared.vocabulary.identifier(),
-            "faultlab_bundle_v6;nodes=1;hooks=1,2;events=none"
+            "faultlab_bundle_v11;nodes=1;hooks=1,2;disks=;checksummed=;events=none;clock=time_namespace;exclude="
         );
     }
 

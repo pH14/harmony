@@ -332,14 +332,17 @@ impl ServiceHandler for StandingHandler {
                 "the fault package answers only the standing namespace".to_owned(),
             ));
         }
-        let live: Vec<StandingWindow> = self
+        let after = process_proto::decode_standing_question(question.payload())
+            .map_err(|_| ChannelError::Malformed)?
+            .map_or(moment, |after| after.min(moment));
+        let answer: Vec<StandingWindow> = self
             .0
             .windows
             .iter()
-            .filter(|window| window.contains(moment))
+            .filter(|window| window.start <= moment && after < window.end)
             .cloned()
             .collect();
-        let bytes = encode_standing(moment, &live).map_err(|_| ChannelError::TooLarge)?;
+        let bytes = encode_standing(moment, &answer).map_err(|_| ChannelError::TooLarge)?;
         Ok(ServiceResponse::Answered(ChannelAnswer::data(bytes)?))
     }
 
@@ -557,6 +560,8 @@ struct LiveTelemetry {
 }
 
 const OBSERVATION_CHECKPOINT_LIMIT: usize = 8 * 1024 * 1024;
+const PUBLISH_SPACING_WARMUP: u64 = 64;
+const MAX_PUBLISH_SPACING: usize = 16;
 const OBSERVATION_ATTACHMENT_DOMAIN: &[u8] = b"fault-observations-v1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1908,17 +1913,55 @@ impl Live {
         ObservationCheckpoint::capture(receipt, decoder.clone())
     }
 
+    fn publish_spacing(&self) -> usize {
+        let telemetry = &self.telemetry;
+        let captures = telemetry
+            .new
+            .host
+            .count
+            .saturating_add(telemetry.rebuild.host.count);
+        if captures < PUBLISH_SPACING_WARMUP || telemetry.publishes.count == 0 {
+            return 1;
+        }
+        let publish = u128::from(telemetry.publishes.nanos / telemetry.publishes.count);
+        let action = u128::from(
+            telemetry
+                .new
+                .host
+                .nanos
+                .saturating_add(telemetry.rebuild.host.nanos)
+                / captures,
+        )
+        .max(1);
+        let lookups = u128::from(
+            telemetry
+                .imports
+                .count
+                .saturating_add(telemetry.misses)
+                .saturating_add(1),
+        );
+        let bound = 2 * publish * u128::from(captures) / (lookups * action);
+        let mut spacing = 1_usize;
+        while spacing < MAX_PUBLISH_SPACING && ((2 * spacing) as u128).pow(2) <= bound {
+            spacing *= 2;
+        }
+        spacing
+    }
+
     fn publish(
         &mut self,
         parent: Point,
         snap: SnapId,
-        cost: u64,
+        moment: u64,
         receipt: &HistoryReceipt,
         checkpoint: &ObservationCheckpoint,
     ) -> Result<Option<Lease>, String> {
         let Some(shared) = self.chain.shared() else {
             return Ok(None);
         };
+        let ancestor = self.chain.parent_for(parent);
+        let cost = moment
+            .saturating_sub(ancestor.map_or(self.chain.point(0).moment, |(point, _)| point.moment));
         let publish_started = started();
         let attachment = consonance_client::session::SnapshotAttachment {
             domain: OBSERVATION_ATTACHMENT_DOMAIN.to_vec(),
@@ -1932,7 +1975,7 @@ impl Live {
             shared.index.as_ref(),
             shared.namespace,
             &receipt.path(),
-            self.chain.parent_for(parent),
+            ancestor.map(|(point, lease)| (point.snap, lease)),
             snap,
             &attachment,
             cost,
@@ -1960,17 +2003,15 @@ impl Live {
         moment: u64,
         receipt: HistoryReceipt,
     ) -> Result<Point, String> {
+        let spacing = self.publish_spacing();
         let captured = self
             .capture_observation_checkpoint(&receipt)
             .and_then(|checkpoint| {
-                self.publish(
-                    parent,
-                    snap,
-                    moment.saturating_sub(parent.moment),
-                    &receipt,
-                    &checkpoint,
-                )
-                .map(|lease| (lease, checkpoint))
+                if !receipt.depth().is_multiple_of(spacing) {
+                    return Ok((None, checkpoint));
+                }
+                self.publish(parent, snap, moment, &receipt, &checkpoint)
+                    .map(|lease| (lease, checkpoint))
             });
         let (lease, checkpoint) = match captured {
             Ok(captured) => captured,
@@ -2589,7 +2630,7 @@ fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Resul
         return Ok(format!(
             "faults-uml-v2;{};executable={:x};initramfs={:x};memory_mib={};arguments-sha256={:x};\
              seed={SEED};setup_budget={SETUP_BUDGET};tag={IDENTITY_TAG};\
-             action=standing-fault-delta-v4;snapshot=uml-checkpoint-v3",
+             action=standing-fault-delta-v5;snapshot=uml-checkpoint-v3",
             guest.identity,
             Sha256::digest(kernel),
             Sha256::digest(initramfs),
@@ -2599,7 +2640,7 @@ fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Resul
     }
     Ok(format!(
         "faults-consonance-whole-vm-v2;session={};\
-         action=standing-fault-delta-v4;snapshot=portable-prefix-to-vm-snapshot-v3",
+         action=standing-fault-delta-v5;snapshot=portable-prefix-to-vm-snapshot-v3",
         identity_with_config(kernel, initramfs, &config.session_config())?,
     ))
 }
@@ -7682,7 +7723,7 @@ mod tests {
         );
         let mut expected = inherited.to_vec();
         for (node, fault, start, end) in [
-            (3, Fault::ProcKill, moment(2), moment(5)),
+            (3, Fault::ProcRestart, moment(2), moment(5)),
             (4, Fault::ProcEventKill { rarity: 7 }, moment(5), u64::MAX),
             (
                 5,
@@ -7899,6 +7940,49 @@ mod tests {
     }
 
     #[test]
+    fn a_standing_question_with_the_previous_poll_returns_windows_closed_since() {
+        let window = |start, end| StandingWindow {
+            class: process_proto::PROCESS_CLASS,
+            target: process_proto::encode_target(0, &process_proto::ProcessAction::Restart),
+            start,
+            end,
+        };
+        let mut handler = StandingHandler(Arc::new(StandingPlan {
+            configuration: Vec::new(),
+            windows: vec![
+                window(10, 20),
+                window(40, 80),
+                window(100, 400),
+                window(500, 600),
+            ],
+            coverage: Vec::new(),
+        }));
+        let mut answer = |after| {
+            let question = Question::with_request_id(
+                1,
+                STANDING_NAMESPACE,
+                process_proto::encode_standing_question(after),
+            )
+            .unwrap();
+            let ServiceResponse::Answered(ChannelAnswer::Data(bytes)) =
+                handler.respond(300, &question).unwrap()
+            else {
+                panic!("the standing service must answer");
+            };
+            let (moment, iter) = fault_policy::parse_standing(&bytes).unwrap();
+            assert_eq!(moment, 300);
+            iter.map(|entry| (entry.start, entry.end))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(answer(None), [(100, 400)]);
+        assert_eq!(answer(Some(15)), [(10, 20), (40, 80), (100, 400)]);
+        assert_eq!(answer(Some(20)), [(40, 80), (100, 400)]);
+        assert_eq!(answer(Some(900)), [(100, 400)]);
+        let malformed = Question::with_request_id(2, STANDING_NAMESPACE, vec![1, 2, 3]).unwrap();
+        assert!(handler.respond(300, &malformed).is_err());
+    }
+
+    #[test]
     fn root_continuation_keeps_an_unfired_event_kill_window() {
         let root = ActionWindows { root_seal: 1_000 };
         let prefix = [FaultAction::from(FaultOperation::EventKill {
@@ -7923,6 +8007,16 @@ mod tests {
         assert_eq!(
             original.respond(moment, &question).unwrap(),
             continuation.respond(moment, &question).unwrap()
+        );
+        let since_start = Question::with_request_id(
+            2,
+            STANDING_NAMESPACE,
+            process_proto::encode_standing_question(Some(0)),
+        )
+        .unwrap();
+        assert_eq!(
+            original.respond(moment, &since_start).unwrap(),
+            continuation.respond(moment, &since_start).unwrap()
         );
         let rooted = ActionWindows { root_seal: moment };
         let suffix = [FaultAction::from(FaultOperation::Wait(
@@ -8230,7 +8324,7 @@ fn active_root_windows(
 ) -> Result<Vec<StandingWindow>, String> {
     let mut standing = inherited.to_vec();
     standing.extend(standing_windows(windows, actions)?);
-    standing.retain(|window| window.contains(moment));
+    standing.retain(|window| window.start <= moment);
     Ok(standing)
 }
 
@@ -8257,8 +8351,8 @@ fn import_root(
         1,
     )?;
     let (setup, moment) = session.import_root(&index, &lease)?;
-    if standing.iter().any(|window| !window.contains(moment)) {
-        return Err("branch root standing window is inactive at its snapshot moment".into());
+    if standing.iter().any(|window| window.start > moment) {
+        return Err("branch root standing window starts after its snapshot moment".into());
     }
     Ok((setup, moment, standing))
 }

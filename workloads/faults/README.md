@@ -15,10 +15,21 @@ in the platform supervisor's bundle format:
 |---|---|
 | `node <name> <argv...>` | one workload process the supervisor supervises |
 | `hook <id> <argv...>` | a command the search can run at any moment |
+| `heal <id>` | names the declared hook that lifts every fault the other hooks leave in force, such as a network partition |
 | `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |
 | `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
+| `disk <node> <path> <size> [checksummed]` | gives that node an ext4 filesystem at `path`, sized `16M` through `1G` in whole 4 KiB pages, which power-loss and disk actions act on |
+
+A `disk` line names a node declared by a `node` line, and each node has at most
+one disk. The image must contain `mkfs.ext4`. The `checksummed` flag declares
+that the node's software checksums the data it stores there and claims to
+detect a corrupted block. Only a checksummed disk draws `DiskCorrupt`. A flipped
+bit breaks a durable-write check on any storage that does not checksum its
+data, so a finding from it on an unflagged disk says nothing about the software. The
+[supervisor README](../../consonance/harmony-linux/supervisor/README.md#node-disks)
+describes how the disk is built, replayed and faulted.
 
 [`prepare`](src/prepare.rs) stages that image, packs its rootfs, reads the packed
 bundle for the action alphabet, and selects `/etc/harmony/bundle` for structured
@@ -190,7 +201,20 @@ instrumented target.
 Every action records its own duration in 10 ms guest ticks, from 10 ms through
 10.24 seconds, and its window lasts that long ([`target`](src/target.rs)). The
 search draws one duration per suffix from the adaptive duration policy, and
-every action in the suffix takes it. Each action also records a coverage
+every action in the suffix takes it. Half of those draws repeat the parent's
+last duration while jobs from the parent still keep states, so a lineage keeps
+one fault rate across jobs. Job length follows the suffix reach in the
+[searcher README](../../dissonance/searcher/README.md). It starts at 64
+actions and stays there while most actions open slots no state has held
+before. Fault actions often do, because the edge bucket is part of the holder
+identity. With every fault kind, later actions of long jobs open fewer novel
+slots, and most jobs return to one action. A worker ends its job at the
+search's wall-time limit, as the searcher README describes.
+An action's planned cost is its guest ticks plus 256 ticks for the host work
+around it, so planned finishes follow wall time. On etcd with KVM, a job takes
+about 0.18 seconds of wall time per action plus 0.076 seconds per guest second,
+so an action's host work costs as much as about 240 ticks of guest time.
+Each action also records a coverage
 quantum: the number of coverage callbacks an instrumented thread makes between
 VM exits during the action's window. It is drawn log-uniform over powers of two
 from 1 through 32768, and it is part of the action's archive key. Virtual time
@@ -206,7 +230,13 @@ timing:
 | `Wait(ticks)` | the workload runs undisturbed |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
 | `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
-| `Kill(node, ticks)` | the node stays down for the window |
+| `Kill(node, ticks)` | the node is killed when the window opens and started when it closes |
+| `KillAll(ticks)` | every node goes down, as in a host crash, and every node starts when the window closes; drawn only for bundles with more than one node |
+| `PowerLoss(node, ticks)` | the node goes down for the window as in `Kill`, and its disk keeps only the writes that reached it before its last cache flush, plus a prefix of the later writes chosen by the action's `choice`; drawn only for a node with a `disk` line |
+| `PowerLossAll(ticks)` | every node goes down for the window as in `KillAll`, and every disk loses its unflushed writes the same way, each with its own prefix; drawn only for bundles with a `disk` line and more than one node |
+| `DiskError(node, ticks)` | every read, write and flush on the node's disk fails with `EIO` for the window; drawn only for a node with a `disk` line |
+| `DiskStall(node, ticks)` | every request to the node's disk waits until the window closes; drawn only for a node with a `disk` line |
+| `DiskCorrupt(node, ticks)` | the node is killed, one bit flips in a block it wrote since its disk was last cut, and it comes back after a quarter of the window, as in `Restart`; drawn only for a node whose `disk` line has the `checksummed` flag |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once; in a bundle with a `heal` line, every other hook is a cut, and when the last open cut window closes the supervisor runs the heal hook if a cut is still in force |
@@ -287,7 +317,8 @@ retained across actions.
 Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
-moment, so an input is fully described by its encoded window list and one
+moment, plus the windows that closed after the previous poll moment the question
+carries. An input is fully described by its encoded window list and one
 branch installs it. A hold still running when an event-park window closes
 continues after the window, so the next actions can overlap the held thread.
 The park counts as a pending fault until that hold ends.
@@ -304,8 +335,16 @@ to the action's horizon deadline, and snapshots the exact stopped endpoint. A te
 with its original stop and has no successor. If a continuable endpoint cannot
 be snapshotted, the session is abandoned and the control diagnostic is
 reported. Each session keeps only its current chain of prefix snapshots, at
-most 32 past the setup snapshot. Every sealed prefix is published to the
+most 32 past the setup snapshot. A session publishes sealed prefixes to the
 search's shared snapshot cache (see [consonance-client](../../consonance/client/README.md)).
+For its first 64 captures it publishes every prefix. After that it publishes
+only prefixes whose depth is a multiple of a spacing `n`, a power of two up to
+16. A larger `n` saves publish time, and each later import reruns about `n / 2`
+more actions. The session doubles `n` while `(2n)^2` stays at most
+`2 * publish * captures / (lookups * action)`. Here `publish` is the mean publish
+time, `action` the mean host time per captured action, `captures` the captured
+prefixes, and `lookups` the imports and misses plus one. Each published prefix
+stores its pages as a delta from the nearest published ancestor in the chain.
 Publishing an action prefix already cached with a different target state
 quarantines its namespace before the fault controller seals a link. A shared
 integrity check invalidates the campaign, including work already running from
@@ -989,8 +1028,10 @@ arm64 MMIO console wrapper.
 
 The package can prepare a recorded prefix for guest debugging and export the
 resulting state as a durable root. A root binds the prepared boot identity to a
-cache extent containing pages and device/service sidecars, plus the standing
-fault windows still active at its snapshot moment. Import validates that
+cache extent containing pages and device/service sidecars, plus every standing
+fault window that started by its snapshot moment. A closed window stays in the
+root because the supervisor's next poll may still ask for windows that closed
+after its previous poll. Import validates that
 identity and the extent; root bytes also contribute to the workload identity.
 The CLI verifies and loads the saved root once before starting a search, then
 passes those bytes to every worker. Later action prefixes/checkpoints
