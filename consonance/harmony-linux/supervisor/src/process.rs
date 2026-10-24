@@ -382,9 +382,9 @@ pub const RECOVERY_ASSERTION: &str = "workload becomes ready within 30 seconds a
 #[must_use]
 pub fn recovery_record(violation: Option<(u64, u64)>) -> String {
     let (hit, details) = match violation {
-        Some((generation, quiet_ticks)) => (
+        Some((generation, quiet_nanos)) => (
             true,
-            format!(r#"{{"recovery_generation":{generation},"quiet_ticks":{quiet_ticks}}}"#),
+            format!(r#"{{"recovery_generation":{generation},"quiet_nanos":{quiet_nanos}}}"#),
         ),
         None => (false, "{}".to_owned()),
     };

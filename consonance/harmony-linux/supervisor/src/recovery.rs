@@ -123,6 +123,7 @@ impl HookFaults {
         }
         if succeeded
             && self.heal == Some(id)
+            && self.running_cuts == 0
             && self.unhealed.is_some_and(|unhealed| unhealed < launch)
         {
             self.unhealed = None;
@@ -161,12 +162,12 @@ pub struct RecoveryWatch {
 impl RecoveryWatch {
     pub fn observe(
         &mut self,
-        tick: u64,
+        moment: u64,
         disturbed: bool,
         readiness: &RecoveryReadiness,
     ) -> Option<u64> {
         if disturbed {
-            self.quiet_since = tick;
+            self.quiet_since = moment;
         }
         if !readiness.is_pending() {
             return None;
@@ -174,15 +175,15 @@ impl RecoveryWatch {
         let unready_since = match self.unready_since {
             Some((generation, since)) if generation == readiness.first_unready() => since,
             _ => {
-                self.unready_since = Some((readiness.first_unready(), tick));
-                tick
+                self.unready_since = Some((readiness.first_unready(), moment));
+                moment
             }
         };
         if disturbed || self.reported == Some(readiness.generation()) {
             return None;
         }
-        let quiet = tick.saturating_sub(self.quiet_since.max(unready_since));
-        if quiet < RECOVERY_NANOS / crate::TICK_NANOS {
+        let quiet = moment.saturating_sub(self.quiet_since.max(unready_since));
+        if quiet < RECOVERY_NANOS {
             return None;
         }
         self.reported = Some(readiness.generation());
@@ -194,21 +195,44 @@ impl RecoveryWatch {
 mod tests {
     use super::{HookFaults, RecoveryError, RecoveryReadiness, RecoveryWatch};
 
-    const BOUND: u64 = super::RECOVERY_NANOS / crate::TICK_NANOS;
+    const STEP: u64 = crate::TICK_NANOS;
+    const BOUND: u64 = super::RECOVERY_NANOS / STEP;
 
     #[test]
     fn a_workload_that_stays_unready_after_faults_end_is_reported_once() {
         let mut readiness = RecoveryReadiness::initially_ready();
         let mut watch = RecoveryWatch::default();
         readiness.restarted(true).unwrap();
-        assert_eq!(watch.observe(10, true, &readiness), None);
-        assert_eq!(watch.observe(10 + BOUND - 1, false, &readiness), None);
-        assert_eq!(watch.observe(10 + BOUND, false, &readiness), Some(BOUND));
-        assert_eq!(watch.observe(20 + BOUND, false, &readiness), None);
+        assert_eq!(watch.observe(10 * STEP, true, &readiness), None);
+        assert_eq!(
+            watch.observe((10 + BOUND - 1) * STEP, false, &readiness),
+            None
+        );
+        assert_eq!(
+            watch.observe((10 + BOUND) * STEP, false, &readiness),
+            Some(BOUND * STEP)
+        );
+        assert_eq!(watch.observe((20 + BOUND) * STEP, false, &readiness), None);
         readiness.restarted(false).unwrap();
         assert_eq!(
-            watch.observe(30 + BOUND, false, &readiness),
-            Some(20 + BOUND)
+            watch.observe((30 + BOUND) * STEP, false, &readiness),
+            Some((20 + BOUND) * STEP)
+        );
+    }
+
+    #[test]
+    fn the_bound_counts_guest_time_however_many_polls_it_took() {
+        let mut readiness = RecoveryReadiness::initially_ready();
+        let mut watch = RecoveryWatch::default();
+        readiness.restarted(true).unwrap();
+        assert_eq!(watch.observe(7, true, &readiness), None);
+        assert_eq!(
+            watch.observe(7 + super::RECOVERY_NANOS - 1, false, &readiness),
+            None
+        );
+        assert_eq!(
+            watch.observe(7 + super::RECOVERY_NANOS, false, &readiness),
+            Some(super::RECOVERY_NANOS)
         );
     }
 
@@ -217,23 +241,32 @@ mod tests {
         let mut readiness = RecoveryReadiness::initially_ready();
         let mut watch = RecoveryWatch::default();
         readiness.restarted(true).unwrap();
-        assert_eq!(watch.observe(10, true, &readiness), None);
-        assert_eq!(watch.observe(20, false, &readiness), None);
+        assert_eq!(watch.observe(10 * STEP, true, &readiness), None);
+        assert_eq!(watch.observe(20 * STEP, false, &readiness), None);
         readiness.mark_ready(readiness.generation());
-        assert_eq!(watch.observe(30, false, &readiness), None);
+        assert_eq!(watch.observe(30 * STEP, false, &readiness), None);
         let mut tick = 10 + BOUND;
         for _ in 0..4 {
             readiness.restarted(true).unwrap();
-            assert_eq!(watch.observe(tick, false, &readiness), None);
-            assert_eq!(watch.observe(tick + BOUND - 1, false, &readiness), None);
+            assert_eq!(watch.observe(tick * STEP, false, &readiness), None);
+            assert_eq!(
+                watch.observe((tick + BOUND - 1) * STEP, false, &readiness),
+                None
+            );
             readiness.mark_ready(readiness.generation());
             tick += BOUND;
         }
         readiness.restarted(true).unwrap();
-        assert_eq!(watch.observe(tick, false, &readiness), None);
+        assert_eq!(watch.observe(tick * STEP, false, &readiness), None);
         readiness.restarted(true).unwrap();
-        assert_eq!(watch.observe(tick + BOUND - 1, false, &readiness), None);
-        assert_eq!(watch.observe(tick + BOUND, false, &readiness), Some(BOUND));
+        assert_eq!(
+            watch.observe((tick + BOUND - 1) * STEP, false, &readiness),
+            None
+        );
+        assert_eq!(
+            watch.observe((tick + BOUND) * STEP, false, &readiness),
+            Some(BOUND * STEP)
+        );
     }
 
     #[test]
@@ -251,9 +284,10 @@ mod tests {
         faults.finished(4, failed_heal, false);
         assert!(faults.in_force());
         let heal = faults.launched(4);
-        faults.launched(3);
+        let later_cut = faults.launched(3);
         faults.finished(4, heal, true);
         assert!(faults.in_force());
+        faults.finished(3, later_cut, true);
         let heal = faults.launched(4);
         faults.finished(4, heal, true);
         assert!(!faults.in_force());
@@ -308,6 +342,18 @@ mod tests {
     }
 
     #[test]
+    fn a_heal_that_finishes_while_a_cut_still_runs_leaves_the_cut_in_force() {
+        let mut faults = HookFaults::new(Some(4));
+        let cut = faults.launched(2);
+        let heal = faults.launched(4);
+        assert!(!faults.finished(4, heal, true));
+        assert!(faults.in_force());
+        assert!(!faults.finished(2, cut, true));
+        faults.cut_windows_closed();
+        assert_eq!(faults.due_heal(), Some(4));
+    }
+
+    #[test]
     fn a_failed_heal_leaves_the_cut_in_force() {
         let mut faults = HookFaults::new(Some(4));
         let cut = faults.launched(2);
@@ -346,20 +392,24 @@ mod tests {
         let mut readiness = RecoveryReadiness::initially_ready();
         let mut watch = RecoveryWatch::default();
         let mut faults = HookFaults::new(Some(4));
-        faults.launched(1);
+        let cut = faults.launched(1);
+        faults.finished(1, cut, true);
         readiness.restarted(true).unwrap();
         for tick in 0..3 * BOUND {
-            assert_eq!(watch.observe(tick, faults.in_force(), &readiness), None);
+            assert_eq!(
+                watch.observe(tick * STEP, faults.in_force(), &readiness),
+                None
+            );
         }
         let heal = faults.launched(4);
         faults.finished(4, heal, true);
         assert_eq!(
-            watch.observe(4 * BOUND - 2, faults.in_force(), &readiness),
+            watch.observe((4 * BOUND - 2) * STEP, faults.in_force(), &readiness),
             None
         );
         assert_eq!(
-            watch.observe(4 * BOUND - 1, faults.in_force(), &readiness),
-            Some(BOUND)
+            watch.observe((4 * BOUND - 1) * STEP, faults.in_force(), &readiness),
+            Some(BOUND * STEP)
         );
     }
 
@@ -367,13 +417,13 @@ mod tests {
     fn faults_and_readiness_keep_the_watch_silent() {
         let mut readiness = RecoveryReadiness::initially_ready();
         let mut watch = RecoveryWatch::default();
-        assert_eq!(watch.observe(2 * BOUND, false, &readiness), None);
+        assert_eq!(watch.observe((2 * BOUND) * STEP, false, &readiness), None);
         readiness.restarted(true).unwrap();
         for tick in 0..3 * BOUND {
-            assert_eq!(watch.observe(tick, true, &readiness), None);
+            assert_eq!(watch.observe(tick * STEP, true, &readiness), None);
         }
         readiness.mark_ready(readiness.generation());
-        assert_eq!(watch.observe(10 * BOUND, false, &readiness), None);
+        assert_eq!(watch.observe((10 * BOUND) * STEP, false, &readiness), None);
     }
 
     #[test]

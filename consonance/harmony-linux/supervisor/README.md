@@ -75,7 +75,7 @@ recovering, so a node that never recovers would go unreported. A second
 built-in Always assertion covers that case:
 `workload becomes ready within 30 seconds after faults end`. Once no fault
 window is active and no injected fault is pending for 30 seconds of virtual
-time, a readiness generation that has still not passed its `ready` probe
+time, measured on the standing answer's moment rather than by counting polls, a readiness generation that has still not passed its `ready` probe
 violates it, once per generation. The 30 seconds count from the later of the
 end of faults and the restart that last made a ready workload unready. A
 restart long after faults end therefore gets its own 30 seconds, and a node
@@ -87,7 +87,8 @@ A bundle's `heal` line names the hook that lifts the faults its other hooks
 leave in force. In such a bundle every other hook is a cut, and each cut launch
 counts as a fault still in effect until a heal hook launched after it exits
 successfully, so a cluster still partitioned by a hook does not start the 30
-seconds. Without a `heal` line, a hook counts only while its window is active.
+seconds. A heal that exits while a cut hook still runs does not count, because
+the cut can install its fault after the heal. Without a `heal` line, a hook counts only while its window is active.
 
 The supervisor heals a cut when its window closes, as it restarts a killed node
 when the kill window closes. When the last open cut window closes, it drops cut
@@ -98,7 +99,7 @@ sees only standing windows and no end of faults, so window close is the
 point it can act on, and each `Hook` action then holds its cut for its own
 window. A shrunk input that keeps a cut and drops the heal action still heals.
 The 30 seconds above start only after the heal succeeds. The details give
-the generation and the quiet ticks. A node that crash-loops after an injected kill, or a cluster that never
+the generation and the quiet time in nanoseconds. A node that crash-loops after an injected kill, or a cluster that never
 regains readiness after a restart, reports through this assertion.
 
 After initial readiness, an optional `workload` command starts once and remains
@@ -161,8 +162,9 @@ namespaces, the supervisor starts every node in its own time namespace. Each
 tick it computes the window's offset plus its rate in parts per million times
 the guest time since the window start, and writes any change to
 `/proc/PID/timens_offsets` as a `realtime` offset. The offset returns to zero
-when the window ends. A node that starts during a window gets the current
-offset before it executes. The supervisor never moves a node's clock before
+when the window ends. A node that starts during a window gets the offset in
+effect at its start edge before it executes, even when the supervisor replays
+later edges in the same poll. The supervisor never moves a node's clock before
 the epoch. A clock window for `EVERY_NODE` with a nonzero spread scales the
 offset and rate for each node by a factor in [-1, 1] derived from the spread
 and the node index. Start and end of a clock window advance the disturbance

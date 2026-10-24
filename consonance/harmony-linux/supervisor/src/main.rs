@@ -121,7 +121,6 @@ mod runtime {
     use harmony_sdk::{Point, Sdk};
     use harmony_supervisor::blockdev::Disks;
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
-    use harmony_supervisor::disk::DiskMode;
     use harmony_supervisor::evidence::CheckEvidence;
     use harmony_supervisor::memory::{OOM_POLL_TICKS, OomWatch, VMSTAT_PATH};
     use harmony_supervisor::process;
@@ -136,7 +135,7 @@ mod runtime {
         REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR, REG_PENDING_FAULTS, REG_RESTARTS, REG_TICKS,
         REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED, REG_WORKLOAD_STARTED, Registers,
     };
-    use harmony_supervisor::supervise::{Action, Supervisor};
+    use harmony_supervisor::supervise::{Action, RemountCheck, Supervisor};
     use hypercall_doorbell::linux::DeviceTransport;
     use hypercall_proto::MAX_PAYLOAD;
     use process_proto::events::{
@@ -1011,10 +1010,16 @@ mod runtime {
                 tick,
                 &mut runtime.assertion_output,
             )?;
-            remount_read_only_disks(&actions, nodes, supervisor, &mut runtime, tick)?;
-            for action in actions {
+            for (index, &action) in actions.iter().enumerate() {
                 log(tick, &action.describe());
+                let check = supervisor.remount_check(&actions, index);
+                if let Some(check) = check.filter(|check| !check.closing) {
+                    remount_read_only_disk(check, nodes, supervisor, &mut runtime, tick)?;
+                }
                 apply(action, spec, bundle, nodes, supervisor, &mut runtime, tick)?;
+                if let Some(check) = check.filter(|check| check.closing) {
+                    remount_read_only_disk(check, nodes, supervisor, &mut runtime, tick)?;
+                }
             }
             report_event_result(
                 drive_event_channels(nodes, supervisor, tick),
@@ -1055,15 +1060,16 @@ mod runtime {
                 )?;
             }
             let disturbed = faults_in_force(supervisor, &runtime.hook_faults);
-            if let Some(quiet) = runtime
-                .recovery_watch
-                .observe(tick, disturbed, &runtime.recovery)
+            if let Some(quiet) =
+                runtime
+                    .recovery_watch
+                    .observe(standing.moment, disturbed, &runtime.recovery)
             {
                 let generation = runtime.recovery.generation();
                 log(
                     tick,
                     &format!(
-                        "workload not ready {quiet} ticks after faults ended or readiness was lost"
+                        "workload not ready {quiet} ns after faults ended or readiness was lost"
                     ),
                 );
                 process::write_record(
@@ -1271,40 +1277,27 @@ mod runtime {
         Err(error)
     }
 
-    fn remount_read_only_disks(
-        actions: &[Action],
+    fn remount_read_only_disk(
+        check: RemountCheck,
         nodes: &mut [Node],
         supervisor: &mut Supervisor,
         runtime: &mut HookRuntime,
         tick: u64,
     ) -> Result<(), String> {
-        for action in actions {
-            if let Action::SetDiskMode {
-                node,
-                mode: DiskMode::Normal,
-            } = *action
-            {
-                runtime.disks.set_mode(node, DiskMode::Normal)?;
-            }
+        let node = check.node;
+        if !runtime.disks.failed(node, check.closing)? {
+            return Ok(());
         }
-        for (node, starting) in supervisor.remount_checks(actions) {
-            let closing = actions.iter().any(|action| {
-                matches!(action, Action::SetDiskMode { node: closed, mode: DiskMode::Normal } if *closed == node)
-            });
-            if !runtime.disks.failed(node, closing)? {
-                continue;
-            }
-            if kill_node(nodes, node, supervisor, tick)? && !starting {
-                supervisor.note_killed_for_remount(node);
-            }
-            if let Some(plan) = runtime.disks.remount(node)? {
-                log(
-                    tick,
-                    &format!("node {node} failed disk remounted: {}", plan.describe()),
-                );
-            }
-            supervisor.note_process_transition();
+        if kill_node(nodes, node, supervisor, tick)? && !check.starting {
+            supervisor.note_killed_for_remount(node);
         }
+        if let Some(plan) = runtime.disks.remount(node)? {
+            log(
+                tick,
+                &format!("node {node} failed disk remounted: {}", plan.describe()),
+            );
+        }
+        supervisor.note_process_transition();
         Ok(())
     }
 
@@ -1382,7 +1375,7 @@ mod runtime {
                         &mut runtime.assertion_output,
                     )?;
                 }
-                let spawned = spawn_node(spec, &entry.spec, supervisor.clock_offset(node))?;
+                let spawned = spawn_node(spec, &entry.spec, supervisor.take_start_clock(node))?;
                 supervisor.note_event_ready(node, false);
                 entry.child = Some(spawned.child);
                 entry.events = Some(spawned.events);

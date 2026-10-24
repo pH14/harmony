@@ -64,6 +64,13 @@ impl Action {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RemountCheck {
+    pub node: u16,
+    pub closing: bool,
+    pub starting: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Counters {
     pub ticks: u64,
@@ -113,6 +120,7 @@ pub struct ProcessSupervisor {
     natural_deaths: Vec<u16>,
     recovery_pending: bool,
     clocks: Vec<i64>,
+    start_clocks: Vec<Vec<i64>>,
     moment: Option<u64>,
     heal: Option<u32>,
 }
@@ -143,6 +151,7 @@ impl ProcessSupervisor {
             natural_deaths: Vec::new(),
             recovery_pending: false,
             clocks: vec![0; node_count],
+            start_clocks: vec![Vec::new(); node_count],
             moment: None,
             heal: None,
         }
@@ -327,6 +336,7 @@ impl ProcessSupervisor {
                     node,
                     after_fault: state.restart_after_fault,
                 });
+                self.start_clocks[index].push(active.clock_offset(node));
                 state.alive = true;
                 state.paused = false;
                 state.expected_down = false;
@@ -361,6 +371,7 @@ impl ProcessSupervisor {
                 node,
                 after_fault: self.nodes[index].restart_after_fault,
             });
+            self.start_clocks[index].push(active.clock_offset(node));
             self.nodes[index].alive = true;
             self.nodes[index].paused = false;
             self.nodes[index].event_kill_death = false;
@@ -398,24 +409,44 @@ impl ProcessSupervisor {
         self.clocks.get(usize::from(node)).copied().unwrap_or(0)
     }
 
-    #[must_use]
-    pub fn remount_checks(&self, actions: &[Action]) -> Vec<(u16, bool)> {
-        let mut checks: Vec<(u16, bool)> = Vec::new();
-        for action in actions {
-            let (node, starting) = match *action {
-                Action::SetDiskMode {
-                    node,
-                    mode: DiskMode::Normal,
-                } => (node, false),
-                Action::Start { node, .. } if self.disk_faulted(node) => (node, true),
-                _ => continue,
-            };
-            match checks.iter_mut().find(|(checked, _)| *checked == node) {
-                Some(check) => check.1 |= starting,
-                None => checks.push((node, starting)),
-            }
+    pub fn take_start_clock(&mut self, node: u16) -> i64 {
+        match self.start_clocks.get_mut(usize::from(node)) {
+            Some(queue) if !queue.is_empty() => queue.remove(0),
+            _ => self.clock_offset(node),
         }
-        checks
+    }
+
+    #[must_use]
+    pub fn remount_check(&self, actions: &[Action], index: usize) -> Option<RemountCheck> {
+        match actions[index] {
+            Action::SetDiskMode {
+                node,
+                mode: DiskMode::Normal,
+            } => Some(RemountCheck {
+                node,
+                closing: true,
+                starting: actions[index + 1..]
+                    .iter()
+                    .any(|later| matches!(later, Action::Start { node: started, .. } if *started == node)),
+            }),
+            Action::Start { node, .. }
+                if self.disk_faulted(node)
+                    && !actions[..index].iter().any(|earlier| {
+                        matches!(
+                            earlier,
+                            Action::SetDiskMode { node: closed, mode: DiskMode::Normal }
+                                if *closed == node
+                        )
+                    }) =>
+            {
+                Some(RemountCheck {
+                    node,
+                    closing: false,
+                    starting: true,
+                })
+            }
+            _ => None,
+        }
     }
 
     pub fn note_killed_for_remount(&mut self, node: u16) {
@@ -794,6 +825,13 @@ mod tests {
         assert_eq!(sup.alive_bitmap(), 0b01);
     }
 
+    fn remount_checks(sup: &Supervisor, actions: &[Action]) -> Vec<(u16, bool)> {
+        (0..actions.len())
+            .filter_map(|index| sup.remount_check(actions, index))
+            .map(|check| (check.node, check.starting))
+            .collect()
+    }
+
     fn standing(moment: u64, windows: &[(u16, ProcessAction, u64, u64)]) -> Standing {
         Standing {
             moment,
@@ -1112,9 +1150,9 @@ mod tests {
         let error = active(&[(0, ProcessAction::DiskError)]);
         sup.tick(&error, &[]);
         let close = sup.tick(&ActiveWindows::new(), &[]);
-        assert_eq!(sup.remount_checks(&close), [(0, false)]);
+        assert_eq!(remount_checks(&sup, &close), [(0, false)]);
         let quiet = sup.tick(&ActiveWindows::new(), &[]);
-        assert_eq!(sup.remount_checks(&quiet), []);
+        assert_eq!(remount_checks(&sup, &quiet), []);
         let restart = sup.tick(&ActiveWindows::new(), &[0]);
         assert_eq!(
             restart,
@@ -1123,7 +1161,7 @@ mod tests {
                 after_fault: true
             }]
         );
-        assert_eq!(sup.remount_checks(&restart), [(0, true)]);
+        assert_eq!(remount_checks(&sup, &restart), [(0, true)]);
         let natural = sup.tick(&ActiveWindows::new(), &[1]);
         assert_eq!(
             natural,
@@ -1132,7 +1170,7 @@ mod tests {
                 after_fault: false
             }]
         );
-        assert_eq!(sup.remount_checks(&natural), []);
+        assert_eq!(remount_checks(&sup, &natural), []);
     }
 
     #[test]
@@ -1155,7 +1193,88 @@ mod tests {
                 }
             ]
         );
-        assert_eq!(sup.remount_checks(&close), [(0, true)]);
+        assert_eq!(remount_checks(&sup, &close), [(0, true)]);
+    }
+
+    #[test]
+    fn a_disk_error_window_replayed_in_one_poll_is_checked_when_it_closes() {
+        let mut sup = Supervisor::new(1);
+        let windows = [(0, ProcessAction::DiskError, 10, 20)];
+        assert_eq!(sup.poll(&standing(5, &[]), &[]), []);
+        let actions = sup.poll(&standing(30, &windows), &[]);
+        assert_eq!(
+            actions,
+            [
+                Action::SetDiskMode {
+                    node: 0,
+                    mode: DiskMode::Error
+                },
+                Action::SetDiskMode {
+                    node: 0,
+                    mode: DiskMode::Normal
+                }
+            ]
+        );
+        assert_eq!(sup.remount_check(&actions, 0), None);
+        assert_eq!(
+            sup.remount_check(&actions, 1),
+            Some(RemountCheck {
+                node: 0,
+                closing: true,
+                starting: false
+            })
+        );
+    }
+
+    #[test]
+    fn a_restart_after_the_close_in_one_poll_is_checked_once() {
+        let mut sup = Supervisor::new(1);
+        let error = active(&[(0, ProcessAction::DiskError)]);
+        sup.tick(&error, &[]);
+        sup.tick(&error, &[0]);
+        let actions = sup.tick(&ActiveWindows::new(), &[]);
+        assert_eq!(
+            sup.remount_check(&actions, 0),
+            Some(RemountCheck {
+                node: 0,
+                closing: true,
+                starting: true
+            })
+        );
+        assert_eq!(sup.remount_check(&actions, 1), None);
+    }
+
+    #[test]
+    fn a_restart_before_the_close_is_checked_before_it_starts() {
+        let mut sup = Supervisor::new(1);
+        let error = active(&[(0, ProcessAction::DiskError)]);
+        sup.tick(&error, &[]);
+        sup.tick(&error, &[0]);
+        let start = Action::Start {
+            node: 0,
+            after_fault: true,
+        };
+        let close = Action::SetDiskMode {
+            node: 0,
+            mode: DiskMode::Normal,
+        };
+        let actions = [start, close];
+        assert_eq!(
+            sup.remount_check(&actions, 0),
+            Some(RemountCheck {
+                node: 0,
+                closing: false,
+                starting: true
+            })
+        );
+        assert_eq!(
+            sup.remount_check(&actions, 1),
+            Some(RemountCheck {
+                node: 0,
+                closing: true,
+                starting: false
+            })
+        );
     }
 
     #[test]
@@ -2110,5 +2229,35 @@ mod tests {
             }]
         );
         assert_eq!(sup.clock_offset(0), 9);
+    }
+
+    #[test]
+    fn a_restart_replayed_inside_a_clock_window_starts_with_the_offset_at_its_edge() {
+        let mut sup = Supervisor::new(1);
+        let clock = ProcessAction::Clock {
+            offset_nanos: 7,
+            rate_ppm: 0,
+            spread: 0,
+        };
+        let windows = [(0, ProcessAction::Restart, 10, 60), (0, clock, 20, 80)];
+        assert_eq!(sup.poll(&standing(5, &[]), &[]), []);
+        let actions = sup.poll(&standing(100, &windows), &[]);
+        assert_eq!(
+            actions,
+            [
+                Action::Kill(0),
+                Action::Start {
+                    node: 0,
+                    after_fault: true
+                },
+                Action::SetClock {
+                    node: 0,
+                    offset_nanos: 0
+                },
+            ]
+        );
+        assert_eq!(sup.clock_offset(0), 0);
+        assert_eq!(sup.take_start_clock(0), 7);
+        assert_eq!(sup.take_start_clock(0), 0);
     }
 }
