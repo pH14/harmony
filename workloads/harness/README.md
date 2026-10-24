@@ -171,6 +171,21 @@ checks use the operations that are not pinned to a node. A pinned read gets
 the cheaper check alone, against every write, under
 `register: no node's read returns a value older than an acknowledged earlier write`.
 
+`Register.Reads` sets the read consistency the store promises. The default,
+`LinearizableReads`, runs the checks above. `MonotonicReads` is for a store
+that promises linearizable writes and monotonic reads but allows a read to
+miss a recent write. Porcupine then checks each key's writes and `cas`
+operations without the reads, under
+`register: each key's writes and compare-and-swaps are linearizable`, so a
+`cas` that succeeds against a value another `cas` already replaced is still a
+violation. Each client's consecutive reads of a key replace the stale-read
+check, under `register: no client reads a value older than one it read before`.
+A read violates it when it finds no value after the client read a value, or
+when it returns a value whose write completed before the write of the client's
+previous value started. Pinned reads and the replica comparison keep their
+checks, so a replica that has applied a fence but lacks an acknowledged write
+is still a violation.
+
 `register: every node holds the same value and metadata for each key`
 compares the nodes' copies from the check's `replicas` rounds. Each round reads
 every key from every node concurrently. A node that fails the read, because it
@@ -353,12 +368,21 @@ acknowledgement. `native.py` ignores `disk` lines.
 
 `targets/nats-kv` drives the `register` family against bucket `B` (three file
 replicas, history 1) on the same three nodes, scripts, network hooks, 128 MiB
-node disks and log lines as `targets/nats`. `write` is `Put`, `read` is `Get`
-and `cas` is `Update` with a revision. NATS ADR-8 states that key-value gets use direct get, which any
-replica answers, with no read-after-write consistency. ADR-31 states that the
-non-direct message get routes to the stream leader and gives read-after-write
-coherency. `ready` therefore turns `AllowDirect` off on stream `KV_B`, and the
-client binds the bucket after ready, so `Get` uses the leader path.
+node disks and log lines as `targets/nats`. `write` is `Put`, `read` is a
+leader message get and `cas` is `Update` with a revision. NATS ADR-8 states
+that key-value gets use direct get, which any replica answers, with no
+read-after-write consistency. ADR-31 states that the non-direct message get
+routes to the stream leader and gives read-after-write coherency. `ready`
+therefore turns `AllowDirect` off on stream `KV_B`. Reads not pinned to a node
+and the lookup before a `cas` send an explicit `$JS.API.STREAM.MSG.GET`
+request, which only the stream leader answers, because the bucket handle keeps
+the direct-get choice it saw when it bound.
+The adapter checks with `Register.Reads` set to `MonotonicReads`. NATS
+documents linearizable writes and monotonic reads for JetStream and no
+read-your-writes guarantee, and a stream leader answers a get from its own
+store without a quorum check, so a partitioned old leader can return an
+older value
+([nats-server #6557](https://github.com/nats-io/nats-server/issues/6557)).
 
 The image runs every node with `jetstream { sync_interval: always }`, which
 syncs each write before the acknowledgement, so a lost acknowledged write is a
@@ -384,17 +408,43 @@ is unknown, it first reads the key and fails definitely unless the key holds
 are definite failures; other write and `cas` errors are indeterminate, and
 read errors are definite.
 
-A read pinned to node `nI` puts key `fence-nI` and waits for a consumer on
-`nI`, filtered to that key from the put's revision, to deliver a message. It
-then creates a consumer on `nI` that delivers the last message of the read
-key. Both are one-replica consumers placed on `nI` the way the `targets/nats`
-pinned read places them. A consumer that has nothing pending at creation means
-the key has no value on `nI`.
+A read pinned to node `nI` puts key `fence-nI`, then creates one consumer on
+`nI` that delivers the last message of every key in the bucket
+(`DeliverLastPerSubject` on `$KV.B.>`), and takes the read key and
+`fence-nI` from it. The consumer is a
+one-replica consumer placed on `nI` the way the `targets/nats` pinned read
+places it. A consumer with nothing pending at creation delivers nothing;
+otherwise the read takes messages until one reports nothing pending, the rule
+nats.go's key-value watcher uses. The pending count at creation is not the
+number of messages the consumer delivers. The fence and the
+value therefore come from one view of `nI`'s store, even when `nI` restarts
+between the put and the read. When the delivered fence sequence is below the
+put's revision, `nI` is not current: the read retries every 250 ms and, if
+`nI` never delivers the fence before the operation's deadline, fails as a
+definite error, which the checker drops. A key with no message in that view
+has no value on `nI`.
 
 A `replicas` read on `nI` writes the same fence, then creates one consumer on
-`nI` that delivers the last message of every subject in the bucket and reads
-the messages pending at creation. Each key's metadata is `revision`, the
+`nI` the same way and keeps every key, under the same fence rule. Each key's metadata is `revision`, the
 stream sequence of its last message, which is the same on every replica.
+
+A check against a cluster that a fault left without a leader can wait out the
+debug terminal's five-minute limit. `harness-check` checks a copied journal on
+the host instead, with no live read. Build it with
+`go build -C workloads/harness/kit -o "$PWD/harness-check" ./cmd/harness-check`,
+put it on `PATH` and set:
+
+```toml
+[workload.options.explain]
+logs = ["/tmp/nats/*.log"]
+data = ["/tmp/nats/n1", "/tmp/nats/n2", "/tmp/nats/n3"]
+host_history = "harness-check -family register -reads monotonic @/tmp/harness/journal"
+```
+
+Pass `-reads monotonic` to check the history the way the nats-kv adapter does.
+`harness-check` checks the clients' operations without the check's final read.
+It prints the journal files, the operation count, the facts and the violations
+as JSON, and exits 3 when it finds violations.
 
 ## rqlite
 
