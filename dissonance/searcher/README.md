@@ -1274,3 +1274,5 @@ prevents a changing but cyclic path from consuming the remaining work budget.
 Experimental input strategy energy normalizes the two barren-work decay exponents by their common minimum before applying the existing eight-halving floor. This preserves relative preference when both strategies have long barren stretches; neither draw weight reaches zero. The ordinary action-mixture energy calculation is unchanged.
 
 Chaining preserves the initial selected suffix, including its parent doubling length. Follow-on blocks take one drawn action at a time until they meet the workload minimum block work, then check retention, stasis, repeated observations and terminal disposition. They do not inherit the initial suffix action count; this avoids delaying observation checks after the first job has already ended.
+
+Minimum-work checks keep a cursor into the generated suffix. Unexecuted actions remain queued across check boundaries; a new suffix is drawn only after the old one is consumed. Check granularity must not discard learned action sequences or add redraws.

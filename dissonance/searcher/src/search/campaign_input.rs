@@ -93,6 +93,9 @@ pub(crate) fn execute_input_job<G: Workload>(
     let mut milestones = job.parent_milestones;
     let mut previous_key = None;
     let mut suffix = job.suffix.clone();
+    let block_len = suffix.len();
+    let mut suffix_offset = 0;
+    let mut initial_block = true;
     let minimum_work = if chaining {
         workload.continuation_block_work(&config.run)
     } else {
@@ -147,13 +150,15 @@ pub(crate) fn execute_input_job<G: Workload>(
         let block_start = workload.execution_work(target);
         let mut retained = false;
         loop {
-            for action in &suffix {
+            while suffix_offset < suffix.len() {
+                let action = suffix[suffix_offset];
+                suffix_offset += 1;
                 let mut block = crate::search::rollout::execute_live_suffix(
                     workload,
                     &config.run,
                     target,
                     milestones,
-                    std::slice::from_ref(action),
+                    std::slice::from_ref(&action),
                     config.retention,
                     config.stop_rollout_on_objective,
                 )?;
@@ -161,7 +166,7 @@ pub(crate) fn execute_input_job<G: Workload>(
                     break;
                 };
                 milestones = last.milestones;
-                path.push(*action);
+                path.push(action);
                 retained = false;
                 if let Some(candidate) = &last.candidate {
                     let key =
@@ -175,7 +180,12 @@ pub(crate) fn execute_input_job<G: Workload>(
                 }
                 let stopped = last.outcome.should_stop(config.stop_rollout_on_objective);
                 result.actions.append(&mut block.actions);
-                if stopped || workload.execution_work(target).saturating_sub(before) >= work_limit {
+                if stopped
+                    || workload.execution_work(target).saturating_sub(before) >= work_limit
+                    || (!initial_block
+                        && workload.execution_work(target).saturating_sub(block_start)
+                            >= minimum_work.get())
+                {
                     break;
                 }
             }
@@ -196,6 +206,7 @@ pub(crate) fn execute_input_job<G: Workload>(
                     input,
                     NonZeroU64::new(remaining).ok_or("empty sticky refill")?,
                 )?;
+                suffix_offset = 0;
                 continue;
             }
             let seed = rand.next_u64();
@@ -211,7 +222,8 @@ pub(crate) fn execute_input_job<G: Workload>(
                 path.last(),
             )?;
             workload.refresh_selected_input_timing(&config.run, seed, &mut suffix)?;
-            suffix.truncate(1);
+            suffix.truncate(block_len);
+            suffix_offset = 0;
             if suffix.is_empty() {
                 break;
             }
@@ -247,6 +259,11 @@ pub(crate) fn execute_input_job<G: Workload>(
             trace.stop_reason = reason.into();
             break;
         }
+        initial_block = false;
+        if suffix_offset < suffix.len() {
+            continue;
+        }
+        suffix_offset = 0;
         if let Some(input) = &mut sticky_input {
             suffix = workload.sticky_actions(&config.run, input, minimum_work)?;
             continue;
@@ -264,7 +281,7 @@ pub(crate) fn execute_input_job<G: Workload>(
             path.last(),
         )?;
         workload.refresh_selected_input_timing(&config.run, seed, &mut suffix)?;
-        suffix.truncate(1);
+        suffix.truncate(block_len);
     }
     workload.finish_live_job(target, before, &mut result)?;
     workload.verify_integrity()?;

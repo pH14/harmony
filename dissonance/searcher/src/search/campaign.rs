@@ -5966,6 +5966,9 @@ mod tests {
             mutation_seed: u64,
             _previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+            if ALIVE_TEST.get() == 9 {
+                return Ok(vec![TestAction::new(2, 1), TestAction::new(3, 1)]);
+            }
             if ALIVE_TEST.get() > 0
                 && let Some(previous) = _previous
             {
@@ -10778,6 +10781,7 @@ mod tests {
             (1, 1, 100, 4, 1, 4),
             (8, 1, 100, 3, 1, 3),
             (8, 1, 100, 2, 2, 3),
+            (9, 1, 6, 5, 2, 6),
             (2, 0, 100, 1, 1, 1),
             (5, 1, 100, 1, 1, 1),
             (6, 1, 7, 3, 1, 7),
@@ -10812,6 +10816,21 @@ mod tests {
                 .run_input_job(&mut target, &job, false, true, budget)
                 .unwrap();
             assert_eq!(trace.blocks.len(), expected);
+            if mode == 9 {
+                assert_eq!(
+                    outcome
+                        .result
+                        .actions
+                        .iter()
+                        .map(|a| a.action.input)
+                        .collect::<Vec<_>>(),
+                    vec![1, 1, 2, 3, 2, 3]
+                );
+                assert_eq!(
+                    trace.blocks.iter().map(|b| b.work).collect::<Vec<_>>(),
+                    vec![2, 1, 1, 1, 1]
+                );
+            }
             if mode == 8 {
                 assert_eq!(trace.stop_reason, "repeated_observation");
             }
