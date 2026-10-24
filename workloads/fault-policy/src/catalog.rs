@@ -165,6 +165,9 @@ pub enum Fault {
         hold: Span,
         target: Option<crate::ParkTarget>,
     },
+    ProcPowerLoss {
+        choice: u64,
+    },
     BuggifyFire,
     RunHook(u32),
 }
@@ -184,6 +187,7 @@ impl Fault {
             | Self::ProcRestart
             | Self::ProcEventKill { .. }
             | Self::ProcEventPark { .. }
+            | Self::ProcPowerLoss { .. }
             | Self::RunHook(_) => DecisionClass::Process,
             Self::BuggifyFire => DecisionClass::Buggify,
         }

@@ -119,6 +119,7 @@ fn run_application(spec: &ExecutionSpec) -> RunOutcome {
 ))]
 mod runtime {
     use harmony_sdk::{Point, Sdk};
+    use harmony_supervisor::blockdev::Disks;
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
     use harmony_supervisor::evidence::CheckEvidence;
     use harmony_supervisor::process;
@@ -651,6 +652,7 @@ mod runtime {
 
     struct HookRuntime {
         assertion_output: File,
+        disks: Disks,
         hooks: Vec<Hook>,
         recovery: RecoveryReadiness,
         recovery_watch: RecoveryWatch,
@@ -663,9 +665,10 @@ mod runtime {
     }
 
     impl HookRuntime {
-        fn new(assertion_output: File) -> Self {
+        fn new(assertion_output: File, disks: Disks) -> Self {
             Self {
                 assertion_output,
+                disks,
                 hooks: Vec::new(),
                 recovery: RecoveryReadiness::initially_ready(),
                 recovery_watch: RecoveryWatch::default(),
@@ -689,6 +692,10 @@ mod runtime {
             DeviceTransport::open().map_err(|error| format!("/dev/harmony: {error}"))?;
         let mut sdk = Sdk::init(transport, &CATALOG).map_err(|error| format!("sdk: {error}"))?;
 
+        let disks = Disks::create(&bundle.disks, spec.uid, spec.gid)?;
+        for disk in &bundle.disks {
+            log(0, &format!("node {} disk {} ready", disk.node, disk.path));
+        }
         run_setup(spec, &bundle)?;
         process::prepare_antithesis_output(
             Path::new(harmony_supervisor::ANTITHESIS_OUTPUT_DIR),
@@ -730,6 +737,7 @@ mod runtime {
             &mut sdk,
             &mut supervisor,
             assertion_output,
+            disks,
         );
         let Err(error) = result else {
             return Ok(());
@@ -884,10 +892,11 @@ mod runtime {
         sdk: &mut GuestSdk,
         supervisor: &mut Supervisor,
         assertion_output: File,
+        disks: Disks,
     ) -> Result<(), String> {
         supervisor.set_check_enabled(bundle.check.is_some());
         let mut registers = Registers::new();
-        let mut runtime = HookRuntime::new(assertion_output);
+        let mut runtime = HookRuntime::new(assertion_output, disks);
         let mut debug = harmony_supervisor::debug::Terminal::default();
         let mut debug_status = None;
         let mut buffer = [0_u8; MAX_PAYLOAD];
@@ -1187,15 +1196,21 @@ mod runtime {
     ) -> Result<(), String> {
         match action {
             Action::Kill(node) => {
-                if let Some(entry) = nodes.get_mut(usize::from(node)) {
-                    if let Some(events) = entry.events.as_mut() {
-                        events.retire(node, supervisor, tick);
-                    }
-                    supervisor.note_event_ready(node, false);
-                }
-                if signal_node(nodes, node, libc::SIGKILL)? {
+                if kill_node(nodes, node, supervisor, tick)? {
                     supervisor.note_process_transition();
                 }
+            }
+            Action::PowerLoss { node, choice, kill } => {
+                if kill {
+                    kill_node(nodes, node, supervisor, tick)?;
+                }
+                if let Some(plan) = runtime.disks.power_loss(node, choice)? {
+                    log(
+                        tick,
+                        &format!("node {node} disk replayed: {}", plan.describe()),
+                    );
+                }
+                supervisor.note_process_transition();
             }
             Action::Stop(node) => {
                 if signal_node(nodes, node, libc::SIGSTOP)? {
@@ -1284,6 +1299,21 @@ mod runtime {
             }
         }
         Ok(())
+    }
+
+    fn kill_node(
+        nodes: &mut [Node],
+        node: u16,
+        supervisor: &mut Supervisor,
+        tick: u64,
+    ) -> Result<bool, String> {
+        if let Some(entry) = nodes.get_mut(usize::from(node)) {
+            if let Some(events) = entry.events.as_mut() {
+                events.retire(node, supervisor, tick);
+            }
+            supervisor.note_event_ready(node, false);
+        }
+        signal_node(nodes, node, libc::SIGKILL)
     }
 
     fn retire_node_child(

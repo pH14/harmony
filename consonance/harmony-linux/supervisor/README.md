@@ -76,9 +76,9 @@ built-in Always assertion covers that case:
 `workload becomes ready within 30 seconds after faults end`. Once no fault
 window is active and no injected fault is pending for 30 seconds of virtual
 time, a readiness generation that has still not passed its `ready` probe
-violates it, once per generation. A node that a kill window left down counts as
-a fault still in effect: a kill keeps its node down until a later restart
-window, so the 30 seconds start only once every node is meant to run. The details give the generation and the quiet
+violates it, once per generation. A node that a kill or power-loss window left
+down counts as a fault still in effect: both keep their node down until a later
+restart window, so the 30 seconds start only once every node is meant to run. The details give the generation and the quiet
 ticks. A node that crash-loops after an injected kill, or a cluster that never
 regains readiness after a restart, reports through this assertion.
 
@@ -125,14 +125,15 @@ coverage evidence only: they do not advance the disturbance generation or the
 pending-fault fence.
 
 A process window addressed to node `EVERY_NODE` (`u16::MAX`) applies its
-kill, pause or restart to every node at once.
+kill, pause, restart or power loss to every node at once.
 
 The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the
 generic process actions and event protocol and does not depend on that workload.
 
-`bundle`, `reconcile`, `recovery`, and `supervise` are portable library
-modules. Linux device and process wiring is isolated to the binary. The
+`bundle`, `disk`, `reconcile`, `recovery`, and `supervise` are portable library
+modules. Linux block-device wiring lives in the Linux-only `blockdev` module,
+and process wiring is isolated to the binary. The
 standalone crate can be checked on a development host with:
 
 ```sh
@@ -140,13 +141,59 @@ cargo test --manifest-path consonance/harmony-linux/supervisor/Cargo.toml
 cargo clippy --manifest-path consonance/harmony-linux/supervisor/Cargo.toml --all-targets -- -D warnings
 ```
 
-Miri covers the portable parsing and reconciliation modules. Process integration
+Miri covers the portable parsing, reconciliation, and write-log replay modules.
+The device-mapper and block-device ioctls in `blockdev` need a guest kernel and
+run only in guest executions. Process integration
 tests run natively: Miri cannot execute the credential, spawn, and wait syscalls.
 The native suite checks process-group isolation, descendant cleanup, and readiness
 probes alongside running nodes; the OCI fixture checks guest credentials. Linux
 event-channel socket regressions run natively because the pinned Miri interpreter
 does not support their nonblocking ioctl. Descriptor duplication and ownership
 remain covered under Miri.
+
+## Node disks
+
+A bundle line `disk <node> <path> <size>` gives the named node its own ext4
+filesystem mounted at `path`. Sizes take a `K`, `M` or `G` suffix and must be
+whole 4 KiB pages from `16M` through `1G`; a bundle has at most five disks. The
+supervisor builds each disk before the setup command runs:
+
+1. Three guest RAM disks (`brd`, 1 GiB each, pages allocated on write) hold the
+   data, the write log, and the replay base. The guest kernels set
+   `CONFIG_BLK_DEV_RAM_COUNT=16` and `CONFIG_BLK_DEV_RAM_SIZE=1048576`.
+2. A `dm-log-writes` device named `harmony-disk-<node>-<generation>` writes
+   through to the data disk and logs every completed write, flush, FUA write and
+   discard.
+3. The image's `mkfs.ext4` formats it with the execution uid and gid as root
+   owner. The supervisor mounts it with shared propagation, removes
+   `lost+found`, and syncs.
+
+A power-loss window (`PowerLoss { choice }` in `process-proto`) kills its node
+as a kill window does and keeps it down until a later restart window. It then
+cuts the disk:
+
+1. It suspends the device-mapper device without flushing or freezing the
+   filesystem and swaps in an `error` table. Unwritten page cache never reaches
+   the data disk, and the old `dm-log-writes` target writes its end mark.
+2. It detaches the mount and requests a deferred device removal, so other
+   nodes' mount namespaces can let go of the old filesystem later.
+3. It reads the log ([`disk`](src/disk.rs)). Every write before the last flush
+   and every FUA write is kept. Of the other writes after that flush, a prefix
+   in log order is kept: its length is the choice, mixed with the node index,
+   modulo the number of such writes plus one. A choice of zero keeps none.
+4. It applies the kept writes to the replay base, which then holds the disk as
+   it would be after the power cut, and copies the base back over every range a
+   dropped write touched. The data disk then equals the base.
+5. It zeroes and discards the log, attaches a new log device under the next
+   generation's name, and remounts. ext4 replays its journal on mount.
+
+A log that fills its RAM disk stops logging and has no end mark; the supervisor
+reports that as an infrastructure error. A power-loss window for a node without
+a disk acts as a kill. Every disk and log page lives in guest memory, so each
+disk can cost up to twice its size plus the writes since the last power loss;
+raise the guest RAM (`ram_mib`) to match. The OCI runtime allows the container
+every block device and `/dev/mapper/control`; the supervisor creates the device
+nodes itself.
 
 ## Investigation terminal
 

@@ -7,6 +7,7 @@ use crate::regs::RegisterSnapshot;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
     Kill(u16),
+    PowerLoss { node: u16, choice: u64, kill: bool },
     Stop(u16),
     Cont(u16),
     Start { node: u16, after_fault: bool },
@@ -22,6 +23,9 @@ impl Action {
     pub fn describe(self) -> String {
         match self {
             Action::Kill(node) => format!("kill node {node}"),
+            Action::PowerLoss { node, choice, .. } => {
+                format!("power loss node {node} choice {choice:#x}")
+            }
             Action::Stop(node) => format!("pause node {node}"),
             Action::Cont(node) => format!("resume node {node}"),
             Action::Start { node, .. } => format!("start node {node}"),
@@ -177,6 +181,21 @@ impl ProcessSupervisor {
                 }
                 state.expected_down = true;
             }
+            if let Some(window) = now.power_loss
+                && was.power_loss != now.power_loss
+            {
+                actions.push(Action::PowerLoss {
+                    node,
+                    choice: window.choice,
+                    kill: state.alive,
+                });
+                if state.alive {
+                    state.alive = false;
+                    state.paused = false;
+                    state.restart_after_fault = true;
+                }
+                state.expected_down = true;
+            }
             if now.pause && !was.pause && state.alive && !state.paused {
                 actions.push(Action::Stop(node));
                 state.paused = true;
@@ -213,7 +232,8 @@ impl ProcessSupervisor {
                     _ => {}
                 }
             }
-            if !now.restart && was.restart && !now.kill && !state.alive {
+            if !now.restart && was.restart && !now.kill && now.power_loss.is_none() && !state.alive
+            {
                 actions.push(Action::Start {
                     node,
                     after_fault: state.restart_after_fault,
@@ -531,7 +551,7 @@ mod tests {
             ..check
         }
     }
-    use process_proto::ProcessAction;
+    use process_proto::{EVERY_NODE, ProcessAction};
 
     fn active(actions: &[(u16, ProcessAction)]) -> ActiveWindows {
         let mut set = ActiveWindows::new();
@@ -596,6 +616,96 @@ mod tests {
             }]
         );
         assert!(!sup.any_node_held_down());
+    }
+
+    #[test]
+    fn a_power_loss_kills_once_resets_the_disk_and_holds_the_node_down() {
+        let mut sup = Supervisor::new(2);
+        let lost = active(&[(EVERY_NODE, ProcessAction::PowerLoss { choice: 7 })]);
+        assert_eq!(
+            sup.tick(&lost, &[]),
+            [
+                Action::PowerLoss {
+                    node: 0,
+                    choice: 7,
+                    kill: true
+                },
+                Action::PowerLoss {
+                    node: 1,
+                    choice: 7,
+                    kill: true
+                }
+            ]
+        );
+        assert_eq!(sup.alive_bitmap(), 0);
+        assert_eq!(sup.tick(&lost, &[0, 1]), []);
+        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), []);
+        assert!(sup.any_node_held_down());
+        assert_eq!(sup.counters().unexpected_deaths, 0);
+        let restart = active(&[(0, ProcessAction::Restart)]);
+        assert_eq!(sup.tick(&restart, &[]), []);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
+        assert!(sup.any_node_held_down());
+        assert_eq!(sup.alive_bitmap(), 0b01);
+    }
+
+    #[test]
+    fn a_power_loss_on_a_dead_node_still_resets_its_disk() {
+        let mut sup = Supervisor::new(1);
+        let killed = active(&[(0, ProcessAction::Kill)]);
+        assert_eq!(sup.tick(&killed, &[]), [Action::Kill(0)]);
+        let mut both = active(&[(0, ProcessAction::Kill)]);
+        both.insert(0, &ProcessAction::PowerLoss { choice: 3 }, 5);
+        assert_eq!(
+            sup.tick(&both, &[0]),
+            [Action::PowerLoss {
+                node: 0,
+                choice: 3,
+                kill: false
+            }]
+        );
+        assert_eq!(sup.tick(&both, &[]), []);
+        let mut later = active(&[(0, ProcessAction::Kill)]);
+        later.insert(0, &ProcessAction::PowerLoss { choice: 3 }, 9);
+        assert_eq!(
+            sup.tick(&later, &[]),
+            [Action::PowerLoss {
+                node: 0,
+                choice: 3,
+                kill: false
+            }]
+        );
+    }
+
+    #[test]
+    fn a_restart_closing_under_a_power_loss_leaves_the_node_down() {
+        let mut sup = Supervisor::new(1);
+        let both = active(&[
+            (0, ProcessAction::Restart),
+            (0, ProcessAction::PowerLoss { choice: 0 }),
+        ]);
+        assert_eq!(
+            sup.tick(&both, &[]),
+            [
+                Action::Kill(0),
+                Action::PowerLoss {
+                    node: 0,
+                    choice: 0,
+                    kill: false
+                }
+            ]
+        );
+        let lost = active(&[(0, ProcessAction::PowerLoss { choice: 0 })]);
+        assert_eq!(sup.tick(&lost, &[0]), []);
+        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), []);
+        assert_eq!(sup.alive_bitmap(), 0);
+        assert_eq!(sup.counters().restarts, 0);
     }
 
     #[test]
@@ -1272,6 +1382,15 @@ mod tests {
     #[test]
     fn the_serial_log_names_each_action() {
         assert_eq!(Action::Kill(2).describe(), "kill node 2");
+        assert_eq!(
+            Action::PowerLoss {
+                node: 1,
+                choice: 0x2a,
+                kill: true
+            }
+            .describe(),
+            "power loss node 1 choice 0x2a"
+        );
         assert_eq!(Action::Stop(0).describe(), "pause node 0");
         assert_eq!(Action::Cont(0).describe(), "resume node 0");
         assert_eq!(

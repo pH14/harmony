@@ -18,18 +18,32 @@ pub struct EventKillWindow {
     pub start: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PowerLossWindow {
+    pub start: u64,
+    pub choice: u64,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NodeActions {
     pub kill: bool,
     pub pause: bool,
     pub restart: bool,
     pub event_park: Option<EventPark>,
+    pub power_loss: Option<PowerLossWindow>,
 }
 
 impl NodeActions {
     #[must_use]
     pub fn any(self) -> bool {
-        self.kill || self.pause || self.restart
+        self.kill || self.pause || self.restart || self.power_loss.is_some()
+    }
+}
+
+fn first(a: Option<PowerLossWindow>, b: Option<PowerLossWindow>) -> Option<PowerLossWindow> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
     }
 }
 
@@ -75,7 +89,8 @@ impl ActiveWindows {
             ProcessAction::Kill
             | ProcessAction::Pause(_)
             | ProcessAction::Restart
-            | ProcessAction::EventPark { .. } => {}
+            | ProcessAction::EventPark { .. }
+            | ProcessAction::PowerLoss { .. } => {}
         }
         let index = match self.nodes.binary_search_by_key(&node, |entry| entry.0) {
             Ok(index) => index,
@@ -100,6 +115,13 @@ impl ActiveWindows {
                     target: *target,
                     start,
                 });
+            }
+            ProcessAction::PowerLoss { choice } => {
+                let window = PowerLossWindow {
+                    start,
+                    choice: *choice,
+                };
+                flags.power_loss = first(flags.power_loss, Some(window));
             }
             ProcessAction::EventKill { .. } | ProcessAction::RunHook(_) => {}
         }
@@ -127,6 +149,7 @@ impl ActiveWindows {
             pause: own.pause || every.pause,
             restart: own.restart || every.restart,
             event_park: own.event_park,
+            power_loss: first(own.power_loss, every.power_loss),
         }
     }
 
@@ -168,6 +191,7 @@ impl ActiveWindows {
             pending = pending.saturating_add(u64::from(actions.pause));
             pending = pending.saturating_add(u64::from(actions.restart));
             pending = pending.saturating_add(u64::from(actions.event_park.is_some()));
+            pending = pending.saturating_add(u64::from(actions.power_loss.is_some()));
         }
         let mut last_pending_node = None;
         for window in &self.event_kills {
@@ -246,6 +270,7 @@ mod tests {
                 restart: true,
                 kill: false,
                 event_park: None,
+                power_loss: None,
             }
         );
         assert_eq!(active.node(2), NodeActions::default());
@@ -258,6 +283,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             [2, 9]
         );
+    }
+
+    #[test]
+    fn overlapping_power_loss_windows_resolve_to_the_earliest() {
+        let mut active = ActiveWindows::new();
+        active.insert(EVERY_NODE, &ProcessAction::PowerLoss { choice: 9 }, 30);
+        active.insert(1, &ProcessAction::PowerLoss { choice: 4 }, 20);
+        active.insert(1, &ProcessAction::PowerLoss { choice: 2 }, 25);
+        assert_eq!(
+            active.node(1).power_loss,
+            Some(PowerLossWindow {
+                start: 20,
+                choice: 4
+            })
+        );
+        assert_eq!(
+            active.node(0).power_loss,
+            Some(PowerLossWindow {
+                start: 30,
+                choice: 9
+            })
+        );
+        assert!(active.node(0).any());
+        assert_eq!(active.pending_process_faults(&[]), 2);
     }
 
     #[test]
