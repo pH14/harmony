@@ -32,12 +32,13 @@ const baselineFile = "disturbance-baseline"
 const checkProcess = 0
 
 type CheckResult struct {
-	Read       history.Type            `json:"read"`
-	Nodes      map[string]history.Type `json:"nodes,omitempty"`
-	Ops        int                     `json:"ops"`
-	Decided    bool                    `json:"decided"`
-	Violations []family.Violation      `json:"violations"`
-	Facts      map[string]bool         `json:"facts"`
+	Read          history.Type            `json:"read"`
+	Nodes         map[string]history.Type `json:"nodes,omitempty"`
+	Ops           int                     `json:"ops"`
+	Decided       bool                    `json:"decided"`
+	UndecidedKeys int                     `json:"undecided_keys"`
+	Violations    []family.Violation      `json:"violations"`
+	Facts         map[string]bool         `json:"facts"`
 }
 
 func (r CheckResult) String() string {
@@ -116,11 +117,12 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 		sdk.Sometimes(readOK && disturbed, CheckReadAfterDisturbed, nil)
 	}
 	result := CheckResult{
-		Read:       outcomes[0],
-		Ops:        len(h.Ops),
-		Decided:    report.Decided,
-		Violations: report.Violations,
-		Facts:      report.Facts,
+		Read:          outcomes[0],
+		Ops:           len(h.Ops),
+		Decided:       report.Decided,
+		UndecidedKeys: report.UndecidedKeys,
+		Violations:    report.Violations,
+		Facts:         report.Facts,
 	}
 	if len(nodes) > 0 {
 		result.Nodes = map[string]history.Type{}
@@ -172,6 +174,7 @@ func Emit(fam family.Family, report family.Report) {
 	for _, observation := range fam.Observations() {
 		sdk.Sometimes(report.Facts[observation], observation, nil)
 	}
+	sdk.CheckUndecided(report.UndecidedKeys)
 }
 
 func disturbedSinceFirstCheck(dir string) (bool, bool) {

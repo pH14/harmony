@@ -113,6 +113,20 @@ func TestAssertionsWriteOneRecordPerLine(t *testing.T) {
 	}
 }
 
+func TestCheckUndecidedWritesOneRecordOnlyForUndecidedKeys(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ANTITHESIS_OUTPUT_DIR", dir)
+	CheckUndecided(0)
+	CheckUndecided(3)
+	text, err := os.ReadFile(filepath.Join(dir, "sdk.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(text) != "{\"harmony_check\":{\"undecided_keys\":3}}\n" {
+		t.Fatalf("records %q", text)
+	}
+}
+
 func TestNoOutputDirectoryIsSilent(t *testing.T) {
 	t.Setenv("ANTITHESIS_OUTPUT_DIR", "")
 	Always(false, "nowhere", nil)

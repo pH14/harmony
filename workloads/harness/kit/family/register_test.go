@@ -3,6 +3,7 @@
 package family
 
 import (
+	"fmt"
 	"testing"
 
 	"harmony.local/harness/kit/history"
@@ -77,6 +78,66 @@ func TestRegisterIndeterminateOpsNeverViolate(t *testing.T) {
 	b.op(drive, 1, RegisterReadF, "k0", nil, 20, history.Info, nil, 0)
 	report := Register{}.Check(b.build())
 	expectKinds(t, report)
+}
+
+func TestRegisterUnseenIndeterminateWritesKeepTheCheckDecided(t *testing.T) {
+	b := newBuilder(t)
+	for p := 0; p < 24; p++ {
+		b.write(10+p, "k0", fmt.Sprintf("lost%d", p), int64(1+p), history.Info, 0)
+	}
+	b.write(0, "k0", "a", 30, history.OK, 40)
+	b.read(1, "k0", "a", 31, 32)
+	b.read(1, "k0", nil, 33, 34)
+	report := Register{Steps: 1000}.Check(b.build())
+	expectKinds(t, report, RegisterLinearizable)
+	if report.Undecided[RegisterLinearizable] {
+		t.Fatalf("undecided %v", report.Undecided)
+	}
+}
+
+func TestRegisterIndeterminateWriteSeenByCASIsKept(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.Info, 0)
+	b.cas(1, "k0", "a", "b", 3, history.OK, 4)
+	b.read(2, "k0", "b", 5, 6)
+	report := Register{}.Check(b.build())
+	expectKinds(t, report)
+	if report.Undecided[RegisterLinearizable] {
+		t.Fatalf("undecided %v", report.Undecided)
+	}
+}
+
+func TestRegisterStepBudgetLeavesLinearizabilityUndecided(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 10)
+	b.read(1, "k0", "a", 2, 3)
+	b.read(1, "k0", nil, 4, 5)
+	report := Register{Steps: 1}.Check(b.build())
+	expectKinds(t, report)
+	if !report.Undecided[RegisterLinearizable] {
+		t.Fatalf("undecided %v", report.Undecided)
+	}
+	if report.UndecidedKeys != 1 {
+		t.Fatalf("undecided keys %d", report.UndecidedKeys)
+	}
+}
+
+func TestRegisterCountsEachUndecidedKey(t *testing.T) {
+	b := newBuilder(t)
+	for index, key := range []string{"k0", "k1", "k2"} {
+		at := int64(10 * index)
+		b.write(0, key, "a"+key, at+1, history.OK, at+2)
+		b.read(1, key, "a"+key, at+3, at+4)
+	}
+	b.write(0, "k3", "a", 31, history.OK, 32)
+	report := Register{Steps: 1}.Check(b.build())
+	expectKinds(t, report)
+	if report.UndecidedKeys != 3 {
+		t.Fatalf("undecided keys %d", report.UndecidedKeys)
+	}
+	if clean := (Register{}).Check(b.build()); clean.UndecidedKeys != 0 || clean.Undecided[RegisterLinearizable] {
+		t.Fatalf("report %+v", clean)
+	}
 }
 
 func (b *builder) readKeyOn(p int, node, key string, value any, invoke int64, complete int64) {

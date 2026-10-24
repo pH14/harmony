@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/anishathalye/porcupine"
 
@@ -26,12 +25,15 @@ const (
 	RegisterCAS   = "cas"
 )
 
-const registerKeys = 5
+const (
+	registerKeys  = 5
+	registerSteps = 1 << 16
+)
 
 type Register struct {
-	Keys    int
-	NoCAS   bool
-	Timeout time.Duration
+	Keys  int
+	NoCAS bool
+	Steps int
 }
 
 func (Register) Name() string { return "register" }
@@ -47,6 +49,13 @@ func (r Register) keys() int {
 		return r.Keys
 	}
 	return registerKeys
+}
+
+func (r Register) steps() int {
+	if r.Steps > 0 {
+		return r.Steps
+	}
+	return registerSteps
 }
 
 func (r Register) Read() Op { return Op{F: RegisterReadF, K: "k0"} }
@@ -142,10 +151,20 @@ func decodeRegister(op *history.Op) (registerOp, bool) {
 	return decoded, op.Type != history.Fail
 }
 
-func registerModel() porcupine.Model {
+type stepBudget struct {
+	left      int
+	exhausted bool
+}
+
+func registerModel(budget *stepBudget) porcupine.Model {
 	return porcupine.Model{
 		Init: func() interface{} { return "" },
 		Step: func(state, input, output interface{}) (bool, interface{}) {
+			if budget.left == 0 {
+				budget.exhausted = true
+				return false, state
+			}
+			budget.left--
 			current := state.(string)
 			in := input.(registerInput)
 			out := output.(registerOutput)
@@ -216,21 +235,17 @@ func (r Register) Check(h *history.History) Report {
 		}
 	}
 	sort.Strings(keys)
-	timeout := r.Timeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
 	var found collector
-	model := registerModel()
 	for _, key := range keys {
 		ops := byKey[key]
 		checkStaleReads(key, ops, ops, RegisterStale, &found)
 		checkStaleReads(key, ops, pinned[key], RegisterNodeStale, &found)
-		if len(ops) == 0 {
+		linearizable := withoutUnseenIndeterminate(ops)
+		if len(linearizable) == 0 {
 			continue
 		}
-		operations := make([]porcupine.Operation, 0, len(ops))
-		for _, op := range ops {
+		operations := make([]porcupine.Operation, 0, len(linearizable))
+		for _, op := range linearizable {
 			operations = append(operations, porcupine.Operation{
 				ClientId: op.op.Process,
 				Input:    op.input,
@@ -239,17 +254,45 @@ func (r Register) Check(h *history.History) Report {
 				Return:   op.op.Complete,
 			})
 		}
-		switch porcupine.CheckOperationsTimeout(model, operations, timeout) {
-		case porcupine.Illegal:
+		budget := stepBudget{left: r.steps()}
+		result := porcupine.CheckOperations(registerModel(&budget), operations)
+		switch {
+		case budget.exhausted:
+			report.Undecided[RegisterLinearizable] = true
+			report.UndecidedKeys++
+		case !result:
 			found.add(RegisterLinearizable, func() map[string]any {
 				return map[string]any{"key": key, "operations": len(operations)}
 			})
-		case porcupine.Unknown:
-			report.Undecided[RegisterLinearizable] = true
 		}
 	}
 	report.Violations = found.result()
 	return report
+}
+
+func withoutUnseenIndeterminate(ops []registerOp) []registerOp {
+	seen := map[string]bool{}
+	writes := map[string]int{}
+	for _, op := range ops {
+		switch op.input.f {
+		case RegisterReadF:
+			seen[op.output.value] = true
+		case RegisterCAS:
+			seen[op.input.old] = true
+			writes[op.input.value]++
+		case RegisterWrite:
+			writes[op.input.value]++
+		}
+	}
+	kept := make([]registerOp, 0, len(ops))
+	for _, op := range ops {
+		unseen := op.input.f != RegisterReadF && !seen[op.input.value] && writes[op.input.value] == 1
+		if op.output.unknown && unseen {
+			continue
+		}
+		kept = append(kept, op)
+	}
+	return kept
 }
 
 func checkStaleReads(key string, ops, reads []registerOp, kind string, found *collector) {
