@@ -3645,9 +3645,9 @@ mod tests {
                 assert!(fds.is_empty());
                 let mut out = Out::op(OK);
                 out.len(2)
-                    .bytes(b"sdk_dispatch.event.request_guard_calls")
+                    .bytes(b"sdk_dispatch.event.response_guard_calls")
                     .u64(value)
-                    .bytes(b"sdk_dispatch.event_shape.2.9.0.request_guard_calls")
+                    .bytes(b"sdk_dispatch.event_shape.2.9.0.response_guard_calls")
                     .u64(value);
                 send(&child, &out.0, &[]).unwrap();
             }
@@ -3674,8 +3674,8 @@ mod tests {
         for expected in [5, 7, 7] {
             let values = session.telemetry_counters();
             for key in [
-                "sdk_dispatch.event.request_guard_calls",
-                "sdk_dispatch.event_shape.2.9.0.request_guard_calls",
+                "sdk_dispatch.event.response_guard_calls",
+                "sdk_dispatch.event_shape.2.9.0.response_guard_calls",
             ] {
                 assert_eq!(
                     values

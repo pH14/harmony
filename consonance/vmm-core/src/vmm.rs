@@ -28,7 +28,6 @@ pub type VcpuOf<B> = <<B as Backend>::A as Arch>::VcpuState;
 pub enum HostOperationSite {
     ControlBefore,
     ControlAfter,
-    SdkRequest,
     SdkResponse,
 }
 
@@ -2447,15 +2446,6 @@ where
     }
 
     pub(crate) fn service_doorbell(&mut self, req_len: u32) -> Result<Step, VmmError> {
-        let (checked, callback) = self.measure_sdk_guard(HostOperationSite::SdkRequest);
-        if checked.is_err() {
-            self.sdk_dispatch_telemetry.borrow_mut().request(
-                Attribution::kind(Kind::Refused),
-                callback,
-                false,
-            );
-            checked?;
-        }
         let moment = self.effective_vns().unwrap_or(0);
         let req = if req_len as usize > HC_PAGE {
             Vec::new()
@@ -2463,7 +2453,7 @@ where
             self.guest_slice(REQ_GPA as u64, req_len as usize)
                 .map(<[u8]>::to_vec)
                 .ok_or_else(|| {
-                    self.sdk_dispatch_telemetry.borrow_mut().request(Attribution::kind(Kind::Unreadable), callback, false);
+                    self.sdk_dispatch_telemetry.borrow_mut().request(Attribution::kind(Kind::Unreadable), false);
                     VmmError::ContractViolation(format!(
                         "doorbell request page {REQ_GPA:#x}+{req_len} is not backed — x86 keeps the \
                          transport ABI pages in the GPA-0 RAM; an arm64 boot must map them (a dedicated \
@@ -2497,7 +2487,6 @@ where
             } else {
                 Attribution::request(&req)
             },
-            callback,
             at_run_deadline && !sdk_decision,
         );
         if at_run_deadline && !sdk_decision {
@@ -2600,7 +2589,7 @@ where
     }
 
     #[cfg(test)]
-    fn write_doorbell_response(&mut self, resp: &[u8]) -> Result<(), VmmError> {
+    pub(crate) fn write_doorbell_response(&mut self, resp: &[u8]) -> Result<(), VmmError> {
         self.write_attributed_response(resp, Attribution::kind(Kind::ResponseUnknown))
     }
 
@@ -4516,22 +4505,16 @@ mod tests {
         assert_eq!(vmm.state_hash().unwrap(), reference.state_hash().unwrap());
         assert_eq!(vmm.sdk_events(), reference.sdk_events());
         assert_eq!(
-            sdk_attribution_counter(&reference, "sdk_dispatch.event.request_guard_calls"),
+            sdk_attribution_counter(&reference, "sdk_dispatch.event.response_guard_calls"),
             0
         );
         assert_eq!(
             sdk_attribution_counter(&reference, "sdk_dispatch.event.requests"),
             1
         );
+        assert_eq!(*calls.lock().unwrap(), vec![HostOperationSite::SdkResponse]);
         assert_eq!(
-            *calls.lock().unwrap(),
-            vec![
-                HostOperationSite::SdkRequest,
-                HostOperationSite::SdkResponse
-            ]
-        );
-        assert_eq!(
-            sdk_attribution_counter(&vmm, "sdk_dispatch.event.request_guard_calls"),
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.response_guard_calls"),
             1
         );
         assert_eq!(
@@ -4539,13 +4522,11 @@ mod tests {
             1
         );
         let hash = vmm.state_hash().unwrap();
-        vmm.sdk_dispatch_telemetry.borrow_mut().request(
-            Attribution::kind(Kind::Unknown),
-            Callback::measured(true, true, 999),
-            false,
-        );
+        vmm.sdk_dispatch_telemetry
+            .borrow_mut()
+            .request(Attribution::kind(Kind::Unknown), false);
         assert_eq!(vmm.state_hash().unwrap(), hash);
-        let (_, sample) = vmm.measure_sdk_guard_using(HostOperationSite::SdkRequest, || 73);
+        let (_, sample) = vmm.measure_sdk_guard_using(HostOperationSite::SdkResponse, || 73);
         assert_eq!(
             sample,
             Callback {
@@ -4556,32 +4537,6 @@ mod tests {
         );
         vmm.set_host_operation_guard(Arc::new(|_| Err("refused".into())));
         let before = vmm.sdk_events().len();
-        assert!(vmm.service_doorbell(n).is_err());
-        assert_eq!(vmm.sdk_events().len(), before);
-        assert_eq!(
-            sdk_attribution_counter(&vmm, "sdk_dispatch.predecode_refused.request_guard_errors"),
-            1
-        );
-        assert_eq!(
-            sdk_attribution_counter(&vmm, "sdk_dispatch.event.requests"),
-            1
-        );
-        let (_, sample) = vmm.measure_sdk_guard_using(HostOperationSite::SdkRequest, || 89);
-        assert_eq!(
-            sample,
-            Callback {
-                calls: 1,
-                errors: 1,
-                nanos: 89
-            }
-        );
-        vmm.set_host_operation_guard(Arc::new(|site| {
-            if site == HostOperationSite::SdkResponse {
-                Err("response refused".into())
-            } else {
-                Ok(())
-            }
-        }));
         let response = vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 64].to_vec();
         assert!(vmm.service_doorbell(n).is_err());
         assert_eq!(vmm.sdk_events().len(), before + 1);
@@ -4590,10 +4545,23 @@ mod tests {
             sdk_attribution_counter(&vmm, "sdk_dispatch.event.response_guard_errors"),
             1
         );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.requests"),
+            2
+        );
+        let (_, sample) = vmm.measure_sdk_guard_using(HostOperationSite::SdkResponse, || 89);
+        assert_eq!(
+            sample,
+            Callback {
+                calls: 1,
+                errors: 1,
+                nanos: 89
+            }
+        );
         vmm.set_host_operation_guard(Arc::new(|_| Ok(())));
         vmm.service_doorbell(1).unwrap();
         assert_eq!(
-            sdk_attribution_counter(&vmm, "sdk_dispatch.invalid.request_guard_calls"),
+            sdk_attribution_counter(&vmm, "sdk_dispatch.invalid.requests"),
             1
         );
         assert_eq!(
@@ -4602,7 +4570,7 @@ mod tests {
         );
         vmm.service_doorbell((HC_PAGE + 1) as u32).unwrap();
         assert_eq!(
-            sdk_attribution_counter(&vmm, "sdk_dispatch.unreadable.request_guard_calls"),
+            sdk_attribution_counter(&vmm, "sdk_dispatch.unreadable.requests"),
             1
         );
         assert_eq!(

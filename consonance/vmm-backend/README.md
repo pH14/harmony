@@ -935,10 +935,17 @@ under `taskset -c <pool>` or a cpuset containing only P-cores or only E-cores.
 Choose the same pool type for every process participating in a snapshot lineage.
 The backend validates the creating thread's affinity against Linux's
 `cpu_core/cpus` and `cpu_atom/cpus` masks, rejecting mixed or uncovered masks
-when exposed. It retains the exact admitted affinity and checks the calling
-thread's current mask before guest entries, staged completion, CPU capture and
-restore, policy installation, and dirty-page drain. A changed mask refuses
-those operations before they mutate KVM state. It does not choose a pool or
+when exposed. It retains the exact admitted affinity. CPU capture and restore,
+snapshot preparation, policy installation, and dirty-page drain check the
+calling thread's full mask with `sched_getaffinity`. Guest entries, exit
+completions, interrupt injection, and register reads check that the thread
+runs on an admitted CPU with the vDSO `getcpu`, and check the full mask every
+1,024 such checks or when the CPU is outside the admitted set. The backend
+cannot move between threads, so the thread admitted at creation is the thread
+checked. A changed mask fails that operation and every later backend
+operation. Every whole-state hash drains dirty pages, and every run end and
+snapshot captures the CPU, so a changed mask is detected before any recorded
+outcome. It does not choose a pool or
 change caller affinity. Preserve affinity for the backend lifetime and prevent
 concurrent external changes. CPU topology is read at admission; CPU hotplug or
 topology remapping requires stopping and requalifying the worker.

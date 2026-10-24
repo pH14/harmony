@@ -1060,14 +1060,14 @@ mod guard_metric_tests {
         let guard = LoadedImageGuard::fixture();
         let shared = guard.clone();
         let separate = guard.fork();
-        shared.check_at(GuardSite::SdkRequest).unwrap();
+        shared.check_at(GuardSite::ControlBefore).unwrap();
         let before = guard
             .counters("test")
             .into_iter()
             .collect::<BTreeMap<_, _>>();
-        assert_eq!(before["test.sdk_request.dispatches"], 1);
-        assert_eq!(before["test.sdk_request.strict_attempts"], 0);
-        assert_eq!(before["test.sdk_request.fixture_dispatches"], 1);
+        assert_eq!(before["test.control_before.dispatches"], 1);
+        assert_eq!(before["test.control_before.strict_attempts"], 0);
+        assert_eq!(before["test.control_before.fixture_dispatches"], 1);
         assert!(separate.counters("test").is_empty());
         let (result, entries, strict) =
             trace_checks(Some(1), || shared.check_at(GuardSite::SdkResponse));
