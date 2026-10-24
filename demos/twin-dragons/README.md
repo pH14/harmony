@@ -4,7 +4,7 @@ A static demonstration of state-space exploration. Emulators compiled to
 WebAssembly run a game, and a Rust worker uses Dissonance to search it. The
 site plays the NES homebrew games Twin Dragons and Famidash on QuickNES, the
 Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and Super Mario Bros., Mega
-Man 2, Metroid, Donkey Kong, Ice Climber, Pac-Man, Joust, Punch-Out!! and The Legend of Zelda on QuickNES from ROMs the visitor supplies. The `game` URL
+Man 2, Metroid, Castlevania, Donkey Kong, Ice Climber, Pac-Man, Joust, Punch-Out!! and The Legend of Zelda on QuickNES from ROMs the visitor supplies. The `game` URL
 parameter picks the game, and the level selector switches between them. The
 page opens the level selector and starts searching once a level is chosen, or
 from the first level if the selector is closed. A `level` URL parameter with a
@@ -85,7 +85,7 @@ workers import `emulator.js` dynamically and set their message handler first.
 The Famidash module waits for the Rust module when it loads, and a module
 worker drops messages that arrive before its handler is set.
 
-Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Donkey Kong, Ice Climber, Pac-Man, Joust, Punch-Out!! and The Legend of Zelda run the
+Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Donkey Kong, Ice Climber, Pac-Man, Joust, Punch-Out!! and The Legend of Zelda run the
 same search as their native workloads. `rust/src/campaign.rs` holds `JsMachine`,
 a `machine::Machine`, `NesBackend` and `NesMemory` that drives the browser
 QuickNES core through `globalThis.harmonyCores`, and a coordinator and rollout
@@ -587,7 +587,7 @@ its `*_observation` export and searches with its `nes-games` workload through
 `ended`, `motion`, `levelComplete` and `transition`, and `tests/tobu.mjs` checks
 that its JavaScript and Rust decoders agree. `maxActionFrames` and
 `menuButtons` bound the controller actions an imported history may hold;
-Mega Man 2, Metroid and Tobu Tobu Girl allow Start and Select.
+Mega Man 2, Metroid, Castlevania and Tobu Tobu Girl allow Start and Select.
 
 ### Tobu Tobu Girl Deluxe
 
@@ -1089,6 +1089,34 @@ runs a short search that replays exactly, and then chooses the ROM in the
 picker. It reads the ROM from `ZELDA_ROM` or the laptop path in the file and
 skips when that ROM is absent. The browser section needs Chrome, which
 `CHROME_CHANNEL=chrome` selects.
+
+### Castlevania
+
+The site ships nothing from Castlevania. The level selector accepts the ROM with
+SHA-256 `5e859d77…7800` and 131,088 bytes, and the page keeps it in IndexedDB as
+for the other ROM games. The 18 levels are the numbered stages. Stage 1 starts
+after the courtyard, which the game loads first.
+
+The search is the `CastlevaniaGame` workload from `nes-games`, as `nes-eval`
+runs it. `workloads/nes/src/castlevania/README.md` describes its RAM map and
+milestones. `rust/src/castlevania.rs` decodes the page's observation, and
+`arcade/castlevania.rs` gives the picker and trail their stage and position.
+
+The map builder loads each stage by writing its stage number and the door
+mode, then walks Simon right with health full and his height held. It tracks the
+camera from the change in the scroll byte at `$FD` on each frame, and copies the
+play area below the 40-row status bar into a strip. A stage ends its map when
+Simon stops moving, when the camera stops, or at the edge of the strip. Some
+stages stop at a locked room or a staircase, so their maps are partial. Stages
+4 to 7 and 14 to 18 come out one screen wide for that reason.
+
+The sprite sheet holds Simon's idle pose in both directions. The builder turns
+him right and left, reads the facing bit at `$15` (1 for right), and writes each
+capture into the half for its facing.
+`tests/castlevania.mjs` boots the game, checks the stage map widths and draws
+the sprite sheet. It reads the ROM from `CASTLEVANIA_ROM` or
+`~/workspace/harmony/.arcade-local/roms/castlevania.nes` and skips when it is
+absent.
 
 ## Verification and publishing
 
