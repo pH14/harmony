@@ -24,6 +24,7 @@ use nes_workload::{
         target::StbAi,
     },
     twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
+    zelda::campaign::{ZeldaCampaignRun, ZeldaGame},
 };
 use std::{fs, io::BufReader, path::Path, time::Instant};
 
@@ -108,6 +109,9 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "twin-dragons" => evaluate_live::<
             nes_games::twin_dragons::campaign::TwinDragonsGame<NativeMachine>,
         >(rom, request, out, started, "twin-dragons"),
+        "zelda" => evaluate_live::<nes_games::zelda::campaign::ZeldaGame<NativeMachine>>(
+            rom, request, out, started, "zelda",
+        ),
         _ => Err("this game has no live view".into()),
     }
 }
@@ -163,7 +167,7 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "punchout"
+            "twin-dragons" | "punchout" | "zelda"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -283,6 +287,17 @@ fn main() -> Result<()> {
                 started,
                 "punchout",
                 <PunchOutGame>::memory_view,
+            ),
+            "zelda" => evaluate_watching(
+                ZeldaGame::new(&rom, p, h, &execution_sha256),
+                ZeldaCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "zelda",
+                <ZeldaGame>::memory_view,
             ),
             "famidash" => {
                 let stage = famidash_stage(&rom, request.stage, request.whole_game)?;

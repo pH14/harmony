@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect executions to each Metroid, Mega Man 2 or Punch-Out!! milestone per build, seed and cell.
+"""Collect executions to each Metroid, Mega Man 2, Punch-Out!! or Zelda milestone per build, seed and cell.
 
 Each source is either a matrix directory written by `eval.py run` or a results
 JSON written by `eval.py` holding cell summaries under `rows`. For every
@@ -81,10 +81,29 @@ PUNCHOUT_OPPONENTS = [
 ]
 PUNCHOUT_MILESTONES = [f"{opponent}_defeated" for opponent in PUNCHOUT_OPPONENTS]
 
+ZELDA_MILESTONES = (
+    ["wooden_sword", "white_sword", "magic_sword"]
+    + [
+        "raft",
+        "ladder",
+        "bow",
+        "candle",
+        "recorder",
+        "power_bracelet",
+        "magic_key",
+        "magic_rod",
+        "boomerang",
+        "book",
+    ]
+    + [f"triforce_{level}" for level in range(1, 9)]
+    + ["ending"]
+)
+
 MILESTONES = {
     "metroid": METROID_MILESTONES,
     "mm2": MM2_MILESTONES,
     "punchout": PUNCHOUT_MILESTONES,
+    "zelda": ZELDA_MILESTONES,
 }
 
 
@@ -216,7 +235,7 @@ def main():
     for source in arguments.sources:
         name, rows = collect(source)
         if not rows:
-            print(f"== {name}: no Metroid, Mega Man 2 or Punch-Out!! cells", file=sys.stderr)
+            print(f"== {name}: no Metroid, Mega Man 2, Punch-Out!! or Zelda cells", file=sys.stderr)
             continue
         for game in sorted({row["game"] for row in rows}):
             game_rows = [row for row in rows if row["game"] == game]

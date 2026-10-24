@@ -13,6 +13,7 @@ pub mod prepare;
 pub mod punchout;
 pub mod smb;
 pub mod witness;
+pub mod zelda;
 
 pub mod package;
 

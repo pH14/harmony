@@ -20,6 +20,7 @@ use crate::{
     smb::target::SmbSnapshot,
     stb::target::StbSnapshot,
     twin_dragons::target::TwinDragonsSnapshot,
+    zelda::target::ZeldaSnapshot,
 };
 
 pub trait EndpointIdentity: Serialize {
@@ -39,6 +40,8 @@ impl EndpointIdentity for PunchOutSnapshot {}
 impl EndpointIdentity for StbSnapshot {}
 
 impl EndpointIdentity for TwinDragonsSnapshot {}
+
+impl EndpointIdentity for ZeldaSnapshot {}
 
 impl<P: SnapshotState> EndpointIdentity for SmbSnapshot<P> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {

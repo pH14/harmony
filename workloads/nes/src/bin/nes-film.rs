@@ -21,6 +21,7 @@ use nes_workload::{
     },
     twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
     witness::replay_witness,
+    zelda::campaign::{ZeldaCampaignRun, ZeldaGame},
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -304,9 +305,21 @@ fn main() -> Result<()> {
                 identity,
             )
         }
-        _ => {
-            Err("nes-film renders the STB, Twin Dragons, Famidash and Punch-Out!! scenarios".into())
+        "zelda" => {
+            if args.ai.is_some() {
+                return Err("Zelda takes no ai option".into());
+            }
+            produce(
+                ZeldaGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                ZeldaCampaignRun,
+                &args,
+                identity,
+            )
         }
+        _ => Err(
+            "nes-film renders the STB, Twin Dragons, Famidash, Punch-Out!! and Zelda scenarios"
+                .into(),
+        ),
     }
 }
 

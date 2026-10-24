@@ -14,7 +14,7 @@ use machine::{
 };
 use nes_workload::{
     chord::ChordVocabulary, famidash, metroid, mm2, punchout, search::rand::RomuDuoJrRand, smb,
-    twin_dragons,
+    twin_dragons, zelda,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -60,6 +60,11 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
         "punchout" => Game {
             setup: punchout::target::setup_tape(),
             chords: punchout::archive::CHORDS,
+            cartridge_ram: false,
+        },
+        "zelda" => Game {
+            setup: zelda::target::setup_tape(),
+            chords: zelda::archive::CHORDS,
             cartridge_ram: false,
         },
         other => return Err(format!("unknown game {other}").into()),
