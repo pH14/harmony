@@ -190,6 +190,11 @@ received results and reports the first missing planned reservation. Target
 recreation failure is an external failure, so its timing can change which
 outstanding jobs complete before the failure is reported.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
+At the wall-time limit the coordinator stops reserving and admits the jobs
+already in its window, so a search runs past its limit by the slowest of those
+jobs. Every workload searches with `default_window(workers)`, one reservation
+per worker. A wider window also makes each selection miss the results of more
+jobs in flight, which slows how fast lineages grow.
 
 `memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
 and the adaptive duration reserve are subtracted, and the archive gets the rest
