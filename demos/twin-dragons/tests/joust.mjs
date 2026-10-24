@@ -35,7 +35,7 @@ const sheet = buildSprites(engine);
 assert.ok(sheet.data.some((v, i) => i % 4 === 3 && v > 0), "The sprite sheet holds the knight");
 console.log("Arena maps and the sprite sheet build from the ROM.");
 
-for (const level of [1, 9, 24, 49]) {
+for (const level of [1, 9, 24, 48]) {
   engine.boot(level);
   const at = engine.observation();
   assert.deepEqual([at.level, at.loading, at.wave, at.lives], [level, false, level + 1, 4], `Starting at wave ${level + 1} boots into that wave`);

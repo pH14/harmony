@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { joust_observation } from "../../rust/pkg/twin_dragons_browser.js";
 
-const LEVEL_COUNT = 50,
+const LEVEL_COUNT = 49,
   SCREEN_WIDTH = 256,
   SCREEN_HEIGHT = 224,
   GAME_MODE = 0x00,

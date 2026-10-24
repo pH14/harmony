@@ -68,7 +68,7 @@ outside play has no key.
 
 ## Arcade view
 
-`nes-games/src/arcade/joust.rs` shows one level per wave, 50 in all. The cleared
+`nes-games/src/arcade/joust.rs` shows one level per wave from 1 to 49; wave 50 is the victory wave. The cleared
 count is the number of waves cleared. The browser builds each wave's map by
 playing to that wave with the enemy counter zeroed, then hiding the sprites.
 The score and lives counter are part of the map image.
