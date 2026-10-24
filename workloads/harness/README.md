@@ -26,6 +26,7 @@ generic operations onto the target's client API.
 | `targets/tarantool` | Tarantool image and adapter |
 | `targets/summitdb` | SummitDB image and adapter |
 | `targets/dqlite` | dqlite image, node program and adapter |
+| `targets/oxia` | Oxia image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 
 ## Writing a target
@@ -754,6 +755,53 @@ adapter asks the other nodes for their leader, and the read counts only when
 one of them names the node that answered. That node has accepted no entry
 from a later leader, and with three nodes a later leader commits nothing
 without it or the answering node.
+
+## Oxia
+
+`targets/oxia` drives the `register` family against
+[Oxia](https://github.com/oxia-db/oxia) `v0.16.11`: three data servers `n1` to
+`n3` at 10.77.0.1-3 (public port 6648, internal port 6649) and one
+coordinator `c` at 10.77.0.4, each in its own `harness-net` namespace. The
+coordinator keeps the cluster status in `/tmp/oxia/c/cluster-status.json`
+(the `file` metadata provider) and reads `cluster.yaml`: namespace `default`
+with one shard and replication factor 3. Data servers keep their WAL and
+Pebble database under `/tmp/oxia/<node>` and run with the shipped defaults
+(WAL sync on) except a 16 MiB read cache. Each node directory is a node disk
+(256 MiB for data servers, 32 MiB for the coordinator), and each node logs to
+`/tmp/oxia/<node>.log`. Oxia documents that operations on a single key are
+linearizable and that a write is acknowledged only after a quorum of replicas
+has persisted it.
+
+Each process uses the upstream Go client (`oxia.NewSyncClient`) dialed to a
+data server drawn from the SDK stream. The client learns shard leaders from
+that server and retries unavailable, not-leader and closed-stream errors
+itself. After any other error the adapter closes the client and dials again on
+the next operation. `write` is `Put`, `read` is `Get` and `cas` is `Put` with
+`ExpectedVersionId`, using the version the client last saw for the old value,
+or a `Get` when it has none. `ErrUnexpectedVersionId` is a definite failure,
+`ErrKeyNotFound` reads as no value, other write errors are indeterminate and
+read errors are definite. The client reads only from shard leaders, so the
+adapter pins no reads and the check skips the replica comparison. `ready`
+passes once a `Put` succeeds through any data server.
+
+The image builds `oxia` from the release source with Go 1.26, which the
+`cockroachdb/swiss` dependency requires, through the Antithesis Go
+instrumentation. `cpuid-xgetbv.sh` replaces `klauspost/cpuid` in both the
+server and the harness with a copy whose `XGETBV` clears ECX: admission
+accepts `XGETBV` only after a provable zero selector, and every caller passes
+0.
+
+`v0.16.11` and `v0.18.0-rc4` can report a `cas` that took effect as
+`ErrUnexpectedVersionId`. When a restarted coordinator fences the shard
+leader, the leader answers its pending writes with a retryable error, and the
+next term still commits them. The client then retries the conditional `Put`,
+and the retry fails its version check against the write it made itself. The
+WAL then holds the same `Put` twice, and the register check reports a
+linearizability violation. About 4 in 20 redrawn variants of the shrunk run
+fail on `v0.16.11` and 2 in 20 on `v0.18.0-rc4`.
+
+Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
+memory, and 1024 MiB cannot hold the four full disks (800 MiB) and Oxia.
 
 ## Native runner
 
