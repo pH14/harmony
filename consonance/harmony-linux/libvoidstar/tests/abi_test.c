@@ -14,9 +14,9 @@
 static unsigned char captured[128];
 static size_t captured_len;
 static int entropy_requested;
-static unsigned char coverage_request[17];
 static size_t coverage_requests;
-static int coverage_requested;
+static size_t coverage_opens;
+static int coverage_stale_fd;
 static int invalid_coverage_response;
 static int reenter_during_exchange;
 static int reenter_during_entropy;
@@ -38,6 +38,8 @@ static int mock_open(const char *path, int flags)
         errno = EIO;
         return -1;
     }
+    if ((flags & O_ACCMODE) == O_RDWR)
+        coverage_opens++;
     return 7;
 }
 
@@ -60,12 +62,6 @@ static ssize_t mock_write(int fd, const void *data, size_t size)
         entropy_requested = 1;
         return 1;
     }
-    if (size == sizeof(coverage_request) && *(const unsigned char *)data == 1) {
-        memcpy(coverage_request, data, size);
-        coverage_requests++;
-        coverage_requested = 1;
-        return (ssize_t)size;
-    }
     if (json_failure == 2) {
         errno = EIO;
         return -1;
@@ -83,37 +79,6 @@ static ssize_t mock_read(int fd, void *data, size_t size)
     static const unsigned char entropy[8] = {0x08, 0x07, 0x06, 0x05,
                                              0x04, 0x03, 0x02, 0x01};
     assert(fd == 7);
-    if (coverage_requested && reenter_during_exchange) {
-        reenter_during_exchange = 0;
-        assert(notify_coverage(5));
-        assert(coverage_requested);
-    }
-    if (coverage_requested) {
-        unsigned char *out = data;
-        uint64_t observed = 0;
-        uint32_t thread = 0;
-        uint32_t ready = 0;
-        uint32_t selected;
-        size_t index;
-
-        assert(size == 12);
-        for (index = 0; index < 4; index++) {
-            thread |= (uint32_t)coverage_request[1 + index] << (index * 8);
-            ready |= (uint32_t)coverage_request[13 + index] << (index * 8);
-        }
-        for (index = 0; index < 8; index++)
-            observed |= (uint64_t)coverage_request[5 + index] << (index * 8);
-        assert(ready != 0);
-        selected = (uint32_t)(((uint64_t)thread ^ observed) % ready);
-        if (!invalid_coverage_response)
-            observed++;
-        for (index = 0; index < 8; index++)
-            out[index] = (unsigned char)(observed >> (index * 8));
-        for (index = 0; index < 4; index++)
-            out[8 + index] = (unsigned char)(selected >> (index * 8));
-        coverage_requested = 0;
-        return 12;
-    }
     assert(entropy_requested);
     assert(size == sizeof(entropy));
     if (entropy_failure == 3) {
@@ -135,10 +100,54 @@ static ssize_t mock_read(int fd, void *data, size_t size)
     return (ssize_t)sizeof(entropy);
 }
 
+struct harmony_ioc_coverage;
+
+static int mock_ioctl(int fd, unsigned long command, struct harmony_ioc_coverage *arg)
+{
+    unsigned char *request = (unsigned char *)arg;
+    unsigned char *out = request + 16;
+    uint64_t observed = 0;
+    uint32_t thread = 0;
+    uint32_t ready = 0;
+    uint32_t selected;
+    size_t index;
+
+    assert(fd == 7);
+    assert(command == 0xC0204803UL);
+    if (coverage_stale_fd) {
+        coverage_stale_fd = 0;
+        errno = EBADF;
+        return -1;
+    }
+    if (reenter_during_exchange) {
+        reenter_during_exchange = 0;
+        assert(notify_coverage(5));
+    }
+    for (index = 0; index < 4; index++)
+        assert(request[28 + index] == 0);
+    for (index = 0; index < 4; index++) {
+        thread |= (uint32_t)request[index] << (index * 8);
+        ready |= (uint32_t)request[12 + index] << (index * 8);
+    }
+    for (index = 0; index < 8; index++)
+        observed |= (uint64_t)request[4 + index] << (index * 8);
+    assert(ready != 0);
+    selected = (uint32_t)(((uint64_t)thread ^ observed) % ready);
+    if (!invalid_coverage_response)
+        observed++;
+    for (index = 0; index < 8; index++)
+        out[index] = (unsigned char)(observed >> (index * 8));
+    for (index = 0; index < 4; index++)
+        out[8 + index] = (unsigned char)(selected >> (index * 8));
+    coverage_requests++;
+    return 0;
+}
+
 #define HARMONY_OPEN(path, flags) mock_open((path), (flags))
 #define HARMONY_CLOSE(fd) mock_close((fd))
 #define HARMONY_READ(fd, buf, len) mock_read((fd), (buf), (len))
 #define HARMONY_WRITE(fd, buf, len) mock_write((fd), (buf), (len))
+#define HARMONY_IOCTL(fd, command, arg) mock_ioctl((fd), (command), (arg))
 #include "../voidstar.c"
 
 static void *worker(void *argument)
@@ -219,11 +228,13 @@ int main(void)
     assert(fuzz_get_random() == 0);
     zero_entropy_response = 0;
     fuzz_flush();
+    size_t opens = coverage_opens;
     assert(init_coverage_module(3, "first.sym.tsv") == 0);
     assert(init_coverage_module(4, "second.sym.tsv") == 4);
     assert(notify_coverage(1));
     assert(notify_coverage(2));
     assert(coverage_requests == 2);
+    assert(coverage_opens == opens + 1);
     assert(harmony_coverage.thread != 0);
     assert(harmony_coverage_configure(7, 3) == 0);
     notify_coverage(1);
@@ -276,6 +287,11 @@ int main(void)
     assert(harmony_coverage_add(UINT64_MAX) == 1);
     assert(harmony_coverage.counter == UINT64_MAX);
     assert(coverage_requests == 17);
+    opens = coverage_opens;
+    coverage_stale_fd = 1;
+    assert(harmony_coverage_add(UINT64_MAX) == 1);
+    assert(coverage_requests == 18);
+    assert(coverage_opens == opens + 1);
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
