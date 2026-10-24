@@ -13,6 +13,7 @@ const LEVEL_COUNT = 50,
   WAVE_ENEMIES = 0x73,
   WAVE_SPAWNED = 0x74,
   LIVES = 0xe9,
+  START_LIVES = 4,
   OAM = 0x200,
   OAM_SPRITES = 64,
   HIDDEN_Y = 0xf8,
@@ -57,6 +58,13 @@ function advanceTo(engine, target) {
     engine.run(0, 1, false);
   }
   if (wave(ram) !== target) throw new Error("Joust did not reach the requested wave");
+}
+
+export function boot(engine, level) {
+  if (!Number.isInteger(level) || level < 0 || level >= LEVEL_COUNT) throw new Error("Unknown Joust starting wave");
+  advanceTo(engine, level + 1);
+  engine.ramView()[LIVES] = START_LIVES;
+  engine.run(0, 1, true);
 }
 
 export function buildMap(engine, level) {
@@ -134,6 +142,7 @@ export default {
     maps: Array.from({ length: LEVEL_COUNT }, (_, id) => ({ id, name: levelName(id), label: levelName(id), width: SCREEN_WIDTH, height: SCREEN_HEIGHT })),
     levels: Array.from({ length: LEVEL_COUNT }, (_, id) => ({ id, label: levelName(id), rooms: [id] })),
   },
+  boot,
   buildMap,
   buildSprites,
   decode,
