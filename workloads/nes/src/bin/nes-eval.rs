@@ -112,7 +112,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
             nes_games::castlevania::campaign::CastlevaniaGame<NativeMachine>,
         >(rom, request, out, started, "castlevania"),
         "punchout" => evaluate_live::<nes_games::punchout::campaign::PunchOutGame<NativeMachine>>(
-            rom, request, out, started, "punchout",
+            rom, request, out, started, "punch-out",
         ),
         "twin-dragons" => evaluate_live::<
             nes_games::twin_dragons::campaign::TwinDragonsGame<NativeMachine>,
@@ -318,7 +318,7 @@ fn main() -> Result<()> {
                 &execution_sha256,
                 &out,
                 started,
-                "punchout",
+                "punch-out",
                 <PunchOutGame>::memory_view,
             ),
             "zelda" => evaluate_watching(

@@ -8,6 +8,7 @@ mod joust;
 mod mega_man;
 mod metroid;
 mod pac_man;
+mod punchout;
 mod smb;
 mod twin_dragons;
 
