@@ -13,7 +13,7 @@ use machine::{
     quicknes::{QuickNesMachine, STATE_HEADER_LEN},
 };
 use nes_workload::{
-    castlevania, chord::ChordVocabulary, famidash, metroid, mm2, punchout,
+    castlevania, chord::ChordVocabulary, famidash, joust, metroid, mm2, punchout,
     search::rand::RomuDuoJrRand, smb, twin_dragons, zelda,
 };
 use serde_json::json;
@@ -70,6 +70,11 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
         "zelda" => Game {
             setup: zelda::target::setup_tape(),
             chords: zelda::archive::CHORDS,
+            cartridge_ram: false,
+        },
+        "joust" => Game {
+            setup: joust::target::setup_tape(),
+            chords: joust::archive::CHORDS,
             cartridge_ram: false,
         },
         other => return Err(format!("unknown game {other}").into()),

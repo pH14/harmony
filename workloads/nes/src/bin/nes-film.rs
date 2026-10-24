@@ -14,6 +14,7 @@ use nes_workload::{
         levels::{Side, Stage},
     },
     film::{Capture, FilmMetadata, Filmable, Reel},
+    joust::campaign::{JoustCampaignRun, JoustGame},
     punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::archive::Input,
     stb::{
@@ -328,8 +329,19 @@ fn main() -> Result<()> {
                 identity,
             )
         }
+        "joust" => {
+            if args.ai.is_some() {
+                return Err("Joust takes no ai option".into());
+            }
+            produce(
+                JoustGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                JoustCampaignRun,
+                &args,
+                identity,
+            )
+        }
         _ => Err(
-            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!! and Zelda scenarios"
+            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda and Joust scenarios"
                 .into(),
         ),
     }

@@ -895,6 +895,33 @@ exactly, and branches from a played history that pauses and resumes with
 Start. It reads the ROM from `METROID_ROM` or `~/workspace/roms/Metroid (USA).nes` and
 skips when it is absent.
 
+### Joust
+
+The site ships nothing from Joust. The level selector accepts the ROM with
+SHA-256 `9c47a479…ee4e`. Joust has no ending, so each of the 50 levels is a wave
+and the cleared count is the number of waves cleared. The search starts from a
+new game with four lives. The page builds a wave's map by playing to that wave
+with the enemy counter set to zero, waiting for the banner to clear and hiding
+the sprites, so the map is the arena as the emulator draws it, with the score
+and lives counter inside the image. The player sprite sheet comes from the
+knight on the first frame, with the sprite hidden for the difference, and the
+other direction is its mirror image.
+
+| Address | Meaning |
+| --- | --- |
+| `$00`, `$02` | game mode and phase; `$90` and 2 is play, `$80` and 3 is game over |
+| `$1E`, `$1F` | player y and x |
+| `$3A`, `$3B` | wave as two decimal digits |
+| `$73`–`$75` | enemies to defeat, spawned and defeated in the wave |
+| `$E9` | lives in reserve |
+| `$EB`–`$ED` | score in BCD |
+
+`workloads/nes/src/joust/README.md` describes the archive key and the
+controller vocabulary. `tests/joust.mjs` boots the game, builds three wave maps
+and the sprite sheet, replays an archived state exactly from power-on and starts a
+search in the page. It reads the ROM from `JOUST_ROM` or
+`~/workspace/roms/Joust (USA).nes` and skips when it is absent.
+
 ## Verification and publishing
 
 ```sh

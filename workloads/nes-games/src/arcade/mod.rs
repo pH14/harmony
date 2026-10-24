@@ -3,6 +3,7 @@
 pub mod castlevania;
 pub mod famidash;
 pub mod feed;
+pub mod joust;
 pub mod mega_man;
 pub mod metroid;
 pub mod punchout;

@@ -4,7 +4,7 @@
 
 `nes-games` holds the game logic of the NES workloads: Super Mario Bros., Mega
 Man 2, Metroid, Castlevania, Super Tilt Bro, Twin Dragons, Famidash, Punch-Out!! and The Legend of
-Zelda. It builds for the
+Zelda, with Joust beside them. It builds for the
 host and for `wasm32-unknown-unknown`, so the browser demo can run the same
 game logic as the native workload.
 

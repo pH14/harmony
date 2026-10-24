@@ -2,6 +2,7 @@
 
 mod campaign;
 mod famidash;
+mod joust;
 mod mega_man;
 mod metroid;
 mod smb;
