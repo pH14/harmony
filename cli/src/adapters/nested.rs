@@ -39,7 +39,8 @@ fn verified_replay_source(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     }
     let recorded_wall_budget = serde_json::json!(source.config.search.wall_seconds);
     if source.payload["campaign_seed"].as_u64() != Some(source.config.search.seed)
-        || source.payload["execution_budget"].as_u64() != Some(source.config.search.executions)
+        || source.payload["execution_budget"].as_u64()
+            != Some(source.config.search.execution_limit())
         || source.payload.get("wall_budget_seconds") != Some(&recorded_wall_budget)
     {
         return Err("nested replay configuration disagrees with the recorded campaign".into());
@@ -327,7 +328,7 @@ fn execute_ready(
     m.save(&out)?;
     let options = nested_driver::host::Options {
         seed: m.config.search.seed,
-        executions: m.config.search.executions,
+        executions: m.config.search.execution_limit(),
         ram_mib: crate::runners::consonance(&m.config.runner)?.ram_mib,
         wall_seconds: m.config.search.wall_seconds,
         output: out.join("package"),
@@ -392,7 +393,7 @@ mod tests {
         let grandchild = tempfile::tempdir().unwrap();
         let mut config = crate::config::Config::default();
         config.runner.kind = "test".into();
-        config.search.executions = 1;
+        config.search.executions = Some(1);
         config.search.wall_seconds = Some(180);
         let stream = b"recorded nested campaign";
         let mut manifest = Manifest::new(config, "search").unwrap();
@@ -439,7 +440,7 @@ mod tests {
         let grandchild = source.path().join("grandchild");
         let mut config = crate::config::Config::default();
         config.runner.kind = "test".into();
-        config.search.executions = 1;
+        config.search.executions = Some(1);
         config.search.wall_seconds = Some(180);
         let stream = b"recorded nested campaign";
         let mut replay = Manifest::new(config, "replay").unwrap();
@@ -484,7 +485,7 @@ mod tests {
         let mut config = crate::config::Config::default();
         config.runner.kind = "test".into();
         config.search.seed = 0;
-        config.search.executions = 1;
+        config.search.executions = Some(1);
         config.search.wall_seconds = Some(180);
         let stream = b"recorded nested campaign";
         let mut replay = Manifest::new(config, "replay").unwrap();
@@ -514,7 +515,7 @@ mod tests {
         {
             replay.config.search = crate::config::Search {
                 seed,
-                executions,
+                executions: Some(executions),
                 wall_seconds,
             };
             replay.save(source.path()).unwrap();

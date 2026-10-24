@@ -8,24 +8,41 @@ search budgets, named searches and branches and command dispatch.
 ## Start an application
 
 ```sh
-harmony init
-harmony prepare
+harmony init path/to/Dockerfile
 harmony check
+harmony prepare
 harmony search --name baseline --for 10m
 harmony list
 harmony show baseline
 harmony show baseline --finding 1 --timeline
 harmony show baseline --finding 1 --logs --contains ERROR
+harmony shrink baseline --finding 1 --jobs 4 --name minimal
+harmony explain baseline --finding 1 --jobs 4 --name why
 harmony branch baseline --finding 1 --rewind 10 --shell --name debugging
 harmony search --from debugging --name neighborhood
 ```
 
 `init` infers a language from recognized project files when unambiguous. Use
 `--language c|rust|go|python|java` when needed. It never overwrites a recipe.
-`init IMAGE` sets the application image name. `search` prepares configured builds
-automatically. `prepare` builds and validates without executing; `check` checks
-runner availability, provisions runtime artifacts and reports admission.
-Neither command infers application readiness or correctness.
+`init IMAGE` sets the application image name and uses the image's bundle.
+`init DOCKERFILE` (a file named `Dockerfile`, `Containerfile`, `Dockerfile.*`,
+`*.Dockerfile` or `*.Containerfile`, in any case) writes a recipe that builds the image
+`harmony-DIRECTORY:local`, where DIRECTORY is the Dockerfile's directory. The
+build context is the root of the Git repository that holds the Dockerfile, or
+the Dockerfile's directory outside a repository. With no input and no
+recognized language, `init` uses a `Dockerfile` or `Containerfile` in the
+configuration directory. `search` prepares configured builds automatically.
+`prepare` builds and validates without executing; `check` checks runner
+availability, provisions runtime artifacts and reports admission. When a
+configured build has not run yet, `check` says so and skips admission. Neither
+command infers application readiness or correctness.
+
+A Dockerfile build runs `docker build`, or `podman build --format docker`
+because the OCI format ignores `SHELL`. When the Dockerfile declares
+`ARG HARMONY_RUNTIME_IMAGE`, `prepare` first builds the language runtime image
+with `workloads/languages/build-runtime.sh` and passes its tag as that build
+argument. `workload.options.build.args` adds build arguments to a Dockerfile
+build, for example `args = { NATS_VERSION = "v2.10.23" }`.
 
 An OCI image selects the faults workload. A `.nes` input selects the NES workload.
 Use `--package` to override inference. This is convenience dispatch owned by the
@@ -70,8 +87,23 @@ executions = 1000
 wall_seconds = 600
 ```
 
-The faults package also accepts `setup`, `ready`, `workload`, `check`, `command`
-and `knobs` in `workload.options`. Lifecycle commands and node/hook commands are
+A fresh search takes its execution budget from `--executions` or `[search]
+executions`, and its wall budget from `--for` or `[search] wall_seconds`. With
+only a wall budget the search has no execution cap and stops at the wall limit.
+At the wall limit a faults search drops the jobs still running and writes its
+report within a few seconds. The first SIGINT or SIGTERM stops it the same way,
+and a second one exits at once without a report.
+With only an execution budget it stops at that count. With both it stops at
+whichever comes first. With neither it stops at 1,000 executions. A value written
+in `harmony.toml` counts as given. The built-in 1,000 applies only when no
+execution or wall budget is set anywhere.
+
+The faults package also accepts `setup`, `ready`, `workload`, `check`, `command`,
+`knobs` and `exclude_faults` in `workload.options`. `exclude_faults` lists fault
+kinds the search never draws, for example `exclude_faults = ["disk_corrupt",
+"power_loss_all"]`; the
+[faults README](../workloads/faults/README.md#actions) lists the
+names. Lifecycle commands and node/hook commands are
 argument arrays; an explicit shell is required for shell syntax. Nodes, lifecycle
 commands and hooks compile into a supervisor bundle. Omit them to use the image's
 bundle. Services share the image filesystem. See the
@@ -109,6 +141,11 @@ Harmony release downloads, not container-builder network access. See the
 
 Consonance chooses KVM, then HVF, then UML according to host availability.
 `--runner` selects an execution implementation; `--backend` constrains its backend.
+On a Linux host with two core types (Intel P-cores and E-cores, or Arm big and
+little cores), every command first limits itself to the fastest core type among
+its allowed CPUs and prints the CPUs it kept. KVM refuses a thread affinity that
+mixes core types, and child processes inherit the limit. A command started on
+CPUs of one type keeps them all.
 UML runs on Linux without hardware virtualization, including ordinary containers.
 An explicit UML profile selects UML when the backend is automatic.
 Preparation applies an explicit UML backend or profile's policy even when the
@@ -119,11 +156,27 @@ selected backend's policy. A saved UML run from before this policy cannot be
 replayed or branched because its guest image was not admitted under this rule.
 
 Consonance artifact overrides are `kernel`, `base_initramfs` and `uml_profile`
-inside `runner.options`. `check` provisions checksummed versioned artifacts.
-Development artifacts are discovered under `consonance/harmony-linux/build/ARCH`,
-and installed artifacts under `share/harmony/guest/ARCH`. The cache uses
+inside `runner.options`; a recipe needs none of them. `check` provisions
+checksummed versioned artifacts.
+Development artifacts are discovered under `consonance/harmony-linux/build/ARCH`
+of the source checkout: the one the CLI was built from, else the one holding
+the executable, else the one holding the current directory. Installed artifacts
+live under `share/harmony/guest/ARCH`. When a CLI from a source checkout on
+Linux finds no current artifacts, `check` (or any command that needs them)
+builds them with `consonance/harmony-linux/scripts/fetch.sh` and
+`scripts/build-platform-runtime.sh`, holding a lock in the build directory so
+concurrent commands build once. The build tree is `GUEST_BUILD_ROOT`, otherwise
+a per-checkout directory under the cache directory below
+(`guest-build/KEY`). The first build takes several minutes and needs the
+Debian build packages listed in the
+[guest Linux README](../consonance/harmony-linux/linux/README.md). With
+`--offline` the command reports the missing artifacts instead. Other CLIs
+download release artifacts. The cache uses
 `HARMONY_DATA_DIR`, otherwise `XDG_DATA_HOME/harmony`, macOS
 `~/Library/Application Support/Harmony`, or Linux `~/.local/share/harmony`.
+Fault runs keep booted setup snapshots in `HARMONY_CACHE_DIR/boot`, otherwise
+`XDG_CACHE_HOME/harmony/boot`, macOS `~/Library/Caches/Harmony/boot`, or Linux
+`~/.cache/harmony/boot`.
 New release assets become available when their release is published.
 Automatic discovery selects the first directory containing a current-source
 `runtime-manifest.json`, the architecture's kernel, and
@@ -187,6 +240,16 @@ harmony
 │   ├── --exec-file LOCAL.sh              copy and execute a local script
 │   ├── --shell                           interactive guest terminal
 │   └── --stop                            save without the original suffix
+├── shrink NAME                          keep only the faults a finding needs
+│   ├── --finding N                      select a finding
+│   └── --jobs N                         replays to run at once
+├── explain NAME                         report what changed around each fault
+│   ├── --finding N                      select a finding
+│   ├── --jobs N                         replays to run at once
+│   ├── --log GUEST_PATH                 log file or glob to compare
+│   ├── --data GUEST_DIR                 directory or glob to compare
+│   ├── --history 'COMMAND'              guest command that prints client history
+│   └── --no-shrink                      probe the recorded actions as they are
 └── diff NAME NAME                       compare configuration and outcomes
 ```
 
@@ -232,6 +295,120 @@ shell commands. Terminal output and submitted bytes are retained as evidence.
 Interactive timing is part of the new experiment. Faults branches with commands
 require the updated supervisor runtime; use `check` to provision matching assets.
 NES exposes typed controller actions and has no guest shell capability.
+
+`shrink` reduces a faults finding to the fault actions it needs. It replays the
+finding's actions up to the first observed violation, then replaces groups of
+fault actions with waits of the same length, halving the groups until no single
+fault can be replaced (delta debugging). A replacement keeps the action's
+recorded `choice`, which seeds guest randomness for that step, so the rest of
+the execution keeps its timing. A candidate counts when its replay reports one
+of the finding's violations.
+
+Each round accepts its lowest-numbered reproducing candidate. `--jobs N` runs up
+to N replays at once, fewer when free memory cannot hold N guests. The replays
+share one snapshot cache, the same cache a search uses. A candidate matches the
+accepted actions up to its first replaced fault, so its replay restores the
+snapshot an earlier replay recorded at that step and runs only the steps after
+it. A candidate counts as soon as the violation appears: the next round starts
+then, and the candidate's replay continues to the end for its report. Idle
+workers start every candidate of the current round. When a candidate reports
+the violation while lower-numbered candidates still run, idle workers also
+start the round that would follow its acceptance. A replay stops as soon as
+other results make it unnecessary. A candidate checked before is not replayed
+again. The accepted candidates, the
+attempt list and the final replay are the same for every N, because the attempt
+list holds the candidates in the order one job checks them.
+
+The output is a replay of the reduced actions that `show`, `show --timeline` and
+`branch` accept. `shrink.json` lists every attempt with the replaced steps and
+the violations it produced, the number of replays started, and the reduced
+actions in a form `debug run --actions` accepts. NES findings are not supported.
+
+`explain` writes a report a maintainer can start a diagnosis from. It shrinks the
+finding first, unless NAME is already a shrink output and no `--finding` is
+given, or `--no-shrink` is given for a recorded run. A recording of a reduced
+`actions.json` made with `debug run --actions` plus `--no-shrink` skips a
+repeated shrink after a rebuild. It then replays the reduced actions and runs a guest script at the
+boundary before and after each remaining fault and at the violation. The script
+records the size of each configured log, checksums every file under each
+configured data directory, then prints each log up to its recorded size (the
+last 1 MiB of a larger file), and runs the history command once, at the
+violation. A window's new log lines are the lines after the longest common
+prefix of its two boundary captures. The guest keeps running while the
+script runs, without the next fault, so the report states how much guest time
+each probe took to record sizes and checksums. `--jobs N` runs N replays at once:
+one probe-free reference replay, and N - 1 replays that share the boundaries
+(with `--jobs 1`, the two run one after the other). Each action of a replay
+starts from the sealed snapshot of the previous boundary, so a probe does not
+change later actions. A replay summary also reads the live guest, such as its
+console and its final state, and a probe can change those. The check is
+therefore per boundary: the reference replay must match the reduced replay,
+and each probe must see the same whole-state certificate as the reference at
+its boundary. A failed check is reported as an
+error after the report is written.
+
+The output directory is a replay of the reduced actions that `show` and `branch`
+accept. It also holds:
+
+- `explain.md`: the promise that broke, the fault table with guest times and the
+  nodes left running, the history output, and one section per fault and per gap
+  between faults. When a remaining fault cuts power, the summary says so and
+  states that a system that acknowledges writes before syncing them loses them
+  this way, with a search of a build that syncs every write as the test;
+- `explain.json`: the same content as data;
+- `actions.json`: the reduced actions for `debug run --actions`;
+- `probes/STEP/`: each probe script and its raw terminal output;
+- `copied/`: the guest files `host_history` names, under their guest paths;
+- `probes/reference/replay.json` and `probes/replay-N/replay.json`: each
+  replay's probed steps, the certificate at each recorded boundary and its
+  summary;
+- `shrink.json` and `attempts/` when explain ran the shrink.
+
+Each section lists the log lines that first appeared in that window. A line
+whose pattern (the text with numbers and generated identifiers replaced) never
+appeared earlier in any log is marked new and ranked first. Other lines fill in,
+rarest first, when fewer than five are new. Data changes list added, removed and
+resized files, and collapse a directory that appeared or disappeared as a whole.
+The report ends with the replay command, the fix check (the same command with a
+fixed image) and a `branch --shell` command at the violation.
+
+The settings come from flags or from the recipe; flags replace the matching
+recipe field:
+
+```toml
+[workload.options.explain]
+logs = ["/tmp/app/*.log"]
+data = ["/tmp/app/data/*"]
+history = "/app/check --json"
+host_history = "app-check --json @/var/app/journal"
+```
+
+Paths are guest paths, and globs are expanded by the guest shell. When neither
+a flag nor the recipe sets `logs` or `data`, explain uses the paths the
+recorded bundle declares: every `log NODE PATH` line for logs and every
+`disk NODE PATH SIZE [checksummed]` line for data
+([supervisor bundle](../consonance/harmony-linux/supervisor/README.md)). The
+probe script needs `find -exec`, `cksum`, `wc`, and `head -c` and `tail -c` in
+the guest; a minimal BusyBox build needs those applets and options. The history
+command runs with `/bin/sh` in the workload's working directory. It counts
+against the five-minute host command limit of the debug terminal, and the
+report states when it did not finish and marks its output partial.
+
+`host_history` (`--host-history`) checks the client history on the host. Each
+`@/path` word names a guest file or directory. At the violation, before the
+logs and the history command, the probe copies every file under those paths
+(each up to 16 MiB) through the terminal with `find`, `wc`, `head -c` and
+`base64`. The guest keeps running during the probe, so a client can still
+append to its journal. Each copy holds the bytes the file had when `wc`
+measured it. After the replays, `explain` replaces each `@/path` with the
+path of its copy, `copied/path`, relative to the output directory, and runs the
+text with `sh -c` in that directory. The report holds the command, its exit status, and its
+combined stdout and stderr. The report names every file the probe could not
+copy and the reason: over the size limit, unreadable in the guest, a copy cut
+short, or a failed probe. The host check then ran on part of the history, so
+the report marks its output partial in the summary and beside the output.
+Use it when the system under test's history checker reads a journal it can
+check offline, or when a live read from the guest can outlast the limit.
 
 `search --from` starts fresh exploration from a branch endpoint. `search --resume`
 restores the existing corpus, snapshots, scheduler and evidence from the latest
@@ -321,10 +498,13 @@ harmony show "${RUN:?}" --json
 
 Retain stdout, stderr and each command's exit status. A faults search report
 returns `0` without confirmed bugs, unmet reachability assertions, execution
-failures or watchdog cutoffs; unconfirmed hits can still appear. `1` means a
-confirmed bug or unmet reachability assertion. Failures or watchdog cutoffs
-take precedence with `2`; CLI, admission and setup errors also exit `2`,
-sometimes without a run directory. Inspect the report and manifest as well as
+failures or hung jobs; unconfirmed hits can still appear. `1` means a
+confirmed bug or unmet reachability assertion. Failures or hung jobs take
+precedence with `2`. A hung job is a job that tripped the guest progress
+watchdog. The search records it as `hang-N.json` in the run directory and keeps
+running. It records the input of each failed execution as `failure-N.json`, which
+`debug run --actions` replays. CLI, admission and setup errors also exit `2`, sometimes without a run
+directory. Inspect the report and manifest as well as
 the exit status: a completed manifest can accompany any of these codes. `show`
 displays saved evidence; it does not verify artifacts or perform a fresh
 replay. A search wall budget is not a hard process-cleanup deadline. Use the
@@ -453,7 +633,9 @@ Consonance execution and readiness checks. `harmony prepare` performs its build
 outside the guarded host. The frontend checks companion admission before implicit
 preparation, then unlinks the captured request file and execs the host with its
 held read-only descriptor. The execution keeps the command's original PID,
-process group and terminal, including for guest shells. The captured backing
+process group and terminal, including for guest shells. `explain` instead runs
+the host as a child in the same process group and waits for it, so the frontend
+can run `host_history` outside the guarded host afterwards. The captured backing
 remains held for the host's lifetime; no request pathname survives the handoff.
 
 The `harmony-prepared-execution-v1` handoff is a self-contained postcard file
@@ -469,9 +651,11 @@ supervision must agree with the requested search, captured actions and configure
 nodes; a plain execution cannot discard requested actions or replace supervision.
 Execution-bearing fields are accepted only by operations that consume them:
 actions by Faults/NES runs and branches, guest commands by Faults branches,
-console output by plain Faults runs, and additional budgets by saved searches.
+console output by plain Faults runs, additional budgets by saved searches, and
+parallel replay counts by Faults shrinks and explanations, and explain
+settings by Faults explanations.
 Raw command overrides must agree with the effective Faults run configuration.
-Saved replay, branch and resume require a selection; incompatible point selectors,
+Saved replay, branch, resume, shrink and explain require a selection; incompatible point selectors,
 commands, captures and repeat counts are refused before execution.
 Captured action/script presence must match the request exactly, and ROM payloads
 belong only to fresh NES execution.
@@ -507,7 +691,7 @@ operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
 Saved runs also retain `cpu_provenance`, an advisory history of observed CPU
-implementation metadata. Replay, branching, and continued search print a warning
+implementation metadata. Replay, branching, shrinking and continued search print a warning
 to stderr if the recording and current CPU differ or either identity is unknown,
 incomplete, or heterogeneous. Older manifests without this field warn as unknown;
 derived runs retain that uncertainty. Standard math libraries remain supported,
@@ -583,6 +767,12 @@ failure or replay divergence. Search budgets and seeds must fit TOML's signed
 Run the CLI tests, package tests, Clippy and registered CI checks. The test-only
 counter package exercises preparation, search, replay and branching through the
 same dispatch and storage interfaces without application or NES types.
+On Linux, run the CLI tests with `cargo nextest run -p harmony-cli`. The CLI
+refuses to start with the `LD_LIBRARY_PATH` that Cargo sets, and the root
+Nextest configuration removes it through `scripts/linux-clean-loader-test.sh`.
+Plain `cargo test` fails those tests unless
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER` (or the Arm64 equivalent) names
+that script, as CI does.
 
 - `bash cli/tests/investigation.sh DIRECTORY` exercises preparation, guest commands,
   local scripts, interactive shells, snapshot restoration, continuation and tamper refusal.

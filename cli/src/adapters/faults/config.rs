@@ -35,6 +35,7 @@ pub struct Build {
     pub language: Option<Language>,
     pub context: Option<PathBuf>,
     pub dockerfile: Option<PathBuf>,
+    pub args: BTreeMap<String, String>,
     pub command: Vec<String>,
 }
 
@@ -44,13 +45,131 @@ pub struct Node {
     pub command: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Explain {
+    pub logs: Vec<String>,
+    pub data: Vec<String>,
+    pub history: Option<String>,
+    pub host_history: Option<String>,
+}
+
+impl Explain {
+    #[must_use]
+    pub fn guest_paths(command: &str) -> Vec<std::ops::Range<usize>> {
+        let path = |byte: u8| byte.is_ascii_alphanumeric() || b"/._-+,:%~".contains(&byte);
+        let bytes = command.as_bytes();
+        let mut ranges = Vec::new();
+        let mut index = 0;
+        while index + 1 < bytes.len() {
+            if bytes[index] == b'@'
+                && bytes[index + 1] == b'/'
+                && (index == 0 || !(path(bytes[index - 1]) || bytes[index - 1] == b'@'))
+            {
+                let end = (index + 1..bytes.len())
+                    .find(|&at| !path(bytes[at]))
+                    .unwrap_or(bytes.len());
+                ranges.push(index + 1..end);
+                index = end;
+            } else {
+                index += 1;
+            }
+        }
+        ranges
+    }
+
+    #[must_use]
+    pub fn copies(&self) -> Vec<String> {
+        let mut paths = self
+            .host_history
+            .iter()
+            .flat_map(|command| {
+                Self::guest_paths(command)
+                    .into_iter()
+                    .map(|range| command[range].to_owned())
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        for path in self.logs.iter().chain(&self.data) {
+            if path.is_empty() || path.contains(['\n', '\r', '\0']) {
+                return Err(format!(
+                    "explain path {path:?} must be nonempty without newlines or NUL"
+                )
+                .into());
+            }
+        }
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|text| text.trim().is_empty() || text.contains('\0'))
+        {
+            return Err("explain history must be nonempty shell text without NUL".into());
+        }
+        if let Some(command) = &self.host_history {
+            if command.trim().is_empty() || command.contains('\0') {
+                return Err("explain host history must be nonempty shell text without NUL".into());
+            }
+            if self.copies().is_empty() {
+                return Err(
+                    "explain host history names no guest path; write one as @/guest/path".into(),
+                );
+            }
+            for path in self.copies() {
+                if path
+                    .split('/')
+                    .skip(1)
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+                    || path.contains(['\n', '\r'])
+                {
+                    return Err(format!(
+                        "explain host history path {path:?} must be a plain absolute guest path"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    #[must_use]
+    pub fn or(&self, saved: &Self) -> Self {
+        Self {
+            logs: if self.logs.is_empty() {
+                saved.logs.clone()
+            } else {
+                self.logs.clone()
+            },
+            data: if self.data.is_empty() {
+                saved.data.clone()
+            } else {
+                self.data.clone()
+            },
+            history: self.history.clone().or_else(|| saved.history.clone()),
+            host_history: self
+                .host_history
+                .clone()
+                .or_else(|| saved.host_history.clone()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub image: Option<String>,
     pub backend: Backend,
     pub seed: u64,
-    pub executions: u64,
+    pub executions: Option<u64>,
     pub wall_seconds: Option<u64>,
     pub ram_mib: u32,
     pub kernel: Option<PathBuf>,
@@ -66,6 +185,8 @@ pub struct Config {
     pub workload: Vec<String>,
     pub check: Vec<String>,
     pub hooks: BTreeMap<String, Vec<String>>,
+    pub explain: Explain,
+    pub exclude_faults: Vec<faults_workload::bundle::FaultKind>,
 }
 
 impl Default for Config {
@@ -74,7 +195,7 @@ impl Default for Config {
             image: None,
             backend: Backend::Auto,
             seed: 0,
-            executions: 1000,
+            executions: None,
             wall_seconds: None,
             ram_mib: 1024,
             kernel: None,
@@ -90,15 +211,20 @@ impl Default for Config {
             workload: Vec::new(),
             check: Vec::new(),
             hooks: BTreeMap::new(),
+            explain: Explain::default(),
+            exclude_faults: Vec::new(),
         }
     }
 }
 
 impl Config {
+    pub fn execution_limit(&self) -> u64 {
+        crate::config::execution_limit(self.executions, self.wall_seconds)
+    }
     pub fn validate(&self) -> Result<()> {
         for (name, value) in [
             ("seed", self.seed),
-            ("executions", self.executions),
+            ("executions", self.executions.unwrap_or(0)),
             ("wall_seconds", self.wall_seconds.unwrap_or(0)),
         ] {
             if value > i64::MAX as u64 {
@@ -107,7 +233,7 @@ impl Config {
                 );
             }
         }
-        if self.executions == 0 || self.ram_mib == 0 || self.wall_seconds == Some(0) {
+        if self.executions == Some(0) || self.ram_mib == 0 || self.wall_seconds == Some(0) {
             return Err("executions, ram_mib and wall_seconds must be positive".into());
         }
         if self.uml_profile.is_some() && !matches!(self.backend, Backend::Auto | Backend::Uml) {
@@ -125,6 +251,18 @@ impl Config {
                 .into());
             }
         }
+        if !self.build.args.is_empty() && self.build.dockerfile.is_none() {
+            return Err("build.args applies to build.dockerfile".into());
+        }
+        if self
+            .build
+            .args
+            .keys()
+            .any(|name| name.is_empty() || name.contains(['=', '\n', '\0']))
+        {
+            return Err("build.args names must be nonempty without '=', newlines or NUL".into());
+        }
+        self.explain.validate()?;
         self.bundle()?;
         Ok(())
     }
@@ -251,10 +389,9 @@ impl Config {
             "seed".into(),
             toml::Value::Integer(shared.search.seed as i64),
         );
-        options.insert(
-            "executions".into(),
-            toml::Value::Integer(shared.search.executions as i64),
-        );
+        if let Some(executions) = shared.search.executions {
+            options.insert("executions".into(), toml::Value::Integer(executions as i64));
+        }
         if let Some(seconds) = shared.search.wall_seconds {
             options.insert("wall_seconds".into(), toml::Value::Integer(seconds as i64));
         }
@@ -353,5 +490,48 @@ mod tests {
         );
         std::fs::write(base, b"changed after resolution").unwrap();
         assert!(crate::runtime::read_pair(&restored.runtime()).is_err());
+    }
+
+    #[test]
+    fn excluded_fault_kinds_come_from_workload_options_and_survive_roundtrip() {
+        use faults_workload::bundle::FaultKind;
+        let shared = |kinds: &str| -> Result<Config> {
+            let shared: crate::config::Config = toml::from_str(&format!(
+                "[workload]\npackage = \"faults\"\n[workload.options]\nexclude_faults = {kinds}\n"
+            ))?;
+            Config::from_shared(&shared)
+        };
+        let config = shared("[\"disk_corrupt\", \"kill_all\"]").unwrap();
+        assert_eq!(
+            config.exclude_faults,
+            [FaultKind::DiskCorrupt, FaultKind::KillAll]
+        );
+        assert_eq!(
+            Config::from_shared(&config.shared().unwrap())
+                .unwrap()
+                .exclude_faults,
+            config.exclude_faults
+        );
+        assert!(shared("[\"wait\"]").is_err());
+        assert!(shared("[\"disk-corrupt\"]").is_err());
+        assert!(Config::default().exclude_faults.is_empty());
+    }
+
+    #[test]
+    fn host_history_names_guest_paths_with_an_at_sign() {
+        let command = "check @/tmp/j; cat @/var/a.log|wc -l '@/x' user@/y @@/z";
+        let explain = Explain {
+            host_history: Some(command.into()),
+            ..Explain::default()
+        };
+        assert_eq!(explain.copies(), vec!["/tmp/j", "/var/a.log", "/x"]);
+        explain.validate().unwrap();
+        for bad in ["check", "check @/tmp/../etc", "check @/tmp/j/", "  "] {
+            let explain = Explain {
+                host_history: Some(bad.into()),
+                ..Explain::default()
+            };
+            assert!(explain.validate().is_err(), "{bad}");
+        }
     }
 }

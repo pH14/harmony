@@ -82,7 +82,7 @@ impl Prepared {
 
 #[cfg(any(feature = "frontend", test))]
 struct RecordWriter {
-    inner: BufWriter<fs::File>,
+    inner: fs::File,
     digest: Sha256,
     bytes: u64,
 }
@@ -115,7 +115,11 @@ fn validate_request_inputs(request: &Request) -> Result<()> {
     if (request.operation == Operation::Run && saved)
         || (matches!(
             request.operation,
-            Operation::Replay | Operation::Branch | Operation::Resume
+            Operation::Replay
+                | Operation::Branch
+                | Operation::Resume
+                | Operation::Shrink
+                | Operation::Explain
         ) && !saved)
         || (request.operation == Operation::Resume
             && request
@@ -161,6 +165,21 @@ fn validate_request_inputs(request: &Request) -> Result<()> {
     {
         return Err("prepared operation does not accept these repeats".into());
     }
+    if matches!(request.operation, Operation::Shrink | Operation::Explain) && !faults {
+        return Err("prepared shrink or explain requires a fault recording".into());
+    }
+    if request.jobs == 0
+        || (request.jobs != 1
+            && !matches!(request.operation, Operation::Shrink | Operation::Explain))
+    {
+        return Err("prepared operation does not accept parallel replays".into());
+    }
+    if (request.skip_shrink || !request.explain.is_empty())
+        && request.operation != Operation::Explain
+    {
+        return Err("prepared operation does not accept explain settings".into());
+    }
+    request.explain.validate()?;
     let budget = &request.budget;
     if (budget.seed.is_some() || budget.executions.is_some() || budget.wall_seconds.is_some())
         && !((faults || nes)
@@ -182,6 +201,8 @@ fn validate_request_config(request: &Request) -> Result<()> {
                 | Operation::Replay
                 | Operation::Branch
                 | Operation::Resume
+                | Operation::Shrink
+                | Operation::Explain
         )
     {
         return Err("the guarded runtime accepts only prepared Consonance execution".into());
@@ -251,15 +272,19 @@ impl Record {
 
     #[cfg(any(feature = "frontend", test))]
     pub fn write(&self, path: &Path) -> Result<()> {
-        let mut writer = RecordWriter {
-            inner: BufWriter::new(fs::File::create(path)?),
-            digest: Sha256::new(),
-            bytes: 0,
-        };
+        let mut writer = BufWriter::with_capacity(
+            1 << 20,
+            RecordWriter {
+                inner: fs::File::create(path)?,
+                digest: Sha256::new(),
+                bytes: 0,
+            },
+        );
         postcard::to_io(self, &mut writer)?;
-        let checksum = writer.digest.clone().finalize();
-        writer.inner.write_all(&checksum)?;
-        writer.inner.flush()?;
+        let mut record = writer.into_inner().map_err(|error| error.into_error())?;
+        let checksum = record.digest.clone().finalize();
+        record.inner.write_all(&checksum)?;
+        record.inner.flush()?;
         Ok(())
     }
 
@@ -802,6 +827,8 @@ mod tests {
             (Operation::Search, "nes"),
             (Operation::Resume, "faults"),
             (Operation::Resume, "nes"),
+            (Operation::Shrink, "faults"),
+            (Operation::Explain, "faults"),
         ] {
             let mut record = saved_record(operation, package);
             let mut request: Request = serde_json::from_slice(&record.request).unwrap();
@@ -824,6 +851,13 @@ mod tests {
                     request.budget.executions = Some(1);
                 }
                 Operation::Resume => request.budget.wall_seconds = Some(1),
+                Operation::Shrink => request.jobs = 4,
+                Operation::Explain => {
+                    request.jobs = 4;
+                    request.explain.logs = vec!["/tmp/app/*.log".into()];
+                    request.explain.data = vec!["/tmp/app/data".into()];
+                    request.explain.history = Some("/app/check".into());
+                }
                 _ => unreachable!(),
             }
             record.request = serde_json::to_vec(&request).unwrap();
@@ -831,6 +865,18 @@ mod tests {
             record.write(file.path()).unwrap();
             let (request, prepared) = Record::read(file.path()).unwrap();
             assert_eq!(request.operation, operation);
+            assert_eq!(
+                request.jobs,
+                if matches!(operation, Operation::Shrink | Operation::Explain) {
+                    4
+                } else {
+                    1
+                }
+            );
+            assert_eq!(
+                request.explain.history.is_some(),
+                operation == Operation::Explain
+            );
             assert!(request.selection.is_some() && prepared.execution.is_none());
             if let Some(path) = request.actions {
                 assert_eq!(fs::read(path).unwrap(), b"[]");
@@ -838,6 +884,80 @@ mod tests {
             if let Some(path) = request.exec_file {
                 assert_eq!(fs::read(path).unwrap(), b"true");
             }
+        }
+    }
+
+    #[test]
+    fn only_a_fault_shrink_accepts_parallel_replays() {
+        for (operation, package, jobs, refusal) in [
+            (Operation::Replay, "faults", 4, "parallel replays"),
+            (Operation::Shrink, "faults", 0, "parallel replays"),
+            (Operation::Shrink, "nes", 1, "fault recording"),
+            (Operation::Explain, "nes", 1, "fault recording"),
+        ] {
+            let mut record = saved_record(operation, package);
+            let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+            request.jobs = jobs;
+            record.request = serde_json::to_vec(&request).unwrap();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            let Err(error) = Record::read(file.path()) else {
+                panic!("{operation:?} {package} {jobs}");
+            };
+            assert!(error.to_string().contains(refusal), "{error}");
+        }
+    }
+
+    #[test]
+    fn only_a_fault_explain_accepts_explain_settings() {
+        for (operation, logs, history, refusal) in [
+            (
+                Operation::Replay,
+                vec!["/tmp/app.log"],
+                None,
+                "explain settings",
+            ),
+            (
+                Operation::Shrink,
+                Vec::new(),
+                Some("/app/check"),
+                "explain settings",
+            ),
+            (
+                Operation::Explain,
+                vec!["/tmp/a\nb.log"],
+                None,
+                "explain path",
+            ),
+            (Operation::Explain, Vec::new(), Some(" "), "explain history"),
+        ] {
+            let mut record = saved_record(operation, "faults");
+            let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+            request.explain.logs = logs.into_iter().map(Into::into).collect();
+            request.explain.history = history.map(Into::into);
+            record.request = serde_json::to_vec(&request).unwrap();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            let Err(error) = Record::read(file.path()) else {
+                panic!("{operation:?} accepted {:?}", request.explain);
+            };
+            assert!(error.to_string().contains(refusal), "{error}");
+        }
+    }
+
+    #[test]
+    fn only_a_fault_explain_skips_the_shrink() {
+        for operation in [Operation::Replay, Operation::Shrink] {
+            let mut record = saved_record(operation, "faults");
+            let mut request: Request = serde_json::from_slice(&record.request).unwrap();
+            request.skip_shrink = true;
+            record.request = serde_json::to_vec(&request).unwrap();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            let Err(error) = Record::read(file.path()) else {
+                panic!("{operation:?} accepted a skipped shrink");
+            };
+            assert!(error.to_string().contains("explain settings"), "{error}");
         }
     }
 
@@ -911,7 +1031,7 @@ mod tests {
             let mut original = request.config.clone();
             let expected = match case {
                 0 => {
-                    original.search.executions = u64::MAX;
+                    original.search.executions = Some(u64::MAX);
                     "exceeds TOML's maximum"
                 }
                 1 => {

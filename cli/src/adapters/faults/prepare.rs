@@ -11,9 +11,10 @@ pub fn sdk(offline: bool) -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("HARMONY_SDK_DIR") {
         return Ok(PathBuf::from(path).canonicalize()?);
     }
-    let local = Path::new("workloads/languages");
-    if local.is_dir() {
-        return Ok(std::env::current_dir()?);
+    if let Some(checkout) = crate::runtime::checkout()
+        && checkout.join("workloads/languages").is_dir()
+    {
+        return Ok(checkout);
     }
     Ok(crate::runtime::acquire("sdk", std::env::consts::ARCH, offline)?.join("sdk"))
 }
@@ -27,14 +28,27 @@ pub fn run(c: &mut Config, offline: bool) -> Result<serde_json::Value> {
         .ok_or("set image to the output image name in harmony.toml")?;
     let context = c.build.context.clone().unwrap_or(std::env::current_dir()?);
     if let Some(dockerfile) = &c.build.dockerfile {
-        checked(
-            Command::new(container_tool()?)
-                .args(["build", "--file"])
-                .arg(dockerfile)
-                .arg("--tag")
-                .arg(&image)
-                .arg(&context),
-        )?;
+        let tool = container_tool()?;
+        let mut build = Command::new(tool);
+        build
+            .args(["build", "--file"])
+            .arg(dockerfile)
+            .arg("--tag")
+            .arg(&image);
+        if tool == "podman" {
+            build.args(["--format", "docker"]);
+        }
+        for (name, value) in &c.build.args {
+            build.arg("--build-arg").arg(format!("{name}={value}"));
+        }
+        if !c.build.args.contains_key("HARMONY_RUNTIME_IMAGE")
+            && declares_runtime_image(&fs::read_to_string(dockerfile)?)
+        {
+            build
+                .arg("--build-arg")
+                .arg(format!("HARMONY_RUNTIME_IMAGE={}", runtime_image(offline)?));
+        }
+        checked(build.arg(&context))?;
     } else if let Some(language) = c.build.language {
         container_tool()?;
         let sdk = sdk(offline)?;
@@ -90,6 +104,32 @@ pub fn run(c: &mut Config, offline: bool) -> Result<serde_json::Value> {
     Ok(report)
 }
 
+fn declares_runtime_image(dockerfile: &str) -> bool {
+    dockerfile.lines().any(|line| {
+        let mut words = line.split_whitespace();
+        words
+            .next()
+            .is_some_and(|word| word.eq_ignore_ascii_case("ARG"))
+            && words
+                .next()
+                .is_some_and(|word| word.split('=').next() == Some("HARMONY_RUNTIME_IMAGE"))
+    })
+}
+
+fn runtime_image(offline: bool) -> Result<String> {
+    let script = sdk(offline)?.join("workloads/languages/build-runtime.sh");
+    let output = Command::new("bash")
+        .arg(&script)
+        .env("HARMONY_CONTAINER_TOOL", container_tool()?)
+        .stderr(std::process::Stdio::inherit())
+        .output()?;
+    let text = String::from_utf8(output.stdout)?;
+    match text.lines().last() {
+        Some(tag) if output.status.success() && !tag.is_empty() => Ok(tag.to_owned()),
+        _ => Err(format!("{} failed; see its output above", script.display()).into()),
+    }
+}
+
 fn container_tool() -> Result<&'static str> {
     for tool in ["docker", "podman"] {
         if Command::new(tool)
@@ -142,7 +182,7 @@ fn recipe(language: Language, context: &Path, command: &[String]) -> Result<Stri
                 if !binary.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)) { return Err("invalid Rust package name".into()); }
                 format!("RUN cargo add antithesis-instrumentation@=0.1.0 && printf '\\nuse antithesis_instrumentation as _;\\n' >> src/main.rs && target=\"$(rustc -vV | sed -n 's/^host: //p')\" && cargo build --release --locked --target \"$target\" && cp \"target/$target/release/{binary}\" /out/application\n")
             },
-            Language::Go => "RUN mkdir -p /out/app-symbols /out/app-stdlib && bash /build/configure-stdlib.sh /build/sdk \"$(go list -m)\" /out/app-stdlib > /out/app-stdlib/instrumentation.env && source /out/app-stdlib/instrumentation.env && ANTITHESIS_SDK_MODULE_DIR=/build/sdk ANTITHESIS_SYMBOLS_DIR=/out/app-symbols ANTITHESIS_SYMBOL_PREFIX=application go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/application .\n".into(),
+            Language::Go => "RUN mkdir -p /out/app-symbols /out/app-stdlib && bash /build/configure-instrumentation.sh /build/sdk /out/app-stdlib . > /out/app-stdlib/instrumentation.env && source /out/app-stdlib/instrumentation.env && ANTITHESIS_SDK_MODULE_DIR=/build/sdk ANTITHESIS_SYMBOLS_DIR=/out/app-symbols ANTITHESIS_SYMBOL_PREFIX=application go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/application .\n".into(),
             _ => unreachable!(),
         }
     };
@@ -154,40 +194,124 @@ fn recipe(language: Language, context: &Path, command: &[String]) -> Result<Stri
     Ok(format!("FROM harmony-language-{name}-builder:local AS application\nWORKDIR /app\nCOPY . /app\n{build}RUN mkdir -p /out/app-symbols && cp /out/application /out/app-symbols/application && nm --defined-only /out/application | awk '$2 ~ /[tT]/ {{print $1 \\\"\\t\\\" $3}}' > /out/app-symbols/native.sym.tsv && sha256sum /out/application | awk '{{print $1 \\\"  /opt/harmony/application\\\"}}' > /out/app-attestation\nFROM {runtime}\nCOPY --from=application /out/application /opt/harmony/application\nCOPY --from=application /out/app-symbols/ /symbols/\n{go_symbols}COPY --from=application /out/app-attestation /tmp/app-attestation\nRUN cat /tmp/app-attestation >> /symbols/harmony-instrumented-events && rm /tmp/app-attestation\nCMD [\\\"/opt/harmony/application\\\"]\n").replace("\\\"", "\""))
 }
 
-pub fn init(path: &Path, language: Option<Language>, image: Option<String>) -> Result<()> {
+pub fn init(path: &Path, language: Option<Language>, input: Option<String>) -> Result<()> {
     use std::io::Write;
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)?;
-    let app_command = match language {
-        Some(Language::Python) => "['/opt/python/bin/python3.14', '/app/main.py']",
-        Some(Language::Java) => "['/opt/java/bin/java', '-jar', '/app/app.jar']",
-        _ => "['/opt/harmony/application']",
+    let directory = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
     };
-    let language = language
-        .map(|language| {
-            format!(
-                "\n[build]\nlanguage = {:?}\ncontext = '.'\n",
-                language.name()
-            )
-        })
-        .unwrap_or_default();
-    let image = image.unwrap_or_else(|| "harmony-app:local".into());
-    let text = format!(
-        "image = {}\nexecutions = 1000\nram_mib = 1024\n{language}\n[nodes.app]\ncommand = {app_command}\n",
-        toml::Value::String(image)
-    );
-    let legacy: Config = toml::from_str(&text)?;
+    let dockerfile = match &input {
+        Some(input) if is_dockerfile(Path::new(input)) => Some(PathBuf::from(input)),
+        None if language.is_none() => ["Dockerfile", "Containerfile"]
+            .into_iter()
+            .map(|name| directory.join(name))
+            .find(|path| path.is_file()),
+        _ => None,
+    };
+    let mut legacy = Config::default();
+    if let Some(dockerfile) = dockerfile {
+        let dockerfile = fs::canonicalize(dockerfile)?;
+        let context = build_context(&dockerfile);
+        let base = fs::canonicalize(directory)?;
+        legacy.image = Some(format!("harmony-{}:local", image_name(&dockerfile)));
+        legacy.build.dockerfile = Some(relative(&dockerfile, &base));
+        legacy.build.context = Some(relative(&context, &base));
+    } else {
+        let skeleton = language.is_some() || input.is_none();
+        legacy.image = Some(input.unwrap_or_else(|| "harmony-app:local".into()));
+        if let Some(language) = language {
+            legacy.build.language = Some(language);
+            legacy.build.context = Some(".".into());
+        }
+        if skeleton {
+            let command = match language {
+                Some(Language::Python) => vec!["/opt/python/bin/python3.14", "/app/main.py"],
+                Some(Language::Java) => vec!["/opt/java/bin/java", "-jar", "/app/app.jar"],
+                _ => vec!["/opt/harmony/application"],
+            };
+            legacy.nodes.insert(
+                "app".into(),
+                super::config::Node {
+                    command: command.into_iter().map(str::to_owned).collect(),
+                },
+            );
+        }
+    }
     let mut shared = legacy.shared()?;
-    shared.workload.options.retain(|_, value| match value {
+    prune(&mut shared.workload.options);
+    let text = toml::to_string_pretty(&shared)?;
+    file.write_all(text.as_bytes())?;
+    Ok(())
+}
+
+fn prune(table: &mut toml::Table) {
+    for (_, value) in table.iter_mut() {
+        if let toml::Value::Table(inner) = value {
+            prune(inner);
+        }
+    }
+    table.retain(|_, value| match value {
         toml::Value::Array(values) => !values.is_empty(),
         toml::Value::Table(values) => !values.is_empty(),
         _ => true,
     });
-    let text = toml::to_string_pretty(&shared)?;
-    file.write_all(text.as_bytes())?;
-    Ok(())
+}
+
+fn is_dockerfile(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    path.is_file()
+        && (["dockerfile", "containerfile"].contains(&lower.as_str())
+            || lower.starts_with("dockerfile.")
+            || lower.ends_with(".dockerfile")
+            || lower.ends_with(".containerfile"))
+}
+
+fn build_context(dockerfile: &Path) -> PathBuf {
+    let parent = dockerfile.parent().unwrap_or(Path::new("/"));
+    parent
+        .ancestors()
+        .find(|directory| directory.join(".git").exists())
+        .unwrap_or(parent)
+        .to_path_buf()
+}
+
+fn image_name(dockerfile: &Path) -> String {
+    let name = dockerfile
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or("app")
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "-_.".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let name = name.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    if name.is_empty() {
+        "app".into()
+    } else {
+        name.into()
+    }
+}
+
+fn relative(path: &Path, base: &Path) -> PathBuf {
+    match path.strip_prefix(base) {
+        Ok(inner) if inner.as_os_str().is_empty() => PathBuf::from("."),
+        Ok(inner) => inner.to_path_buf(),
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 pub fn language(explicit: Option<String>, directory: &Path) -> Result<Option<Language>> {
@@ -231,5 +355,48 @@ mod tests {
             toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         config.validate().unwrap();
         assert!(init(&path, None, None).is_err());
+    }
+
+    #[test]
+    fn a_dockerfile_input_builds_from_the_enclosing_repository_with_the_image_bundle() {
+        let repository = tempfile::tempdir().unwrap();
+        fs::create_dir(repository.path().join(".git")).unwrap();
+        let target = repository.path().join("targets/kv store");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("Dockerfile"), "FROM scratch\n").unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("harmony.toml");
+        init(
+            &path,
+            None,
+            Some(target.join("Dockerfile").display().to_string()),
+        )
+        .unwrap();
+        let mut shared: crate::config::Config =
+            toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        shared.workload.package = "faults".into();
+        let config = Config::from_shared(&shared).unwrap();
+        assert_eq!(config.image.as_deref(), Some("harmony-kv-store:local"));
+        assert_eq!(
+            config.build.dockerfile,
+            Some(fs::canonicalize(target.join("Dockerfile")).unwrap())
+        );
+        assert_eq!(
+            config.build.context,
+            Some(fs::canonicalize(repository.path()).unwrap())
+        );
+        assert!(config.nodes.is_empty());
+        assert!(config.build.language.is_none());
+    }
+
+    #[test]
+    fn only_harmony_runtime_arguments_select_the_runtime_image() {
+        assert!(declares_runtime_image(
+            "ARG HARMONY_RUNTIME_IMAGE=harmony-language-runtime:local\nFROM x\n"
+        ));
+        assert!(declares_runtime_image("arg HARMONY_RUNTIME_IMAGE\n"));
+        assert!(!declares_runtime_image(
+            "ARG HARMONY_RUNTIME_IMAGES=x\n# ARG HARMONY_RUNTIME_IMAGE\n"
+        ));
     }
 }
