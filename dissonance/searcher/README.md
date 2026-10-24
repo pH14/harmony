@@ -42,7 +42,19 @@ are removed on assignment or worker exit and rebuilt after execution or target
 recovery. They convey no ownership or integrity authority. Selection, seeds,
 planned finishes, checkpoint state, retention and admission remain independent
 of these hints. Workloads without locality keys use the same queue with empty
-advertisements.
+advertisements. Without a locality key, assignment takes the first idle worker
+by scanning idle bitmap words instead of all advertisements. Idle locality slots
+and the bitmap are allocated once per worker pool; an idle-to-assigned transition
+moves the value without allocating or freeing an idle-tree node. Matching ranks
+still inspect only idle workers, with the smaller identifier breaking ties. Each
+worker has one fixed assignment slot and its own condition variable. Queued job
+payloads occupy reusable arena slots; a preallocated min-heap moves only order
+keys and slot indexes. Assignment names the payload slot instead of moving a job
+between tree nodes. Native campaign tokens address these slots directly and
+reject an occupied slot before dispatch. Other private pool callers use an
+ordered key-to-slot adapter for duplicate detection. Assignment and claiming
+preserve earliest-key priority, locality rules and synchronous dispatch errors.
+These host structures sit outside the archive budget.
 
 A deterministic two-worker campaign fixture exercises initial and refill
 plan drains with an owned decoded-snapshot cache. It waits for actual queue idle
@@ -80,6 +92,18 @@ source endpoint across imports. Their actions are reconstructed under the curren
 executor; the source progress watermark remains inherited historical evidence
 bound to the source file bytes, not evidence produced by that reconstruction.
 Snapshot-root origins use their separate checkpoint contract.
+The coordinator requests the retained suffix prefix through `InputPolicy::expand_suffix_prefix`. Its default expands the complete suffix before truncating, retaining workload side effects and errors. A workload may override it only when discarded local draws have no observable effect.
+
+Admission keeps an uncertified action prefix without allocating a certificate
+vector. The first certificate materializes the full prefix, including missing
+earlier certificates, so mixed paths retain the same fail-closed validation.
+A single-preference slot rejects a losing candidate before allocating its
+preference mask. Accepted single-capacity, single-preference slots with at most
+one existing holder use a scalar temporary plan for the holder, displacement
+and winning preference. Other shapes retain generic ranked planning. Comparisons,
+population retirement, replacement counters, continuation effects and archive
+memory accounting keep the same order; the temporary plan is not retained state.
+
 For a workload with endpoint certificates, whole-tree import reconstructs each
 action between a parent and its imported candidate, including candidates loaded
 from source snapshots. It compares a checkpointed endpoint with the rebuilt
@@ -159,6 +183,20 @@ hash when nonempty, keeps at most the 4,096 heaviest keys, and reaches each draw
 through `DrawView` with the table version the draw names. Workloads identify
 their input policies and reject unknown or retired identifiers during replay.
 
+Worker replies use a private single-receiver queue with a mutex, deque and
+condition variable; startup status channels remain separate. Senders publish
+under the mutex and notify only after unlocking. The receiver drains queued
+replies before reporting that every sender exited, and last-sender destruction
+wakes a waiting receiver even during unwinding. Closing the receiver rejects
+subsequent sends and releases queued payloads outside the mutex. Queue poisoning
+fails the transport rather than presenting incomplete replies as success.
+Indexed campaigns fallibly reserve reply storage for their fixed in-flight
+window. The reservation window bounds actual outstanding replies, while other
+private pool callers retain their existing unbounded send semantics; this
+storage reservation is not a process memory guarantee. Transport changes do not
+alter keyed replies, ordered admission or worker recovery. Their CPU effect
+requires measurement.
+
 The worker pool starts before the bootstrap. The coordinator bootstraps while
 every worker but the first builds its target, and the first worker builds its
 target after the bootstrap target is dropped, so a campaign never holds more
@@ -167,14 +205,162 @@ worker reports its startup result before the coordinator selects or dispatches
 a job. If several workers fail to start, the lowest worker number determines
 the reported error regardless of host timing.
 
-Workers pull jobs from one shared queue ordered by planned finish, so an idle
-worker takes the queued job that admission reaches first while another worker
-is still busy. A short job reserved after longer ones runs before them,
+Workers share a queue ordered by planned finish, so an idle worker takes the
+queued job that admission reaches first while another worker is still busy.
+Each new assignment notifies only its chosen worker's condition variable;
+an awake worker taking its own assignment needs no notification. Adding backlog
+when no worker is idle sends no notification. Assignment and
+the worker's check before waiting use the same queue mutex, and waiting
+atomically releases it, so an assigned job cannot miss its parked worker.
+Other workers never wait on that condition variable. Already assigned workers
+are absent from the idle set, so a burst cannot overwrite their slots or
+notify them twice. Queue close wakes every worker; an unexpected worker exit
+also wakes the remaining workers. Normal exits after close avoid repeated
+broadcasts. The queue keeps the same priority and locality rules without
+broadcasting on dispatch.
+A short job reserved after longer ones runs before them,
 because admission needs its result first. The coordinator dispatches each job
-when it reserves it, so the admission window alone limits the jobs that are
-queued, running or finished but not yet admitted. Memory held by finished
-results is outside the archive's logical budget and must be measured in host
-RSS. Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
+when it reserves it, including between individual admissions unlocked by a
+buffered-result burst. Workers can start the replacement while the coordinator
+admits the next result. A fresh native reservation goes directly to the worker
+queue; stepped or resumed jobs retain the coordinator's ordered pending-dispatch
+queue. Existing queued jobs and a fresh reservation are dispatched together in
+priority order. The coordinator also refills the queue between received
+replies, so draining a ready reply channel does not defer dispatch. The admission
+window limits the automatic runner's total jobs that are queued, running or
+finished but not yet admitted. Public stepped callers preserve the pending-only
+`reserve_next` limit: explicitly reserving more after an out-of-order completion
+can exceed that total until admission catches up. A reusable reservation arena
+owns pending metadata and the eventual outcome. A small unordered ID-to-token
+map preserves efficient arbitrary stepped and selected-admission requests;
+large pending/completed values never occupy its buckets. Native dispatch and
+reply envelopes carry a private slot/generation token alongside the unchanged
+logical planned finish and reservation identity. Tokens and both logical order
+fields are checked before observer or admission-watch callbacks. Ordered
+admission addresses the arena directly, borrows pending metadata in place and
+drops it in place after use. Reuse advances the generation; overflow is a normal
+error, never a wrapped token. No token or allocation order enters serialized
+JobSpec, JobOutcome, stream records or checkpoints.
+
+The planned-admission min-heap stores small order keys and tokens, separately
+from the pool's queued-job priority view. Checkpoint records remain sorted by
+logical reservation identity. A linear heap/arena bijection check rejects stale,
+duplicate or mismatched entries using one temporary bit per arena slot, rounded
+to whole u64 words. Checkpoint projection reads pending metadata in either slot
+state, stores no completed outcome, and dispatches every in-flight job again on
+restore. A normal native run preallocates `min(window, execution_budget)`
+reservation and queue slots. A restored checkpoint can contain more jobs after
+explicit stepped refills; its initial capacity is the greater of that bound and
+the actual restored job count. Stepped growth follows live reservations, never
+the largest sparse reservation ID. Impossible initial capacities return normal
+allocation errors instead of overflowing a collection. Reservation slots, both
+small-key heaps, ID adapters, queued payload slots, worker assignment/locality
+arrays and checkpoint-validation scratch are host pipeline memory outside the
+archive budget; arbitrary result and snapshot payloads are accounted separately.
+A separate pending count preserves stepped callers' reservation limit, while
+completion gauges include immediately admitted and held results. No hash-map
+iteration affects admission, selection, stream records or checkpoint order.
+The native pool writes the header inline, then moves owned typed records to two
+fixed serializers and one ordered relay. Batch sequences alternate serializers;
+each serializer has six queued commands and one queued result. The relay reads
+only the next expected serializer result, hashes its complete-record bytes, and
+publishes through one output slot to the coordinator's borrowed sink, which need
+not be `Send`. Twelve command slots, two active serializers, two result slots,
+one active relay batch and one output slot bound accepted storage to eighteen
+batches, or 288 records, plus sixteen producer-staged or awaiting-enqueue records. These count bounds
+do not bound arbitrary payload or serialized byte sizes. Later completion never
+releases producer storage before ordered sink consumption, and no reorder map
+or per-record boxed task is used. Byte and empty record-vector buffers recycle.
+
+Each batch has at most sixteen records. Partial batches are submitted after one
+millisecond when output is next pumped, and on finish or error cleanup; this is
+not a one-millisecond delivery guarantee. While waiting for results, the
+coordinator uses five-millisecond receive timeouts to pump output. Serializers
+may encode and dispose later values speculatively. Only the relay publishes
+bytes or chooses failure order: an earlier batch's complete prefix and first
+record error precede every later failure. No digest is returned on a serializer,
+relay, transport, sink or cleanup failure. An arbitrary sink can write partial
+bytes before returning an I/O error; those bytes cannot be rolled back, and
+complete-line output is not promised on sink failure. Sink failure closes inputs and the
+borrowed-output receiver before joining; normal finish drains, joins and flushes.
+Browser and stepped coordinators retain inline encoding.
+
+Logical record serialization must be a deterministic function of the owned
+value, including its error. Serialization and destruction callback scheduling,
+thread identity and cross-record order are unspecified. Each record's own
+cleanup still precedes serialization, and its record destruction follows it.
+Owned payloads are destroyed exactly once, including unpublished tails. Stateful
+global-counter serializers do not satisfy this contract. Campaign records use
+derived serialization of owned scalar/key/action fields, without reading mutable
+observers or scheduling state while encoding.
+
+Stream telemetry separates `serializers[0]`, `serializers[1]` and `relay`, with
+Linux TID, optional thread CPU/run-wait, work wall time and channel waits.
+`encode_ns` is summed serializer work wall time, not elapsed pipeline wall or
+CPU. Published background record/byte counts exclude speculative later output.
+`worker_cpu_ns` and `worker_cpu_wait_ns` are totals over all three threads only
+when every component is available; use them for total/shared-auxiliary service,
+not as a single encoder bottleneck. With three actually separate auxiliary cores,
+a per-task stage model uses `1/max(E0,E1,H)` for serializer and relay CPU, not
+blindly twice the inverse summed serializer cost. Shared cores also pay all
+three costs and other auxiliary work. Overflow flags invalidate affected totals;
+missing CPU counters remain null. These threads alone prove no capacity target.
+
+The public result aliases resolve to storage parameterized by their actual field
+types, so owned static payloads do not require the workload type itself to be
+static. Their serde shapes and diagnostic names remain unchanged. Result literals
+and result-only generic hash helpers require an explicit workload carrier such
+as `CampaignJobResult::<G>` or `postcard_result_sha256::<G>`.
+
+Postcard SHA-256 hashing streams freshly serialized bytes directly into the
+hash. Each call retains no digest or input cache and changes neither the
+postcard representation nor integrity-check boundaries.
+
+Each job record carries the original spent job-result vectors as encoder-owned
+cleanup data. Admission mutably borrows those vectors, copies actions and
+milestones, and takes only accepted snapshots. Duplicate or rejected incoming
+snapshots return to their original candidate; nonviable candidates remain there.
+No snapshot is cloned for cleanup, and snapshot retirement, retention accounting
+and pin release remain on the coordinator. A serializer disposes this payload
+before serializing its record; cleanup data never enters JSON or the stream hash.
+Inline coordinators perform the same disposal before writing the line without
+requiring their cleanup data to be static or creating a thread. Only native
+background entry points require static action, milestone and observation types;
+snapshots also satisfy the immutable publisher's owned static contract.
+
+Observations and incoming snapshots are owned data. Workloads must not use their
+destruction thread or timing to affect evidence, search decisions or other
+observable campaign behavior; both are unspecified. Evidence and certificate
+callbacks finish before candidate ownership changes. The existing record-count
+bounds also bound the number of retained job-result payloads, whose observation,
+action and unused snapshot allocations have variable size. This host pipeline
+storage is outside the archive memory budget, so that budget does not bound
+process RSS or bytes retained by a stalled encoder.
+
+Cleanup, serialization and record destruction have separate panic boundaries.
+A cleanup failure prevents serialization of the current record, and any current
+serialization or destruction failure preserves only earlier complete lines.
+Unprocessed staged, queued and in-batch envelopes guard their cleanup and record
+destruction separately, preserving the first failure or an existing unwind and
+closing channels before joining. This does not guarantee recovery from multiple
+panics inside one aggregate payload destructor.
+
+`StreamEncoder` places the ordered relay, while `StreamSerializer(0)` and
+`StreamSerializer(1)` place the two serializers. A placement failure or panic
+on any of these threads fails startup before dispatch. Their stream CPU totals
+are outside target-worker execution totals. Sink writes and backpressure remain
+coordinator work and can nest inside its stream-write wall span; do not add
+those wall measurements together.
+
+Stream telemetry also reports coordinator sink writes and final flush,
+producer backpressure, accepted outstanding record peak, batch count and size,
+and the largest reusable buffer capacity. `records_in_flight_peak` excludes
+up to sixteen producer-staged or awaiting-enqueue records. Published
+`background_records`, `background_bytes` and `sink_bytes` exclude the inline
+header although the digest includes it; evaluator `stream_bytes_generated`
+counts the whole stream. Finished results remain outside the archive's logical
+budget, and their variable memory must be measured in host RSS.
+Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
 when finished results wait on an earlier job and `idle_no_job_ns` otherwise.
 Worker execution errors also wait for their reservation's planned admission;
 the coordinator can record every earlier successful job and its checkpoint
@@ -215,6 +401,27 @@ and rejects an archive that is still over its limit. Because of that lag, the
 archive's resident bytes are not checked against the whole budget during the
 campaign.
 
+Entry counters, selection flags, cell handles and replay-parent indices occupy
+one named state row per entry, separate from cold snapshot, lineage and
+deepest-leaf data. The row occupies 64 bytes on 64-bit hosts and 56 bytes on
+32-bit WASM; its memory charge uses the target's actual type size. Admission
+assigns the known dense parent directly. Compaction remaps surviving parents,
+using the missing-parent sentinel when ancestor metadata was dropped; restore
+checks identity-index bijection and parent-before-child edges before using any
+row. Call `Archive::is_active` to query activity.
+
+Cells store counters and holder rankings together in a dense arena. Ordered
+cell keys and tier places resolve to stable arena IDs; entries retain their
+cell IDs so admission accounting reaches both structures without repeating
+composite-key lookups. An inactive historical cell retains its counters but
+releases its holder allocations. History compaction rebuilds IDs and entry
+handles and clamps arena capacity to its surviving length. Checkpoint format
+v13 stores this layout and validates every index, entry handle, tier edge and
+holder key before restoring runtime state. The memory charge includes entry
+rows, the arena and ordered indexes. Its changed structural bound can
+change eviction timing under a tight memory budget; seed and fixed-window
+reproducibility still applies within this layout.
+
 The archive charges its own heap from logical counts: entries, stored suffix
 actions, live prefix nodes, slots, cells, active entries, tiers, pins, landing
 markers, continuation edges and shared snapshot allocations. A checkpoint
@@ -227,11 +434,10 @@ node but the root holds at least 5, so a set of maps holding n elements uses at
 most n/5 nodes plus one per map. Each prefix node is charged one child-map node.
 The selector's weighted sets keep freed slots until the selector index is
 rebuilt, and compaction rebuilds it, so freed slots are charged as one per
-inactive entry. Compaction shrinks the entry columns to their length so the
-doubling bound holds afterwards. Each resident snapshot also charges its
-reference-count block. On synthetic archives these charges sit 15-50% above the
-measured heap; the `memory_tests` unit tests count the archive's allocations and
-fail when any part exceeds its charge. Allocator fragmentation and heap a
+inactive entry. Compaction clamps state rows and cold entry columns to their length through
+boxed slices so the doubling bound holds afterwards. Each resident snapshot also charges its
+reference-count block. The `memory_tests` unit tests count the archive's
+allocations and fail when any part exceeds its charge. Allocator fragmentation and heap a
 workload's snapshot charge omits stay outside the archive's limit and show only
 in RSS.
 
@@ -519,6 +725,14 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
+Active tiers cache their exact Debug progress labels for policy lookups. The cache
+is excluded from checkpoints and rebuilt on restore; historical policy counters
+remain keyed by their original strings, including collisions between unequal
+progress values. Inactive tiers format labels on demand. Each active tier owns
+one boxed label, charged by its byte length and the normal heap bound; removal
+releases it, so the cache does not accumulate with historical tiers. This extra
+selector storage can change memory-budget maintenance at tight limits.
+
 One selector exists, `tier_progress_cascade_pace_yield_cell_recent_count_decay_v2`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
@@ -590,12 +804,32 @@ holders, so searches that leave the cell start from them. The other draws weigh 
 preferences draws every holder that way. Half of tier draws first try a recent-arrival window: the newest 256
 selectable entries, deduplicated by cell, limited to the drawn tier and cells
 with fewer than 32 draws since their last productive reset. These cells use
-the same count weights and holder selection. An empty window falls back to
+the same count weights and holder selection. Recent candidates use a cached sorted,
+deduplicated vector bounded by those 256 entries. Active membership changes update the entering and leaving holders, refilling
+from the next newest active entry when needed. Per-cell holder counts preserve
+deduplication as holders enter and leave the window. Selection and cell resets
+update cached weights by binary search. Repeated selections and admissions avoid
+rescanning and looking up all 256 cells. Slots that retain one holder per
+preference select their winners in one pass per preference, preserving the
+preference, action-cost and entry-ID tie breaks without allocating and sorting
+intermediate member and order vectors. The cache is
+rebuilt after checkpoint restore and compaction, and its bounded allocation is
+included in selector memory accounting. Tier weighting sums the equal
+promoted prefix, at most eight distinct geometric weights and the unit-weight
+tail directly, preserving the original random draw and cumulative boundaries
+without scanning every tier to total its weight. An empty window falls back to
 the full tier; the other half always uses the full tier. The window derives
 from the existing ordered active index and saved counts, so it adds no
 checkpoint state. `recent_selections` records draws through this path. There
 is no retirement: a cell that stops producing keeps drawing at a share that only
 shrinks with its count.
+
+Tier accounting borrows existing run counters and formats progress labels into
+128 bytes of stack storage, growing a temporary string only for longer labels.
+Stored labels and checkpoint/report bytes keep the same debug representation.
+Entry-column heap bounds memoize their pure count-to-bytes formula separately
+for the liveness anchor and current population. The two inline scalar pairs add
+no heap allocation or checkpoint state and leave the logical heap formula unchanged.
 
 A cell's draw count resets to zero when an arrival from another cell
 displaces a holder it strictly outranks under a preference, so a place
@@ -778,8 +1012,11 @@ The live progress sidecar gets a line at the first execution and every 100
 executions until 204,800. After that the step between lines doubles each time
 the executions double, so each doubling adds 1,024 lines, the same bound the
 progress curve keeps. A 250-million-execution run writes about 12,500 lines.
-The cadence depends only on the execution count, so a resumed run writes the
-same lines as an uninterrupted one.
+The cadence depends only on the cumulative execution count.
+
+The native evaluator buffers progress records in 8 KiB and flushes at completion,
+so sidecar freshness has no wall-time guarantee and a hard kill can lose the buffered
+tail. The independent live feed does not depend on sidecar emission.
 
 Progress sidecars carry objective workload evidence, actual admitted execution
 work, terminal endpoint and execution-failure totals, final totals, logical
@@ -794,9 +1031,46 @@ include time the coordinator thread waits for a CPU, so coordinator work per
 job is `coordinator_cpu_ns` over admissions. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
 
+The independent process-start `HARMONY_WORKER_CPU_PROFILE` presence switch
+measures each native worker's `execute_cpu` around the actual execute call and
+its panic catcher. `HARMONY_COORDINATOR_PROFILE` alone enables only coordinator
+diagnostics; set both switches for full diagnostics. Neither set is the normal
+default, and a present value such as `0` still enables its switch. Each actual
+worker reports host-only `profile_mode`: `off`, `coordinator_only`, `worker_only`
+or `coordinator_and_worker`. These cached-role labels describe requested
+observability, not successful CPU coverage, and never enter logical reports,
+streams or checkpoints. Worker-only collection leaves verbose coordinator clocks
+disabled while retaining the existing whole coordinator and stream-role counters.
+The execute boundary includes task restore, reconstruction, required snapshot
+capture, observations and execution callbacks;
+it excludes startup, idle/queue waits, reply transport and post-job target
+telemetry. Calls, valid samples, errors and panics are separate, and coverage
+must match worker jobs. Missing, backwards, overflowing or unsupported samples
+invalidate completeness rather than standing in for zero. This is worker CPU
+per submitted job, not guest-only cycles or an independently qualified native
+service floor.
+
+Detailed coordinator phase clocks are opt-in through the process-start
+`HARMONY_COORDINATOR_PROFILE` variable. Without it, public phase spans are null and `timing_complete` is false;
+resuming any segment without detailed timing also leaves that flag false.
+Job counters, receive/idle waits and the optional coordinator/encoder CPU
+counters remain available independently of detailed profiling.
+Search-checkpoint layout v13 retains the timing-coverage flag with the profile.
+
 The campaign report carries `telemetry`, the host measurements that explain
 where a run's time went. It records bootstrap, search, and persistence wall
-time; the coordinator phase durations; and the coordinator's receive time,
+time. Native `dispatch_phase` measures wall time and optional coordinator host
+counters from the worker-readiness barrier, before the first reservation, through
+final admission. It excludes live-observer construction, encoder startup and
+worker readiness. The whole `coordinator_host` counter starts at coordinator
+construction and is sampled after final archive compaction, stream draining,
+integrity verification, report construction and snapshot-checkpoint construction.
+It includes coordinator startup, dispatch and finalization CPU, and excludes the
+evaluator's subsequent witness verification. Dispatch CPU is a subset of this
+whole counter and must not be added to it. Unsupported scheduler statistics remain
+null. Dispatch-phase idle counters use the same readiness boundary.
+Stepped coordinators omit this phase. The report also records
+the coordinator phase durations and the coordinator's receive time,
 split into time when every worker was running and time when finished results
 waited for an earlier result's admission. It also records how many results
 were held for admission order and for how long. Each worker record holds boot,
@@ -806,6 +1080,11 @@ wait time, and the workload's own counters from `TargetExecution::telemetry`,
 which the report also sums across workers. Report equality and the report's
 serialized form leave telemetry out, so a replayed report stays byte-identical;
 a caller that wants it writes it separately.
+
+Admission reuses a scratch action vector between jobs, retaining at most 64
+actions of capacity. This host scratch space is outside the archive's logical
+budget and checkpoint state; oversized temporary vectors are released after
+the admission.
 
 Optional job observations use `run_campaign_checkpointed_observed`. Each workload
 owns its `CampaignTypes::JobObservation` schema; uninterested workloads use `()`.
@@ -837,8 +1116,17 @@ bound their own output rows; no internal per-job log is retained.
 starts fresh gauges and peaks. A result enters when the coordinator receives it
 and leaves when ordered admission removes it. Failed worker results count as one result
 with zero action/candidate records; candidates count every present optional
-candidate, including nonviable ones. Successful reports end with zero live
-counts; peaks include immediately admitted results as well as held results.
+candidate, including nonviable ones. Native workers count the actual result once
+after `CampaignWatch::run` returns, carrying two private 64-bit counts in the
+existing reply message. This adds sixteen bytes of reply metadata and moves the
+candidate scan into worker CPU accounting without changing emulator work or the
+public job result. Public stepped admission counts locally only after reservation,
+duplicate and queued-job validation. Both paths use the same completion validation
+and cache the counts for removal without another scan. Failed outcomes contribute
+zero action/candidate records. Reply metadata and cached counts are host queue
+storage outside the archive budget. Successful
+reports end with zero live counts; peaks include immediately admitted results
+as well as held results.
 Coordinator profile lines expose the same action/candidate live counts and all
 three peaks beside the existing `completed_buffered` result count.
 These are record counts, not heap bytes, unique snapshots or process RSS. They
@@ -868,8 +1156,11 @@ snapshot; a terminal target without a snapshot is reported as an execution
 error.
 
 `CampaignExecutionOptions::placement` is a `ThreadPlacement` hook the campaign
-calls once on the coordinator thread and once on each worker thread before
-that worker builds its target. A launcher uses it to pin threads to cores. A
+calls once on the coordinator thread, once on each of the two native serializer
+threads, once on the ordered relay, and once on each worker before target construction. A launcher
+uses it to pin threads to cores. The relay retains `StreamEncoder`; the serializers use indexed
+`StreamSerializer(0)` and `StreamSerializer(1)` roles so all three can be placed
+separately from the coordinator. A
 failed placement fails the campaign with its message. Placement changes only
 where threads run, so a placed campaign records the same stream as an unplaced
 one.
@@ -904,7 +1195,9 @@ reads the live archive, counters, random state, pending jobs or draw tables.
 The final publication is joined before `End`, the stream digest or a completed
 report. The direct coordinator owns the same publisher as the native pool wrapper.
 Its existing fallible reserve, admission, failure and finish operations hand back
-persistence errors; `plan` and admission watching keep their public signatures.
+persistence errors; native direct reservation and admission dispatch use the same
+integrity-first polling and error-retirement boundary. `plan` and admission
+watching keep their public signatures.
 An admission-gap refusal also joins the last image before returning. Errors from
 these state-mutating operations or the native pool wrapper join the writer and
 retain any primary execution error alongside a typed persistence failure.
@@ -1016,7 +1309,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 9; a checkpoint from another
+match. The search checkpoint format is version 13; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation
@@ -1108,11 +1401,21 @@ stream as the pool for the same seed and window.
 
 `run_campaign_watched` runs the same pool with a `CampaignWatch`. Its `run`
 hook wraps each job on the worker thread and returns a note with the outcome.
-Its `admitted` hook receives that note and the coordinator on the coordinator
-thread after each admission, and `start` runs once after the coordinator
-starts; an error from `start` stops the campaign. `watch_admissions` makes the
-coordinator keep each admission's decisions, and `take_admissions` drains them,
-so a watcher reads retained ids without parsing the stream.
+`start` runs once after the coordinator starts; an error stops the campaign.
+`prepare_admission` receives the note on the coordinator thread before its
+outcome enters the reorder buffer, while the reservation is still pending.
+`admitted` receives that note after processing the outcome, which can release
+zero or several logically ordered admissions. Notes and decisions are matched
+by reservation, independent of physical completion order.
+
+`watch_admissions` keeps every admission's decisions. A sampled watcher instead
+calls `watch_selected_admissions` and requests each detailed note's reservation
+with `request_admission` during `prepare_admission`. Requests outside selected
+mode or for unknown/non-pending reservations return false. The pending window
+bounds the requested IDs; requests survive completion reordering and are removed
+at logical admission. Only selected decisions are cloned. `take_admissions`
+drains collected records, and `unwatch_admissions` clears records and requests.
+These observer operations leave the stream, report and checkpoint unchanged.
 
 The crate builds for `wasm32-unknown-unknown`. On wasm32 the telemetry clock
 reads zero and progress lines carry `unix_time` 0, because `std::time::Instant`
@@ -1127,7 +1430,9 @@ cargo check --locked --manifest-path dissonance/Cargo.toml -p searcher --target 
 ## Browser adapters
 
 `Archive::entry_input` materializes an entry’s complete ancestral action tape
-for inspection or playback and rejects missing indices. A browser adapter can own
+for inspection or playback and rejects missing indices. These observational reads
+leave the serialized archive and its input-reconstruction counter unchanged; that
+counter measures internal search reconstruction work. A browser adapter can own
 execution snapshots outside the archive and use this read accessor for films.
 Weighted draws use `RomuDuoJrRand::below_u64` for 64-bit weight
 totals, so wasm32 does not truncate them through `usize`. This uses the same
@@ -1146,7 +1451,7 @@ preserve existing body bytes without first materializing unbounded temporary
 vectors. These contracts prepare bounded publication images; frozen state does
 not grant execution or import trust.
 
-Whole-search checkpoint v10 uses the same workload codec in a typed `HMSTORE2`
+Whole-search checkpoint v13 uses the same workload codec in a typed `HMSTORE2`
 append store. Snapshot frames refer to semantic shared keys using checksummed
 physical ranges. Shared frames carry earlier parent locators, so resume validates
 the reachable graph iteratively without a global dictionary in each checkpoint.
@@ -1164,7 +1469,7 @@ Appended unreferenced tails may remain after a fatal failure. The bounded immuta
 image and publication worker described above own persistence; synchronous pressure
 handback uses this same codec and publication order.
 
-Whole-search checkpoint v10 combines the current coordinator/archive body with
+Whole-search checkpoint v13 combines the current coordinator/archive body with
 shared snapshot frames. Both earlier v9 layouts are refused before decoding a
 body: upstream's flat snapshot store and the earlier shared-frame layout used
 by the integration branch. There is no legacy format fallback. The shared

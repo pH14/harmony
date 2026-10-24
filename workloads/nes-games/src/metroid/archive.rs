@@ -809,8 +809,8 @@ mod tests {
             }
             let first = held(&mut archive, Some(root), 1, 0x10, states[0]).expect("first");
             let second = held(&mut archive, Some(root), 2, 0x20, states[1]).expect("second");
-            assert!(archive.active[first], "reversed {reversed}");
-            assert!(archive.active[second], "reversed {reversed}");
+            assert!(archive.is_active(first), "reversed {reversed}");
+            assert!(archive.is_active(second), "reversed {reversed}");
         }
     }
 
@@ -832,8 +832,8 @@ mod tests {
             archive.entry_key(unfired).expect("unfired key").boss_damage,
             0
         );
-        assert!(archive.active[fired]);
-        assert!(archive.active[unfired]);
+        assert!(archive.is_active(fired));
+        assert!(archive.is_active(unfired));
     }
 
     #[test]
@@ -845,8 +845,8 @@ mod tests {
         let mut after = tourian(4, 11, 266, 6, 0);
         after.zebetite_hits_left = 7;
         let fired = held(&mut archive, Some(unfired), 1, 0x20, after).expect("fired");
-        assert!(archive.active[fired]);
-        assert!(archive.active[unfired]);
+        assert!(archive.is_active(fired));
+        assert!(archive.is_active(unfired));
     }
 
     #[test]
@@ -940,7 +940,7 @@ mod tests {
             )
             .is_none()
         );
-        assert!(archive.active[stocked]);
+        assert!(archive.is_active(stocked));
     }
 
     fn stock(

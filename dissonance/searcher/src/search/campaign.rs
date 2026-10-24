@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque},
     error::Error,
     fmt::Debug,
+    hash::Hash,
     io::{BufReader, Read, Write},
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
@@ -51,6 +53,11 @@ mod coordinator;
 
 pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
 
+#[path = "campaign_view.rs"]
+mod view;
+
+pub use view::CampaignView;
+
 pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
 
 pub trait CampaignWatch<G: Workload>: Sync {
@@ -61,6 +68,8 @@ pub trait CampaignWatch<G: Workload>: Sync {
         job: &JobSpec<G>,
         run: impl FnOnce() -> Result<JobOutcome<G>, Box<dyn Error>>,
     ) -> WatchedJob<G, Self::Note>;
+
+    fn prepare_admission(&self, _note: &Self::Note, _campaign: &mut CampaignCoordinator<'_, G>) {}
 
     fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>);
 
@@ -120,6 +129,8 @@ pub struct CampaignExecutionOptions {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlacedThread {
     Coordinator,
+    StreamEncoder,
+    StreamSerializer(u32),
     Worker(u32),
 }
 
@@ -218,7 +229,7 @@ pub trait CampaignTypes: Sync {
     type JobObservation: Copy + Send + 'static;
     type Target;
     type Action: Copy + Ord + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    type Key: ArchiveKey + Debug + Eq + Send + Sync;
+    type Key: ArchiveKey + Debug + Eq + Send + Sync + 'static;
     type Milestones: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Progress: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Snapshot: Clone
@@ -410,6 +421,19 @@ pub trait InputPolicy: CampaignTypes {
         previous: Option<&Self::Action>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         self.expand_recorded_or_live(run, state, mixture, None, mutation_seed, previous, false)
+    }
+    fn expand_suffix_prefix(
+        &self,
+        run: &Self::Run,
+        state: &DrawTables<Self::Action>,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+        previous: Option<&Self::Action>,
+        limit: u8,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        let mut suffix = self.expand_suffix(run, state, mixture, mutation_seed, previous)?;
+        suffix.truncate(usize::from(limit));
+        Ok(suffix)
     }
     fn expand_suffix_recorded(
         &self,
@@ -1147,7 +1171,7 @@ fn take_continuation<G: Workload + ?Sized>(
         let Some(parent_index) = core.archive.index_of_id(continuation.parent) else {
             continue;
         };
-        if !core.archive.active[parent_index] {
+        if !core.archive.is_active(parent_index) {
             continue;
         }
         let outranks = core.archive.outranks_slot_holders(
@@ -1278,17 +1302,14 @@ fn continuation_arrival<G: Workload>(
         })
 }
 
-fn retained_archive_indexes<G: Workload>(
-    core: &CoordinatorCore<G>,
-    decisions: &[CampaignAdmissionDecision],
-) -> Vec<usize> {
-    decisions
-        .iter()
-        .filter_map(|decision| match decision {
-            CampaignAdmissionDecision::Retained { id } => core.archive.index_of_id(*id),
-            _ => None,
-        })
-        .collect()
+fn retained_archive_indexes<'a, G: Workload>(
+    core: &'a CoordinatorCore<G>,
+    decisions: &'a [CampaignAdmissionDecision],
+) -> impl Iterator<Item = usize> + 'a {
+    decisions.iter().filter_map(|decision| match decision {
+        CampaignAdmissionDecision::Retained { id } => core.archive.index_of_id(*id),
+        _ => None,
+    })
 }
 
 fn progress_policy_is_supported(policy: &str) -> bool {
@@ -1374,22 +1395,33 @@ fn stop_reservations_after_work_budget(
         .is_some_and(|budget| bootstrap_execution_work.saturating_add(job_execution_work) >= budget)
 }
 
+pub type CampaignCandidate<G> =
+    CampaignCandidateData<<G as CampaignTypes>::Key, <G as CampaignTypes>::Snapshot>;
+pub type CampaignActionResult<G> = CampaignActionResultData<
+    <G as CampaignTypes>::Action,
+    <G as CampaignTypes>::Observations,
+    <G as CampaignTypes>::Milestones,
+    CampaignCandidate<G>,
+>;
+pub type CampaignJobResult<G> =
+    CampaignJobResultData<<G as CampaignTypes>::Observations, CampaignActionResult<G>>;
+
 #[derive(Deserialize, Serialize)]
-#[serde(bound = "")]
-pub struct CampaignCandidate<G: CampaignTypes + ?Sized> {
-    pub key: G::Key,
+#[serde(rename = "CampaignCandidate")]
+pub struct CampaignCandidateData<K, S> {
+    pub key: K,
     pub viable: bool,
-    pub snapshot: G::Snapshot,
+    pub snapshot: S,
 }
 
-impl<G: CampaignTypes + ?Sized> PartialEq for CampaignCandidate<G> {
+impl<K: PartialEq, S: PartialEq> PartialEq for CampaignCandidateData<K, S> {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key && self.viable == other.viable && self.snapshot == other.snapshot
     }
 }
-impl<G: CampaignTypes + ?Sized> Eq for CampaignCandidate<G> {}
+impl<K: Eq, S: Eq> Eq for CampaignCandidateData<K, S> {}
 
-impl<G: CampaignTypes + ?Sized> Clone for CampaignCandidate<G> {
+impl<K: Copy, S: Clone> Clone for CampaignCandidateData<K, S> {
     fn clone(&self) -> Self {
         Self {
             key: self.key,
@@ -1399,7 +1431,7 @@ impl<G: CampaignTypes + ?Sized> Clone for CampaignCandidate<G> {
     }
 }
 
-impl<G: CampaignTypes + ?Sized> Debug for CampaignCandidate<G> {
+impl<K: Debug, S: Debug> Debug for CampaignCandidateData<K, S> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignCandidate")
@@ -1411,16 +1443,18 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignCandidate<G> {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(bound = "")]
-pub struct CampaignActionResult<G: CampaignTypes + ?Sized> {
-    pub action: G::Action,
-    pub observations: Vec<G::Observations>,
-    pub milestones: G::Milestones,
+#[serde(rename = "CampaignActionResult")]
+pub struct CampaignActionResultData<A, O, M, C> {
+    pub action: A,
+    pub observations: Vec<O>,
+    pub milestones: M,
     pub outcome: crate::search::rollout::Outcome,
-    pub candidate: Option<CampaignCandidate<G>>,
+    pub candidate: Option<C>,
 }
 
-impl<G: CampaignTypes + ?Sized> PartialEq for CampaignActionResult<G> {
+impl<A: PartialEq, O: PartialEq, M: PartialEq, C: PartialEq> PartialEq
+    for CampaignActionResultData<A, O, M, C>
+{
     fn eq(&self, other: &Self) -> bool {
         self.action == other.action
             && self.observations == other.observations
@@ -1429,9 +1463,9 @@ impl<G: CampaignTypes + ?Sized> PartialEq for CampaignActionResult<G> {
             && self.candidate == other.candidate
     }
 }
-impl<G: CampaignTypes + ?Sized> Eq for CampaignActionResult<G> {}
+impl<A: Eq, O: Eq, M: Eq, C: Eq> Eq for CampaignActionResultData<A, O, M, C> {}
 
-impl<G: CampaignTypes + ?Sized> Clone for CampaignActionResult<G> {
+impl<A: Copy, O: Clone, M: Copy, C: Clone> Clone for CampaignActionResultData<A, O, M, C> {
     fn clone(&self) -> Self {
         Self {
             action: self.action,
@@ -1443,7 +1477,7 @@ impl<G: CampaignTypes + ?Sized> Clone for CampaignActionResult<G> {
     }
 }
 
-impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
+impl<A: Debug, O: Debug, M: Debug, C: Debug> Debug for CampaignActionResultData<A, O, M, C> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignActionResult")
@@ -1457,20 +1491,20 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(bound = "")]
-pub struct CampaignJobResult<G: CampaignTypes + ?Sized> {
-    pub preparation_failure: Option<Vec<G::Observations>>,
-    pub actions: Vec<CampaignActionResult<G>>,
+#[serde(rename = "CampaignJobResult")]
+pub struct CampaignJobResultData<O, R> {
+    pub preparation_failure: Option<Vec<O>>,
+    pub actions: Vec<R>,
 }
 
-impl<G: CampaignTypes + ?Sized> PartialEq for CampaignJobResult<G> {
+impl<O: PartialEq, R: PartialEq> PartialEq for CampaignJobResultData<O, R> {
     fn eq(&self, other: &Self) -> bool {
         self.preparation_failure == other.preparation_failure && self.actions == other.actions
     }
 }
-impl<G: CampaignTypes + ?Sized> Eq for CampaignJobResult<G> {}
+impl<O: Eq, R: Eq> Eq for CampaignJobResultData<O, R> {}
 
-impl<G: CampaignTypes + ?Sized> Clone for CampaignJobResult<G> {
+impl<O: Clone, R: Clone> Clone for CampaignJobResultData<O, R> {
     fn clone(&self) -> Self {
         Self {
             preparation_failure: self.preparation_failure.clone(),
@@ -1479,7 +1513,7 @@ impl<G: CampaignTypes + ?Sized> Clone for CampaignJobResult<G> {
     }
 }
 
-impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
+impl<O: Debug, R: Debug> Debug for CampaignJobResultData<O, R> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignJobResult")
@@ -1558,6 +1592,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     probe_refused: u64,
     pub(crate) mixture_energy: MixtureEnergy,
     suffix_jobs_in_flight: BTreeMap<(u64, u8), u32>,
+    admission_suffix: Vec<G::Action>,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1596,6 +1631,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             probe_refused: 0,
             mixture_energy: MixtureEnergy::default(),
             suffix_jobs_in_flight: BTreeMap::new(),
+            admission_suffix: Vec::new(),
         }
     }
 
@@ -2002,10 +2038,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         &mut self,
         workload: &G,
         parent_id: u64,
-        result: CampaignJobResult<G>,
+        mut result: CampaignJobResult<G>,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>), Box<dyn Error>> {
         let (sequence, decisions, _) =
-            self.admit_job_tracking(workload, parent_id, result, false, |_| false)?;
+            self.admit_job_tracking(workload, parent_id, &mut result, false, |_| false)?;
         Ok((sequence, decisions))
     }
 
@@ -2013,12 +2049,12 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         &mut self,
         workload: &G,
         parent_id: u64,
-        result: CampaignJobResult<G>,
+        result: &mut CampaignJobResult<G>,
         limited: bool,
         mut tracked_action: impl FnMut(&G::Action) -> bool,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>, DurationAdmission), Box<dyn Error>> {
         workload.verify_integrity()?;
-        let CampaignJobResult {
+        let CampaignJobResult::<G> {
             preparation_failure,
             actions,
         } = result;
@@ -2033,11 +2069,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             .ok_or("campaign job parent is no longer resident")?;
         if let Some(observations) = preparation_failure {
             self.execution_failures = self.execution_failures.saturating_add(1);
-            workload.merge_preparation_failure(&mut self.evidence, &observations);
+            workload.merge_preparation_failure(&mut self.evidence, observations);
             return Ok((sequence, Vec::new(), DurationAdmission::default()));
         }
         let mut current_parent = parent_index;
-        let mut pending_suffix = Vec::new();
+        let mut pending_suffix = std::mem::take(&mut self.admission_suffix);
         let mut pending_certificates = Vec::new();
         let mut previous_key = None;
         let mut decisions = Vec::new();
@@ -2059,8 +2095,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 .transpose()?
                 .flatten();
             pending_suffix.push(action.action);
-            pending_certificates.push(certificate);
-            workload.merge_action_evidence(&mut self.evidence, &action, sequence, || {
+            if certificate.is_some() || !pending_certificates.is_empty() {
+                pending_certificates.resize(pending_suffix.len() - 1, None);
+                pending_certificates.push(certificate);
+            }
+            workload.merge_action_evidence(&mut self.evidence, action, sequence, || {
                 let mut input = self
                     .archive
                     .materialize_input(current_parent)
@@ -2093,7 +2132,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 }
                 decisions.push(CampaignAdmissionDecision::Objective);
             }
-            if let Some(candidate) = action.candidate {
+            if let Some(candidate) = action.candidate.as_ref() {
                 let completed =
                     workload.complete_candidate_key(candidate.key, &candidate.snapshot)?;
                 if !candidate.viable {
@@ -2110,19 +2149,32 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 if certificate.is_some() && pending_certificates.iter().any(Option::is_none) {
                     return Err("certified campaign path lacks an action-prefix certificate".into());
                 }
+                let candidate = action
+                    .candidate
+                    .take()
+                    .expect("validated candidate is present");
                 let retained_before = self.archive.retained;
-                let (admitted, key) = self.archive.insert_after_certified(
-                    Some(current_parent),
-                    previous_key,
-                    sequence,
-                    ArchiveCandidate {
-                        suffix: pending_suffix.as_slice(),
-                        key: completed,
-                        milestones: action.milestones,
-                    },
-                    candidate.snapshot,
-                    Some(&pending_certificates),
-                )?;
+                let (admitted, key, unused) =
+                    self.archive.insert_after_certified_returning_unused(
+                        Some(current_parent),
+                        previous_key,
+                        sequence,
+                        ArchiveCandidate {
+                            suffix: pending_suffix.as_slice(),
+                            key: completed,
+                            milestones: action.milestones,
+                        },
+                        candidate.snapshot,
+                        (!pending_certificates.is_empty())
+                            .then_some(pending_certificates.as_slice()),
+                    )?;
+                if let Some(snapshot) = unused {
+                    action.candidate = Some(CampaignCandidate::<G> {
+                        key: candidate.key,
+                        viable: candidate.viable,
+                        snapshot,
+                    });
+                }
                 left_place |= key.place() != parent_place;
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
@@ -2169,6 +2221,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         if sequence.is_multiple_of(self.curve_interval) {
             self.push_curve_point();
             self.compact_progress_curve_if_needed();
+        }
+        pending_suffix.clear();
+        if pending_suffix.capacity() <= usize::from(SUFFIX_DOUBLING_LIMIT) {
+            self.admission_suffix = pending_suffix;
         }
         Ok((sequence, decisions, duration))
     }
@@ -2417,32 +2473,9 @@ fn stream_header<G: Workload>(
     }
 }
 
-struct StreamWriter<'a> {
-    sink: &'a mut dyn Write,
-    hasher: Sha256,
-}
-
-impl<'a> StreamWriter<'a> {
-    fn new(sink: &'a mut dyn Write) -> Self {
-        Self {
-            sink,
-            hasher: Sha256::new(),
-        }
-    }
-
-    fn write_line<T: Serialize>(&mut self, value: &T) -> Result<(), Box<dyn Error>> {
-        let mut line = serde_json::to_vec(value)?;
-        line.push(b'\n');
-        self.sink.write_all(&line)?;
-        self.hasher.update(&line);
-        Ok(())
-    }
-
-    fn finish(self) -> Result<String, Box<dyn Error>> {
-        self.sink.flush()?;
-        Ok(format!("{:x}", self.hasher.finalize()))
-    }
-}
+#[path = "campaign_stream.rs"]
+mod campaign_stream;
+use campaign_stream::StreamWriter;
 
 #[derive(Deserialize, Serialize)]
 struct CampaignCounters {
@@ -2603,6 +2636,8 @@ fn validate_duration_draw<G: Workload + ?Sized>(
 
 #[derive(Default, Deserialize, Serialize)]
 struct LiveCoordinatorProfile {
+    #[serde(default)]
+    timing_complete: bool,
     receive_wait_ns: u128,
     admission_ns: u128,
     bookkeeping_ns: u128,
@@ -2623,6 +2658,29 @@ struct LiveCoordinatorProfile {
 }
 
 impl LiveCoordinatorProfile {
+    fn new() -> Self {
+        Self {
+            timing_complete: profile_clock_enabled(),
+            ..Self::default()
+        }
+    }
+
+    fn telemetry_json(&self) -> Result<serde_json::Value, serde_json::Error> {
+        let mut value = serde_json::to_value(self)?;
+        if !self.timing_complete {
+            for field in [
+                "admission_ns",
+                "bookkeeping_ns",
+                "history_compaction_ns",
+                "stream_write_ns",
+                "selection_ns",
+            ] {
+                value[field] = serde_json::Value::Null;
+            }
+        }
+        Ok(value)
+    }
+
     fn note_dispatch<G: Workload + ?Sized>(
         &mut self,
         spec: &JobSpec<G>,
@@ -2662,12 +2720,22 @@ fn record_compaction_elapsed(
     }
 }
 
-fn profile_now() -> Moment {
-    now()
+pub(super) fn profile_clock_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some())
 }
 
-fn profile_elapsed(started: Moment) -> u128 {
-    started.elapsed().as_nanos()
+pub(super) fn worker_cpu_profile_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("HARMONY_WORKER_CPU_PROFILE").is_some())
+}
+
+fn profile_now() -> Option<Moment> {
+    profile_clock_enabled().then(now)
+}
+
+fn profile_elapsed(started: Option<Moment>) -> u128 {
+    started.map_or(0, |started| started.elapsed().as_nanos())
 }
 
 impl CampaignCounters {
@@ -2984,31 +3052,331 @@ struct PendingJob<G: Workload + ?Sized> {
 
 struct CompletedJob<G: Workload + ?Sized> {
     held_since: Option<Moment>,
-    pending: PendingJob<G>,
+    token: ReservationToken,
     outcome: Result<(CampaignJobResult<G>, u64, String), String>,
 }
 
-struct CompletedBuffer<K: Ord, V> {
-    entries: BTreeMap<K, V>,
+#[allow(clippy::disallowed_types)]
+type HostLookupMap<K, V> = std::collections::HashMap<K, V>;
+
+struct ReservationLookup<K, V> {
+    map: HostLookupMap<K, V>,
+}
+
+impl<K: Eq + Hash, V> ReservationLookup<K, V> {
+    #[cfg(test)]
+    fn with_capacity_and_hasher(
+        capacity: usize,
+        state: std::collections::hash_map::RandomState,
+    ) -> Self {
+        Self {
+            map: HostLookupMap::with_capacity_and_hasher(capacity, state),
+        }
+    }
+
+    fn get(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
+    }
+
+    fn remove(&mut self, key: &K) -> Option<V> {
+        self.map.remove(key)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ReservationToken {
+    slot: usize,
+    generation: u64,
+}
+
+struct AdmissionSchedule {
+    heap: BinaryHeap<Reverse<((u64, usize), ReservationToken)>>,
+}
+
+impl AdmissionSchedule {
+    fn try_new(capacity: usize) -> Result<Self, std::collections::TryReserveError> {
+        let mut heap = BinaryHeap::new();
+        heap.try_reserve(capacity)?;
+        Ok(Self { heap })
+    }
+    fn insert(&mut self, key: (u64, usize), token: ReservationToken) {
+        self.heap.push(Reverse((key, token)));
+    }
+    fn first(&self) -> Option<&(u64, usize)> {
+        self.heap.peek().map(|Reverse((key, _))| key)
+    }
+    fn first_token(&self) -> Option<ReservationToken> {
+        self.heap.peek().map(|Reverse((_, token))| *token)
+    }
+    fn pop_first(&mut self) {
+        self.heap.pop();
+    }
+    fn validate<P, V>(
+        &self,
+        reservations: &ReservationSlots<usize, P, V>,
+        finish: impl Fn(&P) -> u64,
+    ) -> Result<(), &'static str> {
+        if reservations.len() != self.len() {
+            return Err("search checkpoint reservation count differs");
+        }
+        let words = reservations.slots.len().div_ceil(64);
+        let mut seen = Vec::new();
+        seen.try_reserve_exact(words)
+            .map_err(|_| "search checkpoint validation capacity cannot be allocated")?;
+        seen.resize(words, 0_u64);
+        for Reverse(((planned, reservation), token)) in &self.heap {
+            let slot = reservations
+                .slot(*token)
+                .ok_or("search checkpoint lost an in-flight reservation")?;
+            let bit = 1_u64 << (token.slot % 64);
+            let word = &mut seen[token.slot / 64];
+            if slot.key != *reservation || finish(&slot.pending) != *planned || *word & bit != 0 {
+                return Err("search checkpoint in-flight schedule differs");
+            }
+            *word |= bit;
+        }
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.heap.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.heap.is_empty()
+    }
+}
+
+struct ReservationSlots<K: Eq + Hash + Copy, P, V> {
+    entries: ReservationLookup<K, ReservationToken>,
+    slots: Vec<ReservationCell<K, P, V>>,
+    free: Vec<usize>,
+    pending: usize,
+    admitting: usize,
+    inserted: Option<ReservationToken>,
     telemetry: CompletedBufferTelemetry,
     records: fn(&V) -> (u64, u64),
 }
 
-impl<K: Ord, V> CompletedBuffer<K, V> {
-    fn new(records: fn(&V) -> (u64, u64)) -> Self {
+struct ReservationCell<K, P, V> {
+    generation: u64,
+    entry: Option<ReservationSlot<K, P, V>>,
+}
+
+struct ReservationSlot<K, P, V> {
+    key: K,
+    pending: P,
+    completed: Option<BufferedResult<V>>,
+    admitting: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CompletedRecords {
+    actions: u64,
+    candidates: u64,
+}
+
+impl CompletedRecords {
+    fn of_result<G: CampaignTypes + ?Sized>(result: &CampaignJobResult<G>) -> Self {
         Self {
-            entries: BTreeMap::new(),
-            telemetry: CompletedBufferTelemetry::default(),
-            records,
+            actions: result.actions.len() as u64,
+            candidates: result
+                .actions
+                .iter()
+                .filter(|action| action.candidate.is_some())
+                .count() as u64,
         }
     }
 
-    fn insert(&mut self, key: K, value: V) -> Option<V> {
-        if self.entries.contains_key(&key) {
-            return Some(value);
+    fn after_watch<G: CampaignTypes + ?Sized, N>(
+        outcome: &Result<(JobOutcome<G>, N), String>,
+    ) -> Self {
+        outcome.as_ref().map_or_else(
+            |_| Self::default(),
+            |(outcome, _)| Self::of_result::<G>(&outcome.result),
+        )
+    }
+}
+
+struct BufferedResult<V> {
+    value: V,
+    actions: u64,
+    candidates: u64,
+}
+
+struct CompletedOutcome<G: Workload + ?Sized> {
+    held_since: Option<Moment>,
+    outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+}
+
+impl<K: Eq + Hash + Copy, P, V> ReservationSlots<K, P, V> {
+    #[cfg(test)]
+    fn new(records: fn(&V) -> (u64, u64), capacity: usize) -> Self {
+        Self::try_new(records, capacity).expect("test reservation capacity")
+    }
+
+    fn try_new(
+        records: fn(&V) -> (u64, u64),
+        capacity: usize,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        let mut entries = ReservationLookup {
+            map: HostLookupMap::new(),
+        };
+        entries.map.try_reserve(capacity)?;
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(capacity)?;
+        slots.resize_with(capacity, || ReservationCell {
+            generation: 0,
+            entry: None,
+        });
+        let mut free = Vec::new();
+        free.try_reserve_exact(capacity)?;
+        free.extend((0..capacity).rev());
+        Ok(Self {
+            entries,
+            slots,
+            free,
+            pending: 0,
+            admitting: 0,
+            inserted: None,
+            telemetry: CompletedBufferTelemetry::default(),
+            records,
+        })
+    }
+
+    fn token(&self, key: &K) -> Option<ReservationToken> {
+        self.entries.get(key).copied()
+    }
+
+    fn len(&self) -> usize {
+        self.slots.len() - self.free.len()
+    }
+
+    fn slot(&self, token: ReservationToken) -> Option<&ReservationSlot<K, P, V>> {
+        self.slots
+            .get(token.slot)
+            .filter(|cell| cell.generation == token.generation)
+            .and_then(|cell| cell.entry.as_ref())
+    }
+
+    fn slot_mut(&mut self, token: ReservationToken) -> Option<&mut ReservationSlot<K, P, V>> {
+        self.slots
+            .get_mut(token.slot)
+            .filter(|cell| cell.generation == token.generation)
+            .and_then(|cell| cell.entry.as_mut())
+    }
+
+    fn validate_pending(&self, token: ReservationToken, key: K) -> Result<(), &'static str> {
+        let slot = self
+            .slot(token)
+            .ok_or("campaign worker replied with a stale reservation token")?;
+        if slot.key != key {
+            return Err("campaign worker replied for another reservation");
         }
-        let (actions, candidates) = (self.records)(&value);
-        self.entries.insert(key, value);
+        if slot.completed.is_some() || slot.admitting {
+            return Err("campaign worker completed one reservation twice");
+        }
+        Ok(())
+    }
+
+    fn insert(&mut self, key: K, pending: P) -> Option<P> {
+        let entry = match self.entries.map.entry(key) {
+            std::collections::hash_map::Entry::Occupied(_) => return Some(pending),
+            std::collections::hash_map::Entry::Vacant(entry) => entry,
+        };
+        let index = self.free.pop().unwrap_or_else(|| {
+            let index = self.slots.len();
+            self.slots.push(ReservationCell {
+                generation: 0,
+                entry: None,
+            });
+            index
+        });
+        let cell = &mut self.slots[index];
+        assert!(cell.entry.is_none());
+        let token = ReservationToken {
+            slot: index,
+            generation: cell.generation,
+        };
+        cell.entry = Some(ReservationSlot {
+            key,
+            pending,
+            completed: None,
+            admitting: false,
+        });
+        entry.insert(token);
+        self.inserted = Some(token);
+        self.pending += 1;
+        None
+    }
+
+    fn pending(&self, key: &K) -> Option<&P> {
+        self.slot(self.token(key)?)
+            .filter(|slot| slot.completed.is_none() && !slot.admitting)
+            .map(|slot| &slot.pending)
+    }
+
+    #[cfg(test)]
+    fn metadata(&self, key: &K) -> Option<&P> {
+        self.slot(self.token(key)?).map(|slot| &slot.pending)
+    }
+
+    fn metadata_token_mut(&mut self, token: ReservationToken) -> Option<&mut P> {
+        self.slot_mut(token).map(|slot| &mut slot.pending)
+    }
+
+    #[cfg(test)]
+    fn complete(
+        &mut self,
+        key: K,
+        value: V,
+        validate: impl FnOnce(&P) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        self.complete_with_records(key, value, None, validate)
+    }
+
+    #[cfg(test)]
+    fn complete_with_records(
+        &mut self,
+        key: K,
+        value: V,
+        records: Option<CompletedRecords>,
+        validate: impl FnOnce(&P) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        let token = self
+            .token(&key)
+            .ok_or("campaign worker replied for an unknown reservation")?;
+        self.complete_token(token, key, value, records, validate)
+    }
+
+    fn complete_token(
+        &mut self,
+        token: ReservationToken,
+        key: K,
+        value: V,
+        records: Option<CompletedRecords>,
+        validate: impl FnOnce(&P) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        self.validate_pending(token, key)?;
+        let slot = self.slot(token).expect("validated reservation token");
+        validate(&slot.pending)?;
+        let CompletedRecords {
+            actions,
+            candidates,
+        } = records.unwrap_or_else(|| {
+            let (actions, candidates) = (self.records)(&value);
+            CompletedRecords {
+                actions,
+                candidates,
+            }
+        });
+        self.slot_mut(token)
+            .expect("validated reservation token")
+            .completed = Some(BufferedResult {
+            value,
+            actions,
+            candidates,
+        });
+        self.pending -= 1;
         let stats = &mut self.telemetry;
         stats.results_live = stats.results_live.saturating_add(1);
         stats.actions_live = stats.actions_live.saturating_add(actions);
@@ -3016,12 +3384,18 @@ impl<K: Ord, V> CompletedBuffer<K, V> {
         stats.results_peak = stats.results_peak.max(stats.results_live);
         stats.actions_peak = stats.actions_peak.max(stats.actions_live);
         stats.candidates_peak = stats.candidates_peak.max(stats.candidates_live);
-        None
+        Ok(())
     }
 
-    fn remove(&mut self, key: &K) -> Option<V> {
-        let value = self.entries.remove(key)?;
-        let (actions, candidates) = (self.records)(&value);
+    fn begin_admission(&mut self, token: ReservationToken) -> Option<V> {
+        let slot = self.slot_mut(token)?;
+        let BufferedResult {
+            value,
+            actions,
+            candidates,
+        } = slot.completed.take()?;
+        slot.admitting = true;
+        self.admitting += 1;
         let stats = &mut self.telemetry;
         stats.results_live = stats
             .results_live
@@ -3037,32 +3411,68 @@ impl<K: Ord, V> CompletedBuffer<K, V> {
             .expect("completed candidate accounting");
         Some(value)
     }
-}
 
-impl<K: Ord, V> std::ops::Deref for CompletedBuffer<K, V> {
-    type Target = BTreeMap<K, V>;
-    fn deref(&self) -> &Self::Target {
-        &self.entries
+    fn finish_admission(&mut self, token: ReservationToken) -> Result<(), &'static str> {
+        let cell = self
+            .slots
+            .get_mut(token.slot)
+            .ok_or("campaign admission lost its reservation")?;
+        if cell.generation != token.generation
+            || cell.entry.as_ref().is_none_or(|slot| !slot.admitting)
+        {
+            return Err("campaign admission lost its reservation");
+        }
+        let generation = cell
+            .generation
+            .checked_add(1)
+            .ok_or("campaign reservation generation overflow")?;
+        let key = cell
+            .entry
+            .as_ref()
+            .expect("validated admitting reservation")
+            .key;
+        cell.entry = None;
+        cell.generation = generation;
+        self.entries.remove(&key);
+        self.free.push(token.slot);
+        self.admitting -= 1;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn take_completed(&mut self, key: K) -> Option<(P, V)>
+    where
+        P: Clone,
+    {
+        let token = self.token(&key)?;
+        let pending = self.slot(token)?.pending.clone();
+        let value = self.begin_admission(token)?;
+        self.finish_admission(token)
+            .expect("reservation generation available");
+        Some((pending, value))
+    }
+
+    fn completed_len(&self) -> usize {
+        self.len() - self.pending - self.admitting
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
-fn completed_job_records<G: Workload + ?Sized>(job: &CompletedJob<G>) -> (u64, u64) {
-    completed_result_records(&job.outcome)
+fn completed_job_records<G: Workload + ?Sized>(job: &CompletedOutcome<G>) -> (u64, u64) {
+    completed_result_records::<G>(&job.outcome)
 }
 
 fn completed_result_records<G: CampaignTypes + ?Sized>(
     outcome: &Result<(CampaignJobResult<G>, u64, String), String>,
 ) -> (u64, u64) {
-    outcome.as_ref().map_or((0, 0), |(result, _, _)| {
-        (
-            result.actions.len() as u64,
-            result
-                .actions
-                .iter()
-                .filter(|action| action.candidate.is_some())
-                .count() as u64,
-        )
-    })
+    let counts = outcome.as_ref().map_or_else(
+        |_| CompletedRecords::default(),
+        |(result, _, _)| CompletedRecords::of_result::<G>(result),
+    );
+    (counts.actions, counts.candidates)
 }
 
 fn replay_suffix_limit(drawn: bool, recorded: Option<u8>) -> Result<Option<u8>, Box<dyn Error>> {
@@ -3253,7 +3663,7 @@ fn progress_record<G: Workload>(
             .then(|| G::retained_diagnostics(core.archive.retained_snapshots()))
             .flatten(),
         coordinator: profile
-            .map(|(coordinator, _)| serde_json::to_value(coordinator))
+            .map(|(coordinator, _)| coordinator.telemetry_json())
             .transpose()?,
         host_times: profile.map(|(_, host_times)| host_times),
         progress: Some(serde_json::to_value(G::aggregate_progress(&core.evidence))?),
@@ -3431,6 +3841,10 @@ pub fn run_campaign_checkpointed<G: Workload>(
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     run_campaign_checkpointed_with_options(
         workload,
@@ -3452,6 +3866,10 @@ pub fn run_campaign_checkpointed_with_options<G: Workload>(
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     run_campaign_checkpointed_observed(workload, config, origin, stream, progress, options, None)
 }
@@ -3467,6 +3885,10 @@ pub fn run_campaign_checkpointed_observed<G: Workload>(
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     run_campaign(
         workload,
@@ -3491,6 +3913,10 @@ pub fn run_campaign_watched<G: Workload, W: CampaignWatch<G>>(
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     run_campaign(
         workload, config, origin, stream, progress, options, watch, None,
@@ -3510,6 +3936,10 @@ fn run_campaign<G: Workload, W: CampaignWatch<G>>(
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: 'static,
 {
     crate::search::job_observation::bounded::<G::JobObservation>();
     let mut sink_disabled = false;
@@ -3538,7 +3968,8 @@ where
             let outcome = watch
                 .run(&job, || run_job(workload, config, target, &job))
                 .map_err(|error| error.to_string());
-            Ok((reservation, outcome))
+            let records = CompletedRecords::after_watch::<G, W::Note>(&outcome);
+            Ok((reservation, outcome, records))
         },
         |target| workload.telemetry(target),
         |target| workload.worker_locality(target),
@@ -3557,43 +3988,52 @@ where
                 progress.map(|sink| -> &mut dyn Write { sink }),
                 options,
             )?);
+            pool.configure_indexed(
+                campaign.reservation_capacity(),
+                |key: &(u64, usize, ReservationToken)| key.2.slot,
+            )?;
+            campaign.enable_background_stream(placement.cloned())?;
             watch.start(campaign)?;
             bootstrapped.send(())?;
             drop(bootstrapped);
             pool.wait_ready(config.workers)?;
-            while campaign.reserve_next()? {
-                for job in campaign.plan(usize::MAX) {
-                    #[cfg(test)]
-                    tests::before_locality_dispatch(pool, job.reservation, true)?;
-                    let locality = workload.snapshot_locality(&job.snapshot);
-                    pool.dispatch_local((job.planned_finish, job.reservation), job, locality)?;
-                }
-            }
+            campaign.begin_dispatch_phase();
+            while campaign.reserve_next_dispatch(&mut |job, token| {
+                #[cfg(test)]
+                tests::before_locality_dispatch(pool, job.reservation, true)?;
+                let locality = workload.snapshot_locality(&job.snapshot);
+                pool.dispatch_local((job.planned_finish, job.reservation, token), job, locality)
+            })? {}
             loop {
-                for job in campaign.plan(usize::MAX) {
+                campaign.dispatch_queued(&mut |job, token| {
                     #[cfg(test)]
                     tests::before_locality_dispatch(pool, job.reservation, false)?;
                     let locality = workload.snapshot_locality(&job.snapshot);
-                    pool.dispatch_local((job.planned_finish, job.reservation), job, locality)?;
-                }
+                    pool.dispatch_local((job.planned_finish, job.reservation, token), job, locality)
+                })?;
                 if campaign.finished() {
                     break;
                 }
-                let receive_started = profile_now();
-                let reply = match pool.receive() {
-                    Ok(reply) => reply,
-                    Err(WorkerPoolError::RepliesClosed) => {
-                        let reservation = campaign
-                            .next_admission()
-                            .ok_or("campaign lost its planned admission while waiting")?;
-                        return Err(format!(
-                            "campaign reservation {reservation} failed: every worker exited before reporting its result"
-                        )
-                        .into());
+                let reply = loop {
+                    campaign.drain_background_stream()?;
+                    let receive_started = now();
+                    let received = pool.receive_timeout(Duration::from_millis(5));
+                    campaign.note_receive_wait(receive_started.elapsed().as_nanos());
+                    match received {
+                        Ok(Some(reply)) => break reply,
+                        Ok(None) => continue,
+                        Err(WorkerPoolError::RepliesClosed) => {
+                            let reservation = campaign
+                                .next_admission()
+                                .ok_or("campaign lost its planned admission while waiting")?;
+                            return Err(format!(
+                                "campaign reservation {reservation} failed: every worker exited before reporting its result"
+                            )
+                            .into());
+                        }
+                        Err(error) => return Err(error.into()),
                     }
-                    Err(error) => return Err(error.into()),
                 };
-                campaign.note_receive_wait(profile_elapsed(receive_started));
                 let mut ready_reply = Some(reply);
                 while let Some(mut reply) = ready_reply {
                     let physical_worker = reply.worker;
@@ -3602,17 +4042,25 @@ where
                             "campaign worker replied with an unknown physical identifier".into(),
                         );
                     }
-                    let (planned_finish, reservation) = reply.key;
-                    let outcome = match reply.outcome {
-                        Ok((claimed, outcome)) if claimed == reservation => outcome,
+                    let (planned_finish, reservation, token) = reply.key;
+                    campaign.validate_reply_token(token, reservation, planned_finish)?;
+                    let (outcome, records) = match reply.outcome {
+                        Ok((claimed, outcome, records)) if claimed == reservation => {
+                            (outcome, records)
+                        }
                         Ok(_) => {
                             return Err("campaign worker replied for another reservation".into());
                         }
-                        Err(error) => Err(error),
+                        Err(error) => (Err(error), CompletedRecords::default()),
                     };
+                    if let Ok((outcome, _)) = &outcome
+                        && outcome.reservation != reservation
+                    {
+                        return Err("campaign worker replied for another reservation".into());
+                    }
                     if let Some(observer) = observer.as_mut()
                         && !sink_disabled
-                        && let Some((parent_id, snapshot_id)) = campaign.pending_origin(reservation)
+                        && let Some((parent_id, snapshot_id)) = campaign.pending_origin_token(token)
                     {
                         let receipt = reply.observation.take();
                         let has_payload = receipt.payload.is_some();
@@ -3655,16 +4103,36 @@ where
                     }
                     match outcome {
                         Ok((outcome, note)) => {
-                            if outcome.reservation != reservation {
-                                return Err(
-                                    "campaign worker replied for another reservation".into()
-                                );
-                            }
-                            campaign.admit(outcome)?;
+                            watch.prepare_admission(&note, campaign);
+                            campaign.admit_dispatch(
+                                outcome,
+                                records,
+                                token,
+                                &mut |job, token| {
+                                    #[cfg(test)]
+                                    tests::before_locality_dispatch(pool, job.reservation, false)?;
+                                    let locality = workload.snapshot_locality(&job.snapshot);
+                                    pool.dispatch_local(
+                                        (job.planned_finish, job.reservation, token),
+                                        job,
+                                        locality,
+                                    )
+                                },
+                            )?;
                             watch.admitted(note, campaign);
                         }
-                        Err(error) => campaign.fail(reservation, error)?,
+                        Err(error) => campaign.fail_dispatch(reservation, token, error)?,
                     }
+                    campaign.dispatch_queued(&mut |job, token| {
+                        #[cfg(test)]
+                        tests::before_locality_dispatch(pool, job.reservation, false)?;
+                        let locality = workload.snapshot_locality(&job.snapshot);
+                        pool.dispatch_local(
+                            (job.planned_finish, job.reservation, token),
+                            job,
+                            locality,
+                        )
+                    })?;
                     ready_reply = match pool.try_receive() {
                         Ok(reply) => reply,
                         Err(WorkerPoolError::RepliesClosed) => None,
@@ -3672,6 +4140,7 @@ where
                     };
                 }
             }
+            campaign.end_dispatch_phase();
             pool.close();
             Ok(())
         },
@@ -4002,16 +4471,14 @@ fn write_search_checkpoint<G: Workload>(
     reserved: u64,
     admitted: usize,
     planned_clock: u64,
-    schedule: &BTreeSet<(u64, usize)>,
-    pending: &BTreeMap<usize, PendingJob<G>>,
-    completed: &BTreeMap<usize, CompletedJob<G>>,
-    spec_records: &BTreeMap<usize, JobSpecRecord<G>>,
+    schedule: &AdmissionSchedule,
+    reservations: &ReservationSlots<usize, PendingJob<G>, CompletedOutcome<G>>,
+    spec_records: &BTreeMap<usize, (ReservationToken, JobSpecRecord<G>)>,
 ) -> Result<(), Box<dyn Error>> {
     workload.verify_integrity()?;
     let in_flight = InFlightCheckpointRef {
         schedule,
-        pending,
-        completed,
+        reservations,
         spec_records,
     };
     checkpoints.publish(
@@ -4043,10 +4510,9 @@ fn write_search_checkpoint<G: Workload>(
 }
 
 struct InFlightCheckpointRef<'a, G: Workload> {
-    schedule: &'a BTreeSet<(u64, usize)>,
-    pending: &'a BTreeMap<usize, PendingJob<G>>,
-    completed: &'a BTreeMap<usize, CompletedJob<G>>,
-    spec_records: &'a BTreeMap<usize, JobSpecRecord<G>>,
+    schedule: &'a AdmissionSchedule,
+    reservations: &'a ReservationSlots<usize, PendingJob<G>, CompletedOutcome<G>>,
+    spec_records: &'a BTreeMap<usize, (ReservationToken, JobSpecRecord<G>)>,
 }
 impl<G: Workload> Serialize for InFlightCheckpointRef<'_, G> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -4056,23 +4522,19 @@ impl<G: Workload> Serialize for InFlightCheckpointRef<'_, G> {
                 "search checkpoint in-flight input count differs",
             ));
         }
+        self.schedule
+            .validate(self.reservations, |pending| pending.planned_finish)
+            .map_err(serde::ser::Error::custom)?;
         let mut sequence = serializer.serialize_seq(Some(self.schedule.len()))?;
-        for (reservation, spec) in self.spec_records {
+        for (reservation, (token, spec)) in self.spec_records {
             let pending = self
-                .pending
-                .get(reservation)
-                .or_else(|| self.completed.get(reservation).map(|job| &job.pending))
+                .reservations
+                .slot(*token)
+                .filter(|slot| slot.key == *reservation)
+                .map(|slot| &slot.pending)
                 .ok_or_else(|| {
                     serde::ser::Error::custom("search checkpoint lost an in-flight reservation")
                 })?;
-            if !self
-                .schedule
-                .contains(&(pending.planned_finish, *reservation))
-            {
-                return Err(serde::ser::Error::custom(
-                    "search checkpoint in-flight schedule differs",
-                ));
-            }
             sequence.serialize_element(&InFlightJobRef {
                 reservation: *reservation,
                 spec,
@@ -4090,7 +4552,7 @@ fn finish_record<G: Workload>(
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
 ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-    let mut retained_inputs = Vec::new();
+    let mut retained = Vec::new();
     for decision in decisions {
         let CampaignAdmissionDecision::Retained { id } = decision else {
             continue;
@@ -4104,12 +4566,8 @@ fn finish_record<G: Workload>(
             .entries
             .get(index)
             .ok_or("retained draw-table entry is missing from the run archive")?;
-        retained_inputs.push(entry.input_suffix.clone());
+        retained.push((0, entry.input_suffix.as_slice()));
     }
-    let retained = retained_inputs
-        .iter()
-        .map(|suffix| (0, suffix.as_slice()))
-        .collect::<Vec<_>>();
     workload.finish_stream_record(run, draw_state, &retained, &core.evidence)
 }
 
@@ -5135,7 +5593,7 @@ where
                 let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                     workload,
                     job.parent_id,
-                    result,
+                    &mut { result },
                     suffix_limit.is_some(),
                     |action| {
                         tracked_duration.is_some_and(|duration| {
@@ -5217,8 +5675,7 @@ where
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
                     let new_cell_descendant = retained_archive_indexes(&core, &decisions)
-                        .iter()
-                        .any(|id| core.archive.opened_new_cell(*id));
+                        .any(|id| core.archive.opened_new_cell(id));
                     let (landed, replaced) = continuation_arrival::<G>(
                         &core.archive,
                         taken_continuation
@@ -5235,13 +5692,12 @@ where
                     core.archive.add_continuation_execution_work(execution_work);
                 } else {
                     core.archive.record_selection(parent_index, &job.selector);
-                    let retained_ids = retained_archive_indexes(&core, &decisions);
+                    let retained = retained_archive_indexes(&core, &decisions).next().is_some();
                     core.archive
-                        .record_selection_outcome(parent_index, !retained_ids.is_empty());
+                        .record_selection_outcome(parent_index, retained);
                 }
                 let new_slot_descendant = retained_archive_indexes(&core, &decisions)
-                    .iter()
-                    .any(|id| core.archive.opened_new_slot(*id));
+                    .any(|id| core.archive.opened_new_slot(id));
                 record_mixture_outcome(
                     &mut core.mixture_energy,
                     replay_mixture,
@@ -5586,6 +6042,7 @@ mod tests {
     }
     std::thread_local! {
         static FINALIZATION: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, false)) };
+        static ARCHIVE_REPORT_SCHEDSTAT: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
@@ -5739,6 +6196,9 @@ mod tests {
             evidence: &Self::Evidence,
             state: ArchiveReportState<Self>,
         ) -> Self::ArchiveReport {
+            if let Some(sample) = ARCHIVE_REPORT_SCHEDSTAT.get() {
+                crate::search::telemetry::set_test_schedstat(Some(sample));
+            }
             TestArchiveReport {
                 entries: state.entries,
                 marker: *evidence,
@@ -6390,6 +6850,31 @@ mod tests {
     }
 
     #[test]
+    fn default_suffix_prefix_preserves_full_expansion_side_effects() {
+        let targets = Arc::new(LiveTargets::default());
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(Arc::clone(&targets)),
+        };
+        let state = DrawTables::new(workload.draw_table_parameters(&())).unwrap();
+        let mixture = MixtureDraw {
+            mixture: DrawMixture::AlphabetOnly,
+            weight: 0,
+            splice_weight: 0,
+        };
+        for limit in [0, 1, 2] {
+            let suffix = workload
+                .expand_suffix_prefix(&(), &state, mixture, 1 << 32, None, limit)
+                .unwrap();
+            assert_eq!(suffix.len(), usize::from(limit));
+        }
+        assert_eq!(
+            targets.selections.load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+    }
+
+    #[test]
     fn rollout_stops_on_an_already_terminal_parent() {
         let mut target = TestTarget::default();
         let mut rollout = TestRollout::new(&mut target);
@@ -6599,9 +7084,9 @@ mod tests {
         core.admit_job(
             &workload,
             0,
-            CampaignJobResult {
+            CampaignJobResult::<TestWorkload> {
                 preparation_failure: None,
-                actions: vec![CampaignActionResult {
+                actions: vec![CampaignActionResult::<TestWorkload> {
                     action: terminal_objective,
                     observations: Vec::new(),
                     milestones: (),
@@ -6622,9 +7107,9 @@ mod tests {
         core.admit_job(
             &workload,
             0,
-            CampaignJobResult {
+            CampaignJobResult::<TestWorkload> {
                 preparation_failure: None,
-                actions: vec![CampaignActionResult {
+                actions: vec![CampaignActionResult::<TestWorkload> {
                     action: failed,
                     observations: vec![()],
                     milestones: (),
@@ -6649,7 +7134,7 @@ mod tests {
             .admit_job(
                 &workload,
                 0,
-                CampaignJobResult {
+                CampaignJobResult::<TestWorkload> {
                     preparation_failure: Some(vec![()]),
                     actions: Vec::new(),
                 },
@@ -6665,9 +7150,9 @@ mod tests {
             .admit_job(
                 &workload,
                 0,
-                CampaignJobResult {
+                CampaignJobResult::<TestWorkload> {
                     preparation_failure: Some(vec![()]),
-                    actions: vec![CampaignActionResult {
+                    actions: vec![CampaignActionResult::<TestWorkload> {
                         action,
                         observations: Vec::new(),
                         milestones: (),
@@ -7564,6 +8049,98 @@ mod tests {
     }
 
     #[test]
+    fn postcard_digest_matches_bytes_across_blocks_and_nested_values() {
+        struct Bytes<'a>(&'a [u8]);
+        impl Serialize for Bytes<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_bytes(self.0)
+            }
+        }
+        #[derive(Serialize)]
+        enum Value<'a> {
+            Empty,
+            Data(Option<Vec<u16>>, &'a str),
+        }
+        for length in [0, 1, 63, 64, 65, 127, 128, 129, 1023, 4096] {
+            let bytes = (0..length).map(|i| (i * 31 + 7) as u8).collect::<Vec<_>>();
+            let value = (
+                &bytes,
+                Bytes(&bytes),
+                vec![
+                    Value::Empty,
+                    Value::Data(Some(vec![0, 127, 128, u16::MAX]), "λ→終\0é"),
+                ],
+                Some((u64::MAX, None::<u8>, vec![bytes.clone(), Vec::new()])),
+            );
+            let encoded = postcard::to_allocvec(&value).unwrap();
+            assert_eq!(
+                postcard_value_sha256(&value).unwrap(),
+                format!("{:x}", Sha256::digest(encoded)),
+                "length {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn postcard_sha_flavor_preserves_mixed_chunk_order_and_final_tails() {
+        use postcard::ser_flavors::Flavor;
+        let bytes = (0..4097).map(|i| (i * 17 + 3) as u8).collect::<Vec<_>>();
+        let expected = Sha256::digest(&bytes);
+        for prefix in [0, 1, 63, 64, 65, 127] {
+            for chunk in [1, 2, 63, 64, 65, 256, 1024] {
+                let mut flavor = super::PostcardSha256(Sha256::new());
+                flavor.try_extend(&bytes[..prefix]).unwrap();
+                for part in bytes[prefix..].chunks(chunk) {
+                    flavor.try_push(part[0]).unwrap();
+                    flavor.try_extend(&[]).unwrap();
+                    flavor.try_extend(&part[1..]).unwrap();
+                }
+                assert_eq!(
+                    flavor.finalize().unwrap(),
+                    expected,
+                    "prefix {prefix}, chunk {chunk}"
+                );
+            }
+        }
+        for length in [0, 1, 63, 64, 65, 128] {
+            let mut flavor = super::PostcardSha256(Sha256::new());
+            for byte in &bytes[..length] {
+                flavor.try_push(*byte).unwrap();
+            }
+            assert_eq!(flavor.finalize().unwrap(), Sha256::digest(&bytes[..length]));
+        }
+    }
+
+    #[test]
+    fn postcard_digest_propagates_serialization_error_and_hashes_fresh_values() {
+        struct Fails;
+        impl Serialize for Fails {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeSeq;
+                let mut sequence = serializer.serialize_seq(Some(2))?;
+                sequence.serialize_element(&vec![7_u8; 129])?;
+                Err(serde::ser::Error::custom(
+                    "injected postcard failure after prefix",
+                ))
+            }
+        }
+        assert!(postcard_value_sha256(&Fails).is_err());
+        let mut value = vec![3_u8; 129];
+        let first = postcard_value_sha256(&value).unwrap();
+        value[64] ^= 1;
+        let changed = postcard_value_sha256(&value).unwrap();
+        assert_ne!(first, changed);
+        assert_eq!(
+            changed,
+            format!(
+                "{:x}",
+                Sha256::digest(postcard::to_allocvec(&value).unwrap())
+            )
+        );
+        assert_eq!(first, postcard_value_sha256(&vec![3_u8; 129]).unwrap());
+    }
+
+    #[test]
     fn progress_curve_compaction_is_bounded_and_evenly_spaced() {
         let mut curve: Vec<ProgressPoint<(), ()>> = (1..=MAX_PROGRESS_CURVE_POINTS)
             .map(|sample| ProgressPoint {
@@ -7719,12 +8296,12 @@ mod tests {
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action,
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome::default(),
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<TestWorkload> {
                     key: TestKey(target.value),
                     viable: true,
                     snapshot,
@@ -7754,12 +8331,12 @@ mod tests {
         let tracked = TestAction::new(0x01, 4);
         let seed = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action: tracked,
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome::default(),
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<TestWorkload> {
                     key: TestKey(1),
                     viable: true,
                     snapshot: 1,
@@ -7773,23 +8350,23 @@ mod tests {
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
             actions: vec![
-                CampaignActionResult {
+                CampaignActionResult::<TestWorkload> {
                     action: tracked,
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome::default(),
-                    candidate: Some(CampaignCandidate {
+                    candidate: Some(CampaignCandidate::<TestWorkload> {
                         key: TestKey(1),
                         viable: true,
                         snapshot: 1,
                     }),
                 },
-                CampaignActionResult {
+                CampaignActionResult::<TestWorkload> {
                     action: untracked,
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome::default(),
-                    candidate: Some(CampaignCandidate {
+                    candidate: Some(CampaignCandidate::<TestWorkload> {
                         key: TestKey(2),
                         viable: true,
                         snapshot: 2,
@@ -7798,7 +8375,9 @@ mod tests {
             ],
         };
         let (_, decisions, duration) = core
-            .admit_job_tracking(&workload, 0, result, false, |action| *action == tracked)
+            .admit_job_tracking(&workload, 0, &mut { result }, false, |action| {
+                *action == tracked
+            })
             .expect("admit mixed novelty");
         assert_eq!(
             decisions,
@@ -7817,33 +8396,224 @@ mod tests {
     }
 
     #[test]
+    fn field_generic_result_storage_matches_original_json_and_postcard_shapes() {
+        #[derive(Deserialize, Serialize)]
+        struct OriginalCandidate {
+            key: TestKey,
+            viable: bool,
+            snapshot: u8,
+        }
+        #[derive(Deserialize, Serialize)]
+        struct OriginalAction {
+            action: TestAction,
+            observations: Vec<()>,
+            milestones: (),
+            outcome: Outcome,
+            candidate: Option<OriginalCandidate>,
+        }
+        #[derive(Deserialize, Serialize)]
+        struct OriginalResult {
+            preparation_failure: Option<Vec<()>>,
+            actions: Vec<OriginalAction>,
+        }
+        for preparation in [None, Some(vec![]), Some(vec![()])] {
+            for candidate in [None, Some(false), Some(true)] {
+                let original = OriginalResult {
+                    preparation_failure: preparation.clone(),
+                    actions: vec![OriginalAction {
+                        action: TestAction::new(1, 2),
+                        observations: vec![()],
+                        milestones: (),
+                        outcome: Outcome::default(),
+                        candidate: candidate.map(|viable| OriginalCandidate {
+                            key: TestKey(3),
+                            viable,
+                            snapshot: 4,
+                        }),
+                    }],
+                };
+                let json = serde_json::to_vec(&original).unwrap();
+                let result: CampaignJobResult<TestWorkload> =
+                    serde_json::from_slice(&json).unwrap();
+                assert_eq!(serde_json::to_vec(&result).unwrap(), json);
+                let postcard = postcard::to_allocvec(&original).unwrap();
+                assert_eq!(postcard::to_allocvec(&result).unwrap(), postcard);
+                assert_eq!(
+                    postcard::from_bytes::<CampaignJobResult<TestWorkload>>(&postcard).unwrap(),
+                    result
+                );
+                assert_eq!(
+                    serde_json::to_vec(
+                        &serde_json::from_slice::<OriginalResult>(
+                            &serde_json::to_vec(&result).unwrap()
+                        )
+                        .unwrap()
+                    )
+                    .unwrap(),
+                    json
+                );
+                assert!(format!("{result:?}").starts_with("CampaignJobResult {"));
+                assert!(format!("{:?}", result.actions[0]).starts_with("CampaignActionResult {"));
+                if let Some(candidate) = result.actions[0].candidate.as_ref() {
+                    assert!(format!("{candidate:?}").starts_with("CampaignCandidate {"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_encoder_accepts_owned_payloads_from_a_borrowed_type_carrier() {
+        struct BorrowedTypes<'a>(&'a str);
+        impl CampaignTypes for BorrowedTypes<'_> {
+            type JobObservation = ();
+            type Target = ();
+            type Action = TestAction;
+            type Key = TestKey;
+            type Milestones = ();
+            type Progress = ();
+            type Snapshot = u8;
+            type Observations = ();
+            type Evidence = ();
+            type ArchiveReport = ();
+            type Run = ();
+        }
+        fn encode<'a>(carrier: &BorrowedTypes<'a>) -> Vec<u8> {
+            assert!(!carrier.0.is_empty());
+            let result = CampaignJobResult::<BorrowedTypes<'a>> {
+                preparation_failure: Some(vec![()]),
+                actions: Vec::new(),
+            };
+            let mut sink = Vec::new();
+            let mut writer =
+                super::StreamWriter::<u8, CampaignJobResult<BorrowedTypes<'a>>>::new_with_cleanup(
+                    &mut sink,
+                );
+            writer.enable_background(None).unwrap();
+            writer.write_line_with_cleanup(1, result).unwrap();
+            writer.finish().unwrap();
+            sink
+        }
+        let local = String::from("borrowed type carrier");
+        assert_eq!(encode(&BorrowedTypes(&local)), b"1\n");
+    }
+
+    #[test]
+    fn borrowed_admission_keeps_unused_candidates_and_result_storage_for_cleanup() {
+        let (workload, _, mut core, _) = test_core();
+        let make = |input, work_units, viable| CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            actions: vec![CampaignActionResult::<TestWorkload> {
+                action: TestAction::new(input, work_units),
+                observations: vec![()],
+                milestones: (),
+                outcome: Outcome::default(),
+                candidate: Some(CampaignCandidate::<TestWorkload> {
+                    key: TestKey(1),
+                    viable,
+                    snapshot: 1,
+                }),
+            }],
+        };
+        let mut retained = make(1, 1, true);
+        let actions = retained.actions.as_ptr();
+        let observations = retained.actions[0].observations.as_ptr();
+        let (_, decisions, _) = core
+            .admit_job_tracking(&workload, 0, &mut retained, false, |_| false)
+            .unwrap();
+        assert!(matches!(
+            decisions.as_slice(),
+            [CampaignAdmissionDecision::Retained { .. }]
+        ));
+        assert!(retained.actions[0].candidate.is_none());
+        assert_eq!(retained.actions.as_ptr(), actions);
+        assert_eq!(retained.actions[0].observations.as_ptr(), observations);
+        for offset in 1..TestKey::capacity().max(1) {
+            let mut filler = make(u8::try_from(10 + offset).unwrap(), 1, true);
+            let (_, decisions, _) = core
+                .admit_job_tracking(&workload, 0, &mut filler, false, |_| false)
+                .unwrap();
+            assert!(matches!(
+                decisions.as_slice(),
+                [CampaignAdmissionDecision::Retained { .. }]
+            ));
+        }
+        for (mut result, expected) in [
+            (make(1, 1, true), "duplicate"),
+            (make(2, 10, true), "rejected"),
+            (make(3, 1, false), "refused"),
+        ] {
+            let candidate = result.actions[0].candidate.clone();
+            let actions = result.actions.as_ptr();
+            let observations = result.actions[0].observations.as_ptr();
+            let (_, decisions, _) = core
+                .admit_job_tracking(&workload, 0, &mut result, false, |_| false)
+                .unwrap();
+            assert!(matches!(
+                (expected, decisions.as_slice()),
+                ("duplicate", [CampaignAdmissionDecision::Duplicate { .. }])
+                    | ("rejected", [CampaignAdmissionDecision::Rejected])
+                    | ("refused", [CampaignAdmissionDecision::ProbeRefused])
+            ));
+            assert_eq!(result.actions[0].candidate, candidate);
+            assert_eq!(result.actions.as_ptr(), actions);
+            assert_eq!(result.actions[0].observations.as_ptr(), observations);
+            assert_eq!(result.actions[0].observations, vec![()]);
+        }
+        let mut preparation = CampaignJobResult::<TestWorkload> {
+            preparation_failure: Some(vec![()]),
+            actions: Vec::new(),
+        };
+        let observations = preparation.preparation_failure.as_ref().unwrap().as_ptr();
+        let failures = core.execution_failures;
+        let (_, decisions, _) = core
+            .admit_job_tracking(&workload, 0, &mut preparation, false, |_| false)
+            .unwrap();
+        assert!(decisions.is_empty());
+        assert_eq!(core.execution_failures, failures + 1);
+        assert_eq!(
+            preparation.preparation_failure.as_ref().unwrap().as_ptr(),
+            observations
+        );
+    }
+
+    #[test]
     fn a_probe_refused_state_in_another_place_resets_the_suffix_limit() {
         let (workload, _run, mut core, _target) = test_core();
         let home = core.archive.entries[0].key.0;
         let refused = |value: u8| CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action: TestAction::new(0x01, 1),
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome::default(),
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<TestWorkload> {
                     key: TestKey(value),
                     viable: false,
                     snapshot: value,
                 }),
             }],
         };
-        core.admit_job_tracking(&workload, 0, refused(home), true, |_| false)
+        core.admit_job_tracking(&workload, 0, &mut refused(home), true, |_| false)
             .expect("admit a refused state in the parent's place");
         assert_eq!(core.archive.suffix_limit(0), 2);
-        core.admit_job_tracking(&workload, 0, refused(INHERITS_PARENT_PLACE), true, |_| {
-            false
-        })
+        core.admit_job_tracking(
+            &workload,
+            0,
+            &mut refused(INHERITS_PARENT_PLACE),
+            true,
+            |_| false,
+        )
         .expect("admit a refused state whose completed key keeps the parent's place");
         assert_eq!(core.archive.suffix_limit(0), 2);
-        core.admit_job_tracking(&workload, 0, refused(home.wrapping_add(1)), true, |_| false)
-            .expect("admit a refused state in another place");
+        core.admit_job_tracking(
+            &workload,
+            0,
+            &mut refused(home.wrapping_add(1)),
+            true,
+            |_| false,
+        )
+        .expect("admit a refused state in another place");
         assert_eq!(core.archive.suffix_limit(0), 1);
     }
 
@@ -7877,7 +8647,7 @@ mod tests {
         let winning = TestAction::new(0x81, 7);
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action: winning,
                 observations: Vec::new(),
                 milestones: (),
@@ -7885,7 +8655,7 @@ mod tests {
                     objective_reached: true,
                     disposition: ExecutionDisposition::Runnable,
                 },
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<TestWorkload> {
                     key: TestKey(winning.input),
                     viable: true,
                     snapshot: winning.input,
@@ -7912,9 +8682,9 @@ mod tests {
             })
         );
 
-        let later = CampaignJobResult {
+        let later = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action: TestAction::new(0x01, 9),
                 ..winning_action
             }],
@@ -8269,19 +9039,19 @@ mod tests {
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
             actions: vec![
-                CampaignActionResult {
+                CampaignActionResult::<TestWorkload> {
                     action: first,
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome::default(),
                     candidate: None,
                 },
-                CampaignActionResult {
+                CampaignActionResult::<TestWorkload> {
                     action: second,
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome::default(),
-                    candidate: Some(CampaignCandidate {
+                    candidate: Some(CampaignCandidate::<TestWorkload> {
                         key: TestKey(3),
                         viable: true,
                         snapshot: 3,
@@ -8357,14 +9127,89 @@ mod tests {
     }
 
     #[test]
+    fn worker_cpu_profile_switches_are_independent_in_fresh_processes() {
+        let module = module_path!().split_once("::").unwrap().1;
+        let child = format!("{module}::worker_cpu_profile_switch_child");
+        for (coordinator, worker) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", &child])
+                .env_remove("HARMONY_COORDINATOR_PROFILE")
+                .env_remove("HARMONY_WORKER_CPU_PROFILE");
+            if coordinator {
+                command.env("HARMONY_COORDINATOR_PROFILE", "0");
+            }
+            if worker {
+                command.env("HARMONY_WORKER_CPU_PROFILE", "0");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "coordinator={coordinator} worker={worker}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+    }
+
+    #[test]
+    fn worker_cpu_profile_switch_child() {
+        let coordinator = std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some();
+        let worker = std::env::var_os("HARMONY_WORKER_CPU_PROFILE").is_some();
+        assert_eq!(super::profile_clock_enabled(), coordinator);
+        assert_eq!(super::worker_cpu_profile_enabled(), worker);
+        assert_eq!(super::profile_now().is_some(), coordinator);
+        let (values, workers) = crate::search::parallel::with_worker_pool(
+            1,
+            |_| Ok::<_, String>(10_u64),
+            |_| Ok::<_, String>(10_u64),
+            |state, job: u64| Ok::<_, String>(std::hint::black_box(*state + job)),
+            |_| crate::search::telemetry::TargetCounters::new(),
+            |pool| -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+                pool.send(0, 1)?;
+                pool.send(1, 2)?;
+                let values = (0..2)
+                    .map(|_| Ok(pool.receive()?.outcome?))
+                    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                pool.close();
+                Ok(values)
+            },
+        )
+        .unwrap();
+        assert_eq!(values, [11, 12]);
+        assert_eq!(workers[0].jobs, 2);
+        assert_eq!(
+            workers[0].profile_mode,
+            crate::search::telemetry::ProfileMode::from_flags(coordinator, worker)
+        );
+        assert_eq!(workers[0].execute_cpu.is_some(), worker);
+        if let Some(cpu) = &workers[0].execute_cpu {
+            assert_eq!((cpu.calls, cpu.errors, cpu.panics), (2, 0, 0));
+            if cfg!(target_os = "linux") {
+                assert!(cpu.supported && cpu.complete);
+                assert_eq!(cpu.samples, 2);
+                assert!(cpu.total_cpu_ns.unwrap() > 0);
+            } else {
+                assert!(!cpu.supported && !cpu.complete);
+                assert_eq!(cpu.total_cpu_ns, None);
+            }
+        }
+    }
+
+    #[test]
     fn coordinator_profile_helpers_measure_elapsed_time() {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now()
             .checked_sub(Duration::from_millis(1))
             .expect("one millisecond before now");
-        assert!(profile_elapsed(started) > 0);
+        assert!(profile_elapsed(Some(started)) > 0);
+        assert_eq!(profile_elapsed(None), 0);
 
         let mut profile = LiveCoordinatorProfile::default();
+        assert!(profile.telemetry_json().unwrap()["admission_ns"].is_null());
+        profile.timing_complete = true;
+        assert_eq!(profile.telemetry_json().unwrap()["admission_ns"], 0);
         record_compaction_elapsed(&mut profile, 4, 4, 10);
         record_compaction_elapsed(&mut profile, 4, 3, 20);
         assert_eq!(profile.history_compaction_ns, 0);
@@ -8380,12 +9225,12 @@ mod tests {
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<TestWorkload> {
                 action,
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome::default(),
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<TestWorkload> {
                     key: TestKey(target.value),
                     viable: true,
                     snapshot,
@@ -8405,7 +9250,10 @@ mod tests {
             CampaignAdmissionDecision::Duplicate { id: 0 },
             CampaignAdmissionDecision::Rejected,
         ];
-        assert_eq!(retained_archive_indexes(&core, &decisions), vec![0, 1]);
+        assert_eq!(
+            retained_archive_indexes(&core, &decisions).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
 
         let (mut draw_state, _header) =
             super::initial_draw_state(&workload, &run, None).expect("initialize draw state");
@@ -8777,19 +9625,438 @@ mod tests {
     }
 
     #[test]
-    fn completed_buffer_counts_owned_records_and_balances_removal() {
+    fn arena_tokens_reject_reuse_and_keep_pending_metadata_in_place() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct Pending {
+            drops: Arc<AtomicUsize>,
+            value: u64,
+        }
+        impl Drop for Pending {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut slots = super::ReservationSlots::new(|_: &u64| (1, 0), 1);
+        assert!(
+            slots
+                .insert(
+                    100,
+                    Pending {
+                        drops: Arc::clone(&drops),
+                        value: 9
+                    }
+                )
+                .is_none()
+        );
+        let first = slots.token(&100).unwrap();
+        let address = std::ptr::from_ref(&slots.slot(first).unwrap().pending);
+        slots
+            .complete_token(first, 100, 7, None, |_| Ok(()))
+            .unwrap();
+        assert_eq!(slots.begin_admission(first), Some(7));
+        assert_eq!(
+            std::ptr::from_ref(&slots.slot(first).unwrap().pending),
+            address
+        );
+        assert_eq!(slots.slot(first).unwrap().pending.value, 9);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        slots.finish_admission(first).unwrap();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(
+            slots
+                .insert(
+                    usize::MAX,
+                    Pending {
+                        drops: Arc::clone(&drops),
+                        value: 10
+                    }
+                )
+                .is_none()
+        );
+        let second = slots.token(&usize::MAX).unwrap();
+        assert_eq!(first.slot, second.slot);
+        assert_ne!(first.generation, second.generation);
+        assert_eq!(slots.slots.len(), 1);
+        assert!(
+            slots
+                .validate_pending(first, usize::MAX)
+                .unwrap_err()
+                .contains("stale")
+        );
+        assert!(
+            slots
+                .validate_pending(second, 100)
+                .unwrap_err()
+                .contains("another")
+        );
+        assert_eq!(slots.pending, 1);
+        slots
+            .complete_token(second, usize::MAX, 8, None, |_| Ok(()))
+            .unwrap();
+        slots.begin_admission(second).unwrap();
+        slots.finish_admission(second).unwrap();
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn arena_generation_overflow_fails_without_reusing_or_dropping_a_live_slot() {
+        let mut slots = super::ReservationSlots::new(|_: &u64| (0, 0), 1);
+        slots.insert(2, 5);
+        slots.slots[0].generation = u64::MAX;
+        let token = super::ReservationToken {
+            slot: 0,
+            generation: u64::MAX,
+        };
+        slots.entries.map.insert(2, token);
+        slots.complete_token(token, 2, 7, None, |_| Ok(())).unwrap();
+        assert_eq!(slots.begin_admission(token), Some(7));
+        assert_eq!(
+            slots.finish_admission(token),
+            Err("campaign reservation generation overflow")
+        );
+        assert!(slots.free.is_empty());
+        assert_eq!(slots.slot(token).unwrap().pending, 5);
+    }
+
+    #[test]
+    fn arena_window_reuse_and_explicit_stepped_growth_depend_on_live_count_not_identifiers() {
+        let mut slots = super::ReservationSlots::new(|_: &u64| (1, 1), 2);
+        for id in 100_usize..10_100 {
+            slots.insert(id, id);
+            let token = slots.token(&id).unwrap();
+            slots
+                .complete_token(token, id, id as u64, None, |_| Ok(()))
+                .unwrap();
+            slots.begin_admission(token).unwrap();
+            slots.finish_admission(token).unwrap();
+            assert_eq!(slots.slots.len(), 2);
+        }
+        for id in [usize::MAX, 9, 1] {
+            assert!(slots.insert(id, id).is_none());
+            let token = slots.token(&id).unwrap();
+            slots
+                .complete_token(token, id, id as u64, None, |_| Ok(()))
+                .unwrap();
+        }
+        assert_eq!(slots.slots.len(), 3);
+        assert_eq!(slots.pending, 0);
+        assert_eq!(slots.completed_len(), 3);
+        assert_eq!(slots.telemetry.results_peak, 3);
+    }
+
+    #[test]
+    fn arena_checkpoint_schedule_validates_bijection_order_and_reused_generations() {
+        let mut slots = super::ReservationSlots::new(|_: &u64| (0, 0), 2);
+        slots.insert(99, 2_u64);
+        let a = slots.token(&99).unwrap();
+        slots.insert(1, 1_u64);
+        let b = slots.token(&1).unwrap();
+        let mut schedule = super::AdmissionSchedule::try_new(2).unwrap();
+        schedule.insert((2, 99), a);
+        schedule.insert((1, 1), b);
+        assert_eq!(schedule.first(), Some(&(1, 1)));
+        assert_eq!(schedule.validate(&slots, |finish| *finish), Ok(()));
+        schedule.heap.clear();
+        schedule.insert((2, 99), a);
+        schedule.insert((2, 99), a);
+        assert!(schedule.validate(&slots, |finish| *finish).is_err());
+        schedule.heap.clear();
+        schedule.insert((2, 99), a);
+        schedule.insert((2, 1), b);
+        assert!(schedule.validate(&slots, |finish| *finish).is_err());
+        schedule.heap.clear();
+        schedule.insert((2, 99), a);
+        schedule.insert((1, 1), super::ReservationToken { generation: 1, ..b });
+        assert!(schedule.validate(&slots, |finish| *finish).is_err());
+    }
+
+    #[test]
+    fn arena_impossible_initial_capacity_returns_a_normal_error() {
+        assert!(
+            super::ReservationSlots::<usize, u64, u64>::try_new(|_| (0, 0), usize::MAX).is_err()
+        );
+        assert!(super::AdmissionSchedule::try_new(usize::MAX).is_err());
+        let mut config = three_worker_config();
+        config.window = usize::MAX;
+        config.execution_budget = u64::MAX;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        assert!(
+            CampaignCoordinator::start(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn native_resume_preserves_a_stepped_checkpoint_with_more_live_jobs_than_window() {
+        let directory = std::env::temp_dir().join(format!(
+            "reservation-arena-stepped-overflow-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut config = three_worker_config();
+        config.window = 2;
+        config.execution_budget = 20;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let options = CampaignExecutionOptions {
+            checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                directory: directory.clone(),
+                every: std::num::NonZeroU64::new(1),
+                on_marks: false,
+                on_top_progress: false,
+                checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
+            }),
+            ..Default::default()
+        };
+        {
+            let mut initial_stream = Vec::new();
+            let mut coordinator = CampaignCoordinator::start(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut initial_stream,
+                None,
+                options,
+            )
+            .unwrap();
+            while coordinator.reserve_next().unwrap() {}
+            let mut jobs = coordinator.plan(usize::MAX);
+            let first = jobs.remove(0);
+            let held = jobs.remove(0);
+            let mut target = workload.new_target().unwrap();
+            coordinator
+                .admit(run_job(&workload, &config, &mut target, &held).unwrap())
+                .unwrap();
+            assert_eq!(coordinator.executions(), 0);
+            assert!(coordinator.reserve_next().unwrap());
+            coordinator
+                .admit(run_job(&workload, &config, &mut target, &first).unwrap())
+                .unwrap();
+            assert_eq!(coordinator.executions(), 2);
+            assert_eq!(coordinator.reservation_capacity(), 3);
+        }
+        let origin = CampaignOrigin::SearchCheckpoint {
+            path: directory.join("000000000002-interval.ckpt"),
+            expected_sha256: None,
+        };
+        struct Watch;
+        impl super::CampaignWatch<TestWorkload> for Watch {
+            type Note = usize;
+            fn run(
+                &self,
+                job: &JobSpec<TestWorkload>,
+                run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn std::error::Error>>,
+            ) -> super::WatchedJob<TestWorkload, usize> {
+                Ok((run()?, job.reservation))
+            }
+            fn start(
+                &self,
+                campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+            ) -> Result<(), Box<dyn std::error::Error>> {
+                assert_eq!(campaign.reservation_capacity(), 3);
+                campaign.watch_selected_admissions();
+                Ok(())
+            }
+            fn prepare_admission(
+                &self,
+                note: &usize,
+                campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+            ) {
+                assert!(campaign.request_admission(*note));
+            }
+            fn admitted(&self, _: usize, campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+                assert_eq!(campaign.reservation_capacity(), 3);
+                campaign.take_admissions();
+            }
+        }
+        let mut native_stream = Vec::new();
+        let native = super::run_campaign(
+            &workload,
+            &config,
+            &origin,
+            &mut native_stream,
+            None,
+            Default::default(),
+            &Watch,
+            None,
+        )
+        .unwrap();
+        let mut stepped_stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &origin,
+            &mut stepped_stream,
+            None,
+            Default::default(),
+        )
+        .unwrap();
+        while coordinator.reserve_next().unwrap() {}
+        let mut target = workload.new_target().unwrap();
+        while !coordinator.finished() {
+            let jobs = coordinator.plan(2);
+            assert!(!jobs.is_empty());
+            for job in jobs.into_iter().rev() {
+                coordinator
+                    .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                    .unwrap();
+            }
+        }
+        let stepped = coordinator.finish(Vec::new()).unwrap();
+        assert_eq!(native_stream, stepped_stream);
+        assert_eq!(native, stepped);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn native_reply_token_validates_the_full_logical_key_before_admission() {
+        let config = three_worker_config();
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap();
+        coordinator.reserve_next().unwrap();
+        let job = coordinator.plan(1).pop().unwrap();
+        let token = coordinator.reservation_token(job.reservation).unwrap();
+        assert!(
+            coordinator
+                .validate_reply_token(token, job.reservation, job.planned_finish + 1)
+                .unwrap_err()
+                .to_string()
+                .contains("planned finish")
+        );
+        assert!(
+            coordinator
+                .validate_reply_token(token, job.reservation + 1, job.planned_finish)
+                .unwrap_err()
+                .to_string()
+                .contains("another reservation")
+        );
+        assert!(
+            coordinator
+                .validate_reply_token(
+                    super::ReservationToken {
+                        generation: token.generation + 1,
+                        ..token
+                    },
+                    job.reservation,
+                    job.planned_finish
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("stale")
+        );
+        assert!(
+            coordinator
+                .validate_reply_token(token, job.reservation, job.planned_finish)
+                .is_ok()
+        );
+        assert_eq!(coordinator.executions(), 0);
+    }
+
+    #[test]
+    fn native_invalid_inner_reservation_never_reaches_the_observer_or_admission_watch() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Invalid {
+            admitted: AtomicUsize,
+        }
+        impl super::CampaignWatch<TestWorkload> for Invalid {
+            type Note = ();
+            fn run(
+                &self,
+                _: &JobSpec<TestWorkload>,
+                execute: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn std::error::Error>>,
+            ) -> Result<(JobOutcome<TestWorkload>, ()), Box<dyn std::error::Error>> {
+                let mut outcome = execute()?;
+                outcome.reservation = usize::MAX;
+                Ok((outcome, ()))
+            }
+            fn admitted(&self, _: (), _: &mut CampaignCoordinator<'_, TestWorkload>) {
+                self.admitted.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let mut config = three_worker_config();
+        config.execution_budget = 6;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let watch = Invalid {
+            admitted: AtomicUsize::new(0),
+        };
+        let mut observed = 0;
+        let mut sink = |_| {
+            observed += 1;
+            Ok(())
+        };
+        let mut stream = Vec::new();
+        let result = super::run_campaign(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+            &watch,
+            Some(crate::search::job_observation::JobObserver {
+                diagnostics: Default::default(),
+                sink: &mut sink,
+            }),
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("another reservation")
+        );
+        assert_eq!(observed, 0);
+        assert_eq!(watch.admitted.load(Ordering::SeqCst), 0);
+        assert!(job_lines(&stream).is_empty());
+    }
+
+    #[test]
+    fn reservation_slots_count_owned_records_and_balance_removal() {
         let result = |flags: &[bool]| {
             Ok((
                 CampaignJobResult::<TestWorkload> {
                     preparation_failure: None,
                     actions: flags
                         .iter()
-                        .map(|&candidate| CampaignActionResult {
+                        .map(|&candidate| CampaignActionResult::<TestWorkload> {
                             action: TestAction::new(1, 1),
                             observations: Vec::new(),
                             milestones: (),
                             outcome: Outcome::default(),
-                            candidate: candidate.then_some(CampaignCandidate {
+                            candidate: candidate.then_some(CampaignCandidate::<TestWorkload> {
                                 key: TestKey(1),
                                 viable: false,
                                 snapshot: 1,
@@ -8801,58 +10068,322 @@ mod tests {
                 String::new(),
             ))
         };
-        let mut buffer =
-            super::CompletedBuffer::new(super::completed_result_records::<TestWorkload>);
-        assert!(buffer.insert(2, result(&[true, false, true])).is_none());
-        assert!(
-            buffer
-                .insert(3, Err("failed worker result".into()))
-                .is_none()
+        let mut slots =
+            super::ReservationSlots::new(super::completed_result_records::<TestWorkload>, 3);
+        for key in 2..=4 {
+            assert!(slots.insert(key, key * 10).is_none());
+        }
+        assert_eq!(slots.pending, 3);
+        assert!(slots.take_completed(2).is_none());
+        slots
+            .complete(2, result(&[true, false, true]), |_| Ok(()))
+            .unwrap();
+        slots
+            .complete(3, Err("failed worker result".into()), |_| Ok(()))
+            .unwrap();
+        slots.complete(4, result(&[]), |_| Ok(())).unwrap();
+        assert_eq!(slots.pending, 0);
+        assert_eq!(slots.metadata(&2), Some(&20));
+        assert!(slots.pending(&2).is_none());
+        assert_eq!(slots.telemetry.results_live, 3);
+        assert_eq!(slots.telemetry.actions_live, 3);
+        assert_eq!(slots.telemetry.candidates_live, 2);
+        let before = slots.telemetry;
+        assert_eq!(
+            slots.complete(2, result(&[true]), |_| Ok(())),
+            Err("campaign worker completed one reservation twice")
         );
-        assert!(buffer.insert(4, result(&[])).is_none());
-        assert_eq!(buffer.telemetry.results_live, 3);
-        assert_eq!(buffer.telemetry.actions_live, 3);
-        assert_eq!(buffer.telemetry.candidates_live, 2);
-        let before = buffer.telemetry;
-        assert!(buffer.insert(2, result(&[true])).is_some());
-        assert_eq!(buffer.telemetry, before);
-        assert!(buffer.remove(&99).is_none());
-        assert_eq!(buffer.telemetry, before);
-        assert!(buffer.remove(&2).unwrap().is_ok());
-        assert_eq!(buffer.telemetry.results_live, 2);
-        assert_eq!(buffer.telemetry.actions_live, 0);
-        assert_eq!(buffer.telemetry.candidates_live, 0);
-        assert!(buffer.remove(&3).unwrap().is_err());
-        buffer.remove(&4).unwrap().unwrap();
-        assert!(buffer.is_empty());
-        assert_eq!(buffer.telemetry.results_live, 0);
-        assert_eq!(buffer.telemetry.results_peak, 3);
-        assert_eq!(buffer.telemetry.actions_peak, 3);
-        assert_eq!(buffer.telemetry.candidates_peak, 2);
+        assert_eq!(
+            slots.complete(99, result(&[]), |_| Ok(())),
+            Err("campaign worker replied for an unknown reservation")
+        );
+        assert_eq!(slots.insert(2, 999), Some(999));
+        assert_eq!(slots.metadata(&2), Some(&20));
+        assert_eq!(slots.telemetry, before);
+        assert!(slots.take_completed(99).is_none());
+        let (pending, outcome) = slots.take_completed(2).unwrap();
+        assert_eq!(pending, 20);
+        assert!(outcome.is_ok());
+        assert_eq!(slots.telemetry.results_live, 2);
+        assert_eq!(slots.telemetry.actions_live, 0);
+        assert_eq!(slots.telemetry.candidates_live, 0);
+        assert!(slots.take_completed(3).unwrap().1.is_err());
+        slots.take_completed(4).unwrap().1.unwrap();
+        assert!(slots.is_empty());
+        assert_eq!(slots.telemetry.results_live, 0);
+        assert_eq!(slots.telemetry.results_peak, 3);
+        assert_eq!(slots.telemetry.actions_peak, 3);
+        assert_eq!(slots.telemetry.candidates_peak, 2);
     }
 
     #[test]
-    fn completed_buffer_reordering_changes_only_occupancy_not_admission_content() {
-        let run = |order: &[u64]| {
-            let mut buffer =
-                super::CompletedBuffer::new(|value: &u64| (*value, u64::from(*value > 0)));
+    fn native_campaign_counts_the_actual_post_watch_result() {
+        struct MutatingWatch<'a> {
+            workload: &'a TestWorkload,
+            recorded: Mutex<Option<(super::CompletedRecords, std::thread::ThreadId)>>,
+        }
+        impl super::CampaignWatch<TestWorkload> for MutatingWatch<'_> {
+            type Note = ();
+            fn run(
+                &self,
+                _job: &JobSpec<TestWorkload>,
+                run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+            ) -> super::WatchedJob<TestWorkload, Self::Note> {
+                let mut outcome = run()?;
+                let before = super::CompletedRecords::of_result::<TestWorkload>(&outcome.result);
+                *self.recorded.lock().unwrap() = Some((before, std::thread::current().id()));
+                outcome.result.actions.extend([
+                    CampaignActionResult::<TestWorkload> {
+                        action: TestAction::new(2, 1),
+                        observations: Vec::new(),
+                        milestones: (),
+                        outcome: Outcome::default(),
+                        candidate: Some(CampaignCandidate::<TestWorkload> {
+                            key: TestKey(0),
+                            viable: false,
+                            snapshot: 0,
+                        }),
+                    },
+                    CampaignActionResult::<TestWorkload> {
+                        action: TestAction::new(3, 1),
+                        observations: Vec::new(),
+                        milestones: (),
+                        outcome: Outcome::default(),
+                        candidate: None,
+                    },
+                ]);
+                outcome.result_sha256 = self.workload.result_sha256(&outcome.result)?;
+                Ok((outcome, ()))
+            }
+            fn admitted(&self, _: Self::Note, _: &mut CampaignCoordinator<'_, TestWorkload>) {}
+        }
+        let coordinator = std::thread::current().id();
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let watch = MutatingWatch {
+            workload: &workload,
+            recorded: Mutex::new(None),
+        };
+        let mut stream = Vec::new();
+        let (report, _) = super::run_campaign_watched(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+            &watch,
+        )
+        .unwrap();
+        let (before, worker) = watch.recorded.lock().unwrap().unwrap();
+        assert_ne!(worker, coordinator);
+        let telemetry = report.telemetry.completed_buffer;
+        assert_eq!(telemetry.results_peak, 1);
+        assert_eq!(telemetry.actions_peak, before.actions + 2);
+        assert_eq!(telemetry.candidates_peak, before.candidates + 1);
+        assert_eq!(telemetry.results_live, 0);
+        assert_eq!(telemetry.actions_live, 0);
+        assert_eq!(telemetry.candidates_live, 0);
+        let failure: Result<(JobOutcome<TestWorkload>, ()), String> = Err("worker failed".into());
+        assert_eq!(
+            super::CompletedRecords::after_watch::<TestWorkload, _>(&failure),
+            super::CompletedRecords::default()
+        );
+        let preparation = Ok((
+            JobOutcome::<TestWorkload> {
+                reservation: 0,
+                result: CampaignJobResult::<TestWorkload> {
+                    preparation_failure: Some(vec![()]),
+                    actions: Vec::new(),
+                },
+                execution_work: 0,
+                result_sha256: String::new(),
+            },
+            (),
+        ));
+        assert_eq!(
+            super::CompletedRecords::after_watch::<TestWorkload, _>(&preparation),
+            super::CompletedRecords::default()
+        );
+    }
+
+    #[test]
+    fn counted_completions_validate_and_cache_without_scanning_on_admission_or_removal() {
+        let mut slots = super::ReservationSlots::new(
+            |_: &u64| panic!("coordinator scanned a counted result"),
+            1,
+        );
+        slots.insert(7, "queued");
+        let counts = Some(super::CompletedRecords {
+            actions: 5,
+            candidates: 2,
+        });
+        let before = slots.telemetry;
+        assert_eq!(
+            slots.complete_with_records(8, 1, counts, |_| panic!("unknown validation")),
+            Err("campaign worker replied for an unknown reservation")
+        );
+        assert_eq!(
+            slots.complete_with_records(7, 1, counts, |_| Err("never planned")),
+            Err("never planned")
+        );
+        assert_eq!(slots.telemetry, before);
+        assert_eq!(slots.pending, 1);
+        slots
+            .complete_with_records(7, 1, counts, |_| Ok(()))
+            .unwrap();
+        let completed = slots.telemetry;
+        assert_eq!(completed.actions_live, 5);
+        assert_eq!(completed.candidates_live, 2);
+        assert_eq!(
+            slots.complete_with_records(
+                7,
+                9,
+                Some(super::CompletedRecords::default()),
+                |_| panic!("duplicate validation")
+            ),
+            Err("campaign worker completed one reservation twice")
+        );
+        assert_eq!(slots.telemetry, completed);
+        assert_eq!(slots.pending, 0);
+        assert_eq!(slots.take_completed(7), Some(("queued", 1)));
+        assert_eq!(slots.take_completed(7), None);
+        assert_eq!(slots.telemetry.results_live, 0);
+        assert_eq!(slots.telemetry.actions_live, 0);
+        assert_eq!(slots.telemetry.candidates_live, 0);
+        assert_eq!(slots.telemetry.actions_peak, 5);
+        assert_eq!(slots.telemetry.candidates_peak, 2);
+    }
+
+    #[test]
+    fn worker_and_public_counts_preserve_reordered_results_and_buffer_gauges() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let run = |worker_counted: bool| {
+            let scans = Arc::new(AtomicUsize::new(0));
+            let mut slots = super::ReservationSlots::new(
+                |value: &(Arc<AtomicUsize>, u64)| {
+                    value.0.fetch_add(1, Ordering::Relaxed);
+                    (value.1, u64::from(value.1 > 0))
+                },
+                3,
+            );
+            for reservation in 0..3 {
+                slots.insert(reservation, reservation + 10);
+            }
             let mut next = 0;
             let mut admitted = Vec::new();
-            for &reservation in order {
-                assert!(buffer.insert(reservation, reservation).is_none());
-                while let Some(value) = buffer.remove(&next) {
-                    admitted.push((next, value));
+            for reservation in [2, 0, 1] {
+                let counts = worker_counted.then_some(super::CompletedRecords {
+                    actions: reservation,
+                    candidates: u64::from(reservation > 0),
+                });
+                slots
+                    .complete_with_records(
+                        reservation,
+                        (Arc::clone(&scans), reservation),
+                        counts,
+                        |_| Ok(()),
+                    )
+                    .unwrap();
+                while let Some((pending, (_, value))) = slots.take_completed(next) {
+                    admitted.push((next, pending, value));
                     next += 1;
                 }
             }
-            assert!(buffer.is_empty());
-            assert_eq!(buffer.telemetry.results_live, 0);
-            assert_eq!(buffer.telemetry.actions_live, 0);
-            assert_eq!(buffer.telemetry.candidates_live, 0);
-            (admitted, buffer.telemetry)
+            assert!(slots.is_empty());
+            (admitted, slots.telemetry, scans.load(Ordering::Relaxed))
         };
-        let ordered = run(&[0, 1, 2]);
-        let reordered = run(&[2, 1, 0]);
+        let counted = run(true);
+        let public = run(false);
+        assert_eq!(counted.0, public.0);
+        assert_eq!(counted.1, public.1);
+        assert_eq!(counted.2, 0);
+        assert_eq!(public.2, 3);
+    }
+
+    #[test]
+    fn reservation_slots_validate_before_scanning_and_count_each_result_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let scans = Arc::new(AtomicUsize::new(0));
+        let mut slots = super::ReservationSlots::new(
+            |value: &(Arc<AtomicUsize>, (u64, u64))| {
+                value.0.fetch_add(1, Ordering::Relaxed);
+                value.1
+            },
+            2,
+        );
+        assert!(slots.insert(7, "queued").is_none());
+        assert!(slots.insert(9, "running").is_none());
+        assert_eq!(
+            slots.complete(7, (Arc::clone(&scans), (5, 2)), |_| Err("never planned")),
+            Err("never planned")
+        );
+        assert_eq!(slots.pending, 2);
+        assert_eq!(scans.load(Ordering::Relaxed), 0);
+        slots
+            .complete(7, (Arc::clone(&scans), (5, 2)), |_| Ok(()))
+            .unwrap();
+        slots
+            .complete(9, (Arc::clone(&scans), (3, 1)), |_| Ok(()))
+            .unwrap();
+        assert!(
+            slots
+                .complete(7, (Arc::clone(&scans), (8, 4)), |_| panic!(
+                    "duplicate validation"
+                ))
+                .is_err()
+        );
+        assert_eq!(scans.load(Ordering::Relaxed), 2);
+        assert_eq!(slots.take_completed(9).unwrap().1.1, (3, 1));
+        assert_eq!(slots.take_completed(7).unwrap().1.1, (5, 2));
+        assert!(slots.take_completed(7).is_none());
+        assert_eq!(scans.load(Ordering::Relaxed), 2);
+        assert_eq!(slots.telemetry.results_live, 0);
+        assert_eq!(slots.telemetry.actions_live, 0);
+        assert_eq!(slots.telemetry.candidates_live, 0);
+        assert_eq!(slots.telemetry.actions_peak, 8);
+        assert_eq!(slots.telemetry.candidates_peak, 3);
+    }
+
+    #[test]
+    fn reservation_slots_reordering_changes_only_occupancy_not_admission_content() {
+        use std::hash::BuildHasher;
+        let first = std::collections::hash_map::RandomState::new();
+        let second = std::collections::hash_map::RandomState::new();
+        assert_ne!(first.hash_one(23_u64), second.hash_one(23_u64));
+        let run = |order: &[u64], state: std::collections::hash_map::RandomState| {
+            let mut slots =
+                super::ReservationSlots::new(|value: &u64| (*value, u64::from(*value > 0)), 3);
+            slots.entries = super::ReservationLookup::with_capacity_and_hasher(3, state);
+            for reservation in 0..3 {
+                slots.insert(reservation, reservation + 10);
+            }
+            let mut next = 0;
+            let mut admitted = Vec::new();
+            for &reservation in order {
+                slots
+                    .complete(reservation, reservation, |_| Ok(()))
+                    .unwrap();
+                while let Some((pending, value)) = slots.take_completed(next) {
+                    admitted.push((next, pending, value));
+                    next += 1;
+                }
+            }
+            assert!(slots.is_empty());
+            assert_eq!(slots.pending, 0);
+            assert_eq!(slots.telemetry.results_live, 0);
+            assert_eq!(slots.telemetry.actions_live, 0);
+            assert_eq!(slots.telemetry.candidates_live, 0);
+            (admitted, slots.telemetry)
+        };
+        let ordered = run(&[0, 1, 2], first);
+        let reordered = run(&[2, 1, 0], second);
         assert_eq!(ordered.0, reordered.0);
         assert_eq!(ordered.1.results_peak, 1);
         assert_eq!(reordered.1.results_peak, 3);
@@ -8974,13 +10505,17 @@ mod tests {
         }
     }
 
-    pub(super) fn before_locality_dispatch<Key: Ord, Job, Output, O>(
+    pub(super) fn before_locality_dispatch<Key: Ord + Clone, Job, Output, O>(
         pool: &crate::search::parallel::WorkerPool<Key, Job, Output, O>,
         reservation: usize,
         initial: bool,
     ) -> Result<(), Box<dyn Error>> {
         let fixture = LOCALITY_DISPATCH.with(|slot| slot.borrow().clone());
         if let Some(fixture) = fixture {
+            if fixture.case == ResidencyCase::Refill && !initial {
+                fixture.state.lock().unwrap().first_admitted = true;
+                fixture.changed.notify_all();
+            }
             let idle = match (fixture.case, reservation) {
                 (ResidencyCase::Refill, 0) => vec![1],
                 (ResidencyCase::BusyOwner, 1) => {
@@ -9083,7 +10618,9 @@ mod tests {
                             LOCALITY_WORKER.with(|slot| {
                                 slot.set(match thread {
                                     PlacedThread::Worker(worker) => Some(worker),
-                                    PlacedThread::Coordinator => None,
+                                    PlacedThread::Coordinator
+                                    | PlacedThread::StreamEncoder
+                                    | PlacedThread::StreamSerializer(_) => None,
                                 })
                             });
                             Ok(())
@@ -9241,6 +10778,126 @@ mod tests {
         let replayed =
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert_eq!(replayed, live);
+    }
+
+    #[test]
+    fn replacement_dispatch_precedes_the_next_buffered_admission() {
+        let mut config = three_worker_config();
+        config.window = 6;
+        config.execution_budget = 100;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap();
+        while coordinator.reserve_next().unwrap() {}
+        let mut target = workload.new_target().unwrap();
+        let jobs = coordinator.plan(usize::MAX);
+        assert_eq!(jobs.len(), config.window);
+        let mut outcomes = jobs
+            .iter()
+            .map(|job| run_job(&workload, &config, &mut target, job).unwrap())
+            .collect::<Vec<_>>();
+        let head = outcomes.remove(0);
+        let before = coordinator.executions();
+        for outcome in outcomes.into_iter().rev() {
+            coordinator.admit(outcome).unwrap();
+        }
+        assert_eq!(coordinator.executions(), before);
+        let records = super::CompletedRecords::of_result::<TestWorkload>(&head.result);
+        let token = coordinator.reservation_token(head.reservation).unwrap();
+        let error = coordinator
+            .admit_dispatch(head, records, token, &mut |_, _| {
+                Err("dispatch witness".into())
+            })
+            .unwrap_err();
+        assert_eq!(error.to_string(), "dispatch witness");
+        assert_eq!(coordinator.executions(), before + 1);
+    }
+
+    #[test]
+    fn invalid_worker_replies_fail_before_any_ordered_admission() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut config = three_worker_config();
+        config.window = 6;
+        config.execution_budget = 60;
+        for case in 0..4 {
+            let mut stream = Vec::new();
+            {
+                let mut coordinator = CampaignCoordinator::start(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions::default(),
+                )
+                .unwrap();
+                while coordinator.reserve_next().unwrap() {}
+                let error = match case {
+                    0 => {
+                        coordinator.plan(usize::MAX);
+                        coordinator
+                            .fail(usize::MAX, "unknown worker".into())
+                            .unwrap_err()
+                    }
+                    1 => {
+                        let jobs = coordinator.plan(usize::MAX);
+                        let head = coordinator.next_admission().unwrap();
+                        let held = jobs
+                            .iter()
+                            .find(|job| job.reservation != head)
+                            .unwrap()
+                            .reservation;
+                        coordinator.fail(held, "held failure".into()).unwrap();
+                        assert_eq!(coordinator.executions(), 0);
+                        assert!(coordinator.reserve_next().unwrap());
+                        assert!(!coordinator.reserve_next().unwrap());
+                        coordinator
+                            .fail(held, "duplicate failure".into())
+                            .unwrap_err()
+                    }
+                    2 => {
+                        let planned = coordinator.plan(1).pop().unwrap().reservation;
+                        let queued = (0..config.window)
+                            .find(|&reservation| reservation != planned)
+                            .unwrap();
+                        coordinator
+                            .fail(queued, "unplanned worker".into())
+                            .unwrap_err()
+                    }
+                    _ => coordinator
+                        .fail(0, "worker before plan".into())
+                        .unwrap_err(),
+                };
+                let expected = match case {
+                    0 => "campaign worker replied for an unknown reservation",
+                    1 => "campaign worker completed one reservation twice",
+                    2 => "campaign worker replied for a job that was never planned",
+                    _ => "campaign worker replied without queued work",
+                };
+                assert_eq!(error.to_string(), expected);
+                assert_eq!(coordinator.executions(), 0);
+            }
+            assert!(job_lines(&stream).is_empty());
+            assert!(
+                !std::str::from_utf8(&stream)
+                    .unwrap()
+                    .contains("\"record\":\"end\"")
+            );
+        }
     }
 
     #[test]
@@ -10286,6 +11943,8 @@ mod tests {
         notes: std::sync::Mutex<Vec<usize>>,
         admitted: std::sync::Mutex<Vec<usize>>,
         refuse_start: bool,
+        selected: bool,
+        requested: Mutex<Vec<usize>>,
     }
 
     impl super::CampaignWatch<TestWorkload> for StaggeredWatch {
@@ -10299,6 +11958,20 @@ mod tests {
             let delay = (job.reservation * 7 + self.offset) % 4;
             std::thread::sleep(Duration::from_micros(250 * delay as u64));
             Ok((run()?, job.reservation))
+        }
+
+        fn prepare_admission(
+            &self,
+            note: &usize,
+            campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+        ) {
+            if self.selected {
+                campaign.watch_selected_admissions();
+                if note % 3 == 1 {
+                    assert!(campaign.request_admission(*note));
+                    self.requested.lock().unwrap().push(*note);
+                }
+            }
         }
 
         fn admitted(&self, note: usize, campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
@@ -10318,7 +11991,9 @@ mod tests {
             if self.refuse_start {
                 return Err("the watch refused to start".into());
             }
-            campaign.watch_admissions();
+            if !self.selected {
+                campaign.watch_admissions();
+            }
             Ok(())
         }
     }
@@ -10343,7 +12018,7 @@ mod tests {
     #[test]
     fn a_watched_campaign_writes_the_unwatched_stream_and_sees_every_admission() {
         let mut plain = Vec::new();
-        run_campaign_checkpointed(
+        let plain_outcome = run_campaign_checkpointed(
             &TestWorkload {
                 bootstrap_objective: false,
                 targets: None,
@@ -10359,13 +12034,281 @@ mod tests {
                 offset,
                 ..StaggeredWatch::default()
             };
-            assert_eq!(watched_stream(&watch).expect("watched campaign"), plain);
+            let watched = watched_stream(&watch).expect("watched campaign");
+            assert_eq!(watched, plain);
+            let replayed = super::replay_campaign_checkpointed(
+                &TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                },
+                &watched,
+                None,
+                None,
+            )
+            .expect("reordered campaign replay");
+            assert_eq!(
+                serde_json::to_value(&replayed.0).unwrap(),
+                serde_json::to_value(&plain_outcome.0).unwrap(),
+            );
+            assert_eq!(replayed.1, plain_outcome.1);
             let mut notes = watch.notes.into_inner().unwrap();
             let mut admitted = watch.admitted.into_inner().unwrap();
             notes.sort_unstable();
             admitted.sort_unstable();
             assert!(!notes.is_empty());
             assert_eq!(notes, admitted);
+        }
+    }
+
+    #[derive(Default)]
+    struct FirstFinishWatch {
+        admitted: Mutex<Vec<super::CampaignAdmission>>,
+    }
+
+    impl super::CampaignWatch<TestWorkload> for FirstFinishWatch {
+        type Note = usize;
+
+        fn run(
+            &self,
+            job: &JobSpec<TestWorkload>,
+            run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+        ) -> super::WatchedJob<TestWorkload, usize> {
+            let outcome = run()?;
+            assert!(
+                outcome
+                    .result
+                    .actions
+                    .iter()
+                    .any(|action| action.outcome.objective_reached)
+            );
+            Ok((outcome, job.reservation))
+        }
+
+        fn prepare_admission(
+            &self,
+            note: &usize,
+            campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+        ) {
+            campaign.watch_selected_admissions();
+            assert!(campaign.request_admission(*note));
+        }
+
+        fn admitted(&self, note: usize, campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+            let admissions = campaign.take_admissions();
+            assert_eq!(admissions.len(), 1);
+            assert_eq!(admissions[0].reservation, note);
+            assert!(
+                admissions[0]
+                    .decisions
+                    .contains(&CampaignAdmissionDecision::Objective)
+            );
+            self.admitted.lock().unwrap().extend(admissions);
+        }
+    }
+
+    #[test]
+    fn the_first_watched_job_keeps_its_admission_when_it_finishes_the_campaign() {
+        let targets = Arc::new(LiveTargets::default());
+        targets
+            .objective_after_work
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        config.stop_campaign_on_objective = true;
+        let mut plain = Vec::new();
+        let expected = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut plain,
+            None,
+        )
+        .unwrap();
+        let mut stream = Vec::new();
+        let watch = FirstFinishWatch::default();
+        let outcome = super::run_campaign_watched(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+            &watch,
+        )
+        .unwrap();
+        assert_eq!(outcome.0.executions_completed, 1);
+        assert_eq!(stream, plain);
+        assert_eq!(outcome, expected);
+        assert_eq!(outcome.1, expected.1);
+        assert_eq!(watch.admitted.into_inner().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn selected_admission_requests_survive_reordered_completions_without_changing_the_campaign() {
+        let mut config = three_worker_config();
+        config.window = 6;
+        config.execution_budget = 60;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut plain = Vec::new();
+        let expected = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut plain,
+            None,
+        )
+        .unwrap();
+        for reverse in [false, true] {
+            let mut stream = Vec::new();
+            let mut coordinator = CampaignCoordinator::start(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default(),
+            )
+            .unwrap();
+            while coordinator.reserve_next().unwrap() {}
+            let mut target = workload.new_target().unwrap();
+            let mut requested = BTreeSet::new();
+            let mut observed = BTreeSet::new();
+            assert!(!coordinator.request_admission(0));
+            coordinator.watch_selected_admissions();
+            assert!(!coordinator.request_admission(usize::MAX));
+            assert!(!coordinator.request_admission(config.execution_budget as usize));
+            while !coordinator.finished() {
+                let jobs = coordinator.plan(usize::MAX);
+                assert!(!jobs.is_empty());
+                let mut outcomes = jobs
+                    .iter()
+                    .map(|job| run_job(&workload, &config, &mut target, job).unwrap())
+                    .collect::<Vec<_>>();
+                if reverse {
+                    outcomes.reverse();
+                }
+                for outcome in outcomes {
+                    let reservation = outcome.reservation;
+                    if reservation % 3 == 1 {
+                        assert!(coordinator.request_admission(reservation));
+                        assert!(coordinator.request_admission(reservation));
+                        requested.insert(reservation);
+                    }
+                    coordinator.admit(outcome).unwrap();
+                    for admission in coordinator.take_admissions() {
+                        assert!(observed.insert(admission.reservation));
+                        assert!(!coordinator.request_admission(admission.reservation));
+                    }
+                }
+            }
+            assert!(!requested.is_empty());
+            assert!(requested.len() < config.execution_budget as usize);
+            assert_eq!(observed, requested);
+            assert!(coordinator.take_admissions().is_empty());
+            let actual = coordinator.finish(Vec::new()).unwrap();
+            assert_eq!(stream, plain);
+            assert_eq!(actual, expected);
+            assert_eq!(
+                serde_json::to_value(&actual.0).unwrap(),
+                serde_json::to_value(&expected.0).unwrap()
+            );
+            assert_eq!(actual.1, expected.1);
+        }
+    }
+
+    #[test]
+    fn disabling_admission_watching_drops_pending_requests_and_collected_records() {
+        let mut config = three_worker_config();
+        config.execution_budget = 3;
+        config.window = 3;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap();
+        while coordinator.reserve_next().unwrap() {}
+        let mut target = workload.new_target().unwrap();
+        let mut jobs = coordinator.plan(usize::MAX);
+        coordinator.watch_selected_admissions();
+        for job in &jobs {
+            assert!(coordinator.request_admission(job.reservation));
+        }
+        let first = jobs.remove(0);
+        coordinator
+            .admit(run_job(&workload, &config, &mut target, &first).unwrap())
+            .unwrap();
+        coordinator.unwatch_admissions();
+        assert!(!coordinator.request_admission(jobs[0].reservation));
+        coordinator.watch_selected_admissions();
+        for job in jobs {
+            coordinator
+                .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                .unwrap();
+        }
+        assert!(coordinator.take_admissions().is_empty());
+    }
+
+    #[test]
+    fn a_sampled_watch_matches_requested_reservations_across_worker_completion_orders() {
+        let config = three_worker_config();
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut plain = Vec::new();
+        let expected = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut plain,
+            None,
+        )
+        .unwrap();
+        for offset in 0..3 {
+            let watch = StaggeredWatch {
+                offset,
+                selected: true,
+                ..StaggeredWatch::default()
+            };
+            let mut stream = Vec::new();
+            let outcome = super::run_campaign_watched(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default(),
+                &watch,
+            )
+            .unwrap();
+            assert_eq!(stream, plain);
+            assert_eq!(outcome, expected);
+            assert_eq!(outcome.1, expected.1);
+            let mut requested = watch.requested.into_inner().unwrap();
+            let mut admitted = watch.admitted.into_inner().unwrap();
+            requested.sort_unstable();
+            admitted.sort_unstable();
+            assert!(!requested.is_empty());
+            assert!(requested.len() < watch.notes.lock().unwrap().len());
+            assert_eq!(admitted, requested);
         }
     }
 
@@ -10406,6 +12349,92 @@ mod tests {
         assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
     }
 
+    fn final_report_counter_fixture(
+        sample: Option<(u64, u64)>,
+        report_sample: Option<(u64, u64)>,
+    ) -> (CampaignOutcome<TestWorkload>, Vec<u8>) {
+        struct Restore(Option<(u64, u64)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ARCHIVE_REPORT_SCHEDSTAT.set(self.0);
+            }
+        }
+        let _restore = Restore(ARCHIVE_REPORT_SCHEDSTAT.replace(report_sample));
+        crate::search::telemetry::with_test_schedstat(sample, || {
+            let mut stream = Vec::new();
+            let outcome = run_campaign_checkpointed(
+                &TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                },
+                &three_worker_config(),
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+            )
+            .unwrap();
+            (outcome, stream)
+        })
+    }
+
+    fn assert_final_report_counter_outputs_equal(
+        a: &(CampaignOutcome<TestWorkload>, Vec<u8>),
+        b: &(CampaignOutcome<TestWorkload>, Vec<u8>),
+    ) {
+        assert_eq!(a.1, b.1);
+        assert_eq!(
+            serde_json::to_value(&a.0.0).unwrap(),
+            serde_json::to_value(&b.0.0).unwrap()
+        );
+        assert_eq!(a.0.1.to_bytes().unwrap(), b.0.1.to_bytes().unwrap());
+    }
+
+    #[test]
+    fn whole_coordinator_cpu_includes_final_archive_report_without_changing_logical_outputs() {
+        let reference = final_report_counter_fixture(Some((100, 200)), None);
+        let measured = final_report_counter_fixture(Some((100, 200)), Some((1100, 2200)));
+        let whole = measured.0.0.telemetry.coordinator_host.unwrap();
+        assert_eq!(whole.coordinator_cpu_ns, 1000);
+        assert_eq!(whole.coordinator_run_wait_ns, 2000);
+        let dispatch = measured
+            .0
+            .0
+            .telemetry
+            .dispatch_phase
+            .as_ref()
+            .unwrap()
+            .host
+            .unwrap();
+        assert_eq!(dispatch.coordinator_cpu_ns, 0);
+        assert_eq!(dispatch.coordinator_run_wait_ns, 0);
+        assert_final_report_counter_outputs_equal(&reference, &measured);
+    }
+
+    #[test]
+    fn unavailable_whole_coordinator_cpu_stays_null_without_changing_logical_outputs() {
+        let reference = final_report_counter_fixture(Some((100, 200)), None);
+        let unavailable = final_report_counter_fixture(None, None);
+        assert!(unavailable.0.0.telemetry.coordinator_host.is_none());
+        assert!(
+            serde_json::to_value(&unavailable.0.0.telemetry)
+                .unwrap()
+                .get("coordinator_host")
+                .is_none()
+        );
+        assert!(
+            unavailable
+                .0
+                .0
+                .telemetry
+                .dispatch_phase
+                .as_ref()
+                .unwrap()
+                .host
+                .is_none()
+        );
+        assert_final_report_counter_outputs_equal(&reference, &unavailable);
+    }
+
     #[test]
     fn placement_runs_once_on_the_coordinator_and_each_worker_thread() {
         let placed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -10418,6 +12447,24 @@ mod tests {
             Ok(())
         });
         let placed_run = run_placed(placement).expect("placed campaign");
+        let phase = placed_run
+            .0
+            .telemetry
+            .dispatch_phase
+            .as_ref()
+            .expect("native dispatch phase");
+        assert!(phase.wall_ns <= placed_run.0.telemetry.search_ns);
+        if let Some(host) = phase.host {
+            let total = placed_run
+                .0
+                .telemetry
+                .coordinator_host
+                .expect("coordinator host counters");
+            assert!(host.coordinator_cpu_ns <= total.coordinator_cpu_ns);
+            assert!(host.coordinator_run_wait_ns <= total.coordinator_run_wait_ns);
+            assert!(host.idle_admission_order_ns <= total.idle_admission_order_ns);
+            assert!(host.idle_no_job_ns <= total.idle_no_job_ns);
+        }
         let unplaced = run_campaign_checkpointed(
             &TestWorkload {
                 bootstrap_objective: false,
@@ -10433,12 +12480,17 @@ mod tests {
         let mut placed = placed.lock().expect("placement record").clone();
         placed.sort_by_key(|(thread, _)| match thread {
             PlacedThread::Coordinator => 0,
-            PlacedThread::Worker(worker) => worker + 1,
+            PlacedThread::StreamEncoder => 1,
+            PlacedThread::StreamSerializer(index) => index + 2,
+            PlacedThread::Worker(worker) => worker + 4,
         });
         assert_eq!(
             placed.iter().map(|(thread, _)| *thread).collect::<Vec<_>>(),
             vec![
                 PlacedThread::Coordinator,
+                PlacedThread::StreamEncoder,
+                PlacedThread::StreamSerializer(0),
+                PlacedThread::StreamSerializer(1),
                 PlacedThread::Worker(0),
                 PlacedThread::Worker(1),
                 PlacedThread::Worker(2),
@@ -10448,12 +12500,18 @@ mod tests {
             .iter()
             .map(|(_, id)| format!("{id:?}"))
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(threads.len(), 4);
+        assert_eq!(threads.len(), 7);
     }
 
     #[test]
     fn a_placement_failure_fails_the_campaign() {
-        for refused in [PlacedThread::Coordinator, PlacedThread::Worker(1)] {
+        for refused in [
+            PlacedThread::Coordinator,
+            PlacedThread::StreamEncoder,
+            PlacedThread::StreamSerializer(0),
+            PlacedThread::StreamSerializer(1),
+            PlacedThread::Worker(1),
+        ] {
             let placement = ThreadPlacement::new(move |thread| {
                 if thread == refused {
                     Err(format!("{thread:?} refused"))
@@ -10489,7 +12547,9 @@ mod tests {
                 one_failed_sender.send(()).unwrap();
                 Err("worker one refused startup".to_owned())
             }
-            PlacedThread::Coordinator => Ok(()),
+            PlacedThread::Coordinator
+            | PlacedThread::StreamEncoder
+            | PlacedThread::StreamSerializer(_) => Ok(()),
             _ => unreachable!(),
         });
         let (error, stream) = std::thread::scope(|scope| {
@@ -10552,34 +12612,6 @@ mod tests {
             retention: RetentionPolicy::Unprobed,
             objective_witness_path: None,
         }
-    }
-
-    fn run_direct_checkpointed(
-        workload: &TestWorkload,
-        config: &CampaignConfig<TestWorkload>,
-        stream: &mut dyn Write,
-        options: CampaignExecutionOptions,
-    ) -> Result<CampaignOutcome<TestWorkload>, Box<dyn Error>> {
-        let mut coordinator = CampaignCoordinator::start(
-            workload,
-            config,
-            &CampaignOrigin::Genesis,
-            stream,
-            None,
-            options,
-        )?;
-        while coordinator.reserve_next()? {}
-        let mut target = workload.new_target()?;
-        while !coordinator.finished() {
-            let jobs = coordinator.plan(2);
-            if jobs.is_empty() {
-                return Err("direct coordinator has no runnable jobs".into());
-            }
-            for job in jobs.into_iter().rev() {
-                coordinator.admit(run_job(workload, config, &mut target, &job)?)?;
-            }
-        }
-        coordinator.finish(Vec::new())
     }
 
     #[test]
@@ -10771,9 +12803,16 @@ mod tests {
     #[test]
     fn typed_integrity_failure_precedes_both_ready_and_pending_persistence_failure() {
         for ready in [false, true] {
-            for receive in [false, true] {
+            for operation in [
+                "reserve",
+                "dispatch",
+                "fail",
+                "admit-dispatch",
+                "drain-stream",
+                "dispatch-queued",
+            ] {
                 let directory = std::env::temp_dir().join(format!(
-                    "direct-integrity-persistence-{}-{ready}-{receive}",
+                    "direct-integrity-persistence-{}-{ready}-{operation}",
                     std::process::id()
                 ));
                 let _ = std::fs::remove_dir_all(&directory);
@@ -10822,7 +12861,17 @@ mod tests {
                     .admit(run_job(&workload, &config, &mut target, &job).unwrap())
                     .unwrap();
                 entered.recv_timeout(Duration::from_secs(10)).unwrap();
-                let next = receive.then(|| coordinator.plan(1).pop().unwrap().reservation);
+                let next = matches!(operation, "fail" | "admit-dispatch")
+                    .then(|| coordinator.plan(1).pop().unwrap());
+                let counted = if operation == "admit-dispatch" {
+                    let outcome =
+                        run_job(&workload, &config, &mut target, next.as_ref().unwrap()).unwrap();
+                    let records =
+                        super::CompletedRecords::of_result::<TestWorkload>(&outcome.result);
+                    Some((outcome, records))
+                } else {
+                    None
+                };
                 if ready {
                     released.send(()).unwrap();
                     wait_for_checkpoint_worker(&coordinator);
@@ -10838,11 +12887,30 @@ mod tests {
                 targets
                     .integrity_invalidated
                     .store(true, std::sync::atomic::Ordering::SeqCst);
-                let error = match next {
-                    Some(reservation) => coordinator
-                        .fail(reservation, "worker error".into())
+                let error = match operation {
+                    "reserve" => coordinator.reserve_next().unwrap_err(),
+                    "dispatch" => coordinator
+                        .reserve_next_dispatch(&mut |_, _| {
+                            panic!("dispatch after integrity failure")
+                        })
                         .unwrap_err(),
-                    None => coordinator.reserve_next().unwrap_err(),
+                    "fail" => coordinator
+                        .fail(next.unwrap().reservation, "worker error".into())
+                        .unwrap_err(),
+                    "drain-stream" => coordinator.drain_background_stream().unwrap_err(),
+                    "dispatch-queued" => coordinator
+                        .dispatch_queued(&mut |_, _| panic!("dispatch after integrity failure"))
+                        .unwrap_err(),
+                    "admit-dispatch" => {
+                        let (outcome, records) = counted.unwrap();
+                        let token = coordinator.reservation_token(outcome.reservation).unwrap();
+                        coordinator
+                            .admit_dispatch(outcome, records, token, &mut |_, _| {
+                                panic!("dispatch after integrity failure")
+                            })
+                            .unwrap_err()
+                    }
+                    _ => unreachable!(),
                 };
                 assert!(
                     error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>()
@@ -11053,34 +13121,28 @@ mod tests {
     #[test]
     fn a_delayed_checkpoint_writer_preserves_the_admission_version_replay_and_resume() {
         for direct in [false, true] {
-            struct ObservedStream {
-                bytes: Vec<u8>,
-                parsed: usize,
-                jobs: usize,
-                later_admission: mpsc::Sender<()>,
-            }
-            impl Write for ObservedStream {
-                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                    self.bytes.extend_from_slice(bytes);
-                    while let Some(end) = self.bytes[self.parsed..]
-                        .iter()
-                        .position(|byte| *byte == b'\n')
-                    {
-                        let end = self.parsed + end;
-                        let record: serde_json::Value =
-                            serde_json::from_slice(&self.bytes[self.parsed..end])?;
-                        if record["event"] == "job" {
-                            self.jobs += 1;
-                            if self.jobs == 6 {
-                                let _ = self.later_admission.send(());
-                            }
-                        }
-                        self.parsed = end + 1;
+            struct AdmissionSignal(mpsc::Sender<u64>);
+            impl AdmissionSignal {
+                fn observe(&self, campaign: &CampaignCoordinator<'_, TestWorkload>) {
+                    let executions = campaign.progress().unwrap().executions;
+                    if executions >= 6 {
+                        let _ = self.0.send(executions);
                     }
-                    Ok(bytes.len())
                 }
-                fn flush(&mut self) -> std::io::Result<()> {
-                    Ok(())
+            }
+            impl super::CampaignWatch<TestWorkload> for AdmissionSignal {
+                type Note = ();
+
+                fn run(
+                    &self,
+                    _job: &JobSpec<TestWorkload>,
+                    run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+                ) -> super::WatchedJob<TestWorkload, ()> {
+                    Ok((run()?, ()))
+                }
+
+                fn admitted(&self, _: (), campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+                    self.observe(campaign);
                 }
             }
             let asynchronous = std::env::temp_dir().join(format!(
@@ -11137,38 +13199,66 @@ mod tests {
             ));
             let (live, stream) = std::thread::scope(|scope| {
                 let run = scope.spawn(|| {
-                    let mut stream = ObservedStream {
-                        bytes: Vec::new(),
-                        parsed: 0,
-                        jobs: 0,
-                        later_admission: later_sender,
-                    };
+                    let mut stream = Vec::new();
+                    let signal = AdmissionSignal(later_sender);
                     let options = CampaignExecutionOptions {
                         checkpoints: Some(delayed_plan),
                         ..CampaignExecutionOptions::default()
                     };
-                    let result = if direct {
-                        run_direct_checkpointed(&workload, &config, &mut stream, options)
-                    } else {
-                        run_campaign_checkpointed_with_options(
-                            &workload,
-                            &config,
-                            &CampaignOrigin::Genesis,
-                            &mut stream,
-                            None,
-                            options,
-                        )
-                    };
-                    (result.map_err(|error| error.to_string()), stream.bytes)
+                    let result = (|| {
+                        if direct {
+                            let mut campaign = CampaignCoordinator::start(
+                                &workload,
+                                &config,
+                                &CampaignOrigin::Genesis,
+                                &mut stream,
+                                None,
+                                options,
+                            )?;
+                            while campaign.reserve_next()? {}
+                            let mut target = workload.new_target()?;
+                            while !campaign.finished() {
+                                let jobs = campaign.plan(2);
+                                if jobs.is_empty() {
+                                    return Err("direct coordinator has no runnable jobs".into());
+                                }
+                                for job in jobs.into_iter().rev() {
+                                    campaign.admit(run_job(
+                                        &workload,
+                                        &config,
+                                        &mut target,
+                                        &job,
+                                    )?)?;
+                                    signal.observe(&campaign);
+                                }
+                            }
+                            campaign.finish(Vec::new())
+                        } else {
+                            super::run_campaign_watched(
+                                &workload,
+                                &config,
+                                &CampaignOrigin::Genesis,
+                                &mut stream,
+                                None,
+                                options,
+                                &signal,
+                            )
+                        }
+                    })();
+                    (
+                        result.map_err(|error: Box<dyn Error>| error.to_string()),
+                        stream,
+                    )
                 });
                 let entered = entered.recv_timeout(Duration::from_secs(10));
                 let later = later.recv_timeout(Duration::from_secs(10));
                 let _ = released.send(());
                 let (result, stream) = run.join().unwrap();
                 entered.expect("the first immutable image reached the writer");
-                later.expect(
+                let executions = later.expect(
                     "another admission changed live state while its preceding image was held",
                 );
+                assert!((6..10).contains(&executions));
                 (result.unwrap(), stream)
             });
             assert_eq!(stream, control_stream);

@@ -217,7 +217,7 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
     };
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult {
+        return Ok(CampaignJobResult::<StbGame> {
             preparation_failure: None,
             actions,
         });
@@ -270,14 +270,14 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
                     );
                 }
             };
-            Some(CampaignCandidate {
+            Some(CampaignCandidate::<StbGame> {
                 key: archive_key(target.mechanical_state())
                     .ok_or("STB attempted to archive a phase-invalid state")?,
                 viable,
                 snapshot,
             })
         };
-        actions.push(CampaignActionResult {
+        actions.push(CampaignActionResult::<StbGame> {
             action: recorded_action,
             observations,
             milestones: aggregate,
@@ -288,7 +288,7 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
             break;
         }
     }
-    Ok(CampaignJobResult {
+    Ok(CampaignJobResult::<StbGame> {
         preparation_failure: None,
         actions,
     })
@@ -750,14 +750,14 @@ mod tests {
         };
         let portable = serde_json::from_value(serde_json::json!(bytes))
             .expect("shared-state wire representation");
-        CampaignJobResult {
+        CampaignJobResult::<StbGame> {
             preparation_failure: None,
-            actions: vec![CampaignActionResult {
+            actions: vec![CampaignActionResult::<StbGame> {
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],
                 milestones: StbMilestones::default(),
                 outcome: Outcome::default(),
-                candidate: Some(CampaignCandidate {
+                candidate: Some(CampaignCandidate::<StbGame> {
                     key: archive_key(state).expect("synthetic live archive key"),
                     viable: true,
                     snapshot: StbSnapshot {

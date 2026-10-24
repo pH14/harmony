@@ -263,9 +263,15 @@ intended worker count, archive budget and live workload. The ceiling applies
 to each run, not all runs on a machine: budget simultaneous runs and leave host
 RAM for other services. Exceeding the ceiling can terminate a run.
 
-Leave CPU capacity beyond the selected workers for coordination, stream output,
-live observation and host services. These limits do not establish scaling
-performance. Rendering and video encoding run on the viewing Mac.
+Budget CPU beyond the selected workers for the coordinator, two stream
+serializers, ordered relay, live feed and host services. For example, 136
+physical cores allow 128 workers, four coordinator/stream roles, one live-feed
+allowance and three cores for OS, monitoring and network work. These are sizing
+allowances, not dedicated thread placement or a throughput guarantee. Rendering
+and video encoding run on the Mac. See the
+[scaling qualification guide](../../scripts/qualification/nes-scaling.md) for
+CPU coverage, memory accounting and the distinction between functional checks
+and measured scaling.
 
 Then run on the Mac:
 
@@ -998,7 +1004,12 @@ block, so snapshot digests are comparable only between cores in the same audio
 mode.
 
 `Checks / Dissonance Workloads / Twin Dragons Browser` rebuilds the static app
-once and uploads `twin-dragons-browser-dist`. Two browser jobs then run
+once in two stages and uploads `twin-dragons-browser-dist`. The runtime stage
+uses `./tools/build-runtime.sh --runtime-only` to compile cores, ROMs and the
+Rust worker; the build stage consumes those outputs and extracted Twin Dragons
+map source, runs `./tools/build-assets.sh`, and runs every adapter check. Each
+stage keeps a 15-minute budget. The default `./tools/build-runtime.sh` still
+runs both stages locally. Two browser jobs then run
 `npm run test:browser:games` and `npm run test:browser:interface` against that
 build and upload their evidence. `npm run test:browser` runs both. No
 generated assets or ROM are checked in.

@@ -36,7 +36,9 @@ use serde_json::{Value, json};
 use crate::{
     eval::{Request, Result, evaluate_watched},
     search::{
-        campaign::{CampaignCoordinator, CampaignWatch, JobOutcome, JobSpec, WatchedJob},
+        campaign::{
+            CampaignCoordinator, CampaignView, CampaignWatch, JobOutcome, JobSpec, WatchedJob,
+        },
         draw::draw_mixture_identifier,
     },
     witness::EndpointIdentity,
@@ -205,7 +207,7 @@ fn native_observer<V: 'static>(
     })
 }
 
-fn glance<G: ArcadeGame>(campaign: &CampaignCoordinator<'_, G>) -> Vec<(u64, Vec<u8>)> {
+fn glance<G: ArcadeGame>(campaign: &impl CampaignView<G>) -> Vec<(u64, Vec<u8>)> {
     let archive = campaign.archive();
     let entries = archive.live_entry_count();
     let indices = glance_indices(entries, &mut Sampler(campaign.executions() | 1));
@@ -266,7 +268,7 @@ where
 }
 
 impl<G: ArcadeGame> LiveWatch<G> {
-    fn root(&self, campaign: &CampaignCoordinator<'_, G>) -> Result<()> {
+    fn root(&self, campaign: &impl CampaignView<G>) -> Result<()> {
         let archive = campaign.archive();
         let (id, snapshot) = resident_root(archive)?;
         let frames = G::snapshot_frame_count(snapshot);
@@ -320,7 +322,7 @@ impl<G: ArcadeGame> LiveWatch<G> {
         }
     }
 
-    fn serve(&self, campaign: &CampaignCoordinator<'_, G>) {
+    fn serve(&self, campaign: &impl CampaignView<G>) {
         if self.pending_lookups.load(Ordering::Relaxed) == 0 {
             return;
         }
@@ -409,11 +411,12 @@ where
         Ok((outcome, note))
     }
 
-    fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>) {
+    fn prepare_admission(&self, note: &Self::Note, campaign: &mut CampaignCoordinator<'_, G>) {
         let watched = self.viewers.load(Ordering::Relaxed) > 0;
-        if watched != self.recording.swap(watched, Ordering::Relaxed) {
+        if watched != self.recording.load(Ordering::Relaxed) {
+            self.recording.store(watched, Ordering::Relaxed);
             if watched {
-                campaign.watch_admissions();
+                campaign.watch_selected_admissions();
             } else {
                 campaign.unwatch_admissions();
                 if let Some(feed) = lock(&self.shared).feed.as_mut() {
@@ -421,6 +424,13 @@ where
                 }
             }
         }
+        if watched && note.needs_admission() {
+            campaign.request_admission(note.reservation);
+        }
+    }
+
+    fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>) {
+        let watched = self.recording.load(Ordering::Relaxed);
         if watched {
             let admissions = campaign.take_admissions();
             {

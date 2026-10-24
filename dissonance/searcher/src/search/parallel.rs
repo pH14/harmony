@@ -1,17 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeMap,
+    cmp::Reverse,
+    collections::{BTreeMap, BinaryHeap},
     error::Error,
     fmt,
     sync::{Arc, Condvar, Mutex, mpsc},
     thread,
+    time::Duration,
 };
 
 use crate::search::locality::{LocalityKey, WorkerLocality};
 use crate::search::telemetry::{
     TargetCounters, WorkerTelemetry, nanos_since, now, thread_schedstat,
 };
+
+#[path = "parallel_reply.rs"]
+mod reply;
+
+fn profiled_execute<Output>(
+    profile: &mut Option<crate::search::telemetry::WorkerExecuteCpuTelemetry>,
+    mut clock: impl FnMut() -> Option<u128>,
+    execute: impl FnOnce() -> Result<Output, String>,
+) -> std::thread::Result<Result<Output, String>> {
+    let before = profile.as_ref().and_then(|_| clock());
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(execute));
+    let after = profile.as_ref().and_then(|_| clock());
+    if let Some(profile) = profile {
+        profile.record(
+            before,
+            after,
+            matches!(&outcome, Ok(Err(_))),
+            outcome.is_err(),
+        );
+    }
+    outcome
+}
 
 pub(crate) struct WorkerReply<Key, Output, O = ()> {
     pub(crate) worker: u32,
@@ -26,6 +50,7 @@ pub(crate) enum WorkerPoolError {
     DuplicateJob,
     WorkersExited,
     RepliesClosed,
+    QueueCapacity,
 }
 
 impl fmt::Display for WorkerPoolError {
@@ -35,16 +60,98 @@ impl fmt::Display for WorkerPoolError {
             Self::DuplicateJob => "campaign job queue already holds a job with this order key",
             Self::WorkersExited => "every campaign worker exited before taking the next job",
             Self::RepliesClosed => "every campaign worker exited while a reply was expected",
+            Self::QueueCapacity => "campaign worker queue capacity cannot be allocated",
         })
     }
 }
 
 impl Error for WorkerPoolError {}
 
+struct IdleWorkers {
+    values: Vec<Option<WorkerLocality>>,
+    identifiers: Vec<u32>,
+    bits: Vec<u64>,
+    len: usize,
+}
+
+impl IdleWorkers {
+    fn new(workers: usize) -> Self {
+        Self {
+            values: std::iter::repeat_with(|| None).take(workers).collect(),
+            identifiers: (0..workers)
+                .map(|worker| u32::try_from(worker).expect("worker identifier"))
+                .collect(),
+            bits: vec![0; workers.div_ceil(64)],
+            len: 0,
+        }
+    }
+
+    fn insert(&mut self, worker: u32, locality: WorkerLocality) {
+        let index = worker as usize;
+        if self.values[index].replace(locality).is_none() {
+            self.len += 1;
+        }
+        self.bits[index / 64] |= 1_u64 << (index % 64);
+    }
+
+    fn remove(&mut self, worker: &u32) {
+        let index = *worker as usize;
+        if self.values[index].take().is_some() {
+            self.len -= 1;
+        }
+        self.bits[index / 64] &= !(1_u64 << (index % 64));
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&u32, &WorkerLocality)> {
+        self.bits.iter().enumerate().flat_map(move |(word, &bits)| {
+            let mut remaining = bits;
+            std::iter::from_fn(move || {
+                if remaining == 0 {
+                    return None;
+                }
+                let bit = remaining.trailing_zeros() as usize;
+                remaining &= remaining - 1;
+                let index = word * 64 + bit;
+                Some((
+                    &self.identifiers[index],
+                    self.values[index].as_ref().expect("idle worker bit"),
+                ))
+            })
+        })
+    }
+
+    fn first_key_value(&self) -> Option<(&u32, &WorkerLocality)> {
+        self.iter().next()
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, worker: &u32) -> bool {
+        self.values
+            .get(*worker as usize)
+            .is_some_and(Option::is_some)
+    }
+    #[cfg(test)]
+    fn keys(&self) -> impl Iterator<Item = &u32> {
+        self.iter().map(|(worker, _)| worker)
+    }
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.len
+    }
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 struct JobQueue<Key, Job> {
-    jobs: BTreeMap<Key, QueuedJob<Job>>,
-    idle: BTreeMap<u32, WorkerLocality>,
-    assigned: BTreeMap<u32, (Key, Job)>,
+    jobs: BinaryHeap<Reverse<(Key, usize)>>,
+    slots: Vec<Option<QueuedSlot<Key, Job>>>,
+    free: Vec<usize>,
+    keys: BTreeMap<Key, usize>,
+    slot_index: Option<fn(&Key) -> usize>,
+    idle: IdleWorkers,
+    assigned: Vec<Option<usize>>,
     open: bool,
     workers: usize,
     failed_job: bool,
@@ -55,43 +162,179 @@ struct QueuedJob<Job> {
     locality: Option<LocalityKey>,
 }
 
-impl<Key: Ord, Job> JobQueue<Key, Job> {
-    fn assign(&mut self) -> bool {
+struct QueuedSlot<Key, Job> {
+    key: Key,
+    queued: QueuedJob<Job>,
+}
+
+impl<Key: Ord + Clone, Job> JobQueue<Key, Job> {
+    fn enqueue(
+        &mut self,
+        key: Key,
+        job: Job,
+        locality: Option<LocalityKey>,
+    ) -> Result<(), WorkerPoolError> {
+        let index = if let Some(slot_index) = self.slot_index {
+            let index = slot_index(&key);
+            if self.slots.get(index).is_none_or(Option::is_some) {
+                return Err(WorkerPoolError::DuplicateJob);
+            }
+            index
+        } else {
+            if self.keys.contains_key(&key) {
+                return Err(WorkerPoolError::DuplicateJob);
+            }
+            let index = self.free.pop().unwrap_or_else(|| {
+                self.slots.push(None);
+                self.slots.len() - 1
+            });
+            self.keys.insert(key.clone(), index);
+            index
+        };
+        self.jobs.push(Reverse((key.clone(), index)));
+        self.slots[index] = Some(QueuedSlot {
+            key,
+            queued: QueuedJob { job, locality },
+        });
+        Ok(())
+    }
+
+    fn release(&mut self, index: usize) -> (Key, QueuedJob<Job>) {
+        let slot = self.slots[index].take().expect("assigned job slot");
+        if self.slot_index.is_none() {
+            assert!(self.keys.remove(&slot.key).is_some());
+            self.free.push(index);
+        }
+        (slot.key, slot.queued)
+    }
+
+    fn assign(&mut self, mut notify: impl FnMut(u32)) -> bool {
         let mut assigned = false;
-        while let Some((_, first)) = self.jobs.first_key_value() {
-            let Some((&worker, _)) = self.idle.iter().max_by_key(|(worker, locality)| {
-                (locality.rank(first.locality), std::cmp::Reverse(**worker))
-            }) else {
+        while let Some(Reverse((_, index))) = self.jobs.peek() {
+            let first = &self.slots[*index].as_ref().expect("queued job slot").queued;
+            let worker = if first.locality.is_none() {
+                self.idle.first_key_value().map(|(&worker, _)| worker)
+            } else {
+                self.idle
+                    .iter()
+                    .max_by_key(|(worker, locality)| {
+                        (locality.rank(first.locality), std::cmp::Reverse(**worker))
+                    })
+                    .map(|(&worker, _)| worker)
+            };
+            let Some(worker) = worker else {
                 break;
             };
-            let Some((key, queued)) = self.jobs.pop_first() else {
-                break;
-            };
+            let Reverse((_, index)) = self.jobs.pop().expect("queued job head");
             self.idle.remove(&worker);
-            self.assigned.insert(worker, (key, queued.job));
+            let slot = &mut self.assigned[worker as usize];
+            assert!(slot.is_none());
+            *slot = Some(index);
+            notify(worker);
             assigned = true;
         }
         assigned
+    }
+
+    fn take_assigned(&mut self, worker: u32) -> Option<(Key, Job)> {
+        let index = self.assigned[worker as usize].take()?;
+        let (key, queued) = self.release(index);
+        Some((key, queued.job))
+    }
+
+    #[cfg(test)]
+    fn assigned_keys(&self) -> Vec<Key> {
+        let mut keys = self
+            .assigned
+            .iter()
+            .flatten()
+            .map(|index| self.slots[*index].as_ref().unwrap().key.clone())
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    #[cfg(test)]
+    fn queued_keys(&self) -> Vec<Key> {
+        let mut keys = self
+            .jobs
+            .iter()
+            .map(|Reverse((key, _))| key.clone())
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    #[cfg(test)]
+    fn pop_queued(&mut self) -> Option<(Key, QueuedJob<Job>)> {
+        let Reverse((_, index)) = self.jobs.pop()?;
+        Some(self.release(index))
+    }
+
+    #[cfg(test)]
+    fn from_parts(
+        jobs: BTreeMap<Key, QueuedJob<Job>>,
+        idle: BTreeMap<u32, WorkerLocality>,
+        workers: usize,
+        open: bool,
+    ) -> Self {
+        let mut queue = Self {
+            jobs: BinaryHeap::new(),
+            slots: Vec::new(),
+            free: Vec::new(),
+            keys: BTreeMap::new(),
+            slot_index: None,
+            idle: IdleWorkers::new(workers),
+            assigned: vec![None; workers],
+            open,
+            workers,
+            failed_job: false,
+        };
+        for (worker, locality) in idle {
+            queue.idle.insert(worker, locality);
+        }
+        for (key, queued) in jobs {
+            queue.enqueue(key, queued.job, queued.locality).unwrap();
+        }
+        queue
     }
 }
 
 struct SharedJobs<Key, Job> {
     queue: Mutex<JobQueue<Key, Job>>,
-    ready: Condvar,
+    ready: Vec<Condvar>,
+    #[cfg(test)]
+    state_changed: Condvar,
 }
 
-impl<Key: Ord, Job> SharedJobs<Key, Job> {
+impl<Key, Job> SharedJobs<Key, Job> {
+    fn wake_all(&self) {
+        for ready in &self.ready {
+            ready.notify_all();
+        }
+        #[cfg(test)]
+        self.state_changed.notify_all();
+    }
+}
+
+impl<Key: Ord + Clone, Job> SharedJobs<Key, Job> {
     fn new(workers: usize) -> Self {
         Self {
             queue: Mutex::new(JobQueue {
-                jobs: BTreeMap::new(),
-                idle: BTreeMap::new(),
-                assigned: BTreeMap::new(),
+                jobs: BinaryHeap::new(),
+                slots: Vec::new(),
+                free: Vec::new(),
+                keys: BTreeMap::new(),
+                slot_index: None,
+                idle: IdleWorkers::new(workers),
+                assigned: std::iter::repeat_with(|| None).take(workers).collect(),
                 open: true,
                 workers,
                 failed_job: false,
             }),
-            ready: Condvar::new(),
+            ready: std::iter::repeat_with(Condvar::new).take(workers).collect(),
+            #[cfg(test)]
+            state_changed: Condvar::new(),
         }
     }
 
@@ -99,19 +342,21 @@ impl<Key: Ord, Job> SharedJobs<Key, Job> {
         let mut queue = self.queue.lock().ok()?;
         queue.idle.insert(worker, locality);
         #[cfg(test)]
-        self.ready.notify_all();
+        self.state_changed.notify_all();
         loop {
-            if queue.assign() {
-                self.ready.notify_all();
-            }
-            if let Some(job) = queue.assigned.remove(&worker) {
+            queue.assign(|assigned| {
+                if assigned != worker {
+                    self.ready[assigned as usize].notify_one();
+                }
+            });
+            if let Some(job) = queue.take_assigned(worker) {
                 return Some(job);
             }
             if !queue.open {
                 queue.idle.remove(&worker);
                 return None;
             }
-            queue = self.ready.wait(queue).ok()?;
+            queue = self.ready[worker as usize].wait(queue).ok()?;
         }
     }
 
@@ -119,7 +364,7 @@ impl<Key: Ord, Job> SharedJobs<Key, Job> {
         if let Ok(mut queue) = self.queue.lock() {
             queue.open = false;
         }
-        self.ready.notify_all();
+        self.wake_all();
     }
 
     fn note_failed_job(&self) {
@@ -136,21 +381,60 @@ struct WorkerExit<'a, Key, Job> {
 
 impl<Key, Job> Drop for WorkerExit<'_, Key, Job> {
     fn drop(&mut self) {
-        if let Ok(mut queue) = self.jobs.queue.lock() {
-            queue.workers = queue.workers.saturating_sub(1);
-            queue.idle.remove(&self.worker);
+        let wake = match self.jobs.queue.lock() {
+            Ok(mut queue) => {
+                queue.workers = queue.workers.saturating_sub(1);
+                queue.idle.remove(&self.worker);
+                queue.open
+            }
+            Err(_) => true,
+        };
+        if wake {
+            self.jobs.wake_all();
+        } else {
+            #[cfg(test)]
+            self.jobs.state_changed.notify_all();
         }
-        self.jobs.ready.notify_all();
     }
 }
 
-pub(crate) struct WorkerPool<Key: Ord, Job, Output, O = ()> {
+pub(crate) struct WorkerPool<Key: Ord + Clone, Job, Output, O = ()> {
     jobs: Option<Arc<SharedJobs<Key, Job>>>,
-    reply_receiver: mpsc::Receiver<WorkerReply<Key, Output, O>>,
+    reply_receiver: reply::ReplyReceiver<WorkerReply<Key, Output, O>>,
     startup_receiver: mpsc::Receiver<(u32, Result<(), String>)>,
 }
 
-impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
+impl<Key: Ord + Clone, Job, Output, O> WorkerPool<Key, Job, Output, O> {
+    pub(crate) fn configure_indexed(
+        &mut self,
+        capacity: usize,
+        slot_index: fn(&Key) -> usize,
+    ) -> Result<(), WorkerPoolError> {
+        let shared = self.jobs.as_ref().ok_or(WorkerPoolError::QueueClosed)?;
+        self.reply_receiver.reserve(capacity)?;
+        let mut queue = shared
+            .queue
+            .lock()
+            .map_err(|_| WorkerPoolError::WorkersExited)?;
+        if !queue.jobs.is_empty() || queue.assigned.iter().any(Option::is_some) {
+            return Err(WorkerPoolError::DuplicateJob);
+        }
+        queue
+            .jobs
+            .try_reserve(capacity)
+            .map_err(|_| WorkerPoolError::QueueCapacity)?;
+        let additional = capacity.saturating_sub(queue.slots.len());
+        queue
+            .slots
+            .try_reserve_exact(additional)
+            .map_err(|_| WorkerPoolError::QueueCapacity)?;
+        queue.slots.resize_with(capacity, || None);
+        queue.free.clear();
+        queue.keys.clear();
+        queue.slot_index = Some(slot_index);
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn send(&self, key: Key, job: Job) -> Result<(), WorkerPoolError> {
         self.send_local(key, job, None)
@@ -170,18 +454,8 @@ impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
         if queue.workers == 0 && !queue.failed_job {
             return Err(WorkerPoolError::WorkersExited);
         }
-        if queue.jobs.contains_key(&key)
-            || queue
-                .assigned
-                .values()
-                .any(|(assigned, _)| assigned == &key)
-        {
-            return Err(WorkerPoolError::DuplicateJob);
-        }
-        queue.jobs.insert(key, QueuedJob { job, locality });
-        queue.assign();
-        drop(queue);
-        shared.ready.notify_all();
+        queue.enqueue(key, job, locality)?;
+        queue.assign(|assigned| shared.ready[assigned as usize].notify_one());
         Ok(())
     }
 
@@ -217,11 +491,16 @@ impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
                 return Err(format!(
                     "workers {workers:?} did not become idle; idle={:?}, assigned={:?}",
                     queue.idle.keys().collect::<Vec<_>>(),
-                    queue.assigned.keys().collect::<Vec<_>>()
+                    queue
+                        .assigned
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(worker, job)| job.as_ref().map(|_| worker))
+                        .collect::<Vec<_>>()
                 ));
             }
             queue = shared
-                .ready
+                .state_changed
                 .wait_timeout(queue, remaining)
                 .map_err(|_| "test queue poisoned while waiting")?
                 .0;
@@ -260,24 +539,26 @@ impl<Key: Ord, Job, Output, O> WorkerPool<Key, Job, Output, O> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn receive(&self) -> Result<WorkerReply<Key, Output, O>, WorkerPoolError> {
-        self.reply_receiver
-            .recv()
-            .map_err(|_| WorkerPoolError::RepliesClosed)
+        self.reply_receiver.receive()
+    }
+
+    pub(crate) fn receive_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Option<WorkerReply<Key, Output, O>>, WorkerPoolError> {
+        self.reply_receiver.receive_timeout(timeout)
     }
 
     pub(crate) fn try_receive(
         &self,
     ) -> Result<Option<WorkerReply<Key, Output, O>>, WorkerPoolError> {
-        match self.reply_receiver.try_recv() {
-            Ok(reply) => Ok(Some(reply)),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => Err(WorkerPoolError::RepliesClosed),
-        }
+        self.reply_receiver.try_receive()
     }
 }
 
-impl<Key: Ord, Job, Output, O> Drop for WorkerPool<Key, Job, Output, O> {
+impl<Key: Ord + Clone, Job, Output, O> Drop for WorkerPool<Key, Job, Output, O> {
     fn drop(&mut self) {
         self.close();
     }
@@ -293,7 +574,7 @@ pub(crate) fn with_worker_pool<State, Key, Job, Output, ResultValue, Coordinator
     coordinate: impl FnOnce(&mut WorkerPool<Key, Job, Output>) -> Result<ResultValue, CoordinatorError>,
 ) -> Result<(ResultValue, Vec<WorkerTelemetry>), CoordinatorError>
 where
-    Key: Ord + Send,
+    Key: Ord + Clone + Send,
     Job: Send,
     Output: Send,
     CoordinatorError: From<String>,
@@ -327,7 +608,7 @@ pub(crate) fn with_worker_pool_observed<O, State, Key, Job, Output, ResultValue,
     ) -> Result<ResultValue, CoordinatorError>,
 ) -> Result<(ResultValue, Vec<WorkerTelemetry>), CoordinatorError>
 where
-    Key: Ord + Send,
+    Key: Ord + Clone + Send,
     Job: Send,
     Output: Send,
     O: Copy + Send + 'static,
@@ -363,7 +644,7 @@ pub(crate) fn with_worker_pool_routed<O, State, Key, Job, Output, ResultValue, C
     ) -> Result<ResultValue, CoordinatorError>,
 ) -> Result<(ResultValue, Vec<WorkerTelemetry>), CoordinatorError>
 where
-    Key: Ord + Send,
+    Key: Ord + Clone + Send,
     Job: Send,
     Output: Send,
     O: Copy + Send + 'static,
@@ -371,7 +652,7 @@ where
 {
     crate::search::job_observation::bounded::<O>();
     thread::scope(|scope| {
-        let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Key, Output, O>>();
+        let (reply_sender, reply_receiver) = reply::channel::<WorkerReply<Key, Output, O>>();
         let (startup_sender, startup_receiver) = mpsc::channel();
         let jobs = Arc::new(SharedJobs::<Key, Job>::new(workers as usize));
         let mut handles = Vec::with_capacity(workers as usize);
@@ -394,7 +675,15 @@ where
                 };
                 let schedstat_before = thread_schedstat();
                 let booted = now();
-                let mut telemetry = WorkerTelemetry::default();
+                let mut telemetry = WorkerTelemetry {
+                    profile_mode: crate::search::telemetry::ProfileMode::from_flags(
+                        super::campaign::profile_clock_enabled(),
+                        super::campaign::worker_cpu_profile_enabled(),
+                    ),
+                    execute_cpu: super::campaign::worker_cpu_profile_enabled()
+                        .then(crate::search::telemetry::WorkerExecuteCpuTelemetry::new),
+                    ..WorkerTelemetry::default()
+                };
                 let initialized =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| initialize(worker)));
                 let mut state = Some(match initialized {
@@ -442,9 +731,11 @@ where
                     }
                     let (outcome, panicked) = match state.as_mut() {
                         Some(target) => {
-                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                execute(target, job)
-                            })) {
+                            match profiled_execute(
+                                &mut telemetry.execute_cpu,
+                                crate::search::telemetry::thread_cpu_time_ns,
+                                || execute(target, job),
+                            ) {
                                 Ok(outcome) => (outcome, false),
                                 Err(_) => {
                                     (Err("worker panicked during execution".to_owned()), true)
@@ -530,6 +821,9 @@ where
                         break;
                     }
                 }
+                if let Some(profile) = telemetry.execute_cpu.as_mut() {
+                    profile.finish(telemetry.jobs);
+                }
                 if let Some(target) = state.as_ref() {
                     telemetry.target =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| finish(target)))
@@ -587,8 +881,289 @@ where
 mod tests {
     use std::{cell::Cell, rc::Rc, sync::mpsc, time::Duration};
 
-    use super::{WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
+    use super::{WorkerPool, WorkerPoolError, WorkerReply, profiled_execute, with_worker_pool};
     use crate::search::telemetry::TargetCounters;
+
+    #[test]
+    fn worker_execute_cpu_disabled_does_not_read_clock() {
+        let result = profiled_execute(&mut None, || panic!("disabled clock read"), || Ok(17));
+        assert_eq!(result.expect("execute did not panic"), Ok(17));
+    }
+
+    #[test]
+    fn worker_execute_cpu_classifies_actual_calls_and_panic() {
+        let mut profile = Some(crate::search::telemetry::WorkerExecuteCpuTelemetry::new());
+        profile.as_mut().expect("profile").supported = true;
+        profile.as_mut().expect("profile").total_cpu_ns = Some(0);
+        let mut tick = 0;
+        let mut clock = || {
+            tick += 7;
+            Some(tick)
+        };
+        assert_eq!(
+            profiled_execute(&mut profile, &mut clock, || Ok(11)).expect("success"),
+            Ok(11)
+        );
+        assert_eq!(
+            profiled_execute(&mut profile, &mut clock, || Err::<u8, _>(
+                "failure".to_owned()
+            ))
+            .expect("ordinary error"),
+            Err("failure".to_owned())
+        );
+        assert!(
+            profiled_execute(&mut profile, &mut clock, || -> Result<u8, String> {
+                panic!("execute panic")
+            })
+            .is_err()
+        );
+        let value = profile.as_mut().expect("profile");
+        value.finish(3);
+        assert_eq!(
+            (value.calls, value.samples, value.errors, value.panics),
+            (3, 3, 1, 1)
+        );
+        assert_eq!(value.total_cpu_ns, Some(21));
+        assert!(value.complete);
+        value.finish(4);
+        assert!(!value.complete);
+    }
+
+    #[test]
+    fn worker_execute_cpu_missing_backwards_and_overflow_are_not_zero() {
+        use crate::search::telemetry::WorkerExecuteCpuTelemetry;
+        for (before, after) in [(None, Some(4)), (Some(4), None), (Some(9), Some(4))] {
+            let mut value = WorkerExecuteCpuTelemetry::new();
+            value.supported = true;
+            value.total_cpu_ns = Some(0);
+            value.record(before, after, false, false);
+            value.record(Some(10), Some(11), false, false);
+            value.finish(2);
+            assert_eq!((value.calls, value.samples), (2, 1));
+            assert_eq!(value.total_cpu_ns, None);
+            assert!(!value.complete);
+        }
+        let mut value = WorkerExecuteCpuTelemetry::new();
+        value.total_cpu_ns = Some(u128::MAX);
+        value.record(Some(0), Some(1), false, false);
+        assert!(value.counter_overflow);
+        assert_eq!(value.total_cpu_ns, None);
+        for field in 0..4 {
+            let mut value = WorkerExecuteCpuTelemetry::new();
+            value.total_cpu_ns = Some(0);
+            match field {
+                0 => value.calls = u64::MAX,
+                1 => value.samples = u64::MAX,
+                2 => value.errors = u64::MAX,
+                _ => value.panics = u64::MAX,
+            }
+            value.record(Some(0), Some(1), field == 2, field == 3);
+            value.finish(1);
+            assert!(value.counter_overflow);
+            assert_eq!(value.total_cpu_ns, None);
+            assert!(!value.complete);
+        }
+    }
+
+    #[test]
+    fn worker_execute_cpu_pool_jobs_match_enabled_coverage() {
+        let (values, workers) = with_worker_pool(
+            1,
+            |_| Ok::<_, String>(10_u64),
+            |_| Ok::<_, String>(10_u64),
+            |state, job: u64| Ok::<_, String>(std::hint::black_box(*state + job)),
+            |_| TargetCounters::new(),
+            |pool| -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+                pool.send(0, 1)?;
+                pool.send(1, 2)?;
+                let values = (0..2)
+                    .map(|_| Ok(pool.receive()?.outcome?))
+                    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                pool.close();
+                Ok(values)
+            },
+        )
+        .expect("worker pool");
+        assert_eq!(values, vec![11, 12]);
+        assert_eq!(workers[0].jobs, 2);
+        if super::super::campaign::worker_cpu_profile_enabled() {
+            let value = workers[0]
+                .execute_cpu
+                .as_ref()
+                .expect("enabled execute CPU");
+            assert_eq!(value.calls, 2);
+            assert_eq!((value.errors, value.panics), (0, 0));
+            if cfg!(target_os = "linux") {
+                assert!(value.complete);
+                assert_eq!(value.samples, 2);
+                assert!(value.total_cpu_ns.expect("CPU total") > 0);
+            } else {
+                assert!(!value.supported);
+                assert!(!value.complete);
+                assert_eq!(value.total_cpu_ns, None);
+            }
+        } else {
+            assert!(workers[0].execute_cpu.is_none());
+        }
+    }
+
+    #[test]
+    fn idle_bitmap_preserves_order_across_words_and_replaces_existing_hints() {
+        let mut idle = super::IdleWorkers::new(130);
+        for worker in [129, 64, 0] {
+            idle.insert(worker, Default::default());
+        }
+        assert_eq!(idle.keys().copied().collect::<Vec<_>>(), [0, 64, 129]);
+        idle.remove(&0);
+        idle.insert(64, Default::default());
+        assert_eq!(idle.len(), 2);
+        assert_eq!(idle.first_key_value().unwrap().0, &64);
+        idle.remove(&64);
+        idle.remove(&64);
+        assert_eq!(idle.first_key_value().unwrap().0, &129);
+        idle.remove(&129);
+        assert!(idle.is_empty());
+        assert!(idle.first_key_value().is_none());
+    }
+
+    #[test]
+    fn indexed_queue_reuses_fixed_payload_slots_without_assigned_key_allocations() {
+        let mut queue = super::JobQueue::from_parts(
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+            2,
+            true,
+        );
+        queue.slots.resize_with(2, || None);
+        queue.jobs.reserve(2);
+        queue.slot_index = Some(|key: &(u64, usize)| key.1);
+        let capacities = (queue.slots.capacity(), queue.jobs.capacity());
+        for round in 0..1_000 {
+            queue.enqueue((round, 1), round, None).unwrap();
+            let address = std::ptr::from_ref(&queue.slots[1].as_ref().unwrap().queued.job);
+            assert_eq!(
+                queue.enqueue((round, 1), 0, None),
+                Err(WorkerPoolError::DuplicateJob)
+            );
+            queue.idle.insert(0, Default::default());
+            assert!(queue.assign(|worker| assert_eq!(worker, 0)));
+            assert_eq!(
+                std::ptr::from_ref(&queue.slots[1].as_ref().unwrap().queued.job),
+                address
+            );
+            assert_eq!(
+                queue.enqueue((round + 1, 1), 0, None),
+                Err(WorkerPoolError::DuplicateJob)
+            );
+            assert_eq!(queue.take_assigned(0), Some(((round, 1), round)));
+            assert!(queue.keys.is_empty());
+            assert_eq!((queue.slots.capacity(), queue.jobs.capacity()), capacities);
+        }
+        assert_eq!(
+            queue.enqueue((0, 2), 0, None),
+            Err(WorkerPoolError::DuplicateJob)
+        );
+        assert!(queue.slots.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn indexed_pool_impossible_capacity_is_a_normal_error() {
+        with_worker_pool(
+            1,
+            |_| Ok::<_, String>(()),
+            |_| Ok::<_, String>(()),
+            |(), job: u8| Ok::<_, String>(job),
+            |_| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(1)?;
+                assert_eq!(
+                    pool.configure_indexed(usize::MAX, |key: &usize| *key),
+                    Err(WorkerPoolError::QueueCapacity)
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn timed_receive_distinguishes_waiting_ready_and_closed_workers() {
+        with_worker_pool(
+            1,
+            |_| Ok::<_, String>(()),
+            |_| Ok::<_, String>(()),
+            |(), value: u8| Ok::<_, String>(value + 1),
+            |_| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(1)?;
+                assert!(pool.receive_timeout(Duration::from_millis(10))?.is_none());
+                pool.send(7_u8, 10)?;
+                let reply = pool.receive_timeout(Duration::from_secs(5))?.unwrap();
+                assert_eq!(reply.key, 7);
+                assert_eq!(reply.outcome, Ok(11));
+                pool.close();
+                assert!(matches!(
+                    pool.receive_timeout(Duration::from_secs(5)),
+                    Err(WorkerPoolError::RepliesClosed)
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn parked_workers_take_a_burst_and_wake_again_after_reparking() {
+        type Job = (u8, mpsc::Sender<u8>, mpsc::Receiver<()>);
+        let (started, arrivals) = mpsc::channel();
+        let (_, workers) = with_worker_pool(
+            3,
+            |_| Ok::<_, String>(()),
+            |_| Ok::<_, String>(()),
+            |(), (value, started, release): Job| {
+                started.send(value).map_err(|error| error.to_string())?;
+                release
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>(value)
+            },
+            |_| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(3)?;
+                for round in 0..2 {
+                    pool.wait_idle(&[0, 1, 2])?;
+                    let mut release = Vec::new();
+                    for value in round * 3..round * 3 + 3 {
+                        let (ready, blocked) = mpsc::channel();
+                        release.push(ready);
+                        pool.send(value, (value, started.clone(), blocked))?;
+                    }
+                    let mut observed = (0..3)
+                        .map(|_| arrivals.recv_timeout(Duration::from_secs(5)))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    observed.sort_unstable();
+                    assert_eq!(observed, (round * 3..round * 3 + 3).collect::<Vec<_>>());
+                    for ready in release {
+                        ready.send(())?;
+                    }
+                    let mut replies = (0..3)
+                        .map(|_| -> Result<_, Box<dyn std::error::Error>> {
+                            Ok(pool
+                                .receive_timeout(Duration::from_secs(5))?
+                                .ok_or("missing reply")?
+                                .outcome?)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    replies.sort_unstable();
+                    assert_eq!(replies, observed);
+                }
+                pool.close();
+                Ok(())
+            },
+        )
+        .expect("parked workers must consume both bursts");
+        assert_eq!(workers.iter().map(|worker| worker.jobs).sum::<u64>(), 6);
+    }
 
     #[test]
     fn routed_workers_receive_owned_jobs_and_drain_after_close() {
@@ -610,7 +1185,7 @@ mod tests {
                 let shared = pool.jobs.as_ref().unwrap();
                 let mut queue = shared.queue.lock().unwrap();
                 while queue.idle.len() != 3 {
-                    queue = shared.ready.wait(queue).unwrap();
+                    queue = shared.state_changed.wait(queue).unwrap();
                 }
                 drop(queue);
                 pool.dispatch_local(0, 9, Some(key))?;
@@ -626,6 +1201,83 @@ mod tests {
     }
 
     #[test]
+    fn a_large_parked_pool_repeatedly_wakes_the_chosen_owner() {
+        use crate::search::locality::{LocalityKey, WorkerLocality};
+
+        let ids = (0..128).collect::<Vec<u32>>();
+        let (_, workers) = super::with_worker_pool_routed(
+            128,
+            Ok::<_, String>,
+            Ok::<_, String>,
+            |worker, job: u32| Ok::<_, String>((*worker, job)),
+            |_| TargetCounters::new(),
+            |worker| WorkerLocality::new([(LocalityKey([*worker as u8; 32]), 1)]),
+            || {},
+            || None::<()>,
+            None,
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(128)?;
+                for (reservation, owner) in
+                    [127_u32, 64, 1, 126, 0, 63, 125, 2].into_iter().enumerate()
+                {
+                    pool.wait_idle(&ids)?;
+                    pool.dispatch_local(reservation, owner, Some(LocalityKey([owner as u8; 32])))?;
+                    let reply = pool
+                        .receive_timeout(Duration::from_secs(5))?
+                        .ok_or("chosen owner did not wake")?;
+                    assert_eq!(reply.worker, owner);
+                    assert_eq!(reply.key, reservation);
+                    assert_eq!(reply.outcome, Ok((owner, owner)));
+                }
+                pool.close();
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(workers.iter().map(|worker| worker.jobs).sum::<u64>(), 8);
+    }
+
+    #[test]
+    fn duplicate_keys_are_rejected_while_assigned_and_released_when_claimed() {
+        use crate::search::locality::WorkerLocality;
+        use std::sync::Arc;
+
+        let shared = Arc::new(super::SharedJobs::new(2));
+        shared
+            .queue
+            .lock()
+            .unwrap()
+            .idle
+            .insert(1, WorkerLocality::default());
+        let (_, reply_receiver) = super::reply::channel();
+        let (_, startup_receiver) = mpsc::channel();
+        let pool = super::WorkerPool::<u8, u8, ()> {
+            jobs: Some(Arc::clone(&shared)),
+            reply_receiver,
+            startup_receiver,
+        };
+        pool.send(7, 10).unwrap();
+        assert_eq!(pool.send(7, 99), Err(WorkerPoolError::DuplicateJob));
+        pool.send(8, 11).unwrap();
+        assert_eq!(pool.send(8, 99), Err(WorkerPoolError::DuplicateJob));
+        {
+            let mut queue = shared.queue.lock().unwrap();
+            assert_eq!(queue.take_assigned(1), Some((7, 10)));
+            assert!(queue.assigned_keys().is_empty());
+            queue.idle.insert(1, WorkerLocality::default());
+        }
+        pool.send(7, 12).unwrap();
+        let mut queue = shared.queue.lock().unwrap();
+        assert_eq!(queue.take_assigned(1), Some((7, 12)));
+        assert_eq!(
+            queue.pop_queued().map(|(key, value)| (key, value.job)),
+            Some((8, 11))
+        );
+        assert!(queue.assigned_keys().is_empty());
+        drop(queue);
+    }
+
+    #[test]
     fn assignment_chooses_the_best_idle_owner_for_the_earliest_job() {
         use super::{JobQueue, QueuedJob};
         use crate::search::locality::{LocalityKey, WorkerLocality};
@@ -633,8 +1285,8 @@ mod tests {
 
         let parent = LocalityKey([1; 32]);
         let other = LocalityKey([2; 32]);
-        let mut queue = JobQueue {
-            jobs: BTreeMap::from([
+        let mut queue = JobQueue::from_parts(
+            BTreeMap::from([
                 (
                     10,
                     QueuedJob {
@@ -657,24 +1309,29 @@ mod tests {
                     },
                 ),
             ]),
-            idle: BTreeMap::from([
+            BTreeMap::from([
                 (0, WorkerLocality::new([(other, 1)])),
                 (1, WorkerLocality::new([(parent, 0)])),
                 (2, WorkerLocality::new([(parent, 1)])),
             ]),
-            assigned: BTreeMap::new(),
-            open: true,
-            workers: 3,
-            failed_job: false,
-        };
-        assert!(queue.assign());
+            3,
+            true,
+        );
+        let mut notified = Vec::new();
+        assert!(queue.assign(|worker| notified.push(worker)));
+        assert_eq!(notified, [2, 0, 1]);
+        assert_eq!(queue.assigned_keys(), [10, 20, 30]);
         assert_eq!(
-            queue.assigned,
-            BTreeMap::from([(0, (20, 20)), (1, (30, 30)), (2, (10, 10))])
+            [
+                queue.take_assigned(0),
+                queue.take_assigned(1),
+                queue.take_assigned(2)
+            ],
+            [Some((20, 20)), Some((30, 30)), Some((10, 10))]
         );
         assert!(queue.jobs.is_empty());
         assert!(queue.idle.is_empty());
-        assert!(!queue.assign());
+        assert!(!queue.assign(|_| panic!("assignment notified without work")));
     }
 
     #[test]
@@ -685,8 +1342,8 @@ mod tests {
 
         let busy_parent = LocalityKey([1; 32]);
         let local_parent = LocalityKey([2; 32]);
-        let mut queue = JobQueue {
-            jobs: BTreeMap::from([
+        let mut queue = JobQueue::from_parts(
+            BTreeMap::from([
                 (
                     10,
                     QueuedJob {
@@ -702,18 +1359,19 @@ mod tests {
                     },
                 ),
             ]),
-            idle: BTreeMap::from([(1, WorkerLocality::new([(local_parent, 9)]))]),
-            assigned: BTreeMap::new(),
-            open: false,
-            workers: 2,
-            failed_job: false,
-        };
-        assert!(queue.assign());
-        assert_eq!(queue.assigned.remove(&1), Some((10, 10)));
-        assert_eq!(queue.jobs.keys().copied().collect::<Vec<_>>(), [20]);
+            BTreeMap::from([(1, WorkerLocality::new([(local_parent, 9)]))]),
+            2,
+            false,
+        );
+        assert!(queue.assign(|_| {}));
+        assert!(!queue.assign(|_| panic!("backlog woke a worker without an assignment")));
+        assert_eq!(queue.take_assigned(1), Some((10, 10)));
+        assert!(queue.assigned_keys().is_empty());
+        assert_eq!(queue.queued_keys(), [20]);
         queue.idle.insert(1, WorkerLocality::default());
-        assert!(queue.assign());
-        assert_eq!(queue.assigned.remove(&1), Some((20, 20)));
+        assert!(queue.assign(|_| {}));
+        assert_eq!(queue.take_assigned(1), Some((20, 20)));
+        assert!(queue.assigned_keys().is_empty());
     }
 
     #[test]
@@ -722,25 +1380,23 @@ mod tests {
         use crate::search::locality::WorkerLocality;
         use std::collections::BTreeMap;
 
-        let mut queue = JobQueue {
-            jobs: BTreeMap::from([(
+        let mut queue = JobQueue::from_parts(
+            BTreeMap::from([(
                 7,
                 QueuedJob {
                     job: (),
                     locality: None,
                 },
             )]),
-            idle: BTreeMap::from([
+            BTreeMap::from([
                 (5, WorkerLocality::default()),
                 (2, WorkerLocality::default()),
             ]),
-            assigned: BTreeMap::new(),
-            open: true,
-            workers: 2,
-            failed_job: false,
-        };
-        assert!(queue.assign());
-        assert_eq!(queue.assigned.remove(&2), Some((7, ())));
+            6,
+            true,
+        );
+        assert!(queue.assign(|_| {}));
+        assert_eq!(queue.take_assigned(2), Some((7, ())));
         assert_eq!(queue.idle.keys().copied().collect::<Vec<_>>(), [5]);
     }
 
@@ -815,7 +1471,7 @@ mod tests {
 
     #[test]
     fn try_receive_distinguishes_ready_empty_and_disconnected() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = super::reply::channel();
         let (_startup_sender, startup_receiver) = mpsc::channel();
         let pool = WorkerPool::<u8, (), u64> {
             jobs: None,
@@ -827,14 +1483,16 @@ mod tests {
                 .expect("empty channel remains open")
                 .is_none()
         );
-        sender
-            .send(WorkerReply {
-                worker: 7,
-                key: 0,
-                outcome: Ok(11),
-                observation: Default::default(),
-            })
-            .expect("queue reply");
+        assert!(
+            sender
+                .send(WorkerReply {
+                    worker: 7,
+                    key: 0,
+                    outcome: Ok(11),
+                    observation: Default::default(),
+                })
+                .is_ok()
+        );
         let reply = pool
             .try_receive()
             .expect("ready channel")
@@ -974,7 +1632,7 @@ mod tests {
 
     #[test]
     fn startup_barrier_reports_a_worker_that_never_sent_status() {
-        let (_reply_sender, reply_receiver) = mpsc::channel();
+        let (_reply_sender, reply_receiver) = super::reply::channel();
         let (startup_sender, startup_receiver) = mpsc::channel();
         drop(startup_sender);
         let pool = WorkerPool::<u8, (), ()> {
@@ -1152,7 +1810,7 @@ mod tests {
                 let shared = pool.jobs.as_ref().unwrap();
                 let queue = shared.queue.lock().unwrap();
                 let queue = shared
-                    .ready
+                    .state_changed
                     .wait_timeout_while(queue, Duration::from_secs(5), |queue| queue.workers != 1)
                     .unwrap()
                     .0;
@@ -1201,7 +1859,7 @@ mod tests {
                 let shared = pool.jobs.as_ref().unwrap();
                 let queue = shared.queue.lock().unwrap();
                 let queue = shared
-                    .ready
+                    .state_changed
                     .wait_timeout_while(queue, Duration::from_secs(5), |queue| queue.workers != 0)
                     .unwrap()
                     .0;

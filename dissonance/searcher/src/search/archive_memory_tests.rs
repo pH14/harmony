@@ -286,23 +286,10 @@ fn measured(mut archive: LevelArchive, baseline: isize) -> Usage {
     let continuations = freed(&mut |archive| archive.continuations = None);
     let entries = freed(&mut |archive| {
         archive.entries = Vec::new();
+        archive.entry_state = Vec::new();
         archive.id_to_index.clear();
-        archive.active = Vec::new();
-        archive.selected = Vec::new();
-        archive.productive = Vec::new();
-        archive.opened_cell = Vec::new();
-        archive.opened_slot = Vec::new();
-        archive.cost_in_group = Vec::new();
-        archive.replacement_preferences = Vec::new();
-        archive.in_place_lengths = Vec::new();
         archive.lineages = Vec::new();
         archive.deepest_leaf = Vec::new();
-        archive.parent_index = Vec::new();
-        archive.snapshot_selectable = Vec::new();
-        archive.keyframe = Vec::new();
-        archive.keyframe_id = Vec::new();
-        archive.keyframe_dependents = Vec::new();
-        archive.referenced = Vec::new();
         archive.resident_snapshot_order = VecDeque::new();
         archive.landed.clear();
         archive.metadata_pins.clear();
@@ -387,4 +374,40 @@ fn charges_cover_a_growing_archive_with_shared_histories() {
 #[test]
 fn charges_cover_a_bounded_archive_with_shared_histories() {
     assert_charges_cover_heap(8, true, true);
+}
+
+#[test]
+fn charges_cover_inactive_historical_cell_churn_before_compaction() {
+    let baseline = live_bytes();
+    let mut admissions = Admissions {
+        rand: RomuDuoJrRand::with_seed(0x729),
+        slots_per_cell: 1,
+        shared: false,
+        next: 0,
+        execution: 0,
+    };
+    let mut archive = LevelArchive::new(|chord| u64::from(chord.hold));
+    archive.set_memory_budget(usize::MAX, snapshot_charge);
+    admissions.admit(&mut archive, 2_000);
+    archive.prepare_selection();
+    for id in 1..archive.entries.len() {
+        archive.deactivate(id);
+    }
+    assert!(archive.cells.len() > archive.active_count());
+    assert!(
+        archive
+            .cells
+            .records
+            .iter()
+            .filter(|record| record.state.active == 0)
+            .all(|record| record.members.ids.is_empty() && record.members.ranked.is_empty())
+    );
+    let charged = charged(&archive);
+    let measured = measured(archive, baseline);
+    assert!(
+        measured.cells <= charged.cells
+            && measured.entries <= charged.entries
+            && measured.total <= charged.total,
+        "historical-cell heap {measured:?} exceeds charges {charged:?}"
+    );
 }

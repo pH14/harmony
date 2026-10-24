@@ -33,7 +33,8 @@ use crate::{
             InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
             postcard_semantic_result_sha256, postcard_value_sha256,
         },
-        draw_tables::DrawTableHeader,
+        draw::{MixtureDraw, draw_suffix_prefix},
+        draw_tables::{DrawTableHeader, DrawTables, biased_step},
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
@@ -129,7 +130,7 @@ impl FamidashGame<QuickNesMachine> {
 #[derive(Clone, Copy, Debug)]
 pub struct FamidashCampaignRun;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct FamidashCampaignEvidence {
     aggregate: FamidashMilestones,
     watermark: FamidashProgressWatermark,
@@ -189,7 +190,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>, const GROUP: usize>(
     };
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult {
+        return Ok(CampaignJobResult::<FamidashGame<M, GROUP>> {
             preparation_failure: None,
             actions,
         });
@@ -244,14 +245,14 @@ fn execute_suffix<M: NesBackend<Vec<u8>>, const GROUP: usize>(
                         );
                     }
                 };
-                Some(CampaignCandidate {
+                Some(CampaignCandidate::<FamidashGame<M, GROUP>> {
                     key: archive_key(target.mechanical_state())
                         .ok_or("Famidash attempted to archive a state outside gameplay")?,
                     viable,
                     snapshot,
                 })
             };
-        actions.push(CampaignActionResult {
+        actions.push(CampaignActionResult::<FamidashGame<M, GROUP>> {
             action: recorded_action,
             observations,
             milestones: aggregate,
@@ -262,7 +263,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>, const GROUP: usize>(
             break;
         }
     }
-    Ok(CampaignJobResult {
+    Ok(CampaignJobResult::<FamidashGame<M, GROUP>> {
         preparation_failure: None,
         actions,
     })
@@ -296,6 +297,39 @@ fn action_champion_key(observations: &[FamidashObservations]) -> Option<Famidash
     })
 }
 
+fn merge_observed_evidence<F>(
+    evidence: &mut FamidashCampaignEvidence,
+    observations: &[FamidashObservations],
+    milestones: FamidashMilestones,
+    sequence: u64,
+    input: F,
+) -> Result<(), Box<dyn Error>>
+where
+    F: FnOnce() -> Result<FamidashInput, Box<dyn Error>>,
+{
+    merge_progress_watermark(&mut evidence.watermark, observations);
+    merge_milestones(&mut evidence.aggregate, milestones);
+    let first_input_needed = first_input_needed(&evidence.first_inputs, milestones);
+    let champion = action_champion_key(observations)
+        .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
+    if first_input_needed || champion.is_some() {
+        let input = input()?;
+        update_first_inputs(
+            &mut evidence.first_reached,
+            &mut evidence.first_inputs,
+            milestones,
+            sequence,
+            &input,
+        );
+        if let Some(key) = champion {
+            evidence.champion_key = Some(key);
+            evidence.champion_milestones = milestones;
+            evidence.champion_input = input;
+        }
+    }
+    Ok(())
+}
+
 impl<M: NesBackend<Vec<u8>>, const GROUP: usize> CampaignTypes for FamidashGame<M, GROUP> {
     type JobObservation = ();
     type Target = FamidashTarget<M>;
@@ -311,6 +345,18 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> CampaignTypes for FamidashGame<
 }
 
 impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Reporting for FamidashGame<M, GROUP> {
+    fn write_evidence_checkpoint(
+        evidence: &Self::Evidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        serde_json::to_writer(out, evidence)?;
+        Ok(())
+    }
+
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -333,7 +379,7 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Reporting for FamidashGame<M, G
         &self,
         result: &FamidashCampaignJobResult<M, GROUP>,
     ) -> Result<String, Box<dyn Error>> {
-        postcard_semantic_result_sha256(result)
+        postcard_semantic_result_sha256::<Self>(result)
     }
 
     fn snapshot_identity_sha256(
@@ -369,6 +415,28 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Reporting for FamidashGame<M, G
 }
 
 impl<M: NesBackend<Vec<u8>>, const GROUP: usize> InputPolicy for FamidashGame<M, GROUP> {
+    fn expand_suffix_prefix(
+        &self,
+        run: &FamidashCampaignRun,
+        state: &DrawTables<ButtonChord>,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+        previous: Option<&ButtonChord>,
+        limit: u8,
+    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
+        state.draw(None, false, |view| {
+            draw_suffix_prefix(
+                mixture.mixture,
+                mixture.weight,
+                mutation_seed,
+                previous,
+                limit,
+                |rand| biased_step(view, rand),
+                |previous, rand| self.sample_alphabet(run, previous, rand),
+            )
+        })
+    }
+
     fn policies(&self, _run: &FamidashCampaignRun) -> WorkloadPolicies {
         [
             (
@@ -477,7 +545,7 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> TargetExecution for FamidashGam
         for action in replay {
             target.apply(action);
         }
-        execute_suffix(
+        execute_suffix::<M, GROUP>(
             target,
             parent_milestones,
             suffix,
@@ -586,27 +654,13 @@ impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Evaluation for FamidashGame<M, 
     where
         F: FnOnce() -> Result<FamidashInput, Box<dyn Error>>,
     {
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
-        merge_milestones(&mut evidence.aggregate, action.milestones);
-        let first_input_needed = first_input_needed(&evidence.first_inputs, action.milestones);
-        let champion = action_champion_key(&action.observations)
-            .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() {
-            let input = input()?;
-            update_first_inputs(
-                &mut evidence.first_reached,
-                &mut evidence.first_inputs,
-                action.milestones,
-                sequence,
-                &input,
-            );
-            if let Some(key) = champion {
-                evidence.champion_key = Some(key);
-                evidence.champion_milestones = action.milestones;
-                evidence.champion_input = input;
-            }
-        }
-        Ok(())
+        merge_observed_evidence(
+            evidence,
+            &action.observations,
+            action.milestones,
+            sequence,
+            input,
+        )
     }
 
     fn source_entries<'a>(
@@ -644,6 +698,101 @@ mod tests {
 
     fn game(execution: &str, stage: Stage) -> FamidashGame<QuickNesMachine> {
         FamidashGame::new(&[0], Path::new("core.so"), "core", execution, stage)
+    }
+
+    fn evidence_value(value: &FamidashCampaignEvidence) -> serde_json::Value {
+        serde_json::json!({"aggregate":value.aggregate,"watermark":value.watermark,"first_reached":value.first_reached,"first_inputs":value.first_inputs,"champion_input":value.champion_input,"champion_milestones":value.champion_milestones,"champion_key":value.champion_key})
+    }
+
+    #[test]
+    fn evidence_checkpoint_preserves_empty_and_complete_state_and_rejects_corruption() {
+        let input = FamidashInput {
+            actions: vec![ButtonChord::new(1, 3), ButtonChord::new(0, 7)],
+        };
+        let milestones = FamidashMilestones {
+            cleared: 2,
+            percent: 100,
+            complete: true,
+            death: true,
+        };
+        for evidence in [
+            FamidashCampaignEvidence::default(),
+            FamidashCampaignEvidence {
+                aggregate: milestones,
+                watermark: FamidashProgressWatermark {
+                    cleared: 2,
+                    percent: 100,
+                    x: 1234,
+                },
+                first_reached: FamidashMilestoneTimes {
+                    first_complete: Some(29),
+                    first_death: Some(7),
+                },
+                first_inputs: FamidashMilestoneInputs {
+                    first_complete: Some(input.clone()),
+                    first_death: Some(FamidashInput {
+                        actions: vec![ButtonChord::new(0, 2)],
+                    }),
+                },
+                champion_input: input.clone(),
+                champion_milestones: milestones,
+                champion_key: Some((2, 1234)),
+            },
+        ] {
+            let bytes = FamidashGame::<QuickNesMachine>::evidence_checkpoint(&evidence).unwrap();
+            let restored =
+                FamidashGame::<QuickNesMachine>::evidence_from_checkpoint(&bytes).unwrap();
+            assert_eq!(evidence_value(&restored), evidence_value(&evidence));
+            assert!(
+                FamidashGame::<QuickNesMachine>::evidence_from_checkpoint(
+                    &bytes[..bytes.len() - 1]
+                )
+                .is_err()
+            );
+            let mut trailing = bytes;
+            trailing.extend_from_slice(b"{}");
+            assert!(FamidashGame::<QuickNesMachine>::evidence_from_checkpoint(&trailing).is_err());
+        }
+    }
+
+    #[test]
+    fn bounded_draws_match_full_suffixes_without_changing_table_state() {
+        let game = game("first", Stage::through_group(Side::Main, 0).unwrap());
+        let run = FamidashCampaignRun;
+        let mut state = DrawTables::new(game.draw_table_parameters(&run)).unwrap();
+        state
+            .fold_source(&[ButtonChord::new(0, 2), ButtonChord::new(1, 48)])
+            .unwrap();
+        state.flush().unwrap();
+        let before = state.to_resume_bytes().unwrap();
+        let previous = ButtonChord::new(1, 12);
+        for mixture in [
+            crate::search::draw::DrawMixture::AlphabetOnly,
+            crate::search::draw::DrawMixture::BiasedHalf,
+            crate::search::draw::DrawMixture::Energy { scale: 6 },
+            crate::search::draw::DrawMixture::EnergySplice { scale: 6 },
+        ] {
+            let mixture = MixtureDraw {
+                mixture,
+                weight: 85,
+                splice_weight: 85,
+            };
+            for previous in [None, Some(&previous)] {
+                for seed in 0..128 {
+                    let full = game
+                        .expand_suffix(&run, &state, mixture, seed, previous)
+                        .unwrap();
+                    for limit in [0, 1, 2, 4, 16, 64, 255] {
+                        assert_eq!(
+                            game.expand_suffix_prefix(&run, &state, mixture, seed, previous, limit)
+                                .unwrap(),
+                            full[..usize::from(limit).min(full.len())]
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(before, state.to_resume_bytes().unwrap());
     }
 
     #[test]

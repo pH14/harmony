@@ -4,6 +4,16 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")/../../.." && pwd)
 demo=$root/demos/twin-dragons
 build=$demo/.build
+runtime_only=false
+case "${1:-}" in
+    "") ;;
+    --runtime-only) runtime_only=true; shift ;;
+    *) echo "Usage: $0 [--runtime-only]" >&2; exit 2 ;;
+esac
+if [ "$#" -ne 0 ]; then
+    echo "Usage: $0 [--runtime-only]" >&2
+    exit 2
+fi
 mkdir -p "$build" "$demo/public/engine" "$demo/public/licenses"
 revision=26bb785c9deddb66a17717b21bb4e328f03ade32
 if [ ! -d "$build/quicknes/.git" ]; then
@@ -66,7 +76,7 @@ tar -xzf "$build/twin-dragons.tar.gz" -C "$build/twin-dragons-source" \
     "$upstream/src/metatiles.mfk" "$upstream/src/levels.mfk" "$upstream/src/anims.mfk"
 git -C "$build/quicknes" archive --format=tar.gz --output="$demo/public/licenses/quicknes-source.tar.gz" "$revision"
 cp "$demo/tools/frontend.cpp" "$demo/public/licenses/frontend.cpp"
-cp "$demo/tools/build-runtime.sh" "$demo/public/licenses/build-runtime.sh"
+cp "$demo/tools/build-runtime.sh" "$demo/tools/build-assets.sh" "$demo/public/licenses/"
 
 cargo vendor --locked --manifest-path "$demo/rust/Cargo.toml" "$build/rust-dependencies" > "$build/vendor-config.toml"
 tar -czf "$demo/public/licenses/rust-dependencies.tar.gz" -C "$build" rust-dependencies
@@ -89,5 +99,7 @@ cp "$build/sameboy/LICENSE" "$demo/public/licenses/sameboy-LICENSE.txt"
 git -C "$build/sameboy" archive --format=tar.gz --output="$demo/public/licenses/sameboy-source.tar.gz" HEAD
 cp "$demo/tools/sameboy-frontend.c" "$demo/tools/build-sameboy-runtime.sh" "$demo/public/licenses/"
 
-(cd "$demo" && node tools/build-panorama.mjs && node tools/build-sprites.mjs && node tools/build-tobu-maps.mjs && node tools/build-famidash-music.mjs && node tools/build-famidash-maps.mjs)
+if [ "$runtime_only" = false ]; then
+    "$demo/tools/build-assets.sh"
+fi
 git -C "$root" archive --format=tar.gz --output="$demo/public/licenses/harmony-source.tar.gz" HEAD

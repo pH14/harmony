@@ -176,7 +176,11 @@ impl<T: Copy + Ord> WeightedSet<T> {
         let Some(target) = self.position(key) else {
             return false;
         };
-        let old = std::mem::replace(&mut self.nodes[target].weight, weight);
+        let old = self.nodes[target].weight;
+        if old == weight {
+            return true;
+        }
+        self.nodes[target].weight = weight;
         let mut node = self.root;
         while node != NONE {
             let current = &mut self.nodes[node];
@@ -444,6 +448,27 @@ mod tests {
             }
             assert_matches(&set, &reference);
         }
+    }
+
+    #[test]
+    fn unchanged_weights_preserve_zero_weights_draw_boundaries_and_later_updates() {
+        let mut reference = (0_u32..128)
+            .map(|key| (key, u64::from(key % 7)))
+            .collect::<BTreeMap<_, _>>();
+        let mut set =
+            WeightedSet::from_sorted(reference.iter().map(|(key, weight)| (*key, *weight)));
+        for _ in 0..3 {
+            for (&key, &weight) in &reference {
+                assert!(set.set_weight(&key, weight));
+            }
+            assert!(!set.set_weight(&999, 0));
+            assert_matches(&set, &reference);
+        }
+        for key in (0..128).step_by(3) {
+            assert!(set.set_weight(&key, 11));
+            reference.insert(key, 11);
+        }
+        assert_matches(&set, &reference);
     }
 
     #[test]

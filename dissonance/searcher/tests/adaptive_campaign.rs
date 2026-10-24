@@ -803,8 +803,9 @@ fn preparation_failure_continues_campaign_and_is_hashed_once() {
         actions: Vec::new(),
     };
     assert_ne!(
-        postcard_result_sha256(&without_failure).expect("empty result hash"),
-        postcard_result_sha256(&with_failure).expect("preparation-failure result hash")
+        postcard_result_sha256::<TimingWorkload>(&without_failure).expect("empty result hash"),
+        postcard_result_sha256::<TimingWorkload>(&with_failure)
+            .expect("preparation-failure result hash")
     );
 }
 

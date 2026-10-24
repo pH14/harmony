@@ -183,7 +183,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
     };
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult {
+        return Ok(CampaignJobResult::<TwinDragonsGame<M>> {
             preparation_failure: None,
             actions,
         });
@@ -238,14 +238,14 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
                     );
                     }
                 };
-                Some(CampaignCandidate {
+                Some(CampaignCandidate::<TwinDragonsGame<M>> {
                     key: archive_key(target.mechanical_state())
                         .ok_or("Twin Dragons attempted to archive a state outside gameplay")?,
                     viable,
                     snapshot,
                 })
             };
-        actions.push(CampaignActionResult {
+        actions.push(CampaignActionResult::<TwinDragonsGame<M>> {
             action: recorded_action,
             observations,
             milestones: aggregate,
@@ -256,7 +256,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
             break;
         }
     }
-    Ok(CampaignJobResult {
+    Ok(CampaignJobResult::<TwinDragonsGame<M>> {
         preparation_failure: None,
         actions,
     })
@@ -333,7 +333,7 @@ impl<M: NesBackend<Vec<u8>>> Reporting for TwinDragonsGame<M> {
         &self,
         result: &TwinDragonsCampaignJobResult<M>,
     ) -> Result<String, Box<dyn Error>> {
-        postcard_semantic_result_sha256(result)
+        postcard_semantic_result_sha256::<Self>(result)
     }
 
     fn snapshot_identity_sha256(

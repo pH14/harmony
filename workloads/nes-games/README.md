@@ -12,7 +12,7 @@ setup tapes and the `Target` implementation, and an `archive` with the
 controller vocabulary, archive keys and milestones. Mega Man 2 and Metroid
 also have a `progress` module for named progress. Famidash has a `levels`
 module with each side's level names, lengths and groups. `chord` holds the
-controller chord draw. `nes_backend` holds the `NesBackend`, `NesMemory` and
+controller chord draw. Direction alternatives use bounded stack storage and preserve the vocabulary order and generator draws. Famidash generates only the suffix prefix that the coordinator keeps: its chord draws use a local mutation RNG and read-only draw tables, so discarded tail draws do not affect search or replay. `nes_backend` holds the `NesBackend`, `NesMemory` and
 `SnapshotState` traits that every target uses to run, snapshot and read a
 machine.
 
@@ -47,9 +47,13 @@ load whose executable code differs from the prepared one. The browser demo
 passes the hash of its core WASM module instead.
 
 `arcade` holds what the arcade page draws, for both the browser campaign and a
-native live campaign. `ArcadeGame` extends `Workload` with a view of each
+native live campaign. Feed statistics and retained-state pruning read the
+`CampaignView` interface, so they do not depend on a coordinator's scheduling
+or mutable admission API. `ArcadeGame` extends `Workload` with a view of each
 observation, the four-number motion sample of a frame, the cleared-level count
-and the emulator state of a snapshot. The `smb`, `metroid`, `mm2`, `famidash`
+and the emulator state and canonical frame clock of a snapshot. Feed construction
+uses the actual root's stable id, view, frame clock and digest, including a
+nonzero root after resume. The `smb`, `metroid`, `mm2`, `famidash`
 and `twin_dragons` submodules implement it for each campaign game over any
 backend. `ArcadeGame` decodes RAM in static functions, so `FamidashGame` takes
 the index of a level group in `famidash::levels::GROUPS` as the const
@@ -59,7 +63,15 @@ every four frames and at every chord end, and every controller action it runs. `
 that recorder and returns a `Note` with the trail, the view of every step and
 each candidate's snapshot digest. `feed::Feed` joins notes with the
 coordinator's admission decisions into the `Batch` the page reads: points,
-trails, finished trails and their exits. It drops ids the archive no longer
+trails, finished trails and their exits. Aggregate-only notes update the full
+frame and death totals without entering the pending admission map; batches
+report the cumulative `sampled_jobs` count for notes containing display data.
+A bounded terminal ledger keeps one actual cleared-level step per nonzero `u8`
+count plus an objective endpoint after ordinary batches are drained. Internal
+per-step cleared-count metadata identifies the finishing step within a job;
+it is not part of the browser protocol. `take_terminal_batch` replays that sparse
+summary without retaining transient motion or all historical points.
+It drops ids the archive no longer
 holds once it keeps more than twice the archive's entries.
 `feed::archived_state` builds a state's controller history and replays it
 through a fresh target with `feed::played` when the archived input misses
@@ -102,5 +114,6 @@ Arcade adapters expose each archived snapshot's game-frame count for exact
 ready-state and lookup replay. Feed batches retain level/objective completion
 points separately from sampled motion, so downsampling and terminal delivery
 can preserve progress. Sampling affects presentation only. The native live
-service uses the existing campaign coordinator and full admission-observation
-interface; search selection and admission policy remain unchanged.
+service reads through the campaign view and requests admission details only
+for sampled or completion notes; search selection and admission policy remain
+unchanged.

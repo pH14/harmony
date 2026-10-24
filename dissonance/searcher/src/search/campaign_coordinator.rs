@@ -11,16 +11,17 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CONSECUTIVE_SKIP_LIMIT, CampaignAdmissionDecision, CampaignConfig, CampaignCounters,
-    CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
-    CampaignOrigin, CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord,
-    CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-    CampaignTypes, CompletedBuffer, CompletedJob, CoordinatorCore, JobSpecRecord,
-    LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob, StreamWriter, Workload,
+    AdmissionSchedule, CONSECUTIVE_SKIP_LIMIT, CampaignAdmissionDecision, CampaignConfig,
+    CampaignCounters, CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord,
+    CampaignJobResult, CampaignOrigin, CampaignOriginRecord, CampaignOutcome,
+    CampaignProgressRecord, CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader,
+    CampaignStreamRecord, CampaignTypes, CompletedJob, CompletedOutcome, CompletedRecords,
+    CoordinatorCore, JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob,
+    ReservationSlots, ReservationToken, SelectedJob, StreamWriter, ThreadPlacement, Workload,
     archive_entry_limit_is_valid, bootstrap_campaign, build_report, completed_job_records,
     continuation_arrival, continuation_attempt, derive_selection_seed, execution_work_delta,
     finish_record, initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
-    profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
+    profile_clock_enabled, profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
     record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
     retained_archive_indexes, search_checkpoint_header, stop_reservations_after_objective,
     stop_reservations_after_work_budget, stream_header, with_coordinator_session,
@@ -30,14 +31,14 @@ use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
 };
 use crate::search::checkpoint::{CheckpointReader, publisher::CheckpointPublisher};
-use crate::search::draw::{EnergyStrategy, MixtureDraw, energy_strategy};
+use crate::search::draw::{EnergyStrategy, MixtureDraw, SUFFIX_DOUBLING_LIMIT, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
 use crate::search::duration::DurationPolicies;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
-    CampaignTelemetry, HostTimes, IdleClock, IdleReason, Moment, WorkerTelemetry, nanos_since, now,
-    thread_schedstat,
+    CampaignTelemetry, CoordinatorPhaseTelemetry, HostTimes, IdleClock, IdleReason, Moment,
+    WorkerTelemetry, nanos_since, now, thread_schedstat,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -65,6 +66,11 @@ pub struct JobOutcome<G: CampaignTypes + ?Sized> {
 pub struct CampaignAdmission {
     pub reservation: usize,
     pub decisions: Vec<CampaignAdmissionDecision>,
+}
+
+struct AdmissionRecords {
+    selected: Option<BTreeSet<usize>>,
+    ready: Vec<CampaignAdmission>,
 }
 
 pub fn run_job<G: Workload>(
@@ -97,13 +103,31 @@ pub fn run_job<G: Workload>(
     })
 }
 
+struct ReservedDispatch<G: CampaignTypes + ?Sized> {
+    job: JobSpec<G>,
+    token: ReservationToken,
+}
+
+type JobDispatch<'a, G> =
+    dyn FnMut(JobSpec<G>, ReservationToken) -> Result<(), Box<dyn Error>> + 'a;
+
+struct DispatchPhaseStart {
+    started: Moment,
+    schedstat: Option<(u64, u64)>,
+    idle: (u64, u64),
+}
+
 pub struct CampaignCoordinator<'a, G: Workload> {
     workload: &'a G,
     config: &'a CampaignConfig<G>,
     work_budget: Option<u64>,
     header: CampaignStreamHeader<DrawTableHeader>,
     origin_record: CampaignOriginRecord,
-    writer: StreamWriter<'a>,
+    writer: StreamWriter<
+        'a,
+        CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key>,
+        CampaignJobResult<G>,
+    >,
     progress: Option<&'a mut dyn Write>,
     core: CoordinatorCore<G>,
     counters: CampaignCounters,
@@ -115,20 +139,20 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     reserved: u64,
     admitted: usize,
     planned_clock: u64,
-    pending: BTreeMap<usize, PendingJob<G>>,
-    completed: CompletedBuffer<usize, CompletedJob<G>>,
-    schedule: BTreeSet<(u64, usize)>,
-    queued: BTreeMap<(u64, usize), JobSpec<G>>,
-    spec_records: BTreeMap<usize, JobSpecRecord<G>>,
+    reservations: ReservationSlots<usize, PendingJob<G>, CompletedOutcome<G>>,
+    schedule: AdmissionSchedule,
+    queued: BTreeMap<(u64, usize), ReservedDispatch<G>>,
+    spec_records: BTreeMap<usize, (ReservationToken, JobSpecRecord<G>)>,
     running: usize,
     telemetry: CampaignTelemetry,
     profile: LiveCoordinatorProfile,
     profile_printed: bool,
     idle_clock: IdleClock,
     coordinator_schedstat: Option<(u64, u64)>,
+    dispatch_phase_started: Option<DispatchPhaseStart>,
     telemetry_started: Moment,
     wall_started: Option<Moment>,
-    admissions: Option<Vec<CampaignAdmission>>,
+    admissions: Option<AdmissionRecords>,
 }
 
 impl<'a, G: Workload> CampaignCoordinator<'a, G>
@@ -220,8 +244,8 @@ where
             &executable_identity,
         );
         header.work_budget = work_budget;
-        let mut writer = StreamWriter::new(stream);
-        writer.write_line(&header)?;
+        let mut writer = StreamWriter::new_with_cleanup(stream);
+        writer.write_header(&header)?;
 
         let mut core = CoordinatorCore::new(
             workload,
@@ -270,12 +294,13 @@ where
         let mut reserved = 0_u64;
         let mut admitted = 0_usize;
         let mut planned_clock = 0_u64;
-        let mut profile = LiveCoordinatorProfile::default();
+        let mut profile = LiveCoordinatorProfile::new();
         let mut in_flight = Vec::new();
         if let Some(resume) = resume {
             rand = resume.rand;
             reserved = resume.reserved;
             profile = resume.profile;
+            profile.timing_complete &= profile_clock_enabled();
             admitted = resume.admitted;
             planned_clock = resume.planned_clock;
             in_flight = resume.in_flight;
@@ -300,6 +325,10 @@ where
                 )
             })
             .transpose()?;
+        let reservation_capacity = config
+            .window
+            .min(usize::try_from(config.execution_budget).unwrap_or(usize::MAX))
+            .max(in_flight.len());
         let mut coordinator = Self {
             workload,
             config,
@@ -318,17 +347,17 @@ where
             reserved,
             admitted,
             planned_clock,
-            pending: BTreeMap::new(),
-            completed: CompletedBuffer::new(completed_job_records),
-            schedule: BTreeSet::new(),
+            reservations: ReservationSlots::try_new(completed_job_records, reservation_capacity)?,
+            schedule: AdmissionSchedule::try_new(reservation_capacity)?,
             queued: BTreeMap::new(),
             spec_records: BTreeMap::new(),
             running: 0,
             telemetry,
             profile,
-            profile_printed: std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some(),
+            profile_printed: profile_clock_enabled(),
             idle_clock: IdleClock::new(config.workers as usize),
             coordinator_schedstat: thread_schedstat(),
+            dispatch_phase_started: None,
             telemetry_started,
             wall_started: config.wall_budget.map(|_| telemetry_started),
             admissions: None,
@@ -362,37 +391,146 @@ where
                 .core
                 .start_suffix_job(job.pending.parent_id, job.pending.suffix_limit);
             let key = (job.pending.planned_finish, job.reservation);
-            coordinator.schedule.insert(key);
+
+            coordinator
+                .reservations
+                .insert(job.reservation, job.pending);
+            let token = coordinator
+                .reservations
+                .inserted
+                .expect("restored reservation token");
+            coordinator.schedule.insert(key, token);
             coordinator.queued.insert(
                 key,
-                JobSpec {
-                    reservation: job.reservation,
-                    planned_finish: job.pending.planned_finish,
-                    snapshot,
-                    replay: job.spec.replay.clone(),
-                    replay_certificates: job.spec.replay_certificates.clone(),
-                    parent_milestones: job.spec.parent_milestones,
-                    suffix: job.spec.suffix.clone(),
+                ReservedDispatch {
+                    token,
+                    job: JobSpec {
+                        reservation: job.reservation,
+                        planned_finish: key.0,
+                        snapshot,
+                        replay: job.spec.replay.clone(),
+                        replay_certificates: job.spec.replay_certificates.clone(),
+                        parent_milestones: job.spec.parent_milestones,
+                        suffix: job.spec.suffix.clone(),
+                    },
                 },
             );
             if coordinator.checkpoints.is_some() {
-                coordinator.spec_records.insert(job.reservation, job.spec);
+                coordinator
+                    .spec_records
+                    .insert(job.reservation, (token, job.spec));
             }
-            coordinator.pending.insert(job.reservation, job.pending);
         }
         Ok(coordinator)
+    }
+
+    pub(crate) fn enable_background_stream(
+        &mut self,
+        placement: Option<ThreadPlacement>,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        CampaignJobResult<G>: Send + 'static,
+    {
+        self.writer.enable_background(placement)
+    }
+
+    pub(crate) fn drain_background_stream(&mut self) -> Result<(), Box<dyn Error>> {
+        let result = (|| {
+            self.ensure_active()?;
+            self.poll_persistence()?;
+            self.writer.drain_ready()
+        })();
+        self.handback_on_error(result)
+    }
+
+    pub(crate) fn begin_dispatch_phase(&mut self) {
+        self.dispatch_phase_started = Some(DispatchPhaseStart {
+            started: now(),
+            schedstat: thread_schedstat(),
+            idle: self.idle_clock.totals(),
+        });
+    }
+
+    pub(crate) fn end_dispatch_phase(&mut self) {
+        let idle = self.idle_clock.totals();
+        self.telemetry.dispatch_phase =
+            self.dispatch_phase_started
+                .take()
+                .map(|phase| CoordinatorPhaseTelemetry {
+                    wall_ns: nanos_since(phase.started),
+                    host: HostTimes::try_measure(
+                        phase.schedstat,
+                        (
+                            idle.0.saturating_sub(phase.idle.0),
+                            idle.1.saturating_sub(phase.idle.1),
+                        ),
+                    ),
+                });
     }
 
     pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {
         let result = (|| {
             self.ensure_active()?;
             self.poll_persistence()?;
-            if self.pending.len() >= self.config.window {
+            if self.reservations.pending >= self.config.window {
                 return Ok(false);
             }
-            self.reserve()
+            let Some(job) = self.reserve()? else {
+                return Ok(false);
+            };
+            self.queue_job(job);
+            Ok(true)
         })();
         self.handback_on_error(result)
+    }
+
+    pub(crate) fn reserve_next_dispatch(
+        &mut self,
+        dispatch: &mut JobDispatch<'_, G>,
+    ) -> Result<bool, Box<dyn Error>> {
+        let result = (|| {
+            self.ensure_active()?;
+            self.poll_persistence()?;
+            if self.reservations.pending >= self.config.window {
+                self.dispatch_queued_inner(dispatch)?;
+                return Ok(false);
+            }
+            let Some(job) = self.reserve()? else {
+                self.dispatch_queued_inner(dispatch)?;
+                return Ok(false);
+            };
+            if self.queued.is_empty() {
+                self.dispatch_job(job, dispatch)?;
+            } else {
+                self.queue_job(job);
+                self.dispatch_queued_inner(dispatch)?;
+            }
+            Ok(true)
+        })();
+        self.handback_on_error(result)
+    }
+
+    fn queue_job(&mut self, job: ReservedDispatch<G>) {
+        self.queued
+            .insert((job.job.planned_finish, job.job.reservation), job);
+    }
+
+    fn dispatch_job(
+        &mut self,
+        job: ReservedDispatch<G>,
+        dispatch: &mut JobDispatch<'_, G>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.validate_reply_token(job.token, job.job.reservation, job.job.planned_finish)?;
+        self.running = self.running.saturating_add(1);
+        self.idle_clock.update(
+            self.running,
+            if self.reservations.completed_len() == 0 {
+                IdleReason::NoJob
+            } else {
+                IdleReason::AdmissionOrder
+            },
+        );
+        dispatch(job.job, job.token)
     }
 
     pub fn plan(&mut self, limit: usize) -> Vec<JobSpec<G>> {
@@ -403,18 +541,40 @@ where
         while jobs.len() < limit
             && let Some((_, job)) = self.queued.pop_first()
         {
-            jobs.push(job);
+            jobs.push(job.job);
         }
         self.running = self.running.saturating_add(jobs.len());
         self.idle_clock.update(
             self.running,
-            if self.completed.is_empty() {
+            if self.reservations.completed_len() == 0 {
                 IdleReason::NoJob
             } else {
                 IdleReason::AdmissionOrder
             },
         );
         jobs
+    }
+
+    pub(crate) fn dispatch_queued(
+        &mut self,
+        dispatch: &mut JobDispatch<'_, G>,
+    ) -> Result<(), Box<dyn Error>> {
+        let result = (|| {
+            self.ensure_active()?;
+            self.poll_persistence()?;
+            self.dispatch_queued_inner(dispatch)
+        })();
+        self.handback_on_error(result)
+    }
+
+    fn dispatch_queued_inner(
+        &mut self,
+        dispatch: &mut JobDispatch<'_, G>,
+    ) -> Result<(), Box<dyn Error>> {
+        while let Some((_, job)) = self.queued.pop_first() {
+            self.dispatch_job(job, dispatch)?;
+        }
+        Ok(())
     }
 
     pub fn admit(&mut self, outcome: JobOutcome<G>) -> Result<(), Box<dyn Error>> {
@@ -424,11 +584,39 @@ where
             execution_work,
             result_sha256,
         } = outcome;
-        self.receive(reservation, Ok((result, execution_work, result_sha256)))
+        self.receive(
+            reservation,
+            Ok((result, execution_work, result_sha256)),
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub(super) fn admit_dispatch(
+        &mut self,
+        outcome: JobOutcome<G>,
+        records: CompletedRecords,
+        token: ReservationToken,
+        dispatch: &mut JobDispatch<'_, G>,
+    ) -> Result<(), Box<dyn Error>> {
+        let JobOutcome {
+            reservation,
+            result,
+            execution_work,
+            result_sha256,
+        } = outcome;
+        self.receive(
+            reservation,
+            Ok((result, execution_work, result_sha256)),
+            Some(records),
+            Some(dispatch),
+            Some(token),
+        )
     }
 
     pub fn fail(&mut self, reservation: usize, error: String) -> Result<(), Box<dyn Error>> {
-        self.receive(reservation, Err(error))
+        self.receive(reservation, Err(error), None, None, None)
     }
 
     #[must_use]
@@ -436,16 +624,58 @@ where
         self.schedule.first().map(|(_, reservation)| *reservation)
     }
 
-    pub(crate) fn pending_origin(&self, reservation: usize) -> Option<(u64, u64)> {
-        self.pending
-            .get(&reservation)
-            .map(|job| (job.parent_id, job.snapshot_id))
+    pub(super) fn reservation_capacity(&self) -> usize {
+        self.reservations.slots.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn reservation_token(&self, reservation: usize) -> Option<ReservationToken> {
+        self.reservations.token(&reservation)
+    }
+
+    pub(super) fn validate_reply_token(
+        &self,
+        token: ReservationToken,
+        reservation: usize,
+        planned_finish: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        self.reservations.validate_pending(token, reservation)?;
+        if self
+            .reservations
+            .slot(token)
+            .expect("validated reservation token")
+            .pending
+            .planned_finish
+            != planned_finish
+        {
+            return Err("campaign worker replied for another planned finish".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn pending_origin_token(&self, token: ReservationToken) -> Option<(u64, u64)> {
+        self.reservations
+            .slot(token)
+            .filter(|slot| slot.completed.is_none() && !slot.admitting)
+            .map(|slot| (slot.pending.parent_id, slot.pending.snapshot_id))
+    }
+
+    pub(super) fn fail_dispatch(
+        &mut self,
+        reservation: usize,
+        token: ReservationToken,
+        error: String,
+    ) -> Result<(), Box<dyn Error>> {
+        self.receive(reservation, Err(error), None, None, Some(token))
     }
 
     fn receive(
         &mut self,
         reservation: usize,
         outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+        records: Option<CompletedRecords>,
+        mut dispatch: Option<&mut JobDispatch<'_, G>>,
+        token: Option<ReservationToken>,
     ) -> Result<(), Box<dyn Error>> {
         let result = (|| {
             self.ensure_active()?;
@@ -464,41 +694,62 @@ where
                     IdleReason::NoJob
                 },
             );
-            let pending = self
-                .pending
-                .remove(&reservation)
+            let queued = &self.queued;
+            let token = token
+                .or_else(|| self.reservations.token(&reservation))
                 .ok_or("campaign worker replied for an unknown reservation")?;
-            if self
-                .queued
-                .contains_key(&(pending.planned_finish, reservation))
-            {
-                return Err("campaign worker replied for a job that was never planned".into());
-            }
-            if self
-                .completed
-                .insert(
-                    reservation,
-                    CompletedJob {
-                        held_since: held.then(now),
-                        pending,
-                        outcome,
-                    },
-                )
-                .is_some()
-            {
-                return Err("campaign worker completed one reservation twice".into());
-            }
+            self.reservations.complete_token(
+                token,
+                reservation,
+                CompletedOutcome {
+                    held_since: held.then(now),
+                    outcome,
+                },
+                records,
+                |pending| {
+                    if queued.contains_key(&(pending.planned_finish, reservation)) {
+                        Err("campaign worker replied for a job that was never planned")
+                    } else {
+                        Ok(())
+                    }
+                },
+            )?;
             while let Some(&(finish, reservation)) = self.schedule.first() {
                 self.workload.verify_integrity()?;
-                let Some(completed) = self.completed.remove(&reservation) else {
+                let token = self
+                    .schedule
+                    .first_token()
+                    .expect("scheduled reservation token");
+                let Some(completed) = self.reservations.begin_admission(token) else {
                     break;
                 };
                 self.schedule.pop_first();
-                self.admit_completed(finish, reservation, completed)?;
-                self.reserve()?;
+                self.admit_completed(
+                    finish,
+                    reservation,
+                    CompletedJob {
+                        token,
+                        held_since: completed.held_since,
+                        outcome: completed.outcome,
+                    },
+                )?;
+                self.reservations.finish_admission(token)?;
+                let next = self.reserve()?;
                 self.write_due_checkpoint()?;
+                if let Some(job) = next {
+                    if self.queued.is_empty()
+                        && let Some(dispatch) = dispatch.as_deref_mut()
+                    {
+                        self.dispatch_job(job, dispatch)?;
+                    } else {
+                        self.queue_job(job);
+                    }
+                }
+                if let Some(dispatch) = dispatch.as_deref_mut() {
+                    self.dispatch_queued_inner(dispatch)?;
+                }
             }
-            if self.pending.is_empty() && !self.completed.is_empty() {
+            if self.reservations.pending == 0 && self.reservations.completed_len() != 0 {
                 return Err("campaign reorder window ended with an admission gap".into());
             }
             Ok(())
@@ -561,7 +812,36 @@ where
     }
 
     pub fn watch_admissions(&mut self) {
-        self.admissions.get_or_insert_with(Vec::new);
+        let records = self.admissions.get_or_insert_with(|| AdmissionRecords {
+            selected: None,
+            ready: Vec::new(),
+        });
+        records.selected = None;
+    }
+
+    pub fn watch_selected_admissions(&mut self) {
+        self.admissions
+            .get_or_insert_with(|| AdmissionRecords {
+                selected: None,
+                ready: Vec::new(),
+            })
+            .selected
+            .get_or_insert_with(BTreeSet::new);
+    }
+
+    pub fn request_admission(&mut self, reservation: usize) -> bool {
+        if self.reservations.pending(&reservation).is_none() {
+            return false;
+        }
+        let Some(selected) = self
+            .admissions
+            .as_mut()
+            .and_then(|records| records.selected.as_mut())
+        else {
+            return false;
+        };
+        selected.insert(reservation);
+        true
     }
 
     pub fn unwatch_admissions(&mut self) {
@@ -571,13 +851,13 @@ where
     pub fn take_admissions(&mut self) -> Vec<CampaignAdmission> {
         self.admissions
             .as_mut()
-            .map(std::mem::take)
+            .map(|records| std::mem::take(&mut records.ready))
             .unwrap_or_default()
     }
 
     #[must_use]
     pub fn finished(&self) -> bool {
-        self.pending.is_empty() && self.completed.is_empty()
+        self.reservations.is_empty()
     }
 
     #[must_use]
@@ -620,7 +900,7 @@ where
         self.profile.receive_wait_ns = self.profile.receive_wait_ns.saturating_add(waited);
         let waited = u64::try_from(waited).unwrap_or(u64::MAX);
         let admission = &mut self.telemetry.admission;
-        if self.completed.is_empty() {
+        if self.reservations.completed_len() == 0 {
             admission.receive_all_running_ns =
                 admission.receive_all_running_ns.saturating_add(waited);
         } else {
@@ -635,10 +915,10 @@ where
     ) -> Result<CampaignOutcome<G>, Box<dyn Error>> {
         let result = (|| {
             self.ensure_active()?;
-            if !self.completed.is_empty() || !self.schedule.is_empty() {
+            if self.reservations.completed_len() != 0 || !self.schedule.is_empty() {
                 return Err("campaign reorder window ended with an admission gap".into());
             }
-            self.telemetry.completed_buffer = self.completed.telemetry;
+            self.telemetry.completed_buffer = self.reservations.telemetry;
             if let Some(checkpoints) = self.checkpoints.as_mut() {
                 write_search_checkpoint(
                     self.workload,
@@ -654,8 +934,7 @@ where
                     self.admitted,
                     self.planned_clock,
                     &self.schedule,
-                    &self.pending,
-                    &self.completed,
+                    &self.reservations,
                     &self.spec_records,
                 )?;
             }
@@ -686,7 +965,7 @@ where
         telemetry.workers = workers;
         idle_clock.finish(&mut telemetry.admission);
         telemetry.sum_targets();
-        telemetry.coordinator = serde_json::to_value(&profile)?;
+        telemetry.coordinator = profile.telemetry_json()?;
         let persistence_started = now();
 
         core.archive.preserve_inactive_snapshots(false)?;
@@ -718,13 +997,14 @@ where
         }
         workload.verify_integrity()?;
         writer.write_line(
-            &CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::End(CampaignEndRecord {
+            CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::End(CampaignEndRecord {
                 jobs: reserved,
                 skips: counters.duplicates_skipped,
                 executions_completed: core.sequence,
             }),
         )?;
-        let stream_sha256 = writer.finish()?;
+        let (stream_sha256, stream_telemetry) = writer.finish()?;
+        telemetry.stream = stream_telemetry;
         counters.draw_state_memory_bytes = workload
             .draw_state_memory_bytes(&draw_state)
             .saturating_add(duration_policies.memory_bytes());
@@ -738,11 +1018,18 @@ where
             config.materialize_final_artifacts,
         )?;
         telemetry.persistence_ns = nanos_since(persistence_started);
+        telemetry.coordinator_host = HostTimes::try_measure(
+            coordinator_schedstat,
+            (
+                telemetry.admission.idle_admission_order_ns,
+                telemetry.admission.idle_no_job_ns,
+            ),
+        );
         report.telemetry = telemetry;
         Ok((report, checkpoint))
     }
 
-    fn reserve(&mut self) -> Result<bool, Box<dyn Error>> {
+    fn reserve(&mut self) -> Result<Option<ReservedDispatch<G>>, Box<dyn Error>> {
         let selection_started = profile_now();
         let selected = self.select()?;
         self.profile.selection_ns = self
@@ -751,7 +1038,7 @@ where
             .saturating_add(profile_elapsed(selection_started));
         self.profile.selections = self.profile.selections.saturating_add(1);
         let Some((mut spec, mut pending)) = selected else {
-            return Ok(false);
+            return Ok(None);
         };
         let action_cost = self.workload.action_cost_fn();
         self.profile.note_dispatch(
@@ -764,16 +1051,26 @@ where
         pending.planned_finish = planned_finish(self.planned_clock, &spec, action_cost);
         spec.planned_finish = pending.planned_finish;
         let key = (pending.planned_finish, reservation);
-        if self.pending.insert(reservation, pending).is_some() {
+        if self.reservations.insert(reservation, pending).is_some() {
             return Err("campaign reserved one job twice".into());
         }
         if self.checkpoints.is_some() {
-            self.spec_records
-                .insert(reservation, JobSpecRecord::of(&spec));
+            self.spec_records.insert(
+                reservation,
+                (
+                    self.reservations
+                        .inserted
+                        .expect("inserted reservation token"),
+                    JobSpecRecord::of(&spec),
+                ),
+            );
         }
-        self.schedule.insert(key);
-        self.queued.insert(key, spec);
-        Ok(true)
+        let token = self
+            .reservations
+            .inserted
+            .expect("inserted reservation token");
+        self.schedule.insert(key, token);
+        Ok(Some(ReservedDispatch { job: spec, token }))
     }
 
     fn write_due_checkpoint(&mut self) -> Result<(), Box<dyn Error>> {
@@ -798,8 +1095,7 @@ where
                 self.admitted,
                 self.planned_clock,
                 &self.schedule,
-                &self.pending,
-                &self.completed,
+                &self.reservations,
                 &self.spec_records,
             )?;
         }
@@ -832,15 +1128,17 @@ where
             idle_clock,
             coordinator_schedstat,
             telemetry_started,
-            completed,
+            reservations,
             admissions,
             ..
         } = self;
         let admission = &mut telemetry.admission;
         *planned_clock = finish;
         spec_records.remove(&reservation);
-        let pending_job = completed_job.pending;
-        let (result, execution_work, result_sha256) =
+        let pending_job = reservations
+            .metadata_token_mut(completed_job.token)
+            .ok_or("campaign admission lost its reservation")?;
+        let (mut result, execution_work, result_sha256) =
             completed_job.outcome.map_err(|error| -> Box<dyn Error> {
                 format!("campaign reservation {reservation} failed: {error}").into()
             })?;
@@ -865,7 +1163,7 @@ where
         let (sequence, decisions, duration_admission) = core.admit_job_tracking(
             workload,
             pending_job.parent_id,
-            result,
+            &mut result,
             pending_job.suffix_limit.is_some(),
             |action| {
                 tracked_duration.is_some_and(|duration| {
@@ -904,16 +1202,19 @@ where
             core.archive
                 .record_selection(parent_index, &pending_job.selector);
         }
-        let retained_ids = retained_archive_indexes(core, &decisions);
-        let new_cell_descendant = retained_ids
-            .iter()
-            .any(|id| core.archive.opened_new_cell(*id));
-        let new_slot_descendant = retained_ids
-            .iter()
-            .any(|id| core.archive.opened_new_slot(*id));
+        let (retained, new_cell_descendant, new_slot_descendant) = retained_archive_indexes(
+            core, &decisions,
+        )
+        .fold((false, false, false), |(_, new_cell, new_slot), id| {
+            (
+                true,
+                new_cell || core.archive.opened_new_cell(id),
+                new_slot || core.archive.opened_new_slot(id),
+            )
+        });
         if !isolated_continuation {
             core.archive
-                .record_selection_outcome(parent_index, !retained_ids.is_empty());
+                .record_selection_outcome(parent_index, retained);
         }
         if isolated_continuation {
             let (landed, replaced) =
@@ -968,36 +1269,45 @@ where
         coordinator_profile.bookkeeping_ns = coordinator_profile
             .bookkeeping_ns
             .saturating_add(profile_elapsed(bookkeeping_started));
-        if let Some(admissions) = admissions.as_mut() {
-            admissions.push(CampaignAdmission {
+        if let Some(admissions) = admissions.as_mut()
+            && admissions
+                .selected
+                .as_mut()
+                .is_none_or(|selected| selected.remove(&reservation))
+        {
+            admissions.ready.push(CampaignAdmission {
                 reservation,
                 decisions: decisions.clone(),
             });
         }
         let stream_started = profile_now();
-        writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
-            continuation_energy: pending_job.continuation_energy,
-            sequence,
-            reservation: u64::try_from(reservation)?,
-            parent_id: pending_job.parent_id,
-            mutation_seed: pending_job.mutation_seed,
-            execution_work,
-            result_sha256,
-            decisions,
-            mixture_weight: pending_job.mixture_weight,
-            splice_weight: pending_job.splice_weight,
-            splice: pending_job.splice,
-            selector: pending_job.selector,
-            draw_checkpoint_before: pending_job.draw_checkpoint_before,
-            draw_checkpoint_after,
-            duration_draw: pending_job.duration_draw,
-            duration_admission_sequence_at_draw: pending_job.duration_admission_sequence_at_draw,
-            duration_remaining_work: pending_job.duration_remaining_work,
-            duration_checkpoint_at_draw: pending_job.duration_checkpoint_at_draw,
-            duration_checkpoint_before,
-            duration_checkpoint_after,
-            suffix_limit: pending_job.suffix_limit,
-        }))?;
+        writer.write_line_with_cleanup(
+            CampaignStreamRecord::Job(CampaignJobRecord {
+                continuation_energy: pending_job.continuation_energy,
+                sequence,
+                reservation: u64::try_from(reservation)?,
+                parent_id: pending_job.parent_id,
+                mutation_seed: pending_job.mutation_seed,
+                execution_work,
+                result_sha256,
+                decisions,
+                mixture_weight: pending_job.mixture_weight,
+                splice_weight: pending_job.splice_weight,
+                splice: pending_job.splice.take(),
+                selector: pending_job.selector,
+                draw_checkpoint_before: pending_job.draw_checkpoint_before.take(),
+                draw_checkpoint_after,
+                duration_draw: pending_job.duration_draw,
+                duration_admission_sequence_at_draw: pending_job
+                    .duration_admission_sequence_at_draw,
+                duration_remaining_work: pending_job.duration_remaining_work,
+                duration_checkpoint_at_draw: pending_job.duration_checkpoint_at_draw.take(),
+                duration_checkpoint_before,
+                duration_checkpoint_after,
+                suffix_limit: pending_job.suffix_limit,
+            }),
+            result,
+        )?;
         coordinator_profile.stream_write_ns = coordinator_profile
             .stream_write_ns
             .saturating_add(profile_elapsed(stream_started));
@@ -1054,12 +1364,12 @@ where
                     core.archive.history_compactions(),
                     core.archive.historical_entries_dropped(),
                     core.archive.input_reconstructions(),
-                    completed.len(),
-                    completed.telemetry.actions_live,
-                    completed.telemetry.candidates_live,
-                    completed.telemetry.results_peak,
-                    completed.telemetry.actions_peak,
-                    completed.telemetry.candidates_peak,
+                    reservations.completed_len(),
+                    reservations.telemetry.actions_live,
+                    reservations.telemetry.candidates_live,
+                    reservations.telemetry.results_peak,
+                    reservations.telemetry.actions_peak,
+                    reservations.telemetry.candidates_peak,
                     counters.job_execution_work,
                     coordinator_profile.replay_jobs,
                     coordinator_profile.replay_actions,
@@ -1263,7 +1573,7 @@ where
                     previous,
                     draw,
                 )?,
-                (None, None) => workload.expand_suffix(
+                (None, None) => workload.expand_suffix_prefix(
                     &config.run,
                     draw_state,
                     MixtureDraw {
@@ -1273,6 +1583,7 @@ where
                     },
                     mutation_seed,
                     previous,
+                    suffix_limit.unwrap_or(SUFFIX_DOUBLING_LIMIT),
                 )?,
             };
             if let Some(limit) = suffix_limit {
@@ -1285,7 +1596,7 @@ where
                     .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                 let draw_checkpoint_after =
                     workload.finish_stream_record(&config.run, draw_state, &[], &core.evidence)?;
-                writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
+                writer.write_line(CampaignStreamRecord::Skip(CampaignSkipRecord {
                     reservation: *reserved,
                     parent_id,
                     mutation_seed,

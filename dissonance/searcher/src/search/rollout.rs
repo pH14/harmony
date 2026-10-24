@@ -156,7 +156,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
     let parent_outcome = target.outcome()?;
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult {
+        return Ok(CampaignJobResult::<G> {
             preparation_failure: parent_outcome
                 .disposition
                 .is_failed()
@@ -181,7 +181,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
                 RetentionPolicy::ProbeAtAdmission => target.probe(&snapshot)?,
                 RetentionPolicy::Unprobed => true,
             };
-            Some(CampaignCandidate {
+            Some(CampaignCandidate::<G> {
                 key,
                 viable,
                 snapshot,
@@ -189,7 +189,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
         } else {
             None
         };
-        actions.push(CampaignActionResult {
+        actions.push(CampaignActionResult::<G> {
             action: *action,
             observations,
             milestones,
@@ -200,7 +200,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
             break;
         }
     }
-    Ok(CampaignJobResult {
+    Ok(CampaignJobResult::<G> {
         preparation_failure: None,
         actions,
     })

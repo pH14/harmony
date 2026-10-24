@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     fs,
-    io::{self, BufWriter, LineWriter, Write},
+    io::{self, BufWriter, Write},
     num::NonZeroU64,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -76,17 +76,15 @@ pub struct Request {
     pub live_site: Option<PathBuf>,
 }
 
-struct StreamDigest {
+struct StreamSink {
     file: Option<BufWriter<fs::File>>,
-    digest: Sha256,
     bytes: u64,
 }
-impl Write for StreamDigest {
+impl Write for StreamSink {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if let Some(file) = &mut self.file {
             file.write_all(buf)?;
         }
-        self.digest.update(buf);
         self.bytes += buf.len() as u64;
         Ok(buf.len())
     }
@@ -95,6 +93,24 @@ impl Write for StreamDigest {
             file.flush()?;
         }
         Ok(())
+    }
+}
+
+const PROGRESS_BUFFER_BYTES: usize = 8 * 1024;
+
+fn finish_progress<T>(
+    result: Result<T>,
+    progress: &mut dyn Write,
+    diagnostics: &mut dyn Write,
+) -> Result<T> {
+    match (result, progress.flush()) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(error.into()),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(flush)) => {
+            let _ = writeln!(diagnostics, "progress finalization also failed: {flush}");
+            Err(error)
+        }
     }
 }
 
@@ -125,7 +141,10 @@ pub fn evaluate<G: Workload>(
 ) -> Result<()>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-    G::Snapshot: crate::witness::EndpointIdentity,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: crate::witness::EndpointIdentity + 'static,
 {
     if request.live.is_some() {
         return Err("this game has no live view".into());
@@ -144,7 +163,10 @@ pub fn evaluate_watched<G: Workload, W: CampaignWatch<G>>(
 ) -> Result<()>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
-    G::Snapshot: crate::witness::EndpointIdentity,
+    G::Action: 'static,
+    G::Milestones: 'static,
+    G::Observations: 'static,
+    G::Snapshot: crate::witness::EndpointIdentity + 'static,
 {
     let full = request.verification == "campaign";
     if request.verification != "witness" && !full {
@@ -201,24 +223,27 @@ where
     {
         return Err("search limits must be positive".into());
     }
-    write_json(
-        &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
-    )?;
-    let mut stream = StreamDigest {
+    let identity = json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume});
+    write_json(&out.join("identity.json"), &identity)?;
+    let mut stream = StreamSink {
         file: if full {
-            Some(BufWriter::new(fs::File::create(out.join("stream.jsonl"))?))
+            Some(BufWriter::with_capacity(
+                1024 * 1024,
+                fs::File::create(out.join("stream.jsonl"))?,
+            ))
         } else {
             None
         },
-        digest: Sha256::new(),
         bytes: 0,
     };
-    let mut progress = LineWriter::new(fs::File::create(out.join("progress.jsonl"))?);
+    let mut progress = BufWriter::with_capacity(
+        PROGRESS_BUFFER_BYTES,
+        fs::File::create(out.join("progress.jsonl"))?,
+    );
     let preparation_seconds = started.elapsed().as_secs_f64();
     phase(out, "search", started)?;
     let search_started = telemetry_now();
-    let (report, checkpoint) = run_campaign_watched(
+    let searched = run_campaign_watched(
         game,
         &config,
         &origin,
@@ -230,14 +255,18 @@ where
             placement: None,
         },
         watch,
-    )?;
-    stream.flush()?;
-    progress.flush()?;
+    )
+    .and_then(|outcome| {
+        stream.flush()?;
+        Ok(outcome)
+    });
+    let (report, checkpoint) = finish_progress(searched, &mut progress, &mut io::stderr())?;
     let search_seconds = search_started.elapsed().as_secs_f64();
     phase(out, "export", started)?;
     let export_started = telemetry_now();
+    let victory_observed = report.objectives_reached > 0;
     let mut value = serde_json::to_value(&report)?;
-    let witness: Input<G::Action> = if let Some(input) = &report.objective_witness {
+    let witness: Input<G::Action> = if let Some(input) = report.objective_witness.as_ref() {
         input.clone()
     } else {
         serde_json::from_value(value["archive"]["champion_input"].clone())?
@@ -257,6 +286,7 @@ where
         archive.remove("entries");
     }
     write_json(&out.join("campaign.json"), &value)?;
+    write_json(&out.join("telemetry.json"), &report.telemetry)?;
     let export_seconds = export_started.elapsed().as_secs_f64();
     phase(out, "verification", started)?;
     let verify_started = telemetry_now();
@@ -265,7 +295,7 @@ where
     if first != second {
         return Err("witness replay endpoint is nondeterministic".into());
     }
-    if report.objectives_reached > 0 && first["victory"] != true {
+    if victory_observed && first["victory"] != true {
         return Err("reported victory was not reproduced by its witness".into());
     }
     if full {
@@ -311,22 +341,22 @@ where
     }
     let verification_seconds = verify_started.elapsed().as_secs_f64();
     let solved = objective_within_budget(report.work_to_first_objective, request.frames);
-    write_json(
-        &out.join("result.json"),
-        &json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
-            "victory_observed":report.objectives_reached>0,
-            "frame_budget_overshoot":request.frames.map(|limit| report.execution_work.saturating_sub(limit)),
-            "executions": report.executions_completed, "frames_emulated":report.execution_work,
-            "frames_to_first_victory":report.work_to_first_objective, "executions_to_first_victory":report.executions_to_first_objective,
-            "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":report.executions_completed as f64 / search_seconds,
-            "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.execution_work as f64 / search_seconds,
-            "export_seconds":export_seconds, "verification_seconds":verification_seconds,
-            "witness_replays":2, "campaign_replay":full,
-            "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
-            "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
-            "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.execution_work >= limit) {"frame_limit"} else {"wall_limit"}
-        }),
-    )?;
+    let executions_per_second = report.executions_completed as f64 / search_seconds;
+    let frames_per_second = report.execution_work as f64 / search_seconds;
+    let result = json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
+        "victory_observed":victory_observed,
+        "frame_budget_overshoot":request.frames.map(|limit| report.execution_work.saturating_sub(limit)),
+        "executions": report.executions_completed, "frames_emulated":report.execution_work,
+        "frames_to_first_victory":report.work_to_first_objective, "executions_to_first_victory":report.executions_to_first_objective,
+        "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":executions_per_second,
+        "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": frames_per_second,
+        "export_seconds":export_seconds, "verification_seconds":verification_seconds,
+        "witness_replays":2, "campaign_replay":full,
+        "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
+        "stream_sha256":report.stream_sha256, "stream_bytes_generated":stream.bytes, "stream_retained":full,
+        "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.execution_work >= limit) {"frame_limit"} else {"wall_limit"}
+    });
+    write_json(&out.join("result.json"), &result)?;
     phase(out, "done", started)
 }
 
@@ -357,7 +387,119 @@ pub fn run_cli(
 
 #[cfg(test)]
 mod tests {
-    use super::objective_within_budget;
+    use super::{PROGRESS_BUFFER_BYTES, Result, finish_progress, objective_within_budget};
+    use std::io::{self, BufWriter, LineWriter, Write};
+
+    #[derive(Default)]
+    struct CountingSink {
+        bytes: Vec<u8>,
+        writes: usize,
+        flushes: usize,
+        fail_flush: bool,
+    }
+
+    impl Write for CountingSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            if self.fail_flush {
+                Err(io::Error::other("injected progress flush failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn progress_records(writer: &mut dyn Write) {
+        for task in 0..1000 {
+            serde_json::to_writer(
+                &mut *writer,
+                &serde_json::json!({"executions_completed": task, "execution_work": task * 10}),
+            )
+            .unwrap();
+            writer.write_all(b"\n").unwrap();
+        }
+    }
+
+    #[test]
+    fn progress_buffer_preserves_every_record_with_fewer_underlying_writes() {
+        let mut buffered = BufWriter::with_capacity(PROGRESS_BUFFER_BYTES, CountingSink::default());
+        let mut lines = LineWriter::new(CountingSink::default());
+        progress_records(&mut buffered);
+        progress_records(&mut lines);
+        assert!(buffered.get_ref().bytes.len() < lines.get_ref().bytes.len());
+        finish_progress(Ok(()), &mut buffered, &mut Vec::new()).unwrap();
+        lines.flush().unwrap();
+        assert_eq!(buffered.get_ref().bytes, lines.get_ref().bytes);
+        assert!(buffered.get_ref().writes < lines.get_ref().writes);
+        assert_eq!(buffered.get_ref().bytes.last(), Some(&b'\n'));
+        assert_eq!(
+            buffered
+                .get_ref()
+                .bytes
+                .iter()
+                .filter(|byte| **byte == b'\n')
+                .count(),
+            1000
+        );
+        assert_eq!(buffered.get_ref().flushes, 1);
+    }
+
+    #[test]
+    fn progress_final_flush_failure_rejects_success() {
+        let mut progress = BufWriter::with_capacity(
+            PROGRESS_BUFFER_BYTES,
+            CountingSink {
+                fail_flush: true,
+                ..CountingSink::default()
+            },
+        );
+        progress
+            .write_all(b"{\"executions_completed\":1}\n")
+            .unwrap();
+        let error = finish_progress(Ok(()), &mut progress, &mut Vec::new()).unwrap_err();
+        assert_eq!(error.to_string(), "injected progress flush failure");
+        assert_eq!(progress.get_ref().bytes, b"{\"executions_completed\":1}\n");
+        assert_eq!(progress.get_ref().flushes, 1);
+    }
+
+    #[test]
+    fn progress_search_error_flushes_prefix_and_preserves_primary_error() {
+        for fail_flush in [false, true] {
+            let mut progress = BufWriter::with_capacity(
+                PROGRESS_BUFFER_BYTES,
+                CountingSink {
+                    fail_flush,
+                    ..CountingSink::default()
+                },
+            );
+            progress
+                .write_all(b"{\"executions_completed\":1}\n")
+                .unwrap();
+            let result: Result<()> =
+                Err(io::Error::new(io::ErrorKind::NotFound, "primary search error").into());
+            let mut diagnostics = Vec::new();
+            let error = finish_progress(result, &mut progress, &mut diagnostics).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<io::Error>().unwrap().kind(),
+                io::ErrorKind::NotFound
+            );
+            assert_eq!(error.to_string(), "primary search error");
+            assert_eq!(progress.get_ref().bytes, b"{\"executions_completed\":1}\n");
+            assert_eq!(progress.get_ref().flushes, 1);
+            assert_eq!(!diagnostics.is_empty(), fail_flush);
+            if fail_flush {
+                assert!(String::from_utf8(diagnostics).unwrap().contains(
+                    "progress finalization also failed: injected progress flush failure"
+                ));
+            }
+        }
+    }
 
     #[test]
     fn a_victory_in_the_drained_window_does_not_pass_the_frame_check() {

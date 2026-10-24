@@ -108,6 +108,38 @@ coordination:
 | Guest work run a second time | Its full CPU time |
 | Coordinator time per job | The whole search finishes at most one job in that time |
 
+### Feeding many workers
+
+Measure coordinator CPU per admitted job, including selection, admission,
+queueing, live observation and stream output. Use a boundary after workers and
+observers are ready and before final persistence. Individual phase timers can
+omit outer-loop work or contain waits; their sum is not a substitute for the
+thread's CPU counter. Measure any ordered background encoder separately.
+
+If a worker needs `T` seconds of CPU per job, the coordinator needs `C`, and
+one encoder needs `E`, an optimistic throughput bound for `N` worker cores is
+`min(N / T, 1 / C, 1 / E)`. Thus feeding 100 worker cores requires both
+`C < T / 100` and `E < T / 100`, with room for observation and host contention.
+An eight-worker speedup does not establish either inequality. Worker busy wall
+time inflated by scheduling contention overstates `T`; use CPU coverage or an
+isolated equivalent-core reference and preserve the distinction.
+
+This bound is necessary rather than sufficient. Ordered admission can leave
+workers idle behind an unfinished earlier job, even when the coordinator has
+spare CPU. Retain head-of-line waits, the completed-result peak, and the fixed
+admission window alongside CPU measurements. A full window includes completed
+results awaiting admission, so its occupancy does not establish runnable width.
+Separate startup, a sustained full-window interval and budget drain when reading
+worker utilization. Startup, drain and final persistence still count toward
+end-to-end campaign throughput. Budget cores for the coordinator, encoder and
+viewer, and memory for every worker, queued job and buffered result.
+
+Widening the window also delays selection based on newly admitted states.
+Compare useful search progress at fixed actual guest work before treating a
+larger window as a scaling improvement. A frozen-work scheduling model can test
+ready-work assumptions, but task frame counts alone do not establish native CPU
+tails, cache costs or encoder backpressure.
+
 At these costs, an exit every 25 µs of guest work adds about 10% overhead.
 Copying a page every 10 µs adds another 10%.
 
@@ -239,12 +271,12 @@ This introduces three limits to parallelism:
 - **Coordinator occupancy.** With coordinator time t per job and execution
   time T per worker, the search saturates at T divided by t workers. The
   shorter an execution, the fewer workers one coordinator can feed.
-- **Admission order.** Results are admitted in planned-finish order, which
-  sums each job's action costs. A result waits until every result with an
-  earlier planned finish is admitted, so an execution that runs slower than
-  its planned cost delays the results behind it. Jobs
-  count against one bound from dispatch until admission, and an idle worker
-  waits once that bound is full.
+- **Admission order.** Campaigns admit results in planned-finish
+  order, which sums each job's action costs. This can hold a completed result
+  behind an earlier result that has not finished. Jobs count against their
+  admission window from reservation until admission,
+  and an idle worker waits once that window is full. A slow early result can
+  therefore limit throughput even when coordinator CPU capacity is sufficient.
 - **Critical path.** Because a selection can depend on an earlier admitted
   result, some jobs must run in sequence. The longest such chain limits
   speedup to total work divided by the work along that chain, regardless of

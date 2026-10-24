@@ -449,7 +449,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     };
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult {
+        return Ok(CampaignJobResult::<Mm2Game<M>> {
             preparation_failure: None,
             actions,
         });
@@ -484,7 +484,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
                 RetentionPolicy::ProbeAtAdmission => admission_is_viable(target, &snapshot)?,
                 RetentionPolicy::Unprobed => true,
             };
-            Some(CampaignCandidate {
+            Some(CampaignCandidate::<Mm2Game<M>> {
                 key: archive_key(target.mechanical_state()),
                 viable,
                 snapshot,
@@ -492,7 +492,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
         } else {
             None
         };
-        actions.push(CampaignActionResult {
+        actions.push(CampaignActionResult::<Mm2Game<M>> {
             action: *action,
             observations,
             milestones: aggregate,
@@ -503,7 +503,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
             break;
         }
     }
-    Ok(CampaignJobResult {
+    Ok(CampaignJobResult::<Mm2Game<M>> {
         preparation_failure: None,
         actions,
     })
@@ -667,7 +667,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for Mm2Game<M> {
     }
 
     fn result_sha256(&self, result: &Mm2CampaignJobResult<M>) -> Result<String, Box<dyn Error>> {
-        postcard_semantic_result_sha256(result)
+        postcard_semantic_result_sha256::<Self>(result)
     }
 
     fn snapshot_identity_sha256(

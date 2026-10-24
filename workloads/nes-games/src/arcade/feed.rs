@@ -13,7 +13,7 @@ use crate::{
     nes_backend::unpack_state_into,
     search::{
         campaign::{
-            CampaignAdmission, CampaignAdmissionDecision, CampaignCoordinator, CampaignJobResult,
+            CampaignAdmission, CampaignAdmissionDecision, CampaignJobResult, CampaignView,
             JobOutcome, JobSpec, WatchedJob, Workload,
         },
         rollout::ExecutionDisposition,
@@ -253,10 +253,7 @@ pub fn run_noted<G: ArcadeGame>(
 }
 
 #[must_use]
-pub fn stats<G: Workload>(campaign: &CampaignCoordinator<'_, G>) -> Stats
-where
-    G::ArchiveReport: Serialize,
-{
+pub fn stats<G: Workload>(campaign: &impl CampaignView<G>) -> Stats {
     let won = campaign.objective_witness().is_some();
     Stats {
         executions: campaign.executions(),
@@ -394,10 +391,7 @@ impl<V: Copy> Feed<V> {
         batch
     }
 
-    pub fn forget_dropped<G: Workload>(&mut self, campaign: &CampaignCoordinator<'_, G>)
-    where
-        G::ArchiveReport: Serialize,
-    {
+    pub fn forget_dropped<G: Workload>(&mut self, campaign: &impl CampaignView<G>) {
         let archive = campaign.archive();
         if self.views.len() <= 2 * archive.live_entry_count() + PRUNE_SLACK {
             return;

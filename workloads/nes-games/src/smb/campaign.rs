@@ -420,7 +420,7 @@ where
         "frames"
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
-        postcard_semantic_result_sha256(result)
+        postcard_semantic_result_sha256::<Self>(result)
     }
 
     fn snapshot_identity_sha256(

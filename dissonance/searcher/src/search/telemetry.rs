@@ -6,8 +6,30 @@ use serde::{Deserialize, Serialize};
 
 pub type TargetCounters = BTreeMap<String, u64>;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileMode {
+    #[default]
+    Off,
+    CoordinatorOnly,
+    WorkerOnly,
+    CoordinatorAndWorker,
+}
+
+impl ProfileMode {
+    pub(crate) fn from_flags(coordinator: bool, worker: bool) -> Self {
+        match (coordinator, worker) {
+            (false, false) => Self::Off,
+            (true, false) => Self::CoordinatorOnly,
+            (false, true) => Self::WorkerOnly,
+            (true, true) => Self::CoordinatorAndWorker,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WorkerTelemetry {
+    pub profile_mode: ProfileMode,
     pub boot_ns: u64,
     pub jobs: u64,
     pub busy_ns: u64,
@@ -16,7 +38,113 @@ pub struct WorkerTelemetry {
     pub cpu_ns: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_wait_ns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execute_cpu: Option<WorkerExecuteCpuTelemetry>,
     pub target: TargetCounters,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WorkerExecuteCpuTelemetry {
+    pub clock: String,
+    pub scope: String,
+    pub supported: bool,
+    pub total_cpu_ns: Option<u128>,
+    pub calls: u64,
+    pub samples: u64,
+    pub errors: u64,
+    pub panics: u64,
+    pub counter_overflow: bool,
+    pub complete: bool,
+}
+
+impl WorkerExecuteCpuTelemetry {
+    pub(crate) fn new() -> Self {
+        Self {
+            clock: "thread_cpu_time".to_owned(),
+            scope: "actual_worker_execute_including_unwind_excluding_queue_reply_and_post_job_telemetry".to_owned(),
+            supported: cfg!(target_os = "linux"),
+            total_cpu_ns: cfg!(target_os = "linux").then_some(0),
+            calls: 0,
+            samples: 0,
+            errors: 0,
+            panics: 0,
+            counter_overflow: false,
+            complete: false,
+        }
+    }
+
+    fn increment(value: &mut u64, overflow: &mut bool) {
+        match value.checked_add(1) {
+            Some(next) => *value = next,
+            None => *overflow = true,
+        }
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        before: Option<u128>,
+        after: Option<u128>,
+        error: bool,
+        panic: bool,
+    ) {
+        Self::increment(&mut self.calls, &mut self.counter_overflow);
+        if panic {
+            Self::increment(&mut self.panics, &mut self.counter_overflow);
+        } else if error {
+            Self::increment(&mut self.errors, &mut self.counter_overflow);
+        }
+        let delta = before
+            .zip(after)
+            .and_then(|(before, after)| after.checked_sub(before));
+        if delta.is_some() {
+            Self::increment(&mut self.samples, &mut self.counter_overflow);
+        }
+        self.total_cpu_ns = match self.total_cpu_ns.zip(delta) {
+            Some((total, delta)) => match total.checked_add(delta) {
+                Some(total) => Some(total),
+                None => {
+                    self.counter_overflow = true;
+                    None
+                }
+            },
+            None => None,
+        };
+        if self.counter_overflow {
+            self.total_cpu_ns = None;
+        }
+        self.complete = false;
+    }
+
+    pub(crate) fn finish(&mut self, jobs: u64) {
+        self.complete = self.supported
+            && !self.counter_overflow
+            && self.total_cpu_ns.is_some()
+            && self.samples == self.calls
+            && self.calls == jobs;
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn cpu_timespec_ns(seconds: i64, nanoseconds: i64) -> Option<u128> {
+    if !(0..1_000_000_000).contains(&nanoseconds) {
+        return None;
+    }
+    u128::try_from(seconds)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u128::try_from(nanoseconds).ok()?)
+}
+
+pub(crate) fn thread_cpu_time_ns() -> Option<u128> {
+    #[cfg(target_os = "linux")]
+    {
+        let sample = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+        cpu_timespec_ns(sample.tv_sec, sample.tv_nsec)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -40,8 +168,55 @@ pub struct CompletedBufferTelemetry {
     pub candidates_peak: u64,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StreamThreadTelemetry {
+    pub tid: Option<u32>,
+    pub counter_overflow: bool,
+    pub cpu_ns: Option<u64>,
+    pub cpu_wait_ns: Option<u64>,
+    pub work_ns: u64,
+    pub input_wait_ns: u64,
+    pub output_wait_ns: u64,
+    pub batches: u64,
+    pub records: u64,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StreamTelemetry {
+    pub command_capacity: usize,
+    pub serializer_command_capacity: usize,
+    pub serializer_output_capacity: usize,
+    pub output_capacity: usize,
+    pub batch_record_limit: usize,
+    pub partial_batch_age_ns: u64,
+    pub background_batches: u64,
+    pub largest_batch_records: u64,
+    pub background_records: u64,
+    pub background_bytes: u64,
+    pub encode_ns: u64,
+    pub counter_overflow: bool,
+    pub sink_ns: u64,
+    pub flush_ns: u64,
+    pub sink_bytes: u64,
+    pub producer_backpressure_events: u64,
+    pub producer_wait_ns: u64,
+    pub records_in_flight_peak: u64,
+    pub largest_buffer_capacity_bytes: u64,
+    pub worker_cpu_ns: Option<u64>,
+    pub worker_cpu_wait_ns: Option<u64>,
+    pub serializers: [StreamThreadTelemetry; 2],
+    pub relay: StreamThreadTelemetry,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct CampaignTelemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<StreamTelemetry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_host: Option<HostTimes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_phase: Option<CoordinatorPhaseTelemetry>,
     pub bootstrap_ns: u64,
     pub search_ns: u64,
     pub persistence_ns: u64,
@@ -50,6 +225,12 @@ pub struct CampaignTelemetry {
     pub completed_buffer: CompletedBufferTelemetry,
     pub workers: Vec<WorkerTelemetry>,
     pub target: TargetCounters,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CoordinatorPhaseTelemetry {
+    pub wall_ns: u64,
+    pub host: Option<HostTimes>,
 }
 
 impl PartialEq for CampaignTelemetry {
@@ -114,7 +295,34 @@ pub(crate) const fn unix_seconds() -> u64 {
     0
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static TEST_SCHEDSTAT: std::cell::Cell<Option<Option<(u64, u64)>>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_schedstat<T>(sample: Option<(u64, u64)>, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Option<(u64, u64)>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_SCHEDSTAT.set(self.0);
+        }
+    }
+    let _restore = Restore(TEST_SCHEDSTAT.replace(Some(sample)));
+    run()
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_schedstat(sample: Option<(u64, u64)>) {
+    assert!(TEST_SCHEDSTAT.get().is_some());
+    TEST_SCHEDSTAT.set(Some(sample));
+}
+
 pub(crate) fn thread_schedstat() -> Option<(u64, u64)> {
+    #[cfg(test)]
+    if let Some(sample) = TEST_SCHEDSTAT.get() {
+        return sample;
+    }
     let text = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
     let mut fields = text.split_ascii_whitespace();
     let cpu = fields.next()?.parse().ok()?;
@@ -132,20 +340,25 @@ pub struct HostTimes {
 
 impl HostTimes {
     pub(crate) fn measure(coordinator_start: Option<(u64, u64)>, idle: (u64, u64)) -> Self {
-        let (coordinator_cpu_ns, coordinator_run_wait_ns) = coordinator_start
-            .zip(thread_schedstat())
-            .map_or((0, 0), |((cpu_before, wait_before), (cpu, wait))| {
-                (
-                    cpu.saturating_sub(cpu_before),
-                    wait.saturating_sub(wait_before),
-                )
-            });
-        Self {
-            coordinator_cpu_ns,
-            coordinator_run_wait_ns,
+        Self::try_measure(coordinator_start, idle).unwrap_or(Self {
             idle_admission_order_ns: idle.0,
             idle_no_job_ns: idle.1,
-        }
+            ..Self::default()
+        })
+    }
+
+    pub(crate) fn try_measure(
+        coordinator_start: Option<(u64, u64)>,
+        idle: (u64, u64),
+    ) -> Option<Self> {
+        let (cpu_before, wait_before) = coordinator_start?;
+        let (cpu, wait) = thread_schedstat()?;
+        Some(Self {
+            coordinator_cpu_ns: cpu.saturating_sub(cpu_before),
+            coordinator_run_wait_ns: wait.saturating_sub(wait_before),
+            idle_admission_order_ns: idle.0,
+            idle_no_job_ns: idle.1,
+        })
     }
 }
 
@@ -177,9 +390,14 @@ impl IdleClock {
     }
 
     pub(crate) fn update(&mut self, outstanding: usize, reason: IdleReason) {
+        let busy = outstanding.min(self.workers);
+        if busy == self.busy && (reason == self.reason || busy == self.workers) {
+            self.reason = reason;
+            return;
+        }
         (self.admission_order_ns, self.no_job_ns) = self.totals();
         self.since = now();
-        self.busy = outstanding.min(self.workers);
+        self.busy = busy;
         self.reason = reason;
     }
 
@@ -198,16 +416,75 @@ impl IdleClock {
         }
     }
 
-    pub(crate) fn finish(mut self, waits: &mut AdmissionWaits) {
-        self.update(0, IdleReason::NoJob);
-        waits.idle_admission_order_ns = self.admission_order_ns;
-        waits.idle_no_job_ns = self.no_job_ns;
+    pub(crate) fn finish(self, waits: &mut AdmissionWaits) {
+        (waits.idle_admission_order_ns, waits.idle_no_job_ns) = self.totals();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_modes_keep_coordinator_and_worker_switches_independent() {
+        for (coordinator, worker, expected) in [
+            (false, false, "off"),
+            (true, false, "coordinator_only"),
+            (false, true, "worker_only"),
+            (true, true, "coordinator_and_worker"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(super::ProfileMode::from_flags(coordinator, worker)).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn cpu_timespec_conversion_rejects_invalid_components_and_preserves_precision() {
+        assert_eq!(cpu_timespec_ns(0, 0), Some(0));
+        assert_eq!(cpu_timespec_ns(3, 999_999_999), Some(3_999_999_999));
+        assert_eq!(cpu_timespec_ns(-1, 0), None);
+        assert_eq!(cpu_timespec_ns(0, -1), None);
+        assert_eq!(cpu_timespec_ns(0, 1_000_000_000), None);
+        assert_eq!(
+            cpu_timespec_ns(i64::MAX, 999_999_999),
+            Some(i64::MAX as u128 * 1_000_000_000 + 999_999_999)
+        );
+    }
+
+    #[test]
+    fn test_schedstat_scopes_restore_missing_samples_and_unwind() {
+        with_test_schedstat(Some((3, 4)), || {
+            assert_eq!(thread_schedstat(), Some((3, 4)));
+            with_test_schedstat(None, || assert_eq!(thread_schedstat(), None));
+            assert_eq!(thread_schedstat(), Some((3, 4)));
+            assert!(
+                std::panic::catch_unwind(|| with_test_schedstat(None, || panic!(
+                    "injected scope panic"
+                )))
+                .is_err()
+            );
+            assert_eq!(thread_schedstat(), Some((3, 4)));
+        });
+    }
+
+    #[test]
+    fn unavailable_coordinator_cpu_is_distinct_from_a_measured_zero() {
+        assert_eq!(HostTimes::try_measure(None, (3, 4)), None);
+        let mut telemetry = CampaignTelemetry::default();
+        assert!(
+            serde_json::to_value(&telemetry)
+                .unwrap()
+                .get("coordinator_host")
+                .is_none()
+        );
+        telemetry.coordinator_host = Some(HostTimes::default());
+        assert_eq!(
+            serde_json::to_value(&telemetry).unwrap()["coordinator_host"]["coordinator_cpu_ns"],
+            0
+        );
+    }
 
     #[test]
     fn target_counters_sum_across_workers() {
@@ -246,14 +523,19 @@ mod tests {
 
     #[test]
     fn live_idle_totals_include_the_interval_still_open() {
-        let mut clock = IdleClock::new(2);
-        clock.update(0, IdleReason::AdmissionOrder);
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        let (admission_order, no_job) = clock.totals();
-        assert!(admission_order >= 4_000_000);
-        assert_eq!(no_job, clock.no_job_ns);
-        let mut waits = AdmissionWaits::default();
-        clock.finish(&mut waits);
-        assert!(waits.idle_admission_order_ns >= admission_order);
+        for reason in [IdleReason::AdmissionOrder, IdleReason::NoJob] {
+            let mut clock = IdleClock::new(2);
+            clock.update(0, reason);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let (admission_order, no_job) = clock.totals();
+            match reason {
+                IdleReason::AdmissionOrder => assert!(admission_order >= 4_000_000),
+                IdleReason::NoJob => assert!(no_job >= 4_000_000),
+            }
+            let mut waits = AdmissionWaits::default();
+            clock.finish(&mut waits);
+            assert!(waits.idle_admission_order_ns >= admission_order);
+            assert!(waits.idle_no_job_ns >= no_job);
+        }
     }
 }

@@ -79,7 +79,7 @@ pub fn run_smb_campaign<M, P>(
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>>
 where
     M: NesBackend<P>,
-    P: SnapshotState,
+    P: SnapshotState + 'static,
 {
     run_smb_campaign_with_progress(game, config, origin, stream, None)
 }
@@ -93,7 +93,7 @@ pub fn run_smb_campaign_with_progress<M, P>(
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>>
 where
     M: NesBackend<P>,
-    P: SnapshotState,
+    P: SnapshotState + 'static,
 {
     run_smb_campaign_checkpointed(game, config, origin, stream, progress).map(|(report, _)| report)
 }
@@ -107,7 +107,7 @@ pub fn run_smb_campaign_checkpointed<M, P>(
 ) -> Result<(SmbCampaignModeReport, SmbSnapshotCheckpoint<P>), Box<dyn Error>>
 where
     M: NesBackend<P>,
-    P: SnapshotState,
+    P: SnapshotState + 'static,
 {
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
@@ -342,7 +342,7 @@ mod tests {
     }
 
     fn evidence_action(milestones: SmbMilestones) -> SmbCampaignActionResult {
-        SmbCampaignActionResult {
+        SmbCampaignActionResult::<machine::quicknes::QuickNesMachine, Vec<u8>> {
             action: ButtonChord::new(0x01, 4),
             observations: vec![SmbObservations {
                 frame_count: 1,
