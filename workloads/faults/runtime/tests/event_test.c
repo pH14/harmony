@@ -93,10 +93,23 @@ static void *park_callback(void *site)
     return NULL;
 }
 
+static volatile sig_atomic_t signal_during_ack;
+static volatile sig_atomic_t signal_callbacks;
+
+static void instrumented_handler(int signal_number)
+{
+    (void)signal_number;
+    harmony_instrumentation_event(40);
+    signal_callbacks++;
+}
+
 static ssize_t acknowledged_write(int fd, const void *data, size_t length)
 {
-    if (length == HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE)
+    if (length == HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE) {
         assert(pthread_mutex_trylock(&harmony_fault_events.lock) == EBUSY);
+        if (signal_during_ack)
+            assert(pthread_kill(pthread_self(), SIGUSR1) == 0);
+    }
     return write(fd, data, length);
 }
 
@@ -320,6 +333,26 @@ int main(void)
         exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
         assert(get_word(response, 8) == 7);
         assert(get_word(response, 16) == 0);
+    }
+
+    {
+        struct sigaction action;
+        uint64_t callbacks;
+
+        memset(&action, 0, sizeof(action));
+        action.sa_handler = instrumented_handler;
+        assert(sigemptyset(&action.sa_mask) == 0);
+        assert(sigaction(SIGUSR1, &action, NULL) == 0);
+        exchange(control[1], HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
+        callbacks = get_word(response, 24);
+        signal_during_ack = 1;
+        exchange(control[1], HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
+        signal_during_ack = 0;
+        assert(signal_callbacks == 1);
+        assert(get_word(response, 24) == callbacks);
+        harmony_instrumentation_event(41);
+        exchange(control[1], HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
+        assert(get_word(response, 24) == callbacks + 1);
     }
 
     send_frame(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 22, 22);

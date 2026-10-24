@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::error::Error;
+use std::{
+    error::Error,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,8 +41,50 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    pub const fn should_stop(self, stop_rollout_on_objective: bool) -> bool {
-        self.disposition.is_terminal() || (stop_rollout_on_objective && self.objective_reached)
+    pub fn should_stop(self, stop: &RolloutStop) -> bool {
+        self.ends_rollout(stop) || stop.cancelled()
+    }
+
+    pub const fn ends_rollout(self, stop: &RolloutStop) -> bool {
+        self.disposition.is_terminal() || (stop.objective && self.objective_reached)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RolloutStop {
+    objective: bool,
+    cancel: Option<Arc<AtomicBool>>,
+}
+
+impl RolloutStop {
+    pub const fn new(stop_on_objective: bool) -> Self {
+        Self {
+            objective: stop_on_objective,
+            cancel: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_cancel(self, cancel: Option<Arc<AtomicBool>>) -> Self {
+        Self {
+            objective: self.objective,
+            cancel,
+        }
+    }
+
+    pub const fn stops_on_objective(&self) -> bool {
+        self.objective
+    }
+
+    #[must_use]
+    pub const fn cancellation(&self) -> Option<&Arc<AtomicBool>> {
+        self.cancel.as_ref()
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
     }
 }
 
@@ -112,7 +160,7 @@ pub fn execute_job<G: Workload + ?Sized>(
     parent_milestones: G::Milestones,
     suffix: &[G::Action],
     retention: RetentionPolicy,
-    stop_rollout_on_objective: bool,
+    stop: RolloutStop,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
     workload.verify_integrity()?;
     workload.reset(target);
@@ -124,6 +172,13 @@ pub fn execute_job<G: Workload + ?Sized>(
         .is_terminal()
     {
         for action in replay {
+            if stop.cancelled() {
+                return Ok(CampaignJobResult {
+                    preparation_failure: None,
+                    hang: None,
+                    actions: Vec::new(),
+                });
+            }
             workload.apply_action(target, action, &mut replay_milestones)?;
             workload.verify_integrity()?;
             if workload
@@ -140,7 +195,7 @@ pub fn execute_job<G: Workload + ?Sized>(
         parent_milestones,
         suffix,
         retention,
-        stop_rollout_on_objective,
+        stop,
     )
 }
 
@@ -149,7 +204,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
     parent_milestones: G::Milestones,
     suffix: &[G::Action],
     retention: RetentionPolicy,
-    stop_rollout_on_objective: bool,
+    stop: RolloutStop,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
     let mut milestones = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -161,6 +216,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
                 .disposition
                 .is_failed()
                 .then(|| target.observations()),
+            hang: None,
             actions,
         });
     }
@@ -196,12 +252,13 @@ pub fn execute_suffix<G: Workload + ?Sized>(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop_rollout_on_objective) {
+        if outcome.should_stop(&stop) {
             break;
         }
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }

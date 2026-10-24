@@ -84,6 +84,8 @@ dependencies = [
  "host-code-identity",
  "hypercall-proto",
  "libc",
+ "lz4_flex",
+ "rustix",
  "serde",
  "sha2",
  "thiserror",
@@ -282,6 +284,12 @@ name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "lz4_flex"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
 
 [[package]]
 name = "machine"

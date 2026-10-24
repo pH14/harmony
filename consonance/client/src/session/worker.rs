@@ -16,7 +16,10 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     ptr::NonNull,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -81,6 +84,7 @@ const OTHER: u8 = 0;
 const HUNG: u8 = 1;
 const ABANDONED: u8 = 2;
 const INFRASTRUCTURE: u8 = 3;
+const CANCEL_POLL: Duration = Duration::from_millis(20);
 
 pub trait SearchSession: std::fmt::Debug {
     fn execution_endpoint(
@@ -165,6 +169,7 @@ pub trait SearchSession: std::fmt::Debug {
     fn branch_with_service(
         &mut self,
         snapshot: SnapId,
+        seed: u64,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
@@ -190,6 +195,7 @@ pub trait SearchSession: std::fmt::Debug {
         Ok(events.split_off(offset))
     }
     fn abandoned(&self) -> bool;
+    fn set_cancel(&mut self, _cancel: Option<Arc<AtomicBool>>) {}
 }
 
 trait ServedSession: SearchSession {
@@ -304,12 +310,21 @@ impl SearchSession for Session {
     fn branch_with_service(
         &mut self,
         snapshot: SnapId,
+        seed: u64,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
         coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        Session::branch_with_service(self, snapshot, config, payloads, effects, coverage_schedule)
+        Session::branch_with_service(
+            self,
+            snapshot,
+            seed,
+            config,
+            payloads,
+            effects,
+            coverage_schedule,
+        )
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
@@ -1160,6 +1175,7 @@ fn put_config(out: &mut Out, config: &SessionConfig) {
 
 fn take_config(input: &mut In<'_>) -> io::Result<SessionConfig> {
     Ok(SessionConfig {
+        boot_cache: None,
         guest_contract: match input.u8()? {
             0 => super::GuestContract::Ordinary,
             1 => super::GuestContract::NestedHost,
@@ -1202,7 +1218,6 @@ pub struct WorkerSession {
     owner: Option<Box<dyn crate::writer_lifetime::ExitOwner>>,
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
     setup: (SnapId, u64),
-    seed: u64,
     failed: Cell<bool>,
     counters: RefCell<Vec<(String, u64)>>,
     telemetry_queries: Cell<u64>,
@@ -1213,6 +1228,7 @@ pub struct WorkerSession {
     transport: Arc<work::Work>,
     import_reuse: crate::import_reuse::ImportReuse,
     shutdown: Option<Result<(), String>>,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 struct Exchange<'a>(&'a Cell<bool>);
@@ -1282,13 +1298,13 @@ impl WorkerSession {
             owner,
             loaded_image_guard,
             setup: (SnapId(0), 0),
-            seed: config.seed,
             failed: Cell::new(false),
             counters: RefCell::default(),
             exchanging: Cell::new(false),
             copies: Arc::default(),
             import_reuse: Default::default(),
             shutdown: None,
+            cancel: None,
             transport,
             telemetry_queries: Cell::new(0),
             telemetry_query_failures: Cell::new(0),
@@ -1352,6 +1368,7 @@ impl WorkerSession {
             &self.transport,
             work::Group::request(&request.0),
         )
+        .and_then(|()| self.await_reply())
         .and_then(|()| {
             receive_measured(
                 &self.stream,
@@ -1370,6 +1387,27 @@ impl WorkerSession {
         };
         self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcAfter)?;
         self.reply_status(&body)
+    }
+
+    fn await_reply(&self) -> io::Result<()> {
+        let Some(cancel) = &self.cancel else {
+            return Ok(());
+        };
+        let slice = rustix::event::Timespec::try_from(CANCEL_POLL).map_err(io::Error::other)?;
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err(io::Error::other("the search stopped this job"));
+            }
+            let mut waiting = [rustix::event::PollFd::new(
+                &self.stream,
+                rustix::event::PollFlags::IN,
+            )];
+            match rustix::event::poll(&mut waiting, Some(&slice)) {
+                Ok(0) | Err(rustix::io::Errno::INTR) => {}
+                Ok(_) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     fn reply_status(&self, body: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -1902,12 +1940,13 @@ impl SearchSession for WorkerSession {
     fn branch_with_service(
         &mut self,
         snapshot: SnapId,
+        seed: u64,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
         coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        let spec = service_branch_spec(self.seed, config, payloads, effects, coverage_schedule)?;
+        let spec = service_branch_spec(seed, config, payloads, effects, coverage_schedule)?;
         self.call_unit(
             Out::measured(BRANCH, &self.copies)
                 .u64(snapshot.0)
@@ -1974,6 +2013,9 @@ impl SearchSession for WorkerSession {
 
     fn abandoned(&self) -> bool {
         self.failed.get()
+    }
+    fn set_cancel(&mut self, cancel: Option<Arc<AtomicBool>>) {
+        self.cancel = cancel;
     }
 }
 
@@ -2394,7 +2436,7 @@ mod tests {
     use super::*;
     use crate::cache::{
         LocalIndex,
-        extent::{extent_len, read_extent, resolve, write_extent},
+        extent::{encode, read_extent, resolve},
     };
 
     #[derive(Clone, Debug)]
@@ -2632,6 +2674,7 @@ mod tests {
         fn branch_with_service(
             &mut self,
             _: SnapId,
+            _: u64,
             _: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, Effect)>,
@@ -2734,7 +2777,7 @@ mod tests {
             sidecar.extend_from_slice(b"HMSESS01");
             sidecar.extend_from_slice(&[0; 32]);
             sidecar.extend_from_slice(b"HMSSNAP1");
-            sidecar.extend_from_slice(&13u16.to_le_bytes());
+            sidecar.extend_from_slice(&15u16.to_le_bytes());
             sidecar.extend_from_slice(&4u16.to_le_bytes());
             for len in [vm_state.len() as u64, 0, policy.len() as u64, 1, 0] {
                 sidecar.extend_from_slice(&len.to_le_bytes());
@@ -2748,13 +2791,10 @@ mod tests {
             sidecar.push(0);
             let machine = super::super::live::raw_target_commitment(&sidecar)?;
             let sidecar = super::super::attachment::encode(&sidecar, machine, attachment)?;
-            let mut out = allocate(extent_len(1, 0, sidecar.len()).unwrap())?;
-            write_extent(
-                out.bytes_mut(),
-                &[(0, &[fill; 32], &[fill; 4096])],
-                &[],
-                &sidecar,
-            )?;
+            let (hash, page) = ([fill; 32], [fill; 4096]);
+            let encoded = encode(&[(0, &hash, &page)], &[], &sidecar)?;
+            let mut out = allocate(encoded.len())?;
+            encoded.write(out.bytes_mut())?;
             drop(out);
             Ok(())
         }
@@ -2768,10 +2808,11 @@ mod tests {
                 .iter()
                 .map(|extent| read_extent(extent))
                 .collect::<Result<Vec<_>, _>>()?;
-            self.current = resolve(&deltas)?.pages.last().ok_or("no pages")?.2[0];
+            self.current = resolve(&deltas)?.pages().last().ok_or("no pages")?.2[0];
             if let Some(index) = self.quarantine_on_import.take() {
-                let mut extent = index.extent(extent_len(0, 0, 0).unwrap())?;
-                write_extent(extent.bytes_mut(), &[], &[], &[])?;
+                let encoded = encode(&[], &[], &[])?;
+                let mut extent = index.extent(encoded.len())?;
+                encoded.write(extent.bytes_mut())?;
                 assert!(matches!(
                     index.publish(namespace(), b"key", None, extent, [0xee; 32], 0),
                     Err(crate::cache::CacheError::DivergentDuplicate { .. })
@@ -3495,9 +3536,10 @@ mod tests {
             .unwrap();
         let chain = index.chain(&lease).unwrap();
         assert_eq!(chain.len(), 1);
-        let range = chain[0].shared_range();
-        assert_eq!(range.offset, 0);
-        let span = range.len;
+        assert_eq!(chain[0].shared_range().offset, 0);
+        let delta = read_extent(chain[0].bytes()).unwrap();
+        let written = delta.with_sidecar(delta.sidecar).len();
+        let mapped = chain[0].bytes().len();
         session.import_cached(&index, &lease, SnapId(1)).unwrap();
         let before = session
             .copies
@@ -3513,12 +3555,12 @@ mod tests {
             .telemetry_counters()
             .into_iter()
             .collect::<BTreeMap<_, _>>();
-        for direction in ["import", "export"] {
+        for (direction, len) in [("import", mapped), ("export", written)] {
             for (leaf, expected) in [
                 ("attempts", 1),
                 ("errors", 0),
-                ("range_bytes", range.len as u64),
-                ("span_bytes", span as u64),
+                ("range_bytes", len as u64),
+                ("span_bytes", len as u64),
             ] {
                 assert_eq!(
                     counters[&format!("copy.child.loop.{direction}_mapping.{leaf}")],
@@ -3645,9 +3687,9 @@ mod tests {
                 assert!(fds.is_empty());
                 let mut out = Out::op(OK);
                 out.len(2)
-                    .bytes(b"sdk_dispatch.event.request_guard_calls")
+                    .bytes(b"sdk_dispatch.event.response_guard_calls")
                     .u64(value)
-                    .bytes(b"sdk_dispatch.event_shape.2.9.0.request_guard_calls")
+                    .bytes(b"sdk_dispatch.event_shape.2.9.0.response_guard_calls")
                     .u64(value);
                 send(&child, &out.0, &[]).unwrap();
             }
@@ -3674,8 +3716,8 @@ mod tests {
         for expected in [5, 7, 7] {
             let values = session.telemetry_counters();
             for key in [
-                "sdk_dispatch.event.request_guard_calls",
-                "sdk_dispatch.event_shape.2.9.0.request_guard_calls",
+                "sdk_dispatch.event.response_guard_calls",
+                "sdk_dispatch.event_shape.2.9.0.response_guard_calls",
             ] {
                 assert_eq!(
                     values
@@ -4078,6 +4120,7 @@ mod tests {
         legacy
             .branch_with_service(
                 SnapId(1),
+                7,
                 ServiceConfig::default(),
                 Vec::new(),
                 Vec::new(),
@@ -4867,6 +4910,7 @@ mod tests {
         session
             .branch_with_service(
                 SnapId(1),
+                0,
                 ServiceConfig::default(),
                 Vec::new(),
                 Vec::new(),
@@ -5041,12 +5085,12 @@ mod tests {
                 owner: Some(Box::new(server.clone())),
                 retained_export: RefCell::new(Vec::new()),
                 setup: (SnapId(1), 10),
-                seed: 0,
                 counters: RefCell::new(Vec::new()),
                 exchanging: Cell::new(false),
                 copies: Arc::default(),
                 import_reuse: Default::default(),
                 shutdown: None,
+                cancel: None,
                 transport: Arc::default(),
                 telemetry_queries: Cell::new(0),
                 telemetry_query_failures: Cell::new(0),
@@ -6193,6 +6237,49 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn a_cancelled_job_stops_waiting_for_its_reply_and_retires_the_worker() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut session = WorkerSession {
+            stream: parent,
+            process: None,
+            owner: None,
+            loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            setup: (SnapId(0), 0),
+            failed: Cell::new(false),
+            counters: RefCell::new(Vec::new()),
+            telemetry_queries: Cell::new(0),
+            telemetry_query_failures: Cell::new(0),
+            exchanging: Cell::new(false),
+            retained_export: RefCell::new(Vec::new()),
+            copies: Arc::default(),
+            import_reuse: Default::default(),
+            shutdown: None,
+            cancel: None,
+            transport: Arc::default(),
+        };
+        session.set_cancel(Some(Arc::clone(&cancel)));
+        let stopper = {
+            let cancel = Arc::clone(&cancel);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                cancel.store(true, Ordering::Release);
+            })
+        };
+        let started = Instant::now();
+        let error = session.state_hash().unwrap_err().to_string();
+        assert!(error.contains("the search stopped this job"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(session.abandoned());
+        stopper.join().unwrap();
+        drop(session);
+        let mut rest = Vec::new();
+        (&child).read_to_end(&mut rest).unwrap();
+        assert!(!rest.is_empty());
+    }
+
+    #[test]
     fn actual_drop_preserves_grace_before_enabling_one_signal_and_confirming_exit() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let (parent, child) = UnixStream::pair().unwrap();
@@ -6213,7 +6300,6 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
             })),
             loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             setup: (SnapId(0), 0),
-            seed: 0,
             failed: Cell::new(false),
             counters: RefCell::new(Vec::new()),
             telemetry_queries: Cell::new(0),
@@ -6223,6 +6309,7 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
             copies: Arc::default(),
             import_reuse: Default::default(),
             shutdown: None,
+            cancel: None,
             transport: Arc::default(),
         };
         let (notice_tx, notice_rx) = std::sync::mpsc::channel();
@@ -6397,7 +6484,7 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
 
     #[test]
     fn accepted_worker_imports_report_references_backings_and_session_recurrence() {
-        for (segment_pages, unique) in [(8, 1), (4, 2), (2, 4)] {
+        for (segment_pages, unique) in [(4, 1), (2, 2), (1, 4)] {
             let index = LocalIndex::with_segment_bytes(1 << 20, segment_pages * 4096);
             let (mut source, source_server) = threaded(3);
             let (mut destination, destination_server) = threaded(50);
@@ -6629,7 +6716,7 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
 
     #[test]
     fn worker_import_selects_target_attachment_and_rejects_independent_digest_mismatch() {
-        use crate::cache::extent::{extent_len, read_extent, write_extent};
+        use crate::cache::extent::read_extent;
         let index = LocalIndex::new(1 << 20);
         let space = Namespace::exact(&[b"worker-exact"]);
         let (mut source, server) = threaded(3);
@@ -6677,9 +6764,9 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
         let forged =
             super::super::attachment::encode(envelope.raw, envelope.machine_commitment, &first)
                 .unwrap();
-        let len = extent_len(target.pages.len(), target.reverted.len(), forged.len()).unwrap();
-        let mut extent = index.extent(len).unwrap();
-        write_extent(extent.bytes_mut(), &target.pages, &target.reverted, &forged).unwrap();
+        let encoded = target.with_sidecar(&forged);
+        let mut extent = index.extent(encoded.len()).unwrap();
+        encoded.write(extent.bytes_mut()).unwrap();
         let bad = index
             .publish(
                 space,
@@ -6702,9 +6789,9 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
         );
         assert_eq!(destination.store_bytes(), before);
         let forged = super::super::attachment::encode(envelope.raw, [0xee; 32], &second).unwrap();
-        let len = extent_len(target.pages.len(), target.reverted.len(), forged.len()).unwrap();
-        let mut extent = index.extent(len).unwrap();
-        write_extent(extent.bytes_mut(), &target.pages, &target.reverted, &forged).unwrap();
+        let encoded = target.with_sidecar(&forged);
+        let mut extent = index.extent(encoded.len()).unwrap();
+        encoded.write(extent.bytes_mut()).unwrap();
         let digest = super::super::attachment::commitment([0xee; 32], &second);
         let wrong_machine = index
             .publish(space, &[5; 32], Some(&parent_lease), extent, digest, 1)

@@ -305,7 +305,15 @@ fn search_faults(
             vec!["session-worker".into()],
         )?)
     };
-    let report = package::search(&artifacts, &vocabulary, &options, &resources, worker, start)?;
+    let report = package::search(
+        &artifacts,
+        &vocabulary,
+        &options,
+        &resources,
+        worker,
+        start,
+        None,
+    )?;
     println!(
         "{} executions; {} confirmed findings; {} unmet reachability assertions",
         report.executions,

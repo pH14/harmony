@@ -10,6 +10,7 @@ pub mod sdk_telemetry;
 mod service_transcript;
 pub mod session_trace;
 pub mod snapshot;
+pub mod state_digest;
 pub mod vendor;
 pub mod virtual_time;
 pub mod vmm;

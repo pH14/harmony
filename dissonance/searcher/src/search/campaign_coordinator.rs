@@ -5,26 +5,29 @@ use std::{
     error::Error,
     io::Write,
     num::NonZeroU64,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CONSECUTIVE_SKIP_LIMIT, CampaignAdmissionDecision, CampaignConfig, CampaignCounters,
-    CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
-    CampaignOrigin, CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord,
-    CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-    CampaignTypes, CompletedBuffer, CompletedJob, CoordinatorCore, JobSpecRecord,
-    LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob, StreamWriter, Workload,
-    archive_entry_limit_is_valid, bootstrap_campaign, build_report, completed_job_records,
-    continuation_arrival, continuation_attempt, derive_selection_seed, execution_work_delta,
-    finish_record, initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
-    profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
-    record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
-    retained_archive_indexes, search_checkpoint_header, stop_reservations_after_objective,
-    stop_reservations_after_work_budget, stream_header, with_coordinator_session,
-    write_live_progress, write_search_checkpoint,
+    CONSECUTIVE_SKIP_LIMIT, CampaignAdmissionDecision, CampaignCancelRecord, CampaignConfig,
+    CampaignCounters, CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord,
+    CampaignJobResult, CampaignOrigin, CampaignOriginRecord, CampaignOutcome,
+    CampaignProgressRecord, CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader,
+    CampaignStreamRecord, CampaignTypes, CompletedBuffer, CompletedJob, CoordinatorCore,
+    JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob,
+    StreamWriter, Workload, archive_entry_limit_is_valid, bootstrap_campaign, build_report,
+    completed_job_records, continuation_arrival, continuation_attempt, derive_selection_seed,
+    execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
+    mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
+    progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
+    restore_search_checkpoint, retained_archive_indexes, search_checkpoint_header,
+    stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
+    with_coordinator_session, write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
@@ -35,6 +38,7 @@ use crate::search::draw_tables::{DrawTableHeader, DrawTables};
 use crate::search::duration::DurationPolicies;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::rand::RomuDuoJrRand;
+use crate::search::rollout::RolloutStop;
 use crate::search::telemetry::{
     CampaignTelemetry, HostTimes, IdleClock, IdleReason, Moment, WorkerTelemetry, nanos_since, now,
     thread_schedstat,
@@ -72,7 +76,9 @@ pub fn run_job<G: Workload>(
     config: &CampaignConfig<G>,
     target: &mut G::Target,
     job: &JobSpec<G>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<JobOutcome<G>, Box<dyn Error>> {
+    let stop = RolloutStop::new(config.stop_rollout_on_objective).with_cancel(cancel);
     let work_before = workload.execution_work(target);
     let result = workload.execute_job_certified(
         &config.run,
@@ -83,7 +89,7 @@ pub fn run_job<G: Workload>(
         job.parent_milestones,
         &job.suffix,
         config.retention,
-        config.stop_rollout_on_objective,
+        stop,
     )?;
     workload.verify_integrity()?;
     let result_sha256 = workload.certified_result_sha256(&result, target)?;
@@ -96,6 +102,8 @@ pub fn run_job<G: Workload>(
         result_sha256,
     })
 }
+
+pub(crate) type WorkerResult<G> = Result<(CampaignJobResult<G>, u64, String), String>;
 
 pub struct CampaignCoordinator<'a, G: Workload> {
     workload: &'a G,
@@ -129,6 +137,11 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     telemetry_started: Moment,
     wall_started: Option<Moment>,
     admissions: Option<Vec<CampaignAdmission>>,
+    cancel: Arc<AtomicBool>,
+    interrupt: Option<&'static AtomicBool>,
+    stopped: bool,
+    interrupted: bool,
+    jobs_cancelled: u64,
 }
 
 impl<'a, G: Workload> CampaignCoordinator<'a, G>
@@ -147,6 +160,7 @@ where
         workload.verify_integrity()?;
         let executable_identity = workload.executable_identity()?;
         let work_budget = options.work_budget;
+        let interrupt = options.interrupt;
         let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
         if work_budget == Some(0) {
             return Err("work budget must be nonzero".into());
@@ -332,6 +346,11 @@ where
             telemetry_started,
             wall_started: config.wall_budget.map(|_| telemetry_started),
             admissions: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            interrupt,
+            stopped: false,
+            interrupted: false,
+            jobs_cancelled: 0,
         };
         for job in in_flight {
             let parent_index = coordinator
@@ -339,8 +358,10 @@ where
                 .archive
                 .index_of_id(job.pending.parent_id)
                 .ok_or("search checkpoint in-flight job names a missing parent entry")?;
-            let (_, expected_replay, expected_certificates) =
-                coordinator.core.archive.job_origin(parent_index)?;
+            let (expected_replay, expected_certificates) = coordinator
+                .core
+                .archive
+                .pinned_job_replay(parent_index, job.pending.snapshot_id)?;
             if job.spec.replay != expected_replay
                 || job.spec.replay_certificates != expected_certificates
             {
@@ -383,11 +404,72 @@ where
         Ok(coordinator)
     }
 
+    #[must_use]
+    pub fn cancellation(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
+    #[must_use]
+    pub const fn stopped(&self) -> bool {
+        self.stopped
+    }
+
+    pub fn stop_if_due(&mut self) -> Result<bool, Box<dyn Error>> {
+        if self.stopped {
+            return Ok(true);
+        }
+        if !self.stop_due() {
+            return Ok(false);
+        }
+        let result = self.stop_in_flight(self.interrupt_requested());
+        self.handback_on_error(result)?;
+        Ok(true)
+    }
+
+    fn stop_in_flight(&mut self, interrupted: bool) -> Result<(), Box<dyn Error>> {
+        if interrupted {
+            eprintln!("search interrupted; dropping the jobs in flight and writing the report");
+        }
+        self.stopped = true;
+        self.interrupted = interrupted;
+        self.cancel.store(true, Ordering::Release);
+        self.schedule.clear();
+        self.queued.clear();
+        self.spec_records.clear();
+        let mut dropped = std::mem::take(&mut self.pending);
+        let held = self.completed.keys().copied().collect::<Vec<_>>();
+        for reservation in held {
+            if let Some(completed) = self.completed.remove(&reservation) {
+                dropped.insert(reservation, completed.pending);
+            }
+        }
+        for (reservation, job) in dropped {
+            self.core.finish_suffix_job(job.parent_id, job.suffix_limit);
+            self.core.archive.unpin_job_origin(job.snapshot_id);
+            self.core.archive.unpin_metadata(job.parent_id);
+            self.writer.write_line(
+                &CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::Cancel(
+                    CampaignCancelRecord {
+                        reservation: u64::try_from(reservation)?,
+                        parent_id: job.parent_id,
+                        mutation_seed: job.mutation_seed,
+                        splice: job.splice,
+                        selector: job.selector,
+                        suffix_limit: job.suffix_limit,
+                    },
+                ),
+            )?;
+            self.jobs_cancelled = self.jobs_cancelled.saturating_add(1);
+        }
+        self.idle_clock.update(self.running, IdleReason::NoJob);
+        Ok(())
+    }
+
     pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {
         let result = (|| {
             self.ensure_active()?;
             self.poll_persistence()?;
-            if self.pending.len() >= self.config.window {
+            if self.stopped || self.pending.len() >= self.config.window {
                 return Ok(false);
             }
             self.reserve()
@@ -396,7 +478,7 @@ where
     }
 
     pub fn plan(&mut self, limit: usize) -> Vec<JobSpec<G>> {
-        if self.failed {
+        if self.failed || self.stopped {
             return Vec::new();
         }
         let mut jobs = Vec::new();
@@ -445,7 +527,7 @@ where
     fn receive(
         &mut self,
         reservation: usize,
-        outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+        outcome: WorkerResult<G>,
     ) -> Result<(), Box<dyn Error>> {
         let result = (|| {
             self.ensure_active()?;
@@ -455,6 +537,12 @@ where
                 .running
                 .checked_sub(1)
                 .ok_or("campaign worker replied without queued work")?;
+            if self.stopped || self.stop_due() {
+                if !self.stopped {
+                    self.stop_in_flight(self.interrupt_requested())?;
+                }
+                return Ok(());
+            }
             let held = self.schedule.first().map(|(_, next)| *next) != Some(reservation);
             self.idle_clock.update(
                 self.running,
@@ -495,6 +583,13 @@ where
                 };
                 self.schedule.pop_first();
                 self.admit_completed(finish, reservation, completed)?;
+                if stop_reservations_after_objective(
+                    self.config.stop_campaign_on_objective,
+                    self.core.objective_witness.is_some(),
+                ) {
+                    self.stop_in_flight(false)?;
+                    break;
+                }
                 self.reserve()?;
                 self.write_due_checkpoint()?;
             }
@@ -504,6 +599,19 @@ where
             Ok(())
         })();
         self.handback_on_error(result)
+    }
+
+    fn interrupt_requested(&self) -> bool {
+        self.interrupt
+            .is_some_and(|interrupt| interrupt.load(Ordering::Acquire))
+    }
+
+    fn stop_due(&self) -> bool {
+        self.interrupt_requested()
+            || self
+                .wall_started
+                .zip(self.config.wall_budget)
+                .is_some_and(|(started, budget)| started.elapsed() >= budget)
     }
 
     fn ensure_active(&self) -> Result<(), Box<dyn Error>> {
@@ -650,7 +758,7 @@ where
                     &self.rand,
                     &self.counters,
                     &self.profile,
-                    self.reserved,
+                    self.reserved.saturating_sub(self.jobs_cancelled),
                     self.admitted,
                     self.planned_clock,
                     &self.schedule,
@@ -680,6 +788,8 @@ where
             idle_clock,
             coordinator_schedstat,
             telemetry_started,
+            interrupted,
+            jobs_cancelled,
             ..
         } = self;
         telemetry.search_ns = nanos_since(telemetry_started);
@@ -722,6 +832,8 @@ where
                 jobs: reserved,
                 skips: counters.duplicates_skipped,
                 executions_completed: core.sequence,
+                jobs_cancelled,
+                interrupted,
             }),
         )?;
         let stream_sha256 = writer.finish()?;
@@ -739,6 +851,8 @@ where
         )?;
         telemetry.persistence_ns = nanos_since(persistence_started);
         report.telemetry = telemetry;
+        report.jobs_cancelled = jobs_cancelled;
+        report.interrupted = interrupted;
         Ok((report, checkpoint))
     }
 
@@ -794,7 +908,7 @@ where
                 &self.rand,
                 &self.counters,
                 &self.profile,
-                self.reserved,
+                self.reserved.saturating_sub(self.jobs_cancelled),
                 self.admitted,
                 self.planned_clock,
                 &self.schedule,
@@ -858,6 +972,7 @@ where
             .duration_draw
             .and_then(|draw| duration_policies.context_checkpoint(draw.context));
         let objectives_before = core.objectives_reached;
+        let stopped_before = core.hang_stop.is_some();
         let admission_started = profile_now();
         core.archive
             .set_admission_wave(pending_job.continuation_wave);
@@ -1005,6 +1120,21 @@ where
         if objectives_before == 0 && core.objectives_reached > 0 {
             counters.note_first_objective(sequence);
         }
+        if core.hang_streak() > 0 {
+            match &core.hang_stop {
+                Some(stop) if !stopped_before => {
+                    eprintln!("{stop}; finishing the jobs in flight");
+                }
+                Some(_) => eprintln!(
+                    "campaign reservation {reservation} hung; recorded as hung job {}",
+                    core.hung_jobs()
+                ),
+                None => eprintln!(
+                    "campaign reservation {reservation} hung; recorded as hung job {} and continuing",
+                    core.hung_jobs()
+                ),
+            }
+        }
         if let Some(sink) = progress.as_deref_mut()
             && progress_checkpoint_due(sequence)
         {
@@ -1100,6 +1230,7 @@ where
                 config.stop_campaign_on_objective,
                 core.objective_witness.is_some(),
             )
+            || core.hang_stop.is_some()
         {
             return Ok(None);
         }
@@ -1223,6 +1354,7 @@ where
                 )
             });
             let mut duration_checkpoint_at_draw = None;
+            let lineage_duration = core.lineage_duration(workload, &config.run, parent_index);
             let duration_draw = if spliced.is_none() {
                 workload
                     .duration_request(
@@ -1238,6 +1370,7 @@ where
                             request.context,
                             &mut duration_rand,
                             request.max_duration,
+                            lineage_duration,
                         )
                     })
             } else {

@@ -218,12 +218,63 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual(build.call_count, 1)
             request = json.loads((Path(directory) / "arcade/runs" / run.id / "request.json").read_text())
             self.assertEqual(request["live"], "127.0.0.1:0")
-            self.assertEqual(request["core"], str(core))
+            self.assertEqual(request["core"], str(core.resolve()))
             assert run.process is not None
             self.assertIsNone(run.process.poll())
             launch.stop(run)
             self.assertEqual(run.state, "stopped")
             self.assertIsNotNone(run.process.poll())
+
+    def test_a_local_run_resolves_a_relative_rom_before_changing_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.local_config(directory)
+            target = Path(directory) / "arcade/target/release"
+            target.mkdir(parents=True)
+            fake = target / "nes-eval"
+            fake.write_text("#!/bin/sh\necho 'live view listening on 127.0.0.1:4321'\nexec sleep 60\n")
+            fake.chmod(0o755)
+            (Path(directory) / "arcade/quicknes_libretro.dylib").write_bytes(b"core")
+            launch = launcher.Launcher(config, Path("."))
+            run = launcher.Run.launched("20260101-000000-metroid-00000000", launcher.Settings(
+                "metroid", "mac", 2, 1024, 1, 1.0))
+            with (
+                mock.patch.object(launcher, "rom_path", return_value=Path(os.path.relpath(EXAMPLE))),
+                mock.patch.object(launcher, "build_logged"),
+                mock.patch.object(launcher.sys, "platform", "darwin"),
+            ):
+                launch.deploy(run)
+            request = json.loads((Path(directory) / "arcade/runs" / run.id / "request.json").read_text())
+            self.assertTrue(Path(request["rom"]).is_absolute())
+            launch.stop(run)
+
+    def test_a_stop_before_the_child_is_recorded_still_ends_the_child(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.local_config(directory)
+            target = Path(directory) / "arcade/target/release"
+            target.mkdir(parents=True)
+            fake = target / "nes-eval"
+            fake.write_text("#!/bin/sh\nexec sleep 60\n")
+            fake.chmod(0o755)
+            (Path(directory) / "arcade/quicknes_libretro.dylib").write_bytes(b"core")
+            launch = launcher.Launcher(config, Path("."))
+            run = launcher.Run.launched("20260101-000000-metroid-00000000", launcher.Settings(
+                "metroid", "mac", 2, 1024, 1, 1.0))
+            real = subprocess.Popen
+            children: list[subprocess.Popen[bytes]] = []
+
+            def spawn(*args, **kwargs):
+                run.cancelled = True
+                children.append(real(*args, **kwargs))
+                return children[-1]
+
+            with (
+                mock.patch.object(launcher, "rom_path", return_value=EXAMPLE),
+                mock.patch.object(launcher, "build_logged"),
+                mock.patch.object(launcher.sys, "platform", "darwin"),
+                mock.patch.object(launcher.subprocess, "Popen", spawn),
+            ):
+                launch.deploy(run)
+            self.assertIsNotNone(children[0].poll())
 
     def test_a_local_run_that_exits_before_listening_fails_with_its_log(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

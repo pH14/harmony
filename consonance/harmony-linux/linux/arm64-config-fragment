@@ -77,7 +77,8 @@ CONFIG_RD_GZIP=y
 ## Platform userspace and OCI namespaces
 # The platform PID 1 is a shell entrypoint around the static runtime. It needs
 # the ordinary proc/sys/dev view plus the namespace and cgroup facilities that
-# runc configures for each application.
+# runc configures for each application, and the time namespace that gives each
+# supervised node its own wall-clock offset.
 CONFIG_PROC_FS=y
 CONFIG_PROC_CHILDREN=y
 CONFIG_SYSFS=y
@@ -97,6 +98,7 @@ CONFIG_UTS_NS=y
 CONFIG_IPC_NS=y
 CONFIG_PID_NS=y
 CONFIG_NET_NS=y
+CONFIG_TIME_NS=y
 CONFIG_NET=y
 CONFIG_UNIX=y
 CONFIG_INET=y
@@ -133,3 +135,22 @@ CONFIG_STRICT_KERNEL_RWX=y
 # CONFIG_KSM is not set
 # CONFIG_SUSPEND is not set
 # CONFIG_HIBERNATION is not set
+
+## RAM-backed node disks for power-loss faults
+# A bundle `disk` line gives a node an ext4 filesystem on a dm-log-writes device
+# whose data, log, and replay base are brd RAM disks. The supervisor rebuilds the
+# data device from the write log, so a power loss keeps only flushed writes plus
+# a drawn prefix of later ones. brd allocates pages on write and frees them on
+# discard; nothing here reads host time or entropy.
+CONFIG_BLOCK=y
+CONFIG_BLK_DEV=y
+CONFIG_BLK_DEV_RAM=y
+CONFIG_BLK_DEV_RAM_COUNT=16
+CONFIG_BLK_DEV_RAM_SIZE=1048576
+CONFIG_MD=y
+CONFIG_BLK_DEV_DM=y
+CONFIG_DM_LOG_WRITES=y
+# dm-delay holds a node disk's requests for a DiskStall window. Its delays of
+# 50 ms or more run on guest jiffies timers.
+CONFIG_DM_DELAY=y
+CONFIG_EXT4_FS=y

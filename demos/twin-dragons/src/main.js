@@ -3531,11 +3531,11 @@ $("new-search").onclick = () => {
   });
   $("homebrew-games").replaceChildren(...buttons.filter((_, i) => !games[i].rom.upload));
   $("rom-games").replaceChildren(...buttons.filter((_, i) => games[i].rom.upload));
+  renderLevels(family);
   const shown = missingRom && [...GAMES.values()].find((choice) => choice === missingRom);
   if (shown) showRomPanel(shown, () => location.reload());
   else showLevelGrid();
   applyTarget();
-  renderLevels(family);
   if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
   $("level-picker").showModal();
 };

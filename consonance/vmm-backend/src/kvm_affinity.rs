@@ -147,6 +147,61 @@ pub(crate) fn ensure_host_affinity(expected: &HostAffinity) -> Result<()> {
 }
 
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+pub(crate) const FULL_CHECK_PERIOD: u32 = 1024;
+
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+#[derive(Debug, Default)]
+pub(crate) struct AffinityWatch {
+    changed: std::cell::Cell<bool>,
+    placements: std::cell::Cell<u32>,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+impl AffinityWatch {
+    pub(crate) fn full(
+        &self,
+        expected: &HostAffinity,
+        check: impl FnOnce(&HostAffinity) -> Result<()>,
+    ) -> Result<()> {
+        if self.changed.get() {
+            return Err(changed_affinity());
+        }
+        let result = check(expected);
+        if result.is_err() {
+            self.changed.set(true);
+        }
+        result
+    }
+
+    pub(crate) fn placement(
+        &self,
+        expected: &HostAffinity,
+        current_cpu: impl FnOnce() -> usize,
+        check: impl FnOnce(&HostAffinity) -> Result<()>,
+    ) -> Result<()> {
+        if self.changed.get() {
+            return Err(changed_affinity());
+        }
+        let HostAffinity::Reported { allowed, .. } = expected else {
+            return Ok(());
+        };
+        let placements = self.placements.get().wrapping_add(1) % FULL_CHECK_PERIOD;
+        self.placements.set(placements);
+        if placements != 0 && u16::try_from(current_cpu()).is_ok_and(|cpu| allowed.contains(&cpu)) {
+            return Ok(());
+        }
+        self.full(expected, check)
+    }
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+fn changed_affinity() -> BackendError {
+    BackendError::Unsupported {
+        what: "host CPU affinity changed after KVM backend creation",
+    }
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
 fn check_allowed_mask(
     allowed: &BTreeSet<u16>,
     count: usize,
@@ -155,9 +210,7 @@ fn check_allowed_mask(
     if count == allowed.len() && allowed.iter().copied().all(&mut contains) {
         Ok(())
     } else {
-        Err(BackendError::Unsupported {
-            what: "host CPU affinity changed after KVM backend creation",
-        })
+        Err(changed_affinity())
     }
 }
 
@@ -319,6 +372,66 @@ mod tests {
         }
         assert!(check_masks("0", &["0,2-3".to_owned()]).is_ok());
         assert!(check_masks("0-3", &["0,2-3".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn placement_checks_the_cpu_and_periodically_the_full_mask() {
+        let expected = HostAffinity::Reported {
+            allowed: cpu_list("8-9").unwrap(),
+            class: HostCoreClass::Efficiency,
+        };
+        let watch = AffinityWatch::default();
+        let mut full_checks = 0;
+        for _ in 0..2 * FULL_CHECK_PERIOD {
+            watch
+                .placement(
+                    &expected,
+                    || 9,
+                    |_| {
+                        full_checks += 1;
+                        Ok(())
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(full_checks, 2);
+        watch
+            .placement(
+                &expected,
+                || 3,
+                |_| {
+                    full_checks += 1;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(full_checks, 3);
+        assert!(
+            AffinityWatch::default()
+                .placement(&HostAffinity::Unreported, || 3, |_| unreachable!())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_failed_full_check_fails_every_later_check() {
+        let expected = HostAffinity::Reported {
+            allowed: cpu_list("8-9").unwrap(),
+            class: HostCoreClass::Efficiency,
+        };
+        let watch = AffinityWatch::default();
+        assert!(
+            watch
+                .placement(&expected, || 3, |_| Err(changed_affinity()))
+                .is_err()
+        );
+        assert!(watch.placement(&expected, || 8, |_| Ok(())).is_err());
+        assert!(watch.full(&expected, |_| Ok(())).is_err());
+        assert!(
+            watch
+                .placement(&HostAffinity::Unreported, || 8, |_| Ok(()))
+                .is_err()
+        );
     }
 
     #[test]

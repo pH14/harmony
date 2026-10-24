@@ -18,6 +18,8 @@ pub const PLACEHOLDER_ARCHITECTURAL_CONTROL_VNS: u64 = 1;
 
 pub const PLACEHOLDER_EXECUTION_TICK_VNS: u64 = 1;
 
+pub const PLACEHOLDER_COVERAGE_CALLBACK_VNS: u64 = 1;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeviceClass {
     InterruptController,
@@ -33,6 +35,7 @@ pub struct VirtualTimeTiming {
     pub trapped_time_read_vns: u64,
     pub architectural_control_vns: u64,
     pub execution_tick_vns: u64,
+    pub coverage_callback_vns: u64,
 }
 
 impl Default for VirtualTimeTiming {
@@ -44,6 +47,7 @@ impl Default for VirtualTimeTiming {
             trapped_time_read_vns: PLACEHOLDER_TRAPPED_TIME_READ_VNS,
             architectural_control_vns: PLACEHOLDER_ARCHITECTURAL_CONTROL_VNS,
             execution_tick_vns: PLACEHOLDER_EXECUTION_TICK_VNS,
+            coverage_callback_vns: PLACEHOLDER_COVERAGE_CALLBACK_VNS,
         }
     }
 }

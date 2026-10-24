@@ -74,10 +74,12 @@ fn strict_host_identity() -> io::Result<String> {
 #[cfg(feature = "in-process")]
 impl LoadedImageGuard {
     pub(crate) fn capture() -> io::Result<Self> {
-        Self::capture_with_telemetry(std::sync::Arc::new(GuardTelemetry::default()))
+        Ok(Self::capture_with_telemetry(std::sync::Arc::new(GuardTelemetry::default()))?.1)
     }
 
-    fn capture_with_telemetry(telemetry: std::sync::Arc<GuardTelemetry>) -> io::Result<Self> {
+    fn capture_with_telemetry(
+        telemetry: std::sync::Arc<GuardTelemetry>,
+    ) -> io::Result<(String, Self)> {
         let mut work = host_code_identity::GuardMeasurement::default();
         let started = guard_started();
         let captured = reject_loader_overrides()
@@ -90,10 +92,14 @@ impl LoadedImageGuard {
             false,
             guard_elapsed(started),
         );
-        Ok(Self {
-            admitted: AdmittedImage::Strict(captured?.1),
-            telemetry,
-        })
+        let (identity, admitted) = captured?;
+        Ok((
+            identity,
+            Self {
+                admitted: AdmittedImage::Strict(admitted),
+                telemetry,
+            },
+        ))
     }
 
     pub(crate) fn fork(&self) -> Self {
@@ -112,13 +118,34 @@ impl LoadedImageGuard {
     }
 
     pub(crate) fn check_at(&self, site: GuardSite) -> io::Result<()> {
+        self.check_measured_at(
+            site,
+            host_code_identity::StrictExecutableGuard::check_measured,
+        )
+    }
+
+    pub(crate) fn check_code_at(&self, site: GuardSite) -> io::Result<()> {
+        self.check_measured_at(
+            site,
+            host_code_identity::StrictExecutableGuard::check_code_measured,
+        )
+    }
+
+    fn check_measured_at(
+        &self,
+        site: GuardSite,
+        check: fn(
+            host_code_identity::StrictExecutableGuard,
+            &mut host_code_identity::GuardMeasurement,
+        ) -> io::Result<()>,
+    ) -> io::Result<()> {
         let started = guard_started();
         let mut work = host_code_identity::GuardMeasurement::default();
         #[cfg(test)]
         let fixture = matches!(self.admitted, AdmittedImage::TestFixture);
         #[cfg(not(test))]
         let fixture = false;
-        let result = self.check_inner(&mut work);
+        let result = self.check_inner(&mut work, check);
         self.telemetry.record(
             site,
             GuardDispatch::Check,
@@ -130,7 +157,14 @@ impl LoadedImageGuard {
         result
     }
 
-    fn check_inner(&self, work: &mut host_code_identity::GuardMeasurement) -> io::Result<()> {
+    fn check_inner(
+        &self,
+        work: &mut host_code_identity::GuardMeasurement,
+        check: fn(
+            host_code_identity::StrictExecutableGuard,
+            &mut host_code_identity::GuardMeasurement,
+        ) -> io::Result<()>,
+    ) -> io::Result<()> {
         #[cfg(test)]
         CHECK_TRACE.with(|trace| {
             let (entries, strict, fail_at) = trace.get();
@@ -155,7 +189,7 @@ impl LoadedImageGuard {
             let (entries, strict, fail_at) = trace.get();
             trace.set((entries, strict + 1, fail_at));
         });
-        admitted.check_measured(work)
+        check(admitted, work)
     }
 
     pub(crate) fn current_identity(&self) -> io::Result<String> {
@@ -195,8 +229,7 @@ impl LoadedImageGuard {
     fn identity_with_telemetry(
         telemetry: std::sync::Arc<GuardTelemetry>,
     ) -> io::Result<(String, Self)> {
-        let guard = Self::capture_with_telemetry(telemetry)?;
-        let identity = guard.current_identity()?;
+        let (identity, guard) = Self::capture_with_telemetry(telemetry)?;
         guard.check_at(GuardSite::Admission)?;
         Ok((identity, guard))
     }
@@ -710,10 +743,7 @@ mod strict_host_tests {
 ))]
 mod sealed_guard_tests {
     use super::*;
-    use crate::cache::{
-        CacheIndex, LocalIndex, Namespace,
-        extent::{extent_len, write_extent},
-    };
+    use crate::cache::{CacheIndex, LocalIndex, Namespace, extent::encode};
 
     #[test]
     fn unexpected_executable_mapping_revokes_a_published_lease() {
@@ -762,21 +792,17 @@ mod sealed_guard_tests {
             file_len
         );
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
-        let mut expected_live = 0;
-        let mut expected_sealed = 0;
+        let mut code = 0;
         for line in maps.lines() {
             let fields = line.split_whitespace().collect::<Vec<_>>();
             if !fields[1].contains('x') || fields.last() == Some(&"[vsyscall]") {
                 continue;
             }
             let (start, end) = fields[0].split_once('-').unwrap();
-            let len =
-                u64::from_str_radix(end, 16).unwrap() - u64::from_str_radix(start, 16).unwrap();
-            expected_live += len;
-            if fields.last() != Some(&"[vdso]") {
-                expected_sealed += len;
-            }
+            code += u64::from_str_radix(end, 16).unwrap() - u64::from_str_radix(start, 16).unwrap();
         }
+        // SAFETY: sysconf reads the process page-size setting and accesses no user pointer.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
         assert_eq!(metrics["guard.session.session_boundary.strict_attempts"], 1);
         assert_eq!(
             metrics["guard.session.session_boundary.strict_check_attempts"],
@@ -784,19 +810,23 @@ mod sealed_guard_tests {
         );
         assert_eq!(
             metrics["guard.session.session_boundary.live_exec_read_bytes"],
-            expected_live
+            0
         );
         assert_eq!(
             metrics["guard.session.session_boundary.live_exec_hashed_bytes"],
-            expected_live
+            0
+        );
+        assert_eq!(
+            metrics["guard.session.session_boundary.code_page_entries"],
+            code / page
         );
         assert_eq!(
             metrics["guard.session.session_boundary.sealed_exec_read_bytes"],
-            expected_sealed
+            0
         );
         assert_eq!(
             metrics["guard.session.session_boundary.comparison_input_bytes"],
-            expected_sealed
+            0
         );
         assert_eq!(
             metrics["guard.session.session_boundary.sealed_file_hashed_bytes"],
@@ -804,8 +834,9 @@ mod sealed_guard_tests {
         );
         let index = LocalIndex::new(1 << 20);
         let namespace = Namespace::new(&[b"live-code"]);
-        let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
-        write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+        let encoded = encode(&[], &[], &[]).unwrap();
+        let mut extent = index.extent(encoded.len()).unwrap();
+        encoded.write(extent.bytes_mut()).unwrap();
         let lease = index
             .publish(namespace, b"snapshot", None, extent, [9; 32], 1)
             .unwrap();
@@ -1027,14 +1058,14 @@ mod guard_metric_tests {
         let guard = LoadedImageGuard::fixture();
         let shared = guard.clone();
         let separate = guard.fork();
-        shared.check_at(GuardSite::SdkRequest).unwrap();
+        shared.check_at(GuardSite::ControlBefore).unwrap();
         let before = guard
             .counters("test")
             .into_iter()
             .collect::<BTreeMap<_, _>>();
-        assert_eq!(before["test.sdk_request.dispatches"], 1);
-        assert_eq!(before["test.sdk_request.strict_attempts"], 0);
-        assert_eq!(before["test.sdk_request.fixture_dispatches"], 1);
+        assert_eq!(before["test.control_before.dispatches"], 1);
+        assert_eq!(before["test.control_before.strict_attempts"], 0);
+        assert_eq!(before["test.control_before.fixture_dispatches"], 1);
         assert!(separate.counters("test").is_empty());
         let (result, entries, strict) =
             trace_checks(Some(1), || shared.check_at(GuardSite::SdkResponse));

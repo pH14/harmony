@@ -23,10 +23,7 @@ fetch_one() {
         return
     fi
     echo "fetching $url"
-    local sources=("$url")
-    if [ -n "${3:-}" ]; then
-        sources+=("$3")
-    fi
+    local sources=("$url" "${@:3}")
     local downloaded=false
     local source_url
     for source_url in "${sources[@]}"; do
@@ -71,10 +68,13 @@ if [ "${1:-}" = uml-arm64 ]; then
     exit 0
 fi
 
-fetch_one "$KERNEL_URL" "$KERNEL_SHA256"
+fetch_one "$KERNEL_URL" "$KERNEL_SHA256" \
+    "https://mirrors.edge.kernel.org/pub/linux/kernel/v6.x/$(basename "$KERNEL_URL")"
 fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256" \
+    "https://sources.buildroot.net/busybox/$(basename "$BUSYBOX_URL")" \
     "https://ftp.gwdg.de/pub/linux/gentoo/distfiles/e3/busybox-1.38.0.tar.bz2"
-fetch_one "$MUSL_URL" "$MUSL_SHA256"
+fetch_one "$MUSL_URL" "$MUSL_SHA256" \
+    "https://sources.buildroot.net/musl/$(basename "$MUSL_URL")"
 fetch_one "$GO_X86_BOOTSTRAP_URL" "$GO_X86_BOOTSTRAP_SHA256"
 fetch_one "$RUNC_SOURCE_URL" "$RUNC_SOURCE_SHA256"
 fetch_one "$GO_BOOTSTRAP_URL" "$GO_BOOTSTRAP_SHA256"

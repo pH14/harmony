@@ -496,11 +496,13 @@ class Launcher:
     def deploy_local(self, run: Run, machine: Machine, settings: Settings) -> None:
         try:
             root = Path(machine.dir).expanduser()
+            root = Path(machine.dir).expanduser().resolve()
             directory = root / "runs" / run.id
             directory.mkdir(parents=True)
             rom = rom_path(GAMES[settings.game], self.site, self.config)
             if rom is None:
                 raise RuntimeError(f"no ROM for {settings.game}")
+            rom = rom.resolve()
             core = root / ("quicknes_libretro.dylib" if sys.platform == "darwin" else "quicknes_libretro.so")
             run.message = "Building the QuickNES core and nes-eval"
             if not core.is_file():
@@ -545,6 +547,7 @@ class Launcher:
             if stopped:
                 self.close_process(run)
         except Cancelled:
+            self.close_process(run)
             return
         except (RuntimeError, OSError, subprocess.CalledProcessError, ValueError) as error:
             self.close_process(run)
