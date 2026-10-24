@@ -13,8 +13,8 @@ use machine::{
     quicknes::{QuickNesMachine, STATE_HEADER_LEN},
 };
 use nes_workload::{
-    chord::ChordVocabulary, famidash, metroid, mm2, punchout, search::rand::RomuDuoJrRand, smb,
-    twin_dragons, zelda,
+    castlevania, chord::ChordVocabulary, famidash, metroid, mm2, punchout,
+    search::rand::RomuDuoJrRand, smb, twin_dragons, zelda,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -56,6 +56,11 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             setup: metroid::target::power_on_walk(),
             chords: metroid::archive::CHORDS,
             cartridge_ram: true,
+        },
+        "castlevania" => Game {
+            setup: castlevania::target::setup_tape(),
+            chords: castlevania::archive::CHORDS,
+            cartridge_ram: false,
         },
         "punchout" => Game {
             setup: punchout::target::setup_tape(),

@@ -2,7 +2,7 @@
 
 use std::{env, error::Error, fs, path::PathBuf};
 
-use machine::nes::ButtonChord;
+use machine::nes::{ButtonChord, WRAM_SIZE};
 use machine::{Machine, StopConditions, nes, quicknes::QuickNesMachine};
 use sha2::{Digest, Sha256};
 
@@ -11,7 +11,7 @@ const WAIT_LIMIT: u32 = 20_000;
 struct Probe {
     machine: QuickNesMachine,
     frame: u32,
-    prior: [u8; 2048],
+    prior: [u8; WRAM_SIZE],
     shots: Option<PathBuf>,
     shot_every: u32,
     diff: bool,
@@ -78,6 +78,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .split(',')
         .map(|a| usize::from_str_radix(a.trim_start_matches("0x"), 16))
         .collect::<Result<Vec<_>, _>>()?;
+    if addrs.iter().any(|address| *address >= WRAM_SIZE) {
+        return Err("a printed address is outside the 2 KiB of work RAM".into());
+    }
     let rom = fs::read(PathBuf::from(
         env::var_os("HARMONY_CASTLEVANIA_ROM").ok_or("HARMONY_CASTLEVANIA_ROM")?,
     ))?;
@@ -124,6 +127,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let (condition, b) = until.split_once('/').ok_or("bad wait")?;
             let (address, value) = condition.split_once('=').ok_or("bad wait")?;
             let address = usize::from_str_radix(address, 16)?;
+            if address >= WRAM_SIZE {
+                return Err("a wait address is outside the 2 KiB of work RAM".into());
+            }
             let value = u8::from_str_radix(value, 16)?;
             let buttons = u8::from_str_radix(b, 16)?;
             let mut waited = 0;
