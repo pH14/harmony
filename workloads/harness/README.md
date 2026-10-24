@@ -23,6 +23,8 @@ generic operations onto the target's client API.
 | `targets/etcd` | etcd image and adapter, three members or one |
 | `targets/redisraft` | Redis-Raft image and adapter |
 | `targets/consul` | Consul key-value image and adapter |
+| `targets/tarantool` | Tarantool image and adapter |
+| `targets/summitdb` | SummitDB image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 
 ## Writing a target
@@ -619,6 +621,93 @@ Consul records with the entry, which are the same on every server.
 The Dockerfile knows the source SHA-256 of `v2.1.0` (default); pass
 `CONSUL_SOURCE_SHA256` for other versions.
 
+## Tarantool
+
+`targets/tarantool` drives the `register` family against a three-instance
+Tarantool replica set (`n1` to `n3` at 10.77.0.1-3, port 3301) in
+`harness-net` namespaces, through
+[go-tarantool](https://github.com/tarantool/go-tarantool) v3. `config.yaml` is
+Tarantool's declarative configuration: Raft failover
+(`replication.failover: election`), the MVCC transaction manager, and WAL,
+snapshot and vinyl files under `/tmp/tarantool/<node>` on a 256 MiB node disk.
+Logs are `/tmp/tarantool/<node>.log`. The bundle declares both and the four
+network hooks. Three settings differ from the defaults: `wal.mode: fsync`,
+since the default `write` mode acknowledges a transaction before it reaches
+the disk; `election_timeout: 1` (default 5 s), for elections about as fast as
+in the other targets; and `memtx.memory` 64 MiB, so three instances fit in the
+guest. `harness.lua` creates the synchronous space `kv` on whichever instance
+is leader and defines the functions the adapter calls.
+
+`write` is a `replace` in `kv` and `cas` is a transaction that reads the key
+and replaces it only when it holds the old value. Each operation goes to one
+instance drawn from the SDK stream. A follower answers a write with
+`ER_READONLY` before it has any effect, so the adapter asks that instance for
+`box.info.election.leader_name` and sends the write there once. `ER_READONLY`,
+`ER_TRANSACTION_CONFLICT`, `ER_NO_SUCH_PROC` (an instance that has not loaded
+`harness.lua` yet), a `cas` that finds another value and a failed connect are
+definite failures; other write errors are indeterminate. `read` is
+a `get` in a transaction begun with `txn_isolation = 'linearizable'`. The
+[MVCC transaction mode](https://www.tarantool.io/en/doc/latest/platform/atomic/txn_mode_mvcc/)
+page defines a linearizable read as one that reflects every write whose
+response arrived earlier, and states that `box.begin` with this level waits
+until the instance has heard from enough peers to be sure of that. Read errors
+are definite. The client registers go-tarantool's UUID extension, because an
+`ER_READONLY` error carries the leader's UUID.
+
+A read pinned to node `nI` writes a fresh key `fence-nI-<token>` through the
+leader, then reads the fence and the key on `nI` at the `read-confirmed` level
+until the fence appears. Each read uses its own key, because a check runs a
+pinned read and a `replicas` read on the same node at once. That level shows only transactions the
+quorum confirmed, from `nI`'s own copy, and an instance applies confirmed
+transactions in log order. A `replicas` read on `nI` reads every key the same
+way. Tuples carry no version, so copies hold values alone. `ready` passes once
+a write succeeds through any instance.
+
+The Dockerfile clones tag `3.8.1` (default) with its submodules and checks the
+commit. It builds with clang 19 from Bookworm backports and `trace-pc-guard`
+coverage, and links the C forwarding shim. Tarantool links Bookworm's
+`libssl3`; `tarantool-x86_64.txt` reviews the entropy instructions in that
+`libcrypto.so.3`, and the image drops OpenSSL's legacy provider, which
+Tarantool never loads. A new `libssl3` package changes the digest, and the
+reviews must be redone.
+
+## SummitDB
+
+`targets/summitdb` drives the `register` family through SummitDB's Redis
+protocol with a small RESP client in the adapter, so no client library retries
+a command. Three servers `n1` to `n3` run at 10.77.0.1-3 (port 7481) in
+`harness-net` namespaces, data under `/tmp/summitdb/<node>` on a 256 MiB node
+disk and logs in `/tmp/summitdb/<node>.log`; the bundle declares both and the
+four network hooks. `n1` starts alone and elects itself. `n2` and `n3` start
+with `-join 10.77.0.1:7481`. A server exits when its join request fails, so
+`node.sh` first runs `summitdb-harness wait-leader` until `n1` names a leader.
+A server that already has `raft.db` knows its peers and skips the wait.
+Durability and consistency stay at SummitDB's default, `high`.
+
+`write` is `SET`, `read` is `GET` and `cas` is an `EVAL` script that compares
+and sets inside one Raft command. Each operation goes to one server drawn from
+the SDK stream. A follower answers `TRY <leader>`, and the adapter follows that
+redirect once. The
+[Read Consistency](https://github.com/tidwall/summitdb#read-consistency)
+section of SummitDB's README states that with `--consistency high` only the
+leader accepts reads, and the Raft log index is incremented "to guarantee no
+stale data". In the source (`finn.raftLevelGuard`) the leader applies an empty
+command through Raft and answers the read from its own state after that
+command is applied.
+
+A write or `cas` is a definite failure when the dial fails or the reply is
+`TRY`, `ERR leader not known`, `ERR raft not ready` or `ERR unknown command`.
+Every other write error is indeterminate. A `cas` answered `differs` is a
+definite failure. Read errors are definite. Reads go only through the leader,
+so the adapter pins no reads and the check skips the replica comparison.
+`ready` passes once every server names the same leader and that leader applies
+a `SET`.
+
+The Dockerfile clones a fixed commit. SummitDB has no `go.mod` and vendors its
+dependencies, so it builds in GOPATH mode. Every package outside the standard
+library sits under `github.com/tidwall/summitdb`, the vendored Raft, FastLog
+store and `buntdb` packages among them, and each one is instrumented.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
@@ -686,6 +775,13 @@ container. Opt-in options:
   the put.
 - A Consul pinned read trusts a server's `stale` answer to come from a state
   store that applies entries in log order.
+- A Tarantool pinned read trusts `read-confirmed` to show only confirmed
+  transactions from the instance's own copy.
+- A Tarantool write or `cas` that fails with `ER_READONLY`,
+  `ER_TRANSACTION_CONFLICT` or `ER_NO_SUCH_PROC` is trusted never to reach the
+  WAL.
+- A SummitDB write or `cas` that fails with `TRY`, `ERR leader not known` or
+  `ERR raft not ready` is trusted never to reach the Raft log.
 - A Redis-Raft write or `cas` that fails with `MOVED`, `NOLEADER`,
   `NOCLUSTER`, `LOADING` or `ERR not leader` is trusted never to reach the
   Raft log.
