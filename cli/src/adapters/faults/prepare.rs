@@ -11,9 +11,10 @@ pub fn sdk(offline: bool) -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("HARMONY_SDK_DIR") {
         return Ok(PathBuf::from(path).canonicalize()?);
     }
-    let local = Path::new("workloads/languages");
-    if local.is_dir() {
-        return Ok(std::env::current_dir()?);
+    if let Some(checkout) = crate::runtime::checkout()
+        && checkout.join("workloads/languages").is_dir()
+    {
+        return Ok(checkout);
     }
     Ok(crate::runtime::acquire("sdk", std::env::consts::ARCH, offline)?.join("sdk"))
 }

@@ -119,21 +119,55 @@ pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
     let isa = std::env::consts::ARCH;
     let root = data_dir()?.join("runtime").join(RELEASE);
     let guest = root.join("guest").join(isa);
-    let local = PathBuf::from("consonance/harmony-linux/build").join(isa);
+    let source = checkout();
+    let local = source
+        .as_ref()
+        .map(|source| source.join("consonance/harmony-linux/build").join(isa));
     let installed = crate::host_boundary::installed_binary_hint()
         .as_deref()
         .and_then(Path::parent)
         .and_then(Path::parent)
         .map(|p| p.join("share/harmony/guest").join(isa));
-    let directories = [Some(local), installed, Some(guest.clone())]
+    let directories = [local.clone(), installed, Some(guest.clone())]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
     let kernel_name = if isa == "aarch64" { "Image" } else { "bzImage" };
     select_existing_runtime(c, &directories, kernel_name)?;
-    if c.base_initramfs.is_none() || (c.backend != Backend::Uml && c.kernel.is_none()) {
-        let directory = acquire("guest", isa, offline)?;
-        select_acquired_runtime(c, &directory, isa, kernel_name)?;
+    let missing = |c: &Consonance| {
+        c.base_initramfs.is_none() || (c.backend != Backend::Uml && c.kernel.is_none())
+    };
+    if missing(c) {
+        match (&source, local) {
+            (Some(source), Some(local)) if cfg!(target_os = "linux") => {
+                if offline {
+                    return Err(format!(
+                        "the guest runtime in {} is missing or older than this checkout; run harmony check online to build it",
+                        local.display()
+                    )
+                    .into());
+                }
+                let lock = build_lock(&local)?;
+                select_existing_runtime(c, std::slice::from_ref(&local), kernel_name)?;
+                if missing(c) {
+                    build_runtime(source)?;
+                    select_existing_runtime(c, std::slice::from_ref(&local), kernel_name)?;
+                }
+                drop(lock);
+                if missing(c) {
+                    return Err(format!(
+                        "the guest runtime built in {} does not match this harmony binary; rebuild harmony from {}",
+                        local.display(),
+                        source.display()
+                    )
+                    .into());
+                }
+            }
+            _ => {
+                let directory = acquire("guest", isa, offline)?;
+                select_acquired_runtime(c, &directory, isa, kernel_name)?;
+            }
+        }
     }
     if c.backend == Backend::Uml {
         if c.uml_profile.is_none() {
@@ -148,6 +182,76 @@ pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
     {
         *path = fs::canonicalize(&*path)
             .map_err(|e| format!("runtime artifact {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "frontend")]
+pub fn checkout() -> Option<PathBuf> {
+    let marker = Path::new("consonance/harmony-linux/scripts/build-platform-runtime.sh");
+    let built = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf);
+    let executable = std::env::current_exe()
+        .ok()
+        .and_then(|path| fs::canonicalize(path).ok());
+    let current = std::env::current_dir().ok();
+    [built, executable, current]
+        .into_iter()
+        .flatten()
+        .find_map(|start| {
+            start
+                .ancestors()
+                .find(|directory| directory.join(marker).is_file())
+                .map(Path::to_path_buf)
+        })
+}
+
+#[cfg(feature = "frontend")]
+fn build_lock(local: &Path) -> Result<fs::File> {
+    let directory = local
+        .parent()
+        .ok_or("runtime build directory has no parent")?;
+    fs::create_dir_all(directory)?;
+    let lock = fs::File::create(directory.join(".harmony-build.lock"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+#[cfg(feature = "frontend")]
+fn build_root(source: &Path) -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("GUEST_BUILD_ROOT") {
+        return Ok(path.into());
+    }
+    let cache = cache_dir().ok_or("set HARMONY_CACHE_DIR when HOME is unavailable")?;
+    let key = digest(source.as_os_str().as_encoded_bytes());
+    Ok(cache.join("guest-build").join(&key[..16]))
+}
+
+#[cfg(feature = "frontend")]
+fn build_runtime(source: &Path) -> Result<()> {
+    let guest = source.join("consonance/harmony-linux");
+    let root = build_root(source)?;
+    fs::create_dir_all(&root)?;
+    eprintln!(
+        "building the guest runtime from {} in {}; the first build takes several minutes",
+        guest.display(),
+        root.display()
+    );
+    for script in ["scripts/fetch.sh", "scripts/build-platform-runtime.sh"] {
+        let status = Command::new("bash")
+            .arg(guest.join(script))
+            .env("GUEST_BUILD_ROOT", &root)
+            .stdout(std::process::Stdio::from(std::io::stderr()))
+            .status()
+            .map_err(|error| format!("run {script}: {error}"))?;
+        if !status.success() {
+            return Err(format!(
+                "{} failed; see its output above and consonance/harmony-linux/README.md for the build requirements",
+                guest.join(script).display()
+            )
+            .into());
+        }
     }
     Ok(())
 }
