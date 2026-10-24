@@ -318,6 +318,22 @@ pub struct FaultBugRecord {
     pub observations: FaultObservations,
 }
 
+pub const MAX_RECORDED_HANGS: usize = 64;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultHangRecord {
+    pub execution: u64,
+    pub input: FaultInput,
+}
+
+pub const MAX_RECORDED_FAILURES: usize = 64;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultFailureRecord {
+    pub execution: u64,
+    pub input: FaultInput,
+}
+
 #[must_use]
 pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
     (
@@ -344,6 +360,10 @@ pub struct FaultArchiveReport {
     pub watchdog_cutoffs: u64,
     pub bugs: Vec<FaultBugRecord>,
     #[serde(default)]
+    pub hangs: Vec<FaultHangRecord>,
+    #[serde(default)]
+    pub failures: Vec<FaultFailureRecord>,
+    #[serde(default)]
     pub selector: SelectorAccounting,
     #[serde(default)]
     pub assertions: Assertions,
@@ -353,12 +373,20 @@ pub struct FaultArchiveReport {
     pub park_reads: BTreeMap<u64, u64>,
     #[serde(default)]
     pub park_thresholds: BTreeMap<u32, ParkThresholds>,
+    #[serde(default)]
+    pub undecided_checks: UndecidedChecks,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ParkThresholds {
     pub armed: u64,
     pub fired: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UndecidedChecks {
+    pub executions: u64,
+    pub keys: u64,
 }
 
 #[must_use]

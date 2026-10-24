@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -606,6 +606,22 @@ thread_local! {
     static COORDINATOR_SESSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static LIVE: RefCell<Option<Live>> = const { RefCell::new(None) };
     static RETIRED: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
+    static JOB_CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+pub(crate) struct JobCancel;
+
+impl JobCancel {
+    pub(crate) fn install(cancel: Option<Arc<AtomicBool>>) -> Self {
+        JOB_CANCEL.with(|slot| *slot.borrow_mut() = cancel);
+        Self
+    }
+}
+
+impl Drop for JobCancel {
+    fn drop(&mut self) {
+        JOB_CANCEL.with(|slot| *slot.borrow_mut() = None);
+    }
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -1360,6 +1376,8 @@ fn with_live<T>(
             crate::job_observation::new_generation();
         }
         let live = slot.as_mut().ok_or("the session was not initialized")?;
+        live.session
+            .set_cancel(JOB_CANCEL.with(|cancel| cancel.borrow().clone()));
         let result = operation(live);
         if result.is_err() {
             live.cursor.invalidate();
@@ -4695,7 +4713,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_parent_replay_watchdog_after_success_cannot_reuse_prior_capture() {
+    fn campaign_parent_replay_watchdog_after_success_is_a_hung_job() {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let mut target = unbooted_target();
         let mut live = scripted_capture_live(Vec::new(), false);
@@ -4717,7 +4735,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let error = crate::campaign::execute_job(
+        let result = crate::campaign::execute_job(
             &mut target,
             &origin,
             &[action, action],
@@ -4726,9 +4744,10 @@ mod tests {
             &[],
             searcher::search::rollout::RolloutStop::new(false),
         )
-        .unwrap_err();
-        assert!(error.to_string().contains("campaign incomplete"), "{error}");
-        assert!(error.to_string().contains("parent replay"), "{error}");
+        .unwrap();
+        assert_eq!(result.hang, Some(Vec::new()));
+        assert!(result.actions.is_empty());
+        assert!(result.preparation_failure.is_none());
         assert_eq!(target.history.len(), 1);
         assert_eq!(target.watchdog_cutoffs(), 1);
         assert!(target.failed());
@@ -5300,7 +5319,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_job_reconstruction_cutoff_is_incomplete() {
+    fn campaign_job_reconstruction_cutoff_is_a_hung_job() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
             history: crate::history::FaultHistory::fixture(
@@ -5324,15 +5343,9 @@ mod tests {
             &[],
             searcher::search::rollout::RolloutStop::new(false),
         )
-        .unwrap_err();
-        assert!(
-            result.to_string().contains("campaign incomplete"),
-            "{result}"
-        );
-        assert!(
-            result.to_string().contains("parent reconstruction"),
-            "{result}"
-        );
+        .unwrap();
+        assert_eq!(result.hang, Some(Vec::new()));
+        assert!(result.actions.is_empty());
         assert_eq!(target.watchdog_cutoffs(), 1);
         assert!(!target.found_bug());
         assert!(target.snapshot().unwrap().is_none());
@@ -5340,7 +5353,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_job_replayed_action_cutoff_is_incomplete() {
+    fn campaign_job_replayed_action_cutoff_is_a_hung_job() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
             history: crate::history::FaultHistory::fixture(
@@ -5393,12 +5406,9 @@ mod tests {
             &[],
             searcher::search::rollout::RolloutStop::new(false),
         )
-        .unwrap_err();
-        assert!(
-            result.to_string().contains("campaign incomplete"),
-            "{result}"
-        );
-        assert!(result.to_string().contains("parent replay"), "{result}");
+        .unwrap();
+        assert_eq!(result.hang, Some(Vec::new()));
+        assert!(result.actions.is_empty());
         assert_eq!(target.watchdog_cutoffs(), 1);
         assert!(!target.found_bug());
         assert!(target.snapshot().unwrap().is_none());
@@ -5466,7 +5476,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_suffix_cutoff_discards_the_entire_unadmitted_job() {
+    fn campaign_suffix_cutoff_records_the_attempted_actions_as_a_hung_job() {
         let first = FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into();
         let second = FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into();
         let mut target = unbooted_target();
@@ -5510,14 +5520,72 @@ mod tests {
             &[first, second],
             searcher::search::rollout::RolloutStop::new(false),
         );
-        let error = result.expect_err("no partial job may be certified or admitted");
-        assert!(error.to_string().contains("campaign incomplete"), "{error}");
-        assert!(error.to_string().contains("suffix execution"), "{error}");
+        let result = result.expect("a suffix cutoff is a hung job");
+        assert_eq!(result.hang, Some(vec![first, second]));
+        assert!(result.actions.is_empty());
+        assert!(result.preparation_failure.is_none());
         assert_eq!(target.actions(), &[first]);
         assert_eq!(target.watchdog_cutoffs(), 1);
         assert!(target.snapshot().unwrap().is_none());
         assert!(!target.found_bug());
+        let game = crate::campaign::fixture_workload(
+            b"kernel",
+            b"initramfs",
+            &FaultConfig {
+                knobs: Vec::new(),
+                ram_mib: DEFAULT_RAM_MIB,
+                backend: GuestBackend::Vm,
+                root: None,
+                boot_cache: None,
+            },
+        );
+        use searcher::search::campaign::Reporting;
+        let digest = game
+            .certified_result_sha256(&result, &target)
+            .expect("a hung job result certifies against its failed target");
+        let completed = searcher::search::campaign::CampaignJobResult {
+            hang: None,
+            ..result.clone()
+        };
+        assert!(
+            game.certified_result_sha256(&completed, &target)
+                .unwrap_err()
+                .to_string()
+                .contains("campaign incomplete")
+        );
+        assert_eq!(
+            digest,
+            game.certified_result_sha256(&result, &target).unwrap()
+        );
         LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn a_hung_job_result_cannot_name_a_target_that_did_not_hang() {
+        use searcher::search::campaign::{CampaignJobResult, Reporting};
+        let game = crate::campaign::fixture_workload(
+            b"kernel",
+            b"initramfs",
+            &FaultConfig {
+                knobs: Vec::new(),
+                ram_mib: DEFAULT_RAM_MIB,
+                backend: GuestBackend::Vm,
+                root: None,
+                boot_cache: None,
+            },
+        );
+        let target = unbooted_target();
+        let result = CampaignJobResult {
+            preparation_failure: None,
+            hang: Some(Vec::new()),
+            actions: Vec::new(),
+        };
+        assert!(
+            game.certified_result_sha256(&result, &target)
+                .unwrap_err()
+                .to_string()
+                .contains("did not hang")
+        );
     }
 
     #[test]

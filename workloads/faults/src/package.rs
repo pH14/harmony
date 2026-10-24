@@ -210,12 +210,29 @@ pub struct Report {
     pub bugs: Vec<BugSummary>,
     #[serde(default)]
     pub never_satisfied: Vec<String>,
+    #[serde(default)]
+    pub undecided_checks: crate::archive::UndecidedChecks,
     pub replays: Vec<ReplaySummary>,
     pub execution_ticks: u64,
     pub wall_seconds: u64,
     #[serde(default)]
     pub watchdog_cutoffs: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hang_reports: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_reports: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hang_stop: Option<String>,
     pub execution_failures: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub jobs_cancelled: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl Report {
@@ -241,11 +258,17 @@ impl Report {
             first_bug_execution: None,
             bugs: Vec::new(),
             never_satisfied: Vec::new(),
+            undecided_checks: crate::archive::UndecidedChecks::default(),
             replays: Vec::new(),
             execution_ticks: 0,
             wall_seconds: 0,
             watchdog_cutoffs: 0,
+            hang_reports: Vec::new(),
+            failure_reports: Vec::new(),
+            hang_stop: None,
             execution_failures: 0,
+            jobs_cancelled: 0,
+            interrupted: false,
         }
     }
 
@@ -360,7 +383,10 @@ mod live {
         bundle::FaultVocabulary,
         campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_with_plan},
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
-        report::{BugReport, write_bug_reports},
+        report::{
+            BugReport, FailureReport, HangReport, write_bug_reports, write_failure_reports,
+            write_hang_reports,
+        },
         target::{ActionWindows, FaultAction, FaultObservations, FaultOperation},
     };
 
@@ -467,6 +493,7 @@ mod live {
         resources: &Resources,
         session_worker: Option<WorkerLauncher>,
         start: &super::SearchStart,
+        interrupt: Option<&'static std::sync::atomic::AtomicBool>,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
         let workers = u32::try_from(resources.placement.workers.len())?;
@@ -548,6 +575,7 @@ mod live {
                 checkpoint_owner: options.checkpoint_owner.clone(),
                 max_image_bytes: 64 << 20,
             }),
+            interrupt,
         );
         if let Err(error) = stream.flush() {
             if cache.verify_integrity().is_ok() {
@@ -573,6 +601,23 @@ mod live {
             .transpose()?
             .unwrap_or_default();
         let written = write_bug_reports(windows, &inherited, &archive.bugs, &options.output)?;
+        let hangs = write_hang_reports(windows, &inherited, &archive.hangs, &options.output)?;
+        for hang in &hangs {
+            eprintln!(
+                "hung job at execution {} saved to {}",
+                hang.execution,
+                options.output.join(hang.file_name()).display()
+            );
+        }
+        let failures =
+            write_failure_reports(windows, &inherited, &archive.failures, &options.output)?;
+        for failure in &failures {
+            eprintln!(
+                "failed execution {} saved to {}",
+                failure.execution,
+                options.output.join(failure.file_name()).display()
+            );
+        }
         if let Some(first) = written.first() {
             std::fs::write(
                 options.output.join("first-bug-input.json"),
@@ -600,6 +645,7 @@ mod live {
             "milestones": archive.milestones,
             "assertions": archive.assertions,
             "never_satisfied": archive.assertions.never_satisfied(),
+            "undecided_checks": archive.undecided_checks,
             "park_sites": archive.park_sites,
             "park_reads": archive.park_reads,
             "park_thresholds": archive.park_thresholds,
@@ -607,7 +653,13 @@ mod live {
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
             "watchdog_cutoffs": archive.watchdog_cutoffs,
+            "hung_jobs": campaign_report.campaign.hung_jobs,
+            "hang_reports": hangs.iter().map(HangReport::file_name).collect::<Vec<_>>(),
+            "hang_stop": campaign_report.campaign.hang_stop,
+            "jobs_cancelled": campaign_report.campaign.jobs_cancelled,
+            "interrupted": campaign_report.campaign.interrupted,
             "execution_failures": campaign_report.campaign.execution_failures,
+            "failure_reports": failures.iter().map(FailureReport::file_name).collect::<Vec<_>>(),
             "telemetry": campaign_report.campaign.telemetry,
             "snapshot_cache_locks": cache.lock_counters().into_iter().collect::<std::collections::BTreeMap<_, _>>(),
             "snapshot_cache": cache
@@ -624,6 +676,7 @@ mod live {
         for id in &report.never_satisfied {
             eprintln!("FAIL: assertion never satisfied: {id}");
         }
+        report.undecided_checks = archive.undecided_checks;
         report.executions = campaign_report.campaign.executions_completed;
         report.execution_ticks = campaign_report.campaign.execution_work;
         for bug in &written {
@@ -679,8 +732,18 @@ mod live {
         }
         report.wall_seconds = started.elapsed().as_secs();
         report.watchdog_cutoffs = archive.watchdog_cutoffs;
+        report.hang_reports = hangs.iter().map(HangReport::file_name).collect();
+        report.failure_reports = failures.iter().map(FailureReport::file_name).collect();
+        report
+            .hang_stop
+            .clone_from(&campaign_report.campaign.hang_stop);
         report.execution_failures = campaign_report.campaign.execution_failures;
+        report.jobs_cancelled = campaign_report.campaign.jobs_cancelled;
+        report.interrupted = campaign_report.campaign.interrupted;
         report.write(&options.output)?;
+        if let Some(stop) = &report.hang_stop {
+            eprintln!("{stop}");
+        }
         Ok(report)
     }
 
@@ -1258,6 +1321,7 @@ mod tests {
             start_generation: 7,
             end_generation: 7,
             points: ids(&[11]),
+            undecided_keys: 0,
             pending_faults: 0,
         };
         let observation = |check| FaultObservations {
