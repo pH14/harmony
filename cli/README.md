@@ -767,6 +767,12 @@ failure or replay divergence. Search budgets and seeds must fit TOML's signed
 Run the CLI tests, package tests, Clippy and registered CI checks. The test-only
 counter package exercises preparation, search, replay and branching through the
 same dispatch and storage interfaces without application or NES types.
+On Linux, run the CLI tests with `cargo nextest run -p harmony-cli`. The CLI
+refuses to start with the `LD_LIBRARY_PATH` that Cargo sets, and the root
+Nextest configuration removes it through `scripts/linux-clean-loader-test.sh`.
+Plain `cargo test` fails those tests unless
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER` (or the Arm64 equivalent) names
+that script, as CI does.
 
 - `bash cli/tests/investigation.sh DIRECTORY` exercises preparation, guest commands,
   local scripts, interactive shells, snapshot restoration, continuation and tamper refusal.
