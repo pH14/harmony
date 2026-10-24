@@ -447,42 +447,72 @@ where
             {
                 break;
             }
-            let initial = workload.snapshot(target)?;
-            let initial_identity = workload.snapshot_identity_sha256(&initial)?;
-            let initial_observations = workload.rollout_observations(target);
-            let initial_key = workload.rollout_key(target)?;
+            let initial_state = workload.continuation_state(target);
+            let block_start = workload.execution_work(target);
             let mut retained = false;
-            if repeat {
-                suffix.fill(repeated.ok_or("empty repeated draw")?);
-            }
-            for action in &suffix {
-                let mut block = crate::search::rollout::execute_live_suffix(
-                    workload,
-                    &config.run,
-                    target,
-                    milestones,
-                    std::slice::from_ref(action),
-                    config.retention,
-                    config.stop_rollout_on_objective,
-                )?;
-                let Some(last) = block.actions.last() else {
-                    break;
-                };
-                milestones = last.milestones;
-                path.push(*action);
-                if let Some(candidate) = &last.candidate {
-                    let key =
-                        workload.complete_candidate_key(candidate.key, &candidate.snapshot)?;
-                    let (kept, completed) =
-                        self.core
-                            .archive
-                            .would_retain_after(parent, previous_key, &path, key)?;
-                    retained |= candidate.viable && kept;
-                    previous_key = Some(completed);
+            loop {
+                if repeat {
+                    suffix.fill(repeated.ok_or("empty repeated draw")?);
                 }
-                let stopped = last.outcome.should_stop(config.stop_rollout_on_objective);
-                result.actions.append(&mut block.actions);
-                if stopped || workload.execution_work(target).saturating_sub(before) >= work_limit {
+                for action in &suffix {
+                    let mut block = crate::search::rollout::execute_live_suffix(
+                        workload,
+                        &config.run,
+                        target,
+                        milestones,
+                        std::slice::from_ref(action),
+                        config.retention,
+                        config.stop_rollout_on_objective,
+                    )?;
+                    let Some(last) = block.actions.last() else {
+                        break;
+                    };
+                    milestones = last.milestones;
+                    path.push(*action);
+                    if let Some(candidate) = &last.candidate {
+                        let key =
+                            workload.complete_candidate_key(candidate.key, &candidate.snapshot)?;
+                        let (kept, completed) = self.core.archive.would_retain_after(
+                            parent,
+                            previous_key,
+                            &path,
+                            key,
+                        )?;
+                        retained |= candidate.viable && kept;
+                        previous_key = Some(completed);
+                    }
+                    let stopped = last.outcome.should_stop(config.stop_rollout_on_objective);
+                    result.actions.append(&mut block.actions);
+                    if stopped
+                        || workload.execution_work(target).saturating_sub(before) >= work_limit
+                    {
+                        break;
+                    }
+                }
+                if workload.execution_work(target).saturating_sub(block_start)
+                    >= workload.continuation_block_work(&config.run).get()
+                    || workload.execution_work(target).saturating_sub(before) >= work_limit
+                    || workload
+                        .rollout_outcome(&config.run, target)?
+                        .should_stop(config.stop_rollout_on_objective)
+                {
+                    break;
+                }
+                let seed = rand.next_u64();
+                suffix = workload.expand_suffix(
+                    &config.run,
+                    &self.draw_state,
+                    MixtureDraw {
+                        mixture: config.mixture,
+                        weight: pending.mixture_weight,
+                        splice_weight: pending.splice_weight,
+                    },
+                    seed,
+                    path.last(),
+                )?;
+                workload.refresh_selected_input_timing(&config.run, seed, &mut suffix)?;
+                suffix.truncate(block_len);
+                if suffix.is_empty() {
                     break;
                 }
             }
@@ -495,16 +525,10 @@ where
             {
                 break;
             }
-            let final_snapshot = workload.snapshot(target)?;
-            let final_key = workload.rollout_key(target)?;
-            let preferences_changed = (0..G::Key::preferences())
-                .any(|p| initial_key.preference_cmp(p, final_key) != std::cmp::Ordering::Equal);
-            if initial_identity == workload.snapshot_identity_sha256(&final_snapshot)?
-                && initial_observations == workload.rollout_observations(target)
-                && !preferences_changed
-            {
+            if initial_state == workload.continuation_state(target) {
                 break;
             }
+            let seed = rand.next_u64();
             suffix = workload.expand_suffix(
                 &config.run,
                 &self.draw_state,
@@ -513,9 +537,10 @@ where
                     weight: pending.mixture_weight,
                     splice_weight: pending.splice_weight,
                 },
-                rand.next_u64(),
+                seed,
                 path.last(),
             )?;
+            workload.refresh_selected_input_timing(&config.run, seed, &mut suffix)?;
             suffix.truncate(block_len);
         }
         workload.verify_integrity()?;

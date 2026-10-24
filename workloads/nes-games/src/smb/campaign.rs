@@ -570,6 +570,22 @@ where
         target.apply(action);
         merge_action_milestones(milestones, target)
     }
+    fn continuation_state(&self, target: &SmbTarget<M, P>) -> Vec<u64> {
+        let observation = target.observe();
+        let decoded = observation.decoded;
+        vec![
+            u64::from(decoded.world),
+            u64::from(decoded.level),
+            u64::from(decoded.progress),
+            u64::from(decoded.player_y_bucket),
+            u64::from(decoded.player_engine_state),
+            u64::from(decoded.dead),
+            u64::from(decoded.flag_active),
+        ]
+    }
+    fn continuation_block_work(&self, run: &SmbCampaignRun) -> std::num::NonZeroU64 {
+        std::num::NonZeroU64::new(u64::from(run.vocabulary.chords().longest_hold())).unwrap()
+    }
     fn rollout_observations(&self, target: &SmbTarget<M, P>) -> Vec<SmbObservations> {
         if target.exit_kind() != ExitKind::Ok {
             Vec::new()

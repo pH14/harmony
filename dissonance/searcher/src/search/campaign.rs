@@ -528,6 +528,12 @@ pub trait TargetExecution: CampaignTypes {
         self.apply_action(target, action, milestones)?;
         Ok(None)
     }
+    fn continuation_state(&self, _target: &Self::Target) -> Vec<u64> {
+        Vec::new()
+    }
+    fn continuation_block_work(&self, _run: &Self::Run) -> NonZeroU64 {
+        NonZeroU64::MIN
+    }
     fn rollout_observations(&self, _target: &Self::Target) -> Vec<Self::Observations> {
         Vec::new()
     }
@@ -5857,6 +5863,17 @@ mod tests {
     impl Error for TestIntegrityViolation {}
 
     impl TargetExecution for TestWorkload {
+        fn continuation_state(&self, target: &Self::Target) -> Vec<u64> {
+            vec![if ALIVE_TEST.get() == 5 {
+                0
+            } else {
+                u64::from(target.value)
+            }]
+        }
+
+        fn continuation_block_work(&self, _run: &Self::Run) -> std::num::NonZeroU64 {
+            std::num::NonZeroU64::new(if ALIVE_TEST.get() == 6 { 3 } else { 1 }).unwrap()
+        }
         fn worker_locality(&self, target: &TestTarget) -> crate::search::locality::WorkerLocality {
             use crate::search::locality::{LocalityKey, WorkerLocality};
             if let Some(fixture) = self
@@ -10573,12 +10590,14 @@ mod tests {
 
     #[test]
     fn alive_rollouts_stop_on_retention_stasis_death_and_budget() {
-        for (mode, input, budget, expected, block_len) in [
-            (1, 1, 100, 4, 1),
-            (2, 0, 100, 1, 1),
-            (3, 1, 100, 2, 1),
-            (4, 1, 3, 3, 1),
-            (1, 4, 100, 1, 2),
+        for (mode, input, budget, expected, block_len, actions) in [
+            (1, 1, 100, 4, 1, 4),
+            (2, 0, 100, 1, 1, 1),
+            (5, 1, 100, 1, 1, 1),
+            (6, 1, 7, 3, 1, 7),
+            (3, 1, 100, 2, 1, 2),
+            (4, 1, 3, 3, 1, 3),
+            (1, 4, 100, 1, 2, 2),
         ] {
             ALIVE_TEST.set(mode);
             let workload = TestWorkload {
@@ -10606,8 +10625,8 @@ mod tests {
                 .run_alive_job(&mut target, &job, true, budget)
                 .unwrap();
             assert_eq!(blocks, expected);
-            assert_eq!(outcome.result.actions.len(), expected * block_len);
-            assert_eq!(outcome.execution_work, (expected * block_len) as u64);
+            assert_eq!(outcome.result.actions.len(), actions);
+            assert_eq!(outcome.execution_work, actions as u64);
             assert_eq!(
                 outcome
                     .result

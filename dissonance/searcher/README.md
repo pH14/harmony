@@ -1175,7 +1175,7 @@ by that workload's codec, never by generic storage or routing.
 
 `CampaignCoordinator::run_alive_job` is an opt-in experiment for a single
 admission window. It restores the planned parent once and executes additional
-blocks on that live target when the snapshot, observations, or a preference
+blocks on that live target when the workload’s clock-free continuation vector
 changed. A terminal state, a retained candidate, an unchanged block, or the
 caller's work limit ends the chain. Retention is checked against the archive;
 there are no workload-specific predicates in the continuation rule.
@@ -1208,3 +1208,13 @@ checks. The default `refresh_selected_input_timing` is identity. Live selection
 and replay call the same hook with the recorded mutation seed; workloads pin
 its meaning in their input policy identifiers. Adaptive duration requests bypass
 this hook so their learned duration and accounting remain authoritative.
+
+The experimental continuation contract uses `continuation_state` for workload
+observations and non-clock preferences. The default empty vector opts a workload
+out; snapshots, raw RAM and clocks are never compared by the generic rule. A
+workload supplies `continuation_block_work` in its execution-work units. The
+runner accumulates suffixes until that minimum is met before evaluating activity,
+unless terminal disposition or the experiment work budget ends execution first.
+SMB supplies its decoded mechanical observations and the vocabulary's longest
+hold as the block minimum; its sole archive preference is a clock, so it is
+excluded from activity without changing archive retention.
