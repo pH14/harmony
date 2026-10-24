@@ -9,7 +9,7 @@ state hashing. Host hypervisor calls stay behind the backend trait; concrete
 backend and architecture pairs are selected by the vendor composition roots.
 
 Native AArch64 Linux and macOS builds enable RustCrypto's runtime-dispatched
-SHA-256 backend for state hashes and portable snapshot digests. Hosts with SHA2
+SHA-256 backend for portable snapshot digests and the other SHA-256 consumers. Hosts with SHA2
 instructions use them; hosts without them retain the software implementation.
 Miri builds retain the software implementation. Hash inputs, digest bytes,
 guest CPU policy, and snapshot formats are independent of this host choice.
@@ -190,16 +190,40 @@ those of VMs the server has already replaced. These are host wall-clock
 measurements for performance accounting; they never enter virtual time, state
 hashes, or snapshots.
 
+## Whole-state hash
+
+The whole-state hash commits to guest RAM and the state-blob suffix (vCPU,
+device, SDK, control and taint records). Its encoding is
+`BLAKE3("consonance-state-v2\0" || memory_digest || suffix)`, where
+`memory_digest` is
+`BLAKE3("consonance-state-memory-pages-v2\0" || length_le64 || page_digest[0] || ...)`
+and each `page_digest` is the plain BLAKE3 digest of one 4 KiB page, the same
+digest the snapshot store uses for page content. The previous encoding was
+`SHA-256("MEM\0" || length_le64 || RAM || suffix)`. The two encodings give
+different values for the same state. Equal states give equal hashes, and
+different states differ with the collision resistance of BLAKE3.
+
+The VMM keeps one digest per page and recomputes only pages written since the
+previous hash. The KVM dirty log reports guest writes, and host writes to RAM
+mark their pages as they happen. The dirty log has one reader, so every drain,
+whether for a snapshot seal, a dirty-tracking reset or a hash, marks the
+drained pages for the hash and keeps them pending for the next seal. A backend
+without dirty tracking, or a failed drain, makes the next hash recompute every
+page. All-zero pages use a precomputed digest. Portable export and import
+compute the same encoding from the complete memory image.
+
 `hash.<site>.calls`, `ram_bytes`, `suffix_bytes`, `metadata_bytes`, `ns` and
-`errors` describe physical SHA-256 stages. Sites are `whole_request`,
+`errors` describe physical hash stages. Sites are `whole_request`,
 `checkpoint`, `portable_export`, `portable_import`, `sparse_base`,
 `portable_export_envelope` and `portable_import_envelope`. Whole requests and
 checkpoints count actual memory-preimage feeds; the portable export/import
 sites also include sparse target-page commitments. Sparse-base cache hits do
 not start another hash stage. A call starts when its stage is entered, and a
 failure retains any bytes already fed. RAM bytes count actual memory slices;
-suffix bytes count the whole-state suffix; metadata bytes count domain/length
-framing, page indexes and non-RAM portable-envelope sections. Portable envelope
+for the whole-state hash they count only the nonzero pages that were
+rehashed. Suffix bytes count the whole-state suffix; metadata bytes count
+domain/length framing, page digests, page indexes and non-RAM
+portable-envelope sections. Portable envelope
 counters include only bytes actually hashed after successful reads/writes,
 excluding the trailing recorded digest. Their time includes codec and I/O waits.
 Whole-request and checkpoint time also includes vCPU state capture, readiness
@@ -587,15 +611,16 @@ python3 consonance/vmm-core/qualification/qualify-sha256.py
 ```
 
 `--check` compares digests across padding boundaries, streaming chunk sizes,
-unaligned inputs, cloned prefix states, and complete VMM state hashes.
+unaligned inputs, and cloned prefix states. It also checks that both VMM copies
+produce the same state blob and the same BLAKE3 whole-state hash.
 The Snapshot and Restore job runs it without timing thresholds, as do the
 macOS Arm64 and Linux Arm64 Qualification jobs of Harmony Host Compatibility.
 Backend
 selection is checked against the features reported
 by the compiler artifacts for the actual build, including cached artifacts. The full run
 also reports nine alternating software/native timing pairs for small and large
-digests and whole-state hashes over zero and populated RAM from 4 KiB through
-128 MiB. Each timed result is checked. ARM timings qualify this build change;
+digests, and for whole-state hashes over zero and populated RAM from 4 KiB
+through 128 MiB. Each timed result is checked. ARM timings qualify this build change;
 the software control deliberately disables acceleration on every architecture.
 These are host hashing costs, not guest execution throughput. The executable's
 SHA-256 is printed with the results to bind both arms to the same build.
@@ -753,9 +778,9 @@ lands on its final access; deferred hash consumers use
 `Vmm::arm_checkpoint_hash_preimage` enables one bounded retained record for
 the most recent synchronous checkpoint. The record returned by
 `take_checkpoint_hash_preimage` contains the completed trace event index, the
-published state hash, exact state-blob suffix, RAM length, and the SHA256 digest
-of the `MEM\0 || length_le64 || RAM` prefix. The memory digest reuses a cloned
-hash context before appending the suffix; it adds no RAM traversal. It
+published state hash, exact state-blob suffix, RAM length, and the
+`memory_digest` of the whole-state hash. It is the value the hash already
+computed; retaining it adds no RAM traversal. It
 reuses the checkpoint's existing backend save and does not copy guest RAM or
 perform another CPU read; calling the arm method again clears the prior
 record. The feature is disabled by default and captures only completed

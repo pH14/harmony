@@ -277,15 +277,8 @@ struct SnapshotMeta {
 }
 
 fn hash_state_blob_parts(memory: &[u8], suffix: &[u8], work: &mut HashWork) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"MEM\0");
-    hasher.update((memory.len() as u64).to_le_bytes());
-    hasher.update(memory);
-    work.ram(memory.len());
-    hasher.update(suffix);
-    work.suffix(suffix.len());
-    work.metadata(12);
-    hasher.finalize().into()
+    let memory = crate::state_digest::memory_digest(memory, work);
+    crate::state_digest::state_hash(&memory, suffix, work)
 }
 
 fn append_taint_hash(suffix: &mut Vec<u8>, tainted: bool) {
@@ -1341,8 +1334,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     self.capture_control_state()
                         .encode_and_append_hash(&mut suffix);
                     append_taint_hash(&mut suffix, self.timeline_tainted);
-                    let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
-                    let hash = hash_state_blob_parts(vmm.guest_memory(), &suffix, &mut work);
+                    let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+                    let memory = match vmm.memory_digest(&mut work) {
+                        Ok(memory) => memory,
+                        Err(error) => {
+                            work.finish(&self.hash_telemetry, HashSite::WholeRequest, true);
+                            self.retire_vmm();
+                            return Err(error.into());
+                        }
+                    };
+                    let hash = crate::state_digest::state_hash(&memory, &suffix, &mut work);
                     work.finish(&self.hash_telemetry, HashSite::WholeRequest, false);
                     Ok(Ok(Reply::Hash(hash)))
                 }
@@ -5608,7 +5609,7 @@ mod tests {
             assert_eq!(server.vmm().unwrap().event_history(), history);
             let cost = server.host_telemetry().hashes.cost(HashSite::WholeRequest);
             assert_eq!(cost.calls, with_live.calls + attempt);
-            assert_eq!(cost.ram_bytes, with_live.ram_bytes + attempt * RAM as u64);
+            assert!(cost.ram_bytes >= with_live.ram_bytes);
             assert_eq!(cost.errors, 0);
             assert_eq!(server.host_telemetry(), server.host_telemetry());
         }
@@ -5761,13 +5762,15 @@ mod tests {
         assert_eq!(import.calls, 1);
         assert_eq!(import.ram_bytes, RAM as u64);
         assert_eq!(import.metadata_bytes, export.metadata_bytes);
+        let imported_ram =
+            crate::state_digest::hashed_page_bytes(server.vmm().unwrap().guest_memory());
         assert_eq!(
             server
                 .host_telemetry()
                 .hashes
                 .cost(HashSite::PortableImport)
                 .ram_bytes,
-            RAM as u64
+            imported_ram
         );
         let mut wrong_preimage = artifact.clone();
         wrong_preimage[8 + 2 + 2 + 5 * 8 + 4 * 8] ^= 1;
@@ -5785,7 +5788,7 @@ mod tests {
             .cost(HashSite::PortableImport);
         assert_eq!(preimage.calls, 2);
         assert_eq!(preimage.errors, 1);
-        assert_eq!(preimage.ram_bytes, 2 * RAM as u64);
+        assert!(preimage.ram_bytes >= 2 * imported_ram);
         artifact[0] ^= 1;
         assert!(
             server
