@@ -1170,3 +1170,9 @@ body: upstream's flat snapshot store and the earlier shared-frame layout used
 by the integration branch. There is no legacy format fallback. The shared
 codec remains workload-owned; assurance metadata is interpreted and validated
 by that workload's codec, never by generic storage or routing.
+
+`campaign::inspection::inspect_checkpoint` exposes final-checkpoint archive keys,
+selector counters and resident snapshots for read-only workload diagnostics.
+It validates the normal checkpoint and snapshot-store codecs and rejects
+in-flight jobs. It never constructs a target, restores a workload, or changes
+search state; workload-specific byte decoding belongs in the workload tool.

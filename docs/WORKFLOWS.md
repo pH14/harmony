@@ -197,7 +197,9 @@ run its registered backend.
 The `NES Adapter` job in `Checks / Harmony` lints and tests the host-side NES
 manifests, `workloads/nes-games` among them. It also checks that
 `workloads/nes-games` builds for `wasm32-unknown-unknown`, so the browser demo
-can use the same game logic as the native workload.
+can use the same game logic as the native workload. The job also runs
+`workloads/nes/tests/test_stall_report.py` to check diagnostic attribution,
+missing-data handling, and named constants.
 
 `Checks / Consonance` and `Checks / Harmony Workloads / OCI` each start with an
 `Exact Runtime Artifacts` job. It runs the shared `exact-platform-runtime`

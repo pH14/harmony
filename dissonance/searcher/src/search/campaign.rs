@@ -49,6 +49,9 @@ use crate::search::telemetry::{
 #[path = "campaign_coordinator.rs"]
 mod coordinator;
 
+#[path = "campaign_inspection.rs"]
+pub mod inspection;
+
 pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
 
 pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
@@ -10580,6 +10583,71 @@ mod tests {
             }
         }
         coordinator.finish(Vec::new())
+    }
+
+    #[test]
+    fn final_checkpoint_inspection_reads_snapshots_and_rejects_modified_bytes() {
+        let directory =
+            std::env::temp_dir().join(format!("checkpoint-inspection-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 2;
+        let mut stream = Vec::new();
+        let (report, _) = run_direct_checkpointed(
+            &workload,
+            &config,
+            &mut stream,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: std::num::NonZeroU64::new(1),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                    max_image_bytes: 64 << 20,
+                    before_write: None,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .unwrap();
+        let path = directory.join("000000000002-final.ckpt");
+        let inspected = super::inspection::inspect_checkpoint::<TestWorkload>(&path).unwrap();
+        assert_eq!(inspected.header.executions, report.executions_completed);
+        assert!(!inspected.entries.is_empty());
+        assert!(
+            inspected
+                .entries
+                .iter()
+                .any(|entry| entry.active && entry.snapshot.is_some())
+        );
+        assert!(inspected.selector.draws_by_cell.values().sum::<u64>() > 0);
+        let interval = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "ckpt")
+                    && *path != directory.join("000000000002-final.ckpt")
+            })
+            .unwrap();
+        assert!(super::inspection::inspect_checkpoint::<TestWorkload>(&interval).is_err());
+        let store = directory.join("snapshots.store");
+        let hidden = directory.join("snapshots.hidden");
+        std::fs::rename(&store, &hidden).unwrap();
+        assert!(super::inspection::inspect_checkpoint::<TestWorkload>(&path).is_err());
+        std::fs::rename(hidden, store).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.push(1);
+        std::fs::write(&path, bytes).unwrap();
+        assert!(super::inspection::inspect_checkpoint::<TestWorkload>(&path).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

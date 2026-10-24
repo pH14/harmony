@@ -246,6 +246,7 @@ jobs:
             --target wasm32-unknown-unknown
           cargo clippy --locked --manifest-path workloads/nes-protocol/Cargo.toml \
             --all-features --all-targets -- -D warnings
+          python3 -m unittest discover -s workloads/nes/tests -p 'test_*.py'
           cargo test --locked --manifest-path workloads/nes/Cargo.toml --release --all-features
           cargo test --locked --manifest-path workloads/nes-games/Cargo.toml --release --all-features
           cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml --all-features

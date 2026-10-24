@@ -406,3 +406,53 @@ See the [CLI README](../../cli/README.md) for named runs and investigation.
 Full campaign exports write `checkpoint.bin` using the generic framed snapshot
 codec. Snapshot artifacts use the same codec through fixture tools, package exports,
 and SMB stream readers/writers; flat JSON checkpoint files are no longer written.
+
+## Read-only stall reports
+
+Build `cargo build --release --manifest-path workloads/nes/Cargo.toml --bin nes-checkpoint-inspect`, then run:
+
+```sh
+python3 workloads/nes/stall-report.py RUN/checkpoints/FINAL.ckpt RUN/progress.jsonl \
+  --byte stall_byte=0045 > stall-report.json
+```
+
+The default inspector is `workloads/nes/target/release/nes-checkpoint-inspect`;
+`--inspector` selects another build. The bundled inspector supports native
+QuickNES SMB, Metroid and MM2 snapshots and selects their adapter from the
+checkpoint key policy; `--game` can select it explicitly. Workloads on other
+branches need an inspector compiled with their matching checkpoint and adapter types. The Python
+reader accepts that inspector's `nes-checkpoint-inspection-v1` JSONL contract.
+It does not guess old checkpoint schemas or restore a snapshot across builds.
+No ROM, shared emulator library, replay, or new search is required. Snapshot
+stores referenced by the checkpoint must remain alongside it.
+
+The report validates checkpoint/store integrity, requires a final checkpoint
+without in-flight work, and matches the progress log's final execution, cell-draw
+and tier counters. Both file hashes are reported; matching counters are not a
+cryptographic origin binding between the files. Progress is scanned incrementally.
+The inspector decodes bounded LZ4 snapshots and tagged QuickNES RAM blocks,
+retaining a whole-snapshot digest when emitting RAM and observation fields.
+
+Every tier with trailing dry draws lists its cells, resident distinct states,
+and draw shares when two full cell censuses fall within its final observed
+interval without tier yield. Otherwise interval draws and shares are null and
+lifetime draws are labelled as orientation only. Tier yield means a new active
+cell or carried-in preference win at that tier. It does not certify that draws
+from a source cell produced nothing at another tier. A source cell is certified
+as zero-retention only when its checkpoint entry counters account for every
+lifetime draw and none retained a descendant. Missing historical counters or
+interval productivity are explicitly unknown. Shares show both the full tier
+denominator and the subset attributable to surviving cell metadata.
+
+The top draw cell includes separate top-ten RAM and observation variation lists,
+ranked by Shannon entropy over distinct resident snapshots with deterministic
+name tie-breaking. Full varying lists remain available. This is descriptive
+inspection, not causal ranking or automatic key discovery. `--byte HEX` or
+`--byte NAME=HEX` adds a named diagnostic without changing its rank. Constant
+bytes include their value and sample count; incomplete state coverage is labelled
+`constant_in_available_states`. A constant named diagnostic can therefore expose
+information a varying-byte list necessarily omits. Missing snapshots are never
+silently replayed or counted as equal.
+
+Run the report tests with `python3 -m unittest discover -s workloads/nes/tests -p 'test_*.py'`.
+The native inspector's decoder tests run with the package's Rust tests.
