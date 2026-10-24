@@ -117,3 +117,13 @@ Triforce pieces, sword, key items held and heart containers, in that order.
 `nes-eval` takes `"game": "zelda"` with no stage, ai or whole-game option,
 and `nes-film` renders its witness or champion inputs. `nes-core-oracle`
 takes `zelda` as a game name.
+
+## Browser client
+
+`nes-games/src/arcade/zelda.rs` gives the browser view its motion. The first
+value is the level (0 for the overworld, 1 to 9 for the dungeons). The second
+and third are Link's position in the level's map space, a 16 by 8 grid of 256
+by 168 rooms. The fourth is 1 when Link faces left. The view is hidden outside
+play mode. Map images are built in the browser from the ROM. Each room is run
+through the game's own loader, and the view crops the 168 rows of the play area.
+The search key above does not change for the view.
