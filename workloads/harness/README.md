@@ -30,6 +30,7 @@ generic operations onto the target's client API.
 | `targets/garage` | Garage image and adapter |
 | `targets/openbao` | OpenBao image and adapter |
 | `targets/xline` | Xline image and adapter |
+| `targets/minio` | MinIO image and adapter, four nodes with one drive each |
 | `native.py` | runs an image in a container without Harmony |
 
 ## Writing a target
@@ -982,6 +983,84 @@ fail.
 Set `ram_mib = 3072` under `[runner.options]`. The node disks live in guest
 memory.
 
+## MinIO
+
+`targets/minio` drives the `register` family against
+[MinIO](https://github.com/minio/minio) `RELEASE.2025-10-15T17-29-55Z`, the
+newest release tag, in distributed mode on four nodes `n1` to `n4` at
+10.77.0.1-4 (S3 port 9000) in `harness-net` namespaces. Each node has one
+drive at `/tmp/minio/<node>` on a 256 MiB node disk and logs to
+`/tmp/minio/<node>.log`. `node.sh` passes the four endpoints explicitly, so
+the drives form one erasure set with the default parity `EC:2`: two data and
+two parity shards, write quorum 3 and read quorum 2. The console is off and
+every other setting is the default.
+
+MinIO documents strict read-after-write and list-after-write consistency for
+every operation in distributed mode
+([distributed README](https://github.com/minio/minio/blob/RELEASE.2025-10-15T17-29-55Z/docs/distributed/README.md#consistency-guarantees)).
+The same page says the guarantee holds only on XFS, ZFS or BTRFS and asks
+users to avoid ext4. Harmony node disks are ext4, so a power-loss finding
+needs that caveat. A kill, restart, pause, disk error or network fault does
+not depend on the file system's crash behavior. MinIO documents conditional
+writes with `If-Match` and `If-None-Match`
+([conditional writes](https://www.min.io/blog/leading-the-way-minios-conditional-write-feature-for-modern-data-workloads)).
+
+The adapter reuses the Garage adapter: [minio-go](https://github.com/minio/minio-go)
+with path-style requests, one attempt per request, no keep-alive and no
+redirects, to a node drawn from the SDK stream. `write` is `PutObject`, `read`
+is `GetObject` and `cas` is `PutObject` with `If-Match` set to the MD5 of the
+old value, which is the ETag of an object written in one unencrypted PUT.
+`ready` creates bucket `harness` and passes once a `PutObject` succeeds
+through any node. Four nodes do not fit in a 1 GiB guest: the guest kernel
+kills a `minio` process for memory, and some replays stop at the 60 s
+watchdog. Run the target with `runner.options.ram_mib = 2048`. The drive
+runs with `--timeout 10s`: MinIO writes in the guest take about 2 s, and the
+kit's 2 s default left most writes indeterminate.
+
+A write is a definite failure only when the dial fails. A quorum error (`503`),
+a timeout, a redirect or a reset can follow a write that reached some drives,
+and a later read can return it. A `cas` that MinIO answers with `412
+PreconditionFailed` or `404 NoSuchKey` is a definite failure, because MinIO
+checks `If-Match` under the object's namespace lock before it writes any
+drive. Read errors are definite, and `NoSuchKey` reads as no value. minio-go
+invents a `NoSuchKey` or `PreconditionFailed` error for a 404 or 412 answer
+without an XML body, so the adapter accepts these codes only with the XML
+`Resource` field set. Every node reads through a quorum, so the adapter pins
+no reads and the check skips the replica comparison. Read-after-write
+consistency is the stale-read property (`register: no read returns a value
+older than an acknowledged earlier write`).
+
+The image builds `minio` from the release source with Go 1.24, the
+version its `go.mod` names, through the Antithesis Go instrumentation.
+`cpuid-xgetbv.sh` rewrites `klauspost/cpuid` in the harness and in MinIO the
+way `targets/garage` does. The release's `docs` and `helm` trees are left out
+of the build.
+
+The search finds three anomalies in this release. Each was checked in the
+client history, in `xl.meta` on every drive (decoded with MinIO's
+`docs/debugging/xl-meta`) and in the node logs.
+
+- A GET answers `404 NoSuchKey` for an object whose last acknowledged write
+  is on two or three drives, while one node is down, paused or restarting and
+  another drive holds an older version. `getObjectFileInfo` in
+  `cmd/erasure-object.go` turns a read-quorum error with inconsistent metadata
+  into `errFileNotFound`. A 404 tells an S3 client the key does not exist,
+  and strict consistency allows only the value or an error. One run shrinks to
+  a kill of every node, a disk error on `n2` and a pause of `n4`, and 7 of 20
+  redrawn variants fail. Another shrinks to one kill of every node in a
+  2 GiB guest: three drives hold the acknowledged version and the fourth
+  holds a write the kill cut off. Reads after the restart answer `404`, and
+  the object reappears seconds later. 5 of 20 redrawn variants fail.
+- An overwrite that fails with `503` can leave a drive that held the last
+  acknowledged version with no `xl.meta`, only the backup `xl.meta.bkp` that
+  `RenameData` writes into the old data directory. Fewer drives then hold the
+  acknowledged version, and reads answer `404` until the next write. One run
+  shrinks to two kills at instrumented events, `n1` and then `n3`, in a 2 GiB
+  guest, and 6 of 20 redrawn variants fail.
+- A power loss of every node can lose an acknowledged write from every drive.
+  MinIO renames `xl.meta` into place without a directory fsync unless
+  `MINIO_FS_OSYNC` is set, and its documentation excludes ext4.
+
 ## Native runner
 
 `native.py IMAGE [--for SECONDS] [--seed N] [--no-faults]` runs an image in
@@ -1062,3 +1141,6 @@ container. Opt-in options:
 - A dqlite read trusts a peer to stop naming the old leader once it accepts an
   entry from a new leader. canonical/raft keeps the old leader's name after a
   vote and replaces it when the new leader's first append arrives.
+- A MinIO `cas` trusts the ETag of a value written in one PUT to be the MD5 of
+  the value, and a `412` or `404` answer to `If-Match` to come before any drive
+  write.

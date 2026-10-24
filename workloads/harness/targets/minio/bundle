@@ -1,0 +1,21 @@
+setup /opt/harmony/setup.sh
+node n1 /opt/harmony/node.sh 1
+node n2 /opt/harmony/node.sh 2
+node n3 /opt/harmony/node.sh 3
+node n4 /opt/harmony/node.sh 4
+disk n1 /tmp/minio/n1 256M
+disk n2 /tmp/minio/n2 256M
+disk n3 /tmp/minio/n3 256M
+disk n4 /tmp/minio/n4 256M
+log n1 /tmp/minio/n1.log
+log n2 /tmp/minio/n2.log
+log n3 /tmp/minio/n3.log
+log n4 /tmp/minio/n4.log
+hook 1 /opt/harmony/harness-net partition
+hook 2 /opt/harmony/harness-net isolate
+hook 3 /opt/harmony/harness-net delay
+hook 4 /opt/harmony/harness-net heal
+heal 4
+ready /opt/harmony/minio-harness ready
+workload /opt/harmony/minio-harness drive --timeout 10s
+check /opt/harmony/minio-harness check
