@@ -4,7 +4,7 @@ A static demonstration of state-space exploration. Emulators compiled to
 WebAssembly run a game, and a Rust worker uses Dissonance to search it. The
 site plays the NES homebrew games Twin Dragons and Famidash on QuickNES, the
 Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and Super Mario Bros., Mega
-Man 2 and Metroid on QuickNES from ROMs the visitor supplies. The `game` URL
+Man 2, Metroid and Pac-Man on QuickNES from ROMs the visitor supplies. The `game` URL
 parameter picks the game, and the level selector switches between them. The
 page opens the level selector and starts searching once a level is chosen, or
 from the first level if the selector is closed. A `level` URL parameter with a
@@ -85,7 +85,7 @@ workers import `emulator.js` dynamically and set their message handler first.
 The Famidash module waits for the Rust module when it loads, and a module
 worker drops messages that arrive before its handler is set.
 
-Twin Dragons, Famidash, Super Mario Bros., Mega Man 2 and Metroid run the
+Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid and Pac-Man run the
 same search as their native workloads. `rust/src/campaign.rs` holds `JsMachine`,
 a `machine::Machine`, `NesBackend` and `NesMemory` that drives the browser
 QuickNES core through `globalThis.harmonyCores`, and a coordinator and rollout
@@ -93,7 +93,7 @@ worker that are generic over `BrowserGame`. `BrowserGame` is the `nes-games`
 `ArcadeGame` over `Traced<JsMachine>`; `ArcadeGame` holds each game's view,
 motion samples and level count, so a native live campaign draws the same page.
 Each game's file (`rust/src/twin_dragons.rs`, `rust/src/famidash.rs`,
-`rust/src/smb.rs`, `rust/src/mega_man.rs`, `rust/src/metroid.rs`) adds its root
+`rust/src/smb.rs`, `rust/src/mega_man.rs`, `rust/src/metroid.rs`, `rust/src/pac_man.rs`) adds its root
 snapshot and the page's observation functions. `CampaignSearch` and
 `CampaignWorker` take the game id. The coordinator worker owns a Dissonance
 `CampaignCoordinator`. It sends each planned `JobSpec` to a rollout worker as
@@ -894,6 +894,39 @@ a phone, and the strip beside the view draws a reduced copy.
 exactly, and branches from a played history that pauses and resumes with
 Start. It reads the ROM from `METROID_ROM` or `~/workspace/roms/Metroid (USA).nes` and
 skips when it is absent.
+
+### Pac-Man
+
+The site ships nothing from Pac-Man. The level selector accepts the Namco NES
+ROM with SHA-256 `a72c6f56…4d80`. The game has one maze, so every level uses
+the same picture, drawn from the emulator with the sprites hidden and the score
+panel cropped away. A level is four mazes cleared: the selector lists six
+levels, "Mazes 1-4" to "Mazes 21+". The observation's cleared count is the
+number of mazes cleared, the page counts a level finished at every fourth, and
+"Level progress" shows the dots eaten in the current maze. A search from a later
+level starts at its first maze with the maze index set in RAM.
+
+The player sprite is Pac-Man's body in the emulator's frame, taken while he
+walks left with the mouth open and closed, and turned for the other three
+headings.
+
+| Address | Meaning |
+| --- | --- |
+| `$3F` | game mode; 4 is play, 2 ready, 8 death, `$0A` game over, `$0C` maze clear |
+| `$1A`, `$1C` | Pac-Man's x and y; the sprite's top left is `(x - 12, y - 4)` |
+| `$51` | heading: 0 up, 1 left, 2 down, 3 right |
+| `$67` | lives |
+| `$68` | maze index |
+| `$6A` | dots left of 192 |
+| `$70`–`$75` | score digits |
+
+The search is the `PacManGame` workload from `nes-games`, as `nes-eval` runs
+it. `workloads/nes/src/pac_man/README.md` describes its key, chords and terminal
+policy. `rust/src/pac_man.rs` places Pac-Man on the maze map. A history may not
+press Start, which pauses the game. `tests/pac-man.mjs` boots every level,
+searches from the first maze, replays the furthest state exactly and starts a
+search from the picker. It reads the ROM from `PAC_MAN_ROM` or
+`~/workspace/roms/pac-man.nes` and skips when it is absent.
 
 ## Verification and publishing
 

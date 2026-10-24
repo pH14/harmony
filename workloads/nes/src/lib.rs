@@ -10,6 +10,7 @@ pub mod famidash;
 pub mod film;
 #[cfg(unix)]
 pub mod live;
+pub mod pac_man;
 pub mod prepare;
 pub mod punchout;
 pub mod smb;
