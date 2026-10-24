@@ -35,13 +35,14 @@ export const OPPONENTS = [
 export function decode(ram) {
   const state = JSON.parse(punchout_observation(ram));
   const fighting = ram[MODE] === FIGHT;
+  const at = fighting ? placement(state) : { x: 0, y: 0 };
   return {
     ...state,
     level: state.opponent,
     loading: !fighting,
     health: fighting ? state.mac_health : 0,
-    x: 0,
-    y: 0,
+    x: at.x,
+    y: at.y,
   };
 }
 
@@ -52,15 +53,18 @@ function scaled(lost, max) {
 // The trail has no screen position for Mac, so a sample is placed by damage:
 // x is the opponent's damage across the screen and y is Mac's damage in a band
 // along the bottom edge. The Rust side uses the same mapping.
+function placement(state) {
+  return {
+    x: scaled(FULL_HEALTH - state.opponent_health, SCREEN_WIDTH),
+    y: TRACK_BOTTOM - scaled(FULL_HEALTH - state.mac_health, TRACK_HEIGHT),
+  };
+}
+
 export function motion(ram) {
   const state = JSON.parse(punchout_observation(ram));
   if (ram[MODE] !== FIGHT) return [NO_ROOM, 0, 0, 0];
-  return [
-    state.opponent,
-    scaled(FULL_HEALTH - state.opponent_health, SCREEN_WIDTH),
-    TRACK_BOTTOM - scaled(FULL_HEALTH - state.mac_health, TRACK_HEIGHT),
-    0,
-  ];
+  const at = placement(state);
+  return [state.opponent, at.x, at.y, 0];
 }
 
 function runFrames(engine, buttons, frames, render = false) {
