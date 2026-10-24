@@ -627,13 +627,7 @@ impl<M: NesBackend<Vec<u8>>> TargetExecution for CastlevaniaGame<M> {
         for action in replay {
             target.apply(action);
         }
-        execute_suffix(
-            target,
-            parent_milestones,
-            suffix,
-            retention,
-            stop,
-        )
+        execute_suffix(target, parent_milestones, suffix, retention, stop)
     }
 }
 
