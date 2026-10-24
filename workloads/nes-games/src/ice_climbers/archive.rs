@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "ice_climbers_mountain_floor_tier_phase_altitude_band_16_column_32_place_altitude_preference_v1";
+pub const KEY_POLICY_IDENTIFIER: &str = "ice_climbers_mountain_floor_tier_phase_altitude_band_16_column_32_place_altitude_preference_v2";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 pub const ALTITUDE_BAND_SHIFT: u16 = 4;
@@ -222,8 +222,7 @@ mod tests {
             phase: 1,
             x,
             y,
-            nametable: 3,
-            scroll: 0xcc,
+            camera: 0x9f,
         }
     }
 

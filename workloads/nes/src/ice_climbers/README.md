@@ -25,9 +25,7 @@ play from power-on and comparing it with rendered frames.
 
 | Address | Meaning |
 | --- | --- |
-| `$0A` | PPU nametable select bits; bit 1 is the vertical nametable |
-| `$0B` | PPU vertical scroll, 0 to 239; the mountain scrolls from 444 at the start to 0 at the top |
-| `$13` | Camera scroll during the intro pan over the mountain, 0 to 239, 2 pixels per frame |
+| `$13` | Camera scroll, 0 to 239. The intro pan lowers it 2 pixels per frame. In play it starts at `$9F` and drops 48 each time the camera climbs one floor, which happens after the floor counter reaches 4 and every floor after it |
 | `$20` | Lives; starts at 3 |
 | `$3F` | Death timer |
 | `$59` | Mountain, 0 for mountain 1; it increases when the results screen finishes |
@@ -35,11 +33,11 @@ play from power-on and comparing it with rendered frames.
 | `$64` | Climber x in pixels |
 | `$66` | Climber y in pixels on the screen |
 
-The first frame of play has `$64` = `$38`, `$66` = `$C0`, nametable 3 and scroll `$CC`.
-The world height of the climber is the scroll (240 added when the nametable bit is set)
-plus `$66`. Altitude is `WORLD_BOTTOM` minus that height, and each floor is 48 pixels. The
-bonus stage is a separate screen drawn above the mountain on the map; its position is `$66`
-alone.
+The first frame of play has `$64` = `$38`, `$66` = `$C0` and `$13` = `$9F`. The camera
+top is 444 pixels at the start and 48 less after each camera step. The world height of the
+climber is that top plus `$66`. Altitude is 636 minus that height, so each floor is 48 pixels.
+The bonus stage is a separate screen drawn above the mountain on the map; its position is
+`$66` alone.
 
 ## Setup tape
 

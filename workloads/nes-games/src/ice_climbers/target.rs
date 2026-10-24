@@ -27,13 +27,15 @@ pub const MAP_PAD: u16 = 194;
 pub const BONUS_FLOOR: u8 = 9;
 pub const START_X: u8 = 0x38;
 pub const START_Y: u8 = 0xc0;
-pub const START_NAMETABLE: u8 = 3;
-pub const START_SCROLL: u8 = 0xcc;
-pub const WORLD_BOTTOM: u16 = 240 + START_SCROLL as u16 + START_Y as u16;
+pub const START_CAMERA: u8 = 0x9f;
+pub const START_TOP: u16 = 444;
+pub const CAMERA_WRAP: u16 = 240;
+pub const FLOOR_SCROLL: u16 = 48;
+pub const BONUS_BASE: u16 = 384;
+pub const WORLD_BOTTOM: u16 = START_TOP + START_Y as u16;
 
 const LIVES: usize = 0x20;
-const SCROLL_NAMETABLE: usize = 0x0a;
-const SCROLL_Y: usize = 0x0b;
+const CAMERA: usize = 0x13;
 const LEVEL: usize = 0x59;
 const PHASE: usize = 0x5a;
 const PLAYER_X: usize = 0x64;
@@ -46,24 +48,33 @@ pub struct IceClimbersMechanicalState {
     pub phase: u8,
     pub x: u8,
     pub y: u8,
-    pub nametable: u8,
-    pub scroll: u8,
+    pub camera: u8,
 }
 
 impl IceClimbersMechanicalState {
     #[must_use]
-    pub fn scroll_y(self) -> u16 {
-        u16::from(self.scroll) + if self.nametable & 2 != 0 { 240 } else { 0 }
+    pub fn bonus(self) -> bool {
+        self.phase >= BONUS_FLOOR
+    }
+
+    #[must_use]
+    pub fn scrolled(self) -> u16 {
+        let base = (u16::from(START_CAMERA) + CAMERA_WRAP - u16::from(self.camera)) % CAMERA_WRAP;
+        if self.phase >= BONUS_FLOOR - 1 && base < FLOOR_SCROLL {
+            base + CAMERA_WRAP
+        } else {
+            base
+        }
     }
 
     #[must_use]
     pub fn world_y(self) -> u16 {
-        self.scroll_y() + u16::from(self.y)
+        (START_TOP + u16::from(self.y)).saturating_sub(self.scrolled())
     }
 
     #[must_use]
     pub fn map_y(self) -> u16 {
-        if self.phase >= BONUS_FLOOR {
+        if self.bonus() {
             u16::from(self.y).saturating_sub(SCREEN_CROP - 1)
         } else {
             (self.world_y() + MAP_PAD).saturating_sub(SCREEN_CROP - 1)
@@ -72,7 +83,11 @@ impl IceClimbersMechanicalState {
 
     #[must_use]
     pub fn altitude(self) -> u16 {
-        WORLD_BOTTOM.saturating_sub(self.world_y())
+        if self.bonus() {
+            BONUS_BASE + 255 - u16::from(self.y)
+        } else {
+            WORLD_BOTTOM.saturating_sub(self.world_y())
+        }
     }
 
     #[must_use]
@@ -551,8 +566,7 @@ impl<M: NesBackend<Vec<u8>>> Target for IceClimbersTarget<M> {
             | (u64::from(state.phase) << 40)
             | (u64::from(state.x) << 32)
             | (u64::from(state.y) << 24)
-            | (u64::from(state.nametable) << 16)
-            | u64::from(state.scroll)
+            | u64::from(state.camera)
     }
 
     fn exit_kind(&self) -> ExitKind {
@@ -653,8 +667,7 @@ pub fn decode_state(wram: &[u8]) -> Result<IceClimbersMechanicalState, MachineEr
         phase: byte(wram, PHASE)?,
         x: byte(wram, PLAYER_X)?,
         y: byte(wram, PLAYER_Y)?,
-        nametable: byte(wram, SCROLL_NAMETABLE)?,
-        scroll: byte(wram, SCROLL_Y)?,
+        camera: byte(wram, CAMERA)?,
     })
 }
 
@@ -669,8 +682,7 @@ fn validate_genesis(state: IceClimbersMechanicalState) -> Result<(), MachineErro
         && state.lives == START_LIVES
         && state.x == START_X
         && state.y == START_Y
-        && state.nametable == START_NAMETABLE
-        && state.scroll == START_SCROLL;
+        && state.camera == START_CAMERA;
     if valid {
         Ok(())
     } else {
@@ -704,8 +716,7 @@ mod tests {
         wram[PHASE] = 1;
         wram[PLAYER_X] = START_X;
         wram[PLAYER_Y] = START_Y;
-        wram[SCROLL_NAMETABLE] = START_NAMETABLE;
-        wram[SCROLL_Y] = START_SCROLL;
+        wram[CAMERA] = START_CAMERA;
         wram
     }
 
@@ -752,10 +763,17 @@ mod tests {
         assert_eq!(decode_state(&wram).unwrap().floor(), 1);
         wram[PLAYER_Y] = START_Y - 47;
         assert_eq!(decode_state(&wram).unwrap().floor(), 0);
-        wram[SCROLL_NAMETABLE] = 1;
-        wram[SCROLL_Y] = 0x6c;
+        wram[PHASE] = 7;
+        wram[CAMERA] = 207;
         wram[PLAYER_Y] = 0x60;
-        assert_eq!(decode_state(&wram).unwrap().altitude(), 432);
+        assert_eq!(decode_state(&wram).unwrap().altitude(), 288);
+        wram[PHASE] = 8;
+        wram[CAMERA] = START_CAMERA;
+        assert_eq!(decode_state(&wram).unwrap().altitude(), 336);
+        wram[PHASE] = BONUS_FLOOR;
+        wram[PLAYER_Y] = 0x31;
+        let bonus = decode_state(&wram).unwrap();
+        assert!(bonus.altitude() > 384 && bonus.floor() == 8);
     }
 
     #[test]
