@@ -181,6 +181,8 @@ export default {
   levelCount: LEVELS,
   levelsCleared: (observation) => (observation.cleared ? Math.min(observation.cleared + 1, LEVELS) : 0),
   grid: true,
+  calmCamera: true,
+  exactCellRows: true,
   route: routeOrder,
   entry,
   pace: 300,
