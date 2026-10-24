@@ -414,3 +414,12 @@ refresh was removed; short medians at wrapped-coordinate roots did not establish
 that the duration draw had collapsed. Job length also depends on parent suffix
 doubling, which does not grow on terminal jobs and resets after retention or
 leaving the place.
+
+For rooted Metroid chaining comparisons, `nes-eval` requests accept
+`input_mode: "current"` or `input_mode: "chaining"`, together with the shared
+`mixture: "energy_splice:6"` and `window: 1`. Set `metroid_objective: "high_jump"`
+to stop on the existing named high-jump milestone and emit an objective witness.
+The default objective remains game victory. The selected objective is part of
+the replay policy identity; a different objective cannot replay that stream.
+Live arcade mode rejects these experiment overrides. Root inputs retain their
+ordinary recorded actions and must be replayable under the selected build.

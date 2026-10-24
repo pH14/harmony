@@ -104,3 +104,8 @@ points separately from sampled motion, so downsampling and terminal delivery
 can preserve progress. Sampling affects presentation only. The native live
 service uses the existing campaign coordinator and full admission-observation
 interface; search selection and admission policy remain unchanged.
+
+Metroid chaining compares the complete decoded mechanical observation, boss and
+Tourian evidence, and death state between blocks. Frame count is excluded so
+clock advancement alone cannot prolong a chain. A block spans at least the
+longest hold in the existing Metroid chord vocabulary.

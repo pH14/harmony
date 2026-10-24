@@ -61,6 +61,31 @@ type MetroidChampionKey = (MetroidProgressWatermark, MetroidPreference);
 
 pub type MetroidMachines<M> = Box<dyn Fn() -> Result<M, MachineError> + Send + Sync>;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetroidObjective {
+    #[default]
+    GameVictory,
+    HighJump,
+}
+
+impl MetroidObjective {
+    fn identifier(self) -> &'static str {
+        match self {
+            Self::GameVictory => "game_victory",
+            Self::HighJump => "high_jump",
+        }
+    }
+
+    fn reached<M: NesBackend<Vec<u8>> + NesMemory>(self, target: &MetroidTarget<M>) -> bool {
+        target.exit_kind() == ExitKind::Ok
+            && match self {
+                Self::GameVictory => target.is_victory(),
+                Self::HighJump => NamedProgress::reached(&target.observe()).contains(&"high_jump"),
+            }
+    }
+}
+
 pub struct MetroidGame<M: NesBackend<Vec<u8>> + NesMemory> {
     rom_sha256: String,
     machines: MetroidMachines<M>,
@@ -69,6 +94,7 @@ pub struct MetroidGame<M: NesBackend<Vec<u8>> + NesMemory> {
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
     terminal_policy: MetroidTerminalPolicy,
+    objective: MetroidObjective,
     depth: GenesisDepth,
 }
 
@@ -170,8 +196,15 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidGame<M> {
             champion_input_path: None,
             milestone_input_dir: None,
             terminal_policy: MetroidTerminalPolicy::default(),
+            objective: MetroidObjective::default(),
             depth,
         }
+    }
+
+    #[must_use]
+    pub fn with_objective(mut self, objective: MetroidObjective) -> Self {
+        self.objective = objective;
+        self
     }
 
     #[must_use]
@@ -408,6 +441,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     suffix: &[ButtonChord],
     retention: RetentionPolicy,
     stop_rollout_on_objective: bool,
+    objective: MetroidObjective,
 ) -> Result<MetroidCampaignJobResult<M>, Box<dyn Error>> {
     if retention != RetentionPolicy::Unprobed {
         return Err("Metroid campaigns admit every live candidate".into());
@@ -416,7 +450,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
-        objective_reached: target.exit_kind() == ExitKind::Ok && target.is_victory(),
+        objective_reached: objective.reached(target),
         disposition: if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
         } else if target.is_dead() {
@@ -436,7 +470,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
         target.apply(action);
         merge_action_milestones(&mut aggregate, target, genesis_items, genesis_tanks);
         let failed = target.exit_kind() != ExitKind::Ok;
-        let raw_objective = !failed && target.is_victory();
+        let raw_objective = objective.reached(target);
         let objective_reached = raw_objective && !objective_seen;
         objective_seen |= raw_objective;
         let disposition = if failed {
@@ -735,6 +769,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for MetroidGame<M> {
             (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, self.terminal_policy.identifier()),
+            ("objective", self.objective.identifier()),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -771,7 +806,48 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for MetroidGame<M> {
     }
 }
 
+fn continuation_observation(observation: &MetroidObservations) -> Vec<u64> {
+    vec![
+        u64::from(observation.decoded.area),
+        u64::from(observation.decoded.map_x),
+        u64::from(observation.decoded.map_y),
+        u64::from(observation.decoded.x),
+        u64::from(observation.decoded.y),
+        u64::from(observation.decoded.pose),
+        u64::from(observation.decoded.door),
+        u64::from(observation.decoded.mode),
+        u64::from(observation.decoded.health),
+        u64::from(observation.decoded.equipment),
+        u64::from(observation.decoded.missiles),
+        u64::from(observation.decoded.missile_capacity),
+        u64::from(observation.decoded.energy_tanks),
+        u64::from(observation.decoded.boss_health),
+        u64::from(observation.decoded.zebetites_destroyed),
+        u64::from(observation.decoded.zebetite_hits_left),
+        u64::from(observation.decoded.bosses),
+        u64::from(observation.decoded.statues),
+        u64::from(observation.decoded.mother_brain_defeated),
+        u64::from(observation.decoded.ending),
+        u64::from(observation.boss_health_seen),
+        u64::from(observation.boss_defeats.kraid),
+        u64::from(observation.boss_defeats.ridley),
+        u64::from(observation.mother_brain_status),
+        u64::from(observation.tourian_events.mother_brain_defeated),
+        u64::from(observation.tourian_events.escape_started),
+        u64::from(observation.dead),
+    ]
+}
+
 impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
+    fn continuation_state(&self, target: &MetroidTarget<M>) -> Vec<u64> {
+        continuation_observation(&target.observe())
+    }
+
+    fn continuation_block_work(&self, _run: &MetroidCampaignRun) -> std::num::NonZeroU64 {
+        std::num::NonZeroU64::new(u64::from(crate::metroid::archive::CHORDS.longest_hold()))
+            .unwrap()
+    }
+
     fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
@@ -846,6 +922,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
             suffix,
             retention,
             stop_rollout_on_objective,
+            self.objective,
         )
     }
 }
@@ -866,7 +943,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for MetroidGame<M> {
         _run: &MetroidCampaignRun,
         target: &MetroidTarget<M>,
     ) -> Result<bool, Box<dyn Error>> {
-        Ok(target.exit_kind() == ExitKind::Ok && target.is_victory())
+        Ok(self.objective.reached(target))
     }
 
     fn current_key(&self, target: &MetroidTarget<M>) -> Result<MetroidArchiveKey, Box<dyn Error>> {
@@ -1302,6 +1379,104 @@ mod tests {
     }
 
     #[test]
+    fn continuation_observation_ignores_clock_and_preserves_mechanical_changes() {
+        let baseline = MetroidObservations {
+            frame_count: 0,
+            decoded: Default::default(),
+            boss_health_seen: 0,
+            boss_defeats: Default::default(),
+            mother_brain_status: 0,
+            tourian_events: Default::default(),
+            dead: false,
+        };
+        let expected = super::continuation_observation(&baseline);
+        let mut clock_only = baseline.clone();
+        clock_only.frame_count = u64::MAX;
+        assert_eq!(expected, super::continuation_observation(&clock_only));
+        let mut changed = baseline.clone();
+        changed.decoded.area = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.map_x = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.map_y = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.x = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.y = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.pose = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.door = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.mode = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.health = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.equipment = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.missiles = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.missile_capacity = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.energy_tanks = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.boss_health = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.zebetites_destroyed = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.zebetite_hits_left = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.bosses = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.statues = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.mother_brain_defeated = true;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.decoded.ending = true;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.boss_health_seen = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.boss_defeats.kraid = true;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.boss_defeats.ridley = true;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.mother_brain_status = 1;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.tourian_events.mother_brain_defeated = true;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.tourian_events.escape_started = true;
+        assert_ne!(expected, super::continuation_observation(&changed));
+        let mut changed = baseline.clone();
+        changed.dead = true;
+        assert_ne!(expected, super::continuation_observation(&changed));
+    }
+
+    #[test]
     fn the_census_separates_a_cell_never_drawn_from_one_drawn_without_result() {
         use crate::metroid::target::MetroidMechanicalState;
 
@@ -1335,6 +1510,25 @@ mod tests {
         let kit = &census["live_entries_by_map_cell_and_equipment"];
         assert_eq!(kit["17:3:4:1"], serde_json::json!([1, 7]));
         assert_eq!(kit["17:3:4:4"], serde_json::json!([1, 0]));
+    }
+
+    #[test]
+    fn milestone_objective_requires_matching_replay_policy() {
+        let ending = MetroidGame::new(&[0], Path::new("unused"), "test", "test-execution");
+        let high_jump = MetroidGame::new(&[0], Path::new("unused"), "test", "test-execution")
+            .with_objective(MetroidObjective::HighJump);
+        let ending_policy = ending.policies(&MetroidCampaignRun);
+        let high_jump_policy = high_jump.policies(&MetroidCampaignRun);
+        assert!(high_jump.resolve_recorded(&high_jump_policy).is_ok());
+        assert!(ending.resolve_recorded(&ending_policy).is_ok());
+        assert!(ending.resolve_recorded(&high_jump_policy).is_err());
+        assert!(high_jump.resolve_recorded(&ending_policy).is_err());
+        assert_eq!(high_jump_policy["objective"], "high_jump");
+        assert_eq!(ending_policy["objective"], "game_victory");
+        assert_eq!(
+            high_jump.continuation_block_work(&MetroidCampaignRun).get(),
+            u64::from(crate::metroid::archive::CHORDS.longest_hold())
+        );
     }
 
     #[test]

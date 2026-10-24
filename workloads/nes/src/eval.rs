@@ -8,7 +8,7 @@ use crate::{
             replay_campaign_checkpointed, run_campaign_watched,
         },
         checkpoint::CheckpointPlan,
-        draw::draw_mixture_from_identifier,
+        draw::{InputMode, draw_mixture_from_identifier},
     },
     witness::replay_witness,
 };
@@ -55,6 +55,10 @@ pub struct Request {
     pub wall_seconds: u64,
     #[serde(default)]
     pub mixture: String,
+    #[serde(default)]
+    pub input_mode: InputMode,
+    #[serde(default)]
+    pub metroid_objective: Option<crate::metroid::campaign::MetroidObjective>,
     pub verification: String,
     #[serde(default)]
     pub stage: Option<u8>,
@@ -203,7 +207,7 @@ where
     }
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
+        &json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "input_mode":request.input_mode, "metroid_objective":request.metroid_objective, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -225,7 +229,7 @@ where
         &mut stream,
         Some(&mut progress),
         CampaignExecutionOptions {
-            input_mode: Default::default(),
+            input_mode: request.input_mode,
             work_budget: request.frames,
             checkpoints,
             placement: None,

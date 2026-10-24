@@ -78,6 +78,8 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.ai.is_some()
         || request.root_input.is_some()
         || request.metroid_terminal.is_some()
+        || request.metroid_objective.is_some()
+        || !request.input_mode.is_current()
         || request.resume.is_some()
         || !request.mixture.is_empty()
     {
@@ -142,6 +144,9 @@ fn main() -> Result<()> {
     run_cli(|request, rom, out, started| {
         if request.live.is_some() {
             return live(&request, &rom, &out, started);
+        }
+        if request.game != "metroid" && request.metroid_objective.is_some() {
+            return Err("metroid_objective requires the Metroid workload".into());
         }
         match request.game.as_str() {
             "smb" | "metroid"
@@ -229,6 +234,7 @@ fn main() -> Result<()> {
             "metroid" => evaluate_watching(
                 metroid_game(&rom, p, h, &execution_sha256, request.root_input.as_deref())?
                     .with_milestone_input_dir(out.join("milestone-inputs"))
+                    .with_objective(request.metroid_objective.unwrap_or_default())
                     .with_terminal_policy(match request.metroid_terminal.as_deref() {
                         Some(identifier) => MetroidTerminalPolicy::parse(identifier)?,
                         None => MetroidTerminalPolicy::default(),
