@@ -70,6 +70,10 @@ executions = 1000
 wall_seconds = 600
 ```
 
+At the wall limit a faults search drops the jobs still running and writes its
+report within a few seconds. The first SIGINT or SIGTERM stops it the same way,
+and a second one exits at once without a report.
+
 The faults package also accepts `setup`, `ready`, `workload`, `check`, `command`
 and `knobs` in `workload.options`. Lifecycle commands and node/hook commands are
 argument arrays; an explicit shell is required for shell syntax. Nodes, lifecycle
@@ -324,10 +328,13 @@ harmony show "${RUN:?}" --json
 
 Retain stdout, stderr and each command's exit status. A faults search report
 returns `0` without confirmed bugs, unmet reachability assertions, execution
-failures or watchdog cutoffs; unconfirmed hits can still appear. `1` means a
-confirmed bug or unmet reachability assertion. Failures or watchdog cutoffs
-take precedence with `2`; CLI, admission and setup errors also exit `2`,
-sometimes without a run directory. Inspect the report and manifest as well as
+failures or hung jobs; unconfirmed hits can still appear. `1` means a
+confirmed bug or unmet reachability assertion. Failures or hung jobs take
+precedence with `2`. A hung job is a job that tripped the guest progress
+watchdog. The search records it as `hang-N.json` in the run directory and keeps
+running. It records the input of each failed execution as `failure-N.json`, which
+`debug run --actions` replays. CLI, admission and setup errors also exit `2`, sometimes without a run
+directory. Inspect the report and manifest as well as
 the exit status: a completed manifest can accompany any of these codes. `show`
 displays saved evidence; it does not verify artifacts or perform a fresh
 replay. A search wall budget is not a hard process-cleanup deadline. Use the

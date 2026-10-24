@@ -305,6 +305,7 @@ fn search_faults(
             vec!["session-worker".into()],
         )?)
     };
+    let interrupt = consonance_client::termination::install()?;
     let report = package::search(
         &artifacts,
         &vocabulary,
@@ -312,13 +313,14 @@ fn search_faults(
         &resources,
         worker,
         start,
-        None,
+        Some(interrupt),
     )?;
     println!(
-        "{} executions; {} confirmed findings; {} unmet reachability assertions",
+        "{} executions; {} confirmed findings; {} unmet reachability assertions; {} hung jobs",
         report.executions,
         report.bugs.iter().filter(|b| b.confirmed).count(),
-        report.never_satisfied.len()
+        report.never_satisfied.len(),
+        report.watchdog_cutoffs
     );
     Ok(report)
 }
