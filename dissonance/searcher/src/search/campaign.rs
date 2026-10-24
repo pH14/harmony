@@ -549,6 +549,14 @@ pub trait TargetExecution: CampaignTypes {
         self.apply_action(target, action, milestones)?;
         Ok(None)
     }
+    fn finish_live_job(
+        &self,
+        _target: &Self::Target,
+        _start_work: u64,
+        _result: &mut CampaignJobResult<Self>,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
     fn continuation_state(&self, _target: &Self::Target) -> Vec<u64> {
         Vec::new()
     }

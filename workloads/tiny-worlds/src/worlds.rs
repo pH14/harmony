@@ -2,7 +2,7 @@
 
 use crate::{
     Key, actions, backtrack, chain, crossing, deadline, deadline_actions, delayed, fork, graph,
-    map, maze, passive_clock, resource, route, targets, trap,
+    map, maze, passive_clock, resource, route, targets, trap, vertical,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,7 @@ pub enum World {
     Map(map::Config),
     Graph(graph::Config),
     Crossing(crossing::Config),
+    Vertical(vertical::Config),
     PassiveClock(passive_clock::Config),
     Targets(targets::Config),
     Fork(fork::Config),
@@ -47,6 +48,7 @@ pub enum State {
     Map(map::State),
     Graph(graph::State),
     Crossing(crossing::State),
+    Vertical(vertical::State),
     PassiveClock(passive_clock::State),
     Targets(targets::State),
     Fork(fork::State),
@@ -68,6 +70,7 @@ impl World {
             Self::Map(w) => w.validate(),
             Self::Graph(w) => w.validate(),
             Self::Crossing(w) => w.validate(),
+            Self::Vertical(w) => w.validate(),
             Self::PassiveClock(w) => w.validate(),
             Self::Targets(w) => w.validate(),
             Self::Fork(w) => w.validate(),
@@ -93,6 +96,7 @@ impl World {
                 (Self::Map(w), State::Map(s)) => w.state_is_bounded(s),
                 (Self::Graph(w), State::Graph(s)) => w.state_is_bounded(s),
                 (Self::Crossing(w), State::Crossing(s)) => w.state_is_bounded(s),
+                (Self::Vertical(w), State::Vertical(s)) => w.valid_state(s),
                 (Self::PassiveClock(w), State::PassiveClock(s)) => w.valid_state(s),
                 (Self::Targets(w), State::Targets(s)) => w.state_is_bounded(s),
                 (Self::Fork(w), State::Fork(s)) => w.state_is_bounded(s),
@@ -114,6 +118,7 @@ impl World {
             Self::Map(w) => State::Map(w.initial()),
             Self::Graph(w) => State::Graph(w.initial()),
             Self::Crossing(w) => State::Crossing(w.initial()),
+            Self::Vertical(_) => State::Vertical(vertical::State::default()),
             Self::PassiveClock(w) => State::PassiveClock(w.initial()),
             Self::Targets(w) => State::Targets(w.initial()),
             Self::Fork(w) => State::Fork(w.initial()),
@@ -136,6 +141,7 @@ impl World {
             (Self::Map(w), State::Map(s)) => State::Map(w.step(s, action)),
             (Self::Graph(w), State::Graph(s)) => State::Graph(w.step(s, action)),
             (Self::Crossing(w), State::Crossing(s)) => State::Crossing(w.step(s, action)),
+            (Self::Vertical(w), State::Vertical(s)) => State::Vertical(w.apply(s, action)),
             (Self::PassiveClock(w), State::PassiveClock(s)) => {
                 State::PassiveClock(w.step(s, action))
             }
@@ -159,6 +165,7 @@ impl World {
             (Self::Map(w), State::Map(s)) => w.goal(s),
             (Self::Graph(w), State::Graph(s)) => w.goal(s),
             (Self::Crossing(w), State::Crossing(s)) => w.goal(s),
+            (Self::Vertical(w), State::Vertical(s)) => w.valid_state(s) && s.goal,
             (Self::PassiveClock(w), State::PassiveClock(s)) => w.goal(s),
             (Self::Targets(w), State::Targets(s)) => w.goal(s),
             (Self::Fork(w), State::Fork(s)) => w.goal(s),
@@ -180,6 +187,7 @@ impl World {
             Self::Map(w) => w.reachable(),
             Self::Graph(w) => w.reachable(),
             Self::Crossing(w) => w.reachable(),
+            Self::Vertical(w) => w.reachable(),
             Self::PassiveClock(w) => w.reachable(),
             Self::Targets(w) => w.reachable(),
             Self::Fork(w) => w.reachable(),
@@ -200,6 +208,7 @@ impl World {
             (Self::Map(w), State::Map(s)) => w.key(s, broken),
             (Self::Graph(w), State::Graph(s)) => w.key(s, broken),
             (Self::Crossing(w), State::Crossing(s)) => w.key(s, broken),
+            (Self::Vertical(w), State::Vertical(s)) => w.key(s),
             (Self::PassiveClock(w), State::PassiveClock(s)) => w.key(s, broken),
             (Self::Targets(w), State::Targets(s)) => w.key(s, broken),
             (Self::Fork(w), State::Fork(s)) => w.key(s, broken),
@@ -209,6 +218,8 @@ impl World {
     pub fn work_unit(&self) -> &'static str {
         if matches!(self, Self::PassiveClock(_)) {
             "clock_ticks"
+        } else if matches!(self, Self::Vertical(_)) {
+            "frames"
         } else {
             "transitions"
         }
@@ -216,6 +227,8 @@ impl World {
     pub fn action_cost_fn(&self) -> fn(&u8) -> u64 {
         if matches!(self, Self::PassiveClock(_)) {
             |a| u64::from(*a)
+        } else if matches!(self, Self::Vertical(_)) {
+            |a| u64::from(vertical::duration(*a))
         } else {
             |_| 1
         }

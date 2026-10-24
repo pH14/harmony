@@ -17,6 +17,7 @@ pub mod resource;
 pub mod route;
 pub mod targets;
 pub mod trap;
+pub mod vertical;
 pub mod worlds;
 use worlds::{State, World};
 
@@ -24,6 +25,7 @@ pub const STAGE_PLACES: u16 = 1024;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SearchSettings {
+    pub input_mode: searcher::search::draw::InputMode,
     pub mixture: Option<searcher::search::draw::DrawMixture>,
     pub stop_on_objective: Option<bool>,
 }
@@ -437,6 +439,8 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
             "tiny_actions".into(),
             if matches!(self.config, World::PassiveClock(_)) {
                 "weighted_hold_bands_v1".into()
+            } else if matches!(self.config, World::Vertical(_)) {
+                "vertical-two-bit-uniform-holds-2-64-v1".into()
             } else if let World::Crossing(w) = &self.config
                 && w.action_denominator.is_some()
             {
@@ -459,6 +463,58 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
         }
         Ok(())
     }
+    fn sticky_controller(
+        &self,
+        _: &(),
+        previous: Option<&u8>,
+    ) -> Option<(u8, u8, std::num::NonZeroU64)> {
+        matches!(self.config, World::Vertical(_)).then(|| {
+            (
+                previous.copied().unwrap_or(0) & vertical::CONTROLLER_MASK,
+                vertical::CONTROLLER_MASK,
+                std::num::NonZeroU64::new(u64::from(vertical::LONGEST_HOLD)).unwrap(),
+            )
+        })
+    }
+    fn sticky_actions(
+        &self,
+        _: &(),
+        input: &mut searcher::search::sticky_input::StickyInput,
+        work: std::num::NonZeroU64,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        if !matches!(self.config, World::Vertical(_)) {
+            return Err("sticky adapter requires vertical world".into());
+        }
+        input
+            .block(
+                usize::try_from(work.get())?,
+                std::num::NonZeroU64::new(u64::from(vertical::LONGEST_HOLD)).unwrap(),
+            )
+            .into_iter()
+            .map(|(buttons, frames)| Ok(vertical::action(buttons, u8::try_from(frames)?)))
+            .collect()
+    }
+    fn duration_of_action(&self, _: &(), action: &u8) -> Option<std::num::NonZeroU64> {
+        matches!(self.config, World::Vertical(_))
+            .then(|| std::num::NonZeroU64::new(u64::from(vertical::duration(*action))).unwrap())
+    }
+    fn refresh_selected_input_timing(
+        &self,
+        _: &(),
+        seed: u64,
+        suffix: &mut [u8],
+    ) -> Result<(), Box<dyn Error>> {
+        if matches!(self.config, World::Vertical(_)) {
+            let mut rand = RomuDuoJrRand::with_seed(seed ^ u64::from_le_bytes(*b"HOLDTIME"));
+            for action in suffix {
+                *action = vertical::action(
+                    *action & vertical::CONTROLLER_MASK,
+                    vertical::sample_hold(&mut rand),
+                );
+            }
+        }
+        Ok(())
+    }
     fn sample_alphabet(
         &self,
         _: &(),
@@ -470,6 +526,10 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
         }
         if let World::Crossing(w) = &self.config {
             return Ok(w.sample(rand));
+        }
+        if matches!(self.config, World::Vertical(_)) {
+            let buttons = rand.below(NonZeroUsize::new(4).unwrap()) as u8;
+            return Ok(vertical::action(buttons, vertical::sample_hold(rand)));
         }
         Ok(self
             .config
@@ -531,6 +591,43 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         *milestones |= self.config.goal(target.state);
         Ok(())
     }
+    fn continuation_state(&self, target: &Target) -> Vec<u64> {
+        match (&self.config, target.state) {
+            (World::Vertical(w), State::Vertical(state)) => w.observation(state),
+            _ => Vec::new(),
+        }
+    }
+    fn continuation_block_work(&self, _: &()) -> std::num::NonZeroU64 {
+        std::num::NonZeroU64::new(u64::from(vertical::LONGEST_HOLD)).unwrap()
+    }
+    fn finish_live_job(
+        &self,
+        target: &Target,
+        start_work: u64,
+        result: &mut CampaignJobResult<Self>,
+    ) -> Result<(), Box<dyn Error>> {
+        for observation in result
+            .actions
+            .iter_mut()
+            .flat_map(|a| a.observations.iter_mut())
+        {
+            observation.work_in_job = observation
+                .work_in_job
+                .checked_sub(start_work)
+                .ok_or("observation predates job")?;
+        }
+        let work = target.work - start_work;
+        if let Some(observation) = result
+            .actions
+            .first_mut()
+            .and_then(|a| a.observations.first_mut())
+        {
+            observation.job_work = Some(work);
+        } else if work != 0 {
+            return Err("job executed work without an observation".into());
+        }
+        Ok(())
+    }
     fn rollout_observations(&self, target: &Target) -> Vec<Observation> {
         target.observation.iter().cloned().collect()
     }
@@ -558,23 +655,7 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
             retention,
             stop_rollout_on_objective,
         )?;
-        let work = target.work - start_work;
-        for observation in result
-            .actions
-            .iter_mut()
-            .flat_map(|action| action.observations.iter_mut())
-        {
-            observation.work_in_job -= start_work;
-        }
-        if let Some(observation) = result
-            .actions
-            .first_mut()
-            .and_then(|a| a.observations.first_mut())
-        {
-            observation.job_work = Some(work);
-        } else if work != 0 {
-            return Err("job executed work without an observation".into());
-        }
+        self.finish_live_job(target, start_work, &mut result)?;
         Ok(result)
     }
     fn snapshot(&self, target: &mut Target) -> Result<Snapshot, Box<dyn Error>> {
@@ -893,6 +974,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         e.crossing_pool_actions += u64::from(before.position < w.cells);
                     }
                 }
+                (World::Vertical(_), State::Vertical(_), State::Vertical(_)) => {}
                 _ => return Err("observation family mismatch".into()),
             }
             e.objectives += u64::from(self.config.goal(observation.after));
@@ -935,6 +1017,16 @@ impl Write for CountingStream {
     }
 }
 
+fn validate_input_mode<const CAPACITY_TWO: bool>(
+    workload: &Workload<CAPACITY_TWO>,
+    settings: SearchSettings,
+) -> Result<(), Box<dyn Error>> {
+    if !settings.input_mode.is_current() && !matches!(workload.config, World::Vertical(_)) {
+        return Err("experimental input modes currently require the vertical world".into());
+    }
+    Ok(())
+}
+
 pub fn run_scaled(
     workload: &Workload,
     seed: u64,
@@ -943,6 +1035,7 @@ pub fn run_scaled(
     settings: SearchSettings,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     workload.config.validate()?;
+    validate_input_mode(workload, settings)?;
     let scale = workload.scale.ok_or("scaled run needs scale settings")?;
     scale.validate()?;
     if budget == 0 || budget > Scale::MAX_WORK_BUDGET {
@@ -959,7 +1052,7 @@ pub fn run_scaled(
         &mut stream,
         Some(progress),
         CampaignExecutionOptions {
- input_mode: Default::default(),
+            input_mode: settings.input_mode,
             work_budget: Some(budget),
             checkpoints: None,
             placement: None,
@@ -1051,6 +1144,7 @@ fn campaign<const CAPACITY_TWO: bool>(
     settings: SearchSettings,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     workload.config.validate()?;
+    validate_input_mode(workload, settings)?;
     if workload.scale.is_some() {
         return Err("scaled runs use run_scaled".into());
     }
@@ -1068,7 +1162,7 @@ fn campaign<const CAPACITY_TWO: bool>(
         &mut stream,
         None,
         CampaignExecutionOptions {
- input_mode: Default::default(),
+            input_mode: settings.input_mode,
             work_budget: Some(budget),
             ..Default::default()
         },
@@ -1087,7 +1181,7 @@ fn campaign<const CAPACITY_TWO: bool>(
             &mut again,
             None,
             CampaignExecutionOptions {
- input_mode: Default::default(),
+                input_mode: settings.input_mode,
                 work_budget: Some(budget),
                 ..Default::default()
             },
@@ -1120,6 +1214,7 @@ fn campaign<const CAPACITY_TWO: bool>(
     let mut first_objective_execution = None;
     let mut jobs_after_budget = 0_usize;
     let mut first_objective_work = None;
+    let mut input_strategy_jobs = [0_u64; 4];
     let mut continuation_work = 0;
     let mut continuation_jobs = 0;
     let mut pre_objective_continuation_jobs = 0;
@@ -1147,6 +1242,8 @@ fn campaign<const CAPACITY_TWO: bool>(
         }
         if let CampaignStreamRecord::Job(job) = &record {
             executions += 1;
+            input_strategy_jobs[usize::from(job.input_decision.sticky)
+                + 2 * usize::from(job.input_decision.chaining)] += 1;
             let job_work = job.execution_work;
             if work >= budget {
                 jobs_after_budget += 1;
@@ -1244,6 +1341,7 @@ fn campaign<const CAPACITY_TWO: bool>(
         "route_evidence":route_evidence,"layout":workload.config.layout(),"parent_timeline":timeline,
         "pre_objective_continuation_jobs":pre_objective_continuation_jobs,
         "pre_objective_continuation_work":pre_objective_continuation_work,
+        "input_mode":settings.input_mode,"input_strategy_jobs":input_strategy_jobs,
         "continuation_work":continuation_work,"continuation_jobs":continuation_jobs,
         "first_objective_work":first_objective_work,"parent_draws":parent_draws,"skipped_draws":skipped_draws,
         "success":first_objective_work.is_some_and(|w|w<=budget),

@@ -786,3 +786,33 @@ Each world draws from one pool of 512 shared layouts, so these are approximate
 rates, not 300 independent experiments. All underlying runs reached the goal;
 rejections came from work intervals. This sampling noise limits forecasts
 from small cohorts and does not override the panel's rejection rule.
+
+## Vertical climb model (experimental)
+
+The `vertical` module defines the transition model for the rollout experiment.
+One archive cell spans the entire climb and the spot near its top. Height and
+horizontal exit progress are observations, not archive preferences or places.
+Holding Up climbs one unit per frame; releasing it falls one unit per frame.
+Right alone moves horizontally while falling. Crossing the exit distance
+opens the exit only within its vertical window; starting too high overshoots
+the exit, and continuing to hold Right cannot recover it. Releasing Right
+resets the horizontal approach. Simultaneous Up and Right
+does not traverse the exit. The layout supplies screen height, exit height,
+window width and crossing distance; the distance must fit within the window.
+There is no clock in the state or continuation observation. The only new key
+is the completed objective. Button bits encode the two independent controls.
+Unit speed defines the world coordinate unit; geometry is supplied by the
+layout, not embedded in the searcher. The `vertical` family runs through the ordinary campaign runner and verifies
+its stream and witness. Actions pack two controller bits and a six-bit duration-minus-one into the
+existing byte alphabet. Ordinary holds are uniform from 2 through 64 frames,
+refreshed independently after symbol selection; 64 is the encoding capacity,
+and 2 matches the rollout experiment’s minimum ordinary hold. One-frame actions
+remain representable for sticky flips. The vertical world accepts `search.input_mode` values `current`, `chaining`,
+`sticky`, and `sticky_chaining`, using the same energy gates and generators as
+the game experiment. Experimental modes require one worker and admission
+window and currently reject other world families. Each continuation block
+covers at least 64 frames; the observation is height, horizontal exit progress,
+and completion. The report counts ordinary, sticky, chaining, and combined
+jobs in `input_strategy_jobs`, in that order. Verified runs replay and repeat
+the whole campaign, account for work and replay any objective witness. This
+world is not yet calibrated and does not constitute a rung-2 result.

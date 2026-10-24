@@ -1235,3 +1235,10 @@ excluded from activity without changing archive retention.
 vectors, retention preview and final stop reason. Ordinary jobs leave unavailable
 activity and retention fields empty. These diagnostic traces support the hold
 and chain validity gate; they do not substitute for ordinary stream replay.
+
+Workloads that normalize observations once per job can implement
+`finish_live_job`. The input executor calls it once after assembling all live
+blocks and before hashing the result. It must preserve execution and archive
+decisions; it only finalizes recorded workload observations. The tiny-world
+adapter uses it to attach job work and convert cumulative work to job-relative
+work, matching its ordinary job executor.

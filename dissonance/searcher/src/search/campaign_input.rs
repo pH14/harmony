@@ -262,6 +262,7 @@ pub(crate) fn execute_input_job<G: Workload>(
         workload.refresh_selected_input_timing(&config.run, seed, &mut suffix)?;
         suffix.truncate(block_len);
     }
+    workload.finish_live_job(target, before, &mut result)?;
     workload.verify_integrity()?;
     let execution_work = workload.execution_work(target).saturating_sub(before);
     let result_sha256 = workload.certified_result_sha256(&result, target)?;

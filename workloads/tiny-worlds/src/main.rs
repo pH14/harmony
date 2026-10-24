@@ -26,6 +26,8 @@ struct Request {
 #[serde(deny_unknown_fields)]
 struct SearchRequest {
     #[serde(default)]
+    input_mode: searcher::search::draw::InputMode,
+    #[serde(default)]
     mixture: Option<String>,
     #[serde(default)]
     stop_on_objective: Option<bool>,
@@ -45,6 +47,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map(draw_mixture_from_identifier)
             .transpose()?;
         settings.stop_on_objective = search.stop_on_objective;
+        settings.input_mode = search.input_mode;
     }
     let workload = Workload {
         config: request.config,

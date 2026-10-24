@@ -54,6 +54,7 @@ impl LocalState {
             WorldState::Chain(_)
             | WorldState::Graph(_)
             | WorldState::Crossing(_)
+            | WorldState::Vertical(_)
             | WorldState::PassiveClock(_)
             | WorldState::Targets(_)
             | WorldState::Fork(_) => {
@@ -102,6 +103,7 @@ impl Config {
                 stage.world,
                 World::Graph(_)
                     | World::Crossing(_)
+                    | World::Vertical(_)
                     | World::PassiveClock(_)
                     | World::Targets(_)
                     | World::Fork(_)
