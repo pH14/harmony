@@ -6030,6 +6030,8 @@ mod tests {
         fn continuation_state(&self, target: &Self::Target) -> Vec<u64> {
             vec![if ALIVE_TEST.get() == 5 {
                 0
+            } else if ALIVE_TEST.get() == 8 {
+                u64::from(target.value % 3)
             } else {
                 u64::from(target.value)
             }]
@@ -10774,6 +10776,7 @@ mod tests {
     fn alive_rollouts_stop_on_retention_stasis_death_and_budget() {
         for (mode, input, budget, expected, block_len, actions) in [
             (1, 1, 100, 4, 1, 4),
+            (8, 1, 100, 3, 1, 3),
             (2, 0, 100, 1, 1, 1),
             (5, 1, 100, 1, 1, 1),
             (6, 1, 7, 3, 1, 7),
@@ -10808,6 +10811,9 @@ mod tests {
                 .run_input_job(&mut target, &job, false, true, budget)
                 .unwrap();
             assert_eq!(trace.blocks.len(), expected);
+            if mode == 8 {
+                assert_eq!(trace.stop_reason, "repeated_observation");
+            }
             if mode == 5 {
                 assert_eq!(trace.stop_reason, "unchanged");
                 assert_eq!(trace.blocks[0].before, trace.blocks[0].after);

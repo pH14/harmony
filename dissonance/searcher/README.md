@@ -1261,3 +1261,12 @@ Continuation sources receive the same acceptance factor; skipped sources move
 to the back of their preference queue without advancing their edge cursor.
 Counts persist and compact with entries and are included in memory accounting.
 No additional workload execution, admission change, or hard exclusion occurs.
+
+Observers reconstruct inputs with `inspect_entry_input`, which leaves campaign
+work counters unchanged. Search execution uses counted reconstruction so live
+view access cannot change the report that ordinary replay must reproduce.
+
+Chaining treats a repeated block-boundary observation within the current job
+as stasis, including cycles longer than one block. The visited observations
+are local to that job; retention and source selection are unchanged. This
+prevents a changing but cyclic path from consuming the remaining work budget.

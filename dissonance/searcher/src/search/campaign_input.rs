@@ -134,6 +134,7 @@ pub(crate) fn execute_input_job<G: Workload>(
         stop_reason: "empty_suffix".into(),
     };
     let mut path = Vec::new();
+    let mut seen_states = std::collections::BTreeSet::new();
     loop {
         if suffix.is_empty()
             || workload
@@ -143,6 +144,7 @@ pub(crate) fn execute_input_job<G: Workload>(
             break;
         }
         let initial_state = workload.continuation_state(target);
+        seen_states.insert(initial_state.clone());
         let block_start = workload.execution_work(target);
         let mut retained = false;
         loop {
@@ -217,6 +219,7 @@ pub(crate) fn execute_input_job<G: Workload>(
         }
         let final_state = workload.continuation_state(target);
         let changed = initial_state != final_state;
+        let repeated = !seen_states.insert(final_state.clone());
         trace.blocks.push(InputBlockTrace {
             work: workload.execution_work(target).saturating_sub(block_start),
             before: Some(initial_state),
@@ -236,6 +239,8 @@ pub(crate) fn execute_input_job<G: Workload>(
             Some("single_block")
         } else if !changed {
             Some("unchanged")
+        } else if repeated {
+            Some("repeated_observation")
         } else {
             None
         };
