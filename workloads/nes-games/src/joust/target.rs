@@ -18,7 +18,7 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 pub type JoustInput = crate::search::archive::Input<ButtonChord>;
 
-pub const TARGET_WAVE: u8 = 26;
+pub const TARGET_WAVE: u8 = 50;
 pub const START_LIVES: u8 = 4;
 
 const GAME_MODE: usize = 0x00;
