@@ -129,6 +129,7 @@ export default {
   buildMap,
   buildSprites,
   decode,
+  mapProgress: (observation) => HEIGHT - observation.y,
   campaign: true,
   boot,
 };

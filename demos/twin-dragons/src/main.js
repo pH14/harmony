@@ -1734,7 +1734,7 @@ function startSearch(level = bootLevel) {
         if (isMapEvidence(state.observation, catalog.levels)) {
           seenMaps.add(state.observation.level);
             if (fresh) {
-            bestByMap.set(state.observation.level, state.observation.x);
+            bestByMap.set(state.observation.level, mapProgress(state.observation));
             bestStates.set(state.observation.level, state.id);
             heat.visit(
               {
@@ -1798,8 +1798,8 @@ function startSearch(level = bootLevel) {
           if (point.retained !== null && !arrivals.has(o.level))
             arrivals.set(o.level, point.retained);
           const best = bestByMap.get(o.level) || 0;
-          if (o.x > best && point.retained !== null) {
-            bestByMap.set(o.level, o.x);
+          if (mapProgress(o) > best && point.retained !== null) {
+            bestByMap.set(o.level, mapProgress(o));
             bestStates.set(o.level, point.retained);
             if (o.level === mapLevel || first) latestBest = point.retained;
           }
@@ -1922,6 +1922,9 @@ function replaceDropped(replacements) {
       for (const [level, id] of states)
         if (id === dropped) next === null ? states.delete(level) : states.set(level, next);
   }
+}
+function mapProgress(observation) {
+  return game.mapProgress ? game.mapProgress(observation) : observation.x;
 }
 function levelProgress(observation) {
   return game.levelsCleared ? { ...observation, cleared: game.levelsCleared(observation) } : observation;
