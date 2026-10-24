@@ -602,6 +602,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
         x86_dynamic_policy(bytes, &elf)?;
     }
     let entries: BTreeSet<_> = std::iter::once(elf.entry())
+        .filter(|entry| *entry != 0)
         .chain(
             elf.symbols()
                 .chain(elf.dynamic_symbols())
@@ -616,11 +617,17 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
         {
             continue;
         }
-        let segment_start = header.p_vaddr(elf.endian());
-        let segment_file_start = header.p_offset(elf.endian());
-        let segment_end = segment_start.saturating_add(header.p_filesz(elf.endian()));
-        for entry in entries.range(segment_start..segment_end) {
-            let file_offset = segment_file_start.saturating_add(entry - segment_start);
+        let page_head = header.p_vaddr(elf.endian()) % 4096;
+        let mapped_start = header.p_vaddr(elf.endian()) - page_head;
+        let mapped_end = header
+            .p_vaddr(elf.endian())
+            .saturating_add(header.p_filesz(elf.endian()))
+            .saturating_add(4095)
+            / 4096
+            * 4096;
+        let mapped_file_start = header.p_offset(elf.endian()).saturating_sub(page_head);
+        for entry in entries.range(mapped_start..mapped_end) {
+            let file_offset = mapped_file_start.saturating_add(entry - mapped_start);
             if header_tables.iter().any(|&(start, end)| {
                 usize::try_from(file_offset).is_ok_and(|offset| (start..end).contains(&offset))
             }) {
@@ -1872,6 +1879,35 @@ mod tests {
                 .to_string()
                 .contains("entry point inside the header tables")
         );
+    }
+
+    #[test]
+    fn an_entry_point_in_the_header_page_before_a_late_load_is_refused() {
+        let mut bytes = x86_elf_with_mapped_header_tables(&[0xc3], &[0x0f, 0x03, 0xc1, 0xc3]);
+        let filesz = 4096 + 1 - 0x200_u64;
+        for (offset, value) in [
+            (72, 0x200_u64),
+            (80, 0x400200),
+            (88, 0x400200),
+            (96, filesz),
+            (104, filesz),
+            (24, 0x400138),
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        assert!(
+            scan_elf(&bytes, "")
+                .unwrap_err()
+                .to_string()
+                .contains("entry point inside the header tables")
+        );
+    }
+
+    #[test]
+    fn a_missing_entry_point_is_not_an_entry_inside_the_header_tables() {
+        let mut bytes = x86_elf_with_mapped_header_tables(&[0xc3], &[0x59, 0x0f, 0x03, 0x00]);
+        bytes[24..32].copy_from_slice(&0_u64.to_le_bytes());
+        assert_eq!(scan_elf(&bytes, "").unwrap().unwrap(), []);
     }
 
     #[test]
