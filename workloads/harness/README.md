@@ -127,6 +127,10 @@ journal grows with the stream and the number of reads, not their product. The
 checker reports:
 
 - an append acknowledged before a read started that the read lacks;
+- a value that a read returned and a read started after it lacks. Only reads
+  not pinned to a node supply these values, because an adapter answers them
+  with committed state, while a node's own copy can hold entries a later
+  leader replaces;
 - two reads that order common values differently, or a later read that places
   a new value before a value an earlier read had already returned;
 - a value twice in one read;
@@ -135,7 +139,7 @@ checker reports:
   definite an error the system returns after applying the write;
 - two acknowledged appends with the same position.
 
-The first two cover reads that are not pinned to a node. Pinned reads have
+The first three cover reads that are not pinned to a node. Pinned reads have
 their own assertions, so a node whose copy diverges is named apart from a
 loss every read shows:
 
@@ -143,6 +147,9 @@ loss every read shows:
   pinned read that lacks an append acknowledged before it started. The
   evidence has the node, the first missing value, the number missing and up to
   32 missing values.
+- `log: every node's read includes every value an earlier read returned`
+  reports a pinned read that lacks a value an unpinned read returned before it
+  started.
 - `log: each node's reads agree on one order of values` reports two reads
   pinned to the same node that order common values differently, or a later
   read on a node that places a new value before a value an earlier read on
