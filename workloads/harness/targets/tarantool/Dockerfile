@@ -96,7 +96,7 @@ SHELL ["/bin/sh", "-euxc"]
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends iproute2 iptables libicu72 libncurses6 libreadline8 libssl3 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
-    && rm /usr/lib/x86_64-linux-gnu/ossl-modules/legacy.so \
+    && rm /usr/lib/*/ossl-modules/legacy.so \
     && ip -V && tc -V && iptables -V \
     && for dir in /usr/lib/*/xtables; do \
         ls "$dir" | tr A-Z a-z | sort | uniq -d | while read -r name; do \
