@@ -4,6 +4,7 @@ pub use nes_games::{chord, nes_backend};
 pub use searcher::{search, target};
 pub mod admission;
 pub mod allocator;
+pub mod castlevania;
 pub mod eval;
 pub mod famidash;
 pub mod film;

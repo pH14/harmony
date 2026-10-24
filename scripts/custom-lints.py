@@ -36,6 +36,7 @@ GAME_NAMES = [
     r"tetris",
     r"twin[\s_-]*dragons",
     r"punch[\s_-]*out",
+    r"castlevania",
 ]
 
 # Emulator and runtime names.

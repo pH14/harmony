@@ -2,6 +2,7 @@
 
 pub use searcher::{search, target};
 pub mod arcade;
+pub mod castlevania;
 pub mod chord;
 pub mod famidash;
 pub mod metroid;

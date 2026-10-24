@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect executions to each Metroid, Mega Man 2, Punch-Out!! or Zelda milestone per build, seed and cell.
+"""Collect executions to each Metroid, Mega Man 2, Punch-Out!!, Zelda or Castlevania milestone per build, seed and cell.
 
 Each source is either a matrix directory written by `eval.py run` or a results
 JSON written by `eval.py` holding cell summaries under `rows`. For every
@@ -99,11 +99,26 @@ ZELDA_MILESTONES = (
     + ["ending"]
 )
 
+CASTLEVANIA_BOSSES = {3: "phantom_bat", 6: "medusa", 9: "mummies", 12: "frankenstein", 15: "death", 18: "dracula"}
+CASTLEVANIA_MILESTONES = [
+    name
+    for stage in range(1, 19)
+    for name in [f"stage_{stage:02}_entered"]
+    + (
+        [f"{CASTLEVANIA_BOSSES[stage]}_engaged"]
+        + (["dracula_second_form"] if stage == 18 else [])
+        + [f"{CASTLEVANIA_BOSSES[stage]}_defeated"]
+        if stage in CASTLEVANIA_BOSSES
+        else []
+    )
+] + ["ending"]
+
 MILESTONES = {
     "metroid": METROID_MILESTONES,
     "mm2": MM2_MILESTONES,
     "punchout": PUNCHOUT_MILESTONES,
     "zelda": ZELDA_MILESTONES,
+    "castlevania": CASTLEVANIA_MILESTONES,
 }
 
 

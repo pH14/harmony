@@ -2,6 +2,7 @@
 
 use nes_games::arcade::{ArcadeGame, famidash};
 use nes_workload::{
+    castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
     eval::{Request, Result, evaluate, run_cli},
     famidash::{
         campaign::{FamidashCampaignRun, FamidashGame},
@@ -103,6 +104,9 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "famidash-b" => evaluate_live::<LiveFamidash<2>>(rom, request, out, started, "famidash-b"),
         "famidash-c" => evaluate_live::<LiveFamidash<3>>(rom, request, out, started, "famidash-c"),
         "famidash-d" => evaluate_live::<LiveFamidash<4>>(rom, request, out, started, "famidash-d"),
+        "castlevania" => evaluate_live::<
+            nes_games::castlevania::campaign::CastlevaniaGame<NativeMachine>,
+        >(rom, request, out, started, "castlevania"),
         "punchout" => evaluate_live::<nes_games::punchout::campaign::PunchOutGame<NativeMachine>>(
             rom, request, out, started, "punchout",
         ),
@@ -167,7 +171,7 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "punchout" | "zelda"
+            "twin-dragons" | "castlevania" | "punchout" | "zelda"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -276,6 +280,18 @@ fn main() -> Result<()> {
                 started,
                 "twin-dragons",
                 <TwinDragonsGame>::memory_view,
+            ),
+            "castlevania" => evaluate_watching(
+                CastlevaniaGame::new(&rom, p, h, &execution_sha256)
+                    .with_milestone_input_dir(out.join("milestone-inputs")),
+                CastlevaniaCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "castlevania",
+                <CastlevaniaGame>::memory_view,
             ),
             "punchout" => evaluate_watching(
                 PunchOutGame::new(&rom, p, h, &execution_sha256),

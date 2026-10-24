@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+pub mod castlevania;
 pub mod famidash;
 pub mod feed;
 pub mod mega_man;
