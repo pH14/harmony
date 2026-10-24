@@ -23,6 +23,8 @@ pub const FLOORS: u8 = 8;
 pub const FLOOR_HEIGHT: u16 = 48;
 pub const START_LIVES: u8 = 3;
 pub const SCREEN_CROP: u16 = 8;
+pub const MAP_PAD: u16 = 194;
+pub const BONUS_FLOOR: u8 = 9;
 pub const START_X: u8 = 0x38;
 pub const START_Y: u8 = 0xc0;
 pub const START_NAMETABLE: u8 = 3;
@@ -61,7 +63,11 @@ impl IceClimbersMechanicalState {
 
     #[must_use]
     pub fn map_y(self) -> u16 {
-        self.world_y().saturating_sub(SCREEN_CROP - 1)
+        if self.phase >= BONUS_FLOOR {
+            u16::from(self.y).saturating_sub(SCREEN_CROP - 1)
+        } else {
+            (self.world_y() + MAP_PAD).saturating_sub(SCREEN_CROP - 1)
+        }
     }
 
     #[must_use]

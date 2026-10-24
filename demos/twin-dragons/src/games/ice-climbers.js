@@ -14,14 +14,15 @@ const LEVEL_COUNT = 32,
   SCREEN_WIDTH = 256,
   SCREEN_HEIGHT = 224,
   CROP_TOP = 8,
-  START_TOP = 444,
+  SCRATCH_HEIGHT = 1200,
+  MAP_FIRST_FRAME = 20,
   SCROLL_WRAP = 240,
   START_X = 0x38,
   START_Y = 0xc0,
   START_SCROLL = 0xcc;
 
 export const MAP_WIDTH = SCREEN_WIDTH;
-export const MAP_HEIGHT = START_TOP + SCREEN_HEIGHT;
+export const MAP_HEIGHT = 862;
 export const MAP_SIZES = Array.from({ length: LEVEL_COUNT }, () => ({ width: MAP_WIDTH, height: MAP_HEIGHT }));
 
 export function levelName(id) {
@@ -66,34 +67,29 @@ function bootPlayable(engine, level) {
 }
 
 export function buildMap(engine, level) {
-  const ram = title(engine, level), data = new Uint8ClampedArray(MAP_WIDTH * MAP_HEIGHT * 4);
-  let top = START_TOP, previous = -1, scrolled = false, first = true;
+  const ram = title(engine, level),
+    scratch = new Uint8ClampedArray(MAP_WIDTH * SCRATCH_HEIGHT * 4);
+  let offset = 0, previous = -1, started = false, still = 0;
   const copy = () => {
-    const pixels = engine.pixelView();
-    for (let row = 0; row < SCREEN_HEIGHT; row++) {
-      const y = top + row;
-      if (y < 0 || y >= MAP_HEIGHT) continue;
-      data.set(pixels.subarray(row * SCREEN_WIDTH * 4, (row + 1) * SCREEN_WIDTH * 4), y * MAP_WIDTH * 4);
-    }
+    const pixels = engine.pixelView(), bottom = SCRATCH_HEIGHT - SCREEN_HEIGHT - offset;
+    if (bottom < 0) return;
+    for (let row = 0; row < SCREEN_HEIGHT; row++)
+      scratch.set(pixels.subarray(row * SCREEN_WIDTH * 4, (row + 1) * SCREEN_WIDTH * 4), (bottom + row) * MAP_WIDTH * 4);
   };
-  for (let frame = 0; frame < 1200 && top > 0; frame++) {
+  for (let frame = 0; frame < 1200 && still < 30; frame++) {
     hideSprites(ram);
     engine.run(0, 1, true);
     const scroll = ram[INTRO_SCROLL];
-    if (frame < 140) {
-      previous = scroll;
-      continue;
-    }
-    if (!scrolled && scroll === previous) {
-      if (first) copy();
-      first = false;
-      continue;
-    }
-    scrolled = true;
-    top -= (previous - scroll + SCROLL_WRAP) % SCROLL_WRAP;
+    if (previous >= 0 && scroll !== previous) {
+      started = true;
+      still = 0;
+      offset += (previous - scroll + SCROLL_WRAP) % SCROLL_WRAP;
+    } else if (started) still++;
     previous = scroll;
-    copy();
+    if (frame >= MAP_FIRST_FRAME) copy();
   }
+  const top = SCRATCH_HEIGHT - SCREEN_HEIGHT - offset,
+    data = scratch.slice(top * MAP_WIDTH * 4, (top + MAP_HEIGHT) * MAP_WIDTH * 4);
   return { width: MAP_WIDTH, height: MAP_HEIGHT, data, reached: MAP_HEIGHT };
 }
 
@@ -137,6 +133,7 @@ export default {
   ramBytes: 2048,
   levelCount: LEVEL_COUNT,
   vertical: true,
+  previewBottom: true,
   pace: 300,
   maxActionFrames: 120,
   menuButtons: false,

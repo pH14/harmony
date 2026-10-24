@@ -1141,8 +1141,10 @@ function addAreaMap(id, bitmap) {
 }
 function drawLevelPreview(preview, image) {
   const bitmap = image.small || image;
-  const height = bitmap.height, width = Math.min(bitmap.width, Math.round((height * preview.width) / preview.height));
-  preview.getContext("2d").drawImage(bitmap, 0, 0, width, height, 0, 0, preview.width, preview.height);
+  const cropped = game.previewBottom,
+    height = cropped ? Math.min(bitmap.height, Math.round((bitmap.width * preview.height) / preview.width)) : bitmap.height,
+    width = cropped ? bitmap.width : Math.min(bitmap.width, Math.round((height * preview.width) / preview.height));
+  preview.getContext("2d").drawImage(bitmap, 0, cropped ? bitmap.height - height : 0, width, height, 0, 0, preview.width, preview.height);
 }
 function panorama(level) {
   if (game.buildMap) {
