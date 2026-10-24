@@ -63,7 +63,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 900 } }),
   errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 await page.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
-await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4205"}/?game=zelda&pace=0&workers=1`);
+await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?game=zelda&pace=0&workers=1`);
 await page.locator("#level-picker[open]").waitFor({ timeout: 30000 });
 const chooser = page.waitForEvent("filechooser");
 await page.locator("#rom-drop").click();
