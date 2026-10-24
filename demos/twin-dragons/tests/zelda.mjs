@@ -32,7 +32,7 @@ for (const tile of overworld.tiles) {
   assert.equal(tile.data.length, tile.width * tile.height * 4);
 }
 const dungeon = buildMap(engine, 1);
-assert.equal(dungeon.tiles.length, 128, "Dungeon 1 has a 16 by 8 grid of rooms");
+assert.equal(dungeon.tiles.length, 17, "Dungeon 1 has 17 rooms on its 16 by 8 grid");
 assert.deepEqual(MAP_SIZES[1], { width: 4096, height: 1344 });
 engine.restore(root);
 console.log("Overworld and dungeon 1 maps build from the ROM.");

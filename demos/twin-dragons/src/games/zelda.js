@@ -18,7 +18,12 @@ const RAM_LEVEL = 0x10,
   PLAY_TOP = 56,
   FRAME_WIDTH = 256,
   FRAME_HEIGHT = 224,
-  LINK_SIZE = 16;
+  LINK_SIZE = 16,
+  ROM_HEADER = 16,
+  LEVEL_INFO_START = 103420,
+  LEVEL_INFO_SIZE = 252,
+  LEVEL_INFO_ROTATION = 0x2d,
+  LEVEL_INFO_MASK = 0x3f;
 
 const ENTRANCES = [START_ROOM, 0x73, 0x7d, 0x7c, 0x71, 0x76, 0x79, 0x79, 0x7e, 0x76];
 
@@ -90,13 +95,25 @@ function hideObjects(engine) {
   engine.commitMemory();
 }
 
+// The level block marks the rooms of a dungeon with one bit per grid cell, row by row,
+// after rotating its columns by the rotation byte. Reading the ROM keeps this independent of
+// what the game last copied into cartridge RAM.
+function occupancy(engine, level) {
+  const info = ROM_HEADER + LEVEL_INFO_START + (level - 1) * LEVEL_INFO_SIZE,
+    rotation = engine.rom[info + LEVEL_INFO_ROTATION] & (COLUMNS - 1),
+    mask = engine.rom.subarray(info + LEVEL_INFO_MASK, info + LEVEL_INFO_MASK + COLUMNS);
+  return (room) => (mask[((room & (COLUMNS - 1)) + rotation) & (COLUMNS - 1)] & (0x80 >> (room >> 4))) !== 0;
+}
+
 export function buildMap(engine, level) {
   const saved = engine.capture();
   engine.boot(0);
   if (level !== 0) loadRoom(engine, level, ENTRANCES[level]);
+  const used = level === 0 ? () => true : occupancy(engine, level);
   const start = engine.capture();
   const tiles = [];
   for (let room = 0; room < COLUMNS * ROWS; room++) {
+    if (!used(room)) continue;
     engine.restore(start);
     loadRoom(engine, level, room);
     hideObjects(engine);
