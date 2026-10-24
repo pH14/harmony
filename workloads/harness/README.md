@@ -369,16 +369,26 @@ Dockerfile knows the source SHA-256 of `v2.10.20` (default), `v2.10.23`
 and `v2.15.1`;
 pass `NATS_SOURCE_SHA256` for other versions.
 
+Every target builds and runs from a directory outside the checkout with the
+documented commands:
+
 ```sh
-runtime=$(HARMONY_CONTAINER_TOOL=podman bash workloads/languages/build-runtime.sh)
-podman build --format docker --platform=linux/amd64 \
-  --build-arg HARMONY_RUNTIME_IMAGE="$runtime" \
-  --build-arg NATS_VERSION=v2.10.20 \
-  --file workloads/harness/targets/nats/Dockerfile \
-  --tag harmony-harness-nats:v2.10.20 .
+harmony init /path/to/harmony/workloads/harness/targets/nats/Dockerfile
+harmony check
+harmony prepare
+harmony search --for 30m
+harmony explain SEARCH --finding 1 --jobs 4
 ```
 
-Podman needs `--format docker`; the OCI format ignores `SHELL`.
+`init` sets the checkout as the build context. `prepare` builds the language
+runtime image, passes it as `HARMONY_RUNTIME_IMAGE` and builds with
+`--format docker` under Podman, because the OCI format ignores `SHELL`. Other
+build arguments go in the recipe:
+
+```toml
+[workload.options.build.args]
+NATS_VERSION = "v2.10.23"
+```
 
 Each node's store directory is a 128 MiB node disk (`disk` lines in the
 bundle), so `PowerLoss` and `PowerLossAll` drop the writes the node had not
