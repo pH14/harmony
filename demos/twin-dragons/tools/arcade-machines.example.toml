@@ -29,3 +29,13 @@ workers = 8
 memory_mib = 16384
 memory_max_mib = 24576
 runs = ["/srv/campaigns"]
+
+# A machine with `local = true` runs `nes-eval` on the computer that runs the
+# launcher, with no SSH or systemd. `dir` holds the build output and runs.
+# `workers` and `memory_mib` are the ceilings the page offers; `memory_max_mib`
+# is not used. The launcher builds the core and `nes-eval` from this working tree.
+# [machines.this-mac]
+# local = true
+# dir = "~/harmony-arcade"
+# workers = 8
+# memory_mib = 16384
