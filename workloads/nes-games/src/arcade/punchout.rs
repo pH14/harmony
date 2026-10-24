@@ -95,7 +95,7 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for PunchOutGame<M> {
                     TRACK_WIDTH,
                 ),
                 TRACK_BOTTOM - track(FULL_HEALTH.saturating_sub(state.mac_health), TRACK_HEIGHT),
-                u16::from(state.opponent_action),
+                0,
             ],
             _ => [HIDDEN, 0, 0, 0],
         }
