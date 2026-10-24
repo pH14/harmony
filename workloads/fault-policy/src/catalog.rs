@@ -173,6 +173,11 @@ pub enum Fault {
     ProcDiskCorrupt {
         choice: u64,
     },
+    ProcClock {
+        offset: i64,
+        rate_ppm: i32,
+        spread: u64,
+    },
     BuggifyFire,
     RunHook(u32),
 }
@@ -196,6 +201,7 @@ impl Fault {
             | Self::ProcDiskError
             | Self::ProcDiskStall(_)
             | Self::ProcDiskCorrupt { .. }
+            | Self::ProcClock { .. }
             | Self::RunHook(_) => DecisionClass::Process,
             Self::BuggifyFire => DecisionClass::Buggify,
         }

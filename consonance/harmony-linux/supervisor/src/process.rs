@@ -8,12 +8,42 @@ use std::process::{Child, Command, ExitStatus};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 pub fn command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
-    command_group(spec, argv, true)
+    command_group(spec, argv, true, None)
 }
 pub fn terminal_command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
-    command_group(spec, argv, false)
+    command_group(spec, argv, false, None)
 }
-fn command_group(spec: &ExecutionSpec, argv: &[String], own_group: bool) -> io::Result<Command> {
+pub fn node_command(
+    spec: &ExecutionSpec,
+    argv: &[String],
+    clock_offset_nanos: Option<i64>,
+) -> io::Result<Command> {
+    command_group(spec, argv, true, clock_offset_nanos)
+}
+
+pub const TIME_NAMESPACE_PATH: &str = "/proc/self/ns/time";
+
+#[must_use]
+pub fn realtime_offset_line(offset_nanos: i64) -> String {
+    let seconds = offset_nanos.div_euclid(1_000_000_000);
+    let nanos = offset_nanos.rem_euclid(1_000_000_000);
+    format!("realtime {seconds} {nanos}\n")
+}
+
+#[must_use]
+pub fn reachable_realtime_offset(offset_nanos: i64, realtime_seconds: u64) -> i64 {
+    let floor = i64::try_from(realtime_seconds)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(-1_000_000_000);
+    offset_nanos.max(floor)
+}
+
+fn command_group(
+    spec: &ExecutionSpec,
+    argv: &[String],
+    own_group: bool,
+    clock_offset_nanos: Option<i64>,
+) -> io::Result<Command> {
     spec.validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     if argv.is_empty() {
@@ -57,6 +87,9 @@ fn command_group(spec: &ExecutionSpec, argv: &[String], own_group: bool) -> io::
         if own_group {
             command.process_group(0);
         }
+        if let Some(offset_nanos) = clock_offset_nanos {
+            enter_time_namespace(&mut command, offset_nanos)?;
+        }
         // SAFETY: the closure is installed before spawning and captures only
         // owned scalars and a vector; its child-side operations are the
         // credential syscalls required by the validated execution contract.
@@ -76,6 +109,46 @@ fn command_group(spec: &ExecutionSpec, argv: &[String], own_group: bool) -> io::
         }
     }
     Ok(command)
+}
+
+#[cfg(target_os = "linux")]
+fn enter_time_namespace(command: &mut Command, offset_nanos: i64) -> io::Result<()> {
+    let line = realtime_offset_line(offset_nanos).into_bytes();
+    // SAFETY: the closure captures an owned byte buffer and a scalar; the child
+    // runs only unshare, open, write and close, which are async-signal-safe.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::unshare(libc::CLONE_NEWTIME) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if offset_nanos == 0 {
+                return Ok(());
+            }
+            let fd = libc::open(
+                c"/proc/self/timens_offsets".as_ptr(),
+                libc::O_WRONLY | libc::O_CLOEXEC,
+            );
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let written = libc::write(fd, line.as_ptr().cast(), line.len());
+            let error = io::Error::last_os_error();
+            libc::close(fd);
+            if usize::try_from(written).ok() != Some(line.len()) {
+                return Err(error);
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn enter_time_namespace(_command: &mut Command, _offset_nanos: i64) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "time namespaces need Linux",
+    ))
 }
 
 #[cfg(unix)]
@@ -351,6 +424,25 @@ mod tests {
             unexpected_exit(&ExitStatus::from_raw(3 << 8)),
             Some("exit status 3".to_owned())
         );
+    }
+
+    #[test]
+    fn a_realtime_offset_line_keeps_nanoseconds_nonnegative() {
+        assert_eq!(realtime_offset_line(0), "realtime 0 0\n");
+        assert_eq!(
+            realtime_offset_line(1_500_000_000),
+            "realtime 1 500000000\n"
+        );
+        assert_eq!(realtime_offset_line(-1), "realtime -1 999999999\n");
+        assert_eq!(realtime_offset_line(-2_000_000_000), "realtime -2 0\n");
+    }
+
+    #[test]
+    fn a_realtime_offset_never_moves_the_clock_before_the_epoch() {
+        assert_eq!(reachable_realtime_offset(-5_000_000_000, 3), -3_000_000_000);
+        assert_eq!(reachable_realtime_offset(-1_000_000_000, 3), -1_000_000_000);
+        assert_eq!(reachable_realtime_offset(7, 0), 7);
+        assert_eq!(reachable_realtime_offset(i64::MIN, u64::MAX), i64::MIN);
     }
 
     #[test]

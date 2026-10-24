@@ -12,7 +12,8 @@ pub mod supervise;
 pub use bundle::{Bundle, BundleError, HookSpec, NodeSpec, parse_bundle};
 pub use evidence::CheckEvidence;
 pub use reconcile::{
-    ActiveWindows, CutWindow, EventKillWindow, EventPark, HookWindow, NodeActions, StallWindow,
+    ActiveWindows, ClockShift, CutWindow, EventKillWindow, EventPark, HookWindow, NodeActions,
+    StallWindow,
 };
 pub use recovery::{RecoveryError, RecoveryReadiness};
 pub use supervise::{Action, Counters, ProcessSupervisor, Supervisor};
