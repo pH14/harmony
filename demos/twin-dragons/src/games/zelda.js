@@ -132,13 +132,15 @@ export function buildMap(engine, level) {
   return { ...MAP_SIZES[level], tiles, reached: tiles.length };
 }
 
+// In the frame, Link's top row is object Y - 5: the OAM row is object Y + 2, the first drawn
+// scanline is one below the OAM row, and the frame skips the first 8 scanlines.
 export function buildSprites(engine) {
   const saved = engine.capture();
   engine.boot(0);
   const ram = engine.ramView(),
     start = engine.capture(),
     x = ram[RAM_OBJECT_X],
-    y = ram[RAM_OBJECT_Y] - 8,
+    y = ram[RAM_OBJECT_Y] - 5,
     facesLeft = (ram[0x98] & 2) !== 0;
   engine.run(0, 1, true);
   const shown = engine.pixels().data;
