@@ -206,8 +206,25 @@ Three more windows act on a node's disk:
 
 - A disk error window (`DiskError`) loads an `error` table. Every read, write
   and flush fails with `EIO` until the window closes and the linear table
-  returns. When a journal write fails, ext4 aborts the journal and refuses
-  writes until a later power loss or corruption remounts the disk.
+  returns. The error target fails a request inside the guest without an exit,
+  so the guest kernels charge one execution tick (100 us of virtual time) for
+  each request it fails. A task that retries a failed read without bound, as a
+  page fault under `MAP_POPULATE` does, then still reaches its timer deadlines,
+  and the window closes on time. When a journal write fails, ext4 aborts the
+  journal and marks the filesystem read-only. The 6.18 kernels set ext4's emergency read-only flag,
+  which leaves `ST_RDONLY` clear in `statvfs` and shows as `emergency_ro` in
+  the superblock options of `/proc/self/mountinfo`, so the supervisor checks
+  both. ext4 may notice an aborted journal only at a later write, so when the
+  window closes the supervisor also opens the mount and calls `syncfs`, which
+  fails with `EIO` on an aborted journal. If the sync fails with `EIO` or
+  `EROFS`, or the filesystem is read-only, the supervisor treats the close as
+  a host reboot after a transient disk fault. A filesystem that syncs cleanly
+  keeps running, so the error stays transient. It kills the node if it still runs and cuts the disk as a corruption
+  does, keeping every logged write and flipping no bit. It then remounts the
+  disk and starts the node as a restart after a fault. Writes that failed
+  during the window stay lost, as unwritten page cache is lost in a reboot.
+  Before each start of a node whose disk had a fault, the supervisor checks the
+  read-only signals again and remounts a read-only filesystem the same way.
 - A disk stall window (`DiskStall { hold_nanos }`) loads a `dm-delay` table
   that holds every request for the window's length, at least 50 ms. dm-delay
   serves shorter delays from a polling kernel thread instead of a timer. When the window closes, the
