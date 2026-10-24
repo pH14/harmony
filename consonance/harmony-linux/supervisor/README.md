@@ -252,9 +252,14 @@ A log that fills its RAM disk stops logging and has no end mark; the supervisor
 reports that as an infrastructure error. A power-loss window for a node without
 a disk acts as a kill. Every disk and log page lives in guest memory, so each
 disk can cost up to twice its size plus the writes since the last power loss;
-raise the guest RAM (`ram_mib`) to match. The OCI runtime allows the container
-every block device and `/dev/mapper/control`; the supervisor creates the device
-nodes itself.
+raise the guest RAM (`ram_mib`) to match. A guest that runs out of memory
+ends the execution: the supervisor reads the `oom_kill` counter in
+`/proc/vmstat` whenever a node exits and once a second, and reports the first
+kernel OOM kill as an infrastructure error. The guest kernels charge one
+execution tick for each page-allocation retry, so an allocation that reclaim
+cannot satisfy still lets timers fire and the OOM killer run. The OCI runtime
+allows the container every block device and `/dev/mapper/control`; the
+supervisor creates the device nodes itself.
 
 ### Disk faults
 

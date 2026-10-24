@@ -123,6 +123,7 @@ mod runtime {
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
     use harmony_supervisor::disk::DiskMode;
     use harmony_supervisor::evidence::CheckEvidence;
+    use harmony_supervisor::memory::{OOM_POLL_TICKS, OomWatch, VMSTAT_PATH};
     use harmony_supervisor::process;
     use harmony_supervisor::reconcile::Standing;
     use harmony_supervisor::recovery::{HookFaults, RecoveryReadiness, RecoveryWatch};
@@ -930,6 +931,7 @@ mod runtime {
 
         sdk.state_set(REG_CHECK_ENABLED, u64::from(bundle.check.is_some()))
             .map_err(|error| format!("state_set({REG_CHECK_ENABLED}): {error}"))?;
+        let oom = OomWatch::new(&read_vmstat()?)?;
         start_workload(spec, bundle, &mut runtime, supervisor, 0)?;
         start_check(spec, bundle, &mut runtime, supervisor, sdk, 0)?;
 
@@ -976,6 +978,9 @@ mod runtime {
             }
             let tick = supervisor.counters().ticks + 1;
             let exits = reap_nodes(nodes)?;
+            if !exits.is_empty() || tick.is_multiple_of(OOM_POLL_TICKS) {
+                oom.observe(&read_vmstat()?)?;
+            }
             let deaths: Vec<u16> = exits.iter().map(|(node, _)| *node).collect();
             for &node in &deaths {
                 supervisor.note_event_ready(node, false);
@@ -1115,6 +1120,10 @@ mod runtime {
             || supervisor.pending_faults() != 0
             || supervisor.any_node_held_down()
             || hook_faults.in_force()
+    }
+
+    fn read_vmstat() -> Result<String, String> {
+        std::fs::read_to_string(VMSTAT_PATH).map_err(|error| format!("{VMSTAT_PATH}: {error}"))
     }
 
     fn poll_standing(
