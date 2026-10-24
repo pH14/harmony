@@ -21,7 +21,7 @@ use crate::{
         },
         target::{
             ButtonChord, DonkeyKongInput, DonkeyKongObservations, DonkeyKongSnapshot,
-            DonkeyKongTarget, MAX_HOLD_FRAMES, STAGES_PER_ROUND,
+            DonkeyKongTarget, MAX_HOLD_FRAMES, STAGES_PER_ROUND, TRACKED_STAGES,
         },
     },
     nes_backend::{NesBackend, SnapshotState},
@@ -40,9 +40,9 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "donkey-kong-quicknes-campaign-stream-v1";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "donkey-kong-quicknes-snapshot-checkpoint-v1";
-pub const NAMED_PROGRESS_FORMAT: &str = "donkey-kong-named-progress-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "donkey-kong-quicknes-campaign-stream-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "donkey-kong-quicknes-snapshot-checkpoint-v2";
+pub const NAMED_PROGRESS_FORMAT: &str = "donkey-kong-named-progress-v2";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -52,7 +52,7 @@ const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "pressable_masks_v1";
 const STAGE_NAMES: [&str; STAGES_PER_ROUND as usize] = ["barrels", "elevators", "rivets"];
-const TERMINAL_POLICY_IDENTIFIER: &str = "round_complete_or_death_v1";
+const TERMINAL_POLICY_IDENTIFIER: &str = "goal_rounds_complete_or_death_v2";
 
 pub type DonkeyKongTargets<M> = Box<dyn Fn() -> Result<DonkeyKongTarget<M>, String> + Send + Sync>;
 
@@ -264,7 +264,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
 }
 
 fn reached(value: DonkeyKongMilestones) -> impl Iterator<Item = (usize, usize)> {
-    let cleared = 0..usize::from(value.cleared).min(usize::from(STAGES_PER_ROUND));
+    let cleared = 0..usize::from(value.cleared).min(TRACKED_STAGES);
     cleared
         .map(|index| (0, index))
         .chain(value.victory.then_some((1, 0)))
@@ -349,10 +349,21 @@ fn named_progress(evidence: &DonkeyKongCampaignEvidence) -> serde_json::Value {
         )
     };
     let mut first_seen = serde_json::Map::new();
-    for (name, time) in STAGE_NAMES.iter().zip(&times.first_cleared) {
-        first_seen.insert(format!("{name}_cleared"), seen(time));
+    for (index, time) in times.first_cleared.iter().enumerate() {
+        let name = STAGE_NAMES[index % STAGES_PER_ROUND as usize];
+        let round = index / STAGES_PER_ROUND as usize + 1;
+        let key = if round == 1 {
+            format!("{name}_cleared")
+        } else {
+            format!("round_{round}_{name}_cleared")
+        };
+        first_seen.insert(key, seen(time));
     }
-    first_seen.insert("round_1".to_owned(), seen(&times.first_victory));
+    for round in 1..=TRACKED_STAGES / STAGES_PER_ROUND as usize {
+        let last = round * STAGES_PER_ROUND as usize - 1;
+        first_seen.insert(format!("round_{round}"), seen(&times.first_cleared[last]));
+    }
+    first_seen.insert("goal".to_owned(), seen(&times.first_victory));
     serde_json::json!({ "format": NAMED_PROGRESS_FORMAT, "first_seen": first_seen })
 }
 
@@ -771,7 +782,7 @@ mod tests {
         );
         assert!(!first_input_needed(&evidence.first_inputs, first));
         let later = DonkeyKongMilestones {
-            cleared: 3,
+            cleared: 4,
             victory: true,
             ..first
         };
@@ -787,9 +798,12 @@ mod tests {
         assert_eq!(seen["elevators_cleared"]["execution"], 7);
         assert_eq!(seen["rivets_cleared"]["execution"], 9);
         assert_eq!(seen["round_1"]["execution"], 9);
+        assert_eq!(seen["round_2_barrels_cleared"]["execution"], 9);
+        assert!(seen["round_2"].is_null());
+        assert_eq!(seen["goal"]["execution"], 9);
         assert_eq!(
             DonkeyKongGame::<QuickNesMachine>::checkpoint_marks(&evidence),
-            4
+            5
         );
     }
 }

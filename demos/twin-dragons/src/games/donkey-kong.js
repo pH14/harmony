@@ -2,6 +2,7 @@
 import { donkey_kong_observation } from "../../rust/pkg/twin_dragons_browser.js";
 
 const STAGE = 0x53,
+  ROUND = 0x54,
   DEMO = 0x58,
   MARIO_Y = 0x47,
   STATUS = 0x96,
@@ -15,8 +16,15 @@ const STAGE = 0x53,
   SPRITE = 16;
 
 export const STAGES = [1, 3, 4];
-const NAMES = ["25m Barrels", "75m Elevators", "100m Rivets"];
-const LEVEL_COUNT = STAGES.length;
+const NAMES = [
+  "25m Barrels",
+  "75m Elevators",
+  "100m Rivets",
+  "Round 2+ Barrels",
+  "Round 2+ Elevators",
+  "Round 2+ Rivets",
+];
+const LEVEL_COUNT = NAMES.length;
 const MASKS = [
   [[0, 16, 256, 23], [160, 23, 256, 41]],
   [[0, 16, 256, 23], [160, 23, 256, 41], [30, 24, 86, 56]],
@@ -40,7 +48,8 @@ function boot(engine, id) {
   engine.run(0, 100, true);
   engine.run(START, 3, true);
   engine.run(0, 30, true);
-  ram[STAGE] = STAGES[id];
+  ram[STAGE] = STAGES[id % STAGES.length];
+  ram[ROUND] = id >= STAGES.length ? 1 : 0;
   for (let frames = 0; frames < 1500; frames++) {
     if (playable(ram)) {
       engine.run(0, 30, true);
@@ -64,7 +73,7 @@ export function buildMap(engine, id) {
     engine.run(0, 1, true);
   }
   const data = new Uint8ClampedArray(engine.pixelView());
-  for (const [left, top, right, bottom] of MASKS[id])
+  for (const [left, top, right, bottom] of MASKS[id % MASKS.length])
     for (let y = top; y < bottom; y++)
       for (let x = left; x < right; x++) data.set([0, 0, 0, 255], (y * WIDTH + x) * 4);
   return { width: WIDTH, height: HEIGHT, data };

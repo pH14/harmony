@@ -55,14 +55,14 @@ fn view(state: DonkeyKongMechanicalState) -> View {
         x,
         y,
         health: u8::from(!state.dead()),
-        level: state.stage_index(),
+        level: state.room(),
         stage: state.stage,
         round: state.round,
         lives: state.lives,
         bonus: state.bonus,
         score: state.score,
         rivets: state.rivets,
-        goal: state.victory(),
+        goal: state.round >= 1,
         climbing: state.status == LADDER,
         airborne: state.status == AIRBORNE,
         loading: state.in_transition(),
@@ -99,7 +99,7 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for DonkeyKongGame<M> {
             Ok(state) if state.in_play() => {
                 let (x, y) = corner(state);
                 [
-                    u16::from(state.stage_index()),
+                    u16::from(state.room()),
                     x,
                     y,
                     u16::from(state.facing & FACING_LEFT != 0),

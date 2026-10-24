@@ -21,9 +21,11 @@ standing on the top girder, `$59` equal to 7 with `$5A` set. He clears the
 rivets by pulling all eight rivets, `$C1` to `$C8`. After the rivets the round
 counter `$54` goes up and the stage returns to 1.
 
-Victory is `$54` at 1 or more: round 1 cleared. Each further stage clear is
-progress, and the observation's cleared count is the round times three plus the
-index of the stage.
+The stage order is the same in every round: the program steps `$53` through 1, 3
+and 4, and each wrap increments `$54`. The observation's cleared count is the
+round times three plus the index of the stage, so it keeps rising through later
+rounds. The goal is `$54` at 8, eight rounds cleared. The browser page also
+treats round 1 cleared as a win in its view.
 
 Writing `$53` about 30 frames after Start boots that stage directly. The browser
 uses this to start a search on the elevators or the rivets.
@@ -61,12 +63,23 @@ rivets pulled, then height above the start. The place is the stage, the stages
 cleared, Mario's 16-pixel cell and his posture. A cell keeps one state, and
 more bonus time, then more lives, then a higher score is preferred.
 
-A terminal state is a dead Mario, the attract demo, or round 1.
+A terminal state is a dead Mario, the attract demo, or round 8 reached.
 
 The named progress diagnostics record the first execution that cleared each
-stage and the first that finished round 1.
+stage and the first that finished each round: `barrels_cleared`,
+`elevators_cleared`, `rivets_cleared` and `round_1` for the first round, then
+`round_2_barrels_cleared` and so on up to `round_8`, and `goal`.
 
 ## Results
+
+Eight workers, seed 1, 1,500 seconds from power-on, searching for eight rounds:
+the search cleared rounds 1 to 4 and then the barrels and the elevators of round
+5, a cleared count of 14 of 24, and pulled 7 of 8 rivets on the round 5 rivet
+stage. It did not need a model of the hammer or of the clear cutscene. First
+clears by execution: round 1 at 747,411, round 2 at 1,010,010, round 3 at
+4,261,939 and round 4 at 6,402,575.
+
+Earlier, with the goal at round 1:
 
 Seed 1 with eight workers cleared the barrels, the elevators and the rivets
 from power-on in 357,933 executions and 47 seconds, and the winning tape ends

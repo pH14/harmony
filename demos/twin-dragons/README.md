@@ -899,11 +899,13 @@ skips when it is absent.
 
 The site ships nothing from Donkey Kong. The level selector accepts the ROM with
 SHA-256 `226c6f69…9d27`. A round has three stages, the barrels, the elevators
-and the rivets, and the selector offers each as a level. The levels start from
-power-on for the barrels and from a forced stage for the other two: the
-loader writes the stage byte `$53` 30 frames after Start. The observation's
-cleared count is the round times three plus the stage index, so clearing the
-rivets, and so round 1, marks the game finished.
+and the rivets, and the selector offers each as a level, then offers the same
+three again as "Round 2+" levels for every later round. The first level starts
+from power-on and the others from a forced stage: the loader writes the stage
+byte `$53`, and the round byte `$54` for the later-round levels, 30 frames after
+Start. The observation's cleared count is the round times three plus the stage
+index, so it keeps counting through later rounds, and a later round shows in the
+"Round 2+" level that holds its stage.
 
 The `tape` URL parameter loads a saved winning input list, the `witness-input.json`
 that `nes-eval` writes, and replays it in the history panel with the search paused:

@@ -8,7 +8,7 @@ use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
     donkey_kong::target::{
         ButtonChord, DonkeyKongInput, DonkeyKongMechanicalState, DonkeyKongObservations,
-        DonkeyKongSnapshot, GRID_SHIFT, STAGES_PER_ROUND,
+        DonkeyKongSnapshot, GRID_SHIFT, TRACKED_STAGES,
     },
     search::archive::{
         Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "donkey_kong_stage_rivet_height_tier_stable_stage_grid_16_status_place_bonus_lives_score_preference_v1";
+pub const KEY_POLICY_IDENTIFIER: &str = "donkey_kong_stage_rivet_height_tier_stable_stage_grid_16_status_place_bonus_lives_score_preference_v2";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -124,14 +124,14 @@ pub struct DonkeyKongMilestones {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DonkeyKongMilestoneTimes {
-    pub first_cleared: [Option<u64>; STAGES_PER_ROUND as usize],
+    pub first_cleared: [Option<u64>; TRACKED_STAGES],
     pub first_victory: Option<u64>,
     pub first_death: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DonkeyKongMilestoneInputs {
-    pub first_cleared: [Option<DonkeyKongInput>; STAGES_PER_ROUND as usize],
+    pub first_cleared: [Option<DonkeyKongInput>; TRACKED_STAGES],
     pub first_victory: Option<DonkeyKongInput>,
     pub first_death: Option<DonkeyKongInput>,
 }
@@ -242,7 +242,8 @@ pub const CHORDS: ChordVocabulary = ChordVocabulary {
 mod tests {
     use super::*;
     use crate::donkey_kong::target::{
-        STAGE_BARRELS, STAGE_ELEVATORS, STAGE_RIVETS, START_LIVES, START_X, START_Y, STATUS_DEAD,
+        GOAL_ROUNDS, STAGE_BARRELS, STAGE_ELEVATORS, STAGE_RIVETS, START_LIVES, START_X, START_Y,
+        STATUS_DEAD,
     };
     use crate::search::rand::RomuDuoJrRand;
 
@@ -330,10 +331,10 @@ mod tests {
         assert_eq!(aggregate.cleared, 1);
         assert_eq!(aggregate.height, 0x20 >> HEIGHT_SHIFT);
         let mut last = state(START_X, START_Y);
-        last.round = 1;
+        last.round = GOAL_ROUNDS;
         merge_milestones(&mut aggregate, milestones(last));
         assert!(aggregate.victory);
-        assert_eq!(aggregate.cleared, 3);
+        assert_eq!(aggregate.cleared, TRACKED_STAGES as u8);
     }
 
     #[test]

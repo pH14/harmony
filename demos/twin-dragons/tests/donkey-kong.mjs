@@ -25,10 +25,10 @@ for (let level = 0; level < donkeyKong.levelCount; level++) {
   assert.equal(o.loading, false);
   assert.equal(o.health, 1);
   assert.equal(o.cleared, level);
-  assert.equal(o.round, 0);
-  assert.equal(engine.ramView()[0x53], STAGES[level]);
+  assert.equal(o.round, level >= STAGES.length ? 1 : 0);
+  assert.equal(engine.ramView()[0x53], STAGES[level % STAGES.length]);
 }
-console.log("Each of the 3 stages boots into play.");
+console.log("Each of the 3 stages of round 1 and of round 2 boots into play.");
 
 for (let level = 0; level < donkeyKong.levelCount; level++) {
   const map = buildMap(engine, level);

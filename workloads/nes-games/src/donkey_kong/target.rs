@@ -19,6 +19,8 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 pub type DonkeyKongInput = crate::search::archive::Input<ButtonChord>;
 
 pub const STAGES_PER_ROUND: u8 = 3;
+pub const GOAL_ROUNDS: u8 = 8;
+pub const TRACKED_STAGES: usize = GOAL_ROUNDS as usize * STAGES_PER_ROUND as usize;
 pub const STAGE_BARRELS: u8 = 1;
 pub const STAGE_ELEVATORS: u8 = 3;
 pub const STAGE_RIVETS: u8 = 4;
@@ -74,6 +76,11 @@ impl DonkeyKongMechanicalState {
     }
 
     #[must_use]
+    pub fn room(self) -> u8 {
+        self.stage_index() + STAGES_PER_ROUND * self.round.min(1)
+    }
+
+    #[must_use]
     pub fn stages_cleared(self) -> u8 {
         self.round
             .saturating_mul(STAGES_PER_ROUND)
@@ -101,7 +108,7 @@ impl DonkeyKongMechanicalState {
 
     #[must_use]
     pub fn victory(self) -> bool {
-        self.round >= 1
+        self.round >= GOAL_ROUNDS
     }
 
     #[must_use]
@@ -865,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dead_mario_the_attract_demo_and_a_finished_round_are_terminal() {
+    fn a_dead_mario_the_attract_demo_and_the_goal_round_are_terminal() {
         let mut wram = playing_wram();
         assert!(!decode_state(&wram).unwrap().terminal());
         wram[STATUS] = STATUS_DEAD;
@@ -877,6 +884,9 @@ mod tests {
         let mut wram = playing_wram();
         wram[ROUND] = 1;
         wram[STAGE] = STAGE_BARRELS;
+        let later = decode_state(&wram).unwrap();
+        assert!(!later.victory() && !later.terminal());
+        wram[ROUND] = GOAL_ROUNDS;
         let won = decode_state(&wram).unwrap();
         assert!(won.victory() && won.terminal() && !won.dead());
     }
@@ -903,6 +913,21 @@ mod tests {
         wram[ROUND] = 2;
         wram[STAGE] = STAGE_BARRELS;
         assert_eq!(cleared(&wram), 6);
+    }
+
+    #[test]
+    fn later_rounds_use_their_own_three_rooms() {
+        let mut wram = playing_wram();
+        let room = |wram: &[u8]| decode_state(wram).unwrap().room();
+        assert_eq!(room(&wram), 0);
+        wram[STAGE] = STAGE_RIVETS;
+        assert_eq!(room(&wram), 2);
+        wram[ROUND] = 1;
+        wram[STAGE] = STAGE_BARRELS;
+        assert_eq!(room(&wram), 3);
+        wram[ROUND] = 5;
+        wram[STAGE] = STAGE_RIVETS;
+        assert_eq!(room(&wram), 5);
     }
 
     #[test]

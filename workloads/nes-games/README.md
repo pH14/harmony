@@ -82,7 +82,7 @@ cargo check --manifest-path workloads/nes-games/Cargo.toml --target wasm32-unkno
 
 Snapshot checkpoint codecs live with these shared target types so native and
 browser callers use the same checksummed `HMSNAP02` envelope. The standalone
-formats are Castlevania v1, Famidash v2, Twin Dragons v2, Punch-Out!! v2, Zelda v1, Donkey Kong v1, Metroid v13, Mega Man 2 v4, SMB
+formats are Castlevania v1, Famidash v2, Twin Dragons v2, Punch-Out!! v2, Zelda v1, Donkey Kong v2, Metroid v13, Mega Man 2 v4, SMB
 QuickNES v4 and SMB Consonance v3; Super Tilt Bro's native campaign selects v5.
 These plain snapshots use the postcard payload codec inside the framed envelope.
 Previous flat envelopes are refused. Native `nes` target modules remain
