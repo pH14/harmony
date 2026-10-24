@@ -273,7 +273,7 @@ Completed service exchanges contribute records in addition to normalized
 transport events; this count is not a guest-exit or diagnostic-log count.
 
 Embedded complete portable snapshots use format version 11; sparse sidecars use
-version 14. Older embedded versions are rejected. The outer sparse archive layout
+version 15. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
@@ -333,6 +333,12 @@ checksum over everything except the page data. Every 32 entries along a chain
 the next entry stores its full page list over setup and becomes an anchor, so
 an import reads at most 32 extents.
 
+Extents cross a process boundary. The reader checks the extent checksum, and
+the VMM checks every imported page against its BLAKE3 hash before the snapshot
+store accepts it. The store hashes a page once, when it is written or
+imported, and later exports and restores read the stored hash without
+hashing the page again.
+
 `PageSegments::free` consumes a writable extent; callers cannot reclaim raw
 coordinates while retaining a slice of that range. Abandonment transfers a
 private, non-cloneable reclamation capability when the writer relinquishes ownership.
@@ -349,8 +355,8 @@ sidecar with only the established logical CPU-state projections: init-valued
 x86 XSAVE restore presence and the Arm virtual timer's captured counter.
 Every other sidecar field stays in the commitment, and the original sidecar
 bytes remain in the extent for restore. Sparse delta export derives the
-sidecar's target-pages digest from all target pages that differ from setup,
-independently of the selected parent;
+sidecar's target-pages digest from the hashes of all target pages that differ
+from setup, independently of the selected parent;
 the sidecar also carries the setup RAM digest, canonical state suffix, VM
 state, SDK state, policy, control state and the separate ordered event-history
 commitment/count. Equal logical endpoints reached through different normalized
@@ -467,7 +473,7 @@ registration, mapping or additional pin survives the import. Namespace, pinned
 object commitment, actual pages/sidecar/state and post-reply lease checks remain
 mandatory on every call. Grouping uses bounded O(N*U) comparisons. Numeric wire
 metadata grows by `8 + 8*N` bytes per import versus the former envelope, even if U=N;
-U=N saves no descriptors. Store intern copies, per-use integrity verification,
+U=N saves no descriptors. Store intern copies,
 guest materialization and SDK guard work are unchanged. Existing physical I/O
 counters report actual U handles and copy counters retain actual N mappings;
 backing-reuse counters retain their original N/U per accepted operation meaning.

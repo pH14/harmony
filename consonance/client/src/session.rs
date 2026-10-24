@@ -932,7 +932,7 @@ pub fn identity_with_config_and_payloads(
 
 fn format_session_identity(image_identity: [u8; 32], config: &SessionConfig) -> String {
     format!(
-        "consonance-session-v5;assurance=ordinary-unqualified-v1;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v5",
+        "consonance-session-v5;assurance=ordinary-unqualified-v1;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v6",
         bytes_hex(&image_identity),
         config.ram_bytes,
         config.seed,
