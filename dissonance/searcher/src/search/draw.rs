@@ -88,6 +88,19 @@ impl MixtureEnergy {
         (256_u64 >> u32::try_from(halvings).unwrap_or(8)).max(1)
     }
 
+    fn relative_biased_weight(&self, scale: u64) -> u8 {
+        let unit = u128::from(scale) * u128::from(self.work);
+        let exponents = [0, 2].map(|index| {
+            (u128::from(self.barren_work[index]) * u128::from(self.jobs))
+                .checked_div(unit)
+                .unwrap_or(0)
+        });
+        let common = exponents[0].min(exponents[1]);
+        let shares =
+            exponents.map(|value| 256_u64 >> u32::try_from((value - common).min(8)).unwrap_or(8));
+        u8::try_from(((256 * shares[0]) / (shares[0] + shares[1])).clamp(1, 255)).unwrap_or(128)
+    }
+
     #[must_use]
     pub(crate) fn biased_weight(&self, scale: u64) -> u8 {
         let biased = self.share(0, scale);
@@ -360,7 +373,10 @@ pub struct AliveEnergy(MixtureEnergy);
 
 impl AliveEnergy {
     pub fn choose(&self, seed: u64, scale: u64) -> Result<bool, Box<dyn Error>> {
-        Ok(energy_strategy(seed, self.0.biased_weight(scale), 0)? == EnergyStrategy::Table)
+        Ok(
+            energy_strategy(seed, self.0.relative_biased_weight(scale), 0)?
+                == EnergyStrategy::Table,
+        )
     }
 
     pub fn record(&mut self, chained: bool, new_slot: bool, work: u64) {
@@ -442,6 +458,27 @@ impl InputEnergy {
 mod input_tests {
     use super::{InputDecision, InputEnergy, InputMode};
     use std::num::NonZeroU64;
+
+    #[test]
+    fn unequal_barren_work_does_not_become_equal_at_the_energy_floor() {
+        let energy = super::MixtureEnergy {
+            barren_work: [1000, 0, 500],
+            jobs: 1000,
+            work: 2000,
+        };
+        assert_eq!(energy.biased_weight(6), 128);
+        assert_eq!(energy.relative_biased_weight(6), 1);
+        let reverse = super::MixtureEnergy {
+            barren_work: [500, 0, 1000],
+            ..energy
+        };
+        assert_eq!(reverse.relative_biased_weight(6), 255);
+        let equal = super::MixtureEnergy {
+            barren_work: [1000, 0, 1000],
+            ..energy
+        };
+        assert_eq!(equal.relative_biased_weight(6), 128);
+    }
 
     #[test]
     fn disabled_inputs_preserve_the_current_draw() {

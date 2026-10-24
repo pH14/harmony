@@ -1270,3 +1270,5 @@ Chaining treats a repeated block-boundary observation within the current job
 as stasis, including cycles longer than one block. The visited observations
 are local to that job; retention and source selection are unchanged. This
 prevents a changing but cyclic path from consuming the remaining work budget.
+
+Experimental input strategy energy normalizes the two barren-work decay exponents by their common minimum before applying the existing eight-halving floor. This preserves relative preference when both strategies have long barren stretches; neither draw weight reaches zero. The ordinary action-mixture energy calculation is unchanged.
