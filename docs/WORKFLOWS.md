@@ -585,7 +585,8 @@ The language workflow's `Harness Kit` job runs when a change reaches
 on every target module under `workloads/harness/targets/`, with a pinned Go
 release and `GOTOOLCHAIN=local`. It then builds the single-member etcd 3.5.5
 target image from pinned source and runs `native.py --no-faults` against it
-for 30 seconds, which must report `clean` with a decided check.
+for 30 seconds, which must report `clean` with a decided check over at least
+one operation and a workload driver that is still running.
 
 ## Repository maintenance
 

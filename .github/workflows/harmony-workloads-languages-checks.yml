@@ -382,4 +382,4 @@ jobs:
             --file workloads/harness/targets/etcd/Dockerfile --tag harness-etcd:ci .
           python3 workloads/harness/native.py harness-etcd:ci --tool docker --for 30 --no-faults \
             | tee "$RUNNER_TEMP/native.json"
-          tail -n 1 "$RUNNER_TEMP/native.json" | python3 -c 'import json, sys; r = json.load(sys.stdin); sys.exit(r["result"] != "clean" or not r["last_check"]["decided"])'
+          tail -n 1 "$RUNNER_TEMP/native.json" | python3 -c 'import json, sys; r = json.load(sys.stdin); sys.exit(r["result"] != "clean" or "workload_exit" in r or not r["last_check"]["decided"] or not r["last_check"]["ops"])'
