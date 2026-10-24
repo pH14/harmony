@@ -5560,6 +5560,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
     fn physical_work_survives_replay_retirement_exactly_once() {
         use vmm_backend::{PhysicalTelemetry, RunPlatform, RunPurpose, RunReturn};
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -5589,6 +5590,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
     fn hash_costs_survive_replay_retirement_without_entering_logical_state() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
@@ -5681,6 +5683,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable snapshots use mapped storage")]
     fn portable_hashes_charge_partial_memory_before_io_failure() {
         struct LimitedWriter(usize);
         impl std::io::Write for LimitedWriter {
@@ -5733,6 +5736,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable snapshots use mapped storage")]
     fn portable_and_sparse_hashes_count_actual_digest_feeds() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
