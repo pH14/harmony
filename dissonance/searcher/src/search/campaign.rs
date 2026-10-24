@@ -5488,6 +5488,9 @@ mod tests {
     struct TestKey(u8);
 
     impl ArchiveKey for TestKey {
+        fn capacity() -> usize {
+            if ALIVE_TEST.get() == 0 { 2 } else { 1 }
+        }
         type Place = u8;
         type Progress = ();
         type Identity = ();
@@ -5585,6 +5588,7 @@ mod tests {
         targets: Option<Arc<LiveTargets>>,
     }
     std::thread_local! {
+        static ALIVE_TEST: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
         static FINALIZATION: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, false)) };
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -6081,6 +6085,9 @@ mod tests {
 
     impl Evaluation for TestWorkload {
         fn execution_disposition(&self, _target: &Self::Target) -> ExecutionDisposition {
+            if ALIVE_TEST.get() == 3 && _target.value >= 2 {
+                return ExecutionDisposition::Terminal;
+            }
             ExecutionDisposition::Runnable
         }
 
@@ -6100,7 +6107,13 @@ mod tests {
         }
 
         fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
-            Ok(TestKey(target.value))
+            Ok(TestKey(
+                if ALIVE_TEST.get() > 0 && (ALIVE_TEST.get() != 1 || target.value < 4) {
+                    0
+                } else {
+                    target.value
+                },
+            ))
         }
 
         fn complete_candidate_key(
@@ -10532,6 +10545,58 @@ mod tests {
             "selection ran before startup failures were resolved"
         );
         assert_eq!(job_lines(&stream).len(), 0);
+    }
+
+    #[test]
+    fn alive_rollouts_stop_on_retention_stasis_death_and_budget() {
+        for (mode, input, budget, expected, block_len) in [
+            (1, 1, 100, 4, 1),
+            (2, 0, 100, 1, 1),
+            (3, 1, 100, 2, 1),
+            (4, 1, 3, 3, 1),
+            (1, 4, 100, 1, 2),
+        ] {
+            ALIVE_TEST.set(mode);
+            let workload = TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            };
+            let mut config = three_worker_config();
+            config.workers = 1;
+            config.window = 1;
+            let mut stream = Vec::new();
+            let mut coordinator = CampaignCoordinator::start(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default(),
+            )
+            .unwrap();
+            coordinator.reserve_next().unwrap();
+            let mut job = coordinator.plan(1).pop().unwrap();
+            job.suffix = vec![TestAction::new(input, 1); block_len];
+            let mut target = workload.new_target().unwrap();
+            let (outcome, blocks) = coordinator
+                .run_alive_job(&mut target, &job, true, budget)
+                .unwrap();
+            assert_eq!(blocks, expected);
+            assert_eq!(outcome.result.actions.len(), expected * block_len);
+            assert_eq!(outcome.execution_work, (expected * block_len) as u64);
+            assert_eq!(
+                outcome
+                    .result
+                    .actions
+                    .last()
+                    .unwrap()
+                    .outcome
+                    .disposition
+                    .is_terminal(),
+                mode == 3
+            );
+            ALIVE_TEST.set(0);
+        }
     }
 
     fn three_worker_config() -> CampaignConfig<TestWorkload> {

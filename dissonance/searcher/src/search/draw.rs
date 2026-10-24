@@ -354,3 +354,24 @@ mod tests {
         }
     }
 }
+
+#[derive(Default)]
+pub struct AliveEnergy(MixtureEnergy);
+
+impl AliveEnergy {
+    pub fn choose(&self, seed: u64, scale: u64) -> Result<bool, Box<dyn Error>> {
+        Ok(energy_strategy(seed, self.0.biased_weight(scale), 0)? == EnergyStrategy::Table)
+    }
+
+    pub fn record(&mut self, chained: bool, new_slot: bool, work: u64) {
+        self.0.record_outcome(
+            if chained {
+                EnergyStrategy::Table
+            } else {
+                EnergyStrategy::Alphabet
+            },
+            new_slot,
+            work,
+        );
+    }
+}

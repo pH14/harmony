@@ -1170,3 +1170,24 @@ body: upstream's flat snapshot store and the earlier shared-frame layout used
 by the integration branch. There is no legacy format fallback. The shared
 codec remains workload-owned; assurance metadata is interpreted and validated
 by that workload's codec, never by generic storage or routing.
+
+## Experimental alive rollouts
+
+`CampaignCoordinator::run_alive_job` is an opt-in experiment for a single
+admission window. It restores the planned parent once and executes additional
+blocks on that live target when the snapshot, observations, or a preference
+changed. A terminal state, a retained candidate, an unchanged block, or the
+caller's work limit ends the chain. Retention is checked against the archive;
+there are no workload-specific predicates in the continuation rule.
+
+The caller selects chaining through `AliveEnergy`, which reuses the existing
+mixture's new-slot-per-work accounting, and admits the accumulated result once.
+The repeated-action variant fills every block with the initial action.
+`stop_reservations` lets an experiment stop admitting new jobs after its
+registered observation boundary while finishing already reserved work.
+
+This API is not enabled in ordinary campaign execution. Its energy state and
+expanded actions are not integrated with checkpoint persistence or ordinary
+stream replay; experiment callers must preserve their actual job actions
+separately. Parallel dispatch and production replay integration remain outside
+this prototype. It must not be treated as a production search strategy.

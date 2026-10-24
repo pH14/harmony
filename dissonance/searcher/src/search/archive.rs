@@ -2564,6 +2564,27 @@ where
         }
     }
 
+    pub fn would_retain_after(
+        &self,
+        parent: usize,
+        previous: Option<K>,
+        suffix: &[A],
+        key: K,
+    ) -> Result<(bool, K), Box<dyn Error>> {
+        let completed = self.complete_after(Some(parent), previous, key)?;
+        if self.existing_input_id(Some(parent), suffix).is_some() {
+            return Ok((true, completed));
+        }
+        let cost = self.cost_in_group_of(Some(parent), suffix, completed);
+        let slot = self
+            .slots
+            .get(&slot_of_key(completed))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let (ranked, _) = self.rank_slot_preferences(slot, completed, cost);
+        Ok((ranked.last().copied().unwrap_or(true), completed))
+    }
+
     pub fn insert<T: AsRef<[A]> + Into<Vec<A>>>(
         &mut self,
         parent_id: Option<usize>,
