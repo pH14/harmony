@@ -168,6 +168,11 @@ pub enum Fault {
     ProcPowerLoss {
         choice: u64,
     },
+    ProcDiskError,
+    ProcDiskStall(Span),
+    ProcDiskCorrupt {
+        choice: u64,
+    },
     BuggifyFire,
     RunHook(u32),
 }
@@ -188,6 +193,9 @@ impl Fault {
             | Self::ProcEventKill { .. }
             | Self::ProcEventPark { .. }
             | Self::ProcPowerLoss { .. }
+            | Self::ProcDiskError
+            | Self::ProcDiskStall(_)
+            | Self::ProcDiskCorrupt { .. }
             | Self::RunHook(_) => DecisionClass::Process,
             Self::BuggifyFire => DecisionClass::Buggify,
         }
