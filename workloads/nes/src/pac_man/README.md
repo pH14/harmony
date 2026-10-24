@@ -75,3 +75,24 @@ four mazes into each of its first five levels and the rest into the sixth.
 `nes-eval` takes `"game": "pac-man"` with no stage, ai or whole-game option,
 and `nes-film` renders its witness or champion inputs. `nes-core-oracle` takes
 `pac-man` as a game name.
+
+## Results
+
+Native QuickNES on a 24-core lab machine, `nes-eval` with the live view and
+witness verification. The witness is the champion tape, replayed twice in the
+evaluator. Mazes cleared counts completed mazes in the witness.
+
+| Run | Workers | Wall | Executions | Mazes (witness) | Mazes (any trajectory) | Score (witness) |
+| --- | --- | --- | --- | --- | --- | --- |
+| seed 1 | 2 | 900 s | 2.37 M | 22 | 23 | 63,830 |
+| seed 2 | 1 | 1800 s | 3.04 M | 22 | 23 | 59,030 |
+| seed 3 | 1 | 1800 s | 2.89 M | 22 | 22 | 56,210 |
+
+The first 13 mazes fall in about a minute. Progress then comes in steps: the
+search sits at the last few dots of one maze for several minutes and then
+clears it and several more.
+
+`tools/pac-man-replay.mjs` in `demos/twin-dragons` replays a `witness-input.json`
+from power-on in the browser build of QuickNES and prints the mazes cleared and
+score. Seed 2 and seed 3 end at the same maze count and score there as in the
+native evaluator.
