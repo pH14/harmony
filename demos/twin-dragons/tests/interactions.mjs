@@ -87,6 +87,7 @@ try {
     await desktop.locator('#search-here').click();
     await desktop.waitForFunction(id => window.tdReady.active === id && document.querySelector('#inspector').hidden && !document.querySelector('#pause').disabled, id);
     assert.equal(await desktop.locator(`li[data-search-node="${id-1}"] > ol > li[data-search-node="${id}"]`).count(), 1);
+    if (id === 2) await desktop.waitForFunction(bytes => window.tdMemory > bytes, await desktop.evaluate(() => window.tdMemory));
     const origin = await desktop.evaluate(() => window.tdReady.searches.find(s => s.id === window.tdReady.active).origin);
     const nativeRoot = await desktop.evaluate(() => window.tdReady.root);
     assert.equal(origin.frames,nativeRoot.frames,'Branch time is its exact verified search root after gameplay');
