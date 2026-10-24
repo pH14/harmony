@@ -401,13 +401,19 @@ mod live {
 
     fn pinned(plan: Placement) -> ThreadPlacement {
         ThreadPlacement::new(move |thread| {
-            let cpu = match thread {
-                PlacedThread::Coordinator => plan.coordinator,
-                PlacedThread::Worker(worker) => {
-                    plan.workers.get(worker as usize).copied().flatten()
-                }
+            let cpus = match thread {
+                PlacedThread::Coordinator => plan.coordinator.into_iter().collect(),
+                PlacedThread::Worker(worker) => plan
+                    .workers
+                    .get(worker as usize)
+                    .cloned()
+                    .unwrap_or_default(),
             };
-            cpu.map_or(Ok(()), pin_current_thread)
+            if cpus.is_empty() {
+                Ok(())
+            } else {
+                pin_current_thread(&cpus)
+            }
         })
     }
 
