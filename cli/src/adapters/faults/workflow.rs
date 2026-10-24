@@ -208,6 +208,7 @@ pub fn search_prepared(
     bundle: String,
     vocabulary: FaultVocabulary,
 ) -> Result<u8> {
+    let vocabulary = vocabulary.excluding(&c.exclude_faults);
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "search", Some(bundle), true)?;
     capture_runtime(&mut manifest, &out, &artifacts)?;
