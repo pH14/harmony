@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/anishathalye/porcupine"
 
@@ -31,15 +32,17 @@ const (
 )
 
 type Register struct {
-	Keys  int
-	NoCAS bool
-	Steps int
+	Keys   int
+	NoCAS  bool
+	Steps  int
+	Rounds int
+	Pause  time.Duration
 }
 
 func (Register) Name() string { return "register" }
 
 func (Register) Kinds() []string {
-	return []string{RegisterLinearizable, RegisterStale, RegisterNodeStale}
+	return []string{RegisterLinearizable, RegisterStale, RegisterNodeStale, RegisterReplicasAgree}
 }
 
 func (Register) Observations() []string { return []string{RegisterWriteAcked} }
@@ -58,7 +61,9 @@ func (r Register) steps() int {
 	return registerSteps
 }
 
-func (r Register) Read() Op { return Op{F: RegisterReadF, K: "k0"} }
+func registerKey(index int) string { return fmt.Sprintf("k%d", index) }
+
+func (r Register) Read() Op { return Op{F: RegisterReadF, K: registerKey(0)} }
 
 func (r Register) Generator(int) Generator {
 	return &registerGenerator{keys: r.keys(), cas: !r.NoCAS, known: map[string]string{}}
@@ -73,7 +78,7 @@ type registerGenerator struct {
 }
 
 func (g *registerGenerator) Next(draw Draw, value func() string) Op {
-	key := fmt.Sprintf("k%d", draw(uint64(g.keys)))
+	key := registerKey(int(draw(uint64(g.keys))))
 	switch draw(4) {
 	case 0, 1:
 		return Op{F: RegisterReadF, K: key}
@@ -198,7 +203,7 @@ func registerModel(budget *stepBudget) porcupine.Model {
 func (r Register) Check(h *history.History) Report {
 	report := Report{
 		Facts:     map[string]bool{},
-		Undecided: map[string]bool{RegisterLinearizable: true, RegisterStale: true, RegisterNodeStale: true},
+		Undecided: map[string]bool{RegisterLinearizable: true, RegisterStale: true, RegisterNodeStale: true, RegisterReplicasAgree: true},
 	}
 	byKey := map[string][]registerOp{}
 	pinned := map[string][]registerOp{}
@@ -266,6 +271,7 @@ func (r Register) Check(h *history.History) Report {
 			})
 		}
 	}
+	r.checkReplicas(h, byKey, &report, &found)
 	report.Violations = found.result()
 	return report
 }

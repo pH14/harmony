@@ -27,6 +27,8 @@ const (
 
 const generationEnv = "HARMONY_DISTURBANCE_GENERATION"
 
+const faultsInForceEnv = "HARMONY_FAULTS_IN_FORCE"
+
 const baselineFile = "disturbance-baseline"
 
 const checkProcess = 0
@@ -39,6 +41,14 @@ type CheckResult struct {
 	UndecidedKeys int                     `json:"undecided_keys"`
 	Violations    []family.Violation      `json:"violations"`
 	Facts         map[string]bool         `json:"facts"`
+	Replicas      *ReplicaResult          `json:"replicas,omitempty"`
+}
+
+type ReplicaResult struct {
+	Rounds  int                     `json:"rounds,omitempty"`
+	Agreed  bool                    `json:"agreed"`
+	Nodes   map[string]history.Type `json:"nodes,omitempty"`
+	Skipped string                  `json:"skipped,omitempty"`
 }
 
 func (r CheckResult) String() string {
@@ -84,8 +94,16 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 	}
 	recorder := fam.Recorder(prior)
 	outcomes := make([]history.Type, len(nodes)+1)
-	errs := make([]error, len(nodes)+1)
+	errs := make([]error, len(nodes)+2)
 	var wg sync.WaitGroup
+	var replicas *ReplicaResult
+	if replicated, ok := fam.(family.Replicated); ok {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			replicas, errs[len(nodes)+1] = compareReplicas(ctx, adapter, replicated, recorder, journal, nodes, config)
+		}()
+	}
 	for index := range outcomes {
 		op := fam.Read()
 		if index > 0 {
@@ -123,6 +141,7 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 		UndecidedKeys: report.UndecidedKeys,
 		Violations:    report.Violations,
 		Facts:         report.Facts,
+		Replicas:      replicas,
 	}
 	if len(nodes) > 0 {
 		result.Nodes = map[string]history.Type{}
@@ -155,6 +174,67 @@ func checkRead(ctx context.Context, adapter Adapter, recorder family.Recorder, j
 	default:
 		return history.Info, journal.Complete(p, history.Info, op.F, op.K, index, errorValue(err))
 	}
+}
+
+func compareReplicas(ctx context.Context, adapter Adapter, replicated family.Replicated, recorder family.Recorder, journal *history.Journal, nodes []string, config Config) (*ReplicaResult, error) {
+	if len(nodes) < 2 {
+		return &ReplicaResult{Skipped: "the adapter pins reads to fewer than two nodes"}, nil
+	}
+	// Replicas need only agree once faults end. A member that a fault still
+	// cuts off may answer from its own lagging copy, so no round runs and no
+	// replica record reaches the journal that later checks reread.
+	if os.Getenv(faultsInForceEnv) == "1" {
+		return &ReplicaResult{Skipped: "a fault is in force"}, nil
+	}
+	rounds, settle := replicated.Settle()
+	result := &ReplicaResult{}
+	for round := range rounds {
+		if round > 0 {
+			timer := time.NewTimer(settle)
+			select {
+			case <-ctx.Done():
+			case <-timer.C:
+			}
+			timer.Stop()
+		}
+		outcomes := make([]history.Type, len(nodes))
+		errs := make([]error, len(nodes))
+		var wg sync.WaitGroup
+		for index, node := range nodes {
+			op := replicated.Replicas(round)
+			op.Node = node
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				outcomes[index], errs[index] = checkRead(ctx, adapter, recorder, journal, len(nodes)+1+index, op, config.CheckTimeout)
+			}()
+		}
+		wg.Wait()
+		if err := errors.Join(errs...); err != nil {
+			return nil, err
+		}
+		result.Rounds = round + 1
+		result.Nodes = map[string]history.Type{}
+		answered := 0
+		for index, node := range nodes {
+			result.Nodes[node] = outcomes[index]
+			if outcomes[index] == history.OK {
+				answered++
+			}
+		}
+		if answered < 2 {
+			break
+		}
+		h, err := history.Load(config.Dir)
+		if err != nil {
+			return nil, err
+		}
+		if !replicated.Disagree(h, journal.Name(), round) {
+			result.Agreed = true
+			break
+		}
+	}
+	return result, nil
 }
 
 func Emit(fam family.Family, report family.Report) {

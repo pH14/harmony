@@ -66,6 +66,23 @@ return that node's own copy of the data, and only once that node holds every
 write acknowledged before the read started. The targets below write a fence
 after the read starts and wait until the node has applied it.
 
+A register adapter that pins reads also answers the `replicas` operation:
+`Op.Node` names the node and `Op.V` is a `family.ReplicaQuery` with the keys.
+It returns a `map[string]family.Copy` with an entry for every key, read from
+that node's own copy under the same fence. `Copy.Value` is nil for a missing
+key, and `Copy.Meta` holds the per-key metadata the system exposes, such as a
+revision, or nothing when it exposes none.
+
+The check compares replicas only when the supervisor reports no fault in force
+at its start (`HARMONY_FAULTS_IN_FORCE` is not `1`). Otherwise it skips the
+comparison and journals no replica reads, so a member that a fault cuts off
+cannot answer from its lagging copy into a comparison. The read fence and this
+skip cover the same risk from two sides: a fence makes a cut-off member's pinned
+read fail, and the skip protects targets whose pinned reads answer from local
+state without a fence. A check that starts before a cut still compares. A
+violation needs every round to disagree, so only a cut that starts before the
+first round's reads can cause one.
+
 ## Randomness
 
 Every choice the driver makes comes from `sdk.Random()`: the operation, its
@@ -91,7 +108,8 @@ An invocation pinned to a node also carries `"n"`, the node's name.
 pairs an invocation with its completion within one file. The loader reads every
 `*.jsonl` file in the directory, drops a torn final line and treats an
 invocation without a completion as `info`. An `info` operation completes at
-infinity for every checker.
+infinity for every checker. The loader also keeps the time of every completion
+record, `info` included, as the operation's `Ended`.
 
 Values are `<token>-<process>-<counter>`, unique per operation. The token is
 the driver's journal file token, and the file is created with `O_EXCL`, so
@@ -152,17 +170,42 @@ checks use the operations that are not pinned to a node. A pinned read gets
 the cheaper check alone, against every write, under
 `register: no node's read returns a value older than an acknowledged earlier write`.
 
+`register: every node holds the same value and metadata for each key`
+compares the nodes' copies from the check's `replicas` rounds. Each round reads
+every key from every node concurrently. A node that fails the read, because it
+is down or cannot apply the fence in time, is left out of that round. Two nodes
+disagree on a key when they hold the same value with different metadata, or
+when they hold different values and no write or `cas` on that key overlaps the
+round (from its invocation to its `Ended`). Values are unique per operation, so
+an equal value names one write, and every correct replica records that write
+with the same metadata whether or not it has caught up. A key with a write in
+progress during the round can differ between correct nodes, so it is compared
+on metadata alone. The check reports the property when every one of the rounds
+(`Register.Rounds`, default 3) had two or more answering nodes and a
+disagreement, with the last round's disagreeing keys, the copies by node and
+the check journal as evidence. A check that ran fewer rounds, or a round with
+fewer than two answering nodes, decides nothing.
+
 Apart from that log check, failed operations are dropped. Indeterminate
 operations never produce a violation.
 
 ## Check
 
 The bundle's `check` line performs one read through the adapter into its own
-journal, plus one read per node when the adapter pins reads, loads every
-journal and runs the family checker. It prints one JSON line with the read
-outcome, each node's read outcome under `nodes`, and the violations. It writes
-one failing `Always` per violation, at most three per kind and node, with
-evidence and the kind's total `occurrences` in `details`; evidence from a
+journal, plus one read per node when the adapter pins reads. For the register
+family it also runs, starting with those reads, up to three `replicas` rounds
+500 ms of guest time apart (`Register.Pause`), each with one read per node
+bounded by `--check-timeout`. After each round it reloads the journals and
+stops when the round shows no disagreement under the register rule above, or
+when fewer than two nodes answered. Guest computation advances no virtual
+time, so the settle period is a fixed number of rounds with a sleep between
+them. The check then loads every journal and runs the family checker. It
+prints one JSON line with the read outcome, each node's read outcome under
+`nodes`, the violations and, for the register family, `replicas`: the rounds
+run, whether the last round agreed, each node's outcome in that round, or
+`skipped` with the reason when the adapter pins reads to fewer than two nodes.
+It writes one failing `Always` per violation, at most three per kind and node,
+with evidence and the kind's total `occurrences` in `details`; evidence from a
 pinned read also has `node` and that node's `node_occurrences`. It writes a
 passing `Always` for each kind without a violation only once a read the kind
 covers has succeeded, so a check that cannot reach the system is silent. It
@@ -302,6 +345,11 @@ key. Both are one-replica consumers placed on `nI` the way the `targets/nats`
 pinned read places them. A consumer that has nothing pending at creation means
 the key has no value on `nI`.
 
+A `replicas` read on `nI` writes the same fence, then creates one consumer on
+`nI` that delivers the last message of every subject in the bucket and reads
+the messages pending at creation. Each key's metadata is `revision`, the
+stream sequence of its last message, which is the same on every replica.
+
 ## rqlite
 
 `targets/rqlite` runs three `rqlited` nodes at 10.77.0.1-3 in `harness-net`
@@ -327,7 +375,9 @@ A read pinned to node `nI` in either bundle first runs
 `UPDATE ready SET n = n + 1 WHERE k = 1` with `raft_index` through a random
 node. It polls `nI`'s `/status` until `store.db_applied_index` reaches that
 index, then reads from `nI` at level `none`, which answers from `nI`'s own
-SQLite database.
+SQLite database. A `replicas` read on `nI` takes the same fence and selects
+every row of `kv` at level `none`. A row has no version, so its copies hold
+values alone.
 
 A register write is a definite failure on a dial error, an HTTP status other
 than 200 and 500, a 500 with body `leader not found`, a response error
@@ -349,7 +399,15 @@ Data lives under `/tmp/etcd/<member>`. Members use etcd's default flags.
 `write` is a put, `read` is a range on one key with etcd's default
 linearizable consistency, and `cas` is a transaction that compares the value
 and puts on success. Each operation goes to one member drawn from the SDK
-stream, so reads and writes reach followers as well as the leader. The gateway
+stream, so reads and writes reach followers as well as the leader. Members are
+named `m1` to `mN`. A read pinned to member `mI` first puts key `fence-mI`
+through `mI`. A member answers a put only after it has applied it, and it
+applies entries in log order, so the member then holds every write
+acknowledged before the read started. The read is then a serializable range on
+`mI`, which answers from `mI`'s own store. A `replicas` read on `mI` takes the
+same fence and runs one serializable range over the keys. Each key's metadata
+is `create_revision`, `mod_revision` and `version`. `bundle-single` has one
+member, so its check skips the replica comparison. The gateway
 omits `succeeded` from a transaction whose compare failed, which is a definite
 failure. A write is a definite failure only when the dial fails; every other
 write error is indeterminate. Read errors are definite. `ready` passes once a
@@ -424,3 +482,5 @@ container. Opt-in options:
   sequence missing on the node.
 - An rqlite pinned read trusts `db_applied_index` to count only entries the
   node's SQLite database has applied.
+- An etcd pinned read trusts a member to answer a put only after it has applied
+  the put.

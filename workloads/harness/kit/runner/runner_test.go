@@ -209,6 +209,118 @@ func TestCorrectRegisterIsClean(t *testing.T) {
 	}
 }
 
+type replicatedRegister struct {
+	memoryRegister
+	versions map[string]uint64
+	behind   string
+}
+
+func (r *replicatedRegister) Family() family.Family {
+	return family.Register{Pause: time.Millisecond}
+}
+
+func (r *replicatedRegister) Nodes() []string { return []string{"n1", "n2", "n3"} }
+
+func (r *replicatedRegister) Connect(context.Context, int) (Client, error) { return r, nil }
+
+func (r *replicatedRegister) Invoke(ctx context.Context, op family.Op) (any, error) {
+	if op.F != family.RegisterReplicas {
+		result, err := r.memoryRegister.Invoke(ctx, op)
+		if err == nil && op.F != family.RegisterReadF {
+			r.mu.Lock()
+			r.versions[op.K]++
+			r.mu.Unlock()
+		}
+		return result, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	copies := map[string]family.Copy{}
+	for _, key := range op.V.(family.ReplicaQuery).Keys {
+		value, ok := r.values[key]
+		if !ok {
+			copies[key] = family.Copy{}
+			continue
+		}
+		version := r.versions[key]
+		if op.Node == r.behind {
+			version--
+		}
+		copies[key] = family.Copy{Value: &value, Meta: map[string]uint64{"version": version}}
+	}
+	return copies, nil
+}
+
+func TestReplicasThatAgreeTakeOneRound(t *testing.T) {
+	config := testConfig(t)
+	adapter := &replicatedRegister{memoryRegister: memoryRegister{values: map[string]string{}}, versions: map[string]uint64{}}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Violations) != 0 || result.Replicas == nil || result.Replicas.Rounds != 1 || !result.Replicas.Agreed {
+		t.Fatalf("result %s", result)
+	}
+	if !passed(t)[family.RegisterReplicasAgree] {
+		t.Fatal("the replica property did not pass")
+	}
+}
+
+func TestReplicaBehindOnMetadataIsCaught(t *testing.T) {
+	config := testConfig(t)
+	adapter := &replicatedRegister{memoryRegister: memoryRegister{values: map[string]string{}}, versions: map[string]uint64{}, behind: "n3"}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := failing(t)
+	if !failed[family.RegisterReplicasAgree] || len(failed) != 1 || result.Replicas.Rounds != 3 || result.Replicas.Agreed {
+		t.Fatalf("failing %v; result %s", failed, result)
+	}
+}
+
+func TestReplicasAreComparedOnlyAfterFaultsEnd(t *testing.T) {
+	config := testConfig(t)
+	adapter := &replicatedRegister{memoryRegister: memoryRegister{values: map[string]string{}}, versions: map[string]uint64{}, behind: "n3"}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(faultsInForceEnv, "1")
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed := failing(t); len(failed) != 0 || result.Replicas == nil || result.Replicas.Skipped == "" || result.Replicas.Rounds != 0 {
+		t.Fatalf("failing %v; result %s", failed, result)
+	}
+	t.Setenv(faultsInForceEnv, "0")
+	result, err = Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed := failing(t); !failed[family.RegisterReplicasAgree] || result.Replicas.Rounds != 3 {
+		t.Fatalf("failing %v; result %s", failed, result)
+	}
+}
+
+func TestReplicasNeedTwoNodes(t *testing.T) {
+	config := testConfig(t)
+	adapter := &memoryRegister{values: map[string]string{}}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Replicas == nil || result.Replicas.Skipped == "" || result.Replicas.Rounds != 0 {
+		t.Fatalf("result %s", result)
+	}
+}
+
 type replicatedLog struct {
 	memoryLog
 	behind string

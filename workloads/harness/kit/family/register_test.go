@@ -157,7 +157,7 @@ func TestRegisterNodeStaleRead(t *testing.T) {
 	if details["node"] != "n2" || details["value"] != "a" {
 		t.Fatalf("details %+v", details)
 	}
-	if len(report.Undecided) != 0 {
+	if len(report.Undecided) != 1 || !report.Undecided[RegisterReplicasAgree] {
 		t.Fatalf("undecided %v", report.Undecided)
 	}
 }
@@ -184,7 +184,7 @@ func TestRegisterNodeReadConcurrentWithWriteIsNotStale(t *testing.T) {
 	b.read(2, "k0", "b", 7, 8)
 	report := Register{}.Check(b.build())
 	expectKinds(t, report)
-	if len(report.Undecided) != 0 {
+	if len(report.Undecided) != 1 || !report.Undecided[RegisterReplicasAgree] {
 		t.Fatalf("undecided %v", report.Undecided)
 	}
 }

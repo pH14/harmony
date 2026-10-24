@@ -65,6 +65,10 @@ func TestJournalRoundTrip(t *testing.T) {
 		if op.Type == Info && op.Complete != Forever {
 			t.Errorf("indeterminate op %d completes at %d", op.Index, op.Complete)
 		}
+		recorded := op.Journal == first.Name() && op.Index != lost
+		if ended := op.Ended != Forever; ended != recorded || (ended && op.Ended < op.Invoke) {
+			t.Errorf("op %s/%d ends at %d", op.Journal, op.Index, op.Ended)
+		}
 		if op.Definite() && op.Complete < op.Invoke {
 			t.Errorf("op %d completes before it starts", op.Index)
 		}
