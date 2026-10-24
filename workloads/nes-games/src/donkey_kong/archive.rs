@@ -8,7 +8,7 @@ use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
     donkey_kong::target::{
         ButtonChord, DonkeyKongInput, DonkeyKongMechanicalState, DonkeyKongObservations,
-        DonkeyKongSnapshot, GRID_SHIFT, TRACKED_STAGES,
+        DonkeyKongSnapshot, GRID_SHIFT, STAGE_RIVETS, TRACKED_STAGES,
     },
     search::archive::{
         Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
@@ -22,6 +22,14 @@ pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
 const HEIGHT_SHIFT: u8 = 3;
+
+fn height_tier(state: DonkeyKongMechanicalState) -> u8 {
+    if state.stage == STAGE_RIVETS {
+        0
+    } else {
+        state.height() >> HEIGHT_SHIFT
+    }
+}
 
 pub type DonkeyKongArchive =
     Archive<ButtonChord, DonkeyKongArchiveKey, DonkeyKongMilestones, DonkeyKongSnapshot>;
@@ -92,7 +100,7 @@ pub fn tier(state: DonkeyKongMechanicalState) -> DonkeyKongTier {
     DonkeyKongTier {
         stages: state.stages_cleared(),
         rivets: state.rivets,
-        height: state.height() >> HEIGHT_SHIFT,
+        height: height_tier(state),
     }
 }
 
@@ -172,7 +180,7 @@ pub fn milestones(state: DonkeyKongMechanicalState) -> DonkeyKongMilestones {
     DonkeyKongMilestones {
         cleared: state.stages_cleared(),
         rivets: state.rivets,
-        height: state.height() >> HEIGHT_SHIFT,
+        height: height_tier(state),
         victory: state.victory(),
         death: state.dead(),
     }
@@ -214,7 +222,7 @@ pub fn progress_point(state: DonkeyKongMechanicalState) -> DonkeyKongProgressWat
     DonkeyKongProgressWatermark {
         cleared: state.stages_cleared(),
         rivets: state.rivets,
-        height: state.height() >> HEIGHT_SHIFT,
+        height: height_tier(state),
     }
 }
 
@@ -242,8 +250,7 @@ pub const CHORDS: ChordVocabulary = ChordVocabulary {
 mod tests {
     use super::*;
     use crate::donkey_kong::target::{
-        GOAL_ROUNDS, STAGE_BARRELS, STAGE_ELEVATORS, STAGE_RIVETS, START_LIVES, START_X, START_Y,
-        STATUS_DEAD,
+        GOAL_ROUNDS, STAGE_BARRELS, STAGE_ELEVATORS, START_LIVES, START_X, START_Y, STATUS_DEAD,
     };
     use crate::search::rand::RomuDuoJrRand;
 
@@ -275,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tier_orders_stages_then_rivets_then_height() {
+    fn the_tier_orders_stages_then_rivets_then_height_except_on_the_rivet_stage() {
         let low = archive_key(state(START_X, START_Y)).unwrap();
         let high = archive_key(state(START_X, START_Y - 0x40)).unwrap();
         assert!(high.progress() > low.progress());
@@ -289,6 +296,10 @@ mod tests {
         let mut tall = rivet;
         tall.y = START_Y - 0x60;
         assert!(archive_key(one).unwrap().progress() > archive_key(tall).unwrap().progress());
+        assert_eq!(
+            archive_key(tall).unwrap().progress(),
+            archive_key(rivet).unwrap().progress()
+        );
     }
 
     #[test]
