@@ -204,6 +204,7 @@ impl GuardTelemetry {
                     ("comparison_input_bytes", bytes.comparison_input_bytes),
                     ("sealed_file_read_bytes", bytes.sealed_file_read_bytes),
                     ("sealed_file_hashed_bytes", bytes.sealed_file_hashed_bytes),
+                    ("code_page_entries", bytes.code_page_entries),
                 ] {
                     out.push((format!("{key}.{name}"), value));
                 }
