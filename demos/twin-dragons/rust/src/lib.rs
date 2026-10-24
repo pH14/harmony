@@ -11,6 +11,7 @@ mod pac_man;
 mod punchout;
 mod smb;
 mod twin_dragons;
+mod zelda;
 
 use nes_games::arcade::snapshot_digest;
 use searcher::search::{

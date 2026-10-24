@@ -82,6 +82,7 @@ GAMES: dict[str, Game] = {
     "pac-man": Game("pac-man", "pac-man.nes", False),
     "joust": Game("joust", "joust.nes", False),
     "punch-out": Game("punchout", "punch-out.nes", False),
+    "zelda": Game("zelda", "zelda.nes", False),
 }
 
 

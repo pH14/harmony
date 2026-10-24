@@ -38,7 +38,7 @@ use wasm_bindgen::prelude::*;
 use crate::{
     donkey_kong::DonkeyKong, famidash::Famidash, ice_climbers::IceClimbers, mega_man::MegaMan,
     joust::Joust, metroid::Metroid, pac_man::PacMan, punchout::PunchOut, smb::Smb,
-    twin_dragons::TwinDragons,
+    twin_dragons::TwinDragons, zelda::Zelda,
 };
 
 const WINDOW: usize = 16;
@@ -675,6 +675,7 @@ impl CampaignSearch {
             "pac-man" => Box::new(Search::<PacMan>::new(options).map_err(js_error)?),
             "joust" => Box::new(Search::<Joust>::new(options).map_err(js_error)?),
             "punch-out" => Box::new(Search::<PunchOut>::new(options).map_err(js_error)?),
+            "zelda" => Box::new(Search::<Zelda>::new(options).map_err(js_error)?),
             "famidash" => Box::new(Search::<Famidash<0>>::new(options).map_err(js_error)?),
             "famidash-community" => {
                 Box::new(Search::<Famidash<1>>::new(options).map_err(js_error)?)
@@ -772,6 +773,9 @@ impl CampaignWorker {
             "punch-out" => Box::new(
                 Worker::<PunchOut>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
             ),
+            "zelda" => Box::new(
+                Worker::<Zelda>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
+            ),
             "famidash" => Box::new(
                 Worker::<Famidash<0>>::new(core, rom, identity, identity_sha256)
                     .map_err(js_error)?,
@@ -832,6 +836,7 @@ pub fn campaign_genesis(game: &str, core: u32, rom: &[u8]) -> Result<String, JsV
         "pac-man" => genesis_of::<PacMan>(core, rom),
         "joust" => genesis_of::<Joust>(core, rom),
         "punch-out" => genesis_of::<PunchOut>(core, rom),
+        "zelda" => genesis_of::<Zelda>(core, rom),
         "famidash" => genesis_of::<Famidash<0>>(core, rom),
         "famidash-community" => genesis_of::<Famidash<1>>(core, rom),
         "famidash-b" => genesis_of::<Famidash<2>>(core, rom),

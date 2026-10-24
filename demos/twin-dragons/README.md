@@ -4,7 +4,7 @@ A static demonstration of state-space exploration. Emulators compiled to
 WebAssembly run a game, and a Rust worker uses Dissonance to search it. The
 site plays the NES homebrew games Twin Dragons and Famidash on QuickNES, the
 Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and Super Mario Bros., Mega
-Man 2, Metroid, Donkey Kong, Ice Climber and Pac-Man on QuickNES from ROMs the visitor supplies. The `game` URL
+Man 2, Metroid, Donkey Kong, Ice Climber, Pac-Man, Joust, Punch-Out!! and The Legend of Zelda on QuickNES from ROMs the visitor supplies. The `game` URL
 parameter picks the game, and the level selector switches between them. The
 page opens the level selector and starts searching once a level is chosen, or
 from the first level if the selector is closed. A `level` URL parameter with a
@@ -85,7 +85,7 @@ workers import `emulator.js` dynamically and set their message handler first.
 The Famidash module waits for the Rust module when it loads, and a module
 worker drops messages that arrive before its handler is set.
 
-Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Donkey Kong, Ice Climber and Pac-Man run the
+Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Donkey Kong, Ice Climber, Pac-Man, Joust, Punch-Out!! and The Legend of Zelda run the
 same search as their native workloads. `rust/src/campaign.rs` holds `JsMachine`,
 a `machine::Machine`, `NesBackend` and `NesMemory` that drives the browser
 QuickNES core through `globalThis.harmonyCores`, and a coordinator and rollout
@@ -1045,6 +1045,50 @@ short search whose retained states replay exactly, and starts a search from the
 picker. It reads the ROM from `PUNCHOUT_ROM` or
 `~/workspace/harmony/.arcade-local/roms/punch-out.nes` and skips when it is
 absent.
+
+### The Legend of Zelda
+
+The site ships nothing from Zelda. The level selector accepts the ROM with
+SHA-256 `44e33dc0…5a6a`, 131,088 bytes, an MMC1 cartridge. The picker lists ten
+levels: the overworld and Dungeons 1 to 9. The search starts from a new game in
+the overworld at room `$77`. The observation's Triforce count ranks search
+progress. The page counts one more level than the Triforce count, and that
+mapping is approximate.
+
+The map for each level is built in the browser from the game's own loader. The
+loader sets the level and room, runs the game until play resumes, and reads the
+screen. Each level is a 16 by 8 grid of 256 × 168 rooms, which is 4096 × 1344.
+A room number `r` sits in column `r & 15` and row `r >> 4`. The build visits only the
+cells that the dungeon marks as rooms. Each dungeon's level block has a submenu map
+mask: 16 column bytes, read as one bit per row, after the columns are rotated by the
+block's rotation byte. The other cells stay blank.
+
+Link's position is the room's cell plus his x and y inside the room. The y
+value is offset by the status bar at the top of the frame. The search
+places Link's facing in the sprite's pose bit. The sprite sheet is cut from the
+ROM by drawing Link with the sprites hidden and with them shown, then keeping
+the pixels that changed.
+
+| Address | Meaning |
+| --- | --- |
+| `$10` | level; 0 is the overworld, 1 to 9 are the dungeons |
+| `$12` | game mode; 5 is play, `$11` is death, `$13` is the ending |
+| `$70`, `$84` | Link's x and y |
+| `$98` | Link's direction; bit `$02` is facing left |
+| `$EB` | current room |
+| `$200`–`$2FF` | sprite table; `$F8` hides a sprite |
+
+Loading a dungeon needs one more step: the game reads the room again during
+modes 3 and 4, so the loader writes `$EB` each frame until play resumes.
+
+The search is the `ZeldaGame` workload from `nes-games`, as `nes-eval` runs it.
+`workloads/nes/src/zelda/README.md` describes its archive key, chords and
+terminal policy. `rust/src/zelda.rs` provides the browser search and the
+observation decoder. `tests/zelda.mjs` builds the overworld and Dungeon 1 maps,
+runs a short search that replays exactly, and then chooses the ROM in the
+picker. It reads the ROM from `ZELDA_ROM` or the laptop path in the file and
+skips when that ROM is absent. The browser section needs Chrome, which
+`CHROME_CHANNEL=chrome` selects.
 
 ## Verification and publishing
 

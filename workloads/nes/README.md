@@ -321,9 +321,9 @@ directory. To watch from another machine, forward the port over SSH, for
 example `ssh -L 8790:127.0.0.1:PORT HOST`, or use the arcade launcher in
 [`demos/twin-dragons`](../../demos/twin-dragons/README.md#native-runs).
 
-The arcade page has no client definition for Castlevania or Zelda, so their live
-views are served but not drawn. Punch-Out!! has a client definition in
-[`demos/twin-dragons/src/games/punch-out.js`](../../demos/twin-dragons/src/games/punch-out.js).
+The arcade page has no client definition for Castlevania, so its live view is
+served but not drawn. Every other game has a client definition in
+[`demos/twin-dragons/src/games`](../../demos/twin-dragons/src/games).
 
 Without a connected viewer, workers skip motion trails and detailed observation
 records. With viewers, the service bounds detailed trails per 100 ms tick and
@@ -363,9 +363,10 @@ through a fresh target when the archived input does not hold every frame the
 core ran, as the browser does. Requests are limited to 64 KiB with 10-second
 read and write timeouts, and the server holds at most 64 connections. Open
 `http://127.0.0.1:8790/?game=GAME&live` to watch. The page ids are
-`super-mario-bros`, `mega-man-2`, `metroid`, `castlevania`, `joust`, `twin-dragons` and the five
+`super-mario-bros`, `mega-man-2`, `metroid`, `castlevania`, `donkey-kong`, `ice-climbers`,
+`pac-man`, `joust`, `punch-out`, `zelda`, `twin-dragons` and the five
 Famidash groups `famidash`, `famidash-community`, `famidash-b`, `famidash-c` and
-`famidash-d`; `punch-out` is the Punch-Out!! page; a Famidash campaign reports the group that holds its stage.
+`famidash-d`; a Famidash campaign reports the group that holds its stage.
 
 ## Product CLI adapter
 

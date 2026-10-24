@@ -1,7 +1,7 @@
 # Copy to ~/.config/harmony/arcade-machines.toml and list your own machines.
 
 # A directory with super-mario-bros.nes, mega-man-2.nes, metroid.nes, donkey-kong.nes,
-# ice-climbers.nes, pac-man.nes, joust.nes and punch-out.nes, for
+# ice-climbers.nes, pac-man.nes, joust.nes, punch-out.nes and zelda.nes, for
 # the games whose ROMs the site does not ship. Leave it out to run only the
 # homebrew games.
 roms = "~/arcade-roms"
