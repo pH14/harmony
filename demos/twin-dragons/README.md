@@ -915,8 +915,9 @@ Simon stops moving, when the camera stops, or at the edge of the strip. Some
 stages stop at a locked room or a staircase, so their maps are partial. Stages
 4 to 7 and 14 to 18 come out one screen wide for that reason.
 
-The sprite sheet holds Simon's frame as the game draws it. The left-facing half
-is a mirror of the right-facing half, because the facing byte is not read yet.
+The sprite sheet holds Simon's idle pose in both directions. The builder turns
+him right and left, reads the facing bit at `$15` (1 for right), and writes each
+capture into the half for its facing.
 `tests/castlevania.mjs` boots the game, checks the stage map widths and draws
 the sprite sheet. It reads the ROM from `CASTLEVANIA_ROM` or
 `~/workspace/harmony/.arcade-local/roms/castlevania.nes` and skips when it is
