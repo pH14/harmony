@@ -27,6 +27,9 @@ generic operations onto the target's client API.
 | `targets/summitdb` | SummitDB image and adapter |
 | `targets/dqlite` | dqlite image, node program and adapter |
 | `targets/oxia` | Oxia image and adapter |
+| `targets/garage` | Garage image and adapter |
+| `targets/openbao` | OpenBao image and adapter |
+| `targets/xline` | Xline image and adapter |
 | `native.py` | runs an image in a container without Harmony |
 
 ## Writing a target
@@ -802,6 +805,176 @@ fail on `v0.16.11` and 2 in 20 on `v0.18.0-rc4`.
 
 Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
 memory, and 1024 MiB cannot hold the four full disks (800 MiB) and Oxia.
+
+## Garage
+
+`targets/garage` drives the `register` family without `cas` against
+[Garage](https://garagehq.deuxfleurs.fr/) `v2.4.1`, an S3-compatible object
+store, on three nodes `n1` to `n3` at 10.77.0.1-3 (S3 port 3900, RPC port
+3901) in `harness-net` namespaces. Each node keeps its metadata (LMDB, the
+default engine) and data blocks under `/tmp/garage/<node>` on a 256 MiB node
+disk and logs to `/tmp/garage/<node>.log`. `setup.sh` writes each node's
+configuration from `garage.toml.in`: replication factor 3,
+`consistency_mode = "consistent"`, and `metadata_fsync` and `data_fsync` on.
+Garage documents that the consistent mode chooses read and write quorums so
+that reads see every completed write (read-after-write consistency). Both
+fsync settings are off by default, and the documentation says a power cut can
+then lose recent writes, so the target turns them on.
+
+`ready.sh` forms the cluster once per execution: `n1` connects to `n2` and
+`n3`, assigns the three nodes 100 MB each in zone `dc1`, applies layout
+version 1, imports a fixed access key and creates bucket `harness` with read,
+write and owner permission for it. It then marks `/tmp/garage/formed` and runs
+the adapter's `ready`, which passes once a `PutObject` succeeds through any
+node.
+
+Each operation goes to a node drawn from the SDK stream through
+[minio-go](https://github.com/minio/minio-go) with path-style requests and
+one attempt per request. `write` is `PutObject` and `read` is `GetObject`; a
+`NoSuchKey` error reads as no value. Garage has no conditional `PutObject`, so
+the family runs without `cas`. A write is a definite failure only when the dial
+fails, since Garage reports an error after a write that reached fewer nodes
+than the quorum and keeps it on those nodes. Read errors are definite. The S3
+API reads through a quorum, so the adapter pins no reads and the check skips
+the replica comparison.
+
+The register checker reports linearizability, which is stronger than
+Garage's promise. Read-after-write consistency is the stale-read property
+(`register: no read returns a value older than an acknowledged earlier
+write`). A linearizability violation with no stale read can come from a read
+that saw a write still in progress, which the promise allows.
+
+The image builds `garage` from the release source with Rust 1.97.0,
+`trace-pc-guard` coverage and the `antithesis-instrumentation` crate, which
+the build adds to the `garage` crate and references from `main.rs`. The lock
+file gains only that crate. Admission accepts `XGETBV` only after a provable
+zero selector. `sodium-xgetbv.sh` rewrites the one `XGETBV` in the libsodium
+copy that `libsodium-sys` builds so that it clears ECX itself, and
+`cpuid-xgetbv.sh` does the same for `klauspost/cpuid` in the harness. Both
+callers request only XCR0.
+
+`v2.4.1` writes `node_key` and `cluster_layout` with a truncating
+`File::create` and no fsync or rename, so `metadata_fsync` does not cover
+them. A power loss within the ext4 writeback delay after a node first starts
+leaves `node_key` empty. The node then panics with `Corrupt node_key file`
+on every start, and the supervisor reports an unexpected node death. The
+shrunk run has that one power loss. All 20 redrawn variants leave the file
+empty, and 19 of them fail.
+
+Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
+memory, and 1024 MiB cannot hold three full 256 MiB disks and Garage.
+
+## OpenBao
+
+`targets/openbao` drives the `register` family against
+[OpenBao](https://github.com/openbao/openbao) `v2.7.1` with integrated
+storage (Raft) on three nodes `n1` to `n3` at 10.77.0.1-3 (API port 8200,
+cluster port 8201) in `harness-net` namespaces. `setup.sh` writes each node's
+configuration from `bao.hcl.in`: a `raft` storage path under `/tmp/bao/<node>`
+on a 256 MiB node disk, `retry_join` toward all three nodes, a `static` seal
+with a fixed test key so a restarted node unseals itself, and
+`disable_standby_reads`. Each node logs to `/tmp/bao/<node>.log`. OpenBao
+documents that integrated storage commits an entry once a quorum stores it
+durably and that writes return only after they are committed and applied.
+Standby reads are eventually consistent by default, so the target turns them
+off and every request reaches the active node.
+
+`ready.sh` initializes the cluster once per execution through `n1` with one
+recovery share, keeps the root token in `/tmp/bao/token`, mounts KV version 2
+at `secret/`, and then runs the adapter's `ready`, which passes once a write
+succeeds through any node.
+
+Each operation goes to a node drawn from the SDK stream over a new HTTP
+connection, and the client follows no redirects. A standby whose forwarded
+request fails answers `307` toward the active node, and the forwarded request
+may already have committed, so a redirected write is indeterminate. `write` and `read` use `secret/data/<key>`. `cas` writes with
+`options.cas` set to the version that stored the old value, from the
+versions the client has seen or from a read. A `check-and-set parameter did
+not match` answer and a failed dial are definite failures, other write errors
+are indeterminate and read errors are definite. The check also pins one read
+to each node. A standby forwards it to the node it takes for active, and a node
+that still takes itself for active answers from its own state, with no
+leadership check. The per-node stale-read property covers those reads. The
+check skips the replica comparison.
+
+`bundle-api` runs the same operations through the upstream Go client
+(`api/v2`) with its default retries and redirect handling, so the history
+shows what an application on that client observes. A check-and-set conflict
+is a definite failure there, and every other write error is indeterminate.
+Build it with `HARNESS_BUNDLE=bundle-api`.
+
+`v2.7.1` serves stale reads from a paused active node. After a pause longer
+than the election timeout, the other nodes elect a new leader and acknowledge
+newer writes, while the resumed node still takes itself for active for about
+3 s. It answers reads from its own state, which has no leadership check, and
+steps down only once in-flight requests finish. About 13 in 20 redrawn
+variants of a run that pauses the active node fail the per-node stale-read
+property. A network partition of the active node does not show it, because the
+partitioned leader's lease expires first.
+
+The upstream Go client reports `ErrSecretNotFound` for a secret that exists
+when a standby answers a second `307` during a leader change. The client
+follows one redirect, treats the second `307` as success, and parses its empty
+body as no secret. About 12 in 20 redrawn variants of a run with one power
+loss of every node fail under `bundle-api`.
+
+The image builds `bao` from the release source with Go 1.27 and the
+`openbao` build tag, without the web UI, through the Antithesis Go
+instrumentation. `cpuid-xgetbv.sh` replaces `klauspost/cpuid` with a copy whose `XGETBV`
+clears ECX: admission accepts `XGETBV` only after a provable zero selector,
+and every caller passes 0.
+
+Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
+memory, and the release image needs more than 1 GiB to unpack.
+
+## Xline
+
+`targets/xline` drives the `register` family against
+[Xline](https://github.com/xline-kv/xline) `master` (`71479a4f`) on three
+members `n1` to `n3` at 10.77.0.1-3 (client port 2379, peer port 2380) in
+`harness-net` namespaces. Each member keeps its RocksDB state machine and its
+CURP log under `/tmp/xline/<node>/data` on a 512 MiB node disk and logs to
+`/tmp/xline/<node>.log`. `n1` starts with `--is-leader` only while its data
+directory is missing, since a restarted member already holds its term and
+vote. The CURP log preallocates 64 MiB segment files and opens a new one at
+every start, so 256 MiB disks fill after a few restarts.
+
+Xline serves the etcd v3 API. A `Range` with `serializable` unset is
+linearizable and goes through CURP; a serializable `Range` answers from the
+member's own state. The adapter uses the etcd API client. `write` is `Put`,
+`read` is a linearizable `Range` and `cas` is a `Txn` that compares the value
+and puts on success. Each operation goes to one member drawn from the SDK
+stream over a new connection. A failed `cas` compare and a failed dial are
+definite failures, and other write errors are indeterminate. The replica
+comparison first writes a fresh key `fence-nI-<token>` through member `nI`
+and polls it with a serializable `Range` on `nI` until it returns the written
+value. A member applies committed entries in log order, so its state then
+holds every write acknowledged before the comparison started, and a member cut
+off from a quorum fails the fence instead of answering from stale state. The
+comparison then reads each member with a serializable `Range` and compares
+values, `create_revision`, `mod_revision` and `version`. `ready` passes once a
+`Put` succeeds through any member.
+
+The image builds `xline` with Rust 1.97.0, `trace-pc-guard` coverage and the
+`antithesis-instrumentation` crate, which the build adds to the `xline` crate
+and references from `main.rs`. The source targets Rust 1.74, so the build caps
+lints at warnings.
+
+On `71479a4f` and `v0.7.0` a restarted member can apply its log a second time.
+Xline writes the state machine to RocksDB without sync and relies on the
+fsynced CURP log, so after a power loss each member replays its whole log in
+one after-sync batch. `after_sync` in `crates/curp/src/server/cmd_worker`
+applies the batch's commands first and stores the highest command index as
+the applied index. It then applies the batch's other entries, such as the
+node-state entries at indexes 1-3, and each of them stores its own lower
+index. The next restart of that member replays every command after that
+index again, so its `mod_revision` and `version` grow past the other members'
+and the replica comparison fails. The shrunk run has a power loss of all
+nodes, a kill of `n1` and a restart of `n3`. 12 of its 20 redrawn variants
+fail.
+
+Set `ram_mib = 3072` under `[runner.options]`. The node disks live in guest
+memory.
 
 ## Native runner
 
