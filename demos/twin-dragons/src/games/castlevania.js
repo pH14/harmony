@@ -55,7 +55,7 @@ export function decode(memory) {
 }
 
 export function entry() {
-  return { x: 64, y: STANDING_Y - CROP_TOP - HUD_ROWS };
+  return { x: 64, y: STANDING_Y - HUD_ROWS };
 }
 
 function position(ram) {
