@@ -248,14 +248,22 @@ reach every node. It needs `ip`, `tc` and `iptables` (Debian `iproute2` and
 `partition` and `isolate` replace the previous cut. Every subcommand can be
 run again. A target calls `harness-net setup N` from its setup script, starts
 each node through `harness-net exec I`, binds and advertises 10.77.0.I and
-declares the four fault subcommands as bundle hooks:
+declares the four fault subcommands as bundle hooks, with `heal` naming the
+hook that lifts the other three:
 
 ```
 hook 1 /opt/harmony/harness-net partition
 hook 2 /opt/harmony/harness-net isolate
 hook 3 /opt/harmony/harness-net delay
 hook 4 /opt/harmony/harness-net heal
+heal 4
 ```
+
+The supervisor then holds the recovery check's 30-second clock while a cut or
+delay is still in force, and runs the heal hook when the last open cut or
+delay window closes. A `kit/cmd/harness-net` test refuses a target bundle that
+declares a `partition`, `isolate` or `delay` hook without a `heal` line naming
+the `heal` hook, because the supervisor would then never lift the fault.
 
 Images that install `iptables` drop the xtables extensions whose names differ
 only in case, which `harmony prepare` rejects, and purge `libssl3`, which
