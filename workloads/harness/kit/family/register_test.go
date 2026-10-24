@@ -79,6 +79,55 @@ func TestRegisterIndeterminateOpsNeverViolate(t *testing.T) {
 	expectKinds(t, report)
 }
 
+func (b *builder) readKeyOn(p int, node, key string, value any, invoke int64, complete int64) {
+	b.opOn(drive, p, RegisterReadF, key, node, nil, invoke, history.OK, value, complete)
+}
+
+func TestRegisterNodeStaleRead(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.write(0, "k0", "b", 3, history.OK, 4)
+	b.read(1, "k0", "b", 5, 6)
+	b.readKeyOn(2, "n1", "k0", "b", 5, 6)
+	b.readKeyOn(3, "n2", "k0", "a", 5, 7)
+	report := Register{}.Check(b.build())
+	expectKinds(t, report, RegisterNodeStale)
+	details := report.Violations[0].Details
+	if details["node"] != "n2" || details["value"] != "a" {
+		t.Fatalf("details %+v", details)
+	}
+	if len(report.Undecided) != 0 {
+		t.Fatalf("undecided %v", report.Undecided)
+	}
+}
+
+func TestRegisterNodeReadFindsNoValue(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.readKeyOn(1, "n3", "k0", nil, 3, 4)
+	report := Register{}.Check(b.build())
+	expectKinds(t, report, RegisterNodeStale)
+	if report.Violations[0].Details["node"] != "n3" {
+		t.Fatalf("details %+v", report.Violations[0].Details)
+	}
+	if !report.Decided || !report.Undecided[RegisterStale] || !report.Undecided[RegisterLinearizable] {
+		t.Fatalf("report %+v", report)
+	}
+}
+
+func TestRegisterNodeReadConcurrentWithWriteIsNotStale(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.write(0, "k0", "b", 3, history.OK, 6)
+	b.readKeyOn(1, "n1", "k0", "a", 4, 5)
+	b.read(2, "k0", "b", 7, 8)
+	report := Register{}.Check(b.build())
+	expectKinds(t, report)
+	if len(report.Undecided) != 0 {
+		t.Fatalf("undecided %v", report.Undecided)
+	}
+}
+
 func TestRegisterGeneratorUsesKnownValuesForCAS(t *testing.T) {
 	generator := Register{}.Generator(0)
 	generator.Observe(Op{F: RegisterWrite, K: "k1", V: "x"}, history.OK, nil)

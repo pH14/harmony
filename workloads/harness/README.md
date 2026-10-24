@@ -52,6 +52,20 @@ no limit).
 error with `runner.Definite` only when the operation certainly had no effect.
 A side-effect-free read may always do so.
 
+An adapter that also implements `runner.Pinner` names the system's nodes:
+
+```go
+type Pinner interface {
+	Nodes() []string
+}
+```
+
+The check then reads once through each node as well, concurrently with its
+usual read, with `Op.Node` set to the node's name. A read pinned to a node must
+return that node's own copy of the data, and only once that node holds every
+write acknowledged before the read started. The targets below write a fence
+after the read starts and wait until the node has applied it.
+
 ## Randomness
 
 Every choice the driver makes comes from `sdk.Random()`: the operation, its
@@ -71,6 +85,7 @@ the logical process within the run:
 {"p":0,"t":"invoke","f":"append","k":"","v":"5f0c2a9e1b3d4c7a-0-17","ts":123,"i":40}
 ```
 
+An invocation pinned to a node also carries `"n"`, the node's name.
 `t` is `invoke`, `ok` (happened), `fail` (did not happen) or `info` (unknown).
 `ts` is `CLOCK_MONOTONIC` in nanoseconds, comparable across processes. `i`
 pairs an invocation with its completion within one file. The loader reads every
@@ -86,10 +101,11 @@ restarted drivers never reuse a value.
 
 `log` is an append-only, totally ordered stream. `append(v)` returns the
 assigned position when the system reports one; `read()` returns every value
-from the start. A read is journaled as a reference to the previous read
-recorded by the same file (or, in a check, the latest read in the history),
-the length of the shared prefix and the new values, so the journal grows with
-the stream and the number of reads, not their product. The checker reports:
+from the start. A read is journaled as a reference to the previous read on the
+same node recorded by the same file (or, in a check, the latest such read in
+the history), the length of the shared prefix and the new values, so the
+journal grows with the stream and the number of reads, not their product. The
+checker reports:
 
 - an append acknowledged before a read started that the read lacks;
 - two reads that order common values differently, or a later read that places
@@ -100,13 +116,33 @@ the stream and the number of reads, not their product. The checker reports:
   definite an error the system returns after applying the write;
 - two acknowledged appends with the same position.
 
+The first two cover reads that are not pinned to a node. Pinned reads have
+their own assertions, so a node whose copy diverges is named apart from a
+loss every read shows:
+
+- `log: every node's read includes every acknowledged append` reports a
+  pinned read that lacks an append acknowledged before it started. The
+  evidence has the node, the first missing value, the number missing and up to
+  32 missing values.
+- `log: each node's reads agree on one order of values` reports two reads
+  pinned to the same node that order common values differently, or a later
+  read on a node that places a new value before a value an earlier read on
+  that node returned. Reads on different nodes are never compared, so the
+  order checks name the node whose own reads disagree.
+
+The duplicate, phantom and failed-append checks cover every read and name the
+node of a pinned read.
+
 `register` is a key-value register with `write`, `read` and optional `cas`.
 Each key is checked for linearizability with
 [porcupine](https://github.com/anishathalye/porcupine) under a timeout
 (default 5 s); a timeout reports neither a violation nor a pass. A cheaper check reports a read
 returning a value older than an acknowledged write that completed before the
 read began, when the read value's own write completed before that newer write
-started. It also reports a read that finds no value after such a write.
+started. It also reports a read that finds no value after such a write. Both
+checks use the operations that are not pinned to a node. A pinned read gets
+the cheaper check alone, against every write, under
+`register: no node's read returns a value older than an acknowledged earlier write`.
 
 Apart from that log check, failed operations are dropped. Indeterminate
 operations never produce a violation.
@@ -114,13 +150,19 @@ operations never produce a violation.
 ## Check
 
 The bundle's `check` line performs one read through the adapter into its own
-journal, loads every journal and runs the family checker. It writes one
-failing `Always` per violation, at most three per kind, with evidence and the
-kind's total `occurrences` in `details`. It writes a passing `Always` for each
-kind without a violation only once some read has succeeded, so a check that
-cannot reach the system is silent. It also writes these `Sometimes` assertions:
+journal, plus one read per node when the adapter pins reads, loads every
+journal and runs the family checker. It prints one JSON line with the read
+outcome, each node's read outcome under `nodes`, and the violations. It writes
+one failing `Always` per violation, at most three per kind and node, with
+evidence and the kind's total `occurrences` in `details`; evidence from a
+pinned read also has `node` and that node's `node_occurrences`. It writes a
+passing `Always` for each kind without a violation only once a read the kind
+covers has succeeded, so a check that cannot reach the system is silent. It
+also writes these `Sometimes` assertions:
 
 - `harness: a check read succeeded`;
+- `harness: a check read pinned to a node succeeded`, when the adapter pins
+  reads;
 - `harness: a check read succeeded after a fault`, from
   `HARMONY_DISTURBANCE_GENERATION` compared with the first check's value,
   which the check stores in `disturbance-baseline` in the journal directory;
@@ -193,6 +235,17 @@ When the fence publish fails and two stream lookups 500 ms apart both answer
 "stream not found", the read returns an empty log. A stream that vanished
 then shows up as lost acknowledged appends.
 
+A read pinned to node `nI` also publishes a fence, then reads only from
+one-replica consumers that `nI` hosts, which serve messages from `nI`'s own
+store. The meta leader places a one-replica consumer on a random stream peer,
+so the read creates consumers until the create response names `nI` as the
+consumer's leader, at most 16 times. It fetches until it passes the fence
+sequence. A sequence the node's consumer skips is absent from that node, and
+the read leaves it out. A jump in the consumer sequence means the client
+dropped a late delivery, and the read starts a new consumer after the last
+sequence it has. A node that misses acknowledged messages shows up as
+`log: every node's read includes every acknowledged append` with its name.
+
 The image builds `nats-server` from pinned source through the Antithesis Go
 instrumentation like the
 [etcd case](../bugs/historical/etcd-3.5-inconsistency/image/README.md). The
@@ -229,6 +282,13 @@ is unknown, it first reads the key and fails definitely unless the key holds
 are definite failures; other write and `cas` errors are indeterminate, and
 read errors are definite.
 
+A read pinned to node `nI` puts key `fence-nI` and waits for a consumer on
+`nI`, filtered to that key from the put's revision, to deliver a message. It
+then creates a consumer on `nI` that delivers the last message of the read
+key. Both are one-replica consumers placed on `nI` the way the `targets/nats`
+pinned read places them. A consumer that has nothing pending at creation means
+the key has no value on `nI`.
+
 ## rqlite
 
 `targets/rqlite` runs three `rqlited` nodes at 10.77.0.1-3 in `harness-net`
@@ -249,6 +309,12 @@ family on table `log`. `append` inserts a row and returns its
 row id at level `linearizable`. Each operation goes to a random node without
 `redirect`, so a follower forwards it to the leader. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-forward` to select it.
+
+A read pinned to node `nI` in either bundle first runs
+`UPDATE ready SET n = n + 1 WHERE k = 1` with `raft_index` through a random
+node. It polls `nI`'s `/status` until `store.db_applied_index` reaches that
+index, then reads from `nI` at level `none`, which answers from `nI`'s own
+SQLite database.
 
 A register write is a definite failure on a dial error, an HTTP status other
 than 200 and 500, a 500 with body `leader not found`, a response error
@@ -311,6 +377,10 @@ container. Opt-in options:
   probability `P`, with a hold drawn like other holds, when no node is busy.
 - `--cpuset-cpus CPUS` pins the container and `--memory LIMIT` caps its
   memory, as in `docker run`.
+- `--keep-going` records each failing assertion and runs for the full time.
+  The result lists them under `violations` with the first time, the number of
+  records and the first record's details. Use it when one failure would hide
+  another, such as a global stale read hiding a node's missing values.
 - `--final-probe COMMAND` runs a command in the container after the run and
   puts its last stdout line in the result. For NATS,
   `/opt/harmony/nats-harness stream` reports whether stream `S` exists, with
@@ -334,3 +404,10 @@ container. Opt-in options:
   yet stepped down can answer a get from stale state.
 - A NATS read mixes two sources: the consumer's replica and, for a gap, the
   stream leader's answer to a message get.
+- A NATS pinned read trusts the leader named in a consumer's create response
+  to be the server that serves the consumer's messages.
+- A NATS pinned stream read detects a dropped delivery only by a jump in the
+  consumer sequence. A dropped delivery without that jump would read as a
+  sequence missing on the node.
+- An rqlite pinned read trusts `db_applied_index` to count only entries the
+  node's SQLite database has applied.

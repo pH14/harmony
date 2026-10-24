@@ -35,6 +35,7 @@ type Record struct {
 	T  Type            `json:"t"`
 	F  string          `json:"f"`
 	K  string          `json:"k"`
+	N  string          `json:"n,omitempty"`
 	V  json.RawMessage `json:"v"`
 	TS int64           `json:"ts"`
 	I  int64           `json:"i"`
@@ -82,12 +83,12 @@ func (j *Journal) Token() uint64 {
 	return j.token
 }
 
-func (j *Journal) Invoke(p int, f, k string, v any) (int64, error) {
+func (j *Journal) Invoke(p int, f, k, node string, v any) (int64, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	index := j.next
 	j.next++
-	return index, j.write(Record{P: p, T: Invoke, F: f, K: k, I: index}, v)
+	return index, j.write(Record{P: p, T: Invoke, F: f, K: k, N: node, I: index}, v)
 }
 
 func (j *Journal) Complete(p int, t Type, f, k string, index int64, v any) error {
@@ -126,6 +127,7 @@ type Op struct {
 	Index    int64
 	F        string
 	K        string
+	Node     string
 	Input    json.RawMessage
 	Output   json.RawMessage
 	Type     Type
@@ -232,6 +234,7 @@ func Build(files []File) *History {
 					Index:    record.I,
 					F:        record.F,
 					K:        record.K,
+					Node:     record.N,
 					Input:    record.V,
 					Type:     Info,
 					Invoke:   record.TS,

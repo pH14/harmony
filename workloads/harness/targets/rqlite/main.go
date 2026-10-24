@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ const (
 	readSQL   = "SELECT v FROM kv WHERE k = ?"
 	appendSQL = "INSERT INTO log(v) VALUES(?)"
 	scanSQL   = "SELECT v FROM log ORDER BY id"
+	fenceSQL  = "UPDATE ready SET n = n + 1 WHERE k = 1"
 	readLevel = "linearizable"
 	modeEnv   = "HARNESS_RQLITE_MODE"
 )
@@ -36,6 +38,8 @@ var nodes = []string{
 	"http://127.0.0.1:4003",
 	"http://127.0.0.1:4005",
 }
+
+var nodeNames = []string{"n1", "n2", "n3"}
 
 var readySQL = [][]any{
 	{"CREATE TABLE IF NOT EXISTS kv (k INTEGER PRIMARY KEY, v TEXT)"},
@@ -69,9 +73,10 @@ type result struct {
 }
 
 type response struct {
-	Results []result `json:"results"`
-	Error   string   `json:"error"`
-	text    string
+	Results   []result `json:"results"`
+	Error     string   `json:"error"`
+	RaftIndex uint64   `json:"raft_index"`
+	text      string
 }
 
 func newClient(base string) *client {
@@ -87,6 +92,8 @@ func newClient(base string) *client {
 		},
 	}
 }
+
+func (adapter) Nodes() []string { return nodeNames }
 
 func (a adapter) Connect(_ context.Context, _ int) (runner.Client, error) {
 	if a.forward {
@@ -107,13 +114,78 @@ func (forwardClient) Invoke(ctx context.Context, op family.Op) (any, error) {
 	case family.LogAppend:
 		return c.appendValue(ctx, op.V.(string))
 	case family.LogRead:
-		values, err := c.scan(ctx)
+		level := readLevel
+		if op.Node != "" {
+			pinned, err := pinnedClient(ctx, op.Node)
+			if err != nil {
+				return nil, runner.Definite(err)
+			}
+			defer pinned.Close()
+			c, level = pinned, "none"
+		}
+		values, err := c.scan(ctx, level)
 		if err != nil {
 			return nil, runner.Definite(err)
 		}
 		return values, nil
 	}
 	return nil, runner.Definite(fmt.Errorf("unknown operation %q", op.F))
+}
+
+// A read at level none answers from the node's own SQLite database. The read
+// first waits until that database has applied a fence write made after the
+// read started.
+func pinnedClient(ctx context.Context, node string) (*client, error) {
+	at := slices.Index(nodeNames, node)
+	if at < 0 {
+		return nil, fmt.Errorf("unknown node %q", node)
+	}
+	leader := newClient(nodes[sdk.Below(uint64(len(nodes)))])
+	defer leader.Close()
+	resp, status, err := leader.post(ctx, "/db/execute?raft_index", [][]any{{fenceSQL}})
+	if err != nil {
+		return nil, fmt.Errorf("fence: %w", err)
+	}
+	if status != http.StatusOK || resp.Error != "" || resp.RaftIndex == 0 {
+		return nil, fmt.Errorf("fence: status %d: %s", status, resp.text)
+	}
+	c := newClient(nodes[at])
+	for {
+		applied, err := c.appliedIndex(ctx)
+		if err == nil && applied >= resp.RaftIndex {
+			return c, nil
+		}
+		select {
+		case <-ctx.Done():
+			c.Close()
+			return nil, fmt.Errorf("%s applied %d of fence %d: %w", node, applied, resp.RaftIndex, errors.Join(ctx.Err(), err))
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func (c *client) appliedIndex(ctx context.Context) (uint64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/status", nil)
+	if err != nil {
+		return 0, err
+	}
+	httpResp, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("status: %s", httpResp.Status)
+	}
+	var status struct {
+		Store struct {
+			DBAppliedIndex uint64 `json:"db_applied_index"`
+		} `json:"store"`
+	}
+	if err := json.NewDecoder(httpResp.Body).Decode(&status); err != nil {
+		return 0, fmt.Errorf("status: %w", err)
+	}
+	return status.Store.DBAppliedIndex, nil
 }
 
 func (c *client) appendValue(ctx context.Context, value string) (any, error) {
@@ -155,8 +227,8 @@ func refused(text string) bool {
 	return text == "leader not found" || text == "not leader" || strings.Contains(text, "dial tcp")
 }
 
-func (c *client) scan(ctx context.Context) ([]string, error) {
-	resp, status, err := c.post(ctx, "/db/query?level="+readLevel, [][]any{{scanSQL}})
+func (c *client) scan(ctx context.Context, level string) ([]string, error) {
+	resp, status, err := c.post(ctx, "/db/query?level="+level, [][]any{{scanSQL}})
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +288,16 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		}
 		return nil, fmt.Errorf("cas: rows_affected %d", res.RowsAffected)
 	case family.RegisterReadF:
-		value, err := c.read(ctx, k)
+		reader, level := c, readLevel
+		if op.Node != "" {
+			pinned, err := pinnedClient(ctx, op.Node)
+			if err != nil {
+				return nil, runner.Definite(err)
+			}
+			defer pinned.Close()
+			reader, level = pinned, "none"
+		}
+		value, err := reader.read(ctx, k, level)
 		if err != nil {
 			return nil, runner.Definite(err)
 		}
@@ -225,8 +306,8 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 	return nil, runner.Definite(fmt.Errorf("unknown operation %q", op.F))
 }
 
-func (c *client) read(ctx context.Context, k int64) (any, error) {
-	resp, status, err := c.post(ctx, "/db/query?level="+readLevel, [][]any{{readSQL, k}})
+func (c *client) read(ctx context.Context, k int64, level string) (any, error) {
+	resp, status, err := c.post(ctx, "/db/query?level="+level, [][]any{{readSQL, k}})
 	if err != nil {
 		return nil, err
 	}

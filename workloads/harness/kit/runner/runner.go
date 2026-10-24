@@ -30,6 +30,10 @@ type Readier interface {
 	Ready(ctx context.Context) error
 }
 
+type Pinner interface {
+	Nodes() []string
+}
+
 type Config struct {
 	Dir          string
 	Processes    int
@@ -129,7 +133,7 @@ func process(ctx context.Context, adapter Adapter, fam family.Family, recorder f
 			client = connected
 		}
 		op := generator.Next(draw, value)
-		index, err := journal.Invoke(p, op.F, op.K, op.V)
+		index, err := journal.Invoke(p, op.F, op.K, op.Node, op.V)
 		if err != nil {
 			return err
 		}

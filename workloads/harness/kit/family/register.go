@@ -16,6 +16,7 @@ import (
 const (
 	RegisterLinearizable = "register: each key's history is linearizable"
 	RegisterStale        = "register: no read returns a value older than an acknowledged earlier write"
+	RegisterNodeStale    = "register: no node's read returns a value older than an acknowledged earlier write"
 	RegisterWriteAcked   = "register: a write was acknowledged"
 )
 
@@ -35,7 +36,9 @@ type Register struct {
 
 func (Register) Name() string { return "register" }
 
-func (Register) Kinds() []string { return []string{RegisterLinearizable, RegisterStale} }
+func (Register) Kinds() []string {
+	return []string{RegisterLinearizable, RegisterStale, RegisterNodeStale}
+}
 
 func (Register) Observations() []string { return []string{RegisterWriteAcked} }
 
@@ -174,8 +177,12 @@ func registerModel() porcupine.Model {
 }
 
 func (r Register) Check(h *history.History) Report {
-	report := Report{Facts: map[string]bool{}}
+	report := Report{
+		Facts:     map[string]bool{},
+		Undecided: map[string]bool{RegisterLinearizable: true, RegisterStale: true, RegisterNodeStale: true},
+	}
 	byKey := map[string][]registerOp{}
+	pinned := map[string][]registerOp{}
 	var keys []string
 	for index := range h.Ops {
 		op := &h.Ops[index]
@@ -185,14 +192,27 @@ func (r Register) Check(h *history.History) Report {
 		}
 		if _, seen := byKey[op.K]; !seen {
 			keys = append(keys, op.K)
+			byKey[op.K] = nil
 		}
-		byKey[op.K] = append(byKey[op.K], decoded)
-		if op.Type == history.OK {
-			if op.F == RegisterReadF {
-				report.Decided = true
-			} else {
-				report.Facts[RegisterWriteAcked] = true
-			}
+		onNode := op.Node != "" && op.F == RegisterReadF
+		if onNode {
+			pinned[op.K] = append(pinned[op.K], decoded)
+		} else {
+			byKey[op.K] = append(byKey[op.K], decoded)
+		}
+		if op.Type != history.OK {
+			continue
+		}
+		switch {
+		case op.F != RegisterReadF:
+			report.Facts[RegisterWriteAcked] = true
+		case onNode:
+			report.Decided = true
+			delete(report.Undecided, RegisterNodeStale)
+		default:
+			report.Decided = true
+			delete(report.Undecided, RegisterLinearizable)
+			delete(report.Undecided, RegisterStale)
 		}
 	}
 	sort.Strings(keys)
@@ -204,7 +224,11 @@ func (r Register) Check(h *history.History) Report {
 	model := registerModel()
 	for _, key := range keys {
 		ops := byKey[key]
-		checkStaleReads(key, ops, &found)
+		checkStaleReads(key, ops, ops, RegisterStale, &found)
+		checkStaleReads(key, ops, pinned[key], RegisterNodeStale, &found)
+		if len(ops) == 0 {
+			continue
+		}
 		operations := make([]porcupine.Operation, 0, len(ops))
 		for _, op := range ops {
 			operations = append(operations, porcupine.Operation{
@@ -221,14 +245,14 @@ func (r Register) Check(h *history.History) Report {
 				return map[string]any{"key": key, "operations": len(operations)}
 			})
 		case porcupine.Unknown:
-			report.Undecided = map[string]bool{RegisterLinearizable: true}
+			report.Undecided[RegisterLinearizable] = true
 		}
 	}
 	report.Violations = found.result()
 	return report
 }
 
-func checkStaleReads(key string, ops []registerOp, found *collector) {
+func checkStaleReads(key string, ops, reads []registerOp, kind string, found *collector) {
 	var writes []registerOp
 	byValue := map[string]*history.Op{}
 	for _, op := range ops {
@@ -245,7 +269,7 @@ func checkStaleReads(key string, ops []registerOp, found *collector) {
 			latest[index] = latest[index-1]
 		}
 	}
-	for _, read := range ops {
+	for _, read := range reads {
 		if read.input.f != RegisterReadF {
 			continue
 		}
@@ -256,7 +280,7 @@ func checkStaleReads(key string, ops []registerOp, found *collector) {
 		newer := latest[before-1]
 		value := read.output.value
 		if value == "" {
-			found.add(RegisterStale, func() map[string]any {
+			found.addFor(kind, read.op.Node, func() map[string]any {
 				return map[string]any{"key": key, "read": describe(read.op), "value": nil, "acknowledged_write": describe(newer)}
 			})
 			continue
@@ -265,7 +289,7 @@ func checkStaleReads(key string, ops []registerOp, found *collector) {
 		if !ok || source.Complete >= newer.Invoke {
 			continue
 		}
-		found.add(RegisterStale, func() map[string]any {
+		found.addFor(kind, read.op.Node, func() map[string]any {
 			return map[string]any{
 				"key":                key,
 				"read":               describe(read.op),
