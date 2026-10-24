@@ -20,10 +20,16 @@ engine.run(START, 2, true);
 engine.run(0, 100, true);
 engine.run(START, 2, true);
 engine.run(0, 252, true);
-let frames = 0;
-for (const action of tape.actions) {
-  engine.run(action.buttons, action.hold_frames, true);
-  frames += action.hold_frames;
-}
+const MAZE_CLEAR = 0x0c;
+let frames = 0,
+  clears = 0,
+  mode = 0;
+for (const action of tape.actions)
+  for (let i = 0; i < action.hold_frames; i++) {
+    engine.run(action.buttons, 1, true);
+    frames++;
+    if (ram[0x3f] === MAZE_CLEAR && mode !== MAZE_CLEAR) clears++;
+    mode = ram[0x3f];
+  }
 const end = engine.observation();
-console.log(JSON.stringify({ actions: tape.actions.length, frames, mazes: end.cleared, score: end.score, dots: end.dots, lives: end.health, mode: ram[0x3f] }));
+console.log(JSON.stringify({ actions: tape.actions.length, frames, clears, level: ram[0x68], score: end.score, dots: end.dots, lives: end.health, mode: ram[0x3f] }));

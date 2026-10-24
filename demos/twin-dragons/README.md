@@ -904,7 +904,9 @@ panel cropped away. A level is four mazes cleared: the selector lists six
 levels, "Mazes 1-4" to "Mazes 21+". The observation's cleared count is the
 number of mazes cleared, the page counts a level finished at every fourth, and
 "Level progress" shows the dots eaten in the current maze. A search from a later
-level starts at its first maze with the maze index set in RAM.
+level starts at its first maze with the maze index set in RAM. The game's maze
+index stops at 22, so the page's count from RAM stops at 23 mazes. The native
+evaluator counts further clears itself.
 
 The player sprite is Pac-Man's body in the emulator's frame, taken while he
 walks left with the mouth open and closed, and turned for the other three

@@ -22,6 +22,7 @@ pub const MAZES: u8 = 32;
 pub const DOTS: u8 = 192;
 pub const START_LIVES: u8 = 3;
 pub const MAZES_PER_LEVEL: u8 = 4;
+pub const FINAL_LEVEL: u8 = 22;
 pub const LEVELS: u8 = 6;
 
 pub const MODE_TITLE: u8 = 0x00;
@@ -69,6 +70,7 @@ pub struct PacManMechanicalState {
     pub x: u8,
     pub y: u8,
     pub direction: u8,
+    pub repeat_clears: u8,
     pub power: u8,
     pub power_frames: u16,
     pub paused: bool,
@@ -79,6 +81,13 @@ impl PacManMechanicalState {
     pub fn mazes_cleared(self) -> u8 {
         if self.level == LEVEL_UNSET {
             return 0;
+        }
+        if self.level >= FINAL_LEVEL {
+            return self
+                .level
+                .saturating_add(self.repeat_clears)
+                .saturating_add(u8::from(self.repeat_clears == 0 && self.dots == 0))
+                .min(MAZES);
         }
         self.level
             .saturating_add(u8::from(self.dots == 0))
@@ -346,6 +355,9 @@ impl<M: NesBackend<Vec<u8>>> PacManTarget<M> {
             return self.fail();
         };
         let mut prior_state = initial_state;
+        let mut repeat_clears = initial_state.repeat_clears;
+        let mut previous_mode = initial_state.mode;
+        let mut endpoint_state = endpoint_state;
         let mut emitted = Vec::new();
         for (offset, wram) in self
             .machine
@@ -354,9 +366,18 @@ impl<M: NesBackend<Vec<u8>>> PacManTarget<M> {
             .take(logical_frames)
             .enumerate()
         {
-            let Ok(state) = decode_state(wram) else {
+            let Ok(mut state) = decode_state(wram) else {
                 return self.fail();
             };
+            if state.mode == MODE_MAZE_CLEAR
+                && previous_mode != MODE_MAZE_CLEAR
+                && state.level >= FINAL_LEVEL
+            {
+                repeat_clears = repeat_clears.saturating_add(1);
+            }
+            previous_mode = state.mode;
+            state.repeat_clears = repeat_clears;
+            endpoint_state = state;
             if boundary_fields(state) != boundary_fields(prior_state) {
                 let frame_count = self
                     .observation
@@ -747,6 +768,7 @@ pub fn decode_state(wram: &[u8]) -> Result<PacManMechanicalState, MachineError> 
         x: byte(wram, PAC_X)?,
         y: byte(wram, PAC_Y)?,
         direction: byte(wram, DIRECTION)? & 3,
+        repeat_clears: 0,
         power,
         power_frames,
         paused: byte(wram, PAUSED)? != 0,
@@ -862,6 +884,21 @@ mod tests {
         wram[LEVEL] = LEVEL_UNSET;
         wram[DOTS_LEFT] = 0;
         assert_eq!(decode_state(&wram).unwrap().mazes_cleared(), 0);
+    }
+
+    #[test]
+    fn mazes_past_the_final_level_count_by_repeat_clears() {
+        let mut state = decode_state(&playing_wram()).unwrap();
+        state.level = FINAL_LEVEL;
+        assert_eq!(state.mazes_cleared(), FINAL_LEVEL);
+        state.dots = 0;
+        assert_eq!(state.mazes_cleared(), FINAL_LEVEL + 1);
+        state.repeat_clears = 1;
+        assert_eq!(state.mazes_cleared(), FINAL_LEVEL + 1);
+        state.dots = DOTS;
+        assert_eq!(state.mazes_cleared(), FINAL_LEVEL + 1);
+        state.repeat_clears = 3;
+        assert_eq!(state.mazes_cleared(), FINAL_LEVEL + 3);
     }
 
     #[test]

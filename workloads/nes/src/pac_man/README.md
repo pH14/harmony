@@ -65,6 +65,11 @@ Key choices:
 - The identity is empty and the capacity is one.
 - The one preference is lives, then score.
 
+The game's maze index (`$68`) stops at 22: clearing the maze at index 22 leaves
+the index at 22. From there the target counts maze clears itself, one for each
+entry into the maze-clear mode, and carries the count in the snapshot's
+observation as `repeat_clears`. `mazes_cleared` is the index plus that count.
+
 Milestones are reported only and never enter the key: the first execution to
 clear each of the first 32 mazes (`maze_1` to `maze_32` in
 `named_progress.first_seen`) and the first game over. The arcade page groups
@@ -80,19 +85,21 @@ and `nes-film` renders its witness or champion inputs. `nes-core-oracle` takes
 
 Native QuickNES on a 24-core lab machine, `nes-eval` with the live view and
 witness verification. The witness is the champion tape, replayed twice in the
-evaluator. Mazes cleared counts completed mazes in the witness.
+evaluator. Mazes counts completed mazes in the witness.
 
-| Run | Workers | Wall | Executions | Mazes (witness) | Mazes (any trajectory) | Score (witness) |
-| --- | --- | --- | --- | --- | --- | --- |
-| seed 1 | 2 | 900 s | 2.37 M | 22 | 23 | 63,830 |
-| seed 2 | 1 | 1800 s | 3.04 M | 22 | 23 | 59,030 |
-| seed 3 | 1 | 1800 s | 2.89 M | 22 | 22 | 56,210 |
+| Run | Workers | Wall | Executions | Mazes (witness) | Score (witness) |
+| --- | --- | --- | --- | --- | --- |
+| seed 2, index capped at 23 | 1 | 1800 s | 3.04 M | 22 | 59,030 |
+| seed 3, index capped at 23 | 1 | 1800 s | 2.89 M | 22 | 56,210 |
+| seed 2, repeat clears counted | 1 | 1800 s | 2.72 M | 24 | 63,050 |
+| seed 3, repeat clears counted | 1 | 1800 s | 2.51 M | 22 | 56,210 |
 
 The first 13 mazes fall in about a minute. Progress then comes in steps: the
 search sits at the last few dots of one maze for several minutes and then
-clears it and several more.
+clears it and several more. Before the repeat clears were counted, every run
+stopped rising at 22 or 23 mazes because the maze index stopped there.
 
 `tools/pac-man-replay.mjs` in `demos/twin-dragons` replays a `witness-input.json`
-from power-on in the browser build of QuickNES and prints the mazes cleared and
-score. Seed 2 and seed 3 end at the same maze count and score there as in the
+from power-on in the browser build of QuickNES and prints the maze clears and
+score. Each witness above ends at the same maze count and score there as in the
 native evaluator.
