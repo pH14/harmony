@@ -10,6 +10,7 @@ pub mod eval;
 pub mod famidash;
 pub mod film;
 pub mod ice_climbers;
+pub mod joust;
 #[cfg(unix)]
 pub mod live;
 pub mod pac_man;

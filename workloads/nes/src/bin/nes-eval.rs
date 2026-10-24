@@ -10,6 +10,7 @@ use nes_workload::{
         levels::{GROUPS, Side, Stage},
     },
     ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
+    joust::campaign::{JoustCampaignRun, JoustGame},
     live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
@@ -128,6 +129,9 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "pac-man" => evaluate_live::<nes_games::pac_man::campaign::PacManGame<NativeMachine>>(
             rom, request, out, started, "pac-man",
         ),
+        "joust" => evaluate_live::<nes_games::joust::campaign::JoustGame<NativeMachine>>(
+            rom, request, out, started, "joust",
+        ),
         _ => Err("this game has no live view".into()),
     }
 }
@@ -184,7 +188,7 @@ fn main() -> Result<()> {
                 return Err("STB evaluation takes only an ai option".into());
             }
             "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
-            | "ice-climbers" | "pac-man"
+            | "ice-climbers" | "pac-man" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -360,6 +364,17 @@ fn main() -> Result<()> {
                 started,
                 "pac-man",
                 <PacManGame>::memory_view,
+            ),
+            "joust" => evaluate_watching(
+                JoustGame::new(&rom, p, h, &execution_sha256),
+                JoustCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "joust",
+                <JoustGame>::memory_view,
             ),
             "famidash" => {
                 let stage = famidash_stage(&rom, request.stage, request.whole_game)?;

@@ -7,6 +7,7 @@ pub mod chord;
 pub mod donkey_kong;
 pub mod famidash;
 pub mod ice_climbers;
+pub mod joust;
 pub mod metroid;
 pub mod mm2;
 pub mod nes_backend;

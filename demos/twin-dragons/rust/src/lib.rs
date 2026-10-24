@@ -4,6 +4,7 @@ mod campaign;
 mod donkey_kong;
 mod famidash;
 mod ice_climbers;
+mod joust;
 mod mega_man;
 mod metroid;
 mod pac_man;
