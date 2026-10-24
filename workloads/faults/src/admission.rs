@@ -1906,7 +1906,9 @@ mod tests {
     #[test]
     fn a_missing_entry_point_is_not_an_entry_inside_the_header_tables() {
         let mut bytes = x86_elf_with_mapped_header_tables(&[0xc3], &[0x59, 0x0f, 0x03, 0x00]);
-        bytes[24..32].copy_from_slice(&0_u64.to_le_bytes());
+        for (offset, value) in [(24, 0_u64), (80, 0), (88, 0), (272, 0x1000)] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
         assert_eq!(scan_elf(&bytes, "").unwrap().unwrap(), []);
     }
 
