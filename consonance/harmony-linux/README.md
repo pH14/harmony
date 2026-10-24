@@ -59,8 +59,8 @@ therefore does not change the accepted source bytes.
 
 - `linux/` builds the pinned kernels, direct platform fixtures, and the
   workload-free OCI runtime. Kernel patches provide the guest device,
-  paravirtual clock, observation, and task-park interfaces; build scripts
-  verify source and artifact hashes.
+  paravirtual clock, observation, task-park and per-node clock-offset
+  interfaces; build scripts verify source and artifact hashes.
 - `uml/` builds the User-mode Linux profile: the pinned kernel as a static
   host executable, a fixture initramfs, and the profile that hashes them. It
   applies `linux/patches/common` and `linux/patches/um`.

@@ -77,7 +77,8 @@ CONFIG_RD_GZIP=y
 ## Platform userspace and OCI namespaces
 # The platform PID 1 is a shell entrypoint around the static runtime. It needs
 # the ordinary proc/sys/dev view plus the namespace and cgroup facilities that
-# runc configures for each application.
+# runc configures for each application, and the time namespace that gives each
+# supervised node its own wall-clock offset.
 CONFIG_PROC_FS=y
 CONFIG_PROC_CHILDREN=y
 CONFIG_SYSFS=y
@@ -97,6 +98,7 @@ CONFIG_UTS_NS=y
 CONFIG_IPC_NS=y
 CONFIG_PID_NS=y
 CONFIG_NET_NS=y
+CONFIG_TIME_NS=y
 CONFIG_NET=y
 CONFIG_UNIX=y
 CONFIG_INET=y
