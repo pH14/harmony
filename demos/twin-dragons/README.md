@@ -949,12 +949,16 @@ The site ships nothing from Ice Climber. The level selector accepts the ROM with
 SHA-256 `491898c9…8701`. The game has 32 mountains, one level each. The map of a
 mountain is a tall strip drawn from the ROM's intro camera pan: the loader pokes the
 mountain byte at the title screen, hides the sprites by zeroing the object attribute
-memory, and stitches one 256-pixel-wide row band per scroll step into a 256 × 668
+memory, and stitches one 256-pixel-wide row band per scroll step into a 256 × 862
 bitmap that runs from the first floor to the bonus stage. The view uses the tall
 camera, as Tobu Tobu Girl does. The observation's cleared count is the number of
 mountains finished: it rises when the game advances its mountain byte after the results screen.
 `workloads/nes/src/ice_climbers/README.md` has the RAM map, the key and the setup
-tape. `tests/ice-climbers.mjs` checks the boot, the map and the picker flow; it reads the ROM from
+tape. The `tape` URL parameter loads a saved winning input list, the `witness-input.json`
+that `nes-eval` writes for a run from power-on, and replays it in the history panel with the search
+paused: `?game=ice-climbers&tape=/tapes/ice-climbers.json` after copying the file to
+`public/tapes/ice-climbers.json`. The replay starts after the setup tape, so drag the history slider
+to the end to see the mountains cleared. `tests/ice-climbers.mjs` checks the boot, the map and the picker flow; it reads the ROM from
 `ICE_CLIMBERS_ROM` or the arcade ROM folder and skips when it is absent.
 
 ### Pac-Man

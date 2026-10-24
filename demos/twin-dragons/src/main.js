@@ -622,7 +622,7 @@ function levelOverview(id) {
   strip.className = "level-overview";
   strip.dataset.map = id;
   if (game.vertical) {
-    strip.height = TALL_CAMERA_VIEWPORT.desktop.height;
+    strip.height = (game.tallViewport ?? TALL_CAMERA_VIEWPORT).desktop.height;
     strip.width = Math.max(8, Math.round(map.width * strip.height / map.height));
   } else if (game.grid) {
     const box = { width: 240, height: GRID_CAMERA_VIEWPORT.desktop.height }, fit = Math.min(box.width / map.width, box.height / map.height);
@@ -2152,7 +2152,7 @@ function renderMapRows(owner) {
         part.className = "room-part";
         const c = id === mapLevel && index === 0 ? canvas : document.createElement("canvas");
         c.className = "area-map";
-        const viewports = game.vertical ? TALL_CAMERA_VIEWPORT : game.grid ? GRID_CAMERA_VIEWPORT : CAMERA_VIEWPORT;
+        const viewports = game.vertical ? game.tallViewport ?? TALL_CAMERA_VIEWPORT : game.grid ? GRID_CAMERA_VIEWPORT : CAMERA_VIEWPORT;
         const viewport = phoneLayout.matches ? viewports.phone : viewports.desktop;
         c.width = viewport.width;
         c.height = viewport.height;

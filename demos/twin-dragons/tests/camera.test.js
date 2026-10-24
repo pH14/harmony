@@ -109,3 +109,18 @@ test("a fixed-zoom follow keeps the zoom and closes on a far point", () => {
   assert.ok(Math.abs(view.zoom - 14) < 1e-9);
   assert.ok(view.x > 5000);
 });
+
+test("a viewport that shows the whole panel zooms in on a far point", () => {
+  const panel = { x: 0, y: 0, width: 256, height: 862 }, viewport = { width: 432, height: 506 };
+  let view = { x: 128, y: 431, zoom: 1 };
+  for (let i = 0; i < 300; i++) view = followView(view, { x: 128, y: 100 }, panel, viewport, 2.87, 1 / 60);
+  assert.ok(view.zoom > 2.5);
+  assert.ok(view.y < 200);
+});
+
+test("a view a hair under zoom 1 still counts as showing the whole panel", () => {
+  const panel = { x: 0, y: 0, width: 256, height: 862 }, viewport = { width: 432, height: 506 };
+  let view = { x: 128, y: 431, zoom: 1.0004 };
+  for (let i = 0; i < 300; i++) view = followView(view, { x: 128, y: 20 }, panel, viewport, 2.87, 1 / 60);
+  assert.ok(view.zoom > 2.5);
+});

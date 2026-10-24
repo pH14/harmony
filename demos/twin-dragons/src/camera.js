@@ -34,8 +34,9 @@ export function followView(view, point, panel, viewport, targetZoom, seconds, fi
     return { ...panelCenter(panel, zoom, { x: view.x + (point.x - view.x) * ease, y: view.y + (point.y - view.y) * ease }, viewport), zoom };
   }
   const fit = Math.min(viewport.width / panel.width, viewport.height / panel.height);
-  const distance = Math.hypot((point.x - view.x) * fit / viewport.width,
-    (point.y - view.y) * fit / viewport.height);
+  const reach = panelCenter(panel, view.zoom, point, viewport);
+  const distance = Math.hypot((reach.x - view.x) * fit / viewport.width,
+    (reach.y - view.y) * fit / viewport.height);
   const framing = Math.max(1, Math.min(targetZoom, distance ? 0.4 / distance : targetZoom));
   const zoom = view.zoom + (framing - view.zoom) * (1 - Math.exp(-dt / (framing < view.zoom ? 0.15 : 0.6)));
   const ease = framing < view.zoom && distance * view.zoom > 0.5 ? 0 : 1 - Math.exp(-dt / 0.35);

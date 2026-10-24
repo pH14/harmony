@@ -260,6 +260,10 @@ h2 {
 }
 .vertical-game .room-part .area-map,
 .vertical-game .room-part #map { margin: 0; min-width: 0; }
+@media (max-width: 800px) {
+  .vertical-game .room-part .area-map,
+  .vertical-game .room-part #map { flex: 1 1 0; width: 0; height: auto; align-self: flex-start; }
+}
 .level-overview {
   display: block;
   width: min(100% - 32px, 96px * var(--aspect));

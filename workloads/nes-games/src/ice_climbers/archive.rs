@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "ice_climbers_mountain_floor_tier_phase_altitude_band_16_column_32_place_altitude_preference_v2";
+pub const KEY_POLICY_IDENTIFIER: &str = "ice_climbers_mountain_grounded_floor_tier_phase_altitude_band_16_column_8_air_place_holes_identity_altitude_preference_v4";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 pub const ALTITUDE_BAND_SHIFT: u16 = 4;
@@ -37,23 +37,33 @@ pub struct IceClimbersArchiveKey {
     pub phase: u8,
     pub band: u16,
     pub column: u8,
+    pub air: bool,
+    pub holes: u8,
     pub altitude: u16,
 }
 
 impl ArchiveKey for IceClimbersArchiveKey {
-    type Place = (u8, u8, u16, u8);
+    type Place = (u8, u8, u16, u8, bool);
     type Progress = IceClimbersTier;
-    type Identity = ();
+    type Identity = u8;
 
     fn place(self) -> Self::Place {
-        (self.tier.level, self.phase, self.band, self.column)
+        (
+            self.tier.level,
+            self.phase,
+            self.band,
+            self.column,
+            self.air,
+        )
     }
 
     fn progress(self) -> Self::Progress {
         self.tier
     }
 
-    fn identity(self) -> Self::Identity {}
+    fn identity(self) -> Self::Identity {
+        self.holes
+    }
 
     fn capacity() -> usize {
         1
@@ -94,6 +104,8 @@ pub fn archive_key(state: IceClimbersMechanicalState) -> Option<IceClimbersArchi
         phase: state.phase,
         band: state.altitude() >> ALTITUDE_BAND_SHIFT,
         column: state.x >> GRID_SHIFT,
+        air: state.airborne,
+        holes: state.holes,
         altitude: state.altitude(),
     })
 }
@@ -223,14 +235,16 @@ mod tests {
             x,
             y,
             camera: 0x9f,
+            airborne: false,
+            holes: 0,
         }
     }
 
     #[test]
-    fn the_place_is_the_altitude_band_and_a_32_pixel_column() {
+    fn the_place_is_the_altitude_band_and_an_8_pixel_column() {
         let here = archive_key(state(START_X, START_Y)).unwrap();
         let near = archive_key(state(START_X + 3, START_Y - 2)).unwrap();
-        let right = archive_key(state(START_X + 32, START_Y)).unwrap();
+        let right = archive_key(state(START_X + 8, START_Y)).unwrap();
         let above = archive_key(state(START_X, START_Y - 20)).unwrap();
         assert_eq!(here.place(), near.place());
         assert_ne!(here.place(), right.place());
@@ -245,6 +259,17 @@ mod tests {
         let mut next = state(START_X, START_Y);
         next.level = 1;
         assert!(archive_key(next).unwrap().progress() > high.progress());
+    }
+
+    #[test]
+    fn a_broken_block_keeps_its_own_slot_in_the_same_place() {
+        let intact = archive_key(state(START_X, START_Y)).unwrap();
+        let mut broken_state = state(START_X, START_Y);
+        broken_state.holes = 1;
+        let broken = archive_key(broken_state).unwrap();
+        assert_eq!(intact.place(), broken.place());
+        assert_eq!(intact.progress(), broken.progress());
+        assert_ne!(intact.identity(), broken.identity());
     }
 
     #[test]

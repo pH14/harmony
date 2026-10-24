@@ -70,10 +70,45 @@ impl<M: NesBackend<Vec<u8>>> IceClimbersGame<M> {
         core_sha256: &str,
         targets: IceClimbersTargets<M>,
     ) -> Self {
+        Self::with_genesis(
+            rom,
+            core,
+            core_sha256,
+            "ice-climbers-first-mountain-v1",
+            targets,
+        )
+    }
+
+    #[must_use]
+    pub fn with_rooted_targets(
+        rom: &[u8],
+        core: &str,
+        core_sha256: &str,
+        prefix: &[ButtonChord],
+        targets: IceClimbersTargets<M>,
+    ) -> Self {
+        let mut digest = Sha256::new();
+        for chord in prefix {
+            digest.update([chord.buttons, chord.hold_frames]);
+        }
+        let genesis = format!(
+            "ice-climbers-rooted-v1:prefix-sha256={:x}",
+            digest.finalize()
+        );
+        Self::with_genesis(rom, core, core_sha256, &genesis, targets)
+    }
+
+    fn with_genesis(
+        rom: &[u8],
+        core: &str,
+        core_sha256: &str,
+        genesis: &str,
+        targets: IceClimbersTargets<M>,
+    ) -> Self {
         Self {
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
             identity: format!(
-                "{core};state=ppu-unused2-zero-v1;genesis=ice-climbers-first-mountain-v1;result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
+                "{core};state=ppu-unused2-zero-v1;genesis={genesis};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
             ),
             targets,
         }
@@ -104,6 +139,38 @@ impl IceClimbersGame<QuickNesMachine> {
                     &target_core,
                     &target_sha256,
                     &target_execution,
+                )
+                .map_err(|error| error.to_string())
+            }),
+        )
+    }
+
+    #[must_use]
+    pub fn new_rooted(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        prefix: Vec<ButtonChord>,
+    ) -> Self {
+        let core = machine::quicknes::core_identity();
+        let target_rom = rom.to_vec();
+        let target_core = core_path.to_path_buf();
+        let target_sha256 = core_sha256.to_owned();
+        let target_execution = execution_sha256.to_owned();
+        let target_prefix = prefix.clone();
+        Self::with_rooted_targets(
+            rom,
+            &core,
+            &crate::nes_backend::native_identity_sha256(core_sha256, execution_sha256),
+            &prefix,
+            Box::new(move || {
+                IceClimbersTarget::from_rom_bytes_headless_rooted_with_identity(
+                    &target_rom,
+                    &target_core,
+                    &target_sha256,
+                    &target_execution,
+                    &target_prefix,
                 )
                 .map_err(|error| error.to_string())
             }),

@@ -29,6 +29,7 @@ play from power-on and comparing it with rendered frames.
 | `$20` | Lives; starts at 3 |
 | `$3F` | Death timer |
 | `$59` | Mountain, 0 for mountain 1; it increases when the results screen finishes |
+| `$E0` | Airborne flag: 0 on the ground, 1 while jumping or falling |
 | `$5A` | Floor counter: 1 to 8 on the mountain, 9 in the bonus stage, 0 while a screen changes |
 | `$64` | Climber x in pixels |
 | `$66` | Climber y in pixels on the screen |
@@ -48,14 +49,30 @@ Start press pauses the game, so the search tape holds Start only in the setup. P
 
 ## Declared workload
 
-- Tier is the pair (mountains finished, floor climbed in this mountain). The search
-  prefers a higher tier.
-- Place is the tier level, the floor counter, an altitude band of 16 pixels and a 32-pixel column.
+- Tier is the pair (mountains finished, floor climbed in this mountain). A jump rises
+  51 pixels, three more than one floor, so an airborne state counts the floor below its
+  altitude minus 4 pixels. Only a landing raises the tier.
+- Place is the tier level, the floor counter, an altitude band of 16 pixels, an 8-pixel
+  column and whether the climber is airborne.
 - Within a place, the entry with the greater altitude is preferred.
 - A state is dead once lives drop below 3. A dead state is terminal, so every search
   branch is a one-life climb.
 - Victory is clearing mountain 32.
 - Chords are the pressable NES button masks with the shared short and long holds.
+
+## Floors and moving clouds
+
+On the later mountains some floors have no platform. Clouds drift across those floors
+and carry the climber, and the next full platform has holes the climber jumps through. The
+climber must stay inside a hole's width for the whole rise, so the position that matters
+is a few pixels wide. A 32-pixel column kept one arbitrary
+position per cloud ride; an 8-pixel column keeps the positions that line up with a hole.
+
+## Rooted runs
+
+`nes-eval` takes `root_input` for this game: a JSON input whose actions are played after the
+setup tape, and the search starts from the state they reach with an empty archive. The root
+must end alive, with three lives, in play. The identity records a digest of the root actions.
 
 ## Replay check
 

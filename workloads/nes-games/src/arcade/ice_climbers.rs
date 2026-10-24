@@ -30,6 +30,20 @@ pub struct View {
     cleared: u8,
 }
 
+const OAM: usize = 0x200;
+const PLAYER_X: usize = 0x64;
+const PLAYER_Y: usize = 0x66;
+const HORIZONTAL_FLIP: u8 = 0x40;
+
+fn pose(wram: &[u8], airborne: bool) -> u16 {
+    let (x, y) = (wram[PLAYER_X], wram[PLAYER_Y]);
+    let flipped = wram[OAM..OAM + 0x100]
+        .chunks_exact(4)
+        .find(|sprite| sprite[0].abs_diff(y) <= 1 && (x..=x.saturating_add(8)).contains(&sprite[3]))
+        .is_some_and(|sprite| sprite[2] & HORIZONTAL_FLIP != 0);
+    u16::from(airborne) * 2 + u16::from(flipped)
+}
+
 fn cleared(state: IceClimbersMechanicalState) -> u8 {
     state.level.min(MOUNTAINS)
 }
@@ -77,7 +91,7 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for IceClimbersGame<M> {
                 u16::from(state.level),
                 u16::from(state.x),
                 state.map_y(),
-                u16::from(state.floor()),
+                pose(wram, state.airborne),
             ],
             _ => [HIDDEN, 0, 0, 0],
         }
@@ -109,5 +123,34 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for IceClimbersGame<M> {
 
     fn emulator_state(snapshot: &IceClimbersSnapshot) -> &[u8] {
         &snapshot.emulator_state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wram(sprite: [u8; 4]) -> [u8; 2048] {
+        let mut wram = [0xf8; 2048];
+        wram[PLAYER_X] = 0x38;
+        wram[PLAYER_Y] = 0xc0;
+        wram[OAM..OAM + 4].copy_from_slice(&sprite);
+        wram
+    }
+
+    #[test]
+    fn the_pose_is_the_airborne_flag_and_the_sprite_flip() {
+        let facing = wram([0xc0, 0x5c, 0x00, 0x38]);
+        assert_eq!(pose(&facing, false), 0);
+        assert_eq!(pose(&facing, true), 2);
+        let mirrored = wram([0xc0, 0x5c, 0x40, 0x40]);
+        assert_eq!(pose(&mirrored, false), 1);
+        assert_eq!(pose(&mirrored, true), 3);
+    }
+
+    #[test]
+    fn a_sprite_away_from_the_climber_does_not_set_the_flip() {
+        let enemy = wram([0x40, 0x5c, 0x40, 0x90]);
+        assert_eq!(pose(&enemy, false), 0);
     }
 }
