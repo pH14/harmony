@@ -13,8 +13,8 @@ use machine::{
     quicknes::{QuickNesMachine, STATE_HEADER_LEN},
 };
 use nes_workload::{
-    castlevania, chord::ChordVocabulary, donkey_kong, famidash, metroid, mm2, punchout,
-    search::rand::RomuDuoJrRand, smb, twin_dragons, zelda,
+    castlevania, chord::ChordVocabulary, donkey_kong, famidash, ice_climbers, metroid, mm2,
+    punchout, search::rand::RomuDuoJrRand, smb, twin_dragons, zelda,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -75,6 +75,11 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
         "donkey-kong" => Game {
             setup: donkey_kong::target::setup_tape(),
             chords: donkey_kong::archive::CHORDS,
+            cartridge_ram: false,
+        },
+        "ice-climbers" => Game {
+            setup: ice_climbers::target::setup_tape(),
+            chords: ice_climbers::archive::CHORDS,
             cartridge_ram: false,
         },
         other => return Err(format!("unknown game {other}").into()),

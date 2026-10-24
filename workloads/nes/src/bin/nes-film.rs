@@ -15,6 +15,7 @@ use nes_workload::{
         levels::{Side, Stage},
     },
     film::{Capture, FilmMetadata, Filmable, Reel},
+    ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
     punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::archive::Input,
     stb::{
@@ -336,6 +337,17 @@ fn main() -> Result<()> {
             produce(
                 DonkeyKongGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
                 DonkeyKongCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        "ice-climbers" => {
+            if args.ai.is_some() {
+                return Err("Ice Climbers takes no ai option".into());
+            }
+            produce(
+                IceClimbersGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                IceClimbersCampaignRun,
                 &args,
                 identity,
             )

@@ -9,6 +9,7 @@ use nes_workload::{
         campaign::{FamidashCampaignRun, FamidashGame},
         levels::{GROUPS, Side, Stage},
     },
+    ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
     live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
@@ -120,6 +121,9 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "donkey-kong" => evaluate_live::<
             nes_games::donkey_kong::campaign::DonkeyKongGame<NativeMachine>,
         >(rom, request, out, started, "donkey-kong"),
+        "ice-climbers" => evaluate_live::<
+            nes_games::ice_climbers::campaign::IceClimbersGame<NativeMachine>,
+        >(rom, request, out, started, "ice-climbers"),
         _ => Err("this game has no live view".into()),
     }
 }
@@ -176,6 +180,7 @@ fn main() -> Result<()> {
                 return Err("STB evaluation takes only an ai option".into());
             }
             "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
+            | "ice-climbers"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -329,6 +334,17 @@ fn main() -> Result<()> {
                 started,
                 "donkey-kong",
                 <DonkeyKongGame>::memory_view,
+            ),
+            "ice-climbers" => evaluate_watching(
+                IceClimbersGame::new(&rom, p, h, &execution_sha256),
+                IceClimbersCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "ice-climbers",
+                <IceClimbersGame>::memory_view,
             ),
             "famidash" => {
                 let stage = famidash_stage(&rom, request.stage, request.whole_game)?;

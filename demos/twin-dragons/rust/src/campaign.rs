@@ -36,8 +36,8 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    donkey_kong::DonkeyKong, famidash::Famidash, mega_man::MegaMan, metroid::Metroid, smb::Smb,
-    twin_dragons::TwinDragons,
+    donkey_kong::DonkeyKong, famidash::Famidash, ice_climbers::IceClimbers, mega_man::MegaMan,
+    metroid::Metroid, smb::Smb, twin_dragons::TwinDragons,
 };
 
 const WINDOW: usize = 16;
@@ -670,6 +670,7 @@ impl CampaignSearch {
             "mega-man-2" => Box::new(Search::<MegaMan>::new(options).map_err(js_error)?),
             "metroid" => Box::new(Search::<Metroid>::new(options).map_err(js_error)?),
             "donkey-kong" => Box::new(Search::<DonkeyKong>::new(options).map_err(js_error)?),
+            "ice-climbers" => Box::new(Search::<IceClimbers>::new(options).map_err(js_error)?),
             "famidash" => Box::new(Search::<Famidash<0>>::new(options).map_err(js_error)?),
             "famidash-community" => {
                 Box::new(Search::<Famidash<1>>::new(options).map_err(js_error)?)
@@ -754,6 +755,10 @@ impl CampaignWorker {
                 Worker::<DonkeyKong>::new(core, rom, identity, identity_sha256)
                     .map_err(js_error)?,
             ),
+            "ice-climbers" => Box::new(
+                Worker::<IceClimbers>::new(core, rom, identity, identity_sha256)
+                    .map_err(js_error)?,
+            ),
             "famidash" => Box::new(
                 Worker::<Famidash<0>>::new(core, rom, identity, identity_sha256)
                     .map_err(js_error)?,
@@ -810,6 +815,7 @@ pub fn campaign_genesis(game: &str, core: u32, rom: &[u8]) -> Result<String, JsV
         "mega-man-2" => genesis_of::<MegaMan>(core, rom),
         "metroid" => genesis_of::<Metroid>(core, rom),
         "donkey-kong" => genesis_of::<DonkeyKong>(core, rom),
+        "ice-climbers" => genesis_of::<IceClimbers>(core, rom),
         "famidash" => genesis_of::<Famidash<0>>(core, rom),
         "famidash-community" => genesis_of::<Famidash<1>>(core, rom),
         "famidash-b" => genesis_of::<Famidash<2>>(core, rom),

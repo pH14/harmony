@@ -4,6 +4,7 @@ pub mod castlevania;
 pub mod donkey_kong;
 pub mod famidash;
 pub mod feed;
+pub mod ice_climbers;
 pub mod mega_man;
 pub mod metroid;
 pub mod punchout;

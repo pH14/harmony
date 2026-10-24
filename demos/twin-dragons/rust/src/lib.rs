@@ -3,6 +3,7 @@
 mod campaign;
 mod donkey_kong;
 mod famidash;
+mod ice_climbers;
 mod mega_man;
 mod metroid;
 mod smb;
