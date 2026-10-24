@@ -306,7 +306,7 @@ protocol and validation machinery without copying the evaluation loop.
 ## Live view
 
 Every `nes-eval` campaign of Super Mario Bros., Mega Man 2, Metroid,
-Castlevania, Twin Dragons, Famidash, Punch-Out!! or Zelda serves the arcade page's view of itself over HTTP on a
+Castlevania, Twin Dragons, Famidash, Punch-Out!!, Zelda or Joust serves the arcade page's view of itself over HTTP on a
 loopback port. It prints `live view listening on 127.0.0.1:PORT` and writes
 `live.json` with the address, the page's game id, the process id and, on Linux,
 the process start time from `/proc/self/stat`, to its output directory. It
@@ -359,7 +359,7 @@ through a fresh target when the archived input does not hold every frame the
 core ran, as the browser does. Requests are limited to 64 KiB with 10-second
 read and write timeouts, and the server holds at most 64 connections. Open
 `http://127.0.0.1:8790/?game=GAME&live` to watch. The page ids are
-`super-mario-bros`, `mega-man-2`, `metroid`, `castlevania`, `twin-dragons` and the five
+`super-mario-bros`, `mega-man-2`, `metroid`, `castlevania`, `joust`, `twin-dragons` and the five
 Famidash groups `famidash`, `famidash-community`, `famidash-b`, `famidash-c` and
 `famidash-d`; a Famidash campaign reports the group that holds its stage.
 
