@@ -915,7 +915,7 @@ mod tests {
             let mut original = request.config.clone();
             let expected = match case {
                 0 => {
-                    original.search.executions = u64::MAX;
+                    original.search.executions = Some(u64::MAX);
                     "exceeds TOML's maximum"
                 }
                 1 => {
