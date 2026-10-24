@@ -38,6 +38,8 @@ vtime-paravirtual-vns = 10000
 vtime-time-read-vns = 1
 vtime-arch-control-vns = 10000
 vtime-execution-tick-vns = 100000
+# Charged per coverage callback when an SDK coverage exchange is answered.
+vtime-coverage-callback-vns = 12
 vtime-clockevent-period-vns = 10000000
 
 [cpuid]
