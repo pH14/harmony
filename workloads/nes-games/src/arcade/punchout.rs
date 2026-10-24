@@ -31,6 +31,16 @@ fn track(lost: u8, span: u16) -> u16 {
     scaled.min(u32::from(span) - 1) as u16
 }
 
+fn placement(state: PunchOutMechanicalState) -> (u16, u16) {
+    (
+        track(
+            FULL_HEALTH.saturating_sub(state.opponent_health),
+            TRACK_WIDTH,
+        ),
+        TRACK_BOTTOM - track(FULL_HEALTH.saturating_sub(state.mac_health), TRACK_HEIGHT),
+    )
+}
+
 #[derive(Clone, Copy, Deserialize, Serialize)]
 pub struct View {
     mode: u8,
@@ -44,10 +54,18 @@ pub struct View {
     knockdowns: u8,
     opponent_action: u8,
     cleared: u8,
+    x: u16,
+    y: u16,
+    health: u8,
 }
 
 fn view(state: PunchOutMechanicalState) -> View {
+    let fighting = state.fighting();
+    let (x, y) = if fighting { placement(state) } else { (0, 0) };
     View {
+        x,
+        y,
+        health: if fighting { state.mac_health } else { 0 },
         mode: state.mode,
         opponent: state.opponent,
         screen: state.screen,
@@ -88,15 +106,10 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for PunchOutGame<M> {
 
     fn motion(wram: &[u8; WRAM_SIZE]) -> [u16; 4] {
         match decode_state(wram) {
-            Ok(state) if state.fighting() => [
-                u16::from(state.opponent),
-                track(
-                    FULL_HEALTH.saturating_sub(state.opponent_health),
-                    TRACK_WIDTH,
-                ),
-                TRACK_BOTTOM - track(FULL_HEALTH.saturating_sub(state.mac_health), TRACK_HEIGHT),
-                0,
-            ],
+            Ok(state) if state.fighting() => {
+                let (x, y) = placement(state);
+                [u16::from(state.opponent), x, y, 0]
+            }
             _ => [HIDDEN, 0, 0, 0],
         }
     }
