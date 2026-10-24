@@ -116,7 +116,12 @@ pending-fault fence. A protocol failure while work is outstanding marks the
 execution as an infrastructure failure. A kill or restart retires the node's
 channel before it signals the process. The killed process can close its
 descriptors before the supervisor reaps it, so a retired channel ignores a
-closed transport.
+closed transport. A node that exits on its own also closes its descriptors
+before it can be reaped, and its exit can take many ticks, for example while the
+kernel releases a file system held by the node's mount namespace. A closed
+transport therefore stays pending while the node's process is exiting or is a
+zombie, as `/proc/<pid>/stat` reports it. The closure is an infrastructure
+failure only when the process is still running a tick after it.
 
 Each tick, a ready channel with nothing in flight also asks its runtime for
 edge-coverage status. The supervisor adds each node's new bucket crossings and

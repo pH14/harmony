@@ -241,6 +241,7 @@ mod runtime {
         failed: bool,
         transport_error: Option<String>,
         closed: Option<(u64, String)>,
+        closed_while_exiting: bool,
     }
 
     impl EventChannel {
@@ -271,6 +272,7 @@ mod runtime {
                 failed: false,
                 transport_error: None,
                 closed: None,
+                closed_while_exiting: false,
             })
         }
 
@@ -325,8 +327,22 @@ mod runtime {
             }
         }
 
-        fn reconcile_closed(&mut self, node: u16, tick: u64) {
+        fn is_closed(&self) -> bool {
+            self.closed.is_some()
+        }
+
+        fn reconcile_closed(&mut self, node: u16, tick: u64, exiting: bool) {
             if self.reported_kill_pending {
+                return;
+            }
+            if exiting {
+                if self.closed.is_some() && !self.closed_while_exiting {
+                    self.closed_while_exiting = true;
+                    log(
+                        tick,
+                        &format!("node {node} closed its event transport while exiting"),
+                    );
+                }
                 return;
             }
             if let Some((closed_tick, detail)) = self.closed.as_ref()
@@ -407,6 +423,7 @@ mod runtime {
         fn note_child_dead(&mut self) {
             self.reported_kill_pending = false;
             self.closed = None;
+            self.closed_while_exiting = false;
         }
 
         fn drain_pending_on_death(&mut self, node: u16, supervisor: &mut Supervisor, tick: u64) {
@@ -1145,10 +1162,11 @@ mod runtime {
         tick: u64,
     ) -> Result<(), String> {
         for (id, node) in nodes.iter_mut().enumerate() {
-            if node.child.is_some()
+            if let Some(child) = node.child.as_ref()
                 && let Some(events) = node.events.as_mut()
             {
-                events.reconcile_closed(id as u16, tick);
+                let exiting = events.is_closed() && process::exiting(child.id());
+                events.reconcile_closed(id as u16, tick, exiting);
                 events.drive(id as u16, supervisor, tick);
                 if let Some(error) = events.take_transport_error() {
                     return Err(format!("node {id} event transport: {error}"));
@@ -2147,9 +2165,33 @@ mod runtime {
             channel.drive(0, &mut supervisor, 1);
             assert!(!channel.failed);
             assert!(channel.pending_faults() > 0);
-            channel.reconcile_closed(0, 2);
+            channel.reconcile_closed(0, 2, false);
             assert!(channel.failed);
             assert!(channel.take_transport_error().is_some());
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn a_closed_transport_waits_while_its_node_exits() {
+            let (control, child_control) = UnixStream::pair().unwrap();
+            let (report, _child_report) = UnixStream::pair().unwrap();
+            let mut channel = EventChannel::new(control, report).unwrap();
+            let mut supervisor = Supervisor::new(1);
+            channel.ready = true;
+            drop(child_control);
+            channel.queue(EventCommand::ParkStatus);
+            channel.drive(0, &mut supervisor, 1);
+            assert!(channel.is_closed());
+            for tick in 2..100 {
+                channel.reconcile_closed(0, tick, true);
+                assert!(!channel.failed);
+                assert!(channel.take_transport_error().is_none());
+                assert!(channel.pending_faults() > 0);
+            }
+            channel.drain_pending_on_death(0, &mut supervisor, 100);
+            channel.reconcile_closed(0, 101, false);
+            assert!(!channel.failed);
+            assert!(channel.take_transport_error().is_none());
         }
 
         #[test]
@@ -2164,7 +2206,7 @@ mod runtime {
             drop(child_control);
             drop(child_report);
             channel.drain_reports(0, &mut supervisor, 1, false);
-            channel.reconcile_closed(0, 2);
+            channel.reconcile_closed(0, 2, false);
             assert!(!channel.failed);
             assert!(channel.take_transport_error().is_none());
             assert_eq!(channel.pending_faults(), 0);
