@@ -93,7 +93,7 @@ worker that are generic over `BrowserGame`. `BrowserGame` is the `nes-games`
 `ArcadeGame` over `Traced<JsMachine>`; `ArcadeGame` holds each game's view,
 motion samples and level count, so a native live campaign draws the same page.
 Each game's file (`rust/src/twin_dragons.rs`, `rust/src/famidash.rs`,
-`rust/src/smb.rs`, `rust/src/mega_man.rs`, `rust/src/metroid.rs`) adds its root
+`rust/src/smb.rs`, `rust/src/mega_man.rs`, `rust/src/metroid.rs`, `rust/src/punchout.rs`) adds its root
 snapshot and the page's observation functions. `CampaignSearch` and
 `CampaignWorker` take the game id. The coordinator worker owns a Dissonance
 `CampaignCoordinator`. It sends each planned `JobSpec` to a rollout worker as
@@ -895,6 +895,33 @@ exactly, and branches from a played history that pauses and resumes with
 Start. It reads the ROM from `METROID_ROM` or `~/workspace/roms/Metroid (USA).nes` and
 skips when it is absent.
 
+### Punch-Out!!
+
+The site ships nothing from Punch-Out!!. The level selector accepts the ROM
+with SHA-256 `2f068675…b052`. The circuit has fourteen opponents, from Glass
+Joe to Mr. Dream, and each opponent is one level. Each level's map is a ring
+screenshot taken from the emulator, so the picker shows the ring behind every
+opponent.
+
+Opening a level boots the game into a fight against that opponent. The boot
+plays the title screen, the Glass Joe profile and the Start press, then writes
+the opponent index (`$0001`) before the fight starts. The fight then runs with
+the game's own round logic. The cleared count is the opponent index, so it
+counts the opponents beaten before the current fight.
+
+The player trail and heatmap plot fight state, not the boxer's position. The
+x position is the opponent's health lost, and the y position is Mac's health
+lost, each scaled to the 256 by 224 map. The RAM address for Mac's position is
+not verified yet, so the trail does not follow the dodges.
+
+The RAM map and the search are described in
+[`workloads/nes/src/punchout/README.md`](../../workloads/nes/src/punchout/README.md).
+`tests/punch-out.mjs` boots all fourteen opponents, checks each ring map, runs a
+short search whose retained states replay exactly, and starts a search from the
+picker. It reads the ROM from `PUNCHOUT_ROM` or
+`~/workspace/harmony/.arcade-local/roms/punch-out.nes` and skips when it is
+absent.
+
 ## Verification and publishing
 
 ```sh
@@ -962,6 +989,7 @@ decoders, checks that the stage map is drawn when the first rollouts appear,
 and checks that the stage map and the top and bottom edge chevrons move the
 view.
 `tests/metroid.mjs` does the same for Metroid's five area maps.
+`tests/punch-out.mjs` boots each of Punch-Out!!'s fourteen opponents and builds its ring map.
 `tests/famidash.mjs` boots all 109 levels and checks that each starts in the
 first screen of its map, runs a 2,000 execution search from one random level
 of each group with a random seed and replays its rightmost state exactly, checks the picker order and the grouped
