@@ -124,11 +124,40 @@ func TestReplicasThatSettlePass(t *testing.T) {
 	expectKinds(t, Register{}.Check(b.build()))
 }
 
-func TestReplicaRoundsCutShortDecideNothing(t *testing.T) {
+func TestReplicaRoundsCutShortAfterADisagreementLeaveReplicasUndecided(t *testing.T) {
 	b := newBuilder(t)
 	b.write(0, "k0", "a", 1, history.OK, 2)
 	b.replicas(0, "n1", map[string]Copy{"k0": held("a", 2)}, 10, 12)
 	b.replicas(0, "n2", map[string]Copy{"k0": held("a", 1)}, 10, 12)
+	report := Register{}.Check(b.build())
+	expectKinds(t, report)
+	if !report.Undecided[RegisterReplicasAgree] {
+		t.Fatalf("undecided %v", report.Undecided)
+	}
+}
+
+func TestReplicaRoundLostAfterDisagreementsLeavesReplicasUndecided(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.rounds(10, func(round int) map[string]map[string]Copy {
+		n2 := map[string]Copy{"k0": held("a", 1)}
+		if round == replicaRounds-1 {
+			n2 = nil
+		}
+		return map[string]map[string]Copy{"n1": {"k0": held("a", 2)}, "n2": n2}
+	})
+	report := Register{}.Check(b.build())
+	expectKinds(t, report)
+	if !report.Undecided[RegisterReplicasAgree] {
+		t.Fatalf("undecided %v", report.Undecided)
+	}
+}
+
+func TestReplicaRoundsThatAgreeOnceAreDecided(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.replicas(0, "n1", map[string]Copy{"k0": held("a", 2)}, 10, 12)
+	b.replicas(0, "n2", map[string]Copy{"k0": held("a", 2)}, 10, 12)
 	report := Register{}.Check(b.build())
 	expectKinds(t, report)
 	if report.Undecided[RegisterReplicasAgree] {

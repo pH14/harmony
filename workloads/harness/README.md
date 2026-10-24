@@ -225,7 +225,8 @@ on metadata alone. The check reports the property when every one of the rounds
 (`Register.Rounds`, default 3) had two or more answering nodes and a
 disagreement, with the last round's disagreeing keys, the copies by node and
 the check journal as evidence. A check that ran fewer rounds, or a round with
-fewer than two answering nodes, decides nothing.
+fewer than two answering nodes, decides nothing unless a round with two or more
+answering nodes found no unexplained disagreement.
 
 Apart from that log check, failed operations are dropped. Indeterminate
 operations never produce a violation.

@@ -172,11 +172,16 @@ func (r Register) checkReplicas(h *history.History, writes map[string][]register
 	byJournal := collectRounds(h, rounds)
 	for _, journal := range sortedKeys(byJournal) {
 		journalRounds := byJournal[journal]
+		compared, settled := 0, false
 		for _, round := range journalRounds {
 			if len(round.copies) >= 2 {
-				report.Decided = true
-				delete(report.Undecided, RegisterReplicasAgree)
+				compared++
+				settled = settled || len(round.disagreements(writes)) == 0
 			}
+		}
+		if settled || compared == rounds {
+			report.Decided = true
+			delete(report.Undecided, RegisterReplicasAgree)
 		}
 		var last []disagreement
 		every := len(journalRounds) == rounds
