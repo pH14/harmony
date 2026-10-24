@@ -663,6 +663,35 @@ Counting portfolio holders compares every pair of holders in each slot, which
 on every line would take most of the coordinator's time. The draws of hundreds
 of thousands of cells take tens of megabytes per line.
 
+Every 32nd live progress line and the final line also carry
+`selector.cell_interval`, the per-cell draw accounting since the previous line
+that carried it. `since` is that line's execution count, `cells` the number of
+cells with any count in the interval, `totals` the sums over all of them, and
+`top` the 16 cells with the most draws in the interval, each named as `cell`.
+Each cell reports these counts:
+
+- `draws`: selections of an entry in the cell.
+- `continuation`: draws dispatched from the continuation bank, credited to the
+  cell of the entry they continue.
+- `recent`: draws whose cell came from the recent window. The other tier draws
+  chose the cell by its count-decay weight.
+- `best_holder`: draws whose holder came from the best-holder share. The other
+  draws chose the holder by its count-decay weight.
+- `top_tier`: draws whose tier was drawn at rank 0.
+- `fall_through`: draws whose tier was drawn at or above the fall-through
+  floor while `tier_halvings` had lowered those ranks' weight.
+- `resets`: resets of the cell's draw count.
+- `opened`, `novel`, `replaced`: admissions whose parent sat in the cell that
+  opened a cell holding nothing, opened a cell never seen at its tier or above
+  (the `cells` count of `tier_runs`), or displaced a slot holder.
+
+The counts are saved in search checkpoints, so a resumed run repeats the
+original lines. A run with no progress sink keeps no counts, and a stream replay
+keeps none, so neither grows the archive. The counts are left out of the archive
+memory estimate, so snapshot eviction runs on the same schedule as without
+them. A 100M-execution run writes about 350 of these reports, about 1.2 MB or
+under 3% of its `progress.jsonl`.
+
 Continuation edges copy their action tail only after the existing-cost check
 accepts the edge; equal-cost and more expensive routes leave the bank unchanged
 without allocating an action vector.
