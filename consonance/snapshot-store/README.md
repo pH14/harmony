@@ -15,9 +15,9 @@ builder omits zero-page entries immediately, including when a zero write replace
 a buffered nonzero page. Flattening leaves unchanged inherited entries in place
 without acquiring and releasing the same reference again.
 
-`read_page` resolves the nearest layer that wrote a frame. Layers are immutable
-after sealing; each layer caches inherited lookups to make repeated reads
-efficient. Page contents are interned store-wide by BLAKE3, while the all-zero
+`read_page` resolves the nearest layer that wrote a frame. A sealed layer keeps
+its contents; its page table changes only when `gc` folds a released parent into
+it. Each layer caches inherited lookups to make repeated reads efficient. Page contents are interned store-wide by BLAKE3, while the all-zero
 page is implicit. `vm_state` is opaque but its seal-time digest is checked before
 it is returned.
 
@@ -35,7 +35,7 @@ lengths still return `PageIntegrity`.
 
 ## Plans and deltas
 
-Layer page tables are immutable sorted arrays of guest frame numbers and
+Layer page tables are sorted arrays of guest frame numbers and
 word-sized page references. Digests stay in the content index and resident-page
 records; layer tables and lookup caches refer to a reusable resident-page slot
 instead of copying those digests. A slot remains occupied while any builder or
@@ -84,8 +84,9 @@ layer is collected; there is no capacity limit or eviction policy. This favors
 repeated restores and reads over limiting cache memory. Cache allocation grows
 with the distinct inherited frames queried on each resident layer, rather than
 multiplying every query across its ancestry. Cache entries do not own page
-references: immutable ancestry keeps the resolved content alive for the layer's
-lifetime, and collecting the layer also drops its cache.
+references: the layer's ancestry keeps the resolved content alive for the layer's
+lifetime, folding moves a released ancestor's pages into its child, and
+collecting the layer also drops its cache.
 
 Snapshot IDs pair the seal-time sequence with a process-local store identity.
 The store identity is only a handle guard; it is absent from snapshot bytes,
@@ -100,7 +101,14 @@ payload bytes.
 Each layer counts its resident direct children. Releasing the last external
 reference queues a childless layer for collection; removing it can queue its
 released parent. Collection follows those newly unreachable chains iteratively,
-without scanning live layers. Live snapshot counts and resident VM-state bytes
+without scanning live layers. `gc` then folds every released layer that has one
+resident child into that child. The child takes the parent's page entries it
+does not override, and the parent's VM state and overridden pages are freed.
+Release and collection queue those parents, so `gc` visits the layer table to
+recompute chain depths only when it folds. A search that seals a snapshot per action and
+releases the previous one therefore keeps one layer per live snapshot, and a
+page rewritten at every action holds one copy instead of one per action.
+Live snapshot counts and resident VM-state bytes
 are maintained at seal, release, and collection, making `store_stats` constant
 time. Its `bytes_resident` remains a payload measure: page buffers and VM-state
 bytes, excluding allocator overhead, indexes, lookup caches, and materialized

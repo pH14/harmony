@@ -167,6 +167,7 @@ pub struct Store {
     next_id: u64,
     layers: BTreeMap<u64, Layer>,
     collectible: Vec<u64>,
+    foldable: Vec<u64>,
     live_snapshots: u64,
     vm_state_bytes: u64,
     #[allow(clippy::disallowed_types)]
@@ -208,6 +209,7 @@ impl Store {
             next_id: 0,
             layers: BTreeMap::new(),
             collectible: Vec::new(),
+            foldable: Vec::new(),
             live_snapshots: 0,
             vm_state_bytes: 0,
             #[allow(clippy::disallowed_types)]
@@ -626,12 +628,15 @@ impl Store {
         let layer = self.live_layer_mut(snap)?;
         layer.refcount -= 1;
         let remaining = layer.refcount;
-        let collectible = remaining == 0 && layer.children == 0;
+        let children = layer.children;
+        let collectible = remaining == 0 && children == 0;
         if remaining == 0 {
             self.live_snapshots -= 1;
         }
         if collectible {
             self.collectible.push(snap.0);
+        } else if remaining == 0 && children == 1 {
+            self.foldable.push(snap.0);
         }
         Ok(remaining)
     }
@@ -653,11 +658,16 @@ impl Store {
             if let Some(parent) = layer.parent {
                 let ancestor = self.layers.get_mut(&parent).expect("retained parent");
                 ancestor.children -= 1;
-                if ancestor.children == 0 && ancestor.refcount == 0 {
-                    self.collectible.push(parent);
+                if ancestor.refcount == 0 {
+                    match ancestor.children {
+                        0 => self.collectible.push(parent),
+                        1 => self.foldable.push(parent),
+                        _ => {}
+                    }
                 }
             }
         }
+        freed += self.fold_released_layers();
         if self.page_index.is_empty() {
             self.page_index.shrink_to_fit();
             self.pages = Vec::new();
@@ -665,6 +675,74 @@ impl Store {
         }
         if self.layers.is_empty() {
             self.collectible = Vec::new();
+            self.foldable = Vec::new();
+        }
+        freed
+    }
+
+    fn fold_released_layers(&mut self) -> u64 {
+        let mut released = std::mem::take(&mut self.foldable);
+        released.sort_unstable();
+        released.dedup();
+        released.retain(|id| {
+            self.layers
+                .get(id)
+                .is_some_and(|layer| layer.refcount == 0 && layer.children == 1)
+        });
+        if released.is_empty() {
+            return 0;
+        }
+        let child: BTreeMap<u64, u64> = self
+            .layers
+            .iter()
+            .filter_map(|(&id, layer)| Some((layer.parent?, id)))
+            .collect();
+        let mut freed = 0u64;
+        let mut shadowed = Vec::new();
+        for id in released {
+            let layer = self.layers.remove(&id).expect("released layer");
+            let state_bytes = layer.vm_state.len() as u64;
+            self.vm_state_bytes -= state_bytes;
+            freed += state_bytes;
+            let into = self
+                .layers
+                .get_mut(&child[&id])
+                .expect("child of a released layer");
+            let mut pages = Vec::with_capacity(layer.pages.len() + into.pages.len());
+            let (mut older, mut newer) =
+                (layer.pages.iter().peekable(), into.pages.iter().peekable());
+            loop {
+                let next = match (older.peek(), newer.peek()) {
+                    (None, None) => break,
+                    (Some(_), None) => older.next(),
+                    (None, Some(_)) => newer.next(),
+                    (Some(old), Some(new)) => match old.0.cmp(&new.0) {
+                        std::cmp::Ordering::Less => older.next(),
+                        std::cmp::Ordering::Greater => newer.next(),
+                        std::cmp::Ordering::Equal => {
+                            if let Some(&(_, PageRef::Data(page))) = older.next() {
+                                shadowed.push(page);
+                            }
+                            newer.next()
+                        }
+                    },
+                };
+                if let Some(&row) = next {
+                    pages.push(row);
+                }
+            }
+            into.pages = pages.into_boxed_slice();
+            into.parent = layer.parent;
+        }
+        for page in shadowed {
+            freed += self.release_page_ref(page);
+        }
+        let ids: Vec<u64> = self.layers.keys().copied().collect();
+        for id in ids {
+            let parent = self.layers[&id].parent;
+            let chain_len =
+                parent.map_or(1, |parent| self.layers[&parent].chain_len.saturating_add(1));
+            self.layers.get_mut(&id).expect("layer").chain_len = chain_len;
         }
         freed
     }

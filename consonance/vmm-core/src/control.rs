@@ -5070,8 +5070,10 @@ mod tests {
         assert_eq!(s.handle(&Request::Drop(first)).unwrap(), Ok(Reply::Unit));
         assert_eq!(s.current_image, image);
         assert_eq!(s.derive_parent, image);
+        s.engine.retain(image.unwrap()).unwrap();
         let second = snap(&mut s);
         assert_eq!(chain_len(&s, second), 2);
+        s.engine.release(image.unwrap()).unwrap();
         assert_eq!(s.handle(&Request::Drop(second)).unwrap(), Ok(Reply::Unit));
         s.set_current_image(None);
         assert_eq!(s.engine.store_stats().snapshots, 0);
