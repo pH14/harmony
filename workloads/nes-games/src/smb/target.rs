@@ -584,12 +584,12 @@ impl SmbTarget<QuickNesMachine, Vec<u8>> {
 }
 
 fn smb_scroll_bucket(wram: &[u8; WRAM_SIZE]) -> u16 {
-    u16::from(wram[SCREEN_PAGE_OFFSET]) * 16 + u16::from(wram[SCREEN_X_OFFSET] / 16)
+    (smb_camera_pixels(wram) / 16) as u16
 }
 
 #[must_use]
 pub fn smb_camera_pixels(wram: &[u8; WRAM_SIZE]) -> u32 {
-    u32::from(wram[SCREEN_PAGE_OFFSET]) * 256 + u32::from(wram[SCREEN_X_OFFSET])
+    u32::from(i16::from_be_bytes([wram[SCREEN_PAGE_OFFSET], wram[SCREEN_X_OFFSET]]).max(0) as u16)
 }
 
 const PLAYER_BELOW_PLAY_AREA_PAGE: u8 = 2;
