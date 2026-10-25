@@ -20,9 +20,12 @@ machine it runs on. The claims it ships with:
    Kraid, high jump, Ridley, Tourian, ending) reached and replayed. The
    searcher is told nothing about what any scalar means.
 4. Castlevania as the held-out game: untouched during development, then
-   given a chosen vector at the end and run from power-on, within 3x the
-   tries of the current searcher's run with its hand-written key. It shows
-   the searcher works on a game it was not built against.
+   given a chosen vector at the end and run from power-on with the same
+   try budget as the stage 0 position-only run. It reaches every stage the
+   stage 0 run reached, in at most 3x its tries per stage, and reaches at
+   least one stage beyond. No run of any searcher has finished Castlevania,
+   so the yardstick is the stage 0 run, stage by stage. It shows the
+   searcher works on a game it was not built against.
 5. A faults workload (NATS or rqlite) where promoted features name
    scenario markers nobody wrote down, and the search reaches a failure
    the current searcher does not reach in equal work.
