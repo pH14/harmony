@@ -60,6 +60,9 @@ dialog {
 html[data-booting] :is(#app, dialog) {
   opacity: 0;
 }
+html[data-switching] .workspace {
+  transition: none;
+}
 html[data-switching] body,
 html[data-switching] dialog {
   cursor: progress;
@@ -1071,7 +1074,8 @@ dialog h2 {
 }
 
 .theme-button { margin-left: auto; background: transparent; font-size: 20px; padding: 6px 10px; }
-.branches { top: 16px; padding: 12px 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: 0 8px 28px #0002; animation: timeline-in .2s ease-out; }
+.branches { top: 16px; padding: 12px 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: 0 8px 28px #0002; }
+html:not([data-switched]) .branches { animation: timeline-in .2s ease-out; }
 .pane-heading { display: flex; align-items: center; justify-content: space-between; padding-left: 4px; margin-bottom: 10px; }
 .branches .pane-heading h2 { margin: 0; color: var(--text); font-size: 13px; font-weight: 500; }
 .branches #timeline-toggle { width: 28px; padding: 2px; text-align: center; font-size: 20px; }
@@ -1212,7 +1216,7 @@ dialog h2 {
   .level-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 }
 
-.workspace:not(.timeline-collapsed) .branches nav { animation: timeline-in .2s ease-out; }
+html:not([data-switched]) .workspace:not(.timeline-collapsed) .branches nav { animation: timeline-in .2s ease-out; }
 
 
 .exploration-heading { margin: 12px 0 0; font-size: 13px; font-weight: 500; color: var(--text); }

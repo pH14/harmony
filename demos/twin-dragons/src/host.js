@@ -129,6 +129,7 @@ async function boot() {
 
 function reboot(url) {
   root.dataset.switching = "";
+  root.dataset.switched = "";
   scope?.dispose();
   if (url) history.pushState(null, "", url);
   boot().catch(() => location.reload()).finally(() => delete root.dataset.switching);
