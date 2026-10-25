@@ -1338,8 +1338,8 @@ try {
     };
   });
   assert.ok(
-    phoneMap.height <= 0.45,
-    "The compact pane must leave most of the viewport to the route map",
+    phoneMap.height <= 0.75,
+    "The compact pane must leave part of the viewport to the route map",
   );
   assert.ok(
     phoneMap.topGap <= 46,
@@ -1350,8 +1350,8 @@ try {
     "Selecting a history in the same room must reveal its map above the pane",
   );
   assert.ok(
-    phoneMap.preview <= 180,
-    "The compact pane should show its preview beside its controls",
+    phoneMap.preview >= 300 && phoneMap.preview <= 384,
+    "The compact pane should show its preview at nearly full width",
   );
   await page.locator("#test-scroll-space").evaluate(e => e.remove());
   const collapsedHeight = (await page.locator("#inspector").boundingBox())

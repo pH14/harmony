@@ -46,19 +46,6 @@ The controller vocabulary is the six held chords of Left, Right and neutral,
 each with or without A, and a tap of A. A tap is a flap. Short holds are 1 to
 10 frames and long holds 12 to 40.
 
-## Search results
-
-Each run used one QuickNES worker on a Linux host, the `energy_splice:6` draw mixture and witness verification. `nes-eval` replays the winning tape twice in its own process. A separate `joust-probe` process replays each tape from power-on and ends on the same wave and score.
-
-| Target wave | Seed | Executions | Search time | Waves cleared | Score |
-| --- | --- | --- | --- | --- | --- |
-| 26 | 1 | 4,501,240 | 2,316 s | 25 | 205,000 |
-| 26 | 2 | 3,783,429 | 1,237 s | 25 | 217,000 |
-| 50 | 1 | 6,471,287 | 3,024 s | 49 | 528,000 |
-| 50 | 2 | 7,153,717 | 3,086 s | 49 | 540,500 |
-
-A 900 s run with two workers and seed 1 reached wave 11 with score 74,500.
-
 ## Archive key
 
 The place is the wave and a 32 pixel cell of the player's x and y. Progress is

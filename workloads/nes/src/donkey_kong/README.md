@@ -70,31 +70,3 @@ The named progress diagnostics record the first execution that cleared each
 stage and the first that finished each round: `barrels_cleared`,
 `elevators_cleared`, `rivets_cleared` and `round_1` for the first round, then
 `round_2_barrels_cleared` and so on up to `round_10`, and `goal`.
-
-## Results
-
-Eight workers from power-on, seeds 1 to 3, with the goal at round 8 and the
-rivet stage tier ignoring height: all three seeds cleared eight rounds, 24
-stages, with a replayed winning tape.
-
-| Seed | Executions | Seconds | Round 1 at execution | Round 8 at execution |
-| --- | --- | --- | --- | --- |
-| 1 | 8,101,837 | 1,289 | 208,200 | 8,101,806 |
-| 2 | 10,605,357 | 1,652 | 935,307 | 10,605,326 |
-| 3 | 6,503,664 | 1,084 | 39,798 | 6,503,633 |
-
-Before the rivet stage tier dropped height, seed 1 cleared 14 stages in 1,500
-seconds and seed 2 cleared 13 in 1,800 seconds. Both pulled the last rivet of a
-round only rarely, because states near the last rivet are lower than the girder
-Mario had already reached. No model of the hammer or of the clear cutscene was
-needed. The winning tapes replay in the wasm QuickNES core to round 8 at frames
-62,511, 63,450 and 65,545.
-
-With the goal raised to round 10, seed 3 cleared ten rounds, 30 stages, in
-7,540,152 executions and 1,220 seconds, the same run as before up to round 8,
-with a replayed winning tape. The wasm core replays it to round 10 at frame
-81,718.
-
-With the goal at round 1, seeds 1 to 3 solved in 747,442, 1,693,325 and 48,034
-executions. The seed 1 winning tape replays to the same endpoint in a second
-process.
