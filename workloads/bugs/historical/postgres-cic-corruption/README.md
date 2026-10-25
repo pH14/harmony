@@ -117,8 +117,8 @@ lands beside the default kernel as `x86_64/bzImage-task-park`. Both production
 profiles serve glibc's and PostgreSQL's userspace `RDTSC`/`RDTSCP` reads from
 Harmony's virtual clock; the task-park profile additionally carries the
 process-control capability used by the fault package. The same build writes
-`x86_64/initramfs.cpio.gz`, the package-neutral base image `--base-initramfs`
-names; canonical OCI preparation supplies the workload rootfs and platform
+`x86_64/initramfs.cpio.gz`, the package-neutral base image that
+`runner.options.base_initramfs` names; canonical OCI preparation supplies the workload rootfs and platform
 supervisor bundle to the guest.
 
 `case.json` is the machine-readable form of all of this: the pins, the node and
@@ -142,8 +142,9 @@ scenario has two stages:
   sessions and compare their state digests. These samples include no-find paths
   and consume the case's aggregate replay-session cap.
 
-`scripts/historical-oracle.sh` holds these rules and reads the two ids
-from `case.json`; `scripts/historical-oracle.test.sh` exercises them
+`scripts/historical-oracle.sh` holds these rules and takes the two ids
+from `ORACLE_ASSERTION` and `ORACLE_EVIDENCE`, which the workflow sets from
+`case.json`; `scripts/historical-oracle.test.sh` exercises them
 against synthetic reports in quality CI.
 
 The earlier reproduction in the fault-library work — a campaign that reported

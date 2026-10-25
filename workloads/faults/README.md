@@ -21,6 +21,7 @@ in the platform supervisor's bundle format:
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |
 | `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
 | `disk <node> <path> <size> [checksummed]` | gives that node an ext4 filesystem at `path`, sized `16M` through `1G` in whole 4 KiB pages, which power-loss and disk actions act on |
+| `log <node> <path>` | names a log file the node writes, which `harmony explain` reads |
 
 A `disk` line names a node declared by a `node` line, and each node has at most
 one disk. The image must contain `mkfs.ext4`. The `checksummed` flag declares
