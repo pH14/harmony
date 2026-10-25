@@ -11,6 +11,7 @@ const MODE = 0x18,
   HEALTH = 0x45,
   INVINCIBLE = 0x5b,
   SCROLL = 0xfd,
+  CAMERA_HIGH = 0x2f,
   OAM = 0x200,
   MODE_PLAYING = 5,
   SUBMODE_CONTROL = 6,
@@ -39,6 +40,12 @@ const MAP_CAPACITY = 4096,
   RIGHT = 0x80,
   LEFT = 0x40;
 
+// Camera x and section when Simon enters each stage. The stage map starts at that camera x,
+// and trail x is world x minus it. Must match ENTRY in workloads/nes-games/src/arcade/castlevania.rs.
+export const ENTRY = [
+  [0, 0], [0, 1], [0, 0], [256, 0], [512, 0], [512, 0], [512, 0], [0, 0], [0, 0],
+  [0, 0], [0, 0], [0, 0], [0, 0], [1024, 0], [768, 0], [1280, 0], [512, 0], [512, 0],
+];
 // Stage map widths in image pixels, measured by walking each stage once.
 export const MAP_WIDTHS = [1536, 512, 768, 256, 256, 256, 256, 768, 1536, 1015, 1536, 408, 512, 256, 256, 256, 256, 256];
 
@@ -60,6 +67,10 @@ export function entry() {
 
 function position(ram) {
   return ram[X_LOW] | (ram[X_HIGH] << 8);
+}
+
+function cameraOf(ram) {
+  return (ram[CAMERA_HIGH] << 8) | ram[SCROLL];
 }
 
 function scrollOf(x, low) {
@@ -95,11 +106,13 @@ export function buildMap(engine, level) {
   loadStage(engine, level + 1);
   const ram = engine.ramView(),
     ground = ram[SIMON_Y],
-    section = ram[SECTION];
-  let scroll = 0,
-    scrollLow = ram[SCROLL],
+    section = ram[SECTION],
+    [origin, entrySection] = ENTRY[level];
+  if (cameraOf(ram) !== origin || section !== entrySection)
+    throw new Error(`Castlevania stage ${level + 1} entered at camera ${cameraOf(ram)}, section ${section}`);
+  let camera = origin,
+    farthest = origin,
     blocked = 0,
-    farthest = 0,
     still = 0,
     data = new Uint8ClampedArray(MAP_CAPACITY * MAP_HEIGHT * 4);
   for (let frame = 0; frame < MAX_FRAMES; frame++) {
@@ -117,22 +130,21 @@ export function buildMap(engine, level) {
       ram[X_HIGH] = (nudged >> 8) & 255;
       blocked = 0;
     }
-    const low = ram[SCROLL];
-    scroll = Math.max(0, scroll + (((low - scrollLow + 128) & 255) - 128));
-    scrollLow = low;
-    if (scroll > farthest) {
-      farthest = scroll;
+    camera = cameraOf(ram);
+    if (camera > farthest) {
+      farthest = camera;
       still = 0;
     } else if (++still > STILL_FRAMES) break;
-    if (farthest + SCREEN_WIDTH > MAP_CAPACITY) break;
-    const pixels = engine.pixelView();
+    if (farthest - origin + SCREEN_WIDTH > MAP_CAPACITY) break;
+    const pixels = engine.pixelView(),
+      column = camera - origin;
     for (let row = HUD_ROWS; row < IMAGE_HEIGHT; row++)
       data.set(
         pixels.subarray(row * SCREEN_WIDTH * 4, (row + 1) * SCREEN_WIDTH * 4),
-        ((row - HUD_ROWS) * MAP_CAPACITY + scroll) * 4,
+        ((row - HUD_ROWS) * MAP_CAPACITY + column) * 4,
       );
   }
-  const width = farthest + SCREEN_WIDTH,
+  const width = farthest - origin + SCREEN_WIDTH,
     cropped = new Uint8ClampedArray(width * MAP_HEIGHT * 4);
   for (let y = 0; y < MAP_HEIGHT; y++)
     cropped.set(data.subarray(y * MAP_CAPACITY * 4, (y * MAP_CAPACITY + width) * 4), y * width * 4);

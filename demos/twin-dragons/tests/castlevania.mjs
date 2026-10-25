@@ -31,6 +31,9 @@ for (const level of [0, 1, 9]) {
 }
 console.log("Stage maps build from the ROM at their measured widths.");
 
+for (let level = 0; level < castlevania.levelCount; level++) buildMap(engine, level);
+console.log("Every stage enters at the camera its map starts from.");
+
 const sheet = buildSprites(engine);
 assert.ok(sheet.data.some((v, i) => i % 4 === 3 && v > 0), "The sprite sheet holds Simon");
 console.log("The sprite sheet builds from the ROM.");
@@ -61,4 +64,17 @@ assert.match(await page.locator("#cell-title").getAttribute("title"), /^Cell \d+
 assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Nothing scrolls sideways");
 assert.deepEqual(errors, []);
 console.log("Clicking a visible trail cell selects its history.");
+
+const stage6 = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+stage6.on("pageerror", (error) => errors.push(error.message));
+await stage6.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
+await stage6.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?game=castlevania&pace=0&workers=1`);
+await stage6.locator("#level-picker[open]").waitFor({ timeout: 30000 });
+const stage6Chooser = stage6.waitForEvent("filechooser");
+await stage6.locator("#rom-drop").click();
+await (await stage6Chooser).setFiles(path);
+await stage6.locator("#level-grid:not([hidden]) button", { hasText: /^Stage 6$/ }).click({ timeout: 60000 });
+await stage6.waitForFunction(() => Number(document.querySelector('canvas[data-map="5"]')?.dataset.swarmCount) > 0, null, { timeout: 90000 });
+console.log("Stage 6 draws Simon's trail on its map.");
+await stage6.close();
 await browser.close();
