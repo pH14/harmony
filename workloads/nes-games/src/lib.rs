@@ -5,6 +5,7 @@ pub mod arcade;
 pub mod castlevania;
 pub mod chord;
 pub mod donkey_kong;
+pub mod evidence;
 pub mod famidash;
 pub mod ice_climbers;
 pub mod joust;

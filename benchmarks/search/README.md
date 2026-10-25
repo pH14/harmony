@@ -127,8 +127,9 @@ with a power-on run.
 
 An `nes-eval` request can write search checkpoints into `checkpoints/` in its
 output directory. `checkpoint_every` writes one every that many executions, and
-`checkpoint_on_progress` writes one whenever the workload reaches a new named
-milestone or the archive opens a higher tier. `resume` names a checkpoint file
+`checkpoint_on_progress` writes one whenever the game first reaches a
+milestone, as `workloads/nes/README.md` defines it, or the archive opens a
+higher tier. `resume` names a checkpoint file
 and continues that search under the exact loaded executable that wrote the
 checkpoint. Compare changed builds from rooted inputs or fresh power-on runs.
 The native `nes-eval` request exposes only mixture as a runtime policy setting;

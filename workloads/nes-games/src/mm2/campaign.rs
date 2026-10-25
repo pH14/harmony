@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
+    evidence::{NesCampaignEvidence, NesEvidence},
     mm2::{
         archive::{
             DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, Mm2ArchiveKey, Mm2ArchiveReport,
@@ -20,7 +21,7 @@ use crate::{
             REPLACEMENT_IDENTIFIER, archive_key, chord_time, merge_milestones,
             merge_progress_watermark, milestone_key, milestones, progress_watermark,
         },
-        progress::{FirstSeen, NamedProgress, is_route_milestone},
+        progress::{NamedProgress, is_route_milestone},
         target::{
             ButtonChord, Mm2Input, Mm2Observations, Mm2Route, Mm2Snapshot, Mm2Stage, Mm2Target,
             Mm2Tier, ROBOT_MASTER_ORDER, preference_tuple, walk_to_stage_select,
@@ -298,55 +299,17 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Game<M> {
 #[derive(Clone, Copy, Debug)]
 pub struct Mm2CampaignRun;
 
-#[derive(Clone, Default)]
-pub struct Mm2CampaignEvidence {
+pub type Mm2CampaignEvidence<M> = NesCampaignEvidence<Mm2Game<M>>;
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub struct Mm2ExtraEvidence {
     named_progress: NamedProgress,
-    aggregate: Mm2Milestones,
-    watermark: Mm2ProgressWatermark,
-    first_reached: Mm2MilestoneTimes,
-    first_inputs: Mm2MilestoneInputs,
-    champion_input: Mm2Input,
-    champion_milestones: Mm2Milestones,
-    champion_key: Option<Mm2ChampionKey>,
     genesis_screen: Option<u8>,
     best_health: BTreeMap<String, (u8, u16)>,
     best_energy: BTreeMap<String, (u16, u8)>,
 }
 
-#[derive(Deserialize, Serialize)]
-struct Mm2EvidenceCheckpoint {
-    first_seen: Vec<(String, Option<FirstSeen>)>,
-    aggregate: Mm2Milestones,
-    watermark: Mm2ProgressWatermark,
-    first_reached: Mm2MilestoneTimes,
-    first_inputs: Mm2MilestoneInputs,
-    champion_input: Mm2Input,
-    champion_milestones: Mm2Milestones,
-    champion_key: Option<Mm2ChampionKey>,
-    genesis_screen: Option<u8>,
-    best_health: Vec<(String, (u8, u16))>,
-    best_energy: Vec<(String, (u16, u8))>,
-}
-
-impl Mm2CampaignEvidence {
-    fn from_checkpoint(checkpoint: Mm2EvidenceCheckpoint) -> Result<Self, Box<dyn Error>> {
-        let mut named_progress = NamedProgress::default();
-        named_progress.restore(checkpoint.first_seen)?;
-        Ok(Self {
-            named_progress,
-            aggregate: checkpoint.aggregate,
-            watermark: checkpoint.watermark,
-            first_reached: checkpoint.first_reached,
-            first_inputs: checkpoint.first_inputs,
-            champion_input: checkpoint.champion_input,
-            champion_milestones: checkpoint.champion_milestones,
-            champion_key: checkpoint.champion_key,
-            genesis_screen: checkpoint.genesis_screen,
-            best_health: checkpoint.best_health.into_iter().collect(),
-            best_energy: checkpoint.best_energy.into_iter().collect(),
-        })
-    }
-
+impl Mm2ExtraEvidence {
     fn stock(&mut self, observation: &Mm2Observations) -> Vec<String> {
         let state = observation.decoded;
         let mut improved = Vec::new();
@@ -552,57 +515,87 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for Mm2Game<M> {
     type Progress = Mm2ProgressWatermark;
     type Snapshot = Mm2Snapshot;
     type Observations = Mm2Observations;
-    type Evidence = Mm2CampaignEvidence;
+    type Evidence = Mm2CampaignEvidence<M>;
     type ArchiveReport = Mm2ArchiveReport;
     type Run = Mm2CampaignRun;
 }
 
-impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for Mm2Game<M> {
-    fn write_evidence_checkpoint(
-        evidence: &Mm2CampaignEvidence,
-        out: &mut dyn std::io::Write,
-    ) -> Result<(), Box<dyn Error>> {
-        use searcher::search::checkpoint::image::Sequence;
-        postcard::to_io(
-            &(
-                Sequence(evidence.named_progress.first_seen.iter()),
-                evidence.aggregate,
-                evidence.watermark,
-                evidence.first_reached,
-                &evidence.first_inputs,
-                &evidence.champion_input,
-                evidence.champion_milestones,
-                evidence.champion_key,
-                evidence.genesis_screen,
-                Sequence(evidence.best_health.iter()),
-                Sequence(evidence.best_energy.iter()),
-            ),
-            out,
-        )?;
-        Ok(())
+impl<M: NesBackend<Vec<u8>> + NesMemory> NesEvidence for Mm2Game<M> {
+    type MilestoneTimes = Mm2MilestoneTimes;
+    type MilestoneInputs = Mm2MilestoneInputs;
+    type ChampionKey = Mm2ChampionKey;
+    type Extras = Mm2ExtraEvidence;
+
+    fn milestone_rank(milestones: Mm2Milestones) -> impl Ord {
+        milestone_key(milestones)
     }
-    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Mm2CampaignEvidence, Box<dyn Error>> {
-        Mm2CampaignEvidence::from_checkpoint(postcard::from_bytes(bytes)?)
+    fn merge_watermark(watermark: &mut Mm2ProgressWatermark, observations: &[Mm2Observations]) {
+        merge_progress_watermark(watermark, observations);
     }
-    fn checkpoint_marks(evidence: &Mm2CampaignEvidence) -> usize {
-        evidence
+    fn champion_key(
+        observations: &[Mm2Observations],
+        _milestones: Mm2Milestones,
+    ) -> Option<Mm2ChampionKey> {
+        action_champion_key(observations)
+    }
+    fn record_first_reached(
+        times: &mut Mm2MilestoneTimes,
+        inputs: &mut Mm2MilestoneInputs,
+        extras: &Mm2ExtraEvidence,
+        milestones: Mm2Milestones,
+        sequence: u64,
+        input: &Mm2Input,
+    ) {
+        update_first_inputs(
+            times,
+            inputs,
+            milestones,
+            extras.genesis_screen.unwrap_or(0),
+            sequence,
+            input,
+        );
+    }
+    fn first_reached_count(times: &Mm2MilestoneTimes) -> usize {
+        [times.first_new_screen, times.first_boss, times.first_clear]
+            .into_iter()
+            .flatten()
+            .count()
+    }
+    fn named_progress_count(extras: &Mm2ExtraEvidence) -> usize {
+        extras
             .named_progress
             .first_seen
             .iter()
             .filter(|(name, seen)| seen.is_some() && is_route_milestone(name))
             .count()
     }
-    fn diagnostics(evidence: &Mm2CampaignEvidence) -> Option<serde_json::Value> {
-        Some(serde_json::json!({ "named_progress": evidence.named_progress }))
+}
+
+impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for Mm2Game<M> {
+    fn write_evidence_checkpoint(
+        evidence: &Mm2CampaignEvidence<M>,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        evidence.write_checkpoint(out)
+    }
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Mm2CampaignEvidence<M>, Box<dyn Error>> {
+        NesCampaignEvidence::from_checkpoint(bytes)
+    }
+    fn checkpoint_marks(evidence: &Mm2CampaignEvidence<M>) -> usize {
+        evidence.checkpoint_marks()
+    }
+    fn diagnostics(evidence: &Mm2CampaignEvidence<M>) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "named_progress": evidence.extras.named_progress }))
     }
     fn merge_witness_diagnostics(
-        evidence: &mut Mm2CampaignEvidence,
+        evidence: &mut Mm2CampaignEvidence<M>,
         observations: &[Mm2Observations],
         sequence: u64,
     ) {
         let action_end = observations.last().map_or(0, |obs| obs.frame_count);
         for observation in observations {
             evidence
+                .extras
                 .named_progress
                 .observe(observation, sequence, action_end);
         }
@@ -681,7 +674,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for Mm2Game<M> {
 
     fn archive_report(
         &self,
-        evidence: &Mm2CampaignEvidence,
+        evidence: &Mm2CampaignEvidence<M>,
         state: ArchiveReportState<Self>,
     ) -> Mm2ArchiveReport {
         Mm2ArchiveReport {
@@ -878,28 +871,33 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for Mm2Game<M> {
         merge_milestones(into, from);
     }
 
-    fn aggregate_milestones(evidence: &Mm2CampaignEvidence) -> Mm2Milestones {
+    fn aggregate_milestones(evidence: &Mm2CampaignEvidence<M>) -> Mm2Milestones {
         evidence.aggregate
     }
 
-    fn aggregate_progress(evidence: &Mm2CampaignEvidence) -> Mm2ProgressWatermark {
+    fn aggregate_progress(evidence: &Mm2CampaignEvidence<M>) -> Mm2ProgressWatermark {
         evidence.watermark
     }
 
-    fn merge_origin_evidence(&self, evidence: &mut Mm2CampaignEvidence, source: &Mm2ArchiveReport) {
-        evidence.watermark = evidence.watermark.max(source.progress_watermark);
+    fn merge_origin_evidence(
+        &self,
+        evidence: &mut Mm2CampaignEvidence<M>,
+        source: &Mm2ArchiveReport,
+    ) {
+        evidence.merge_origin(source.progress_watermark);
     }
 
     fn merge_snapshot_root_evidence(
         &self,
-        evidence: &mut Mm2CampaignEvidence,
+        evidence: &mut Mm2CampaignEvidence<M>,
         target: &Mm2Target<M>,
     ) -> Result<(), Box<dyn Error>> {
         let state = target.mechanical_state();
         evidence.watermark = evidence.watermark.max(progress_watermark(state));
-        evidence.genesis_screen.get_or_insert(state.screen);
+        evidence.extras.genesis_screen.get_or_insert(state.screen);
         let observation = target.observe();
         evidence
+            .extras
             .named_progress
             .observe(&observation, 0, observation.frame_count);
         Ok(())
@@ -907,29 +905,16 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for Mm2Game<M> {
 
     fn merge_import_evidence(
         &self,
-        evidence: &mut Mm2CampaignEvidence,
+        evidence: &mut Mm2CampaignEvidence<M>,
         value: Mm2Milestones,
         input: &Mm2Input,
     ) {
-        merge_milestones(&mut evidence.aggregate, value);
-        let genesis_screen = evidence.genesis_screen.unwrap_or(0);
-        update_first_inputs(
-            &mut evidence.first_reached,
-            &mut evidence.first_inputs,
-            value,
-            genesis_screen,
-            0,
-            input,
-        );
-        if milestone_key(value) > milestone_key(evidence.champion_milestones) {
-            evidence.champion_milestones = value;
-            evidence.champion_input = input.clone();
-        }
+        evidence.merge_import(self, value, input);
     }
 
     fn merge_action_evidence<F>(
         &self,
-        evidence: &mut Mm2CampaignEvidence,
+        evidence: &mut Mm2CampaignEvidence<M>,
         action: &Mm2CampaignActionResult<M>,
         sequence: u64,
         input: F,
@@ -937,14 +922,13 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for Mm2Game<M> {
     where
         F: FnOnce() -> Result<Mm2Input, Box<dyn Error>>,
     {
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
-        merge_milestones(&mut evidence.aggregate, action.milestones);
         let action_end_frame = action.observations.last().map_or(0, |obs| obs.frame_count);
         let mut discoveries = Vec::new();
         let mut improved = Vec::new();
         for observation in &action.observations {
             discoveries.extend(
                 evidence
+                    .extras
                     .named_progress
                     .observe(observation, sequence, action_end_frame)
                     .into_iter()
@@ -952,38 +936,23 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for Mm2Game<M> {
             );
         }
         if let Some(last) = action.observations.last() {
-            improved = evidence.stock(last);
+            improved = evidence.extras.stock(last);
         }
-        let genesis_screen = evidence.genesis_screen.unwrap_or(0);
-        let first_input_needed = (action.milestones.max_screen > genesis_screen
-            && evidence.first_inputs.first_new_screen.is_none())
-            || (action.milestones.reached_boss && evidence.first_inputs.first_boss.is_none())
-            || (action.milestones.defeated_boss && evidence.first_inputs.first_clear.is_none());
-        let champion = action_champion_key(&action.observations)
-            .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed
-            || champion.is_some()
-            || !discoveries.is_empty()
-            || !improved.is_empty()
-        {
-            let input = input()?;
-            self.publish_inputs(discoveries.into_iter().chain(improved), &input)?;
-            update_first_inputs(
-                &mut evidence.first_reached,
-                &mut evidence.first_inputs,
-                action.milestones,
-                genesis_screen,
-                sequence,
-                &input,
-            );
-            if let Some(key) = champion {
-                evidence.champion_key = Some(key);
-                evidence.champion_milestones = action.milestones;
-                self.publish_champion(&input)?;
-                evidence.champion_input = input;
-            }
-        }
-        Ok(())
+        let extras_need_input = !discoveries.is_empty() || !improved.is_empty();
+        evidence.merge_action(
+            self,
+            action,
+            sequence,
+            extras_need_input,
+            input,
+            |input, champion| {
+                self.publish_inputs(discoveries.into_iter().chain(improved), input)?;
+                if champion {
+                    self.publish_champion(input)?;
+                }
+                Ok(())
+            },
+        )
     }
 
     fn source_entries<'a>(
@@ -1012,40 +981,53 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for Mm2Game<M> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::mm2::progress::FirstSeen;
+
     #[test]
-    fn streamed_evidence_preserves_the_owned_reference_bytes_and_resume_fields() {
-        let mut evidence = Mm2CampaignEvidence::default();
-        evidence.champion_input.actions.push(ButtonChord {
-            buttons: 3,
-            hold_frames: 7,
-        });
-        evidence.best_health.insert("health λ".into(), (3, 5));
-        evidence.best_energy.insert("energy".into(), (9, 11));
-        evidence.genesis_screen = Some(4);
-        let reference = Mm2EvidenceCheckpoint {
-            first_seen: evidence
-                .named_progress
-                .first_seen
-                .clone()
-                .into_iter()
-                .collect(),
-            aggregate: evidence.aggregate,
-            watermark: evidence.watermark,
-            first_reached: evidence.first_reached,
-            first_inputs: evidence.first_inputs.clone(),
-            champion_input: evidence.champion_input.clone(),
-            champion_milestones: evidence.champion_milestones,
-            champion_key: evidence.champion_key,
-            genesis_screen: evidence.genesis_screen,
-            best_health: evidence.best_health.clone().into_iter().collect(),
-            best_energy: evidence.best_energy.clone().into_iter().collect(),
+    fn populated_evidence_survives_a_checkpoint_and_counts_named_progress() {
+        let input = Mm2Input {
+            actions: vec![ButtonChord::new(0x01, 4)],
         };
-        let bytes = Mm2Game::<QuickNesMachine>::evidence_checkpoint(&evidence).unwrap();
-        assert_eq!(bytes, postcard::to_allocvec(&reference).unwrap());
-        let restored = Mm2Game::<QuickNesMachine>::evidence_from_checkpoint(&bytes).unwrap();
-        assert_eq!(
-            Mm2Game::<QuickNesMachine>::evidence_checkpoint(&restored).unwrap(),
-            bytes
+        let milestones = Mm2Milestones {
+            max_screen: 6,
+            reached_boss: true,
+            defeated_boss: false,
+        };
+        let mut evidence = Mm2CampaignEvidence::<QuickNesMachine>::default();
+        evidence.extras.genesis_screen = Some(2);
+        let stamp = Some(FirstSeen {
+            execution: 4,
+            route_action_end_frame: 9,
+        });
+        evidence
+            .extras
+            .named_progress
+            .restore(vec![
+                ("crash_entered".to_owned(), stamp),
+                ("crash_room_7".to_owned(), stamp),
+            ])
+            .expect("restore named progress");
+        evidence.extras.best_health = BTreeMap::from([("crash_entered".to_owned(), (28, 14))]);
+        evidence.extras.best_energy = BTreeMap::from([("crash_entered".to_owned(), (14, 28))]);
+        Mm2Game::<QuickNesMachine>::record_first_reached(
+            &mut evidence.first_reached,
+            &mut evidence.first_inputs,
+            &evidence.extras,
+            milestones,
+            4,
+            &input,
         );
+        evidence.aggregate = milestones;
+        let watermark = Mm2ProgressWatermark {
+            stage: 3,
+            screen: 6,
+            x: 40,
+            ..Mm2ProgressWatermark::default()
+        };
+        evidence.watermark = watermark;
+        evidence.champion_input = input;
+        evidence.champion_milestones = milestones;
+        evidence.champion_key = Some((watermark, (watermark.tier, 28, 300)));
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 3);
     }
 }

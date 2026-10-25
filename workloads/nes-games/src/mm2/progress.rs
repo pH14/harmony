@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use super::target::{
     MM2_FIRST_WILY_STAGE, MM2_STAGE_COUNT, Mm2Observations, Mm2Stage, ROBOT_MASTER_ORDER,
@@ -69,6 +69,28 @@ impl Default for NamedProgress {
                 .map(|name| (name, None))
                 .collect(),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for NamedProgress {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Stored {
+            format: String,
+            first_seen: BTreeMap<String, Option<FirstSeen>>,
+        }
+        let stored = Stored::deserialize(deserializer)?;
+        if stored.format != NAMED_PROGRESS_FORMAT {
+            return Err(D::Error::custom(format!(
+                "named progress format {} is not {NAMED_PROGRESS_FORMAT}",
+                stored.format
+            )));
+        }
+        let mut progress = Self::default();
+        progress
+            .restore(stored.first_seen.into_iter().collect())
+            .map_err(D::Error::custom)?;
+        Ok(progress)
     }
 }
 

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use super::target::MetroidObservations;
 
@@ -100,6 +100,41 @@ impl Default for NamedProgress {
             max_missile_capacity: 0,
             max_energy_tanks: 0,
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for NamedProgress {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Stored {
+            format: String,
+            first_seen: BTreeMap<String, Option<FirstSeen>>,
+            max_missile_capacity: u8,
+            max_energy_tanks: u8,
+        }
+        let stored = Stored::deserialize(deserializer)?;
+        let mut progress = Self::default();
+        if stored.format != progress.format {
+            return Err(D::Error::custom(format!(
+                "named progress format {} is not {}",
+                stored.format, progress.format
+            )));
+        }
+        if stored.first_seen.len() != progress.first_seen.len() {
+            return Err(D::Error::custom(
+                "search checkpoint milestone names differ from this build",
+            ));
+        }
+        for (name, seen) in stored.first_seen {
+            *progress.first_seen.get_mut(name.as_str()).ok_or_else(|| {
+                D::Error::custom(format!(
+                    "search checkpoint names an unknown milestone {name}"
+                ))
+            })? = seen;
+        }
+        progress.max_missile_capacity = stored.max_missile_capacity;
+        progress.max_energy_tanks = stored.max_energy_tanks;
+        Ok(progress)
     }
 }
 
