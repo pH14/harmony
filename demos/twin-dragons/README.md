@@ -9,7 +9,19 @@ parameter picks the game, and the level selector switches between them. The
 page opens the level selector and starts searching once a level is chosen, or
 from the first level if the selector is closed. A `level` URL parameter with a
 level id starts that level's search at once. Each
-game has one map per level. By default, search and rendering run on the
+game has one map per level.
+
+Choosing another game switches in place. `src/host.js` is the page entry. It
+runs `run(scope)` from `src/main.js` with a `Scope` that stands in for `window`,
+`document`, `addEventListener`, timers, animation frames, `matchMedia`, `Worker`
+and `ResizeObserver`, and records each listener, timer, frame, worker and observer
+the game creates. Switching disposes the scope, which releases all of them and
+stops the music, tour and launcher, then pushes the new `?game=` URL and runs
+`main.js` again in a fresh scope. A disposed scope hands inert stubs to code still
+in flight, so it cannot touch the next game's page. The Back button does the same.
+After 12 in-place switches, and for any other origin, the page does a full
+navigation so leaked memory cannot build up. `tests/soft-switch.mjs` checks that
+switching loads no new document and leaves no extra workers or listeners. By default, search and rendering run on the
 visitor's computer, so hosting needs only static files. Native runs move the
 search to a Linux machine while the viewing browser renders and records it.
 

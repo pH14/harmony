@@ -33,6 +33,8 @@ import {
   followExit,
   busierDeeperLevel,
 } from "./world.js";
+export async function run(scope) {
+const { window, document, addEventListener, setTimeout, clearTimeout, requestAnimationFrame, cancelAnimationFrame, matchMedia, Worker, ResizeObserver } = scope;
 const params = new URLSearchParams(location.search);
 const liveView = params.has("live");
 const bundledRoms = new URL("roms/", new URL(import.meta.env.BASE_URL, location.href));
@@ -50,6 +52,7 @@ async function bundledRom(choice) {
 const suppliedRom = requested.rom.upload ? (await loadRom(requested.id)) || (await bundledRom(requested)) : null;
 const missingRom = requested.rom.upload && !suppliedRom ? requested : null;
 const game = missingRom ? GAMES.get("twin-dragons") : requested;
+if (!scope.alive) return;
 const engineInputs = suppliedRom && !missingRom ? { rom: suppliedRom } : {};
 let askedForRom = false;
 const SPRITE = game.sprite;
@@ -57,12 +60,13 @@ const base = new URL(import.meta.env.BASE_URL, location.href),
   assets = new URL(game.assets, base),
   $ = (id) => document.getElementById(id);
 const compactReplay = matchMedia("(max-width: 800px), (pointer: coarse) and (max-width: 1000px) and (max-height: 500px)");
+const catalog = game.catalog || (await (await fetch(new URL("maps.json", assets))).json());
+if (!scope.alive) return;
 document.title = "Harmony Arcade";
 document.documentElement.dataset.game = game.id;
 document.documentElement.classList.toggle("vertical-game", !!game.vertical);
 document.documentElement.classList.toggle("grid-game", !!game.grid);
 document.documentElement.style.setProperty("--screen-ratio", game.screen.width / game.screen.height);
-const catalog = game.catalog || (await (await fetch(new URL("maps.json", assets))).json());
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Arcade</h1><p class="hero-lede">Watch and join Harmony in playing games through multiverse state exploration.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details" open><summary>Details</summary><label class="search-speed"><span>Timelines per second <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
@@ -3585,7 +3589,7 @@ $("new-search").onclick = () => {
     const play = () => {
       const url = new URL(location.href);
       url.searchParams.set("game", choice.id);
-      leaveTo(url);
+      scope.navigate(url);
     };
     button.onclick = () => {
       if (nativeTarget) showNativeLevels(choice);
@@ -3599,7 +3603,7 @@ $("new-search").onclick = () => {
   $("rom-games").replaceChildren(...buttons.filter((_, i) => games[i].rom.upload));
   renderLevels(family);
   const shown = missingRom && [...GAMES.values()].find((choice) => choice === missingRom);
-  if (shown) showRomPanel(shown, () => location.reload());
+  if (shown) showRomPanel(shown, () => scope.navigate(location.href, { replace: true }));
   else showLevelGrid();
   applyTarget();
   if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
@@ -3648,7 +3652,7 @@ function renderLevels(family) {
             const url = new URL(location.href);
             url.searchParams.set("game", member.id);
             url.searchParams.set("level", level.id);
-            leaveTo(url);
+            scope.navigate(url);
           };
       card.onclick = () => (nativeTarget ? showHardware(member, level, card) : open());
       $("level-grid").append(card);
@@ -3871,10 +3875,6 @@ createEngine(base, game, engineInputs)
     if (state) selectState(state, true).catch(fail);
   })
   .catch(fail);
-function leaveTo(url) {
-  document.documentElement.dataset.leaving = "";
-  setTimeout(() => location.assign(url), matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 130);
-}
 const linkedLevel = params.has("level") ? Number(params.get("level")) : null;
 if (catalog.levels.some((level) => level.id === linkedLevel)) startSearch(linkedLevel);
 else if (liveView || tapeUrl) startSearch(catalog.levels[0].id);
@@ -3897,3 +3897,11 @@ detectLauncher()
     if ($("level-picker").open) launcher.activate();
   })
   .catch(() => {});
+scope.onDispose(() => {
+  tour.dispose();
+  music.dispose();
+  launcher?.deactivate();
+  if (recording.state === "recording") recording.stop("The game changed");
+  if (recordingURL) URL.revokeObjectURL(recordingURL);
+});
+}

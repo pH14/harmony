@@ -11,6 +11,12 @@ export class GameAudio {
     this.samples = 0;
     this.muted = false;
   }
+  dispose() {
+    this.stop();
+    this.context?.close();
+    this.context = null;
+    this.gain = null;
+  }
   async unlock() {
     if (!this.Context) return Promise.resolve();
     this.context ||= new this.Context({ sampleRate: 48000 });

@@ -60,9 +60,10 @@ dialog {
 html[data-booting] :is(#app, dialog) {
   opacity: 0;
 }
-html[data-leaving] :is(#app, dialog) {
-  opacity: 0;
-  transition-duration: 0.12s;
+html[data-switching] body,
+html[data-switching] dialog {
+  cursor: progress;
+  pointer-events: none;
 }
 @media (prefers-reduced-motion: reduce) {
   #app,
