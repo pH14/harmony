@@ -4,7 +4,7 @@ A static demonstration of state-space exploration. Emulators compiled to
 WebAssembly run a game, and a Rust worker uses Dissonance to search it. The
 site plays the NES homebrew games Twin Dragons and Famidash on QuickNES, the
 Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and Super Mario Bros., Mega
-Man 2, Metroid, Castlevania, Donkey Kong, Ice Climber, Pac-Man, Joust, Punch-Out!! and The Legend of Zelda on QuickNES from ROMs the visitor supplies. The `game` URL
+Man 2, Metroid, Castlevania, Donkey Kong, Ice Climber and The Legend of Zelda on QuickNES from ROMs the visitor supplies. The `game` URL
 parameter picks the game, and the level selector switches between them. The
 page opens the level selector and starts searching once a level is chosen, or
 from the first level if the selector is closed. A `level` URL parameter with a
@@ -85,7 +85,7 @@ workers import `emulator.js` dynamically and set their message handler first.
 The Famidash module waits for the Rust module when it loads, and a module
 worker drops messages that arrive before its handler is set.
 
-Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Donkey Kong, Ice Climber, Pac-Man, Joust, Punch-Out!! and The Legend of Zelda run the
+Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Donkey Kong, Ice Climber and The Legend of Zelda run the
 same search as their native workloads. `rust/src/campaign.rs` holds `JsMachine`,
 a `machine::Machine`, `NesBackend` and `NesMemory` that drives the browser
 QuickNES core through `globalThis.harmonyCores`, and a coordinator and rollout
@@ -306,7 +306,9 @@ stopped once its start returns. A start that fails also stops its unit.
 
 A machine entry with `local = true` and a `dir`, and no `ssh`, runs the campaign
 on the computer that runs the launcher. The first run builds the core and
-`nes-eval` from the working tree with `cargo` into `<dir>/target`. The launcher
+`nes-eval` from the working tree with `cargo` into `<dir>/target`; a cold release
+build takes minutes, and the run's status line shows the crate being compiled.
+Stopping a run during the build ends `cargo`. The launcher
 starts `nes-eval` as a child process, reads its live port from the log and
 serves that port directly, with no tunnel. It enforces no `memory_max_mib`, and
 quitting the launcher stops its local runs.
@@ -759,6 +761,10 @@ A private build can ship ROMs beside the page. At startup the page reads
 for a listed game that has no stored ROM. The file must match the game's size
 and SHA-256. A listed game skips the ROM page. The public site has no manifest,
 so the request fails and every game asks for its ROM.
+`node tools/bundle-roms.mjs <directory>` fills `public/roms` from the `.nes` and
+`.zip` files in a directory. It writes `roms/<id>.nes` and the manifest for every
+registered game whose file matches the registry's size and SHA-256, and lists
+the games it found no file for. `public/roms/` is git-ignored.
 
 The search is the `SmbGame` workload from `nes-games` with the
 `nes_pressable_36` vocabulary and the game-victory objective, as `nes-eval`
@@ -965,6 +971,8 @@ to the end to see the mountains cleared. `tests/ice-climbers.mjs` checks the boo
 
 ### Pac-Man
 
+The arcade does not list this game. Its browser module, Rust adapter and test stay in the tree; adding it back to `GAMES` in `src/emulator.js` and to `test:browser:games` in `package.json` shows it again.
+
 The site ships nothing from Pac-Man. The level selector accepts the Namco NES
 ROM with SHA-256 `a72c6f56…4d80`. The game has one maze, so every level uses
 the same picture, drawn from the emulator with the sprites hidden and the score
@@ -1000,6 +1008,8 @@ search from the picker. It reads the ROM from `PAC_MAN_ROM` or
 
 ### Joust
 
+The arcade does not list this game. Its browser module, Rust adapter and test stay in the tree; adding it back to `GAMES` in `src/emulator.js` and to `test:browser:games` in `package.json` shows it again.
+
 The site ships nothing from Joust. The level selector accepts the ROM with
 SHA-256 `9c47a479…ee4e`. Joust has no ending, so each of the 49 levels is a wave and wave 50 is the victory bar
 and the cleared count is the number of waves cleared. The search starts from a
@@ -1026,6 +1036,8 @@ search in the page. It reads the ROM from `JOUST_ROM` or
 `~/workspace/roms/Joust (USA).nes` and skips when it is absent.
 
 ### Punch-Out!!
+
+The arcade does not list this game. Its browser module, Rust adapter and test stay in the tree; adding it back to `GAMES` in `src/emulator.js` and to `test:browser:games` in `package.json` shows it again.
 
 The site ships nothing from Punch-Out!!. The level selector accepts the ROM
 with SHA-256 `2f068675…b052`. The circuit has fourteen opponents, from Glass

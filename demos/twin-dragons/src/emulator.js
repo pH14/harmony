@@ -11,14 +11,11 @@ import megaMan2 from "./games/mega-man-2.js";
 import metroid from "./games/metroid.js";
 import donkeyKong from "./games/donkey-kong.js";
 import iceClimbers from "./games/ice-climbers.js";
-import pacMan from "./games/pac-man.js";
-import joust from "./games/joust.js";
-import punchOut from "./games/punch-out.js";
 import zelda from "./games/zelda.js";
 import castlevania from "./games/castlevania.js";
 
 const CORES = { quicknes: loadQuickNES, sameboy: loadSameBoy };
-export const GAMES = new Map([twinDragons, ...FAMIDASH, tobuTobuGirl, superMarioBros, megaMan2, metroid, donkeyKong, iceClimbers, pacMan, joust, punchOut, zelda, castlevania].map((game) => [game.id, game]));
+export const GAMES = new Map([twinDragons, ...FAMIDASH, tobuTobuGirl, superMarioBros, megaMan2, metroid, donkeyKong, iceClimbers, zelda, castlevania].map((game) => [game.id, game]));
 
 export async function sha256Hex(bytes) {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]

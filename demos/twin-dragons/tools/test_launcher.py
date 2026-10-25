@@ -369,6 +369,22 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(scripts[-3:], [launcher.START, launcher.STOP, launcher.STOP])
         self.assertEqual(run.state, "stopped")
 
+    def test_a_cancelled_build_stops_its_compiler(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cancel = threading.Timer(1.5, lambda: stop.append(True))
+            stop: list[bool] = []
+            cancel.start()
+            with self.assertRaises(launcher.Cancelled):
+                launcher.build_logged(["sleep", "30"], Path(directory) / "build.log", cancelled=lambda: bool(stop))
+
+    def test_build_progress_names_the_crate_being_compiled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "build.log"
+            log.write_text("   Compiling serde v1.0\n   Compiling nes-games v0.1.0 (/src)\n")
+            self.assertEqual(launcher.build_progress(log), "Building nes-eval: 2 crates compiled, now nes-games")
+            log.write_text("    Blocking waiting for file lock on build directory\n")
+            self.assertEqual(launcher.build_progress(log), "Waiting for another build on this machine to finish")
+
     def test_site_files_stay_inside_the_site(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
