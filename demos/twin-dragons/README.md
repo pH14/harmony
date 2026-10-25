@@ -594,7 +594,8 @@ map; Zooming in selects a cell, draws its route and lights History; Your turn
 covers Play from here; Hand it back covers branching or discarding the played
 draft; and Search branches spotlights the Searches pane. Next on Your turn
 skips Hand it back until the visitor has played. The tour opens once after the
-opening camera finishes and the search has populated a cell.
+opening camera finishes and the search has populated a cell. When the tour ends
+with History open, the search stays paused until History closes.
 
 Replay and play round the frame count owed to elapsed time, so a 60 Hz display
 steps one game frame per display frame. The map repaints every display frame

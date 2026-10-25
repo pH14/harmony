@@ -79,6 +79,20 @@ try {
   await page.waitForTimeout(400);
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'Pausing the replay leaves the search paused while the history is open');
 
+  for (const fraction of [0.3, 0.8, 0.5]) {
+    const frame = await page.evaluate((fraction) => {
+      const scrub = document.querySelector('#scrub');
+      scrub.value = Math.floor(Number(scrub.max) * fraction);
+      scrub.dispatchEvent(new Event('input', {bubbles: true}));
+      return Number(scrub.value);
+    }, fraction);
+    await page.waitForFunction((frame) => document.querySelector('#frame-label').textContent.startsWith(`FRAME ${frame.toLocaleString()} `), frame, {timeout: 15000});
+    await page.waitForFunction((frame) => {
+      const marked = [...document.querySelectorAll('.area-map')].map((c) => c.dataset.markerFrame).filter(Boolean);
+      return marked.length > 0 && marked.every((value) => Number(value) === frame);
+    }, frame, {timeout: 15000});
+  }
+
   await page.locator('#speed').selectOption('12');
   await page.locator('#play').click();
   await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');

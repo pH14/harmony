@@ -124,7 +124,10 @@ try {
     await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && !document.querySelector('#take-control').disabled, chosen);
     await ready(page, 1);
     assert.equal(await page.locator(`#state-list .state[data-state-id="${chosen}"]`).getAttribute('aria-pressed'), 'true');
-    if (viewport.width < viewport.height) await exposed(page.locator(`#state-list .state[data-state-id="${chosen}"]`), true);
+    if (viewport.width < viewport.height) {
+      const film = await page.locator('#film').boundingBox();
+      assert.ok(film.width >= 64 && film.height >= 64, 'The stacked history video stays visible');
+    }
     await exposed(page.locator('#play'), true);
     await exposed(page.locator('#scrub'), true);
     await exposed(page.locator('#sound'), true);
@@ -232,7 +235,10 @@ try {
       await play(page);
       const playingPaths = await page.locator('#attempts').textContent();
       await page.locator('#tour-skip').tap();
-      await page.waitForFunction((n) => !document.querySelector('#inspector').classList.contains('controlling') && document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search' && Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > Number(n.replaceAll(',','')),playingPaths);
+      await page.waitForFunction(() => !document.querySelector('#inspector').classList.contains('controlling') && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
+      assert.equal(await page.locator('#inspector').isVisible(), true);
+      await page.locator('#close-inspector').tap();
+      await page.waitForFunction((n) => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search' && Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > Number(n.replaceAll(',','')),playingPaths);
     }
     await page.goto('about:blank');
     await page.close();

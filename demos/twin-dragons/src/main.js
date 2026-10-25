@@ -1305,8 +1305,9 @@ function advanceFilm(target, paint = true, renderAt = target) {
     recordTrail();
   if (paint) drawFilm();
 }
+let scrubSeeks = 0;
 function markerPoint() {
-  if (seeking)
+  if (seeking && !scrubSeeks)
     return (
       trailPoint(trace, requestedFrame) ||
       (requestedFrame === current?.frames &&
@@ -2424,7 +2425,7 @@ function drawArea(canvas, now) {
       : routeHover && !preview ? routeHover.frames : preview || $("inspector").hidden
         ? areaOrigin.frame
         : seeking
-          ? requestedFrame
+          ? scrubSeeks ? renderedFrame : requestedFrame
           : currentFrame;
   if (o?.level === mapLevel) {
     ctx.strokeStyle = "#fff5cc";
@@ -2694,7 +2695,12 @@ function resumeAfterScrub() {
 $("scrub").oninput = async () => {
   userSelected = true;
   if (playing) scrubResume = true;
-  await seek(Number($("scrub").value));
+  scrubSeeks++;
+  try {
+    await seek(Number($("scrub").value));
+  } finally {
+    scrubSeeks--;
+  }
   resumeAfterScrub();
 };
 $("scrub").onpointerdown = () => {
@@ -3410,7 +3416,7 @@ const tour = new GuidedTour({
       title: "Zooming in",
       ping: () => (traceReveal ? null : tourCellRect()),
       copy: [
-        "Harmony can zoom in on any single timeline it has explored. You can press Replay to watch how it reached this one particular state.",
+        "Harmony can zoom in on any single timeline it has explored. You can watch how it reached this one particular state.",
       ],
       targets: () => [
         segments.length
@@ -3536,9 +3542,10 @@ const tour = new GuidedTour({
     if (!valid()) return;
     if (index === STEP.one) {
       frameRoute();
-      $("state-list")
-        .querySelector(".selected")
-        ?.scrollIntoView({ block: "nearest", behavior: "instant" });
+      if (!document.body.classList.contains("tour-phone"))
+        $("state-list")
+          .querySelector(".selected")
+          ?.scrollIntoView({ block: "nearest", behavior: "instant" });
     }
     if (index >= STEP.fork && !document.body.classList.contains("tour-phone"))
       $("branches").scrollIntoView({
@@ -3568,9 +3575,14 @@ const tour = new GuidedTour({
         .catch(fail);
     }
     if (ready && !stats.stopped) {
-      paused = false;
-      worker.postMessage({ type: "resume" });
-      updateSearchControl();
+      if ($("inspector").hidden) {
+        paused = false;
+        worker.postMessage({ type: "resume" });
+        updateSearchControl();
+      } else {
+        replayWatching = replayPaused = inspectorHeld = true;
+        setSearchPaused(true);
+      }
     }
     applyCameraMode();
     return restoration;

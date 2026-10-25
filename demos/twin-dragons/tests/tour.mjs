@@ -250,10 +250,14 @@ try {
   await next(page, 4);
   await page.locator("#tour-next").click();
   assert.equal(await page.locator("#guided-tour").isVisible(), false);
+  assert.equal(await page.locator("#inspector").isVisible(), true);
   assert.equal(
     await page.locator("#pause").getAttribute("aria-label"),
-    "Pause Search",
+    "Resume Search",
+    "The search stays held while History is open after the tour",
   );
+  await page.locator("#close-inspector").click();
+  await page.waitForFunction(() => document.querySelector("#pause").getAttribute("aria-label") === "Pause Search");
   assert.equal(
     await page.evaluate((key) => localStorage.getItem(key), TOUR_KEY),
     "seen",
@@ -371,9 +375,11 @@ try {
 
   assert.equal(
     await page.locator("#pause").getAttribute("aria-label"),
-    "Pause Search",
-    "Tour exit must resume even an already-paused search",
+    "Resume Search",
+    "Tour exit holds the search while History is open",
   );
+  await page.locator("#close-inspector").click();
+  await page.waitForFunction(() => document.querySelector("#pause").getAttribute("aria-label") === "Pause Search");
   await page.close();
 
   const phone = await open({
