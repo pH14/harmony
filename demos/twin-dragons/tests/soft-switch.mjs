@@ -70,6 +70,7 @@ try {
     await page.waitForFunction(() => Number(document.querySelector('#attempts').textContent.replaceAll(',', '')) > 0, null, {timeout: 60000});
   }
   assert.deepEqual(loads, [], 'No game switch loads a new page');
+  assert.equal(await page.locator('#guided-tour').count(), 1, 'Each switch removes the previous tour dialog');
   await page.locator('#new-search').click();
   await page.locator('#game-choice .game-row', {hasText: 'Famidash'}).first().click();
   await settled('famidash');

@@ -1379,6 +1379,7 @@ function equal(a, b) {
 }
 const yieldChannel = new MessageChannel(), yieldQueue = [];
 yieldChannel.port1.onmessage = () => yieldQueue.shift()?.();
+scope.onDispose(() => yieldChannel.port1.close());
 function yieldToBrowser() {
   return new Promise((resolve) => {
     yieldQueue.push(resolve);

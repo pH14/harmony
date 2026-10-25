@@ -125,8 +125,12 @@ export class GuidedTour {
     });
   }
   dispose() {
+    cancelAnimationFrame(this.animation);
     document.removeEventListener("focusin", this.onFocusIn);
     document.removeEventListener("keydown", this.onKeyDown, true);
+    this.restoreInteraction();
+    this.clearStage();
+    this.dialog.remove();
   }
   restoreInteraction() {
     for (const [node, inert] of this.disabled || []) node.inert = inert;
