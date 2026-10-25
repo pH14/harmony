@@ -316,20 +316,6 @@ h2 {
 .map-row:last-child {
   border: 0;
 }
-#hover {
-  position: absolute;
-  right: 14px;
-  bottom: 12px;
-  padding: 9px;
-  font:
-    10px ui-monospace,
-    monospace;
-  line-height: 1.5;
-  background: #232629f0;
-  border: 1px solid var(--line);
-  color: var(--text);
-  pointer-events: none;
-}
 .map-footer {
   display: flex;
   justify-content: space-between;
@@ -444,6 +430,9 @@ h2 {
   padding: 8px;
   white-space: nowrap;
 }
+#play {
+  min-width: 78px;
+}
 .transport input {
   flex: 1;
   min-width: 25px;
@@ -471,11 +460,11 @@ h2 {
   margin-top: 14px;
 }
 #take-control {
-  min-height: 48px;
+  min-height: 38px;
   background: var(--play);
   border-color: transparent;
   color: var(--on-play);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
 }
 #take-control:hover:not(:disabled) {
@@ -487,11 +476,11 @@ h2 {
   border-color: transparent;
   font-size: 12px;
   font-weight: 600;
-  min-height: 48px;
+  min-height: 38px;
   padding-inline: 8px;
 }
 #discard-branch {
-  min-height: 48px;
+  min-height: 38px;
   border-color: var(--line);
   font-size: 12px;
   padding-inline: 8px;
@@ -1088,7 +1077,6 @@ dialog h2 {
 .toggles button[data-viz="movement"][aria-pressed="true"]::before { color: var(--accent); }
 .screen { background: #1c1c1c; }
 #frame-label, .screen.updating::after { background: #1c1c1ce6; color: #dcdcdc; }
-#hover { background: var(--surface); }
 @keyframes timeline-in { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: translateX(0); } }
 @media (max-width: 1000px) and (min-width: 801px) { .workspace.inspect-open { grid-template-columns: 160px minmax(0,1fr) 300px; } }
 @media (max-width: 800px) {
@@ -1343,11 +1331,9 @@ dialog h2 {
 @media (max-width: 800px) {
   .transport .replay-actions { grid-column: 1 / -1; min-width: 0; }
   .transport .replay-actions #play { flex: 1; }
-  .transport .replay-actions #sound { flex: 0 0 30px; width: 30px; height: 30px; padding: 5px; }
 }
 .tour-landscape .transport .replay-actions { grid-column: 1 / -1; min-width: 0; }
 .tour-landscape .transport .replay-actions #play { flex: 1; }
-.tour-landscape .transport .replay-actions #sound { flex: 0 0 30px; width: 30px; height: 30px; padding: 5px; }
 
 @media (hover: none) { .state { min-height: 40px; } }
 
@@ -1492,3 +1478,8 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
 .recording-controls { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 8px; }
 #record-view[aria-pressed="true"] { color: #ff6c77; }
 #recording-status { font-size: 12px; }
+
+.follow-camera { position: absolute; right: 14px; bottom: 12px; z-index: 3; display: flex; align-items: center; gap: 6px; padding: 6px 11px; border: 1px solid #ffffff2e; border-radius: 999px; background: #10161dcc; color: #fff; font-size: 11px; font-weight: 500; opacity: 0; pointer-events: none; transition: opacity .3s ease; backdrop-filter: blur(4px); }
+.follow-camera svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.map-wrap[data-away="true"] .follow-camera { opacity: .6; pointer-events: auto; }
+.map-wrap[data-away="true"] .follow-camera:hover, .follow-camera:focus-visible { opacity: 1; }

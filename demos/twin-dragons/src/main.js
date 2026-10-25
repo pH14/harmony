@@ -68,7 +68,7 @@ document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Arcade</h1><p class="hero-lede">Watch and join Harmony in playing games through multiverse state exploration.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details" open><summary>Details</summary><label class="search-speed"><span>Timelines per second <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
 <div class="goal"><div class="level-nav"><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><nav id="level-strip" class="level-strip" aria-label="Levels in this search" data-key=""><button id="level-more" class="level-more" aria-controls="level-trail" aria-expanded="false" hidden></button><div id="level-trail" class="level-trail"></div></nav><span id="goal-status" hidden></span></div><div class="view-tools"><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
 <div class="recording-controls" role="group" aria-label="Record exploration"><button id="record-to-file" hidden>Record to file</button><button id="record-view" aria-pressed="false">Record clip</button><a id="download-recording" hidden>Download video</a></div>
-<div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys pan; Enter inspects the cell under the pointer or at the center."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="hover" hidden></div></div>
+<div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys pan; Enter inspects the cell under the pointer or at the center."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><button id="follow-camera" class="follow-camera" type="button" tabindex="-1" aria-label="Follow the search again" title="Follow the search again"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/></svg>Follow</button></div>
 <div class="map-footer"><span id="memory-limit" hidden></span><span id="recording-status" role="status" aria-live="polite"></span></div>
 ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 </section>
@@ -377,7 +377,6 @@ function setVisualization(mode, draw = true) {
   visualization = mode;
   $("visualization").dataset.value = mode;
   for (const button of $("visualization").children) button.setAttribute("aria-pressed", mode === "both" || button.dataset.viz === mode);
-  $("hover").hidden = true;
   if (draw) drawMap(performance.now());
 }
 for (const button of $("visualization").children) button.onclick = () => {
@@ -834,7 +833,9 @@ function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null)
 function updateCamera(now) {
   const dt = Math.min(0.1, camera.last ? (now - camera.last) / 1000 : 0);
   camera.last = now;
-  document.querySelector(".map-wrap").dataset.camera = camera.focus ? "focus" : camera.follow ? "follow" : "idle";
+  const wrap = document.querySelector(".map-wrap");
+  wrap.dataset.camera = camera.focus ? "focus" : camera.follow ? "follow" : "idle";
+  wrap.dataset.away = !camera.focus && !paused && (!camera.follow || camera.manual > now);
   resetRetreat(camera, mapLevel);
   if (!ready || branchPreview || camera.focus || !camera.follow || paused || camera.held > now || camera.manual > now) resetRetreat(camera);
   if (!ready || branchPreview) return;
@@ -2220,13 +2221,19 @@ function panEdge(c, dir, axis = "x") {
   const mine = () => holdingPan(c, dir, axis);
   const start = () => holdPan(c, dir, axis);
   const end = () => releasePan(c, dir, axis);
-  edge.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && mine()) panHold = null; });
+  edge.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") camera.held = performance.now() + 3000; });
+  edge.addEventListener("pointerleave", (e) => {
+    if (e.pointerType !== "mouse") return;
+    camera.held = Math.min(camera.held, performance.now() + 600);
+    if (mine()) panHold = null;
+  });
   edge.addEventListener("pointerdown", (e) => { e.preventDefault(); if (e.pointerType !== "mouse") start(); });
   edge.addEventListener("pointerup", (e) => { if (e.pointerType !== "mouse") end(); });
   edge.addEventListener("pointercancel", () => { if (panHold?.canvas === c) panHold = null; });
   const forward = (type, e) => c.dispatchEvent(new PointerEvent(type, { clientX: e.clientX, clientY: e.clientY, pointerType: "mouse", bubbles: true }));
   edge.addEventListener("pointermove", (e) => {
     if (e.pointerType !== "mouse") return;
+    if (e.movementX || e.movementY) camera.held = performance.now() + 3000;
     if (!mine() && (e.movementX || e.movementY)) start();
     forward("pointermove", e);
   });
@@ -2438,12 +2445,6 @@ function bindMap(c) {
     const delta = wheelDelta(e, size);
     if (delta && scrollAlong(Number(c.dataset.map), c, (delta * (game.vertical ? c.height : c.width)) / size)) e.preventDefault();
   }, { passive: false });
-  c.addEventListener("pointermove", (e) => {
-    if (e.pointerType === "mouse" && (e.movementX || e.movementY)) camera.held = performance.now() + 3000;
-  });
-  c.addEventListener("pointerleave", (e) => {
-    if (e.pointerType === "mouse") camera.held = Math.min(camera.held, performance.now() + 600);
-  });
   c.addEventListener("pointerdown", (e) => {
     if (e.pointerType !== "mouse") camera.held = performance.now() + 2500;
   });
@@ -2464,7 +2465,6 @@ function bindMap(c) {
     dragged = true;
     pointerStart = null;
     hoverCell = null;
-    $("hover").hidden = true;
     moveCameraByHand();
   }, { passive: false });
   c.addEventListener("touchmove", (event) => {
@@ -2541,16 +2541,12 @@ function bindMap(c) {
       cell = heat.cells.get(`${point.level}:${point.x}:${point.y}`);
     hoverCell = cell?.ids.length ? point : null;
     c.style.cursor = hoverCell ? "pointer" : "default";
-    $("hover").hidden = !cell?.visits && !cell?.ids.length;
-    $("hover").textContent =
-      `${cell?.visits || 0} visits · ${cell?.ids.length || 0} states`;
   });
   c.addEventListener("pointerleave", (e) => {
     if (c.hasPointerCapture(e.pointerId)) return;
     pointerStart = null;
     hoverCell = null;
     c.style.cursor = "default";
-    $("hover").hidden = true;
   });
   c.addEventListener("click", (e) => {
     if (branchBusy) return;
@@ -2716,11 +2712,6 @@ compactReplay.addEventListener("change", () => {
   if (tour.open && tour.ready) tour.setInteraction(tour.steps[tour.index].interactive?.() || []);
 });
 function updateBranchControls() {
-  const soundParent = document.querySelector(!controlMode ? ".replay-actions" : ".history-controls");
-  if ($("sound").parentElement !== soundParent) {
-    if (soundParent.classList.contains("history-controls")) soundParent.prepend($("sound"));
-    else soundParent.append($("sound"));
-  }
   $("new-search").disabled = !ready || !engine || branchBusy || controlMode;
   renderLevelStrip();
   if (missingRom && !askedForRom && !$("new-search").disabled) {
@@ -3636,6 +3627,9 @@ function renderLevels(family) {
     }
   }
 }
+$("follow-camera").onclick = () => {
+  applyCameraMode();
+};
 $("close-level-picker").onclick = () => $("level-picker").close();
 $("picker-back").onclick = () => ($("picker-body").dataset.view = "games");
 $("runs-open").onclick = () => showRuns();
