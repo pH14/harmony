@@ -22,7 +22,8 @@ export class ViewRecording {
     try {
       this.stream = canvas.captureStream(0);
       this.track = this.stream.getVideoTracks()[0];
-      if (!this.track?.requestFrame) throw new Error("Display-paced video recording is unavailable in this browser.");
+      this.requester = this.track?.requestFrame ? this.track : this.stream.requestFrame ? this.stream : null;
+      if (!this.requester) throw new Error("Display-paced video recording is unavailable in this browser.");
       this.recorder = new this.Recorder(this.stream, { mimeType: this.mimeType, videoBitsPerSecond: 20_000_000 });
       this.recorder.ondataavailable = ({ data }) => {
         if (this.state === "idle" || !data.size) return;
@@ -46,7 +47,7 @@ export class ViewRecording {
   frame() {
     if (this.state !== "recording" || this.backpressured || this.recorder.state !== "recording") return false;
     try {
-      this.track.requestFrame();
+      this.requester.requestFrame();
       return true;
     } catch (error) { this.fail(error); return false; }
   }
@@ -122,7 +123,7 @@ export class ViewRecording {
     if (writable) {
       try { Promise.resolve(writable.abort()).catch(() => {}); } catch { /* Preserve the original capture error. */ }
     }
-    this.recorder = this.stream = this.track = null;
+    this.recorder = this.stream = this.track = this.requester = null;
     this.chunks = [];
     this.backpressured = false;
     this.pendingBytes = 0;
