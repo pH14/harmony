@@ -118,12 +118,11 @@ let scope = null;
 let softSwitches = 0;
 const root = document.documentElement;
 
-async function boot() {
-  scope = new Scope(navigate);
+async function boot(own) {
   try {
-    await run(scope);
+    await run(own);
   } catch (error) {
-    if (scope.alive) throw error;
+    if (own.alive) throw error;
   }
 }
 
@@ -133,7 +132,14 @@ function reboot(url, label = "") {
   root.dataset.switched = "";
   scope?.dispose();
   if (url) history.pushState(null, "", url);
-  boot().catch(() => location.reload()).finally(() => delete root.dataset.switching);
+  const own = (scope = new Scope(navigate));
+  boot(own)
+    .catch(() => {
+      if (scope === own) location.reload();
+    })
+    .finally(() => {
+      if (scope === own) delete root.dataset.switching;
+    });
 }
 
 function navigate(target, { replace = false, label = "" } = {}) {
@@ -148,4 +154,4 @@ function navigate(target, { replace = false, label = "" } = {}) {
 }
 
 addEventListener("popstate", () => reboot(null));
-boot();
+boot((scope = new Scope(navigate)));

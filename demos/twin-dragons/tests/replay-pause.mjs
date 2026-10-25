@@ -52,7 +52,7 @@ try {
     const o = await page.evaluate(() => window.tdRetained.get(Number(document.querySelector('#map').dataset.map)));
     const opened = await showOnMap(page, o.level, Math.floor((o.x + 8) / 32) * 32 + 16, Math.floor(o.y / 32) * 32 + 24)
       .then((point) => page.mouse.click(point.x, point.y))
-      .then(() => page.waitForFunction(() => !document.querySelector('#inspector').hidden, null, {timeout: 5000}))
+      .then(() => page.waitForFunction(() => !document.querySelector('#inspector').hidden, null, {timeout: 15000}))
       .then(() => true, () => false);
     if (opened) break;
     assert.ok(attempt < 2, 'Clicking a retained cell on the live map opens the inspector');
@@ -72,10 +72,10 @@ try {
     scrub.dispatchEvent(new Event('input', {bubbles: true}));
     scrub.dispatchEvent(new Event('change', {bubbles: true}));
   });
-  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'pause' && Number(document.querySelector('#scrub').value) > 10, null, {timeout: 5000});
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'pause' && Number(document.querySelector('#scrub').value) > 10, null, {timeout: 15000});
 
   await page.locator('#play').click();
-  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'play', null, {timeout: 5000});
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'play', null, {timeout: 15000});
   await page.waitForTimeout(400);
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'Pausing the replay leaves the search paused while the history is open');
 

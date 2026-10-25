@@ -7,7 +7,7 @@ const engine = process.env.BROWSER_ENGINE === 'firefox' ? firefox : chromium;
 const browser = await engine.launch({headless: true, ...(engine === chromium && process.env.CHROME_CHANNEL ? {channel: process.env.CHROME_CHANNEL} : {})});
 const url = (process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '');
 const errors = [];
-const SWITCHES = [['famidash', 'Famidash'], ['super-mario-bros', 'Super Mario Bros.'], ['donkey-kong', 'Donkey Kong'], ['zelda', 'The Legend of Zelda'], ['twin-dragons', 'Twin Dragons']];
+const SWITCHES = [['famidash', 'Famidash'], ['tobu-tobu-girl', 'Tobu Tobu Girl'], ['famidash', 'Famidash'], ['tobu-tobu-girl', 'Tobu Tobu Girl'], ['twin-dragons', 'Twin Dragons']];
 
 try {
   const page = await browser.newPage({viewport: {width: 1440, height: 1000}});

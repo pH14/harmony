@@ -244,8 +244,16 @@ impl<M: NesBackend<Vec<u8>>> PunchOutTarget<M> {
             .map_err(|error| error.to_string())?;
         let wram = read_wram(&self.machine).map_err(|error| error.to_string())?;
         let decoded = decode_state(&wram).map_err(|error| error.to_string())?;
-        self.failed = false;
+        let next = self.machine.snapshot().map_err(|error| error.to_string())?;
+        if self.current != self.genesis {
+            self.machine
+                .drop_snapshot(self.current)
+                .map_err(|error| error.to_string())?;
+        }
+        self.current = next;
         self.current_wram = wram;
+        self.failed = false;
+        self.snapshot_base = None;
         self.observation = Self::make_observation(frame_count, decoded);
         self.action_observations = vec![self.observation.clone()];
         self.snapshot()

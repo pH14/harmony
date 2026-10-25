@@ -2740,6 +2740,8 @@ function closeInspector({ restoreFocus = true } = {}) {
   stopControl();
   music.stop();
   playing = false;
+  scrubResume = false;
+  scrubbing = false;
   setPlayState("play");
   $("inspector").hidden = true;
   $("workspace").classList.remove("inspect-open");
@@ -3261,7 +3263,7 @@ function animate(now) {
     for (let i = 0; i < frames; i++) {
       if (
         currentFrame >= 200000 ||
-        !appendInput(current.actions, controller.buttons(), 1, game.maxActionFrames)
+        !appendInput(current.actions, controller.buttons(), 1, Math.min(120, game.maxActionFrames))
       ) {
         stopControl();
         $("branch-message").hidden = false;
@@ -3588,8 +3590,9 @@ $("tour-open").onclick = beginTour;
 function familyOf(choice) {
   return choice.family ? [...GAMES.values()].filter((member) => member.family === choice.family) : [choice];
 }
+const storedRoms = new Set();
 function needsRom(choice) {
-  return choice.rom.upload && !bundled.has(choice.id) && (choice !== requested || !!missingRom);
+  return choice.rom.upload && !bundled.has(choice.id) && !storedRoms.has(choice.id) && (choice !== requested || !!missingRom);
 }
 function gameMeta(choice) {
   if (needsRom(choice)) return "Needs ROM";
@@ -3602,6 +3605,13 @@ $("new-search").onclick = () => {
   const games = [...GAMES.values()].filter((choice) => !choice.family || choice.id === choice.family),
     family = familyOf(game);
   pickerGames = [];
+  for (const choice of games)
+    if (choice.rom.upload && !bundled.has(choice.id) && !storedRoms.has(choice.id))
+      load(choice.id).then((stored) => {
+        if (!stored || !scope.alive) return;
+        storedRoms.add(choice.id);
+        for (const entry of pickerGames) if (entry.choice === choice) entry.button.dataset.meta = gameMeta(choice);
+      });
   const buttons = games.map((choice) => {
     const button = document.createElement("button");
     button.className = "game-row";
@@ -3921,6 +3931,7 @@ detectLauncher()
   })
   .catch(() => {});
 scope.onDispose(() => {
+  worker?.terminate();
   tour.dispose();
   music.dispose();
   launcher?.deactivate();
