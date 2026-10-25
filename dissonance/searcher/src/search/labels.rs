@@ -5,6 +5,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
+    ops::Bound,
 };
 
 use super::{
@@ -22,7 +23,9 @@ pub const RELAXATION_QUEUE_SHARE: usize = 64;
 
 const UNRELIABLE_IN: u32 = 4;
 
-pub type Route<K> = (Slot<K>, Vec<(Position<K>, Position<K>)>);
+pub type Hop<K> = (Position<K>, Position<K>);
+
+pub type Route<K> = (Slot<K>, Vec<Hop<K>>);
 
 #[must_use]
 pub fn slot_position<K: ArchiveKey>(slot: Slot<K>) -> Position<K> {
@@ -100,7 +103,23 @@ pub struct LabelAccounting {
     pub relaxations: u64,
     pub examinations: u64,
     pub changed: u64,
-    pub dominating: usize,
+    pub realized: u64,
+    pub hops_attempted: u64,
+    pub hops_landed: u64,
+    pub arrived: u64,
+    pub replaced: u64,
+    pub useful: u64,
+    pub execution_work: u64,
+}
+
+type Cursor<K> = (Position<K>, Option<Slot<K>>);
+
+#[derive(Deserialize, Serialize)]
+#[serde(bound(serialize = "K: Serialize", deserialize = "K: DeserializeOwned"))]
+struct Recomputation<K: ArchiveKey> {
+    target: Slot<K>,
+    after: Option<Cursor<K>>,
+    best: Vec<Option<LabelEntry<K>>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -119,6 +138,10 @@ pub struct LabelGraph<A, K: ArchiveKey> {
     queue: BTreeSet<(u8, u64, Slot<K>)>,
     queued: BTreeMap<Slot<K>, (u8, u64)>,
     stale: BTreeSet<Slot<K>>,
+    forget: BTreeSet<Slot<K>>,
+    forgetting: Option<(Slot<K>, Cursor<K>)>,
+    recomputing: Option<Recomputation<K>>,
+    scanning: Option<(Slot<K>, Position<K>)>,
     edge_actions: usize,
     relaxations: u64,
     examinations: u64,
@@ -139,11 +162,40 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
             queue: BTreeSet::new(),
             queued: BTreeMap::new(),
             stale: BTreeSet::new(),
+            forget: BTreeSet::new(),
+            forgetting: None,
+            recomputing: None,
+            scanning: None,
             edge_actions: 0,
             relaxations: 0,
             examinations: 0,
             changed: 0,
         }
+    }
+
+    #[must_use]
+    pub fn longest_edge(&self) -> usize {
+        self.longest_edge
+    }
+
+    pub fn reset_labels(&mut self) {
+        self.labels.clear();
+        self.labelled.clear();
+        self.queue.clear();
+        self.queued.clear();
+        self.forget.clear();
+        self.forgetting = None;
+        self.recomputing = None;
+        self.scanning = None;
+        self.stale = self
+            .occupied
+            .iter()
+            .flat_map(|(position, tiers)| {
+                tiers
+                    .iter()
+                    .map(move |tier| ((*tier, position.0), position.1))
+            })
+            .collect();
     }
 
     pub fn set_longest_edge(&mut self, longest_edge: usize) {
@@ -193,6 +245,10 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
                 1,
                 self.queued.len(),
             ))
+            .saturating_add(heap::btree_bytes::<Slot<K>, ()>(
+                1,
+                self.stale.len() + self.forget.len(),
+            ))
     }
 
     #[must_use]
@@ -207,7 +263,12 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
 
     #[must_use]
     pub fn queue_len(&self) -> usize {
-        self.queue.len() + self.stale.len()
+        self.queue.len()
+            + self.stale.len()
+            + self.forget.len()
+            + usize::from(self.forgetting.is_some())
+            + usize::from(self.recomputing.is_some())
+            + usize::from(self.scanning.is_some())
     }
 
     #[must_use]
@@ -220,11 +281,11 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
         LabelAccounting {
             edges: self.edges.len(),
             labels: self.labels.len(),
-            queued: self.queue.len() + self.stale.len(),
+            queued: self.queue_len(),
             relaxations: self.relaxations,
             examinations: self.examinations,
             changed: self.changed,
-            dominating: 0,
+            ..LabelAccounting::default()
         }
     }
 
@@ -287,6 +348,7 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
                 held.leaf_key = to_key;
                 held.cost = cost;
                 held.actions = actions.to_vec();
+                self.edge_weakened(from, to);
             }
             None => {
                 self.edge_actions = self.edge_actions.saturating_add(actions.len());
@@ -331,18 +393,23 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
                 self.occupied.remove(&position);
             }
         }
-        self.stale_exits(position);
+        self.forget.insert(slot);
+        self.stale.insert(slot);
     }
 
-    fn stale_exits(&mut self, position: Position<K>) {
-        let exits: Vec<Position<K>> = self
-            .exits
-            .get(&position)
-            .map(|to| to.iter().copied().collect())
-            .unwrap_or_default();
-        for to in exits {
-            let targets: Vec<Slot<K>> = self.slots_at(to).collect();
-            self.stale.extend(targets);
+    pub fn holder_demoted(&mut self, key: K) {
+        let slot = slot_of_key(key);
+        self.forget.insert(slot);
+        self.stale.insert(slot);
+    }
+
+    fn edge_weakened(&mut self, from: Position<K>, to: Position<K>) {
+        let targets: Vec<Slot<K>> = self.slots_at(to).collect();
+        for target in targets {
+            if self.clear_entries(target, |parent| slot_position::<K>(parent) == from) {
+                self.forget.insert(target);
+            }
+            self.stale.insert(target);
         }
     }
 
@@ -353,9 +420,11 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
         edge.attempted = edge.attempted.saturating_add(1);
         if landed {
             edge.landed = edge.landed.saturating_add(1);
+            let targets: Vec<Slot<K>> = self.slots_at(to).collect();
+            self.stale.extend(targets);
+        } else {
+            self.edge_weakened(from, to);
         }
-        let targets: Vec<Slot<K>> = self.slots_at(to).collect();
-        self.stale.extend(targets);
     }
 
     fn slots_at(&self, position: Position<K>) -> impl Iterator<Item = Slot<K>> + '_ {
@@ -439,52 +508,58 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
     fn recompute(
         &mut self,
         target: Slot<K>,
+        after: Option<Cursor<K>>,
+        mut best: Vec<Option<LabelEntry<K>>>,
+        remaining: usize,
         best_holder: &dyn Fn(Slot<K>, usize) -> Option<K>,
         raisable: &dyn Fn(Slot<K>) -> bool,
     ) -> usize {
         let position = slot_position::<K>(target);
-        let preferences = label_preferences::<K>();
-        let mut best: Vec<Option<LabelEntry<K>>> = vec![None; preferences];
-        let mut examined = 0_usize;
-        let entrances: Vec<Position<K>> = self
-            .entrances
-            .get(&position)
-            .map(|from| from.iter().copied().collect())
-            .unwrap_or_default();
-        for from in entrances {
+        let (work, more) =
+            self.work_after(self.entrances.get(&position), after, remaining, |from| {
+                self.edges
+                    .get(&(from, position))
+                    .is_some_and(LabelEdge::carries)
+            });
+        let charged = work.len();
+        let last = work.last().copied();
+        for (from, source) in work {
+            let Some(source) = source else {
+                continue;
+            };
             let Some(edge) = self.edges.get(&(from, position)) else {
                 continue;
             };
-            if !edge.carries() {
+            if Self::target_progress((source.0).0, edge) != (target.0).0 || source == target {
                 continue;
             }
-            let sources: Vec<Slot<K>> = self.slots_at(from).collect();
-            for source in sources {
-                if Self::target_progress((source.0).0, edge) != (target.0).0 || source == target {
+            self.examinations = self.examinations.saturating_add(1);
+            for (preference, best) in best.iter_mut().enumerate() {
+                let Some((source_key, source_cost)) = self.source(source, preference, best_holder)
+                else {
+                    continue;
+                };
+                if source_key.preference_cmp(preference, edge.donor_key) == Ordering::Less {
                     continue;
                 }
-                examined = examined.saturating_add(1);
-                for (preference, best) in best.iter_mut().enumerate() {
-                    let Some((source_key, source_cost)) =
-                        self.source(source, preference, best_holder)
-                    else {
-                        continue;
-                    };
-                    if source_key.preference_cmp(preference, edge.donor_key) == Ordering::Less {
-                        continue;
-                    }
-                    let candidate = LabelEntry {
-                        key: source_key.carry(edge.donor_key, edge.leaf_key, edge.weight()),
-                        parent: source,
-                        cost: source_cost.saturating_add(edge.cost),
-                    };
-                    if Self::better(preference, &candidate, best.as_ref()) {
-                        *best = Some(candidate);
-                    }
+                let candidate = LabelEntry {
+                    key: source_key.carry(edge.donor_key, edge.leaf_key, edge.weight()),
+                    parent: source,
+                    cost: source_cost.saturating_add(edge.cost),
+                };
+                if Self::better(preference, &candidate, best.as_ref()) {
+                    *best = Some(candidate);
                 }
             }
         }
-        self.examinations = self.examinations.saturating_add(examined as u64);
+        if more && let Some(last) = last {
+            self.recomputing = Some(Recomputation {
+                target,
+                after: Some(last),
+                best,
+            });
+            return charged;
+        }
         for (preference, best) in best.iter_mut().enumerate() {
             if let (Some(candidate), Some(holder)) =
                 (best.as_ref(), best_holder(target, preference))
@@ -494,7 +569,7 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
             }
         }
         self.apply(target, best, raisable);
-        examined
+        charged.max(1)
     }
 
     fn apply(
@@ -567,7 +642,7 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
                 .insert((target.0).0);
         }
         if lowered {
-            self.stale_exits(position);
+            self.forget.insert(target);
         }
         self.push(target, changed_preference, cost);
         true
@@ -579,19 +654,19 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
         to: Position<K>,
         best_holder: &dyn Fn(Slot<K>, usize) -> Option<K>,
         raisable: &dyn Fn(Slot<K>) -> bool,
-    ) -> usize {
+    ) {
         let position = slot_position::<K>(source);
         let Some(edge) = self.edges.get(&(position, to)) else {
-            return 0;
+            return;
         };
         if !edge.carries() {
-            return 0;
+            return;
         }
         let (donor_key, leaf_key, weight, edge_cost) =
             (edge.donor_key, edge.leaf_key, edge.weight(), edge.cost);
         let target = ((Self::target_progress((source.0).0, edge), to.0), to.1);
         if target == source {
-            return 0;
+            return;
         }
         let preferences = label_preferences::<K>();
         let mut best: Vec<Option<LabelEntry<K>>> = self
@@ -622,7 +697,6 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
         }
         self.examinations = self.examinations.saturating_add(1);
         self.apply(target, best, raisable);
-        1
     }
 
     pub fn relax(
@@ -633,26 +707,189 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
     ) -> usize {
         let mut examined = 0_usize;
         while examined < budget {
-            if let Some(target) = self.stale.pop_first() {
+            let remaining = budget - examined;
+            let forgetting = match self.forgetting.take() {
+                Some((slot, cursor)) => Some((slot, Some(cursor))),
+                None => self.forget.pop_first().map(|slot| (slot, None)),
+            };
+            if let Some((slot, after)) = forgetting {
+                if let Some(recomputation) = self.recomputing.take() {
+                    self.stale.insert(recomputation.target);
+                }
                 self.relaxations = self.relaxations.saturating_add(1);
-                examined = examined.saturating_add(self.recompute(target, best_holder, raisable));
+                examined = examined.saturating_add(self.forget_exits(slot, after, remaining));
                 continue;
             }
-            let Some(slot) = self.pop() else {
-                break;
+            let recomputation = match self.recomputing.take() {
+                Some(recomputation) => Some(recomputation),
+                None => self.stale.pop_first().map(|target| Recomputation {
+                    target,
+                    after: None,
+                    best: vec![None; label_preferences::<K>()],
+                }),
             };
-            self.relaxations = self.relaxations.saturating_add(1);
-            let position = slot_position::<K>(slot);
-            let exits: Vec<Position<K>> = self
-                .exits
-                .get(&position)
-                .map(|to| to.iter().copied().collect())
-                .unwrap_or_default();
-            for to in exits {
-                examined = examined.saturating_add(self.improve(slot, to, best_holder, raisable));
+            if let Some(Recomputation {
+                target,
+                after,
+                best,
+            }) = recomputation
+            {
+                self.relaxations = self.relaxations.saturating_add(1);
+                examined = examined.saturating_add(self.recompute(
+                    target,
+                    after,
+                    best,
+                    remaining,
+                    best_holder,
+                    raisable,
+                ));
+                continue;
+            }
+            let (slot, after) = match self.scanning.take() {
+                Some((slot, last)) => (slot, Some(last)),
+                None => {
+                    let Some(slot) = self.pop() else {
+                        break;
+                    };
+                    self.relaxations = self.relaxations.saturating_add(1);
+                    (slot, None)
+                }
+            };
+            let exits = self.exits_after(slot_position::<K>(slot), after, remaining);
+            if exits.is_empty() {
+                examined = examined.saturating_add(1);
+            }
+            if exits.len() > remaining {
+                self.scanning = Some((slot, exits[remaining - 1]));
+            }
+            for to in exits.into_iter().take(remaining) {
+                self.improve(slot, to, best_holder, raisable);
+                examined = examined.saturating_add(1);
             }
         }
         examined
+    }
+
+    fn exits_after(
+        &self,
+        position: Position<K>,
+        after: Option<Position<K>>,
+        remaining: usize,
+    ) -> Vec<Position<K>> {
+        self.exits
+            .get(&position)
+            .map(|to| {
+                let lower = after.map_or(Bound::Unbounded, Bound::Excluded);
+                to.range((lower, Bound::Unbounded))
+                    .take(remaining.saturating_add(1))
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn forget_exits(&mut self, slot: Slot<K>, after: Option<Cursor<K>>, remaining: usize) -> usize {
+        let (work, more) = self.work_after(
+            self.exits.get(&slot_position::<K>(slot)),
+            after,
+            remaining,
+            |_| true,
+        );
+        if more && let Some(last) = work.last().copied() {
+            self.forgetting = Some((slot, last));
+        }
+        let charged = work.len().max(1);
+        for (_, target) in work {
+            let Some(target) = target else {
+                continue;
+            };
+            if self.clear_entries(target, |parent| parent == slot) {
+                self.forget.insert(target);
+            }
+            self.stale.insert(target);
+        }
+        charged
+    }
+
+    fn slots_after(
+        &self,
+        position: Position<K>,
+        after: Option<K::Progress>,
+    ) -> impl Iterator<Item = Slot<K>> + '_ {
+        let lower = after.map_or(Bound::Unbounded, Bound::Excluded);
+        let mut occupied = self
+            .occupied
+            .get(&position)
+            .into_iter()
+            .flat_map(move |tiers| tiers.range((lower, Bound::Unbounded)))
+            .copied()
+            .peekable();
+        let mut labelled = self
+            .labelled
+            .get(&position)
+            .into_iter()
+            .flat_map(move |tiers| tiers.range((lower, Bound::Unbounded)))
+            .copied()
+            .peekable();
+        std::iter::from_fn(move || {
+            let tier = match (occupied.peek().copied(), labelled.peek().copied()) {
+                (Some(left), Some(right)) => match left.cmp(&right) {
+                    Ordering::Less => occupied.next(),
+                    Ordering::Greater => labelled.next(),
+                    Ordering::Equal => {
+                        labelled.next();
+                        occupied.next()
+                    }
+                },
+                (Some(_), None) => occupied.next(),
+                (None, Some(_)) => labelled.next(),
+                (None, None) => None,
+            }?;
+            Some(((tier, position.0), position.1))
+        })
+    }
+
+    fn work_after(
+        &self,
+        neighbours: Option<&BTreeSet<Position<K>>>,
+        after: Option<Cursor<K>>,
+        remaining: usize,
+        expand: impl Fn(Position<K>) -> bool,
+    ) -> (Vec<Cursor<K>>, bool) {
+        let mut work = Vec::new();
+        let Some(neighbours) = neighbours else {
+            return (work, false);
+        };
+        let lower = match after {
+            None => Bound::Unbounded,
+            Some((position, None)) => Bound::Excluded(position),
+            Some((position, Some(_))) => Bound::Included(position),
+        };
+        for neighbour in neighbours.range((lower, Bound::Unbounded)).copied() {
+            let resumed = after
+                .and_then(|(position, slot)| (position == neighbour).then_some(slot).flatten());
+            if expand(neighbour) {
+                let mut found = false;
+                for slot in self.slots_after(neighbour, resumed.map(|slot| (slot.0).0)) {
+                    if work.len() == remaining {
+                        return (work, true);
+                    }
+                    work.push((neighbour, Some(slot)));
+                    found = true;
+                }
+                if found {
+                    continue;
+                }
+            }
+            if resumed.is_some() {
+                continue;
+            }
+            if work.len() == remaining {
+                return (work, true);
+            }
+            work.push((neighbour, None));
+        }
+        (work, false)
     }
 
     pub fn relax_fully(
@@ -661,7 +898,7 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
         raisable: &dyn Fn(Slot<K>) -> bool,
     ) -> usize {
         let mut examined = 0_usize;
-        while !self.queue.is_empty() || !self.stale.is_empty() {
+        while self.queue_len() > 0 {
             examined = examined.saturating_add(self.relax(usize::MAX, best_holder, raisable));
         }
         examined
@@ -749,7 +986,9 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
             }
             let targets: Vec<Slot<K>> = self.slots_at(to).collect();
             for slot in targets {
-                self.forget_parent(slot, position);
+                if self.clear_entries(slot, |parent| slot_position::<K>(parent) == position) {
+                    self.forget.insert(slot);
+                }
                 self.stale.insert(slot);
             }
         }
@@ -762,30 +1001,52 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
                 }
             }
         }
+        if self
+            .scanning
+            .is_some_and(|(slot, _)| slot_position::<K>(slot) == position)
+        {
+            self.scanning = None;
+        }
+        if self
+            .forgetting
+            .is_some_and(|(slot, _)| slot_position::<K>(slot) == position)
+        {
+            self.forgetting = None;
+        }
+        if self
+            .recomputing
+            .as_ref()
+            .is_some_and(|recomputation| slot_position::<K>(recomputation.target) == position)
+        {
+            self.recomputing = None;
+        }
         let slots: Vec<Slot<K>> = self.slots_at(position).collect();
         self.occupied.remove(&position);
         self.labelled.remove(&position);
         for slot in slots {
             self.labels.remove(&slot);
             self.stale.remove(&slot);
+            self.forget.remove(&slot);
             if let Some((preference, cost)) = self.queued.remove(&slot) {
                 self.queue.remove(&(preference, cost, slot));
             }
         }
     }
 
-    fn forget_parent(&mut self, slot: Slot<K>, parent: Position<K>) {
+    fn clear_entries(&mut self, slot: Slot<K>, matches: impl Fn(Slot<K>) -> bool) -> bool {
         let Some(label) = self.labels.get_mut(&slot) else {
-            return;
+            return false;
         };
+        let mut cleared = false;
         for entry in &mut label.entries {
-            if entry.is_some_and(|entry| slot_position::<K>(entry.parent) == parent) {
+            if entry.is_some_and(|entry| matches(entry.parent)) {
                 *entry = None;
+                cleared = true;
             }
         }
+        let position = slot_position::<K>(slot);
         if label.entries.iter().all(Option::is_none) {
             self.labels.remove(&slot);
-            let position = slot_position::<K>(slot);
             if let Some(tiers) = self.labelled.get_mut(&position) {
                 tiers.remove(&(slot.0).0);
                 if tiers.is_empty() {
@@ -793,6 +1054,7 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
                 }
             }
         }
+        cleared
     }
 
     fn drop_edge(&mut self, from: Position<K>, to: Position<K>) {
@@ -1029,6 +1291,239 @@ mod tests {
                 .is_none()
         );
         assert_eq!(graph.queue_len(), 0);
+    }
+
+    #[test]
+    fn removing_a_position_lowers_labels_beyond_its_neighbours() {
+        let mut graph = LabelGraph::<u8, Key>::new(8);
+        let mut table = BTreeMap::new();
+        let keys = [key(0, 1, 10), key(0, 2, 7), key(0, 3, 4), key(0, 4, 1)];
+        for k in keys {
+            table.insert(slot_of_key(k), k);
+            graph.holder_changed(k, Some(0));
+        }
+        for (step, pair) in keys.windows(2).enumerate() {
+            let step = u64::try_from(step).unwrap();
+            graph.record(pair[0], pair[1], step + 1, step + 2, &[1], 1);
+        }
+        let improved = key(0, 1, 30);
+        table.insert(slot_of_key(improved), improved);
+        graph.holder_changed(improved, Some(0));
+        graph.relax_fully(&holders(&table), &always);
+        assert!(graph.label(slot_of_key(key(0, 4, 0))).is_some());
+        let live: BTreeSet<Position<Key>> = keys[1..].iter().map(|k| position_of(*k)).collect();
+        graph.retain(&live);
+        table.remove(&slot_of_key(improved));
+        graph.relax_fully(&holders(&table), &always);
+        assert_eq!(graph.label_count(), 0);
+        assert_eq!(graph.queue_len(), 0);
+    }
+
+    #[test]
+    fn a_wide_exit_scan_resumes_within_the_budget() {
+        let mut graph = LabelGraph::<u8, Key>::new(8);
+        let mut table = BTreeMap::new();
+        let hub = key(0, 1, 10);
+        table.insert(slot_of_key(hub), hub);
+        graph.holder_changed(hub, Some(0));
+        for place in 2..7_u8 {
+            let leaf = key(0, place, 5);
+            table.insert(slot_of_key(leaf), leaf);
+            graph.holder_changed(leaf, Some(0));
+            graph.record(hub, leaf, 1, u64::from(place), &[place], 1);
+        }
+        let improved = key(0, 1, 30);
+        table.insert(slot_of_key(improved), improved);
+        graph.holder_changed(improved, Some(0));
+        let mut whole =
+            postcard::from_bytes::<LabelGraph<u8, Key>>(&postcard::to_stdvec(&graph).unwrap())
+                .unwrap();
+        whole.relax_fully(&holders(&table), &always);
+        let mut calls = 0;
+        while graph.queue_len() > 0 {
+            assert!(graph.relax(2, &holders(&table), &always) <= 2);
+            calls += 1;
+        }
+        assert!(calls >= 3);
+        assert_eq!(graph.label_count(), 5);
+        assert_eq!(
+            postcard::to_stdvec(&graph.labels().collect::<Vec<_>>()).unwrap(),
+            postcard::to_stdvec(&whole.labels().collect::<Vec<_>>()).unwrap()
+        );
+    }
+
+    #[test]
+    fn removing_the_root_of_a_cycle_leaves_no_label_supporting_another() {
+        let mut graph = LabelGraph::<u8, Key>::new(8);
+        let mut table = BTreeMap::new();
+        let a = key(0, 1, 10);
+        let b = key(0, 2, 10);
+        let c = key(0, 3, 10);
+        for k in [a, b, c] {
+            table.insert(slot_of_key(k), k);
+            graph.holder_changed(k, Some(0));
+        }
+        graph.record(a, b, 1, 2, &[1], 1);
+        graph.record(b, c, 2, 3, &[2], 1);
+        graph.record(c, b, 3, 4, &[3], 1);
+        let improved = key(0, 1, 30);
+        table.insert(slot_of_key(improved), improved);
+        graph.holder_changed(improved, Some(0));
+        graph.relax_fully(&holders(&table), &always);
+        assert_eq!(graph.label_count(), 2);
+        let live: BTreeSet<Position<Key>> = [position_of(b), position_of(c)].into_iter().collect();
+        graph.retain(&live);
+        table.remove(&slot_of_key(a));
+        graph.relax_fully(&holders(&table), &always);
+        assert_eq!(graph.label_count(), 0);
+        assert_eq!(graph.queue_len(), 0);
+    }
+
+    #[test]
+    fn a_cheaper_replacement_edge_lowers_the_label_it_predicted() {
+        let mut graph = LabelGraph::<u8, Key>::new(8);
+        let mut table = BTreeMap::new();
+        let a = key(0, 1, 10);
+        let b = key(0, 2, 5);
+        for k in [a, b] {
+            table.insert(slot_of_key(k), k);
+            graph.holder_changed(k, Some(0));
+        }
+        graph.record(a, b, 1, 2, &[1, 2], 2);
+        let improved = key(0, 1, 40);
+        table.insert(slot_of_key(improved), improved);
+        graph.holder_changed(improved, Some(0));
+        graph.relax_fully(&holders(&table), &always);
+        let at_b = |graph: &LabelGraph<u8, Key>| {
+            graph
+                .label(slot_of_key(b))
+                .unwrap()
+                .entry(0)
+                .unwrap()
+                .key
+                .stock
+        };
+        assert_eq!(at_b(&graph), 35);
+        graph.record(key(0, 1, 30), key(0, 2, 6), 3, 4, &[3], 1);
+        graph.relax_fully(&holders(&table), &always);
+        assert_eq!(at_b(&graph), 16);
+    }
+
+    #[test]
+    fn a_demoted_holder_lowers_the_labels_it_supported() {
+        let (mut graph, mut table) = graph_with_route();
+        let improved = key(0, 1, 30);
+        table.insert(slot_of_key(improved), improved);
+        graph.holder_changed(improved, Some(0));
+        graph.relax_fully(&holders(&table), &always);
+        assert_eq!(graph.label_count(), 2);
+        let weaker = key(0, 1, 10);
+        table.insert(slot_of_key(weaker), weaker);
+        graph.holder_demoted(improved);
+        graph.relax_fully(&holders(&table), &always);
+        assert_eq!(graph.label_count(), 0);
+    }
+
+    #[test]
+    fn a_failed_transfer_into_a_wide_entrance_recomputes_within_the_budget() {
+        let mut graph = LabelGraph::<u8, Key>::new(8);
+        let mut table = BTreeMap::new();
+        let hub = key(0, 9, 5);
+        table.insert(slot_of_key(hub), hub);
+        graph.holder_changed(hub, Some(0));
+        for place in 1..7_u8 {
+            let source = key(0, place, 10);
+            table.insert(slot_of_key(source), source);
+            graph.holder_changed(source, Some(0));
+            graph.record(source, hub, u64::from(place), 9, &[place], 1);
+        }
+        let improved = key(0, 1, 30);
+        table.insert(slot_of_key(improved), improved);
+        graph.holder_changed(improved, Some(0));
+        graph.relax_fully(&holders(&table), &always);
+        assert!(graph.label(slot_of_key(hub)).is_some());
+        for _ in 0..8 {
+            graph.transfer_attempted(position_of(improved), position_of(hub), false);
+        }
+        let mut calls = 0;
+        while graph.queue_len() > 0 {
+            assert!(graph.relax(2, &holders(&table), &always) <= 2);
+            calls += 1;
+        }
+        assert!(calls >= 3);
+        assert!(graph.label(slot_of_key(hub)).is_none());
+    }
+
+    #[test]
+    fn a_demoted_holder_lets_its_own_slot_take_a_label() {
+        let (mut graph, mut table) = graph_with_route();
+        let strong = key(0, 2, 40);
+        table.insert(slot_of_key(strong), strong);
+        graph.holder_changed(strong, Some(0));
+        let improved = key(0, 1, 30);
+        table.insert(slot_of_key(improved), improved);
+        graph.holder_changed(improved, Some(0));
+        graph.relax_fully(&holders(&table), &always);
+        assert!(graph.label(slot_of_key(strong)).is_none());
+        let weak = key(0, 2, 7);
+        table.insert(slot_of_key(weak), weak);
+        graph.holder_demoted(strong);
+        graph.relax_fully(&holders(&table), &always);
+        let label = graph
+            .label(slot_of_key(weak))
+            .expect("label above the weaker holder");
+        assert_eq!(label.entry(0).unwrap().key.stock, 27);
+    }
+
+    #[test]
+    fn a_recompute_over_many_source_tiers_resumes_within_the_budget() {
+        let mut graph = LabelGraph::<u8, Key>::new(8);
+        let mut table = BTreeMap::new();
+        let hub = key(0, 9, 5);
+        table.insert(slot_of_key(hub), hub);
+        graph.holder_changed(hub, Some(0));
+        for tier in 0..6_u8 {
+            let source = key(tier, 1, if tier == 0 { 10 } else { 1 });
+            table.insert(slot_of_key(source), source);
+            graph.holder_changed(source, Some(0));
+        }
+        graph.record(key(0, 1, 10), hub, 1, 2, &[1], 1);
+        let improved = key(0, 1, 30);
+        table.insert(slot_of_key(improved), improved);
+        graph.holder_changed(improved, Some(0));
+        graph.relax_fully(&holders(&table), &always);
+        assert!(graph.label(slot_of_key(hub)).is_some());
+        assert_eq!(graph.label_count(), 1);
+        graph.transfer_attempted(position_of(improved), position_of(hub), true);
+        let mut calls = 0;
+        while graph.queue_len() > 0 {
+            assert!(graph.relax(2, &holders(&table), &always) <= 2);
+            calls += 1;
+        }
+        assert!(calls >= 3);
+        assert!(graph.label(slot_of_key(hub)).is_some());
+    }
+
+    #[test]
+    fn slots_after_a_tier_merge_held_and_labelled_tiers_in_order() {
+        let mut graph = LabelGraph::<u8, Key>::new(8);
+        for tier in [0_u8, 2, 4] {
+            graph.holder_changed(key(tier, 1, 0), Some(0));
+        }
+        graph
+            .labelled
+            .entry(position_of(key(0, 1, 0)))
+            .or_default()
+            .extend([1_u8, 2, 5]);
+        let tiers = |after| {
+            graph
+                .slots_after(position_of(key(0, 1, 0)), after)
+                .map(|slot| (slot.0).0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(tiers(None), vec![0, 1, 2, 4, 5]);
+        assert_eq!(tiers(Some(2)), vec![4, 5]);
+        assert_eq!(tiers(Some(5)), Vec::<u8>::new());
     }
 
     #[test]

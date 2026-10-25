@@ -1635,7 +1635,6 @@ mod tests {
                 sequence: 1,
                 reservation: 0,
                 parent_id: 0,
-                continuation_energy: None,
                 mutation_seed: 1,
                 execution_work: 1,
                 result_sha256: "result".to_owned(),
@@ -1644,6 +1643,7 @@ mod tests {
                 mixture_weight: 0,
                 splice_weight: 0,
                 splice: None,
+                realization: None,
                 selector: SelectorDraw {
                     path: SelectorPath::Tiers,
                     tier_rank: Some(0),

@@ -325,7 +325,7 @@ Diagnostics count admitted suffix observations. Arrival histograms count
 transitions into a location; resource refill counts require a stock increase.
 Delayed-progress histograms include distraction observations in their zero bin.
 Exported archive entries include ancestry; `live_entries` reports active holders.
-Continuation job counts and work come from the campaign stream.
+Realized job counts and work come from the campaign stream.
 Ordinary reports also count `executions`, one restore plus one executed suffix,
 and give `first_objective_execution` beside `first_objective_work`. Both are
 independently read from the stream and checked against the campaign counters;
@@ -503,11 +503,11 @@ first traversal completes the objective.
 
 Position and lane identify archive places; phase is a retention preference.
 Route reports join executed observations to admitted campaign jobs. They record
-first upgraded position/lane arrivals, acquisition, alignment, and continuation
-transfers that advance an upgraded state. Donor and leaf states come from
+first upgraded position/lane arrivals, acquisition, alignment, and realized
+jobs that advance an upgraded state. Donor and leaf states come from
 historical admissions. A `non_upgraded_donor` label describes their recorded
 phase. Job-end work includes replay overhead. The action mixture draws random
-suffixes and supports continuation dispatch.
+suffixes and supports realization on draw.
 
 ## Searcher panel
 

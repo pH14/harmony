@@ -90,7 +90,6 @@ fn pattern_action(pattern: u64, position: u8) -> u8 {
 
 fn path_name(path: SelectorPath) -> &'static str {
     match path {
-        SelectorPath::Continuation => "continuation",
         SelectorPath::Tiers => "tiers",
         SelectorPath::Recent => "recent",
     }
@@ -1118,10 +1117,10 @@ fn campaign<const CAPACITY_TWO: bool>(
     let mut first_objective_execution = None;
     let mut jobs_after_budget = 0_usize;
     let mut first_objective_work = None;
-    let mut continuation_work = 0;
-    let mut continuation_jobs = 0;
-    let mut pre_objective_continuation_jobs = 0;
-    let mut pre_objective_continuation_work = 0;
+    let mut realized_work = 0;
+    let mut realized_jobs = 0;
+    let mut pre_objective_realized_jobs = 0;
+    let mut pre_objective_realized_work = 0;
     let parents: std::collections::BTreeMap<u64, (u16, u16)> = report
         .archive
         .evidence
@@ -1164,12 +1163,12 @@ fn campaign<const CAPACITY_TWO: bool>(
             } else if job_work != 0 {
                 return Err("job with work has no recorded parent".into());
             }
-            if job.selector.path == SelectorPath::Continuation {
-                continuation_work += job_work;
-                continuation_jobs += 1;
+            if job.realization.is_some() {
+                realized_work += job_work;
+                realized_jobs += 1;
                 if first_objective_work.is_none() {
-                    pre_objective_continuation_jobs += 1;
-                    pre_objective_continuation_work += job_work;
+                    pre_objective_realized_jobs += 1;
+                    pre_objective_realized_work += job_work;
                 }
             }
             if job
@@ -1240,9 +1239,9 @@ fn campaign<const CAPACITY_TWO: bool>(
         "chain_work_by_parent_stage":report.archive.evidence.chain_work_by_parent_stage,
         "chain_selected_charge":report.archive.evidence.chain_selected_charge,
         "route_evidence":route_evidence,"layout":workload.config.layout(),"parent_timeline":timeline,
-        "pre_objective_continuation_jobs":pre_objective_continuation_jobs,
-        "pre_objective_continuation_work":pre_objective_continuation_work,
-        "continuation_work":continuation_work,"continuation_jobs":continuation_jobs,
+        "pre_objective_realized_jobs":pre_objective_realized_jobs,
+        "pre_objective_realized_work":pre_objective_realized_work,
+        "realized_work":realized_work,"realized_jobs":realized_jobs,
         "first_objective_work":first_objective_work,"parent_draws":parent_draws,"skipped_draws":skipped_draws,
         "success":first_objective_work.is_some_and(|w|w<=budget),
         "elapsed_seconds":elapsed,"stream_bytes":stream.0.len(),"stream_sha256":report.stream_sha256,

@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
 };
 
@@ -12,7 +12,10 @@ use nes_workload::{
     metroid::archive::MetroidArchiveKey,
     search::{
         archive::{ArchiveKey, Position, Slot},
-        campaign::{CampaignAdmissionDecision, CampaignSpliceRecord, CampaignStreamRecord},
+        campaign::{
+            CampaignAdmissionDecision, CampaignJobRecord, CampaignSpliceRecord,
+            CampaignStreamRecord,
+        },
         empirical_steps::EmpiricalStepCheckpoint,
         labels::LabelGraph,
     },
@@ -133,8 +136,7 @@ fn run<K: ArchiveKey>(
         if line.trim().is_empty() {
             continue;
         }
-        let record: CampaignStreamRecord<EmpiricalStepCheckpoint, K> = serde_json::from_str(&line)?;
-        let CampaignStreamRecord::Job(job) = record else {
+        let Some(job) = job_record::<K>(&line)? else {
             continue;
         };
         jobs += 1;
@@ -324,8 +326,8 @@ fn run<K: ArchiveKey>(
         "campaign": campaign.display().to_string(),
         "jobs": jobs,
         "retained": retained,
-        "continuation_transfers": transfers,
-        "continuation_landed": landed,
+        "splice_transfers": transfers,
+        "splice_landed": landed,
         "edges": graph.edge_count(),
         "labels": graph.label_count(),
         "accounting": serde_json::to_value(graph.accounting())?,
@@ -404,10 +406,67 @@ fn report<K: ArchiveKey>(
     }
 }
 
+fn job_record<K: ArchiveKey>(
+    line: &str,
+) -> Result<Option<CampaignJobRecord<EmpiricalStepCheckpoint, K>>, Box<dyn Error>> {
+    let mut record: Value = serde_json::from_str(line)?;
+    if record["event"] != "job" {
+        return Ok(None);
+    }
+    if record["selector"]["path"] == "continuation" {
+        record["selector"]["path"] = json!("recent");
+    }
+    match serde_json::from_value::<CampaignStreamRecord<EmpiricalStepCheckpoint, K>>(record)? {
+        CampaignStreamRecord::Job(job) => Ok(Some(job)),
+        _ => Ok(None),
+    }
+}
+
+fn dump<K: ArchiveKey>(campaign: &Path, out: &Path) -> Result<Value, Box<dyn Error>> {
+    let reader = BufReader::new(fs::File::open(campaign.join("stream.jsonl"))?);
+    let mut writer = BufWriter::new(fs::File::create(out)?);
+    let mut entries = 0_u64;
+    let mut jobs = 0_u64;
+    for line in reader.lines().skip(1) {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some(job) = job_record::<K>(&line)? else {
+            continue;
+        };
+        jobs += 1;
+        let ids = job.decisions.iter().filter_map(|decision| match decision {
+            CampaignAdmissionDecision::Retained { id } => Some(*id),
+            _ => None,
+        });
+        for (id, key) in ids.zip(&job.retained_keys) {
+            serde_json::to_writer(&mut writer, &json!([job.sequence, id, job.parent_id, key]))?;
+            writer.write_all(b"\n")?;
+            entries += 1;
+        }
+    }
+    writer.flush()?;
+    Ok(json!({ "jobs": jobs, "entries": entries }))
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|mode| mode == "dump") {
+        let [_, game, campaign, out] = args.as_slice() else {
+            return Err("usage: nes-hindsight dump GAME CAMPAIGN_DIR OUT".into());
+        };
+        let (campaign, out) = (PathBuf::from(campaign), PathBuf::from(out));
+        let report = match game.as_str() {
+            "metroid" => dump::<MetroidArchiveKey>(&campaign, &out)?,
+            "smb" => dump::<SmbArchiveKey>(&campaign, &out)?,
+            other => return Err(format!("unsupported game {other}").into()),
+        };
+        println!("{report}");
+        return Ok(());
+    }
     if !(2..=3).contains(&args.len()) {
-        return Err("usage: nes-hindsight GAME CAMPAIGN_DIR [EVERY]".into());
+        return Err("usage: nes-hindsight GAME CAMPAIGN_DIR [EVERY] | nes-hindsight dump GAME CAMPAIGN_DIR OUT".into());
     }
     let campaign = PathBuf::from(&args[1]);
     let every: u64 = args.get(2).map_or(Ok(250_000), |every| every.parse())?;

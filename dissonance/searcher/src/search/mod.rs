@@ -3,7 +3,6 @@
 pub mod archive;
 pub mod campaign;
 pub mod checkpoint;
-mod continuation;
 pub mod draw;
 pub mod draw_tables;
 pub mod duration;

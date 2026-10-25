@@ -5,7 +5,7 @@ use std::{
     error::Error,
     fmt::Debug,
     io::{BufReader, Read, Write},
-    num::{NonZeroU64, NonZeroUsize},
+    num::NonZeroU64,
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
     time::Duration,
@@ -15,15 +15,13 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
-    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, ContinuationAccounting, Edge, Input,
-    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SelectorAccounting,
-    SelectorDraw, SelectorPath, SnapshotRetention, retention_policy_from_identifier,
-    retention_policy_identifier,
+    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, Input, ProgressPoint,
+    RetentionPolicy, SELECTOR_IDENTIFIER, SelectorAccounting, SelectorDraw, SelectorPath,
+    SnapshotRetention, retention_policy_from_identifier, retention_policy_identifier,
 };
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, SEARCH_CHECKPOINT_FORMAT,
 };
-use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT, SuffixReach,
     draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
@@ -37,7 +35,7 @@ use crate::search::duration::{
     DurationRequest,
 };
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
-use crate::search::labels::LabelAccounting;
+use crate::search::labels::{Hop, LABEL_IDENTIFIER, LabelAccounting};
 
 pub const LONGEST_SPLICE_TAIL: usize = 128;
 use crate::search::parallel::{WorkerPoolError, with_worker_pool_routed};
@@ -943,8 +941,6 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub sequence: u64,
     pub reservation: u64,
     pub parent_id: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub continuation_energy: Option<u16>,
     pub mutation_seed: u64,
     pub execution_work: u64,
     pub result_sha256: String,
@@ -955,7 +951,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub splice_weight: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
-
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realization: Option<CampaignRealizationRecord>,
     pub selector: SelectorDraw,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draw_checkpoint_before: Option<C>,
@@ -987,7 +984,6 @@ pub struct CampaignSkipRecord<C, K = ()> {
     pub splice_weight: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
-
     pub selector: SelectorDraw,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draw_checkpoint_before: Option<C>,
@@ -1016,9 +1012,19 @@ pub struct CampaignCancelRecord {
     pub mutation_seed: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realization: Option<CampaignRealizationRecord>,
     pub selector: SelectorDraw,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suffix_limit: Option<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignRealizationRecord {
+    pub drawn_id: u64,
+    pub preference: u8,
+    pub hops: u8,
+    pub tail_postcard: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1071,7 +1077,7 @@ const RESUMABLE_POLICY_FIELDS: [&str; 9] = [
     "mixture_policy",
     "retention_policy",
     "parent_scheduler",
-    "continuation_policy",
+    "label_policy",
     "stop_rollout_on_objective",
     "stop_campaign_on_objective",
     DRAW_TABLE_POLICY_FIELD,
@@ -1197,159 +1203,77 @@ fn resident_memory_is_within_budget(bytes: usize, memory_budget_mib: Option<usiz
     memory_budget_mib.is_none_or(|budget_mib| bytes <= budget_mib.saturating_mul(1024 * 1024))
 }
 
-struct ContinuationReservation<G: Workload + ?Sized> {
-    parent_index: usize,
-    parent_id: u64,
-    donor: u64,
-    leaf: u64,
-    source: Position<G::Key>,
-    destination: Position<G::Key>,
-    wave: u32,
-    suffix: Vec<G::Action>,
+#[derive(Deserialize, Serialize)]
+#[serde(bound = "")]
+pub(crate) struct PlannedRealization<G: Workload + ?Sized> {
+    pub drawn_id: u64,
+    pub root_id: u64,
+    pub preference: u8,
+    pub hops: Vec<Hop<G::Key>>,
+    pub actions: Vec<G::Action>,
 }
 
-fn take_continuation<G: Workload + ?Sized>(
-    core: &mut CoordinatorCore<G>,
-    from_highest_preference: bool,
-) -> Option<ContinuationReservation<G>> {
-    let mut examined = 0_usize;
-    let mut gaining_fallback = None;
-    while examined < CONTINUATION_EXITS_PER_RESERVATION
-        && let Some(continuation) = core.archive.pop_continuation(from_highest_preference)
-    {
-        examined = examined.saturating_add(1);
-        let Some(parent_index) = core.archive.index_of_id(continuation.parent) else {
-            continue;
-        };
-        if !core.archive.active[parent_index] {
-            continue;
-        }
-        let outranks = core.archive.outranks_slot_holders(
-            parent_index,
-            continuation.destination,
-            continuation.preference,
-        );
-        let gaining = continuation.gains != 0;
-        if !outranks && (!gaining || gaining_fallback.is_some()) {
-            continue;
-        }
-        let actions = continuation.actions;
-        if core.all_prefixes_archived(parent_index, &actions) {
-            continue;
-        }
-        let reservation = ContinuationReservation {
-            parent_index,
-            parent_id: continuation.parent,
-            donor: continuation.donor,
-            leaf: continuation.leaf,
-            source: continuation.source,
-            destination: continuation.destination,
-            wave: continuation.wave,
-            suffix: actions,
-        };
-        if outranks {
-            core.archive.record_continuation_dispatch(false);
-            return Some(reservation);
-        }
-        gaining_fallback = Some(reservation);
-    }
-    if gaining_fallback.is_some() {
-        core.archive.record_continuation_dispatch(true);
-    }
-    gaining_fallback
-}
-
-fn continuation_attempt<G: Workload + ?Sized>(
-    core: &mut CoordinatorCore<G>,
-    campaign_seed: u64,
-    reservation: u64,
-) -> (Option<u16>, Option<ContinuationReservation<G>>) {
-    if core.archive.continuation_pending() == 0 {
-        return (None, None);
-    }
-    let energy = CONTINUATION_ATTEMPT_SHARE;
-    let takes = draws_continuation(campaign_seed, reservation);
-    core.archive.record_continuation_reservation(energy, takes);
-    let taken = takes
-        .then(|| {
-            let from_highest_preference = draws_highest_preference(campaign_seed, reservation);
-            take_continuation(core, from_highest_preference)
+impl<G: Workload + ?Sized> PlannedRealization<G> {
+    pub(crate) fn plan(
+        archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
+        drawn_index: usize,
+        selector: &SelectorDraw,
+    ) -> Option<Self> {
+        let realization = archive.realization(drawn_index, selector.best_preference)?;
+        Some(Self {
+            drawn_id: archive.stable_id(drawn_index)?,
+            root_id: archive.stable_id(realization.root)?,
+            preference: realization.preference,
+            hops: realization.hops,
+            actions: realization.actions,
         })
-        .flatten();
-    (Some(energy), taken)
+    }
+
+    pub(crate) fn record(&self) -> Result<CampaignRealizationRecord, Box<dyn Error>> {
+        Ok(CampaignRealizationRecord {
+            drawn_id: self.drawn_id,
+            preference: self.preference,
+            hops: u8::try_from(self.hops.len())?,
+            tail_postcard: postcard::to_allocvec(&self.actions)?,
+        })
+    }
 }
 
-fn continuation_reservation_matches<G: Workload + ?Sized>(
-    taken: Option<&ContinuationReservation<G>>,
-    energy: Option<u16>,
-    selector: &SelectorDraw,
-    splice: Option<&CampaignSpliceRecord>,
-    recorded_energy: Option<u16>,
+fn realization_matches<G: Workload + ?Sized>(
+    planned: Option<&PlannedRealization<G>>,
+    parent_id: u64,
+    recorded: Option<&CampaignRealizationRecord>,
     sequence: u64,
 ) -> Result<(), Box<dyn Error>> {
-    if recorded_energy != energy {
-        return Err(
-            format!("record {sequence} disagrees with the rebuilt continuation share").into(),
-        );
-    }
-    let recorded = selector.path == SelectorPath::Continuation;
-    match (taken, recorded) {
-        (None, false) => Ok(()),
-        (None, true) => Err(format!(
-            "record {sequence} is a continuation job the replayed queue did not produce"
+    let expected = planned.map(PlannedRealization::record).transpose()?;
+    if expected.as_ref() != recorded {
+        return Err(format!(
+            "record {sequence} disagrees with the realization the replayed labels produce"
         )
-        .into()),
-        (Some(_), false) => Err(format!(
-            "the replayed queue produced a continuation at record {sequence}, which is an ordinary job"
-        )
-        .into()),
-        (Some(taken), true) => {
-            let Some(CampaignSpliceRecord::Tail {
-                donor_id,
-                leaf_id,
-                tail_postcard,
-            }) = splice
-            else {
-                return Err(
-                    format!("continuation record {sequence} lacks its complete tail").into(),
-                );
-            };
-            let tail: Vec<G::Action> = postcard::from_bytes(tail_postcard)?;
-            if *donor_id != taken.donor || *leaf_id != taken.leaf || tail != taken.suffix {
-                return Err(format!(
-                    "continuation record {sequence} disagrees with the replayed queue entry"
-                )
-                .into());
-            }
-            Ok(())
-        }
+        .into());
     }
+    if planned.is_some_and(|planned| planned.root_id != parent_id) {
+        return Err(format!("realized record {sequence} starts from another root").into());
+    }
+    Ok(())
 }
 
-fn continuation_arrival<G: Workload>(
+pub(crate) fn realization_arrivals<G: Workload + ?Sized>(
     archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
-    edge: Option<Edge<G::Key>>,
     decisions: &[CampaignAdmissionDecision],
-) -> (Option<usize>, bool) {
-    let Some((source, destination)) = edge else {
-        return (None, false);
-    };
+) -> Vec<(usize, bool)> {
     decisions
         .iter()
-        .fold((None, false), |(landed, replaced), decision| {
-            let (id, retained) = match decision {
-                CampaignAdmissionDecision::Retained { id } => (*id, true),
-                CampaignAdmissionDecision::Duplicate { id } => (*id, false),
-                _ => return (landed, replaced),
-            };
-            let arrived = archive
-                .index_of_id(id)
-                .filter(|index| archive.lands_on_edge(*index, source, destination));
-            (
-                landed.or(arrived),
-                replaced || (arrived.is_some() && retained),
-            )
+        .filter_map(|decision| match decision {
+            CampaignAdmissionDecision::Retained { id } => {
+                archive.index_of_id(*id).map(|index| (index, true))
+            }
+            CampaignAdmissionDecision::Duplicate { id } => {
+                archive.index_of_id(*id).map(|index| (index, false))
+            }
+            _ => None,
         })
+        .collect()
 }
 
 fn retained_keys<G: Workload>(
@@ -1391,15 +1315,11 @@ fn progress_policy_is_supported(policy: &str) -> bool {
 fn record_mixture_outcome(
     energy: &mut MixtureEnergy,
     mixture: DrawMixture,
-    path: SelectorPath,
     mutation_seed: u64,
     (mixture_weight, splice_weight): (u8, u8),
     new_slot: bool,
     work: u64,
 ) -> Result<(), Box<dyn Error>> {
-    if path == SelectorPath::Continuation {
-        return Ok(());
-    }
     if matches!(
         mixture,
         DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. }
@@ -1419,36 +1339,6 @@ pub(super) fn mixture_weights(energy: &MixtureEnergy, mixture: DrawMixture) -> (
         DrawMixture::EnergySplice { scale } => energy.splice_weights(scale),
         _ => (DEFAULT_MIXTURE_WEIGHT, 0),
     }
-}
-
-pub(crate) const CONTINUATION_EXITS_PER_RESERVATION: usize = 8;
-
-pub(crate) const CONTINUATION_ATTEMPT_IN: usize = 4;
-
-pub(crate) const CONTINUATION_HIGHEST_TIER_IN: usize = 4;
-
-const CONTINUATION_ATTEMPT_SHARE: u16 = 64;
-
-const CONTINUATION_TIER_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
-
-fn draws_one_in(seed: u64, one_in: usize) -> bool {
-    let Some(bound) = NonZeroUsize::new(one_in) else {
-        return false;
-    };
-    RomuDuoJrRand::with_seed(seed).below(bound) == 0
-}
-
-#[must_use]
-pub(crate) fn draws_continuation(campaign_seed: u64, reservation: u64) -> bool {
-    draws_one_in(campaign_seed ^ reservation, CONTINUATION_ATTEMPT_IN)
-}
-
-#[must_use]
-pub(crate) fn draws_highest_preference(campaign_seed: u64, reservation: u64) -> bool {
-    draws_one_in(
-        campaign_seed ^ reservation ^ CONTINUATION_TIER_SALT,
-        CONTINUATION_HIGHEST_TIER_IN,
-    )
 }
 
 fn stop_reservations_after_objective(
@@ -1599,9 +1489,6 @@ fn verify_selector_annotation(
             if usize::from(rank) >= archive_entry_limit =>
         {
             Err("tier rank exceeds the archive population limit".into())
-        }
-        (SelectorPath::Continuation, Some(_)) => {
-            Err("continuation draw carries a tier rank".into())
         }
         _ => Ok(()),
     }
@@ -3156,9 +3043,7 @@ struct SearchResume<G: Workload + ?Sized> {
 struct PendingJob<G: Workload + ?Sized> {
     snapshot_id: u64,
     parent_id: u64,
-    continuation_energy: Option<u16>,
-    continuation_wave: u32,
-    continuation_edge: Option<Edge<G::Key>>,
+    realization: Option<PlannedRealization<G>>,
     mutation_seed: u64,
     mixture_weight: u8,
     splice_weight: u8,
@@ -3173,6 +3058,14 @@ struct PendingJob<G: Workload + ?Sized> {
     duration_checkpoint_at_draw: Option<DurationCheckpoint>,
     suffix_limit: Option<u8>,
     planned_finish: u64,
+}
+
+impl<G: Workload + ?Sized> PendingJob<G> {
+    fn drawn_id(&self) -> u64 {
+        self.realization
+            .as_ref()
+            .map_or(self.parent_id, |realization| realization.drawn_id)
+    }
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
@@ -3292,13 +3185,8 @@ fn verify_splice_selection<G: Workload>(
     parent_index: usize,
     mutation_seed: u64,
     weights: (u8, u8),
-    selector_path: SelectorPath,
-    actual_continuation: bool,
     recorded: Option<&CampaignSpliceRecord>,
 ) -> Result<(), Box<dyn Error>> {
-    if selector_path == SelectorPath::Continuation || actual_continuation {
-        return Ok(());
-    }
     let expected =
         if energy_strategy(mutation_seed, weights.0, weights.1)? == EnergyStrategy::Splice {
             match core
@@ -3399,8 +3287,6 @@ pub struct CampaignProgressRecord<K> {
     #[serde(default)]
     pub selector: SelectorAccounting,
     #[serde(default)]
-    pub continuations: ContinuationAccounting,
-    #[serde(default)]
     pub labels: LabelAccounting,
 }
 
@@ -3500,7 +3386,6 @@ fn progress_record<G: Workload>(
         } else {
             core.archive.selector_counters()
         },
-        continuations: core.archive.continuation_report(),
         labels: core.archive.label_report(),
     })
 }
@@ -3972,7 +3857,7 @@ fn bootstrap_campaign<G: Workload>(
     counters: &mut CampaignCounters,
 ) -> Result<(), Box<dyn Error>> {
     core.archive
-        .enable_continuations(usize::from(SUFFIX_DOUBLING_LIMIT));
+        .enable_labels(usize::from(SUFFIX_DOUBLING_LIMIT));
     let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
     })?;
@@ -4020,7 +3905,7 @@ fn search_checkpoint_header<G: Workload>(
             retention_policy_identifier(config.retention).to_owned(),
         ),
         ("parent_scheduler", SELECTOR_IDENTIFIER.to_owned()),
-        ("continuation_policy", CONTINUATION_IDENTIFIER.to_owned()),
+        ("label_policy", LABEL_IDENTIFIER.to_owned()),
         (
             PREFERENCE_PORTFOLIO_FIELD,
             preference_portfolio_identifier::<G::Key>(),
@@ -4151,7 +4036,7 @@ fn restore_search_checkpoint<G: Workload>(
         core.archive.rerank_slot_holders();
     }
     core.archive
-        .resume_continuations(usize::from(SUFFIX_DOUBLING_LIMIT));
+        .resume_labels(usize::from(SUFFIX_DOUBLING_LIMIT));
     core.evidence = G::evidence_from_checkpoint(&evidence)?;
     *draw_state = if changes.contains_key(DRAW_TABLE_POLICY_FIELD) {
         let parameters = workload.draw_table_parameters(&config.run);
@@ -4624,8 +4509,9 @@ where
             u64,
             Option<u8>,
             u64,
-            SelectorPath,
+            SelectorDraw,
             Option<CampaignSpliceRecord>,
+            Option<u64>,
         ),
     >::new();
     let mut replay_cancelled = 0_u64;
@@ -4644,8 +4530,12 @@ where
                             cancel.parent_id,
                             cancel.suffix_limit,
                             cancel.mutation_seed,
-                            cancel.selector.path,
+                            cancel.selector,
                             cancel.splice.clone(),
+                            cancel
+                                .realization
+                                .as_ref()
+                                .map(|realization| realization.drawn_id),
                         ),
                     )
                     .is_some()
@@ -4663,8 +4553,11 @@ where
                             job.parent_id,
                             job.suffix_limit,
                             job.mutation_seed,
-                            job.selector.path,
+                            job.selector,
                             job.splice.clone(),
+                            job.realization
+                                .as_ref()
+                                .map(|realization| realization.drawn_id),
                         ),
                     )
                     .is_some()
@@ -4694,19 +4587,22 @@ where
     }
     let replay_job_parents = replay_job_reservations
         .values()
-        .map(|record| record.0)
+        .map(|record| record.5.unwrap_or(record.0))
         .collect::<Vec<_>>();
     let replay_job_suffix_limits = replay_job_reservations
         .values()
         .map(|record| record.1)
         .collect::<Vec<_>>();
+    let replay_job_metadata = replay_job_reservations
+        .values()
+        .map(|record| match record.5 {
+            Some(drawn_id) => vec![drawn_id, record.0],
+            None => vec![record.0],
+        })
+        .collect::<Vec<_>>();
     let replay_job_splices = replay_job_reservations
         .into_values()
-        .map(|(_, _, seed, path, splice)| (seed, path, splice))
-        .collect::<Vec<_>>();
-    let replay_job_metadata = replay_job_parents
-        .iter()
-        .map(|parent_id| vec![*parent_id])
+        .map(|(_, _, seed, selector, splice, _)| (seed, selector, splice))
         .collect::<Vec<_>>();
     let resume_input = match header.origin_kind.as_str() {
         ORIGIN_GENESIS => {
@@ -4825,7 +4721,7 @@ where
     core.record_progress = true;
     core.bounded_progress_curve = true;
     core.archive
-        .enable_continuations(usize::from(SUFFIX_DOUBLING_LIMIT));
+        .enable_labels(usize::from(SUFFIX_DOUBLING_LIMIT));
     let mut counters = CampaignCounters::new();
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -4931,8 +4827,7 @@ where
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
     let mut replay_job_snapshots =
         BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, Vec<Option<[u8; 32]>>, u64)>::new();
-    let mut replay_continuations = BTreeMap::<usize, ContinuationReservation<G>>::new();
-    let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
+    let mut replay_realizations = BTreeMap::<usize, Option<PlannedRealization<G>>>::new();
     let mut replay_job_weights = BTreeMap::<usize, (u8, u8)>::new();
     let mut replay_job_tier_limits = BTreeMap::<usize, usize>::new();
     let mut replay_job_lineage_durations = BTreeMap::<usize, Option<NonZeroU64>>::new();
@@ -4940,67 +4835,85 @@ where
     let mut replay_planned_clock = 0_u64;
     let mut last_admitted = None::<(u64, usize)>;
     core.archive.preserve_inactive_snapshots(false)?;
-    for (job_slot, parent_id) in replay_job_parents
-        .iter()
-        .take(replay_window_depth)
+    let mut replay_pending_reservations =
+        (0..replay_job_parents.len().min(replay_window_depth)).collect::<VecDeque<usize>>();
+
+    let mut replay_admissions = 0_usize;
+    let mut replay_skips = ReplaySkipSchedule::default();
+    for (replay_record_index, line) in record_lines
+        .into_iter()
+        .map(Some)
+        .chain(std::iter::once(None))
         .enumerate()
     {
-        replay_job_tier_limits.insert(job_slot, observed_progress_tiers.len());
-        let (energy, continuation) =
-            continuation_attempt(&mut core, header.campaign_seed, u64::try_from(job_slot)?);
-        let actual_continuation = continuation.is_some();
-        replay_continuation_energy.insert(job_slot, energy);
-        if let Some(continuation) = continuation {
-            replay_continuations.insert(job_slot, continuation);
-            replay_job_weights.insert(job_slot, (0, u8::MAX));
-        } else {
+        let record = line
+            .map(serde_json::from_str::<CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key>>)
+            .transpose()?;
+        let skip_reservation = match &record {
+            Some(CampaignStreamRecord::Skip(skip)) => Some(skip.reservation),
+            _ => None,
+        };
+        let mut reserved_any = false;
+        while let Some(job_slot) = replay_pending_reservations.front().copied() {
+            if skip_reservation == Some(u64::try_from(job_slot)?) {
+                break;
+            }
+            replay_pending_reservations.pop_front();
+            reserved_any = true;
+            let parent_id = &replay_job_parents[job_slot];
+            replay_job_tier_limits.insert(job_slot, observed_progress_tiers.len());
             replay_job_weights.insert(
                 job_slot,
                 mixture_weights(&core.mixture_energy, replay_mixture),
             );
+            let parent_index = core
+                .archive
+                .index_of_id(*parent_id)
+                .ok_or("replay job names a parent the archive does not hold")?;
+            if replay_job_suffix_limits[job_slot]
+                .is_some_and(|recorded| core.suffix_limit(*parent_id, parent_index) != recorded)
+            {
+                return Err("replayed job suffix limit diverged at reservation".into());
+            }
+            replay_job_lineage_durations.insert(
+                job_slot,
+                core.lineage_duration(workload, &replay_run, parent_index),
+            );
+            let (mutation_seed, selector, splice) = &replay_job_splices[job_slot];
+            verify_splice_selection(
+                &mut core,
+                parent_index,
+                *mutation_seed,
+                replay_job_weights[&job_slot],
+                splice.as_ref(),
+            )?;
+            core.start_suffix_job(*parent_id, replay_job_suffix_limits[job_slot]);
+            let realization = PlannedRealization::plan(&core.archive, parent_index, selector);
+            let origin = match &realization {
+                Some(realization) => core
+                    .archive
+                    .index_of_id(realization.root_id)
+                    .ok_or("realization root is not resident")?,
+                None => parent_index,
+            };
+            replay_realizations.insert(job_slot, realization);
+            replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(origin)?);
+            replay_selections.insert(job_slot, (replay_planned_clock, core.sequence));
+            for metadata_id in &replay_job_metadata[job_slot] {
+                let uses = replay_metadata_uses.entry(*metadata_id).or_default();
+                *uses = uses
+                    .checked_add(1)
+                    .ok_or("recorded metadata use count overflow")?;
+            }
         }
-        let parent_index = core
-            .archive
-            .index_of_id(*parent_id)
-            .ok_or("initial replay job names a parent the archive does not hold")?;
-        if replay_job_suffix_limits[job_slot]
-            .is_some_and(|recorded| core.suffix_limit(*parent_id, parent_index) != recorded)
-        {
-            return Err("replayed job suffix limit diverged at reservation".into());
+        if reserved_any {
+            core.archive
+                .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
         }
-        replay_job_lineage_durations.insert(
-            job_slot,
-            core.lineage_duration(workload, &replay_run, parent_index),
-        );
-        let (mutation_seed, selector_path, splice) = &replay_job_splices[job_slot];
-        verify_splice_selection(
-            &mut core,
-            parent_index,
-            *mutation_seed,
-            replay_job_weights[&job_slot],
-            *selector_path,
-            actual_continuation,
-            splice.as_ref(),
-        )?;
-        core.start_suffix_job(*parent_id, replay_job_suffix_limits[job_slot]);
-        replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
-        replay_selections.insert(job_slot, (replay_planned_clock, core.sequence));
-        for metadata_id in &replay_job_metadata[job_slot] {
-            let uses = replay_metadata_uses.entry(*metadata_id).or_default();
-            *uses = uses
-                .checked_add(1)
-                .ok_or("recorded metadata use count overflow")?;
-        }
-    }
-    core.archive
-        .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
-
-    let mut replay_admissions = 0_usize;
-    let mut replay_skips = ReplaySkipSchedule::default();
-    for (replay_record_index, line) in record_lines.into_iter().enumerate() {
+        let Some(record) = record else {
+            break;
+        };
         draw_state.release_versions(&required_draw_versions, replay_record_index);
-        let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
-            serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
                 replay_skips.accept_skip(
@@ -5009,11 +4922,6 @@ where
                     replay_window_depth,
                     replay_job_parents.len(),
                 )?;
-                if replay_continuations.contains_key(&usize::try_from(skip.reservation)?) {
-                    return Err(
-                        "campaign replay recorded a skip before a taken continuation".into(),
-                    );
-                }
                 if stop_reservations_after_objective(
                     header.stop_campaign_on_objective,
                     core.objective_witness.is_some(),
@@ -5046,8 +4954,6 @@ where
                     parent_index,
                     skip.mutation_seed,
                     (skip.mixture_weight, skip.splice_weight),
-                    skip.selector.path,
-                    false,
                     skip.splice.as_ref(),
                 )?;
                 let strategy =
@@ -5167,9 +5073,6 @@ where
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
-                if skip.selector.path == SelectorPath::Continuation {
-                    return Err("continuations cannot be recorded skips".into());
-                }
                 verify_selector_annotation(&skip.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&skip.selector, observed_progress_tiers.len())?;
                 verify_selector_preference::<G::Key>(&skip.selector)?;
@@ -5194,15 +5097,6 @@ where
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
             }
             CampaignStreamRecord::Job(job) => {
-                if job.selector.path == SelectorPath::Continuation
-                    && (job.mixture_weight != 0
-                        || job.splice_weight != u8::MAX
-                        || !matches!(&job.splice, Some(CampaignSpliceRecord::Tail { .. })))
-                {
-                    return Err(
-                        "continuation job lacks its registered schedule or complete tail".into(),
-                    );
-                }
                 let replay_job_slot = usize::try_from(job.reservation)?;
                 replay_skips.admit(job.reservation);
                 let selector_tier_limit = replay_job_tier_limits
@@ -5227,21 +5121,24 @@ where
                 let (planned_start, selection_sequence) = replay_selections
                     .remove(&replay_job_slot)
                     .ok_or("recorded job was admitted before its selection")?;
-                let taken_continuation = replay_continuations.remove(&replay_job_slot);
-                continuation_reservation_matches::<G>(
-                    taken_continuation.as_ref(),
-                    replay_continuation_energy
-                        .remove(&replay_job_slot)
-                        .ok_or("recorded job has no reconstructed reservation")?,
-                    &job.selector,
-                    job.splice.as_ref(),
-                    job.continuation_energy,
+                let realization = replay_realizations
+                    .remove(&replay_job_slot)
+                    .ok_or("recorded job has no rebuilt realization")?;
+                realization_matches(
+                    realization.as_ref(),
+                    job.parent_id,
+                    job.realization.as_ref(),
                     job.sequence,
                 )?;
                 let parent_index = core
                     .archive
                     .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
+                let drawn_id = replay_job_parents[replay_job_slot];
+                let drawn_index = core
+                    .archive
+                    .index_of_id(drawn_id)
+                    .ok_or("recorded job draw is no longer resident")?;
                 let ((snapshot, replay, replay_certificates, snapshot_id), parent_milestones) = {
                     let entry = core
                         .archive
@@ -5285,7 +5182,7 @@ where
                     validate_duration_draw(
                         workload,
                         &replay_run,
-                        core.archive.entries[parent_index].key,
+                        core.archive.entries[drawn_index].key,
                         header.work_budget,
                         duration_remaining_work,
                         recorded_duration_draw,
@@ -5333,12 +5230,17 @@ where
                         },
                         draw_checkpoint_before.as_ref(),
                         job.mutation_seed,
-                        core.archive.last_action(parent_index),
+                        core.archive.last_action(drawn_index),
                         draw,
                     )?,
                 };
                 if let Some(limit) = suffix_limit {
                     suffix.truncate(usize::from(limit));
+                }
+                if let Some(realization) = &realization {
+                    let mut tail = realization.actions.clone();
+                    tail.append(&mut suffix);
+                    suffix = tail;
                 }
                 let finish = replay
                     .iter()
@@ -5391,11 +5293,7 @@ where
                     .map(|draw| draw.duration);
                 drop(snapshot);
                 let objectives_before = core.objectives_reached;
-                let continuation_wave = taken_continuation
-                    .as_ref()
-                    .map_or(0, |taken| taken.wave.saturating_add(1));
-                core.archive.set_admission_wave(continuation_wave);
-                core.finish_suffix_job(job.parent_id, suffix_limit);
+                core.finish_suffix_job(drawn_id, suffix_limit);
                 let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                     workload,
                     job.parent_id,
@@ -5421,9 +5319,7 @@ where
                     )
                     .into());
                 }
-                if !job.retained_keys.is_empty()
-                    && retained_keys::<G>(&core.archive, &decisions)? != job.retained_keys
-                {
+                if retained_keys::<G>(&core.archive, &decisions)? != job.retained_keys {
                     return Err(format!(
                         "replayed job {} retained keys diverged from the recorded stream",
                         job.sequence
@@ -5487,30 +5383,22 @@ where
                 verify_selector_annotation(&job.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&job.selector, selector_tier_limit)?;
                 verify_selector_preference::<G::Key>(&job.selector)?;
-                if job.selector.path == SelectorPath::Continuation {
-                    core.archive.record_isolated_continuation(parent_index);
-                    let new_cell_descendant = retained_archive_indexes(&core, &decisions)
-                        .iter()
-                        .any(|id| core.archive.opened_new_cell(*id));
-                    let (landed, replaced) = continuation_arrival::<G>(
-                        &core.archive,
-                        taken_continuation
-                            .as_ref()
-                            .map(|taken| (taken.source, taken.destination)),
-                        &decisions,
+                let drawn_index = core
+                    .archive
+                    .index_of_id(drawn_id)
+                    .ok_or("recorded job draw is no longer resident")?;
+                core.archive.record_selection(drawn_index, &job.selector);
+                let retained_ids = retained_archive_indexes(&core, &decisions);
+                core.archive
+                    .record_selection_outcome(drawn_index, !retained_ids.is_empty());
+                if let Some(realization) = &realization {
+                    core.archive.record_realized_selection(drawn_index);
+                    let arrivals = realization_arrivals::<G>(&core.archive, &decisions);
+                    core.archive.record_realization_outcome(
+                        &realization.hops,
+                        &arrivals,
+                        execution_work,
                     );
-                    core.archive.record_continuation_outcome(
-                        landed,
-                        replaced,
-                        new_cell_descendant,
-                        continuation_wave,
-                    );
-                    core.archive.add_continuation_execution_work(execution_work);
-                } else {
-                    core.archive.record_selection(parent_index, &job.selector);
-                    let retained_ids = retained_archive_indexes(&core, &decisions);
-                    core.archive
-                        .record_selection_outcome(parent_index, !retained_ids.is_empty());
                 }
                 let new_slot_descendant = retained_archive_indexes(&core, &decisions)
                     .iter()
@@ -5518,7 +5406,6 @@ where
                 record_mixture_outcome(
                     &mut core.mixture_energy,
                     replay_mixture,
-                    job.selector.path,
                     job.mutation_seed,
                     (job.mixture_weight, job.splice_weight),
                     new_slot_descendant,
@@ -5526,6 +5413,9 @@ where
                 )?;
                 core.archive.unpin_job_origin(snapshot_id);
                 core.archive.unpin_metadata(job.parent_id);
+                if realization.is_some() {
+                    core.archive.unpin_metadata(drawn_id);
+                }
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
                 for metadata_id in &replay_job_metadata[replay_job_slot] {
@@ -5575,57 +5465,8 @@ where
                         "campaign stream ended before required reservations completed".into(),
                     );
                 }
-                if let Some(parent_id) = replay_job_parents.get(next_slot) {
-                    replay_job_tier_limits.insert(next_slot, observed_progress_tiers.len());
-                    let (energy, continuation) = continuation_attempt(
-                        &mut core,
-                        header.campaign_seed,
-                        u64::try_from(next_slot)?,
-                    );
-                    let actual_continuation = continuation.is_some();
-                    replay_continuation_energy.insert(next_slot, energy);
-                    if let Some(continuation) = continuation {
-                        replay_continuations.insert(next_slot, continuation);
-                        replay_job_weights.insert(next_slot, (0, u8::MAX));
-                    } else {
-                        replay_job_weights.insert(
-                            next_slot,
-                            mixture_weights(&core.mixture_energy, replay_mixture),
-                        );
-                    }
-                    let parent_index = core
-                        .archive
-                        .index_of_id(*parent_id)
-                        .ok_or("next replay job names a parent the archive does not hold")?;
-                    if replay_job_suffix_limits[next_slot].is_some_and(|recorded| {
-                        core.suffix_limit(*parent_id, parent_index) != recorded
-                    }) {
-                        return Err("replayed job suffix limit diverged at reservation".into());
-                    }
-                    replay_job_lineage_durations.insert(
-                        next_slot,
-                        core.lineage_duration(workload, &replay_run, parent_index),
-                    );
-                    let (mutation_seed, selector_path, splice) = &replay_job_splices[next_slot];
-                    verify_splice_selection(
-                        &mut core,
-                        parent_index,
-                        *mutation_seed,
-                        replay_job_weights[&next_slot],
-                        *selector_path,
-                        actual_continuation,
-                        splice.as_ref(),
-                    )?;
-                    core.start_suffix_job(*parent_id, replay_job_suffix_limits[next_slot]);
-                    replay_job_snapshots
-                        .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
-                    replay_selections.insert(next_slot, (replay_planned_clock, core.sequence));
-                    for metadata_id in &replay_job_metadata[next_slot] {
-                        let uses = replay_metadata_uses.entry(*metadata_id).or_default();
-                        *uses = uses
-                            .checked_add(1)
-                            .ok_or("recorded metadata use count overflow")?;
-                    }
+                if next_slot < replay_job_parents.len() {
+                    replay_pending_reservations.push_back(next_slot);
                 }
                 core.archive
                     .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
@@ -5668,10 +5509,22 @@ where
                 verify_selector_observed_tiers(&cancel.selector, selector_tier_limit)?;
                 verify_selector_preference::<G::Key>(&cancel.selector)?;
                 replay_selections.remove(&slot);
-                replay_continuations.remove(&slot);
-                core.finish_suffix_job(cancel.parent_id, replay_job_suffix_limits[slot]);
+                let realization = replay_realizations
+                    .remove(&slot)
+                    .ok_or("recorded cancelled job has no rebuilt realization")?;
+                realization_matches(
+                    realization.as_ref(),
+                    cancel.parent_id,
+                    cancel.realization.as_ref(),
+                    cancel.reservation,
+                )?;
+                let drawn_id = replay_job_parents[slot];
+                core.finish_suffix_job(drawn_id, replay_job_suffix_limits[slot]);
                 core.archive.unpin_job_origin(snapshot_id);
                 core.archive.unpin_metadata(cancel.parent_id);
+                if realization.is_some() {
+                    core.archive.unpin_metadata(drawn_id);
+                }
                 for metadata_id in &replay_job_metadata[slot] {
                     if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
                         *uses = uses.saturating_sub(1);
@@ -5743,8 +5596,8 @@ where
 }
 
 #[cfg(test)]
-#[path = "campaign_continuation_tests.rs"]
-mod continuation_tests;
+#[path = "campaign_realization_tests.rs"]
+mod realization_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5758,27 +5611,27 @@ mod tests {
         CampaignCandidate, CampaignCheckpoint, CampaignConfig, CampaignCoordinator,
         CampaignCounters, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
         CampaignOrigin, CampaignOutcome, CampaignProgressRecord, CampaignSpliceRecord,
-        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, ContinuationAccounting,
-        CoordinatorCore, DrawTables, DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy,
-        Evaluation, InputPolicy, JobOutcome, JobSpec, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile,
+        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, CoordinatorCore, DrawTables,
+        DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy,
+        JobOutcome, JobSpec, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile,
         MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting,
         RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution,
         ThreadPlacement, WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve,
-        coordinator_session_result, default_window, draws_continuation, draws_highest_preference,
-        execution_work_delta, finish_record, full_selector_report_due, is_zero_usize,
-        memory_is_within_reserve, postcard_value_sha256, profile_elapsed, progress_checkpoint_due,
-        progress_line_interval, progress_policy_is_supported, record_compaction_elapsed,
-        record_mixture_outcome, replay_campaign_checkpointed, replay_campaign_prefix_checkpointed,
-        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
-        run_campaign_checkpointed, run_campaign_checkpointed_with_options, run_job,
-        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
-        stop_reservations_after_objective, with_coordinator_session,
+        coordinator_session_result, default_window, execution_work_delta, finish_record,
+        full_selector_report_due, is_zero_usize, memory_is_within_reserve, postcard_value_sha256,
+        profile_elapsed, progress_checkpoint_due, progress_line_interval,
+        progress_policy_is_supported, record_compaction_elapsed, replay_campaign_checkpointed,
+        replay_campaign_prefix_checkpointed, replay_splice, resident_memory_is_within_budget,
+        retained_archive_indexes, run_campaign_checkpointed,
+        run_campaign_checkpointed_with_options, run_job, schedule_policy_identifier,
+        schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
+        with_coordinator_session,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
         SelectorPath, entries_by_suffix,
     };
-    use crate::search::draw::{DrawMixture, MixtureDraw, MixtureEnergy};
+    use crate::search::draw::{DrawMixture, MixtureDraw};
     use crate::search::rollout::{ExecutionDisposition, Outcome, Rollout, execute_suffix};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
@@ -9449,14 +9302,13 @@ mod tests {
         let selector = &final_record.selector;
         assert!(interval_draws >= selector.cell_selections);
         assert!(
-            interval_draws
-                <= selector.cell_selections + selector.continuation_selections.unwrap_or(0)
+            interval_draws <= selector.cell_selections + selector.realized_selections.unwrap_or(0)
         );
         assert!(interval_draws > 0);
     }
 
     #[test]
-    fn a_key_without_a_preference_runs_and_replays_with_no_continuation_bank() {
+    fn a_key_without_a_preference_runs_and_replays_with_no_labels() {
         let config = CampaignConfig {
             campaign_seed: 31,
             workers: 2,
@@ -9489,13 +9341,12 @@ mod tests {
         )
         .expect("campaign without a preference");
         let text = std::str::from_utf8(&stream).expect("stream is utf-8");
-        assert!(!text.contains("\"path\":\"continuation\""));
-        assert!(!text.contains("continuation_energy"));
+        assert!(!text.contains("\"realization\":"));
         let progress = String::from_utf8(progress).expect("progress is utf-8");
         let last: CampaignProgressRecord<serde_json::Value> =
             serde_json::from_str(progress.lines().last().expect("a progress line"))
                 .expect("progress record parses");
-        assert_eq!(last.continuations, ContinuationAccounting::default());
+        assert_eq!(last.labels.realized, 0);
         assert_eq!(
             replay_campaign_checkpointed(&workload, &stream, None, None)
                 .expect("replay without a preference"),
@@ -11022,7 +10873,7 @@ mod tests {
         let (index, _) = job_lines(&stream)
             .into_iter()
             .find(|(_, job)| {
-                job.selector.path != SelectorPath::Continuation
+                job.realization.is_none()
                     && matches!(job.splice, Some(CampaignSpliceRecord::Tail { .. }))
             })
             .expect("ordinary splice job");
@@ -12320,77 +12171,6 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    #[test]
-    fn the_continuation_draw_takes_a_fixed_one_reservation_in_four() {
-        let taken = (0..4096)
-            .filter(|reservation| draws_continuation(11, *reservation))
-            .count();
-        assert!(
-            (896..1152).contains(&taken),
-            "one in four of 4096 reservations, got {taken}"
-        );
-    }
-
-    #[test]
-    fn the_continuation_draw_is_seeded_by_the_campaign_and_the_reservation() {
-        assert_eq!(draws_continuation(11, 3), draws_continuation(11, 3));
-        assert!(
-            (0..512).any(|reservation| draws_continuation(11, reservation)
-                != draws_continuation(12, reservation))
-        );
-    }
-
-    #[test]
-    fn the_highest_preference_draw_is_one_pop_in_four_and_independent_of_the_attempt() {
-        let taken = (0..4096)
-            .filter(|reservation| draws_highest_preference(11, *reservation))
-            .count();
-        assert!(
-            (896..1152).contains(&taken),
-            "one in four of 4096 reservations, got {taken}"
-        );
-        assert!(
-            (0..512).any(|reservation| draws_highest_preference(11, reservation)
-                != draws_continuation(11, reservation))
-        );
-    }
-
-    #[test]
-    fn a_continuation_outcome_leaves_the_draw_weights_alone() {
-        let mut energy = MixtureEnergy::default();
-        let mixture = DrawMixture::EnergySplice { scale: 4 };
-        let before = energy.splice_weights(4);
-        for seed in 0..64_u64 {
-            record_mixture_outcome(
-                &mut energy,
-                mixture,
-                SelectorPath::Continuation,
-                seed,
-                (128, 128),
-                seed % 3 == 0,
-                10,
-            )
-            .expect("continuation outcome");
-        }
-        assert_eq!(energy.splice_weights(4), before);
-        assert_eq!(
-            energy.biased_weight(4),
-            MixtureEnergy::default().biased_weight(4)
-        );
-        for _ in 0..16 {
-            record_mixture_outcome(
-                &mut energy,
-                mixture,
-                SelectorPath::Tiers,
-                1,
-                (128, 128),
-                false,
-                10,
-            )
-            .expect("ordinary outcome");
-        }
-        assert_ne!(energy.splice_weights(4), before);
-    }
     #[test]
     fn replay_rejects_a_forged_initial_archive_skip_suffix_limit() {
         let workload = TestWorkload {
