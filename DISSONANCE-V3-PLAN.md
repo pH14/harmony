@@ -99,11 +99,19 @@ Rules that make this fast:
 
 - Record once, analyze many times. Keep every checkpoint and the full
   stream. Delete nothing that a pass line cites.
-- Preregister every run: question, pass line, budget, seeds, binary hash.
-  Append it to the attempts log before the run and the result after. The
-  attempts log is `dissonance-v3/ATTEMPTS.local.md`, a new file that starts
-  empty with this work. It is the only record of runs; nothing else in the
-  repository is consulted for history. A run that reaches its budget is recorded as reaching the budget,
+- Preregister every scored run: question, pass line, budget, seeds, binary
+  hash. Append it to the attempts log before the run and the result after.
+  The attempts log is `dissonance-v3/ATTEMPTS.local.md`, a new file that
+  starts empty with this work. It is the only record of runs; nothing else
+  in the repository is consulted for history. A scored run is one whose
+  result bears on a pass line. Builds, unit tests, lint, file copies,
+  storage work and diagnostics are not preregistered and not logged; one
+  entry per scored run, at most fifteen lines, result included.
+- Infrastructure is not the work. Storage formats, memory layouts, disk
+  guards and tool speed get attention only when a pass line cannot be
+  computed at all. A hindsight pass that needs four hours and 30 GB on ms02
+  is run that way, once, before any optimization. A recording that is not
+  cited by a pass line is deleted when disk is short. A run that reaches its budget is recorded as reaching the budget,
   never as a failure.
 - A test is uninformative when the control is at 0 of N or N of N, when
   arms tie, or when the mechanism did not fire. An uninformative test is a
@@ -278,10 +286,12 @@ bottlenecks. Run it offline on positions taken from the recordings' hand
 keys so it can be scored before stage 2 lands.
 
 Pass: label lead ratios at or below 0.2 on at least one early milestone of
-SMB and of Metroid; terminal edges move the SMB 5-4 prediction earlier;
-regions agree with room and area fields better than a random partition of
-equal size; the deepest region at each checkpoint predicts the next
-milestone.
+SMB and of Metroid; regions agree with room and area fields better than a
+random partition of equal size; the deepest region at each checkpoint
+predicts the next milestone. The stage passes on retained-only records,
+which is all the black-box recordings contain. The terminal-edge check,
+that terminal edges move the SMB 5-4 prediction earlier, waits for the
+first v3-recorded corpus and does not hold the stage.
 
 ### Stage 4: graph on learned positions (Mac, offline)
 
