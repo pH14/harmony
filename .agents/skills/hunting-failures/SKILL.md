@@ -65,7 +65,7 @@ Then run the native baseline with faults for the same wall time the search
 will get, on the same image:
 
 ```sh
-python3 workloads/harness/native.py IMAGE --for 1h --seed N
+python3 workloads/harness/native.py IMAGE --for 3600 --seed N
 ```
 
 ## 4. Search
