@@ -18,9 +18,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{ArcadeGame, HIDDEN, Machines};
 
-/// Punch-Out has no screen position for Mac that the trail can use, so a sample
-/// is placed by damage: x is the opponent's damage across the screen and y is
-/// Mac's damage in a band along the bottom edge.
 const TRACK_WIDTH: u16 = 256;
 const TRACK_HEIGHT: u16 = 16;
 const TRACK_BOTTOM: u16 = 216;

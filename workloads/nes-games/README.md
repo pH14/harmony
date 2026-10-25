@@ -56,7 +56,7 @@ and the emulator state of a snapshot. The `smb`, `metroid`, `mm2`, `castlevania`
 backend. `ArcadeGame` decodes RAM in static functions, so `FamidashGame` takes
 the index of a level group in `famidash::levels::GROUPS` as the const
 parameter `GROUP`. Each group is its own game type, with that group's side,
-levels and map tops. `trail::Traced` wraps a machine and records each job's motion trail
+levels and map tops. Punch-Out!! has no screen position for Mac, so its motion sample places a point by damage: x is the opponent's damage across the screen and y is Mac's damage in a band along the bottom edge. `trail::Traced` wraps a machine and records each job's motion trail
 every four frames and at every chord end, and every controller action it runs. `feed::run_noted` runs a job inside
 that recorder and returns a `Note` with the trail, the view of every step and
 each candidate's snapshot digest. `feed::Feed` joins notes with the
