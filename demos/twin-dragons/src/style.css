@@ -1060,9 +1060,12 @@ html:not([data-switched]) .branches { animation: timeline-in .2s ease-out; }
 .exploration { container: exploration / inline-size; }
 @container exploration (max-width: 620px) {
   .goal { flex-wrap: wrap; row-gap: 10px; }
-  .goal > .level-nav { flex: 1 1 100%; gap: 10px; }
-  .level-strip { padding-left: 10px; }
+  .goal > .level-nav { flex: 1 1 100%; gap: 8px; }
+  .level-strip { gap: 4px; padding-left: 8px; }
+  .level-strip .level-more { padding: 0 8px; }
   .level-strip .level-more span { display: none; }
+  .level-trail button { padding: 0 8px; }
+  .level-trail button:only-child[aria-pressed="true"] { padding-right: 4px; font-size: 14px; }
   .new-search { width: var(--bar-height); justify-content: center; padding: 0; }
   .new-search span { display: none; }
   .new-search::before { font-size: 18px; }

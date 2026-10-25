@@ -2035,12 +2035,13 @@ function renderLevelStrip() {
     after = path.levels.findIndex((id) => id > focusedLevel),
     ids = path.levels.includes(focusedLevel) ? path.levels : path.levels.toSpliced(after < 0 ? path.levels.length : after, 0, focusedLevel),
     levels = ids.map((id) => catalog.levels.find((level) => level.id === id)).filter(Boolean),
-    recent = new Set(levels.slice(-2).map((level) => level.id).concat(focusedLevel)),
+    phone = phoneLayout.matches,
+    recent = new Set((phone ? [live] : levels.slice(-2).map((level) => level.id)).concat(focusedLevel)),
     hidden = levels.filter((level) => !recent.has(level.id)),
-    collapse = hidden.length > 1,
+    collapse = hidden.length > (phone ? 0 : 1),
     shown = collapse && !levelsExpanded ? levels.filter((level) => recent.has(level.id)) : levels,
     locked = !ready || branchBusy || controlMode,
-    key = `${levels.map((level) => `${level.id}${cleared.has(level.id) ? "c" : ""}`)}|${focusedLevel}|${live}|${gameWon}|${locked}|${collapse && levelsExpanded}`;
+    key = `${levels.map((level) => `${level.id}${cleared.has(level.id) ? "c" : ""}`)}|${focusedLevel}|${live}|${gameWon}|${locked}|${phone}|${collapse && levelsExpanded}`;
   const strip = $("level-strip"),
     trail = $("level-trail");
   if (strip.dataset.key === key) return;
@@ -2099,6 +2100,7 @@ new ResizeObserver(() => {
   revealLevel($("level-trail").querySelector('[aria-pressed="true"]'));
   fadeTrail();
 }).observe($("level-trail"));
+phoneLayout.addEventListener("change", renderLevelStrip);
 $("level-more").onclick = () => {
   levelsExpanded = !levelsExpanded;
   renderLevelStrip();
@@ -3259,7 +3261,7 @@ function animate(now) {
     for (let i = 0; i < frames; i++) {
       if (
         currentFrame >= 200000 ||
-        !appendInput(current.actions, controller.buttons(), 1)
+        !appendInput(current.actions, controller.buttons(), 1, game.maxActionFrames)
       ) {
         stopControl();
         $("branch-message").hidden = false;
