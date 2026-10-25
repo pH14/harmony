@@ -1248,20 +1248,6 @@ decisions; it only finalizes recorded workload observations. The tiny-world
 adapter uses it to attach job work and convert cumulative work to job-relative
 work, matching its ordinary job executor.
 
-### Learned survival weighting
-
-Each admitted job contributes a draw and, if it ends terminal without
-an objective, a death to its source entry. The same outcome reaches retained
-ancestors with the existing inverse-square count decay applied to lineage
-distance. Counts use the existing fixed-point scale; priors are one survivor
-and two draws. Ordinary parent selection uses rejection sampling over the full
-existing selector, multiplying each entry probability by `(survivors + 1) /
-(draws + 2)`. This includes recent and best-holder paths and single-holder cells.
-Continuation sources receive the same acceptance factor; skipped sources move
-to the back of their preference queue without advancing their edge cursor.
-Counts persist and compact with entries and are included in memory accounting.
-No additional workload execution, admission change, or hard exclusion occurs.
-
 Observers reconstruct inputs with `inspect_entry_input`, which leaves campaign
 work counters unchanged. Search execution uses counted reconstruction so live
 view access cannot change the report that ordinary replay must reproduce.
@@ -1274,5 +1260,3 @@ prevents a changing but cyclic path from consuming the remaining work budget.
 Experimental input strategy energy normalizes the two barren-work decay exponents by their common minimum before applying the existing eight-halving floor. This preserves relative preference when both strategies have long barren stretches; neither draw weight reaches zero. The ordinary action-mixture energy calculation is unchanged.
 
 Chaining preserves the initial selected suffix, including its parent doubling length. Follow-on blocks retain that action-count limit and accumulate suffixes until the workload minimum work is met. At each block boundary, chaining stops when the completed endpoint leaves the source archive cell (progress and place), even when the destination is already known and rejected by retention. This confines live continuation to motion inside one cell while retaining the normal initial job. Terminal outcomes, retention, unchanged or repeated observations, and the work budget also stop the chain.
-
-Minimum-work checks keep a cursor into the generated suffix. Unexecuted actions remain queued across check boundaries; a new suffix is drawn only after the old one is consumed. Check granularity must not discard learned action sequences or add redraws.

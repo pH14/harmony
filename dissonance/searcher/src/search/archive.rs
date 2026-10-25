@@ -284,31 +284,6 @@ fn count_decay(draws: u64) -> u64 {
     (COUNT_DECAY_SCALE / divisor).max(1)
 }
 
-#[derive(Clone, Copy, Default, Deserialize, Serialize)]
-struct SurvivalCounts {
-    draws: u64,
-    deaths: u64,
-}
-
-impl SurvivalCounts {
-    fn record(&mut self, weight: u64, died: bool) {
-        if self.draws > u64::MAX - COUNT_DECAY_SCALE * 3 {
-            self.draws /= 2;
-            self.deaths /= 2;
-        }
-        self.draws += weight;
-        if died {
-            self.deaths += weight;
-        }
-    }
-
-    fn accepts(self, rand: &mut RomuDuoJrRand) -> bool {
-        let survivors = self.draws - self.deaths;
-        rand.below_u64(NonZeroU64::new(self.draws + 2 * COUNT_DECAY_SCALE).unwrap())
-            < survivors + COUNT_DECAY_SCALE
-    }
-}
-
 #[must_use]
 fn tier_weight(rank: u8) -> u64 {
     1_u64 << (u32::from(TIER_RANK_CAP.saturating_sub(rank.min(TIER_RANK_CAP))) * TIER_RANK_SHIFT)
@@ -435,8 +410,6 @@ pub struct ProgressPoint<M, P = ()> {
 pub struct EntrySelectorCounters {
     pub selected: u64,
     pub productive: u64,
-    pub survival_draws_scaled: u64,
-    pub survival_deaths_scaled: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -624,7 +597,6 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub retained: u64,
     pub rejected: u64,
     selected: Vec<u64>,
-    survival: Vec<SurvivalCounts>,
     productive: Vec<u64>,
     opened_cell: Vec<bool>,
     opened_slot: Vec<bool>,
@@ -1230,7 +1202,6 @@ where
             retained: 0,
             rejected: 0,
             selected: Vec::new(),
-            survival: Vec::new(),
             productive: Vec::new(),
             opened_cell: Vec::new(),
             opened_slot: Vec::new(),
@@ -1733,7 +1704,6 @@ where
         }
         self.entries = retain_marked(std::mem::take(&mut self.entries), &keep);
         self.active = retain_marked(std::mem::take(&mut self.active), &keep);
-        self.survival = retain_marked(std::mem::take(&mut self.survival), &keep);
         self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
         self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
@@ -2033,7 +2003,6 @@ where
             column(&self.entries, entries),
             column(&self.active, entries),
             column(&self.selected, entries),
-            column(&self.survival, entries),
             column(&self.productive, entries),
             column(&self.opened_cell, entries),
             column(&self.opened_slot, entries),
@@ -2906,7 +2875,6 @@ where
             None => self.live_progress = Some((key, candidate_cost_in_group)),
         }
         self.selected.push(0);
-        self.survival.push(SurvivalCounts::default());
         self.productive.push(0);
         self.opened_cell.push(new_cell);
         self.opened_slot.push(new_slot);
@@ -3045,18 +3013,6 @@ where
     }
 
     pub fn select_parent(
-        &mut self,
-        rand: &mut RomuDuoJrRand,
-    ) -> Result<(usize, SelectorDraw), Box<dyn Error>> {
-        loop {
-            let drawn = self.select_parent_unweighted(rand)?;
-            if self.survival[drawn.0].accepts(rand) {
-                return Ok(drawn);
-            }
-        }
-    }
-
-    fn select_parent_unweighted(
         &mut self,
         rand: &mut RomuDuoJrRand,
     ) -> Result<(usize, SelectorDraw), Box<dyn Error>> {
@@ -3462,22 +3418,6 @@ where
         self.continuation_wave = wave;
     }
 
-    pub(crate) fn pop_survival_continuation(
-        &mut self,
-        from_highest_preference: bool,
-        rand: &mut RomuDuoJrRand,
-    ) -> Option<Continuation<Position<K>, A>> {
-        let ids = &self.id_to_index;
-        let survival = &self.survival;
-        self.continuations
-            .as_mut()?
-            .pop_accepted(from_highest_preference, |parent| {
-                ids.get(&parent)
-                    .is_some_and(|id| survival[*id].accepts(rand))
-            })
-    }
-
-    #[cfg(test)]
     pub(crate) fn pop_continuation(
         &mut self,
         from_highest_preference: bool,
@@ -3725,17 +3665,6 @@ where
         }
     }
 
-    pub(crate) fn record_survival_outcome(&mut self, id: usize, died: bool) {
-        self.sync_parent_index();
-        let mut ancestor = id;
-        let mut distance = 0;
-        while let Some(counts) = self.survival.get_mut(ancestor) {
-            counts.record(count_decay(distance), died);
-            ancestor = self.parent_index[ancestor];
-            distance += 1;
-        }
-    }
-
     pub fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool) {
         if !retained_descendant {
             return;
@@ -3870,8 +3799,6 @@ where
                 selector: Some(EntrySelectorCounters {
                     selected: self.selected[id],
                     productive: self.productive[id],
-                    survival_draws_scaled: self.survival[id].draws,
-                    survival_deaths_scaled: self.survival[id].deaths,
                 }),
             };
             reports.push(report);
@@ -5887,7 +5814,7 @@ mod tests {
             let mut reference = actual;
             for _ in 0..256 {
                 assert_eq!(
-                    archive.select_parent_unweighted(&mut actual).unwrap(),
+                    archive.select_parent(&mut actual).unwrap(),
                     archive
                         .select_parent_candidates_reference(&mut reference)
                         .unwrap()
@@ -5901,7 +5828,7 @@ mod tests {
                 let ratio = paired_candidate_timing(
                     |new, rand| {
                         black_box(if new {
-                            archive.select_parent_unweighted(rand)
+                            archive.select_parent(rand)
                         } else {
                             archive.select_parent_candidates_reference(rand)
                         })
@@ -9399,55 +9326,6 @@ mod tests {
         assert_eq!(campaign.donor_id, donor);
         assert_eq!(campaign.leaf_id, leaf);
         assert_eq!(campaign.actions, vec![3]);
-    }
-
-    #[test]
-    fn survival_weight_changes_single_holder_cell_draws_without_excluding_sources() {
-        let mut archive = tier_archive(&[(1, 1, 0), (1, 1, 5)]);
-        for _ in 0..100 {
-            archive.record_survival_outcome(0, true);
-            archive.record_survival_outcome(1, false);
-        }
-        let counts = unrecorded_draw_counts(&mut archive, 731, 8192);
-        assert!(counts[0] > 0, "cold entry remains drawable: {counts:?}");
-        assert!(
-            counts[1] > counts[0] * 10,
-            "survival changes full selection: {counts:?}"
-        );
-        let mut restored: TestArchive =
-            postcard::from_bytes(&postcard::to_stdvec(&archive).expect("encode")).expect("decode");
-        restored
-            .restore_runtime(|_| 1, None, Vec::new())
-            .expect("restore");
-        assert_eq!(
-            unrecorded_draw_counts(&mut archive, 732, 1024),
-            unrecorded_draw_counts(&mut restored, 732, 1024)
-        );
-    }
-
-    #[test]
-    fn survival_outcome_reaches_ancestors_with_existing_count_decay() {
-        let mut archive = tier_archive(&[(1, 1, 0)]);
-        let child = archive
-            .insert(
-                Some(0),
-                0,
-                ArchiveCandidate {
-                    suffix: vec![9],
-                    key: probe_key(1, 1, 5, 0),
-                    milestones: (),
-                },
-                (),
-            )
-            .expect("insert")
-            .expect("retain");
-        archive.record_survival_outcome(child, true);
-        assert_eq!(archive.survival[child].draws, super::COUNT_DECAY_SCALE);
-        assert_eq!(archive.survival[0].draws, super::count_decay(1));
-        assert_eq!(archive.survival[0].deaths, super::count_decay(1));
-        archive.record_survival_outcome(child, false);
-        assert_eq!(archive.survival[child].draws, 2 * super::COUNT_DECAY_SCALE);
-        assert_eq!(archive.survival[child].deaths, super::COUNT_DECAY_SCALE);
     }
 
     fn tier_archive(keys: &[(u8, u8, u16)]) -> TestArchive {

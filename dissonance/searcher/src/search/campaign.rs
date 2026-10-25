@@ -97,7 +97,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 17;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 16;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window; each job's planned finish is the planned finish of the admission before its \
@@ -1186,14 +1186,11 @@ struct ContinuationReservation<G: Workload + ?Sized> {
 fn take_continuation<G: Workload + ?Sized>(
     core: &mut CoordinatorCore<G>,
     from_highest_preference: bool,
-    rand: &mut RomuDuoJrRand,
 ) -> Option<ContinuationReservation<G>> {
     let mut examined = 0_usize;
     let mut gaining_fallback = None;
     while examined < CONTINUATION_EXITS_PER_RESERVATION
-        && let Some(continuation) = core
-            .archive
-            .pop_survival_continuation(from_highest_preference, rand)
+        && let Some(continuation) = core.archive.pop_continuation(from_highest_preference)
     {
         examined = examined.saturating_add(1);
         let Some(parent_index) = core.archive.index_of_id(continuation.parent) else {
@@ -1251,10 +1248,7 @@ fn continuation_attempt<G: Workload + ?Sized>(
     let taken = takes
         .then(|| {
             let from_highest_preference = draws_highest_preference(campaign_seed, reservation);
-            let mut rand = RomuDuoJrRand::with_seed(
-                campaign_seed ^ reservation.rotate_left(32) ^ u64::from_le_bytes(*b"SURVIVAL"),
-            );
-            take_continuation(core, from_highest_preference, &mut rand)
+            take_continuation(core, from_highest_preference)
         })
         .flatten();
     (Some(energy), taken)
@@ -2087,7 +2081,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             .index_of_id(parent_id)
             .ok_or("campaign job parent is no longer resident")?;
         if let Some(observations) = preparation_failure {
-            self.archive.record_survival_outcome(parent_index, false);
             self.execution_failures = self.execution_failures.saturating_add(1);
             workload.merge_preparation_failure(&mut self.evidence, &observations);
             return Ok((sequence, Vec::new(), DurationAdmission::default()));
@@ -2102,11 +2095,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         let terminal = actions
             .last()
             .is_some_and(|action| action.outcome.disposition.is_terminal());
-        let terminal_without_objective = actions.last().is_some_and(|action| {
-            action.outcome.disposition.is_terminal() && !action.outcome.disposition.is_failed()
-        }) && !actions
-            .iter()
-            .any(|action| action.outcome.objective_reached);
         let parent_place = self.archive.entries[parent_index].key.place();
         let retained_at_start = self.archive.retained;
         let mut left_place = false;
@@ -2218,8 +2206,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 }
             }
         }
-        self.archive
-            .record_survival_outcome(parent_index, terminal_without_objective);
         if limited {
             self.archive.record_suffix_outcome(
                 parent_index,
@@ -6874,10 +6860,6 @@ mod tests {
         assert_eq!(core.terminal_endpoints, 1);
         assert_eq!(core.terminal_objectives, 1);
         assert_eq!(core.execution_failures, 1);
-        let (entries, _) = core.archive.take_entry_reports_and_snapshots();
-        let counts = entries[0].selector.expect("selector counts");
-        assert_eq!(counts.survival_draws_scaled, 2 * (1_u64 << 32));
-        assert_eq!(counts.survival_deaths_scaled, 0);
     }
 
     #[test]
@@ -7778,7 +7760,7 @@ mod tests {
         assert!(error.contains("suffix limit"), "{error}");
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":17,"format":"campaign-v1","campaign_seed":7,
+    const RECORDED_HEADER: &str = r#"{"schema_version":16,"format":"campaign-v1","campaign_seed":7,
 "schedule_policy":"planned_finish_window_2_v6","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -11733,7 +11715,7 @@ mod tests {
             source: source_archive.clone(),
             checkpoint: None,
         };
-        let mut config = CampaignConfig {
+        let config = CampaignConfig {
             campaign_seed: 196,
             workers: 3,
             execution_budget: 8,
@@ -11751,22 +11733,7 @@ mod tests {
             objective_witness_path: None,
         };
         let mut stream = Vec::new();
-        for seed in 0..256 {
-            config.campaign_seed = seed;
-            stream.clear();
-            run_campaign_checkpointed(&workload, &config, &origin, &mut stream, None).unwrap();
-            let first: serde_json::Value = serde_json::from_str(
-                std::str::from_utf8(&stream)
-                    .unwrap()
-                    .lines()
-                    .nth(1)
-                    .unwrap(),
-            )
-            .unwrap();
-            if first["event"] == "skip" {
-                break;
-            }
-        }
+        run_campaign_checkpointed(&workload, &config, &origin, &mut stream, None).unwrap();
         replay_campaign_checkpointed(&workload, &stream, Some(&source_archive), None).unwrap();
         let mut records = std::str::from_utf8(&stream)
             .unwrap()
@@ -11774,8 +11741,9 @@ mod tests {
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(records[1]["event"], "skip");
-        assert!(records[1]["reservation"].as_u64().unwrap() < config.window as u64);
+        assert_eq!(records[1]["reservation"], 1);
         assert_eq!(records[1]["suffix_limit"], 1);
+        assert_eq!(records[2]["event"], "job");
         records[1]["suffix_limit"] = serde_json::json!(2);
         let forged = records
             .iter()
