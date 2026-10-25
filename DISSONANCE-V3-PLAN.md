@@ -113,6 +113,13 @@ Rules that make this fast:
   runs come last and confirm.
 - Positive and negative controls in every harness: a known-good key must
   pass, a shuffled key must fail, before any candidate is scored.
+- Pass lines are coarse by design. Every measurement has a granularity, such
+  as the report cadence in a hindsight pass, and a result within one
+  granularity step of its threshold meets it. A result of 0.2008 against a
+  threshold of 0.2 measured in steps of 250,000 tries is a pass. Record the
+  number, mark the stage passed, move on. Never rerun, retune or refine a
+  measurement to chase a threshold, and never block a stage on a miss
+  smaller than the measurement can resolve.
 - Never ask for approval. Decide, record, proceed. A turn ends only when
   every machine has work in flight that cannot yet be analyzed, and then
   the turn schedules its own check.
@@ -136,8 +143,11 @@ with milestone files giving the try count and input tape at each milestone.
 
 **Labels.** Replay the stream in order, maintaining positions, holders and
 edges. At each report point (every 250,000 tries), run relaxation and
-record every position's label. For each milestone, take the position where
-it was realized and the stock the search realized there. t_search is the
+record every position's label. The ratio is quantized by the cadence, so
+a ratio within one report step of a threshold meets it; a finer cadence may
+be used when it is cheap, never to rescue a near miss. For each milestone,
+take the position where it was realized and the stock the search realized
+there. t_search is the
 try at which the search realized it. t_label is the first report point at
 which the label at that position already predicted that stock. Lead ratio
 is t_label / t_search. Pass is a ratio at or below 0.2 on at least one
@@ -352,6 +362,9 @@ branch is complete.
 - Keep a fixed-work job rule. Jobs end on observed events.
 - Throw out a working mechanism over a ratio. Capability is the result;
   speed is the next phase. Log the ratio and move on.
+- Chase a threshold. A miss smaller than the measurement granularity is a
+  pass. A larger miss is a result to record and diagnose in one paragraph,
+  then the plan continues.
 - Accept slow silently. A v3 run far slower per try than the current
   searcher at equal workers gets a diagnosis in the log, alongside the
   claim it is pursuing.
