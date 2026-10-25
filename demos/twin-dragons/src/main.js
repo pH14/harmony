@@ -3395,6 +3395,12 @@ function searchesSpotlight() {
     getBoundingClientRect: () => element.getBoundingClientRect(),
     scrollIntoView: (options) => element.scrollIntoView(options) };
 }
+function inspectorSpotlight() {
+  const element = $("inspector"), phone = document.body.classList.contains("tour-phone");
+  return { element, padding: phone ? 0 : 6, radius: phone ? 14 : undefined,
+    getBoundingClientRect: () => element.getBoundingClientRect(),
+    scrollIntoView: (options) => element.scrollIntoView(options) };
+}
 const STEP = { many: 0, one: 1, you: 2, fork: 3, tree: 4 };
 const tour = new GuidedTour({
   occluders: () => [$("inspector"), ...(document.body.classList.contains("tour-phone") && tour.index >= STEP.fork ? [$("branches")] : [])],
@@ -3422,7 +3428,7 @@ const tour = new GuidedTour({
         segments.length
           ? rowsSpotlight([...new Set([tourSession?.cell?.level, ...segments.flat().map((p) => p.level)])].map((room) => mapCanvas(room)))
           : tourCellRect(),
-        $("inspector"),
+        inspectorSpotlight(),
       ],
       interactive: () => [document.querySelector(".transport"), $("sound"), $("state-list"), $("map-rows"), $("take-control")],
     },

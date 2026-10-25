@@ -1189,6 +1189,7 @@ html:not([data-switched]) .workspace:not(.timeline-collapsed) .branches nav { an
 }
 
 /* Phone tours reserve a stage for the real UI instead of floating over it. */
+.tour-phone { --tour-sheet-height: min(52dvh, calc(var(--tour-history-height) * .7)); }
 .tour-phone .inspector {
   inset: auto auto var(--tour-stage-bottom) var(--tour-stage-left);
   width: var(--tour-stage-width);
@@ -1196,8 +1197,11 @@ html:not([data-switched]) .workspace:not(.timeline-collapsed) .branches nav { an
   border-radius: 14px;
   animation: none; scroll-padding-block: 44px 8px;
 }
-.tour-phone .inspector:not(.expanded, .controlling) .screen {
-  max-width: max(96px, calc((min(44dvh, calc(var(--tour-history-height) * .65)) - 150px) * var(--screen-ratio)));
+.tour-phone:not(.tour-landscape) .inspector:not(.expanded, .controlling) {
+  height: var(--tour-sheet-height); max-height: var(--tour-sheet-height);
+}
+.tour-phone:not(.tour-landscape) .inspector:not(.expanded, .controlling) .screen {
+  max-width: min(384px, calc(34dvh * var(--screen-ratio)), calc((var(--tour-sheet-height) - 150px) * var(--screen-ratio)));
 }
 .tour-phone .inspector.expanded { height: var(--tour-history-height); max-height: var(--tour-history-height); }
 .tour-phone .inspector.controlling {
@@ -1260,7 +1264,7 @@ html:not([data-switched]) .workspace:not(.timeline-collapsed) .branches nav { an
   body:not(.tour-phone) .workspace.inspect-open { padding-bottom: 100dvh; }
   html:has(#inspector:not([hidden])):not(:has(.tour-phone)) { overflow: hidden; overscroll-behavior: none; }
   body:not(.tour-phone) .inspector:not(.expanded, .controlling) { height: var(--sheet-height); max-height: var(--sheet-height); }
-  body.tour-phone .workspace.inspect-open { padding-bottom: 44dvh; }
+  body.tour-phone .workspace.inspect-open { padding-bottom: var(--tour-sheet-height); }
 }
 
 .tour-ping-core { fill: #fff0ae; stroke: #493715; stroke-width: 1.5; }

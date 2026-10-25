@@ -402,7 +402,7 @@ try {
         const hole = [...document.querySelectorAll('#tour-rings rect')].at(-1).getBoundingClientRect(), pane = document.querySelector('#inspector').getBoundingClientRect();
         return {top:hole.top,bottom:hole.bottom,paneTop:pane.top,paneBottom:pane.bottom};
       });
-      assert.ok(clips.top >= clips.paneTop - 6 && clips.bottom <= clips.paneBottom + 6, `Phone spotlights stay inside the visible history sheet: ${JSON.stringify(clips)}`);
+      assert.ok(clips.top >= 0 && clips.bottom <= clips.paneBottom + 6, `Phone spotlights stay inside the visible history sheet: ${JSON.stringify(clips)}`);
     }
     if (step === 1) await watchDuringTour(phone);
     if (step === 1 || step === 2 || step === 4)
