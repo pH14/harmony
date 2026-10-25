@@ -1265,6 +1265,12 @@ html:not([data-switched]) .workspace:not(.timeline-collapsed) .branches nav { an
   html:has(#inspector:not([hidden])):not(:has(.tour-phone)) { overflow: hidden; overscroll-behavior: none; }
   body:not(.tour-phone) .inspector:not(.expanded, .controlling) { height: var(--sheet-height); max-height: var(--sheet-height); }
   body.tour-phone .workspace.inspect-open { padding-bottom: var(--tour-sheet-height); }
+  .inspector:not(.expanded, .controlling) { overflow: hidden; }
+  .inspector:not(.expanded, .controlling) > .drawer-top,
+  .inspector:not(.expanded, .controlling) > .film { flex-shrink: 0; }
+  .inspector:not(.expanded, .controlling) > .state-picker { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .inspector:not(.expanded, .controlling) #state-list { max-height: none; overflow: visible; }
+  @media (max-height: 700px) { body:not(.tour-phone) .inspector:not(.expanded, .controlling) .screen { max-width: min(384px, calc(24dvh * var(--screen-ratio))); } }
 }
 
 .tour-ping-core { fill: #fff0ae; stroke: #493715; stroke-width: 1.5; }

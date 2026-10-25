@@ -1358,6 +1358,16 @@ try {
     "hidden",
     "The page behind a phone history sheet does not scroll",
   );
+  const pinned = await page.locator("#inspector").evaluate((panel) => {
+    const top = () => panel.querySelector(".screen").getBoundingClientRect().top;
+    const before = top();
+    panel.querySelector(".state-picker").scrollTop = 9999;
+    return { moved: Math.abs(top() - before), inspectorScroll: panel.scrollTop };
+  });
+  assert.ok(
+    pinned.moved < 1 && pinned.inspectorScroll === 0,
+    `Scrolling the saved paths keeps the replay screen in view (${JSON.stringify(pinned)})`,
+  );
   await page.locator("#test-scroll-space").evaluate(e => e.remove());
   const collapsedHeight = (await page.locator("#inspector").boundingBox())
     .height;
