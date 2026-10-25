@@ -1119,5 +1119,5 @@ root, and validates it before encoding/deduplication and after decoding.
 Changing assurance is refused even if the receipt root and frame checksum are
 recomputed. The codec does not upgrade an ordinary execution into a qualified
 composition. Older DAG-v1 codecs and flat snapshot envelopes are refused;
-whole-search checkpoints require the distinct v10 envelope. The current
+whole-search checkpoints require the distinct v12 envelope. The current
 execution identity remains v11 and ordered event history remains v3.

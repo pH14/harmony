@@ -145,7 +145,7 @@ scenario has two stages:
 `scripts/historical-oracle.sh` holds these rules and takes the two ids
 from `ORACLE_ASSERTION` and `ORACLE_EVIDENCE`, which the workflow sets from
 `case.json`; `scripts/historical-oracle.test.sh` exercises them
-against synthetic reports in quality CI.
+against synthetic reports in the `Checks / Repository` workflow.
 
 The earlier reproduction in the fault-library work — a campaign that reported
 the corruption at execution 476 with 8 workers at 500 ms horizons — was found
