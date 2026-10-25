@@ -18,6 +18,7 @@ use nes_workload::{
         },
         empirical_steps::EmpiricalStepCheckpoint,
         labels::LabelGraph,
+        survival::{Survival, SurvivalHistogram, fold_weights},
     },
     smb::archive::SmbArchiveKey,
 };
@@ -111,6 +112,7 @@ fn run<K: ArchiveKey>(
     campaign: &Path,
     every: u64,
     stocks: &[Stock<K>],
+    deaths: bool,
 ) -> Result<Value, Box<dyn Error>> {
     let named = named_first_seen(campaign)?;
     let mut report_points = checkpoint_executions(campaign)?;
@@ -130,7 +132,11 @@ fn run<K: ArchiveKey>(
     let reader = BufReader::new(fs::File::open(campaign.join("stream.jsonl"))?);
     let mut lines = reader.lines();
     let _header = lines.next().transpose()?;
-    let raisable = |_: Slot<K>| true;
+    let mut survival: BTreeMap<u64, Survival> = BTreeMap::new();
+    let mut parents: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut histogram = SurvivalHistogram::default();
+    let mut holder_ids: BTreeMap<Slot<K>, Vec<u64>> = BTreeMap::new();
+    let mut died = 0_u64;
     for line in lines {
         let line = line?;
         if line.trim().is_empty() {
@@ -163,19 +169,25 @@ fn run<K: ArchiveKey>(
             if let Some(parent) = parent {
                 graph.record(parent, key, job.parent_id, *id, &[], job.execution_work);
             }
+            survival.insert(*id, Survival::default());
+            histogram.add(Survival::default());
+            parents.insert(*id, job.parent_id);
             let slot = slot_of(key);
             let mut changed = None;
             match holders.get_mut(&slot) {
                 Some(held) => {
+                    let held_ids = holder_ids.entry(slot).or_default();
                     for (preference, held) in held.iter_mut().enumerate() {
                         if key.preference_cmp(preference, *held) == std::cmp::Ordering::Greater {
                             *held = key;
+                            held_ids[preference] = *id;
                             changed.get_or_insert(preference);
                         }
                     }
                 }
                 None => {
                     holders.insert(slot, vec![key; preferences]);
+                    holder_ids.insert(slot, vec![*id; preferences]);
                     changed = Some(0);
                 }
             }
@@ -217,11 +229,41 @@ fn run<K: ArchiveKey>(
             landed += u64::from(arrived);
             graph.transfer_attempted(position_of(*donor), position_of(*leaf), arrived);
         }
+        if deaths {
+            died += u64::from(job.died);
+            let mut node = job
+                .realization
+                .as_ref()
+                .map_or(job.parent_id, |realization| realization.drawn_id);
+            for weight in fold_weights() {
+                let Some(entry) = survival.get_mut(&node) else {
+                    break;
+                };
+                histogram.remove(*entry);
+                entry.record(weight, job.died);
+                histogram.add(*entry);
+                let Some(parent) = parents.get(&node) else {
+                    break;
+                };
+                node = *parent;
+            }
+        }
         {
             let best_holder = |slot: Slot<K>, preference: usize| -> Option<K> {
                 holders
                     .get(&slot)
                     .map(|held| held[preference.min(held.len() - 1)])
+            };
+            let median = histogram.median();
+            let raisable = |slot: Slot<K>| {
+                !deaths
+                    || holder_ids.get(&slot).is_none_or(|ids| {
+                        ids.iter().any(|id| {
+                            survival
+                                .get(id)
+                                .is_some_and(|entry| entry.bucket() >= median)
+                        })
+                    })
             };
             let budget = graph.relaxation_budget();
             graph.relax(budget, &best_holder, &raisable);
@@ -237,7 +279,7 @@ fn run<K: ArchiveKey>(
                 &mut points,
                 job.sequence,
                 stocks,
-                &raisable,
+                &|_| true,
             );
         }
     }
@@ -252,7 +294,7 @@ fn run<K: ArchiveKey>(
             &mut points,
             last_sequence,
             stocks,
-            &raisable,
+            &|_| true,
         );
     }
     let mut best_ratio: Option<f64> = None;
@@ -328,6 +370,8 @@ fn run<K: ArchiveKey>(
         "retained": retained,
         "splice_transfers": transfers,
         "splice_landed": landed,
+        "death_folding": deaths,
+        "died": died,
         "edges": graph.edge_count(),
         "labels": graph.label_count(),
         "accounting": serde_json::to_value(graph.accounting())?,
@@ -441,7 +485,18 @@ fn dump<K: ArchiveKey>(campaign: &Path, out: &Path) -> Result<Value, Box<dyn Err
             _ => None,
         });
         for (id, key) in ids.zip(&job.retained_keys) {
-            serde_json::to_writer(&mut writer, &json!([job.sequence, id, job.parent_id, key]))?;
+            serde_json::to_writer(
+                &mut writer,
+                &json!([
+                    job.sequence,
+                    id,
+                    job.parent_id,
+                    key,
+                    key.progress(),
+                    key.place(),
+                    key.identity()
+                ]),
+            )?;
             writer.write_all(b"\n")?;
             entries += 1;
         }
@@ -465,14 +520,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("{report}");
         return Ok(());
     }
+    let deaths = args.last().is_some_and(|flag| flag == "deaths");
+    let args = &args[..args.len() - usize::from(deaths)];
     if !(2..=3).contains(&args.len()) {
-        return Err("usage: nes-hindsight GAME CAMPAIGN_DIR [EVERY] | nes-hindsight dump GAME CAMPAIGN_DIR OUT".into());
+        return Err("usage: nes-hindsight GAME CAMPAIGN_DIR [EVERY] [deaths] | nes-hindsight dump GAME CAMPAIGN_DIR OUT".into());
     }
     let campaign = PathBuf::from(&args[1]);
     let every: u64 = args.get(2).map_or(Ok(250_000), |every| every.parse())?;
     let report = match args[0].as_str() {
-        "metroid" => run("metroid", &campaign, every, &metroid_stocks())?,
-        "smb" => run("smb", &campaign, every, &smb_stocks())?,
+        "metroid" => run("metroid", &campaign, every, &metroid_stocks(), deaths)?,
+        "smb" => run("smb", &campaign, every, &smb_stocks(), deaths)?,
         other => return Err(format!("unsupported game {other}").into()),
     };
     println!("{report}");

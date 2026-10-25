@@ -984,7 +984,7 @@ where
         let stopped_before = core.hang_stop.is_some();
         let admission_started = profile_now();
         core.finish_suffix_job(pending_job.drawn_id(), pending_job.suffix_limit);
-        let (sequence, decisions, duration_admission) = core.admit_job_tracking(
+        let (sequence, decisions, admission) = core.admit_job_tracking(
             workload,
             pending_job.parent_id,
             result,
@@ -995,14 +995,14 @@ where
                 })
             },
         )?;
-        if duration_admission.applied {
+        if admission.applied {
             let draw = pending_job
                 .duration_draw
                 .ok_or("duration application was reported without a duration draw")?;
             duration_policies.observe(
                 draw.context,
                 draw.duration,
-                duration_admission.useful,
+                admission.useful,
                 NonZeroU64::new(execution_work)
                     .ok_or("duration application requires positive execution work")?,
             )?;
@@ -1028,6 +1028,7 @@ where
             .any(|id| core.archive.opened_new_slot(*id));
         core.archive
             .record_selection_outcome(drawn_index, !retained_ids.is_empty());
+        core.archive.record_job_end(drawn_index, admission.died);
         if let Some(realization) = &pending_job.realization {
             core.archive.record_realized_selection(drawn_index);
             let arrivals = realization_arrivals::<G>(&core.archive, &decisions);
@@ -1103,6 +1104,7 @@ where
             splice_weight: pending_job.splice_weight,
             splice: pending_job.splice,
             realization,
+            died: admission.died,
             selector: pending_job.selector,
             draw_checkpoint_before: pending_job.draw_checkpoint_before,
             draw_checkpoint_after,

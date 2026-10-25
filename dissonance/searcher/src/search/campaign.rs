@@ -953,6 +953,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub splice: Option<CampaignSpliceRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realization: Option<CampaignRealizationRecord>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub died: bool,
     pub selector: SelectorDraw,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draw_checkpoint_before: Option<C>,
@@ -2037,7 +2039,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         result: CampaignJobResult<G>,
         limited: bool,
         mut tracked_action: impl FnMut(&G::Action) -> bool,
-    ) -> Result<(u64, Vec<CampaignAdmissionDecision>, DurationAdmission), Box<dyn Error>> {
+    ) -> Result<(u64, Vec<CampaignAdmissionDecision>, JobAdmission), Box<dyn Error>> {
         workload.verify_integrity()?;
         let CampaignJobResult {
             preparation_failure,
@@ -2070,20 +2072,25 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 input.actions.extend_from_slice(&attempted);
                 Ok(input)
             })?;
-            return Ok((sequence, Vec::new(), DurationAdmission::default()));
+            return Ok((sequence, Vec::new(), JobAdmission::default()));
         }
         self.hang_streak = 0;
         if let Some(observations) = preparation_failure {
             self.execution_failures = self.execution_failures.saturating_add(1);
             workload.merge_preparation_failure(&mut self.evidence, &observations);
-            return Ok((sequence, Vec::new(), DurationAdmission::default()));
+            return Ok((sequence, Vec::new(), JobAdmission::default()));
         }
         let mut current_parent = parent_index;
         let mut pending_suffix = Vec::new();
         let mut pending_certificates = Vec::new();
         let mut previous_key = None;
         let mut decisions = Vec::new();
-        let mut duration = DurationAdmission::default();
+        let mut duration = JobAdmission {
+            died: actions.last().is_some_and(|action| {
+                action.outcome.disposition.is_terminal() && !action.outcome.objective_reached
+            }),
+            ..JobAdmission::default()
+        };
         let actions_run = actions.len();
         let terminal = actions
             .last()
@@ -2530,12 +2537,13 @@ fn execution_work_delta(before: u64, after: u64, scope: &str) -> Result<u64, Box
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct DurationAdmission {
+struct JobAdmission {
     applied: bool,
     useful: bool,
+    died: bool,
 }
 
-struct DurationAdmissionRecord<C> {
+struct JobAdmissionRecord<C> {
     sequence: u64,
     context: C,
     before: Option<DurationCheckpoint>,
@@ -2544,7 +2552,7 @@ struct DurationAdmissionRecord<C> {
 
 fn duration_checkpoint_at_reservation<C: Copy + Ord>(
     policies: &DurationPolicies<C>,
-    admissions: &VecDeque<DurationAdmissionRecord<C>>,
+    admissions: &VecDeque<JobAdmissionRecord<C>>,
     context: C,
     sequence: u64,
 ) -> Option<DurationCheckpoint> {
@@ -4822,7 +4830,7 @@ where
     {
         return Err("campaign stream ended before required reservations completed".into());
     }
-    let mut duration_admissions = VecDeque::new();
+    let mut admissions = VecDeque::new();
     let mut duration_work = VecDeque::from([(0, counters.bootstrap_execution_work)]);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
     let mut replay_job_snapshots =
@@ -5005,7 +5013,7 @@ where
                     }
                     let expected_checkpoint = duration_checkpoint_at_reservation(
                         &duration_policies,
-                        &duration_admissions,
+                        &admissions,
                         draw.context,
                         admission_sequence,
                     );
@@ -5196,7 +5204,7 @@ where
                         .ok_or("recorded duration choice is missing its admission sequence")?;
                     let expected_checkpoint = duration_checkpoint_at_reservation(
                         &duration_policies,
-                        &duration_admissions,
+                        &admissions,
                         draw.context,
                         admission_sequence,
                     );
@@ -5294,7 +5302,7 @@ where
                 drop(snapshot);
                 let objectives_before = core.objectives_reached;
                 core.finish_suffix_job(drawn_id, suffix_limit);
-                let (sequence, decisions, duration_admission) = core.admit_job_tracking(
+                let (sequence, decisions, admission) = core.admit_job_tracking(
                     workload,
                     job.parent_id,
                     result,
@@ -5334,18 +5342,18 @@ where
                         }
                     }
                 }
-                if duration_admission.applied {
+                if admission.applied {
                     let draw = duration_draw
                         .ok_or("duration application was reported without a duration draw")?;
                     let evicted = duration_policies.eviction_checkpoint(draw.context);
                     duration_policies.observe(
                         draw.context,
                         draw.duration,
-                        duration_admission.useful,
+                        admission.useful,
                         NonZeroU64::new(execution_work)
                             .ok_or("duration application requires positive execution work")?,
                     )?;
-                    duration_admissions.push_back(DurationAdmissionRecord {
+                    admissions.push_back(JobAdmissionRecord {
                         sequence,
                         context: draw.context,
                         before: duration_checkpoint_before.clone(),
@@ -5391,6 +5399,14 @@ where
                 let retained_ids = retained_archive_indexes(&core, &decisions);
                 core.archive
                     .record_selection_outcome(drawn_index, !retained_ids.is_empty());
+                if admission.died != job.died {
+                    return Err(format!(
+                        "replayed job {} terminal outcome diverged from the recorded stream",
+                        job.sequence
+                    )
+                    .into());
+                }
+                core.archive.record_job_end(drawn_index, admission.died);
                 if let Some(realization) = &realization {
                     core.archive.record_realized_selection(drawn_index);
                     let arrivals = realization_arrivals::<G>(&core.archive, &decisions);
@@ -5487,11 +5503,11 @@ where
                 {
                     duration_work.pop_front();
                 }
-                while duration_admissions
+                while admissions
                     .front()
                     .is_some_and(|admission| admission.sequence <= oldest_selection)
                 {
-                    duration_admissions.pop_front();
+                    admissions.pop_front();
                 }
                 if objectives_before == 0 && core.objectives_reached > 0 {
                     counters.note_first_objective(sequence);
@@ -5612,15 +5628,15 @@ mod tests {
         CampaignCounters, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
         CampaignOrigin, CampaignOutcome, CampaignProgressRecord, CampaignSpliceRecord,
         CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, CoordinatorCore, DrawTables,
-        DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy,
-        JobOutcome, JobSpec, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile,
-        MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting,
-        RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution,
-        ThreadPlacement, WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve,
-        coordinator_session_result, default_window, execution_work_delta, finish_record,
-        full_selector_report_due, is_zero_usize, memory_is_within_reserve, postcard_value_sha256,
-        profile_elapsed, progress_checkpoint_due, progress_line_interval,
-        progress_policy_is_supported, record_compaction_elapsed, replay_campaign_checkpointed,
+        EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, JobAdmission, JobOutcome,
+        JobSpec, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
+        PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint,
+        SnapshotCheckpointEntry, TargetExecution, ThreadPlacement, WorkloadPolicies,
+        archive_entry_limit_is_valid, compact_progress_curve, coordinator_session_result,
+        default_window, execution_work_delta, finish_record, full_selector_report_due,
+        is_zero_usize, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
+        progress_checkpoint_due, progress_line_interval, progress_policy_is_supported,
+        record_compaction_elapsed, replay_campaign_checkpointed,
         replay_campaign_prefix_checkpointed, replay_splice, resident_memory_is_within_budget,
         retained_archive_indexes, run_campaign_checkpointed,
         run_campaign_checkpointed_with_options, run_job, schedule_policy_identifier,
@@ -8289,9 +8305,10 @@ mod tests {
         );
         assert_eq!(
             duration,
-            DurationAdmission {
+            JobAdmission {
                 applied: true,
                 useful: false,
+                died: false,
             }
         );
     }

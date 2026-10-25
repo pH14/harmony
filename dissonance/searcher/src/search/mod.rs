@@ -20,3 +20,4 @@ mod weighted_set;
 pub mod job_observation;
 pub mod labels;
 pub mod locality;
+pub mod survival;

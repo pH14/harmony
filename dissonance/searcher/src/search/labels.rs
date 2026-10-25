@@ -110,6 +110,10 @@ pub struct LabelAccounting {
     pub replaced: u64,
     pub useful: u64,
     pub execution_work: u64,
+    pub held_back: u64,
+    pub job_ends: u64,
+    pub deaths: u64,
+    pub survival_median: usize,
 }
 
 type Cursor<K> = (Position<K>, Option<Slot<K>>);
@@ -146,6 +150,7 @@ pub struct LabelGraph<A, K: ArchiveKey> {
     relaxations: u64,
     examinations: u64,
     changed: u64,
+    held_back: u64,
 }
 
 impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
@@ -170,6 +175,7 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
             relaxations: 0,
             examinations: 0,
             changed: 0,
+            held_back: 0,
         }
     }
 
@@ -285,6 +291,7 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
             relaxations: self.relaxations,
             examinations: self.examinations,
             changed: self.changed,
+            held_back: self.held_back,
             ..LabelAccounting::default()
         }
     }
@@ -582,16 +589,20 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
         let preferences = best.len();
         let held = self.labels.get(&target);
         if !raisable(target) {
+            let mut held_back = false;
             for (preference, best) in best.iter_mut().enumerate() {
                 let old = held.and_then(|label| label.entry(preference));
                 if let (Some(candidate), Some(old)) = (best.as_ref(), old)
                     && candidate.key.preference_cmp(preference, old.key) == Ordering::Greater
                 {
                     *best = Some(*old);
+                    held_back = true;
                 } else if let (Some(_), None) = (best.as_ref(), old) {
                     *best = None;
+                    held_back = true;
                 }
             }
+            self.held_back = self.held_back.saturating_add(u64::from(held_back));
         }
         let unchanged = match held {
             Some(label) => label.entries == best,

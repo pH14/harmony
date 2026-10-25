@@ -1644,6 +1644,7 @@ mod tests {
                 splice_weight: 0,
                 splice: None,
                 realization: None,
+                died: false,
                 selector: SelectorDraw {
                     path: SelectorPath::Tiers,
                     tier_rank: Some(0),

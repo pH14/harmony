@@ -15,6 +15,7 @@ use crate::search::{
     heap,
     labels::{Hop, LabelAccounting, LabelGraph, label_preferences},
     rand::RomuDuoJrRand,
+    survival::{Survival, SurvivalHistogram, fold_weights},
     weighted_set::WeightedSet,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -262,7 +263,8 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_progress_cascade_pace_yield_cell_recent_count_decay_v2";
+pub const SELECTOR_IDENTIFIER: &str =
+    "tier_progress_cascade_pace_yield_cell_recent_count_decay_survival_v3";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -274,12 +276,12 @@ const _: () = assert!(TIER_RANK_SHIFT * (TIER_RANK_CAP as u32) < u64::BITS);
 
 const COUNT_DECAY_EXPONENT: u32 = 2;
 
-const COUNT_DECAY_SCALE: u64 = 1 << 32;
+pub const COUNT_DECAY_SCALE: u64 = 1 << 32;
 
 const BEST_HOLDER_SHARE_DENOMINATOR: usize = 4;
 
 #[must_use]
-fn count_decay(draws: u64) -> u64 {
+pub fn count_decay(draws: u64) -> u64 {
     let divisor = draws
         .saturating_add(1)
         .saturating_pow(COUNT_DECAY_EXPONENT)
@@ -640,6 +642,10 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub rejected: u64,
     selected: Vec<u64>,
     productive: Vec<u64>,
+    survival: Vec<Survival>,
+    survival_histogram: SurvivalHistogram,
+    job_ends: u64,
+    deaths: u64,
     opened_cell: Vec<bool>,
     opened_slot: Vec<bool>,
     opened_novel_slot: Vec<bool>,
@@ -1250,6 +1256,10 @@ where
             rejected: 0,
             selected: Vec::new(),
             productive: Vec::new(),
+            survival: Vec::new(),
+            survival_histogram: SurvivalHistogram::default(),
+            job_ends: 0,
+            deaths: 0,
             opened_cell: Vec::new(),
             opened_slot: Vec::new(),
             opened_novel_slot: Vec::new(),
@@ -1758,10 +1768,16 @@ where
                 self.take_snapshot(index);
             }
         }
+        for (index, keep) in keep.iter().enumerate() {
+            if !keep {
+                self.survival_histogram.remove(self.survival[index]);
+            }
+        }
         self.entries = retain_marked(std::mem::take(&mut self.entries), &keep);
         self.active = retain_marked(std::mem::take(&mut self.active), &keep);
         self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
+        self.survival = retain_marked(std::mem::take(&mut self.survival), &keep);
         self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_novel_slot = retain_marked(std::mem::take(&mut self.opened_novel_slot), &keep);
@@ -2079,6 +2095,7 @@ where
             column(&self.active, entries),
             column(&self.selected, entries),
             column(&self.productive, entries),
+            column(&self.survival, entries),
             column(&self.opened_cell, entries),
             column(&self.opened_slot, entries),
             column(&self.opened_novel_slot, entries),
@@ -2320,7 +2337,7 @@ where
         let rank = self.holder_rank(0, id);
         let (progress, place) = (rank.key.progress(), rank.key.place());
         let place_weight = self.place_weight(progress, place);
-        let holder_weight = count_decay(self.selected[id]);
+        let holder_weight = self.holder_weight(id);
         let tier = self.tiers.entry(progress).or_default();
         tier.weights.insert(place, place_weight);
         let members = tier.places.entry(place).or_default();
@@ -2329,6 +2346,56 @@ where
         for (preference, ranked) in members.ranked.iter_mut().enumerate() {
             ranked.insert(HolderRank { preference, ..rank });
         }
+    }
+
+    fn holder_weight(&self, id: usize) -> u64 {
+        self.survival
+            .get(id)
+            .copied()
+            .unwrap_or_default()
+            .scale(count_decay(self.selected[id]))
+    }
+
+    pub fn record_job_end(&mut self, id: usize, died: bool) {
+        self.job_ends = self.job_ends.saturating_add(1);
+        self.deaths = self.deaths.saturating_add(u64::from(died));
+        self.sync_parent_index();
+        let mut ancestor = id;
+        for weight in fold_weights() {
+            let Some(survival) = self.survival.get_mut(ancestor) else {
+                break;
+            };
+            self.survival_histogram.remove(*survival);
+            survival.record(weight, died);
+            self.survival_histogram.add(*survival);
+            self.refresh_holder_weight(ancestor);
+            ancestor = self
+                .parent_index
+                .get(ancestor)
+                .copied()
+                .unwrap_or(usize::MAX);
+        }
+    }
+
+    fn refresh_holder_weight(&mut self, id: usize) {
+        if !self.active.get(id).copied().unwrap_or(false) {
+            return;
+        }
+        let key = self.entries[id].key;
+        let weight = self.holder_weight(id);
+        if let Some(members) = self
+            .tiers
+            .get_mut(&key.progress())
+            .and_then(|tier| tier.places.get_mut(&key.place()))
+            && members.ids.weight(&id).is_some()
+        {
+            members.ids.set_weight(&id, weight);
+        }
+    }
+
+    #[must_use]
+    pub fn survival(&self, id: usize) -> Survival {
+        self.survival[id]
     }
 
     fn place_weight(&self, progress: K::Progress, place: K::Place) -> u64 {
@@ -2393,10 +2460,7 @@ where
             );
             for members in tier.places.values_mut() {
                 let ids = WeightedSet::from_sorted(
-                    members
-                        .ids
-                        .iter()
-                        .map(|id| (id, count_decay(self.selected[id]))),
+                    members.ids.iter().map(|id| (id, self.holder_weight(id))),
                 );
                 members.ranked = self.cell_ranks(&ids);
                 members.ids = ids;
@@ -2932,6 +2996,8 @@ where
         }
         self.selected.push(0);
         self.productive.push(0);
+        self.survival.push(Survival::default());
+        self.survival_histogram.add(Survival::default());
         self.opened_cell.push(new_cell);
         self.opened_slot.push(new_slot);
         self.opened_novel_slot.push(novel_slot);
@@ -3258,7 +3324,7 @@ where
                     && members
                         .ids
                         .iter()
-                        .all(|id| members.ids.weight(&id) == Some(count_decay(self.selected[id])))
+                        .all(|id| members.ids.weight(&id) == Some(self.holder_weight(id)))
                     && members.ranked.len() == K::preferences()
                     && members
                         .ranked
@@ -3501,8 +3567,15 @@ where
                 .map(|index| entries[*index].key)
                 .max_by(|a, b| a.preference_cmp(preference, *b))
         };
+        let survival = &self.survival;
+        let median = self.survival_histogram.median();
+        let raisable = |slot: Slot<K>| {
+            slots
+                .get(&slot)
+                .is_none_or(|held| held.iter().any(|index| survival[*index].bucket() >= median))
+        };
         let budget = labels.relaxation_budget();
-        labels.relax(budget, &best_holder, &|_| true)
+        labels.relax(budget, &best_holder, &raisable)
     }
 
     #[must_use]
@@ -3519,6 +3592,10 @@ where
             relaxations: graph.relaxations,
             examinations: graph.examinations,
             changed: graph.changed,
+            held_back: graph.held_back,
+            job_ends: self.job_ends,
+            deaths: self.deaths,
+            survival_median: self.survival_histogram.median(),
             ..self.realization_accounting.clone()
         }
     }
@@ -3715,7 +3792,7 @@ where
         state.draws = state.draws.saturating_add(1);
         state.draws_total = state.draws_total.saturating_add(1);
         let place_weight = count_decay(state.draws);
-        let holder_weight = count_decay(self.selected[id]);
+        let holder_weight = self.holder_weight(id);
         if let Some(interval) = self.interval_counts(cell_of(key)) {
             interval.draws = interval.draws.saturating_add(1);
             if draw.path == SelectorPath::Recent {
@@ -4104,7 +4181,7 @@ where
         }
         let weights = ids
             .iter()
-            .map(|id| count_decay(self.selected[*id]))
+            .map(|id| self.holder_weight(*id))
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, weights.iter().copied())?;
         Ok((ids[index], None))
@@ -4167,13 +4244,15 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::{
-        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellDraws, CellIntervalRow, CellMembers,
-        CellState, HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
-        MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
-        SharedAllocation, SharedSnapshotMemory, SnapshotRetention, TIER_RANK_SHIFT, TierCells,
-        WeightedSet, tier_weight,
+        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, COUNT_DECAY_SCALE, CellDraws,
+        CellIntervalRow, CellMembers, CellState, HISTORY_COMPACTION_MIN_DROPS,
+        HISTORY_COMPACTION_SHARE, Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY,
+        SelectorAccounting, SelectorDraw, SelectorPath, SharedAllocation, SharedSnapshotMemory,
+        SnapshotRetention, TIER_RANK_SHIFT, TierCells, WeightedSet, count_decay, tier_weight,
     };
-    use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand};
+    use crate::search::{
+        draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand, survival::Survival,
+    };
     use serde::{Deserialize, Serialize};
     use std::{collections::BTreeMap, sync::Arc};
 
@@ -6373,6 +6452,65 @@ mod tests {
         assert_eq!(realization.actions, vec![2]);
         assert_eq!(archive.realization(right, Some(0)), Some(realization));
         assert_eq!(archive.realization(richer, None), None);
+    }
+
+    #[test]
+    fn a_death_folds_into_its_ancestors_with_the_count_decay_and_lowers_their_draw_weight() {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        let left = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        let right = insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
+        archive.rebuild_selector_index();
+        let before = archive.holder_weight(right);
+        archive.record_job_end(right, true);
+        archive.record_job_end(left, false);
+        assert_eq!(
+            archive.survival(right),
+            Survival {
+                draws: COUNT_DECAY_SCALE,
+                deaths: COUNT_DECAY_SCALE,
+            }
+        );
+        assert_eq!(
+            archive.survival(left),
+            Survival {
+                draws: COUNT_DECAY_SCALE + count_decay(1),
+                deaths: count_decay(1),
+            }
+        );
+        assert!(archive.holder_weight(right) < before);
+        let members = &archive.tiers[&()].places[&1];
+        assert_eq!(
+            members.ids.weight(&right),
+            Some(archive.holder_weight(right))
+        );
+        assert_eq!(members.ids.weight(&left), Some(archive.holder_weight(left)));
+        let report = archive.label_report();
+        assert_eq!((report.job_ends, report.deaths), (2, 1));
+        let bytes = postcard::to_allocvec(&archive).unwrap();
+        let restored: Archive<u8, RegionKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.survival(right), archive.survival(right));
+        assert_eq!(restored.label_report(), report);
+    }
+
+    #[test]
+    fn a_position_whose_holder_keeps_dying_keeps_its_label_below_the_median() {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        archive.enable_labels(4);
+        let left = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        let right = insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
+        for spot in 0..3 {
+            insert_region_at(&mut archive, None, 4, (2, spot, 1));
+        }
+        for _ in 0..4 {
+            archive.record_job_end(right, true);
+        }
+        while archive.relax_labels() > 0 {}
+        insert_region_at(&mut archive, None, 3, (1, 0, 9));
+        while archive.relax_labels() > 0 {}
+        assert_eq!(archive.realization(right, None), None);
+        let report = archive.label_report();
+        assert!(report.held_back > 0);
+        assert!(report.survival_median > archive.survival(right).bucket());
     }
 
     #[test]

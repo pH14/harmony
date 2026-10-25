@@ -1732,6 +1732,38 @@ fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
 }
 
 #[test]
+fn a_flipped_death_record_fails_its_replay() {
+    let config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap().to_owned();
+    let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+    let line = lines
+        .iter_mut()
+        .find(|line| line.contains("\"event\":\"job\""))
+        .expect("a job record");
+    let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+    let died = value["died"].as_bool().unwrap_or(false);
+    value["died"] = serde_json::json!(!died);
+    *line = serde_json::to_string(&value).unwrap();
+    let error =
+        replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
+            .expect_err("replay accepted a flipped death record")
+            .to_string();
+    assert!(
+        error.contains("terminal outcome diverged"),
+        "a flipped death record failed for another reason: {error}"
+    );
+}
+
+#[test]
 fn a_record_missing_its_retained_keys_fails_its_replay() {
     let config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     let mut bytes = Vec::new();

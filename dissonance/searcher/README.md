@@ -835,13 +835,26 @@ Replay rebuilds the labels from the stream, recomputes the realization at each
 reservation and rejects a record that disagrees. Labels, edges, counters and
 the queue are saved in search checkpoints.
 
+Each entry keeps a `Survival` estimate: jobs drawn from it and jobs that ended
+terminal without an objective. A finished job credits its drawn holder with
+the full count and its ancestors with the count decay of their distance, for
+as long as that weight stays at least 1/64 of the direct one. The estimate is
+(survivors + 1) / (draws + 2), so an unseen entry sits at one half. It
+multiplies the holder's draw weight. A histogram of the estimates over resident
+entries gives the archive median. Relaxation does not raise the label of a
+slot whose holders all sit below that median. The job record carries `died`
+for a job that ended terminal without an objective, and replay rejects a
+record whose replayed outcome differs. The same type folds deaths in
+`nes-hindsight ... deaths`.
+
 Labels exist only for a key that declares a preference. Without one nothing is
 recorded, charged or realized, and the stream is unchanged. `LabelAccounting`
 rides every live progress line under `labels`: `edges`, `labels` and `queued`
 for the graph's size, `relaxations`, `examinations` and `changed` for its
 work, and `realized`, `hops_attempted`, `hops_landed`, `arrived`, `replaced`,
-`useful` and `execution_work` for the realized jobs. A useful arrival is one
-whose entry later bred a retained child.
+`useful` and `execution_work` for the realized jobs, and `held_back`,
+`job_ends`, `deaths` and `survival_median` (in 64ths) for survival. A useful
+arrival is one whose entry later bred a retained child.
 
 `nes-hindsight` in `workloads/nes` builds the same labels offline from a
 recorded stream and reports when each milestone's stock was first predicted
