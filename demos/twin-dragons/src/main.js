@@ -1334,12 +1334,19 @@ function followReplayRoom(point) {
   if (changed || changedPart || (phone && revealReplayRoom)) {
     revealReplayRoom = false;
     if (phone && $("inspector").classList.contains("expanded")) return;
-    const bounds = row.getBoundingClientRect(),
-      sheet = $("inspector").getBoundingClientRect(),
-      bottom = phone ? sheet.top - 12 : innerHeight - 20;
-    if (bounds.top < 20 || bounds.bottom > bottom)
+    if (phone) return showMapAboveSheet(row);
+    const bounds = row.getBoundingClientRect();
+    if (bounds.top < 20 || bounds.bottom > innerHeight - 20)
       window.scrollBy({ top: bounds.top - 24, behavior: "instant" });
   }
+}
+function showMapAboveSheet(row) {
+  const mapRow = row.closest(".map-row") || row,
+    toolbar = document.querySelector(".goal"),
+    room = innerHeight - $("inspector").offsetHeight - 16,
+    toolbarTop = toolbar.getBoundingClientRect().top,
+    anchor = mapRow.getBoundingClientRect().bottom - toolbarTop <= room ? toolbar : mapRow;
+  window.scrollBy({ top: anchor.getBoundingClientRect().top - 8, behavior: "instant" });
 }
 function recordTrail() {
   timeline.trail = trace;

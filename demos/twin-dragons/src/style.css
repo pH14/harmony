@@ -740,7 +740,7 @@ dialog h2 {
     font-size: 22px;
   }
   .inspector .screen {
-    max-width: min(384px, calc(40dvh * var(--screen-ratio)));
+    max-width: min(384px, calc(34dvh * var(--screen-ratio)));
     margin: auto;
   }
   .inspector:not(.expanded) .film {
@@ -1252,7 +1252,13 @@ html:not([data-switched]) .workspace:not(.timeline-collapsed) .branches nav { an
 .room-parts { display: flow-root; background: var(--surface); }
 .room-part { position: relative; min-width: 0; isolation: isolate; }
 
-@media (max-width: 800px) { .workspace.inspect-open { padding-bottom: 44dvh; } }
+@media (max-width: 800px) and (min-height: 501px) {
+  :root { --sheet-height: 58dvh; }
+  body:not(.tour-phone) .workspace.inspect-open { padding-bottom: 100dvh; }
+  html:has(#inspector:not([hidden])):not(:has(.tour-phone)) { overflow: hidden; overscroll-behavior: none; }
+  body:not(.tour-phone) .inspector:not(.expanded, .controlling) { height: var(--sheet-height); max-height: var(--sheet-height); }
+  body.tour-phone .workspace.inspect-open { padding-bottom: 44dvh; }
+}
 
 .tour-ping-core { fill: #fff0ae; stroke: #493715; stroke-width: 1.5; }
 .tour-ping-wave { fill: none; stroke: #ffe29a; stroke-width: 2; animation: tour-cell-ping 2s ease-out infinite; transform-box: fill-box; transform-origin: center; }

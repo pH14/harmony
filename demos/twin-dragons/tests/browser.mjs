@@ -1353,6 +1353,11 @@ try {
     phoneMap.preview >= 300 && phoneMap.preview <= 384,
     "The compact pane should show its preview at nearly full width",
   );
+  assert.equal(
+    await page.evaluate(() => getComputedStyle(document.documentElement).overflow),
+    "hidden",
+    "The page behind a phone history sheet does not scroll",
+  );
   await page.locator("#test-scroll-space").evaluate(e => e.remove());
   const collapsedHeight = (await page.locator("#inspector").boundingBox())
     .height;
