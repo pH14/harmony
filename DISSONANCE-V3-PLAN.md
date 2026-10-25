@@ -176,8 +176,10 @@ and the rank of each known answer.
 **Regions and bottlenecks.** Cluster the transition graph at each
 checkpoint. Compare the partition to the hand key's room and area fields
 with a standard agreement measure against a random partition of the same
-sizes. For bottlenecks, at each checkpoint find the deepest region and
-check whether the next milestone the search reached lies past it.
+sizes. For bottlenecks, at each checkpoint rank regions by depth and by
+recent yield (novel positions and holder improvements in the last report
+interval per unit of work) and report both ranks of the region holding the
+next milestone the search reached.
 
 **Terminal edges.** Mark every job whose endpoint was terminal. Rerun the
 labels pass with reliability discounted by terminal edges. Pass is that the
@@ -287,8 +289,12 @@ keys so it can be scored before stage 2 lands.
 
 Pass: label lead ratios at or below 0.2 on at least one early milestone of
 SMB and of Metroid; regions agree with room and area fields better than a
-random partition of equal size; the deepest region at each checkpoint
-predicts the next milestone. The stage passes on retained-only records,
+random partition of equal size; at each checkpoint, the region holding the
+next milestone ranks in the top three regions by depth or by recent yield,
+with both ranks reported. Depth alone picks the frontier on a linear game
+and fails where the map branches, which is the case the two-level
+allocation in stage 5 exists for, so a depth miss with a yield hit is a
+pass and a design input. The stage passes on retained-only records,
 which is all the black-box recordings contain. The terminal-edge check,
 that terminal edges move the SMB 5-4 prediction earlier, waits for the
 first v3-recorded corpus and does not hold the stage.
