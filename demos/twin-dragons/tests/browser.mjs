@@ -1400,6 +1400,19 @@ try {
     mapVisible,
     "Collapsing after playback must reveal the selected path again",
   );
+  await page.locator("#close-inspector").click();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.locator("#history-reopen").click();
+  assert.ok(
+    await page
+      .locator('.area-map[data-marker-frame]:not([data-marker-frame=""])').first()
+      .evaluate(
+        (map) =>
+          map.getBoundingClientRect().bottom <=
+          document.querySelector("#inspector").getBoundingClientRect().top,
+      ),
+    "Reopening History from the docked bar reveals the selected path above the sheet",
+  );
   await page.locator("#take-control").click();
   assert.equal(
     await page.locator("#expand-inspector").getAttribute("aria-expanded"),

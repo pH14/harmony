@@ -2860,6 +2860,7 @@ $("close-inspector").onclick = () => {
 };
 $("history-reopen").onclick = () => {
   openInspector();
+  followReplayRoom(markerPoint());
   $("close-inspector").focus({ preventScroll: true });
 };
 function expandInspector(expanded) {
