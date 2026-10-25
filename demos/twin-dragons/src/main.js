@@ -3591,7 +3591,7 @@ function needsRom(choice) {
 }
 function gameMeta(choice) {
   if (needsRom(choice)) return "Needs ROM";
-  if (choice === game || (choice.family && choice.family === game.family)) return "Playing";
+  if (ready && (choice === game || (choice.family && choice.family === game.family))) return "Playing";
   return "";
 }
 $("new-search").onclick = () => {

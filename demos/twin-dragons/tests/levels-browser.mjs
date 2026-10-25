@@ -98,6 +98,16 @@ try {
     }
     await page.close();
   }
+  const fresh = await browser.newPage({viewport:{width:1440,height:1000}});
+  await fresh.addInitScript(() => localStorage.setItem('harmony.twin-dragons.tour.v1','seen'));
+  await fresh.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?game=twin-dragons&pace=0`);
+  await fresh.locator('#level-picker[open]').waitFor();
+  assert.equal(await fresh.locator('#homebrew-games .game-row[aria-pressed="true"]').getAttribute('data-meta'),'','The picker does not say Playing before a search starts');
+  await fresh.locator('#level-grid button').first().click();
+  await fresh.waitForFunction(() => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > 0);
+  await fresh.locator('#new-search').click();
+  assert.equal(await fresh.locator('#homebrew-games .game-row[aria-pressed="true"]').getAttribute('data-meta'),'Playing');
+  await fresh.close();
   assert.deepEqual(errors,[]);
   console.log('Desktop/phone level picker: 3 cards, three repeated real warps, exact route replay and gameplay forks, pinch zoom and vertical page scroll passed.');
 } finally { await browser.close(); }
