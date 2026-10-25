@@ -9,32 +9,31 @@ machine it runs on. The claims it ships with:
 
 1. Super Mario Bros. from power-on to the ending with three untyped
    scalars as the observation (horizontal position, vertical position,
-   level), on all of ms02, within 3x the tries and wall time of the
-   current searcher's run with its hand-written key.
+   level), on all of ms02, in one sitting.
 2. The Famidash base level set, every level beaten from its start with
-   untyped scalars as the observation, within 3x the total tries of the
-   current searcher with its hand-written key.
+   untyped scalars as the observation.
 3. Metroid from power-on to the ending with a chosen vector of unnamed
-   scalars as the observation, within 3x the tries of the current
-   searcher's run with its hand-written key, with every milestone (bombs,
-   Kraid, high jump, Ridley, Tourian, ending) reached and replayed. The
-   searcher is told nothing about what any scalar means.
+   scalars as the observation, every milestone (bombs, Kraid, high jump,
+   Ridley, Tourian, ending) reached and replayed. The searcher is told
+   nothing about what any scalar means. No searcher has finished Metroid
+   from power-on.
 4. Castlevania as the held-out game: untouched during development, then
    given a chosen vector at the end and run from power-on to the ending,
    every stage reached and replayed. No searcher has finished Castlevania.
    It shows the searcher works on a game it was not built against.
 5. A faults workload (NATS or rqlite) where promoted features name
-   scenario markers nobody wrote down, and the search reaches a failure
-   the current searcher does not reach in equal work.
+   scenario markers nobody wrote down, and the search reaches a confirmed
+   failure from them.
 
-Capability first, then speed. The current searcher cannot do claims 1, 2,
-4 or 5 at all, because it needs a hand-written key. Finishing these games
-and workloads with no key is the result. Once a claim holds, the ratio to
-the current searcher is reported as information and becomes the target of
-a second phase of measured improvements, one change at a time, on the
-recordings the first phase produced. A working mechanism is never thrown
-out because a ratio came in at 1.02x or 1.5x. It is kept, recorded, and
-improved.
+These are outcomes, not comparisons. v3 is a different design from the
+current searcher, and its stages are checked against what the design says
+each layer must do, on recorded data, never against how the current
+searcher performs. The current searcher appears in this plan in one role:
+a black box that records the corpus in stage 0. Its tries and wall time
+are not pass lines anywhere. After every claim holds, stage 8 measures v3
+against it and against published systems as information for the write-up.
+A working mechanism is never removed because some number is worse than the
+old searcher's. It is kept, recorded, and improved.
 
 Live work runs in that order because feedback time differs by a thousand
 fold: SMB from power-on takes three minutes and its failure modes are the
@@ -49,10 +48,11 @@ mechanism built for Metroid waits on a Metroid run to be tested. The
 Metroid rooted segment in stage 5 is the first live check of stock
 carrying and precedes any power-on run.
 
-Fast still means fast. Every run uses every core it can. A run that takes
-hours where the current searcher takes minutes is a defect to diagnose,
-and the diagnosis goes in the log beside the result, but it does not stop
-the claim from being pursued.
+Fast still means fast. Every run uses every core it can. Tries per second
+per worker and worker utilization are reported with every live run. A run
+that leaves cores idle or spends most of a try outside the emulator is a
+defect to diagnose, and the diagnosis goes in the log beside the result,
+but it does not stop the claim from being pursued.
 
 The design is `DISSONANCE-V3-DESIGN.md`. Read it first, then this file.
 
@@ -87,10 +87,11 @@ component as a tool that reads a record, score it by hindsight against
 what the recorded search did, and only then put it in the live loop.
 
 Hindsight scoring is the same for every component: for each milestone the
-recorded search reached, find the earliest point at which the component
-would have pointed the search at it. Report the ratio of that time to the
-recorded time. A component that does not shorten the ratio on the record
-will not shorten the live run.
+recording contains, find the earliest point at which the component would
+have pointed the search at it, and report that point as a fraction of the
+time the recording took to get there. This measures the component's
+predictive power on real data. The recording is data; what produced it is
+irrelevant to the score.
 
 Rules that make this fast:
 
@@ -113,9 +114,9 @@ Rules that make this fast:
 - A test is uninformative when the control is at 0 of N or N of N, when
   arms tie, or when the mechanism did not fire. An uninformative test is a
   defect in the test. Fix it and rerun.
-- Live comparisons use rooted segments: same root snapshot, same budget,
-  three fresh seeds per arm, median tries to a replayed witness. Power-on
-  runs come last and confirm.
+- Live checks use rooted segments: same root snapshot, same budget, three
+  fresh seeds, median tries to a replayed witness. Power-on runs come last
+  and confirm.
 - Positive and negative controls in every harness: a known-good key must
   pass, a shuffled key must fail, before any candidate is scored.
 - Pass lines are coarse by design. Every measurement has a granularity, such
@@ -308,23 +309,23 @@ first v3-recorded corpus and does not hold the stage.
 
 Run stage 3's tools on positions built from stage 2's features.
 
-Pass: lead ratios within 1.2x of the hand-position ratios on SMB and
-Metroid, and the hierarchy by change rate reproduces area above room above
-position.
+Pass: labels on learned positions predict the same early milestones at or
+below 0.2 on SMB and Metroid, and the hierarchy by change rate reproduces
+area above room above position.
 
 ### Stage 5: selection, live (ms02)
 
 Build the v3 live loop: parallel workers, region-by-yield allocation with
 the bottleneck floor, the label-gap draw with realization, the terminal
-discount. Rooted segments against the current searcher, in this order: SMB 5-4
-to 6-1, a Famidash level that stalls the current searcher, Metroid
-post-Kraid to high jump; three seeds per arm.
+discount. Rooted segments, in this order: SMB 5-4 to 6-1, the Famidash
+level with the longest stall in the stage 0 recordings, Metroid post-Kraid
+to high jump; three seeds each.
 
-Pass: v3 arrives on at least 2 of 3 seeds on every segment within 3x the
-control's median tries, every witness replayed. Report the median ratio,
-the hop landing rate and wall time per try at equal worker count as
-information. A ratio above 1 is a note for the improvement phase, never a
-reason to remove the mechanism.
+Pass: v3 arrives on at least 2 of 3 seeds on every segment, every witness
+replayed, and the selection log shows the design working: draw share
+tracks region yield, the bottleneck floor holds, labels pointed at the
+arriving lineage before it arrived. Report median tries, hop landing rate
+and wall time per try as information.
 
 ### Stage 6: input and jobs (Mac, then ms02)
 
@@ -334,9 +335,8 @@ mixture over both.
 
 Pass: a tiny-worlds panel built for v3 with positive and negative controls
 and no failed rule, and a Metroid rooted segment that arrives on at least
-2 of 3 seeds with selection held at stage 5's build. Report the ratio to
-the fixed-work control on the calibrated climb world and the segment as
-information.
+2 of 3 seeds with selection held at stage 5's build. Report tries to
+arrival on the calibrated climb world and the segment as information.
 
 ### Stage 7: the claims (ms02, msr1)
 
@@ -381,14 +381,17 @@ branch is complete.
 - Treat a budget hit as a failure, a tie as a verdict, or a 0 of N control
   as evidence.
 - Keep a fixed-work job rule. Jobs end on observed events.
-- Throw out a working mechanism over a ratio. Capability is the result;
-  speed is the next phase. Log the ratio and move on.
+- Throw out a working mechanism over a number. Capability is the result;
+  speed is the next phase. Log the number and move on.
+- Score any stage against the current searcher's tries or wall time. The
+  design is checked against itself and the record; the comparison comes
+  in stage 8.
 - Chase a threshold. A miss smaller than the measurement granularity is a
   pass. A larger miss is a result to record and diagnose in one paragraph,
   then the plan continues.
-- Accept slow silently. A v3 run far slower per try than the current
-  searcher at equal workers gets a diagnosis in the log, alongside the
-  claim it is pursuing.
+- Accept slow silently. A run with idle cores or a try spent mostly
+  outside the emulator gets a diagnosis in the log, alongside the claim it
+  is pursuing.
 - Write `unsafe`. The substrate's interfaces are safe; if one is not, the
   fix goes in the substrate.
 - Stop. A closed line needs the cause named and shown in the log. Six
