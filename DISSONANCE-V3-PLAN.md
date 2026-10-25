@@ -216,7 +216,7 @@ records its own corpus and the black-box recordings are retired.
 |---|---|---|
 | ms02 (24 cores: 8 P, 16 E, fastest) | recordings, live rooted segments, power-on runs | unrestricted; delete any file or process to free disk and memory; keep it saturated |
 | this Mac (6 cores, 24 GB) | builds, offline hindsight tools, tiny worlds, unit tests | hard limit 6 cores and 24 GB across everything |
-| msr1 (12 arm64 cores, slow) | breadth-game recordings, replay verification, long benchmarks | unrestricted; same deletion rights |
+| msr1 (12 arm64 cores, slow) | held-out and secondary game recordings, replay verification, long benchmarks | unrestricted; same deletion rights |
 
 Saturate all three at all times. Recordings are embarrassingly parallel
 across games and seeds. Hindsight analyses are parallel across recordings
@@ -251,7 +251,7 @@ flowchart LR
 Record power-on runs with full stream and every checkpoint, using the
 current searcher as a black box: SMB to the ending, every Famidash base
 level, Metroid to the ending or as far as it goes, Mega Man 2, Punch-Out,
-Castlevania, one breadth game with no hand key, and one faults workload run
+Castlevania with a position-only key, and one faults workload run
 with coverage, assertion and log-template output. Three seeds each where
 the game allows.
 
@@ -302,7 +302,7 @@ control promotes nothing stable. A hidden byte is scored only at a
 checkpoint where it varies. Acquisition fields need their acquisition
 transitions in the record; where the black-box record lacks them, score on
 the first v3-recorded corpus and say so. This stage holds nothing: it runs
-beside stages 4 to 7, and claim 4, the breadth game, is the live test of
+beside stages 4 to 7, and claim 4, Castlevania held out, is the live test of
 it. Report false
 promotions and what explains them.
 
