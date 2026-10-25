@@ -273,7 +273,10 @@ scalars, shown by recomputing it from the v3 record.
 
 Implement the feature table with both feature kinds as a tool over a v3
 record: the four progress tests and the three place tests. Promote per
-region. Learn direction.
+region. Learn direction. The concentrating test needs only parents and
+whether their job changed a progress feature, so it is computable on
+retained-only records: compare the spread of the scalar among parents of
+progress-changing jobs against its spread among all parents in the region.
 
 Pass, with negative control: on each recording, the promoted features
 contain every field of the hand key, progress fields as progress features

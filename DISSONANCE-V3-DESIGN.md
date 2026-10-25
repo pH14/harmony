@@ -74,17 +74,19 @@ follows the search. Four tests promote a progress feature in a region:
 rare, directed, predictive, unexplained. A clock is rare and directed but
 fails the last two, since work explains it and terminal lineages carry it
 too. Three tests promote a place feature in a region: local, meaning the
-change per step is small against the range of values seen; separating,
-meaning lineages at different values have different futures conditional on
-the progress features; and unexplained by work. A sprite animation counter
-is local but does not separate. A feature is demoted in a region when its
+change per step is small against the range of values seen; concentrating,
+meaning the states whose next job changed a progress feature occupy a
+narrow band of its values against the spread over all states in the
+region, so crossing a bottleneck requires being somewhere in particular;
+and unexplained by work. A sprite animation counter is local but crossings
+are spread over all its values, so it does not concentrate. A feature is demoted in a region when its
 separation there ends.
 
 ```mermaid
 flowchart LR
     R[endpoints<br/>parent, scalars, outcome] --> C[feature table<br/>global: rate, direction, group<br/>per region: lift, separation]
     C --> K{rare, directed,<br/>predictive, unexplained?}
-    C --> L{local, separating,<br/>unexplained?}
+    C --> L{local, concentrating,<br/>unexplained?}
     K -- yes --> A[progress feature of the region]
     L -- yes --> B[place feature of the region]
     K -- no --> D[stays a scalar]
