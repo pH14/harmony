@@ -1591,3 +1591,24 @@ footer .brand svg { width: 14px; height: 14px; }
 .credit-game summary:hover { background: var(--hover); }
 .credit-game > :not(summary) { font-size: 13px; }
 .credit-game > :last-child { margin-bottom: 14px; }
+
+@media (max-width: 800px) {
+  .inspector:not(.expanded, .controlling) {
+    display: grid;
+    grid-template-columns: max(108px, min(46%, 100vw - 230px)) minmax(0, 1fr);
+    align-content: start;
+    gap: 6px 10px;
+  }
+  .inspector:not(.expanded, .controlling) :is(.drawer-top, #branch-message, .state-disclosure) { grid-column: 1 / -1; }
+  .inspector:not(.expanded, .controlling) :is(.film, .state-picker) { display: contents; }
+  .inspector:not(.expanded, .controlling) .screen { grid-column: 1; grid-row: 2 / span 3; }
+  .inspector:not(.expanded, .controlling) :is(.branch-actions, .state-picker .section-title, #selection-hint, #state-list) { grid-column: 2; }
+  .inspector:not(.expanded, .controlling) .state-picker .section-title { margin: 4px 0 0; }
+  .inspector:not(.expanded, .controlling) .drawer-top { grid-row: 1; }
+  .inspector:not(.expanded, .controlling) .branch-actions { grid-row: 2; align-self: start; }
+  .inspector:not(.expanded, .controlling) .state-picker .section-title { grid-row: 3; }
+  .inspector:not(.expanded, .controlling) #state-list { grid-row: 4; }
+  .inspector:not(.expanded, .controlling) #branch-message { grid-row: 5; }
+  .inspector:not(.expanded, .controlling) .state-disclosure { grid-row: 6; }
+  .inspector:not(.expanded, .controlling) #state-list { max-height: none; }
+}
