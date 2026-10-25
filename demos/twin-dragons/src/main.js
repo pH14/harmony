@@ -3625,10 +3625,14 @@ $("new-search").onclick = () => {
       url.searchParams.set("game", choice.id);
       scope.navigate(url, { label: choice.title });
     };
-    button.onclick = () => {
+    button.onclick = async () => {
       if (nativeTarget) showNativeLevels(choice);
-      else if (needsRom(choice)) showRomPanel(choice, play);
-      else if (choice === game || (choice.family && choice.family === game.family)) showLevelGrid();
+      else if (needsRom(choice)) {
+        if (await load(choice.id)) {
+          storedRoms.add(choice.id);
+          play();
+        } else showRomPanel(choice, play);
+      } else if (choice === game || (choice.family && choice.family === game.family)) showLevelGrid();
       else play();
     };
     return button;
