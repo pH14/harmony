@@ -5,6 +5,7 @@ use std::num::NonZeroU16;
 
 use control_proto::StopReason;
 use fault_policy::{DecisionClass, Fault, ParkTarget, Span, StandingWindow, process_target};
+use process_proto::EVERY_NODE;
 use process_proto::registers as reg;
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,12 @@ const STATE_PAYLOAD_LEN: usize = 9;
 pub enum FaultOperation {
     Wait(NonZeroU16),
     Kill(u16, NonZeroU16),
+    KillAll(NonZeroU16),
+    PowerLoss(u16, NonZeroU16),
+    PowerLossAll(NonZeroU16),
+    DiskError(u16, NonZeroU16),
+    DiskStall(u16, NonZeroU16),
+    DiskCorrupt(u16, NonZeroU16),
     EventKill {
         node: u16,
         rarity: u8,
@@ -46,6 +53,17 @@ pub enum FaultOperation {
     Pause(u16, NonZeroU16),
     Restart(u16, NonZeroU16),
     Hook(u32, NonZeroU16),
+    Clock {
+        node: u16,
+        offset_ms: i32,
+        rate_ppm: i32,
+        ticks: NonZeroU16,
+    },
+    ClockAll {
+        offset_ms: i32,
+        rate_ppm: i32,
+        ticks: NonZeroU16,
+    },
 }
 
 impl FaultOperation {
@@ -54,11 +72,19 @@ impl FaultOperation {
         match *self {
             Self::Wait(ticks)
             | Self::Kill(_, ticks)
+            | Self::KillAll(ticks)
+            | Self::PowerLoss(_, ticks)
+            | Self::PowerLossAll(ticks)
+            | Self::DiskError(_, ticks)
+            | Self::DiskStall(_, ticks)
+            | Self::DiskCorrupt(_, ticks)
             | Self::EventKill { ticks, .. }
             | Self::EventPark { ticks, .. }
             | Self::Pause(_, ticks)
             | Self::Restart(_, ticks)
-            | Self::Hook(_, ticks) => u64::from(ticks.get()),
+            | Self::Hook(_, ticks)
+            | Self::Clock { ticks, .. }
+            | Self::ClockAll { ticks, .. } => u64::from(ticks.get()),
         }
     }
 
@@ -67,6 +93,12 @@ impl FaultOperation {
         match self {
             Self::Wait(_) => Self::Wait(ticks),
             Self::Kill(node, _) => Self::Kill(node, ticks),
+            Self::KillAll(_) => Self::KillAll(ticks),
+            Self::PowerLoss(node, _) => Self::PowerLoss(node, ticks),
+            Self::PowerLossAll(_) => Self::PowerLossAll(ticks),
+            Self::DiskError(node, _) => Self::DiskError(node, ticks),
+            Self::DiskStall(node, _) => Self::DiskStall(node, ticks),
+            Self::DiskCorrupt(node, _) => Self::DiskCorrupt(node, ticks),
             Self::EventKill { node, rarity, .. } => Self::EventKill {
                 node,
                 rarity,
@@ -91,6 +123,26 @@ impl FaultOperation {
             Self::Pause(node, _) => Self::Pause(node, ticks),
             Self::Restart(node, _) => Self::Restart(node, ticks),
             Self::Hook(id, _) => Self::Hook(id, ticks),
+            Self::Clock {
+                node,
+                offset_ms,
+                rate_ppm,
+                ..
+            } => Self::Clock {
+                node,
+                offset_ms,
+                rate_ppm,
+                ticks,
+            },
+            Self::ClockAll {
+                offset_ms,
+                rate_ppm,
+                ..
+            } => Self::ClockAll {
+                offset_ms,
+                rate_ppm,
+                ticks,
+            },
         }
     }
 }
@@ -159,17 +211,69 @@ impl FaultOperation {
                 put(&id.to_le_bytes());
                 put(&ticks.get().to_le_bytes());
             }
+            Self::KillAll(ticks) => {
+                put(&[7]);
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::PowerLoss(node, ticks) => {
+                put(&[8]);
+                put(&node.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::PowerLossAll(ticks) => {
+                put(&[9]);
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::DiskError(node, ticks) => {
+                put(&[10]);
+                put(&node.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::DiskStall(node, ticks) => {
+                put(&[11]);
+                put(&node.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::DiskCorrupt(node, ticks) => {
+                put(&[12]);
+                put(&node.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::Clock {
+                node,
+                offset_ms,
+                rate_ppm,
+                ticks,
+            } => {
+                put(&[13]);
+                put(&node.to_le_bytes());
+                put(&offset_ms.to_le_bytes());
+                put(&rate_ppm.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::ClockAll {
+                offset_ms,
+                rate_ppm,
+                ticks,
+            } => {
+                put(&[14]);
+                put(&offset_ms.to_le_bytes());
+                put(&rate_ppm.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
         }
         out
     }
 }
 
-pub const ACTION_KEY_WIDTH: usize = OPERATION_KEY_WIDTH + 2;
+pub const ACTION_KEY_WIDTH: usize = OPERATION_KEY_WIDTH + 2 + 8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultAction {
     pub operation: FaultOperation,
     pub coverage_quantum: NonZeroU16,
+    #[serde(default)]
+    pub choice: u64,
 }
 
 impl FaultAction {
@@ -177,7 +281,24 @@ impl FaultAction {
         Self {
             operation,
             coverage_quantum,
+            choice: 0,
         }
+    }
+
+    #[must_use]
+    pub fn with_choice(self, choice: u64) -> Self {
+        Self { choice, ..self }
+    }
+
+    #[must_use]
+    pub fn entropy_seed(&self, base: u64) -> u64 {
+        if self.choice == 0 {
+            return base;
+        }
+        let mut z = (base ^ self.choice).wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
     }
 
     pub fn ticks(&self) -> u64 {
@@ -194,7 +315,9 @@ impl FaultAction {
     pub fn key_bytes(&self) -> [u8; ACTION_KEY_WIDTH] {
         let mut bytes = [0; ACTION_KEY_WIDTH];
         bytes[..OPERATION_KEY_WIDTH].copy_from_slice(&self.operation.key_bytes());
-        bytes[OPERATION_KEY_WIDTH..].copy_from_slice(&self.coverage_quantum.get().to_le_bytes());
+        bytes[OPERATION_KEY_WIDTH..OPERATION_KEY_WIDTH + 2]
+            .copy_from_slice(&self.coverage_quantum.get().to_le_bytes());
+        bytes[OPERATION_KEY_WIDTH + 2..].copy_from_slice(&self.choice.to_le_bytes());
         bytes
     }
 }
@@ -263,7 +386,7 @@ pub struct FaultSnapshot {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ActionDelta {
-    pub standing: Option<StandingWindow>,
+    pub standing: Vec<StandingWindow>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -315,6 +438,10 @@ pub fn action_ticks(action: &FaultAction) -> u64 {
     action.ticks()
 }
 
+fn restart_end(start: u64, horizon: u64) -> u64 {
+    start.saturating_add((horizon / RESTART_DOWN_DIVISOR).max(SUPERVISOR_TICK_NANOS))
+}
+
 fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingWindow {
     StandingWindow {
         class: DecisionClass::Process.as_u16(),
@@ -331,10 +458,10 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
     match action.operation {
         FaultOperation::Wait(_) => ActionDelta::default(),
         FaultOperation::EventKill { node, rarity, .. } => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(node, &Fault::ProcEventKill { rarity }),
                 (start, u64::MAX),
-            )),
+            )],
         },
         FaultOperation::EventPark {
             node,
@@ -343,7 +470,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             target,
             ..
         } => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(
                     node,
                     &Fault::ProcEventPark {
@@ -353,37 +480,121 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                     },
                 ),
                 (start, end),
-            )),
+            )],
         },
         FaultOperation::Kill(node, _) => ActionDelta {
-            standing: Some(standing(
-                process_target(node, &Fault::ProcKill),
+            standing: vec![standing(
+                process_target(node, &Fault::ProcRestart),
                 (start, end),
-            )),
+            )],
+        },
+        FaultOperation::KillAll(_) => ActionDelta {
+            standing: vec![standing(
+                process_target(EVERY_NODE, &Fault::ProcRestart),
+                (start, end),
+            )],
+        },
+        FaultOperation::PowerLoss(node, _) => ActionDelta {
+            standing: vec![
+                standing(process_target(node, &Fault::ProcRestart), (start, end)),
+                standing(
+                    process_target(
+                        node,
+                        &Fault::ProcPowerLoss {
+                            choice: action.choice,
+                        },
+                    ),
+                    (start, end),
+                ),
+            ],
+        },
+        FaultOperation::PowerLossAll(_) => ActionDelta {
+            standing: vec![
+                standing(
+                    process_target(EVERY_NODE, &Fault::ProcRestart),
+                    (start, end),
+                ),
+                standing(
+                    process_target(
+                        EVERY_NODE,
+                        &Fault::ProcPowerLoss {
+                            choice: action.choice,
+                        },
+                    ),
+                    (start, end),
+                ),
+            ],
+        },
+        FaultOperation::DiskError(node, _) => ActionDelta {
+            standing: vec![standing(
+                process_target(node, &Fault::ProcDiskError),
+                (start, end),
+            )],
+        },
+        FaultOperation::DiskStall(node, _) => ActionDelta {
+            standing: vec![standing(
+                process_target(node, &Fault::ProcDiskStall(Span(horizon))),
+                (start, end),
+            )],
+        },
+        FaultOperation::DiskCorrupt(node, _) => ActionDelta {
+            standing: vec![standing(
+                process_target(
+                    node,
+                    &Fault::ProcDiskCorrupt {
+                        choice: action.choice,
+                    },
+                ),
+                (start, restart_end(start, horizon)),
+            )],
         },
         FaultOperation::Pause(node, _) => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(node, &Fault::ProcPause(Span(horizon))),
                 (start, end),
-            )),
+            )],
         },
         FaultOperation::Restart(node, _) => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(node, &Fault::ProcRestart),
-                (
-                    start,
-                    start.saturating_add(
-                        (horizon / RESTART_DOWN_DIVISOR).max(SUPERVISOR_TICK_NANOS),
-                    ),
-                ),
-            )),
+                (start, restart_end(start, horizon)),
+            )],
         },
         FaultOperation::Hook(id, _) => ActionDelta {
-            standing: Some(standing(
+            standing: vec![standing(
                 process_target(0, &Fault::RunHook(id)),
                 (start, end),
-            )),
+            )],
         },
+        FaultOperation::Clock {
+            node,
+            offset_ms,
+            rate_ppm,
+            ..
+        } => ActionDelta {
+            standing: vec![standing(
+                process_target(node, &clock_fault(offset_ms, rate_ppm, 0)),
+                (start, end),
+            )],
+        },
+        FaultOperation::ClockAll {
+            offset_ms,
+            rate_ppm,
+            ..
+        } => ActionDelta {
+            standing: vec![standing(
+                process_target(EVERY_NODE, &clock_fault(offset_ms, rate_ppm, action.choice)),
+                (start, end),
+            )],
+        },
+    }
+}
+
+fn clock_fault(offset_ms: i32, rate_ppm: i32, spread: u64) -> Fault {
+    Fault::ProcClock {
+        offset: i64::from(offset_ms) * 1_000_000,
+        rate_ppm,
+        spread,
     }
 }
 
@@ -404,7 +615,7 @@ pub fn standing_windows(
 ) -> Result<Vec<StandingWindow>, String> {
     Ok(action_deltas(windows, actions)?
         .into_iter()
-        .filter_map(|delta| delta.standing)
+        .flat_map(|delta| delta.standing)
         .collect())
 }
 
@@ -415,6 +626,8 @@ pub struct CheckEvidence {
     pub start_generation: u64,
     pub end_generation: u64,
     pub points: Vec<String>,
+    #[serde(default)]
+    pub undecided_keys: u64,
     pub pending_faults: u64,
 }
 
@@ -424,6 +637,8 @@ pub struct SdkCapture {
     pub assertions: Assertions,
     pub setup_complete: bool,
     pub completed_check: Option<CompletedCheck>,
+    #[serde(default)]
+    pub undecided_keys: u64,
     pub parks: Vec<ParkLanding>,
     pub park_reads: Vec<ParkRead>,
 }
@@ -451,12 +666,16 @@ pub struct CompletedCheck {
 }
 
 impl SdkCapture {
-    fn note_completed_check(&mut self, run: u64, check_passes: &BTreeMap<u64, BTreeSet<String>>) {
+    fn note_completed_check(
+        &mut self,
+        run: u64,
+        check_passes: &BTreeMap<u64, BTreeSet<String>>,
+        check_undecided: &BTreeMap<u64, u64>,
+    ) {
         let register = |id: u32| self.registers.get(&id).copied().unwrap_or_default();
-        let Some(points) = check_passes
-            .get(&register(reg::COMPLETED_CHECK_PID))
-            .filter(|points| !points.is_empty())
-        else {
+        let pid = register(reg::COMPLETED_CHECK_PID);
+        self.undecided_keys = check_undecided.get(&pid).copied().unwrap_or_default();
+        let Some(points) = check_passes.get(&pid).filter(|points| !points.is_empty()) else {
             return;
         };
         self.completed_check = Some(CompletedCheck {
@@ -485,6 +704,8 @@ impl SdkCapture {
 struct SdkDecoderState {
     capture: SdkCapture,
     check_passes: BTreeMap<u64, BTreeSet<String>>,
+    #[serde(default)]
+    check_undecided: BTreeMap<u64, u64>,
     last_moment: u64,
     offset: u32,
     action_after: Option<u64>,
@@ -561,6 +782,7 @@ impl SdkDecoder {
                         .sum::<usize>()
             })
             .sum::<usize>();
+        bytes += self.state.check_undecided.len() * tree_entry::<u64, u64>();
         bytes += capture.parks.capacity() * std::mem::size_of::<ParkLanding>();
         bytes += capture.park_reads.capacity() * std::mem::size_of::<ParkRead>();
         if let Some(check) = &capture.completed_check {
@@ -582,12 +804,16 @@ impl SdkDecoder {
         let state = std::sync::Arc::make_mut(&mut staged.state);
         let capture = &mut state.capture;
         let check_passes = &mut state.check_passes;
+        let check_undecided = &mut state.check_undecided;
         let mut processed = 0_usize;
         for (moment, event_id, bytes) in events {
             processed += 1;
             if *event_id == JSON_EVENT_ID && bytes.trim_ascii_start().first() == Some(&b'{') {
                 if let Some(event) = decode_json_event(bytes) {
                     capture.setup_complete |= event.setup_complete;
+                    if let (Some(keys), Some(pid)) = (event.undecided_keys, event.pid) {
+                        check_undecided.insert(pid, keys);
+                    }
                     if let Some(park) = event.park {
                         capture.parks.push(ParkLanding {
                             moment: *moment,
@@ -646,9 +872,10 @@ impl SdkDecoder {
                             let previous = capture.registers.insert(local, value);
                             if local == reg::CHECKS_STARTED && previous != Some(value) {
                                 check_passes.clear();
+                                check_undecided.clear();
                             }
                             if local == reg::COMPLETED_CHECK_RUN {
-                                capture.note_completed_check(value, check_passes);
+                                capture.note_completed_check(value, check_passes, check_undecided);
                             }
                         }
                         STATE_MAX => {
@@ -733,10 +960,14 @@ pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, S
 fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, String> {
     let mut capture = SdkCapture::default();
     let mut check_passes: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+    let mut check_undecided: BTreeMap<u64, u64> = BTreeMap::new();
     for (moment, event_id, bytes) in events {
         if *event_id == JSON_EVENT_ID && bytes.trim_ascii_start().first() == Some(&b'{') {
             if let Some(event) = decode_json_event(bytes) {
                 capture.setup_complete |= event.setup_complete;
+                if let (Some(keys), Some(pid)) = (event.undecided_keys, event.pid) {
+                    check_undecided.insert(pid, keys);
+                }
                 if let Some(park) = event.park {
                     capture.parks.push(ParkLanding {
                         moment: *moment,
@@ -793,9 +1024,10 @@ fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapt
                         let previous = capture.registers.insert(local, value);
                         if local == reg::CHECKS_STARTED && previous != Some(value) {
                             check_passes.clear();
+                            check_undecided.clear();
                         }
                         if local == reg::COMPLETED_CHECK_RUN {
-                            capture.note_completed_check(value, &check_passes);
+                            capture.note_completed_check(value, &check_passes, &check_undecided);
                         }
                     }
                     STATE_MAX => {
@@ -915,6 +1147,7 @@ impl FaultObservations {
                     start_generation: completed.start_generation,
                     end_generation: completed.end_generation,
                     points: completed.points,
+                    undecided_keys: capture.undecided_keys,
                     pending_faults: value(reg::PENDING_FAULTS),
                 }
             }),
@@ -1307,7 +1540,11 @@ mod tests {
             target: None,
         };
         let window = WINDOWS.window(&[action.into()], 0).unwrap();
-        let fault = action_delta(action.into(), window).standing.unwrap();
+        let fault = action_delta(action.into(), window)
+            .standing
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(fault.start, ROOT);
         assert_eq!(fault.end, ROOT + 500 * TICK);
         assert_eq!(
@@ -1328,7 +1565,11 @@ mod tests {
             ticks: ticks(500),
             target: ParkTarget::new(0x1000, 0x1004),
         };
-        let fault = action_delta(aimed.into(), window).standing.unwrap();
+        let fault = action_delta(aimed.into(), window)
+            .standing
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(
             decode_process_target(&fault.target),
             Some((
@@ -1343,11 +1584,27 @@ mod tests {
     }
 
     #[test]
+    fn a_choice_changes_the_action_key_and_entropy_seed() {
+        let action = FaultAction::from(FaultOperation::Wait(ticks(4)));
+        assert_eq!(action.entropy_seed(11), 11);
+        let first = action.with_choice(1);
+        let second = action.with_choice(2);
+        assert_ne!(first.entropy_seed(11), 11);
+        assert_ne!(first.entropy_seed(11), second.entropy_seed(11));
+        assert_eq!(
+            first.entropy_seed(11),
+            action.with_choice(1).entropy_seed(11)
+        );
+        assert_ne!(first.key_bytes(), second.key_bytes());
+        assert_eq!(first.with_ticks(ticks(9)).choice, 1);
+    }
+
+    #[test]
     fn an_event_park_target_is_a_nonempty_range_in_json() {
-        let untargeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":null}},"coverage_quantum":1}"#;
+        let untargeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":null}},"coverage_quantum":1,"choice":7}"#;
         let action: FaultAction = serde_json::from_str(untargeted).unwrap();
         assert_eq!(serde_json::to_string(&action).unwrap(), untargeted);
-        let targeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}},"coverage_quantum":1}"#;
+        let targeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}},"coverage_quantum":1,"choice":0}"#;
         let action: FaultAction = serde_json::from_str(targeted).unwrap();
         assert!(matches!(
             action.operation,
@@ -1428,16 +1685,177 @@ mod tests {
     }
 
     #[test]
-    fn kill_holds_its_whole_window_for_its_node() {
+    fn kill_holds_its_node_down_for_its_window_and_brings_it_back() {
         let window = WINDOWS.window(&kills(4), 1).unwrap();
         let delta = action_delta(FaultOperation::Kill(2, ticks(50)).into(), window);
-        let fault = delta.standing.expect("kill installs a standing fault");
+        assert_eq!(delta.standing.len(), 1);
+        let fault = &delta.standing[0];
         assert_eq!(fault.class, DecisionClass::Process.as_u16());
         assert_eq!(
             decode_process_target(&fault.target),
-            Some((2, Fault::ProcKill))
+            Some((2, Fault::ProcRestart))
         );
         assert_eq!((fault.start, fault.end), window);
+    }
+
+    #[test]
+    fn a_whole_cluster_kill_holds_every_node_down_for_its_window() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        let delta = action_delta(FaultOperation::KillAll(ticks(50)).into(), window);
+        assert_eq!(delta.standing.len(), 1);
+        let fault = &delta.standing[0];
+        assert_eq!(
+            decode_process_target(&fault.target),
+            Some((EVERY_NODE, Fault::ProcRestart))
+        );
+        assert_eq!((fault.start, fault.end), window);
+        assert_ne!(
+            FaultOperation::KillAll(ticks(50)).key_bytes(),
+            FaultOperation::Kill(0, ticks(50)).key_bytes()
+        );
+    }
+
+    #[test]
+    fn a_power_loss_carries_its_choice_and_brings_the_node_back_at_window_end() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        for (operation, node) in [
+            (FaultOperation::PowerLoss(2, ticks(50)), 2),
+            (FaultOperation::PowerLossAll(ticks(50)), EVERY_NODE),
+        ] {
+            let action = FaultAction::from(operation).with_choice(77);
+            let delta = action_delta(action, window);
+            assert_eq!(
+                delta
+                    .standing
+                    .iter()
+                    .map(|fault| (decode_process_target(&fault.target), fault.start, fault.end))
+                    .collect::<Vec<_>>(),
+                [
+                    (Some((node, Fault::ProcRestart)), window.0, window.1),
+                    (
+                        Some((node, Fault::ProcPowerLoss { choice: 77 })),
+                        window.0,
+                        window.1
+                    ),
+                ]
+            );
+        }
+        assert_ne!(
+            FaultOperation::PowerLoss(0, ticks(50)).key_bytes(),
+            FaultOperation::Kill(0, ticks(50)).key_bytes()
+        );
+        assert_ne!(
+            FaultOperation::PowerLossAll(ticks(50)).key_bytes(),
+            FaultOperation::KillAll(ticks(50)).key_bytes()
+        );
+    }
+
+    #[test]
+    fn disk_faults_reach_the_supervisor_with_their_windows() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        let horizon = window.1 - window.0;
+        for (operation, fault, end) in [
+            (
+                FaultOperation::DiskError(1, ticks(50)),
+                Fault::ProcDiskError,
+                window.1,
+            ),
+            (
+                FaultOperation::DiskStall(1, ticks(50)),
+                Fault::ProcDiskStall(Span(horizon)),
+                window.1,
+            ),
+            (
+                FaultOperation::DiskCorrupt(1, ticks(50)),
+                Fault::ProcDiskCorrupt { choice: 77 },
+                window.0 + horizon / RESTART_DOWN_DIVISOR,
+            ),
+        ] {
+            let action = FaultAction::from(operation).with_choice(77);
+            let standing = action_delta(action, window)
+                .standing
+                .into_iter()
+                .next()
+                .expect("a disk fault installs a standing fault");
+            assert_eq!(decode_process_target(&standing.target), Some((1, fault)));
+            assert_eq!((standing.start, standing.end), (window.0, end));
+            assert_eq!(operation.with_ticks(ticks(9)).ticks(), 9);
+        }
+        let keys = [
+            FaultOperation::DiskError(0, ticks(50)),
+            FaultOperation::DiskStall(0, ticks(50)),
+            FaultOperation::DiskCorrupt(0, ticks(50)),
+            FaultOperation::PowerLoss(0, ticks(50)),
+            FaultOperation::Restart(0, ticks(50)),
+        ]
+        .map(|operation| operation.key_bytes());
+        assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), keys.len());
+    }
+
+    #[test]
+    fn a_clock_shift_covers_its_window_and_spreads_only_across_every_node() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        for (operation, node, spread) in [
+            (
+                FaultOperation::Clock {
+                    node: 2,
+                    offset_ms: -1_500,
+                    rate_ppm: 250_000,
+                    ticks: ticks(50),
+                },
+                2,
+                0,
+            ),
+            (
+                FaultOperation::ClockAll {
+                    offset_ms: -1_500,
+                    rate_ppm: 250_000,
+                    ticks: ticks(50),
+                },
+                EVERY_NODE,
+                77,
+            ),
+        ] {
+            let action = FaultAction::from(operation).with_choice(77);
+            let fault = action_delta(action, window)
+                .standing
+                .into_iter()
+                .next()
+                .expect("a clock shift installs a standing fault");
+            assert_eq!(
+                decode_process_target(&fault.target),
+                Some((
+                    node,
+                    Fault::ProcClock {
+                        offset: -1_500_000_000,
+                        rate_ppm: 250_000,
+                        spread,
+                    }
+                ))
+            );
+            assert_eq!((fault.start, fault.end), window);
+            assert_eq!(action.ticks(), 50);
+            assert_eq!(action.with_ticks(ticks(9)).ticks(), 9);
+        }
+        let shift = |offset_ms, rate_ppm| FaultOperation::Clock {
+            node: 0,
+            offset_ms,
+            rate_ppm,
+            ticks: ticks(50),
+        };
+        let keys = [
+            shift(1, 0).key_bytes(),
+            shift(-1, 0).key_bytes(),
+            shift(0, 1).key_bytes(),
+            FaultOperation::ClockAll {
+                offset_ms: 1,
+                rate_ppm: 0,
+                ticks: ticks(50),
+            }
+            .key_bytes(),
+            FaultOperation::Kill(0, ticks(50)).key_bytes(),
+        ];
+        assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), keys.len());
     }
 
     #[test]
@@ -1447,6 +1865,8 @@ mod tests {
             let (start, end) = WINDOWS.window(&actions, 0).unwrap();
             let fault = action_delta(actions[0], (start, end))
                 .standing
+                .into_iter()
+                .next()
                 .expect("pause installs a standing fault");
             assert_eq!(
                 decode_process_target(&fault.target),
@@ -1466,6 +1886,8 @@ mod tests {
             let (start, end) = WINDOWS.window(&actions, 0).unwrap();
             let fault = action_delta(actions[0], (start, end))
                 .standing
+                .into_iter()
+                .next()
                 .expect("restart installs a standing fault");
             assert_eq!(
                 decode_process_target(&fault.target),
@@ -1486,6 +1908,8 @@ mod tests {
             WINDOWS.window(&kills(4), 0).unwrap(),
         )
         .standing
+        .into_iter()
+        .next()
         .expect("hook installs a standing fault");
         assert_eq!(
             decode_process_target(&fault.target),
@@ -1740,10 +2164,70 @@ mod tests {
                 start_generation: 2,
                 end_generation: 2,
                 points: vec!["checked".to_owned()],
+                undecided_keys: 0,
                 pending_faults: 1,
             })
         );
         assert!(FaultObservations::default().check.is_none());
+    }
+
+    fn json_undecided(pid: u64, keys: u64) -> (u64, u32, Vec<u8>) {
+        (
+            0,
+            JSON_EVENT_ID,
+            format!(
+                r#"{{"harmony_attribution":{{"rip":"0x1","pid":{pid},"comm_hex":"61"}},"harmony_check":{{"undecided_keys":{keys}}}}}"#
+            )
+            .into_bytes(),
+        )
+    }
+
+    #[test]
+    fn a_completed_check_carries_its_own_undecided_keys() {
+        let mut events = vec![
+            state_event(reg::CHECK_ENABLED, STATE_SET, 1),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+            json_pass(40, "checked"),
+            json_undecided(40, 3),
+            json_undecided(41, 9),
+        ];
+        events.extend(completion(40, 1, 1));
+        let check = |events: &[(u64, u32, Vec<u8>)]| {
+            let capture = decode_sdk_events(events).unwrap();
+            assert_eq!(capture, decode_sdk_events_reference(events).unwrap());
+            FaultObservations::new(1, &capture, FaultStop::Deadline)
+                .check
+                .unwrap()
+        };
+        assert_eq!(check(&events).undecided_keys, 3);
+        events.extend([
+            state_event(reg::CHECKS_STARTED, STATE_SET, 2),
+            json_pass(40, "checked"),
+        ]);
+        events.extend(completion(40, 2, 1));
+        let next = check(&events);
+        assert_eq!((next.run, next.undecided_keys), (2, 0));
+    }
+
+    #[test]
+    fn a_fully_undecided_check_still_reports_its_undecided_keys() {
+        let mut events = vec![
+            state_event(reg::CHECK_ENABLED, STATE_SET, 1),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+            json_pass(40, "checked"),
+        ];
+        events.extend(completion(40, 1, 1));
+        events.extend([
+            state_event(reg::CHECKS_STARTED, STATE_SET, 2),
+            json_undecided(40, 3),
+        ]);
+        events.extend(completion(40, 2, 2));
+        let capture = decode_sdk_events(&events).unwrap();
+        assert_eq!(capture, decode_sdk_events_reference(&events).unwrap());
+        let check = FaultObservations::new(1, &capture, FaultStop::Deadline)
+            .check
+            .unwrap();
+        assert_eq!((check.run, check.undecided_keys), (1, 3));
     }
 
     #[test]

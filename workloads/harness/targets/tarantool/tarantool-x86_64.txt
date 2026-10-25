@@ -1,0 +1,5 @@
+# Reviewed sites in Bookworm libssl3 3.0 libcrypto.so.3, which Tarantool links. See workloads/languages/reviewed/README.md.
+76dd3d93e5ee48950a92a58d59b94de8143847f91a80d9682c938767b991577d 0x1b1fb5 LSL bytes inside the EC_GFp_nistp521 precomputed table in .text; no code branches there
+76dd3d93e5ee48950a92a58d59b94de8143847f91a80d9682c938767b991577d 0x1c5bf8 LSL bytes inside the EC_GFp_nistp521 precomputed table in .text; no code branches there
+76dd3d93e5ee48950a92a58d59b94de8143847f91a80d9682c938767b991577d 0x2419f4 RDRAND OPENSSL_ia32_rdrand_bytes; rand_cpu_x86.c calls it only when OPENSSL_ia32cap_P has CPUID.1.ECX bit30; frozen guest CPUID clears that bit
+76dd3d93e5ee48950a92a58d59b94de8143847f91a80d9682c938767b991577d 0x241a64 RDSEED OPENSSL_ia32_rdseed_bytes; rand_cpu_x86.c calls it only when OPENSSL_ia32cap_P has CPUID.7.EBX bit18; frozen guest CPUID clears that bit

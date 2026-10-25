@@ -4,7 +4,7 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Start native arcade campaigns on SSH machines and watch them in the arcade page.
+"""Start native arcade campaigns on SSH machines or this computer and watch them in the arcade page.
 
 The launcher serves a built arcade site on a loopback port. The page offers a
 Native run dialog when it finds the launcher. A run copies this checkout's
@@ -13,6 +13,10 @@ once per commit, starts `nes-eval` with a `live` request under `systemd-run`
 with a memory cap, and forwards the live port back over SSH. The page watches a
 run at `/runs/<id>/?game=<game>&live`, which serves the same site and proxies
 `/runs/<id>/live/` to that run.
+
+A machine with `local = true` runs `nes-eval` as a child process of the
+launcher instead. It builds the QuickNES core and `nes-eval` from this working
+tree and needs no SSH or systemd. It does not enforce a memory ceiling.
 
 Every `nes-eval` campaign writes `live.json` to its output directory while it
 runs. The launcher also lists the campaigns it finds under each machine's
@@ -30,15 +34,18 @@ import hashlib
 import http.client
 import json
 import mimetypes
+import os
 import re
 import secrets
 import shlex
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -48,7 +55,6 @@ from urllib.parse import unquote, urlsplit
 REPOSITORY = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = Path("~/.config/harmony/arcade-machines.toml")
 UNIT_PREFIX = "harmony-arcade-"
-MEMORY_HEADROOM_MIB = 1024
 LISTEN_PATTERN = re.compile(r"live view listening on 127\.0\.0\.1:(\d+)")
 RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-z0-9-]+$")
 STATUS_SECONDS = 10.0
@@ -73,6 +79,10 @@ GAMES: dict[str, Game] = {
     "super-mario-bros": Game("smb", "super-mario-bros.nes", False),
     "mega-man-2": Game("mm2", "mega-man-2.nes", False),
     "metroid": Game("metroid", "metroid.nes", False),
+    "donkey-kong": Game("donkey-kong", "donkey-kong.nes", False),
+    "ice-climbers": Game("ice-climbers", "ice-climbers.nes", False),
+    "zelda": Game("zelda", "zelda.nes", False),
+    "castlevania": Game("castlevania", "castlevania.nes", False),
 }
 
 
@@ -83,7 +93,9 @@ class Machine:
     dir: str
     workers: int
     memory_mib: int
+    memory_max_mib: int
     runs: tuple[str, ...] = ()
+    local: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,6 +112,7 @@ class Settings:
     memory_mib: int
     seed: int
     hours: float
+    stage: int | None = None
 
 
 @dataclass
@@ -114,6 +127,7 @@ class Run:
     started: float = field(default_factory=time.time)
     local_port: int | None = None
     tunnel: subprocess.Popen[bytes] | None = None
+    process: subprocess.Popen[bytes] | None = None
     cancelled: bool = False
 
     @classmethod
@@ -121,6 +135,8 @@ class Run:
         return cls(run_id, settings.game, settings.machine, settings, **fields)
 
     def describe(self) -> dict[str, Any]:
+        stage = self.settings.stage if self.settings else None
+        level = "" if stage is None else f"&level={stage}"
         return {
             "id": self.id,
             "game": self.game,
@@ -130,7 +146,7 @@ class Run:
             "state": self.state,
             "message": self.message,
             "started": self.started,
-            "watch": f"/runs/{self.id}/?game={self.game}&live" if self.local_port else None,
+            "watch": f"/runs/{self.id}/?game={self.game}&live{level}" if self.local_port else None,
         }
 
 
@@ -138,13 +154,22 @@ def load_config(path: Path) -> Config:
     data = tomllib.loads(path.expanduser().read_text())
     machines: dict[str, Machine] = {}
     for name, entry in data.get("machines", {}).items():
+        archive = entry.get("memory_mib")
+        local = bool(entry.get("local", False))
+        whole = entry.get("memory_max_mib", archive if local else None)
+        if type(archive) is not int or archive <= 0:
+            raise ValueError(f"{name} memory_mib must be a positive integer archive ceiling")
+        if type(whole) is not int or (whole <= archive and not local):
+            raise ValueError(f"{name} memory_max_mib must be an integer whole-unit ceiling greater than memory_mib")
         machines[name] = Machine(
             name=name,
-            ssh=str(entry["ssh"]),
+            ssh="" if local else str(entry["ssh"]),
             dir=str(entry["dir"]),
             workers=int(entry["workers"]),
-            memory_mib=int(entry["memory_mib"]),
-            runs=tuple(str(directory) for directory in entry.get("runs", [])),
+            memory_mib=archive,
+            memory_max_mib=whole,
+            runs=() if local else tuple(str(directory) for directory in entry.get("runs", [])),
+            local=local,
         )
     if not machines:
         raise ValueError(f"{path} lists no [machines.NAME] tables")
@@ -167,7 +192,10 @@ def parse_settings(body: dict[str, Any], config: Config) -> Settings:
         raise ValueError(f"{machine} allows 256 to {limits.memory_mib} MiB")
     if seed < 0 or not 0 < hours <= 72:
         raise ValueError("the seed must be at least 0 and the time limit 72 hours or less")
-    return Settings(game, machine, workers, memory_mib, seed, hours)
+    stage = body.get("stage")
+    if stage is not None and not (game.startswith("famidash") and isinstance(stage, int) and stage >= 0):
+        raise ValueError("only Famidash runs take a starting level")
+    return Settings(game, machine, workers, memory_mib, seed, hours, stage)
 
 
 def rom_path(game: Game, site: Path, config: Config) -> Path | None:
@@ -199,6 +227,7 @@ def run_request(
         "wall_seconds": round(settings.hours * 3600),
         "verification": "witness",
         "live": "127.0.0.1:0",
+        **({} if settings.stage is None else {"stage": settings.stage}),
     }
 
 
@@ -275,7 +304,7 @@ START = (
 mkdir -p "$run"
 cat >"$run/request.json"
 printf '%s\\n' "$3" >"$run/launch.json"
-systemd-run $user --unit "$4" --collect -p MemoryMax="$5"M -p Nice=10 \\
+systemd-run $user --unit "$4" --collect -p MemoryMax="$5"M -p MemorySwapMax=0 -p Nice=10 \\
   -p WorkingDirectory="$run" "$1/src/$6/nes-eval" "$run/request.json" "$run/out" >/dev/null
 for _ in $(seq 1 120); do
   line=$(journalctl $user -u "$4" -o cat --no-pager 2>/dev/null | grep -m1 'live view listening' || true)
@@ -359,6 +388,47 @@ class Cancelled(Exception):
     pass
 
 
+def build_logged(
+    command: list[str],
+    log: Path,
+    environment: dict[str, str] | None = None,
+    cancelled: Callable[[], bool] = lambda: False,
+    progress: Callable[[str], None] = lambda text: None,
+) -> None:
+    with log.open("wb") as output:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            env={**os.environ, **(environment or {})},
+            start_new_session=True,
+        )
+        while True:
+            try:
+                process.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                if cancelled():
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait()
+                    raise Cancelled
+                progress(build_progress(log))
+    if process.returncode != 0:
+        tail = log.read_text(errors="replace").strip().splitlines()[-5:]
+        raise RuntimeError(f"{command[0]} failed: " + " / ".join(tail))
+
+
+def build_progress(log: Path) -> str:
+    lines = log.read_text(errors="replace").splitlines()
+    compiled = [line.split()[1] for line in lines if line.lstrip().startswith("Compiling ")]
+    if lines and "waiting for file lock" in lines[-1]:
+        return "Waiting for another build on this machine to finish"
+    if not compiled:
+        return "Building the QuickNES core and nes-eval"
+    return f"Building nes-eval: {len(compiled)} crates compiled, now {compiled[-1]}"
+
+
 class Launcher:
     def __init__(self, config: Config, site: Path) -> None:
         self.config = config
@@ -389,6 +459,8 @@ class Launcher:
         settings = run.settings
         assert settings is not None
         machine = self.config.machines[settings.machine]
+        if machine.local:
+            return self.deploy_local(run, machine, settings)
         try:
             self.check_cancelled(run)
             commit = self.commit()
@@ -428,7 +500,7 @@ class Launcher:
                     run.id,
                     launch,
                     UNIT_PREFIX + run.id,
-                    str(settings.memory_mib + MEMORY_HEADROOM_MIB),
+                    str(machine.memory_max_mib),
                     commit,
                     stdin=json.dumps(request).encode(),
                 )
@@ -445,6 +517,95 @@ class Launcher:
             with self.lock:
                 if not run.cancelled:
                     run.state, run.message = "failed", str(error)
+
+    def deploy_local(self, run: Run, machine: Machine, settings: Settings) -> None:
+        try:
+            root = Path(machine.dir).expanduser()
+            root = Path(machine.dir).expanduser().resolve()
+            directory = root / "runs" / run.id
+            directory.mkdir(parents=True)
+            rom = rom_path(GAMES[settings.game], self.site, self.config)
+            if rom is None:
+                raise RuntimeError(f"no ROM for {settings.game}")
+            rom = rom.resolve()
+            core = root / ("quicknes_libretro.dylib" if sys.platform == "darwin" else "quicknes_libretro.so")
+            run.message = "Building the QuickNES core and nes-eval"
+            if not core.is_file():
+                build_logged(
+                    ["bash", str(REPOSITORY / "scripts/build-quicknes-core.sh"), str(core)],
+                    directory / "core.log",
+                    cancelled=lambda: self.cancelled(run),
+                )
+            self.check_cancelled(run)
+            eval_binary = root / "target/release/nes-eval"
+            build_logged(
+                ["cargo", "build", "--release", "--locked", "--bin", "nes-eval",
+                 "--manifest-path", str(REPOSITORY / "workloads/nes/Cargo.toml")],
+                directory / "build.log",
+                {"CARGO_TARGET_DIR": str(root / "target")},
+                cancelled=lambda: self.cancelled(run),
+                progress=lambda text: setattr(run, "message", text),
+            )
+            self.check_cancelled(run)
+            request = run_request(
+                settings,
+                str(rom),
+                hashlib.sha256(rom.read_bytes()).hexdigest(),
+                str(core),
+                hashlib.sha256(core.read_bytes()).hexdigest(),
+            )
+            (directory / "request.json").write_text(json.dumps(request))
+            (directory / "launch.json").write_text(json.dumps(settings.__dict__))
+            run.message = "Starting"
+            log = (directory / "nes-eval.log").open("wb")
+            run.process = subprocess.Popen(
+                [str(eval_binary), str(directory / "request.json"), str(directory / "out")],
+                cwd=directory,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                preexec_fn=lambda: os.nice(10),
+            )
+            log.close()
+            port = self.listening_port(run, directory / "nes-eval.log")
+            with self.lock:
+                if run.cancelled:
+                    stopped = True
+                else:
+                    stopped = False
+                    run.local_port, run.state, run.message = port, "running", ""
+            if stopped:
+                self.close_process(run)
+        except Cancelled:
+            self.close_process(run)
+            return
+        except (RuntimeError, OSError, subprocess.CalledProcessError, ValueError) as error:
+            self.close_process(run)
+            with self.lock:
+                if not run.cancelled:
+                    run.state, run.message = "failed", str(error)
+
+    def listening_port(self, run: Run, log: Path) -> int:
+        assert run.process is not None
+        for _ in range(240):
+            self.check_cancelled(run)
+            match = LISTEN_PATTERN.search(log.read_text(errors="replace"))
+            if match:
+                return int(match.group(1))
+            if run.process.poll() is not None:
+                tail = log.read_text(errors="replace").strip().splitlines()[-5:]
+                raise RuntimeError(" / ".join(tail) or "nes-eval exited before opening its live port")
+            time.sleep(0.5)
+        raise RuntimeError("the run did not open its live port")
+
+    def close_process(self, run: Run) -> None:
+        if run.process is not None and run.process.poll() is None:
+            run.process.terminate()
+            try:
+                run.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                run.process.kill()
 
     def cancelled(self, run: Run) -> bool:
         with self.lock:
@@ -493,6 +654,9 @@ class Launcher:
         with self.lock:
             run.cancelled = True
             run.state, run.message = "stopped", ""
+        if machine.local:
+            self.close_process(run)
+            return
         ssh(machine, STOP, UNIT_PREFIX + run.id)
         self.close_tunnel(run)
 
@@ -503,6 +667,8 @@ class Launcher:
 
     def discover(self) -> None:
         for machine in self.config.machines.values():
+            if machine.local:
+                continue
             try:
                 listing = ssh(machine, DISCOVER, machine.dir)
             except RuntimeError as error:
@@ -525,7 +691,7 @@ class Launcher:
     def scan(self) -> None:
         while True:
             for machine in self.config.machines.values():
-                if not machine.runs:
+                if machine.local or not machine.runs:
                     continue
                 try:
                     self.scan_machine(machine)
@@ -567,9 +733,12 @@ class Launcher:
                     for run in self.runs.values()
                     if run.state == "running" and run.settings is not None
                 ]
+            for run in running:
+                if run.process is not None and run.process.poll() is not None:
+                    run.state = "finished"
             for name, machine in self.config.machines.items():
                 mine = [run for run in running if run.machine == name]
-                if not mine:
+                if not mine or machine.local:
                     continue
                 try:
                     states = ssh(machine, STATUS, *(UNIT_PREFIX + run.id for run in mine))
@@ -615,7 +784,7 @@ class Handler(BaseHTTPRequestHandler):
         launcher = self.launcher
         if path == "/launcher/machines":
             machines = [
-                {"name": m.name, "workers": m.workers, "memory_mib": m.memory_mib}
+                {"name": m.name, "workers": m.workers, "memory_mib": m.memory_mib, "memory_max_mib": m.memory_max_mib}
                 for m in launcher.config.machines.values()
             ]
             games = available_games(launcher.site, launcher.config)
@@ -725,6 +894,7 @@ def main() -> int:
         pass
     for run in launcher.runs.values():
         launcher.close_tunnel(run)
+        launcher.close_process(run)
     return 0
 
 

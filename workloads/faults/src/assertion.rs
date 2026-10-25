@@ -209,6 +209,7 @@ pub struct JsonEvent {
     pub pid: Option<u64>,
     pub park: Option<ParkReport>,
     pub park_read: Option<ParkReport>,
+    pub undecided_keys: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -224,6 +225,12 @@ struct RawEvent {
     harmony_attribution: Option<RawAttribution>,
     harmony_park: Option<ParkReport>,
     harmony_park_read: Option<ParkReport>,
+    harmony_check: Option<RawCheck>,
+}
+
+#[derive(Deserialize)]
+struct RawCheck {
+    undecided_keys: u64,
 }
 
 #[derive(Deserialize)]
@@ -313,6 +320,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
             .and_then(|attribution| attribution.pid),
         park: raw.harmony_park,
         park_read: raw.harmony_park_read,
+        undecided_keys: raw.harmony_check.map(|check| check.undecided_keys),
     })
 }
 
@@ -377,6 +385,12 @@ mod tests {
         assert!(unknown.assertion.is_none());
         let other = decode_json_event(br#"{"workload_event":{"any":1}}"#).unwrap();
         assert_eq!(other, JsonEvent::default());
+        let undecided = decode_json_event(
+            br#"{"harmony_attribution":{"pid":9},"harmony_check":{"undecided_keys":3}}"#,
+        )
+        .unwrap();
+        assert_eq!(undecided.undecided_keys, Some(3));
+        assert_eq!(undecided.pid, Some(9));
     }
 
     #[test]

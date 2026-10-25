@@ -69,6 +69,8 @@ pub trait Vendor: Arch + Sized {
 
     fn next_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64>;
 
+    fn coverage_callback_vns() -> u64;
+
     fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)>;
 
     fn restored_clockevent_trace_schedule_present<B: Backend<A = Self>>(

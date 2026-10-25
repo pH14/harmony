@@ -403,7 +403,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     parent_milestones: MetroidMilestones,
     suffix: &[ButtonChord],
     retention: RetentionPolicy,
-    stop_rollout_on_objective: bool,
+    stop: searcher::search::rollout::RolloutStop,
 ) -> Result<MetroidCampaignJobResult<M>, Box<dyn Error>> {
     if retention != RetentionPolicy::Unprobed {
         return Err("Metroid campaigns admit every live candidate".into());
@@ -425,6 +425,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions,
         });
     }
@@ -471,12 +472,13 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop_rollout_on_objective) {
+        if outcome.should_stop(&stop) {
             break;
         }
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }
@@ -854,7 +856,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
         parent_milestones: Self::Milestones,
         suffix: &[Self::Action],
         retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: searcher::search::rollout::RolloutStop,
     ) -> Result<MetroidCampaignJobResult<M>, Box<dyn Error>> {
         target.restore(origin_snapshot)?;
         for action in replay {
@@ -869,7 +871,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
             parent_milestones,
             suffix,
             retention,
-            stop_rollout_on_objective,
+            stop,
         )
     }
 }

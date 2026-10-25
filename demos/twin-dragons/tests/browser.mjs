@@ -19,6 +19,7 @@ const browser = await chromium.launch({
     ? { channel: process.env.CHROME_CHANNEL }
     : {}),
 });
+let selectFixtureCell;
 const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } }),
   errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
@@ -103,6 +104,14 @@ await page.addInitScript((tourKey) => {
     }
     postMessage(data, ...rest) {
       if (data.type === "states") window.tdTestRequest = data.request;
+      if (data.type === "states" && data.request > 0 && window.tdTestFixture) {
+        const state = window.tdTestFixture;
+        window.tdTestFixture = null;
+        window.tdTestFixtureRequest = data.request;
+        window.tdTestFixtureWorker = this;
+        queueMicrotask(() => this.onmessage({ data: { type: "states", request: data.request, states: [state] } }));
+        return;
+      }
       if (data.type === "fork") window.tdTestFork = structuredClone(data);
       super.postMessage(data, ...rest);
     }
@@ -152,14 +161,15 @@ async function selectFixture(tape, id) {
   };
   await page.evaluate((state) => {
     state.snapshot = new Uint8Array(state.snapshot);
-    window.tdTestWorker.onmessage({
-      data: {
-        type: "states",
-        request: window.tdTestRequest,
-        states: [state],
-      },
-    });
+    window.tdTestFixture = state;
+    window.tdTestLastFixture = state;
+    window.tdTestFixtureRequest = null;
   }, state);
+  if (await page.locator("#map").getAttribute("data-map") !== "0")
+    await page.locator('#level-strip button[data-level="0"]').click();
+  if (await page.evaluate(() => window.tdTestFixture !== null))
+    await selectFixtureCell();
+  await page.waitForFunction(() => window.tdTestFixtureRequest !== null);
   return frames;
 }
 async function measurePlayback() {
@@ -184,7 +194,14 @@ async function measurePlayback() {
   );
 }
 try {
-  await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?level=0&workers=1&pace=0`);
+  await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?game=twin-dragons&level=0&workers=1&pace=0`);
+  await page.evaluate(() => {
+    window.overlappingActions = 0;
+    const visible = (id) => { const e = document.getElementById(id); return !!e && getComputedStyle(e).display !== "none" && !e.hidden; };
+    const check = () => { if (visible("take-control") && (visible("search-here") || visible("discard-branch"))) window.overlappingActions++; };
+    new MutationObserver(check).observe(document.documentElement, { subtree: true, attributes: true, childList: true });
+    setInterval(check, 20);
+  });
   await page.waitForFunction(
     () =>
       document.querySelector("#verification")?.textContent === "Original game",
@@ -196,7 +213,7 @@ try {
     await page.locator("#screenshot,#export,#import,#history-file").count(),
     0,
   );
-  assert.equal(await page.locator(".brand").innerText(), "harmony");
+  assert.equal(await page.locator(".brand").innerText(), "pH14/harmony");
   const heroLayout = await page.evaluate(() => {
     const totals = document.querySelector(".hero-stats").getBoundingClientRect(),
       goal = document.querySelector(".goal").getBoundingClientRect(),
@@ -213,7 +230,8 @@ try {
   });
   assert.ok(heroLayout.totalsBottom <= heroLayout.goalTop, "Live totals sit above the level title");
   assert.equal(await page.locator("#branches .search-details").count(), 1, "Per-search counters sit in the Searches pane");
-  assert.equal(heroLayout.detailsOpen, true, "Per-search counters start open");
+  assert.equal(heroLayout.detailsOpen, false, "Per-search counters start closed");
+  assert.equal(await page.locator("#branches > .search-speed").count(), 1, "The search speed slider sits in the Searches pane");
   assert.equal(heroLayout.heading, "Harmony Arcade");
   const originImage = await page
     .locator("#film")
@@ -295,6 +313,7 @@ try {
     assert.equal(await introMap.evaluate((c) => getComputedStyle(c).cursor), "pointer");
     await page.mouse.click(point.x, point.y);
   };
+  selectFixtureCell = clickIntroCell;
   const emptyCell = async (move) => {
     const room = Number(await introMap.getAttribute("data-map"));
     const point = await showOnMap(page, room, 16, 8);
@@ -521,6 +540,7 @@ try {
         "Exact replay ✓" &&
       document.querySelector("#film-title").dataset.stateId === "fixture-level-one",
   );
+  const firstFixtureRequest = await page.evaluate(() => window.tdTestFixtureRequest);
   const firstMainImage = await page
     .locator("#film")
     .evaluate((c) => c.toDataURL());
@@ -537,6 +557,18 @@ try {
       mainFrames / 2,
     "Reopening a route must reuse its verified history checkpoints",
   );
+  const cachedFixtureRequest = await page.evaluate(() => window.tdTestFixtureRequest);
+  assert.notEqual(cachedFixtureRequest, firstFixtureRequest);
+  await page.evaluate((request) => {
+    window.tdTestFixtureWorker.onmessage({ data: {
+      type: "states", request,
+      states: [{ ...window.tdTestLastFixture, id: "fixture-delayed-old-reply" }],
+    } });
+  }, firstFixtureRequest);
+  await page.waitForTimeout(1000);
+  assert.equal(await page.locator("#film-title").getAttribute("data-state-id"), "fixture-level-one-cached");
+  assert.equal(await page.locator("#verification").textContent(), "Exact replay ✓");
+
   assert.equal(
     await page.locator("#film").evaluate((c) => c.toDataURL()),
     firstMainImage,
@@ -690,12 +722,20 @@ try {
   );
   assert.equal(await page.locator("#error").isVisible(), false);
   assert.ok(longFrames > 60000);
-  await selectFixture({ actions: [] }, "fixture-root");
-  await page.waitForFunction(
-    () =>
-      document.querySelector("#verification").textContent === "Original game" &&
-      document.querySelector("#scrub").max === "0",
-  );
+  const rootMotionPreference = await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  try {
+    assert.equal(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches), true);
+    await selectFixture({ actions: [] }, "fixture-root");
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#verification").textContent === "Original game" &&
+        document.querySelector("#scrub").max === "0",
+    );
+  } finally {
+    await page.emulateMedia({ reducedMotion: null });
+  }
+  assert.equal(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches), rootMotionPreference);
   await setView(page,'heat');
   await settledCamera();
   const originalAttempts = await page.locator("#attempts").textContent();
@@ -916,6 +956,7 @@ try {
     "Search descendants must include and reproduce the human input prefix",
   );
   const nestedFrame = childState.frames - 1;
+  if ((await page.locator("#play").getAttribute("data-state")) === "pause") await page.locator("#play").click();
   await page.locator("#scrub").fill(String(nestedFrame));
   await page.waitForFunction((frame) =>
     document.querySelector("#frame-label").textContent.startsWith(`FRAME ${frame} /`) &&
@@ -1111,15 +1152,23 @@ try {
     }
   }
   await page.locator("#credits").click();
+  await page.locator(".credit-game").first().waitFor();
   const credits = await page.locator("#info-content").innerText();
   for (const text of [/Garydos/, /zlib license/, /sound-effect data is zeroed/, /Shiru are not included/, /surt/, /CC BY 3\.0/, /CC BY 4\.0/, /FamiTone2/, /FamiTone5/])
     assert.match(credits, text);
+  assert.match(credits, /^CREDITS & LICENSING\s+Harmony\s+Created by pH14\. Available on GitHub and licensed under the AGPL-3\.0\./);
+  assert.match(credits, /auto-generated:/);
+  assert.equal(await page.locator('#info-content a[href="https://github.com/pH14/harmony"]').first().innerText(), 'Available on GitHub');
+  assert.ok(await page.locator('.credit-game').count() >= 10, 'The credits list every supported game');
+  assert.equal(await page.locator('.credit-game[open] summary').innerText(), 'Twin Dragons');
+  await page.locator('.credit-game:not([open]) summary').first().click();
+  assert.equal(await page.locator('.credit-game[open]').count(), 2);
   assert.equal(await page.locator('#info-content a[href$=".tar.gz"]').evaluateAll(links => links.some(link => /twin-dragons/i.test(link.href))), false);
   await page.locator("#close-info").click();
   assert.equal(await page.locator('.art-credit').count(), 0);
   assert.match(await page.locator('.exploration .game-attribution').innerText(), /Garydos.*surt.*CC BY 3\.0/);
   assert.equal(await page.locator('.game-attribution').count(), 1);
-  assert.match(await page.locator('footer').innerText(), /^harmony\nCredits & source\n(Dark|Light) mode$/);
+  assert.match(await page.locator('footer').innerText(), /^pH14\/harmony\nCredits & source$/);
   assert.equal(await page.locator('.exploration-heading').innerText(), 'Exploration');
   assert.equal(await page.locator('.history-heading h2').innerText(), 'History');
 
@@ -1289,8 +1338,8 @@ try {
     };
   });
   assert.ok(
-    phoneMap.height <= 0.45,
-    "The compact pane must leave most of the viewport to the route map",
+    phoneMap.height <= 0.75,
+    "The compact pane must leave part of the viewport to the route map",
   );
   assert.ok(
     phoneMap.topGap <= 46,
@@ -1301,8 +1350,8 @@ try {
     "Selecting a history in the same room must reveal its map above the pane",
   );
   assert.ok(
-    phoneMap.preview <= 180,
-    "The compact pane should show its preview beside its controls",
+    phoneMap.preview >= 300 && phoneMap.preview <= 384,
+    "The compact pane should show its preview at nearly full width",
   );
   await page.locator("#test-scroll-space").evaluate(e => e.remove());
   const collapsedHeight = (await page.locator("#inspector").boundingBox())
@@ -1425,6 +1474,7 @@ try {
     animations: "disabled",
   });
   assert.equal(await page.locator("#error").isVisible(), false);
+  assert.equal(await page.evaluate(() => window.overlappingActions), 0, "Play from here never shows beside Branch search or Discard branch");
   assert.deepEqual(errors, []);
   console.log(
     "Browser search, exact replay, level-following scrubbing, audible 1x/4x history, manual branching, simplified controls, reset and mobile layout passed.",

@@ -9,7 +9,7 @@ state hashing. Host hypervisor calls stay behind the backend trait; concrete
 backend and architecture pairs are selected by the vendor composition roots.
 
 Native AArch64 Linux and macOS builds enable RustCrypto's runtime-dispatched
-SHA-256 backend for state hashes and portable snapshot digests. Hosts with SHA2
+SHA-256 backend for portable snapshot digests and the other SHA-256 consumers. Hosts with SHA2
 instructions use them; hosts without them retain the software implementation.
 Miri builds retain the software implementation. Hash inputs, digest bytes,
 guest CPU policy, and snapshot formats are independent of this host choice.
@@ -115,12 +115,15 @@ admission or integrity checks to create, restore, publish or execute state.
 The composition layer can inject a host-operation guard into `ControlServer`.
 The server checks it before and after each control request, including before
 the request's reply is encoded, and attaches it to every fresh or recovery VM.
-The VMM checks the same guard before servicing a doorbell and immediately
-before writing any service answer to guest memory. Consonance uses this hook
-to reject host loader changes without making the execution core depend on a
-particular process-loader implementation. The callback receives a bounded
-`HostOperationSite` tag for control-before, control-after, SDK request or SDK
-response. Tags describe existing call boundaries and add no guard calls or
+The VMM checks the same guard once per SDK exchange, immediately before writing
+the service answer to guest memory. A request that stops for a decision or a
+control deadline is answered inside a later control request, which the control
+checks bracket. Every recorded outcome is produced inside a control request,
+so full checks bracket it, and the per-exchange check refuses a changed host
+before a guest reads an answer that host code produced. Consonance uses this
+hook to reject host loader changes without making the execution core depend on
+a particular process-loader implementation. The callback receives a bounded
+`HostOperationSite` tag for control-before, control-after, or SDK response. Tags describe existing call boundaries and add no guard calls or
 executable policy; runtime measurement ownership belongs to the composition.
 
 When a `Run` deadline is the earlier idle wake and resumes the guest, control
@@ -157,7 +160,8 @@ after virtual time crosses a staged host effect or reseed, control rejects the
 decision as an unsatisfiable schedule instead of exposing it before the input.
 Further `Run` requests reject that poisoned schedule before resolving the
 pending service answer.
-An x86 SDK doorbell does not advance virtual time. An effect added at the
+An x86 SDK doorbell exit does not advance virtual time. An answered coverage
+exchange advances it after the answer is written. An effect added at the
 moment of an already surfaced decision would run after its live answer but
 before that request when replayed from an earlier snapshot. At a deferred raw
 doorbell, the effect would run before its response live but after the response
@@ -190,16 +194,40 @@ those of VMs the server has already replaced. These are host wall-clock
 measurements for performance accounting; they never enter virtual time, state
 hashes, or snapshots.
 
+## Whole-state hash
+
+The whole-state hash commits to guest RAM and the state-blob suffix (vCPU,
+device, SDK, control and taint records). Its encoding is
+`BLAKE3("consonance-state-v2\0" || memory_digest || suffix)`, where
+`memory_digest` is
+`BLAKE3("consonance-state-memory-pages-v2\0" || length_le64 || page_digest[0] || ...)`
+and each `page_digest` is the plain BLAKE3 digest of one 4 KiB page, the same
+digest the snapshot store uses for page content. The previous encoding was
+`SHA-256("MEM\0" || length_le64 || RAM || suffix)`. The two encodings give
+different values for the same state. Equal states give equal hashes, and
+different states differ with the collision resistance of BLAKE3.
+
+The VMM keeps one digest per page and recomputes only pages written since the
+previous hash. The KVM dirty log reports guest writes, and host writes to RAM
+mark their pages as they happen. The dirty log has one reader, so every drain,
+whether for a snapshot seal, a dirty-tracking reset or a hash, marks the
+drained pages for the hash and keeps them pending for the next seal. A backend
+without dirty tracking, or a failed drain, makes the next hash recompute every
+page. All-zero pages use a precomputed digest. Portable export and import
+compute the same encoding from the complete memory image.
+
 `hash.<site>.calls`, `ram_bytes`, `suffix_bytes`, `metadata_bytes`, `ns` and
-`errors` describe physical SHA-256 stages. Sites are `whole_request`,
+`errors` describe physical hash stages. Sites are `whole_request`,
 `checkpoint`, `portable_export`, `portable_import`, `sparse_base`,
 `portable_export_envelope` and `portable_import_envelope`. Whole requests and
 checkpoints count actual memory-preimage feeds; the portable export/import
 sites also include sparse target-page commitments. Sparse-base cache hits do
 not start another hash stage. A call starts when its stage is entered, and a
 failure retains any bytes already fed. RAM bytes count actual memory slices;
-suffix bytes count the whole-state suffix; metadata bytes count domain/length
-framing, page indexes and non-RAM portable-envelope sections. Portable envelope
+for the whole-state hash they count only the nonzero pages that were
+rehashed. Suffix bytes count the whole-state suffix; metadata bytes count
+domain/length framing, page digests, page indexes and non-RAM
+portable-envelope sections. Portable envelope
 counters include only bytes actually hashed after successful reads/writes,
 excluding the trailing recorded digest. Their time includes codec and I/O waits.
 Whole-request and checkpoint time also includes vCPU state capture, readiness
@@ -209,29 +237,16 @@ The leaves attribute each feed once; wrapper requests do not add another
 charge. Retiring or replaying a VMM never rewinds these host totals. Backend physical
 entry telemetry is merged on the same retirement and failed-restore boundaries,
 independently of normalized exit service counts. Snapshot
-store verification appears under `snapshot.verify.*`, with distinct BLAKE3
-resident-page and VM-state work. Timings are nested diagnostic envelopes across
-hashing and storage, not additive elapsed time. Standalone codec/comparison
+store VM-state digest checks appear under `snapshot.verify.*`. Standalone codec/comparison
 helpers outside a ControlServer do not report into a server's telemetry. These
 fields do not enter event history, portable records, cache identities, hashes,
 retention charges or search policy. Existing snapshot page metrics keep their
 original meanings.
 
-Sparse delta export holds one snapshot-store read transaction across full
-setup/parent/target integrity verification, delta planning, target comparison,
-and the first base-RAM commitment calculation. Each distinct resident page is
-integrity-hashed once within that export; subsequent exports start fresh
-verification even when the base-RAM digest is cached. BLAKE3 resident integrity
-checks and the flat SHA-256 base/target commitments retain their separate
-purposes and existing encodings. Sparse delta import shares one immutable read
-transaction across target comparison and setup/base verification, including a
-cached base digest. Metadata and RAM validation still precede service preflight.
-That transaction ends before any user service callback. Rebase analysis then
-starts fresh resident verification after preflight; the subsequent mutable derive
-also retains its own resident/incoming-page checks. No verified-slot set crosses
-those boundaries. Thus a retained page can still be checked again after the
-callback or during derive; import does not promise one check per page over the
-whole operation.
+Sparse delta export and import read page bytes and BLAKE3 hashes from the
+snapshot store without hashing resident pages again; the store hashed each page
+when it was written. Import hashes every incoming page and checks it against
+its row before the target commitment, base-RAM digest and service preflight.
 
 Guest RAM is owned by `Vmm` for the lifetime of the backend. The canonical state
 fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
@@ -250,7 +265,7 @@ Snapshots can be restored into a copy-on-write memory mapping. In-place restore
 combines the snapshot difference and the guest dirty set before loading page
 contents. The control server holds a store reference on the image the VM last
 sealed or restored, so dropping that snapshot's handle keeps the difference
-small instead of forcing a full-image copy. The resulting sorted plan borrows integrity-checked store pages and
+small instead of forcing a full-image copy. The resulting sorted plan borrows store pages and
 copies each selected page directly into guest RAM. Page-write validation sorts
 small address/reference records, rejects duplicates and invalid ranges before
 any write, then coalesces instruction-cache invalidation ranges in the same pass
@@ -303,30 +318,22 @@ with its sidecar before deriving pages or minting a handle. Both imports verify
 that the installed service factory can instantiate the recorded policy and
 restore the captured handler state before committing the snapshot. Sparse
 sidecars also carry the source base snapshot's RAM digest. Export and import
-compute that digest once per base snapshot and cache it, verifying every
-distinct resident base page before reusing the cached digest. Sparse exports
-also verify every distinct resident target page, including inherited pages
-omitted from a delta. Pages shared by the base and target are hashed once per
-export when the base digest is cached; delta export performs this check before
-encoding its sidecar and does not repeat it there. The first base-digest
-calculation still reads the base pages to compute its SHA-256 identity. A
-release microbenchmark on Apple silicon measured 30.11 ms per
-base-only check for 8,192 distinct 4 KiB pages (32 MiB) and 0.45 ms when
-those frames shared one interned page. Checking that base together with a
-target that replaced one quarter of its pages measured 35.90 ms with distinct
-content and 1.07 ms with interned content. These checks hash each distinct
-resident page once. Cache deltas use setup
+compute that digest once per base snapshot and cache it. The base digest is
+BLAKE3 over the domain `consonance-sparse-base-ram-pages-v2`, the RAM length
+and the ordered BLAKE3 page digests the snapshot store keeps, so it costs 32
+bytes per page. Cache deltas use setup
 as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 11, and the sparse sidecar is version 13;
+The complete portable format is version 11, and the sparse sidecar is version 15;
 older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
 changed-page numbers and bytes to its sidecar; import verifies them before
 deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
-page numbers and bytes that differ from setup, independently of the parent or
-near snapshot. Import checks this commitment and every supplied page hash
-before minting a handle. Together with the setup RAM digest, the commitment
+page numbers and BLAKE3 page hashes that differ from setup, independently of
+the parent or near snapshot. Export takes those hashes from the store. Import
+first checks every supplied page against its hash, then checks this commitment,
+both before the service preflight and before minting a handle. Together with the setup RAM digest, the commitment
 checks reconstructed target RAM; it is not a standalone whole-state hash. Use
 a complete portable snapshot when the imported target's whole-state hash must
 be verified directly.
@@ -587,15 +594,16 @@ python3 consonance/vmm-core/qualification/qualify-sha256.py
 ```
 
 `--check` compares digests across padding boundaries, streaming chunk sizes,
-unaligned inputs, cloned prefix states, and complete VMM state hashes.
+unaligned inputs, and cloned prefix states. It also checks that both VMM copies
+produce the same state blob and the same BLAKE3 whole-state hash.
 The Snapshot and Restore job runs it without timing thresholds, as do the
 macOS Arm64 and Linux Arm64 Qualification jobs of Harmony Host Compatibility.
 Backend
 selection is checked against the features reported
 by the compiler artifacts for the actual build, including cached artifacts. The full run
 also reports nine alternating software/native timing pairs for small and large
-digests and whole-state hashes over zero and populated RAM from 4 KiB through
-128 MiB. Each timed result is checked. ARM timings qualify this build change;
+digests, and for whole-state hashes over zero and populated RAM from 4 KiB
+through 128 MiB. Each timed result is checked. ARM timings qualify this build change;
 the software control deliberately disables acceleration on every architecture.
 These are host hashing costs, not guest execution throughput. The executable's
 SHA-256 is printed with the results to bind both arms to the same build.
@@ -753,9 +761,9 @@ lands on its final access; deferred hash consumers use
 `Vmm::arm_checkpoint_hash_preimage` enables one bounded retained record for
 the most recent synchronous checkpoint. The record returned by
 `take_checkpoint_hash_preimage` contains the completed trace event index, the
-published state hash, exact state-blob suffix, RAM length, and the SHA256 digest
-of the `MEM\0 || length_le64 || RAM` prefix. The memory digest reuses a cloned
-hash context before appending the suffix; it adds no RAM traversal. It
+published state hash, exact state-blob suffix, RAM length, and the
+`memory_digest` of the whole-state hash. It is the value the hash already
+computed; retaining it adds no RAM traversal. It
 reuses the checkpoint's existing backend save and does not copy guest RAM or
 perform another CPU read; calling the arm method again clears the prior
 record. The feature is disabled by default and captures only completed
@@ -958,6 +966,14 @@ next quantum. The next threshold is part of the SDK snapshot. A thread whose
 count restarts at the first threshold gets a fresh entry, because Linux reuses
 thread IDs. A zero, malformed or overflowing quantum leaves the environment and
 every threshold unchanged.
+An answered exchange advances virtual time by the callbacks it allows before
+the next exchange times `vtime-coverage-callback-vns` (12 ns), after the exit's
+event is recorded. The guest kernel charges the coverage ioctl no execution
+tick, so a busy instrumented thread runs at the same virtual speed at every
+quantum. When the runnable width is 1, an exchange selects nothing, so the VM
+sets the next threshold at the last whole quantum before the next guest timer
+deadline, at most 32768 callbacks ahead. The timer then lands at the same
+callback as with an exchange every quantum, with fewer exits.
 
 ## ARM executable RAM restore qualification
 
@@ -1102,19 +1118,18 @@ the data, so at most MAX_PAYLOAD - 1 data bytes fit. Oversized local responses
 return MalformedEnvironment with the question still pending, matching explicit
 resolution, rather than reaching a writer failure that retires the VM.
 
-SDK dispatch attribution partitions existing request and response guard callback
+SDK dispatch attribution counts requests and partitions response guard callback
 calls, errors, and outer callback nanoseconds by bounded generic wire-operation
 bins. It does not add checks, RPCs, copied-byte estimates, or canonical state.
 The outer duration wraps `check_host_operation_guard`, including its optional
 callback invocation and error mapping, and overlaps session guard metrics.
 Constructing the callback record, classifying the request, and updating witness
 rows occur outside this timer. Inner strict-check time and executable-read bytes
-are unavailable by operation. Request counts include unreadable and predecode-refused attempts;
+are unavailable by operation. Request counts include unreadable attempts;
 callback counts/time do not count successful response writes or semantic
 outcomes. The first scope has no separate semantic-status/write-success or
 copy-byte counters. An absent guard contributes zero callback calls, not a measured
-successful check. Request refusals before reading guest memory remain explicitly
-unclassified. Invalid frames and unreadable/oversize requests have separate
+successful check. Invalid frames and unreadable/oversize requests have separate
 bins; a valid frame's
 operation bin does not imply a semantically valid payload.
 
@@ -1147,5 +1162,5 @@ Fault completions have a distinct tag. This detects differing supplied answers
 even when device and guest state later reconverge. It does not independently
 attest that hardware applied the supplied value correctly. ARM raw-only GIC and
 sysreg substrate operations remain outside the portable normalized stream.
-Complete snapshots use version 11 and sparse snapshots use version 13; earlier
+Complete snapshots use version 11 and sparse snapshots use version 15; earlier
 histories cannot be imported under these semantics.

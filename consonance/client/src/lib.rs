@@ -39,6 +39,9 @@ mod import_reuse;
 pub mod placement;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod termination;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod watchdog;
 
 #[cfg(all(feature = "in-process", not(miri)))]

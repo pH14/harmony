@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::search::rand::RomuDuoJrRand;
 
-pub const DURATION_POLICY_IDENTIFIER: &str = "recent_useful_work_log_duration_v2";
-pub const DURATION_POLICIES_IDENTIFIER: &str = "recent_useful_work_context_log_duration_v2";
+pub const DURATION_POLICY_IDENTIFIER: &str = "recent_useful_work_log_duration_v3";
+pub const DURATION_POLICIES_IDENTIFIER: &str = "recent_useful_work_context_log_duration_v3";
 pub const MAX_DURATION_CONTEXTS: usize = 256;
 const RECENT_OBSERVATIONS: usize = 128;
 const CONTEXT_NODE_OVERHEAD: usize = 128;
@@ -181,23 +181,40 @@ impl DurationPolicy {
 
     #[must_use]
     pub fn draw(&self, rand: &mut RomuDuoJrRand, max_duration: NonZeroU64) -> u64 {
-        Self::draw_from(&self.recent, rand, max_duration)
+        Self::draw_from(&self.recent, rand, max_duration, None)
+    }
+
+    #[must_use]
+    pub fn draw_in_lineage(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        max_duration: NonZeroU64,
+        lineage: Option<NonZeroU64>,
+    ) -> u64 {
+        Self::draw_from(&self.recent, rand, max_duration, lineage)
     }
 
     #[must_use]
     pub fn draw_without_history(rand: &mut RomuDuoJrRand, max_duration: NonZeroU64) -> u64 {
-        Self::draw_from(&VecDeque::new(), rand, max_duration)
+        Self::draw_from(&VecDeque::new(), rand, max_duration, None)
     }
 
     fn draw_from(
         recent: &VecDeque<Observation>,
         rand: &mut RomuDuoJrRand,
         max_duration: NonZeroU64,
+        lineage: Option<NonZeroU64>,
     ) -> u64 {
         let scales = (u64::BITS - max_duration.get().leading_zeros()) as usize;
         let scale_bound = NonZeroUsize::new(scales).expect("positive duration has a scale");
         if rand.next_u64() & 1 == 0 {
             return 1_u64 << rand.below(scale_bound);
+        }
+        if let Some(lineage) = lineage
+            && lineage.get().is_power_of_two()
+            && lineage <= max_duration
+        {
+            return lineage.get();
         }
         let mut successes = [0_u128; u64::BITS as usize];
         let mut costs = [0_u128; u64::BITS as usize];
@@ -316,10 +333,11 @@ impl<C: Copy + Ord> DurationPolicies<C> {
         context: C,
         rand: &mut RomuDuoJrRand,
         max_duration: NonZeroU64,
+        lineage: Option<NonZeroU64>,
     ) -> DurationDraw<C> {
         let duration = match self.policies.get(&context) {
-            Some(policy) => policy.draw(rand, max_duration),
-            None => DurationPolicy::draw_without_history(rand, max_duration),
+            Some(policy) => policy.draw_in_lineage(rand, max_duration, lineage),
+            None => DurationPolicy::draw_from(&VecDeque::new(), rand, max_duration, lineage),
         };
         DurationDraw {
             context,
@@ -603,8 +621,8 @@ mod tests {
             assert_eq!(actual.memory_bytes(), expected.memory_bytes());
             for context in [context, 511] {
                 assert_eq!(
-                    actual.draw(context, &mut actual_rand, positive(u64::MAX)),
-                    expected.draw(context, &mut expected_rand, positive(u64::MAX))
+                    actual.draw(context, &mut actual_rand, positive(u64::MAX), None),
+                    expected.draw(context, &mut expected_rand, positive(u64::MAX), None)
                 );
             }
             assert_eq!(actual_rand.next_u64(), expected_rand.next_u64());
@@ -729,6 +747,44 @@ mod tests {
             postcard::from_bytes::<DurationCheckpoint>(&postcard).expect("decode"),
             checkpoint
         );
+    }
+
+    #[test]
+    fn a_lineage_duration_replaces_the_preferred_scale_and_leaves_exploration_unchanged() {
+        let mut policy = DurationPolicy::new();
+        for _ in 0..32 {
+            policy
+                .observe(positive(4), true, positive(4))
+                .expect("observe");
+        }
+        let mut continued = 0;
+        for seed in 0..512 {
+            let explores = RomuDuoJrRand::with_seed(seed).next_u64() & 1 == 0;
+            let mut lineage_rand = RomuDuoJrRand::with_seed(seed);
+            let mut plain_rand = RomuDuoJrRand::with_seed(seed);
+            let drawn =
+                policy.draw_in_lineage(&mut lineage_rand, positive(1_024), Some(positive(256)));
+            let plain = policy.draw(&mut plain_rand, positive(1_024));
+            if explores {
+                assert_eq!(drawn, plain);
+            } else {
+                assert_eq!((drawn, plain), (256, 4));
+                continued += 1;
+            }
+            let mut bounded_rand = RomuDuoJrRand::with_seed(seed);
+            let mut bounded_plain = RomuDuoJrRand::with_seed(seed);
+            assert_eq!(
+                policy.draw_in_lineage(&mut bounded_rand, positive(128), Some(positive(256))),
+                policy.draw(&mut bounded_plain, positive(128))
+            );
+            let mut odd_rand = RomuDuoJrRand::with_seed(seed);
+            let mut odd_plain = RomuDuoJrRand::with_seed(seed);
+            assert_eq!(
+                policy.draw_in_lineage(&mut odd_rand, positive(1_024), Some(positive(3))),
+                policy.draw(&mut odd_plain, positive(1_024))
+            );
+        }
+        assert!(continued > 192);
     }
 
     #[test]

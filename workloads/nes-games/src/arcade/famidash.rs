@@ -100,7 +100,26 @@ impl<M: NesBackend<Vec<u8>> + NesMemory + 'static, const GROUP: usize> ArcadeGam
     type View = View;
 
     fn arcade(rom: &[u8], identity: &str, identity_sha256: &str, machines: Machines<M>) -> Self {
-        let stage = group_stage(GROUP);
+        Self::arcade_from(
+            rom,
+            identity,
+            identity_sha256,
+            machines,
+            group_stage(GROUP).level,
+        )
+    }
+
+    fn arcade_from(
+        rom: &[u8],
+        identity: &str,
+        identity_sha256: &str,
+        machines: Machines<M>,
+        level: u8,
+    ) -> Self {
+        let stage = Stage {
+            level,
+            ..group_stage(GROUP)
+        };
         Self::with_targets(
             rom,
             identity,
@@ -152,6 +171,10 @@ impl<M: NesBackend<Vec<u8>> + NesMemory + 'static, const GROUP: usize> ArcadeGam
 
     fn cleared(observation: &FamidashObservations) -> u8 {
         cleared(observation.decoded)
+    }
+
+    fn snapshot_frame_count(snapshot: &FamidashSnapshot) -> u64 {
+        snapshot.observation.frame_count
     }
 
     fn emulator_state(snapshot: &FamidashSnapshot) -> &[u8] {

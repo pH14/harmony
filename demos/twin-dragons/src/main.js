@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import "./style.css";
+import { ViewRecording, composeView } from "./recording.js";
 import { GuidedTour, tourSeen } from "./tour.js";
 import { ReplayTimeline, levelEntryFrame, prefixTrail, trailPoint } from "./replay.js";
 import { RoutePreviews } from "./preview.js";
@@ -8,6 +9,8 @@ import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { Swarm, ghosts, trailRoom, MOTION_STRIDE } from "./swarm.js";
+import { resumeFollowing, resetRetreat, trackingGoal, followView } from "./camera.js";
+import { SmoothCounter } from "./counter.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, GRID_CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
@@ -20,16 +23,17 @@ import {
 } from "./branch.js";
 import { StateCache, memoryBudget } from "./memory.js";
 import { liveSearch } from "./live-source.js";
-import { nativeRuns } from "./native-run.js";
+import { detectLauncher, nativePanel, segments as segmentButtons } from "./native-run.js";
 import {
   project,
-  completedLevels,
   mergeProgress,
   isMapEvidence,
   finishedLevel,
   followExit,
   busierDeeperLevel,
 } from "./world.js";
+export async function run(scope) {
+const { window, document, addEventListener, setTimeout, clearTimeout, requestAnimationFrame, cancelAnimationFrame, matchMedia, Worker, ResizeObserver } = scope;
 const params = new URLSearchParams(location.search);
 const liveView = params.has("live");
 const bundledRoms = new URL("roms/", new URL(import.meta.env.BASE_URL, location.href));
@@ -37,7 +41,7 @@ const manifest = await fetch(new URL("manifest.json", bundledRoms))
   .then((response) => (response.ok ? response.json() : {}))
   .catch(() => ({}));
 const bundled = new Set(manifest.games || []);
-const requested = GAMES.get(params.get("game")) || GAMES.get(manifest.default) || GAMES.get("twin-dragons");
+const requested = GAMES.get(params.get("game")) || GAMES.get(manifest.default) || GAMES.get(manifest.games?.includes("super-mario-bros") ? "super-mario-bros" : "famidash");
 async function bundledRom(choice) {
   if (!bundled.has(choice.id)) return null;
   const response = await fetch(new URL(`${choice.id}.nes`, bundledRoms)).catch(() => null);
@@ -47,6 +51,7 @@ async function bundledRom(choice) {
 const suppliedRom = requested.rom.upload ? (await loadRom(requested.id)) || (await bundledRom(requested)) : null;
 const missingRom = requested.rom.upload && !suppliedRom ? requested : null;
 const game = missingRom ? GAMES.get("twin-dragons") : requested;
+if (!scope.alive) return;
 const engineInputs = suppliedRom && !missingRom ? { rom: suppliedRom } : {};
 let askedForRom = false;
 const SPRITE = game.sprite;
@@ -54,26 +59,121 @@ const base = new URL(import.meta.env.BASE_URL, location.href),
   assets = new URL(game.assets, base),
   $ = (id) => document.getElementById(id);
 const compactReplay = matchMedia("(max-width: 800px), (pointer: coarse) and (max-width: 1000px) and (max-height: 500px)");
+const catalog = game.catalog || (await (await fetch(new URL("maps.json", assets))).json());
+if (!scope.alive) return;
 document.title = "Harmony Arcade";
 document.documentElement.dataset.game = game.id;
 document.documentElement.classList.toggle("vertical-game", !!game.vertical);
 document.documentElement.classList.toggle("grid-game", !!game.grid);
 document.documentElement.style.setProperty("--screen-ratio", game.screen.width / game.screen.height);
-const catalog = game.catalog || (await (await fetch(new URL("maps.json", assets))).json());
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
-<main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Arcade</h1><p class="hero-lede">Watch and join Harmony in playing games through multiverse state exploration.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details" open><summary>Details</summary><label class="search-speed"><span>Timelines per second <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
-<div class="goal"><div class="level-nav"><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><nav id="level-strip" class="level-strip" aria-label="Levels in this search" data-key=""><button id="level-more" class="level-more" aria-controls="level-trail" aria-expanded="false" hidden></button><div id="level-trail" class="level-trail"></div></nav><span id="goal-status" hidden></span></div><div class="view-tools"><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
-<div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys pan; Enter inspects the cell under the pointer or at the center."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="hover" hidden></div></div>
-<div class="map-footer"><span id="memory-limit" hidden></span></div>
+<main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Arcade</h1><p class="hero-lede">Watch and join Harmony in playing games through multiverse state exploration.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><label class="search-speed"><span>Timelines per second <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label><details class="search-details"><summary>Details</summary><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
+<div class="goal"><div class="level-nav"><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><nav id="level-strip" class="level-strip" aria-label="Levels in this search" data-key=""><button id="level-more" class="level-more" aria-controls="level-trail" aria-expanded="false" hidden></button><div id="level-trail" class="level-trail"></div></nav><span id="goal-status" hidden></span></div><div class="view-tools"><div class="zoom-controls segments" role="group" aria-label="Zoom the map"><button id="zoom-out" type="button" aria-label="Zoom out" title="Zoom out (-, or Ctrl and scroll)">−</button><button id="zoom-in" type="button" aria-label="Zoom in" title="Zoom in (+, or Ctrl and scroll)">+</button></div><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><div class="recording-controls" role="group" aria-label="Record exploration"><button id="record-to-file" hidden>Record to file</button><button id="record-view" aria-pressed="false">Record clip</button><a id="download-recording" hidden>Download video</a></div></div></div>
+<div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div> <button id="follow-camera" class="follow-camera" type="button" hidden aria-label="Follow the search again" title="Follow the search again"><i class="follow-dot" aria-hidden="true"></i>Follow</button><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys pan; Enter inspects the cell under the pointer or at the center."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span></div>
+<div class="map-footer"><span id="memory-limit" hidden></span><span id="recording-status" role="status" aria-live="polite"></span></div>
 ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 </section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History">›</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="${game.screen.width}" height="${game.screen.height}" aria-label="${game.title} gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><div class="replay-actions"><button id="play" disabled>▶ Replay</button></div><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>${game.controls.a}</span></span><span><kbd>X</kbd><span>${game.controls.b}</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons"><button data-button="2" aria-label="${game.controls.b}">B</button><button data-button="1" aria-label="${game.controls.a}">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><div class="film-frame"><canvas id="film" tabindex="0" width="${game.screen.width}" height="${game.screen.height}" aria-label="${game.title} gameplay replay"></canvas><span id="frame-label" class="visually-hidden">FRAME 0</span><div class="transport"><div class="replay-actions"><button id="play" class="icon-button" data-state="play" aria-label="Replay" title="Replay" disabled><svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg><svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg><svg class="i-replay" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12a7 7 0 1 0 2.2-5.1M5 4v4.5h4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div></div></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>${game.controls.a}</span></span>${game.controls.b ? `<span><kbd>X</kbd><span>${game.controls.b}</span></span>` : ""}</div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons">${game.controls.b ? `<button data-button="2" aria-label="${game.controls.b}">B</button>` : ""}<button data-button="1" aria-label="${game.controls.a}">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Saved paths</h2></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
-<footer><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><button id="credits">Credits & source</button><button id="theme" class="theme-button" aria-label="Switch color theme">Dark mode</button></footer>
+<footer><a class="brand" href="https://github.com/pH14/harmony"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>pH14/harmony</a><button id="credits">Credits & source</button></footer>
 <div id="error" role="alert" hidden></div>
-<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Pick a game</h2></div><div id="game-choice" class="game-choice"><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="segments" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring Your Own ROM</h3><div id="rom-games" class="segments" role="group" aria-labelledby="byo-rom-title"></div></section></div><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><div id="level-grid" class="level-grid"></div></dialog>
+<dialog id="level-picker" aria-labelledby="level-picker-title" tabindex="-1" autofocus><div class="level-picker-heading"><h2 id="level-picker-title">New search</h2><button id="close-level-picker" class="close" aria-label="Close level selector">×</button></div><div id="picker-body" class="picker-body" data-view="detail"><nav id="game-choice" class="game-choice" aria-label="Games"><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="game-list" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring your own ROM</h3><div id="rom-games" class="game-list" role="group" aria-labelledby="byo-rom-title"></div></section><section id="runs-entry" class="game-group" aria-labelledby="runs-title" hidden><h3 id="runs-title">Your machines</h3><div class="game-list"><button id="runs-open" class="game-row" type="button" aria-pressed="false">Runs</button></div></section></nav><div class="picker-detail"><div class="picker-detail-head"><button id="picker-back" class="picker-back" type="button">‹ All games</button><div class="picker-detail-title"><h3 id="detail-title"></h3><p id="detail-meta"></p></div><section id="run-target" class="run-target" hidden></section></div><div class="picker-detail-body"><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><section id="native-panel" class="native-panel" hidden></section><section id="runs-panel" class="native-panel" hidden></section><div id="level-grid" class="level-grid"></div></div></div></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
+const recordingCanvas = document.createElement("canvas");
+recordingCanvas.width = 1920;
+recordingCanvas.height = 1080;
+let recordingURL = null, choosingRecordingFile = false;
+const recording = new ViewRecording({
+  onChange(state) {
+    $("record-view").textContent = state === "recording" ? "Stop recording" : state === "stopping" ? "Saving video…" : "Record clip";
+    $("record-view").disabled = choosingRecordingFile || state === "stopping" || !recording.supported(recordingCanvas);
+    $("record-to-file").disabled = choosingRecordingFile || state !== "idle" || !recording.supported(recordingCanvas);
+    $("record-view").setAttribute("aria-pressed", state === "recording");
+    if (state === "recording" && recordingURL) $("download-recording").textContent = "Download previous clip";
+    if (state === "recording" && recording.writable) $("recording-status").textContent = recording.backpressured
+      ? "Disk is busy. Capture is paused while video writes drain; the search continues."
+      : "Recording directly to file with no duration limit. Keep this tab visible. Stop recording to finish and save the video.";
+  },
+  onComplete(blob, reason, result) {
+    if (result?.file) {
+      $("recording-status").textContent = `Video saved to file (${(result.bytes / 1048576).toFixed(1)} MB).`;
+      return;
+    }
+    if (recordingURL) URL.revokeObjectURL(recordingURL);
+    recordingURL = URL.createObjectURL(blob);
+    const link = $("download-recording");
+    link.href = recordingURL;
+    link.textContent = "Download video";
+    link.download = `harmony-${game.id}-${new Date().toISOString().replace(/[:.]/g, "-")}.${blob.type.includes("mp4") ? "mp4" : "webm"}`;
+    link.hidden = false;
+    $("recording-status").textContent = `${reason ? reason + ". " : ""}Video ready (${(blob.size / 1048576).toFixed(1)} MB). Download it before leaving this page.`;
+  },
+  onError(error) { $("recording-status").textContent = `Recording failed: ${error.message}`; },
+});
+const localHost = /^(localhost|127\.0\.0\.1|\[::1\]|.+\.localhost)$/.test(location.hostname);
+document.querySelector(".recording-controls").hidden = !localHost;
+$("record-to-file").hidden = typeof window.showSaveFilePicker !== "function";
+$("record-to-file").disabled = $("record-view").disabled = !recording.supported(recordingCanvas);
+if ($("record-view").disabled) $("recording-status").textContent = "Video recording is unavailable in this browser. Try Chrome or Firefox.";
+$("record-view").onclick = () => {
+  if (recording.state === "recording") return recording.stop();
+  try {
+    paintRecording();
+    recording.start(recordingCanvas);
+    $("recording-status").textContent = "Recording view and mini map. Keep this tab visible. Stops after 10 minutes or 256 MB.";
+  } catch (error) { $("recording-status").textContent = `Recording failed: ${error.message}`; }
+};
+$("record-to-file").onclick = async () => {
+  choosingRecordingFile = true;
+  recording.onChange(recording.state);
+  let writable;
+  try {
+    const type = recording.mimeType.split(";")[0], extension = type.includes("mp4") ? ".mp4" : ".webm";
+    const handle = await window.showSaveFilePicker({
+      suggestedName: `harmony-${game.id}-${new Date().toISOString().replace(/[:.]/g, "-")}${extension}`,
+      types: [{ description: "Search video", accept: { [type]: [extension] } }],
+    });
+    writable = await handle.createWritable();
+    paintRecording();
+    recording.start(recordingCanvas, { writable });
+  } catch (error) {
+    if (writable && recording.writable !== writable) {
+      try { await writable.abort(); } catch { /* The recording may already have aborted the writer. */ }
+    }
+    $("recording-status").textContent = error.name === "AbortError" ? "File recording canceled." : `Recording failed: ${error.message}`;
+  } finally {
+    choosingRecordingFile = false;
+    recording.onChange(recording.state);
+  }
+};
+function paintRecording() {
+  const map = document.querySelector(".area-map");
+  if (!map) throw new Error("Wait for the game map to load.");
+  composeView(recordingCanvas, {
+    map, overview: document.querySelector(".level-overview"),
+    title: `Harmony Plays ${game.title} | ${$("workers").textContent} ${Number($("workers").textContent) === 1 ? "Worker" : "Workers"}`,
+    detail: maps.get(Number(map.dataset.map))?.label || "",
+    progress: `${$("hero-timelines").textContent} timelines tried · ${$("work").textContent} game frames`,
+    attribution: `${document.querySelector(".game-attribution")?.textContent || game.title} / github.com/pH14/harmony`,
+  });
+  recording.frame();
+}
+window.addEventListener("beforeunload", (event) => {
+  if (recording.state !== "idle") { event.preventDefault(); event.returnValue = ""; }
+});
+window.addEventListener("pagehide", () => {
+  const activeRecording = recording.state !== "idle";
+  recording.cleanup();
+  if (activeRecording) $("recording-status").textContent = "Recording canceled when leaving this page. Start a new recording to capture more.";
+  if (recordingURL) {
+    URL.revokeObjectURL(recordingURL);
+    recordingURL = null;
+    $("download-recording").hidden = true;
+    $("download-recording").removeAttribute("href");
+    $("recording-status").textContent = "Video cleared when leaving this page. Start a new recording to capture more.";
+  }
+});
 let heat = new Heatmap(),
   worker,
   rolloutWorkers = [],
@@ -83,6 +183,7 @@ let heat = new Heatmap(),
   bootLevel = 0,
   gameWon = false,
   paused = false,
+  terminalDrain = null,
   replayPaused = false,
   replayWatching = false,
   viewerReplay = false,
@@ -105,7 +206,6 @@ let heat = new Heatmap(),
   mapWidth = 1280,
   mapHeight = 224,
   focusedLevel = 0,
-  watchRequested = false,
   pointerStart = null,
   dragged = false;
 let stateCache = new StateCache(),
@@ -114,9 +214,9 @@ let stateCache = new StateCache(),
   arrivals = new Map(),
   seenMaps = new Set(),
   cleared = new Set(),
-  wins = new Map(),
   path = { level: 0, levels: [0], since: 0, idle: 0 },
   stats = {};
+const counters = { executions: new SmoothCounter(), states: new SmoothCounter(), frames: new SmoothCounter() };
 const views = new Map(),
   controller = new Controller();
 let playSession = null,
@@ -143,7 +243,22 @@ let playSession = null,
   lastDetailPaint = 0;
 const searchViews = new Map(),
   reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+function invalidateStateRequest() {
+  heat.releasePending();
+  return ++request;
+}
+function clearRouteSelection() {
+  heat.clearPins();
+  invalidateStateRequest();
+}
+function requestStates(ids, cell = selectedCell, ordinal) {
+  const token = ++request;
+  heat.pending(cell, ids[0], token, ordinal);
+  worker.postMessage({ type: "states", ids, request: token });
+}
 function saveSearchView() {
+  terminalDrain = null;
+  clearRouteSelection();
   heat.setRunning(false, performance.now());
   searchViews.set(activeSearch, {
     heat,
@@ -153,7 +268,6 @@ function saveSearchView() {
     arrivals,
     seenMaps,
     cleared,
-    wins,
     path,
     gameWon,
     latestBest,
@@ -171,7 +285,6 @@ function activateSearchView(id) {
     arrivals: new Map(),
     seenMaps: new Set(),
     cleared: new Set(),
-    wins: new Map(),
     path: { level: null, levels: [], since: 0, idle: 0 },
     gameWon: false,
     latestBest: null,
@@ -185,7 +298,6 @@ function activateSearchView(id) {
     arrivals,
     seenMaps,
     cleared,
-    wins,
     path,
     gameWon,
     latestBest,
@@ -195,6 +307,7 @@ function activateSearchView(id) {
   searchViews.set(id, view);
   swarmRooms = swarm.frame(id, heat.clock(performance.now()), reducedMotion.matches);
   hoverCell = selectedCell = null;
+  clearRouteSelection();
   lastAuto = 0;
   return fresh;
 }
@@ -263,7 +376,6 @@ function setVisualization(mode, draw = true) {
   visualization = mode;
   $("visualization").dataset.value = mode;
   for (const button of $("visualization").children) button.setAttribute("aria-pressed", mode === "both" || button.dataset.viz === mode);
-  $("hover").hidden = true;
   if (draw) drawMap(performance.now());
 }
 for (const button of $("visualization").children) button.onclick = () => {
@@ -273,21 +385,6 @@ for (const button of $("visualization").children) button.onclick = () => {
   if (on.has(button.dataset.viz)) on.delete(button.dataset.viz);
   else on.add(button.dataset.viz);
   if (on.size) setVisualization(on.size === 2 ? "both" : [...on][0]);
-};
-let theme;
-try { theme = localStorage.getItem("harmony.twin-dragons.theme"); } catch {}
-function applyTheme(value) {
-  document.documentElement.dataset.theme = value;
-  $("theme").setAttribute("aria-label", `Switch to ${value === "dark" ? "light" : "dark"} mode`);
-  $("theme").textContent = value === "dark" ? "Light mode" : "Dark mode";
-}
-const themeMedia = matchMedia("(prefers-color-scheme: dark)");
-applyTheme(theme === "light" || theme === "dark" ? theme : themeMedia.matches ? "dark" : "light");
-themeMedia.addEventListener("change", () => { if (!theme) applyTheme(themeMedia.matches ? "dark" : "light"); });
-$("theme").onclick = () => {
-  theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  applyTheme(theme);
-  try { localStorage.setItem("harmony.twin-dragons.theme", theme); } catch {}
 };
 $("timeline-toggle").onclick = () => {
   const collapsed = $("workspace").classList.toggle("timeline-collapsed");
@@ -325,7 +422,7 @@ ghostDot.width = ghostDot.height = 32;
 function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null, visible = null) {
   if (!sprites.complete || !sprites.naturalWidth) return 0;
   const map = maps.get(level), points = rooms?.get(level) || [];
-  const size = Math.max(1, Math.min(2.5, 18 / (SPRITE.height * screenScale)));
+  const size = Math.max(1, 18 / (SPRITE.height * screenScale));
   const radius = 1.7 * size, margin = 32 * size;
   const shown = [];
   let count = 0;
@@ -359,13 +456,20 @@ const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3,
   PATH_STALL_MS = 8000,
   ROOM_DWELL_MS = 10000,
-  CAMERA_RETREAT_MS = 1500;
-const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map() };
+  CAMERA_RETREAT_MS = 1500,
+  CALM_HOLD_MS = 2000,
+  CALM_REANCHOR_MS = 8000,
+  CALM_PAN_PX_PER_S = 1200,
+  CALM_PAN_SECONDS = 0.7;
+const camera = { zoomScale: 1, mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), calm: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
-function closeUpZoom(c) {
+function baseZoom(c) {
   const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
   const view = game.closeUp || game.screen;
   return Math.max(1, Math.min(c.width / view.width, c.height / view.height) / fit);
+}
+function closeUpZoom(c) {
+  return Math.max(1, baseZoom(c) * camera.zoomScale);
 }
 function frameRoute() {
   for (const room of cameraRooms()) {
@@ -432,6 +536,28 @@ function reachedFrontier(level) {
 function cameraProgress(level, point) {
   return game.grid ? game.route(level, point.x, point.y + 8) : game.vertical ? -point.y : point.x;
 }
+// Calm games keep a frontier point for a few seconds. The point moves on only to a deeper
+// frontier, or after a long hold so the camera cannot stay on a stale point forever.
+function calmGoal(room, point, now) {
+  const state = camera.calm.get(room);
+  if (!state) {
+    if (point) camera.calm.set(room, { goal: point, since: now });
+    return point;
+  }
+  if (!point) return state.goal;
+  const held = now - state.since;
+  if (held >= CALM_HOLD_MS && (cameraProgress(room, point) > cameraProgress(room, state.goal) || held >= CALM_REANCHOR_MS)) {
+    state.goal = point;
+    state.since = now;
+  }
+  return state.goal;
+}
+function calmAim(view, point, dt) {
+  const dx = point.x - view.x, dy = point.y - view.y, distance = Math.hypot(dx, dy);
+  if (!distance) return point;
+  const step = Math.min(distance * (1 - Math.exp(-dt / CALM_PAN_SECONDS)), CALM_PAN_PX_PER_S * dt);
+  return { x: view.x + (dx * step) / distance, y: view.y + (dy * step) / distance };
+}
 function steerCamera(level, c, target, zoom, zoomRate, panRate) {
   const view = roomView(level, c);
   view.zoom += (zoom - view.zoom) * zoomRate;
@@ -477,12 +603,31 @@ function wheelDelta(e, size) {
   const unit = wheelUnit(e, size);
   return (game.vertical ? e.deltaY : Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : 0) * unit;
 }
+function zoomBy(factor, c, at) {
+  const id = Number(c.dataset.map), view = roomView(id, c), panel = canvasPanel(c);
+  const fit = Math.min(c.width / panel.width, c.height / panel.height);
+  const zoom = Math.max(1, Math.min(maxZoom(c), view.zoom * factor));
+  if (zoom === view.zoom) return;
+  const r = c.getBoundingClientRect();
+  const ox = at ? ((at.clientX - r.left) / r.width - 0.5) * c.width : 0, oy = at ? ((at.clientY - r.top) / r.height - 0.5) * c.height : 0;
+  const before = fit * view.zoom, after = fit * zoom;
+  const center = panelCenter(panel, zoom, { x: view.x + ox / before - ox / after, y: view.y + oy / before - oy / after }, c);
+  camera.zoomScale = zoom / baseZoom(c);
+  Object.assign(view, center, { zoom });
+  roomView(id).zoom = zoom;
+  camera.overview = false;
+  if (at) moveCameraByHand();
+  drawMap(performance.now());
+}
+function zoomMaps(factor) {
+  for (const c of document.querySelectorAll(".area-map")) if (c.offsetParent) zoomBy(factor, c);
+}
 function levelOverview(id) {
   const map = maps.get(id), strip = document.createElement("canvas");
   strip.className = "level-overview";
   strip.dataset.map = id;
   if (game.vertical) {
-    strip.height = TALL_CAMERA_VIEWPORT.desktop.height;
+    strip.height = (game.tallViewport ?? TALL_CAMERA_VIEWPORT).desktop.height;
     strip.width = Math.max(8, Math.round(map.width * strip.height / map.height));
   } else if (game.grid) {
     const box = { width: 240, height: GRID_CAMERA_VIEWPORT.desktop.height }, fit = Math.min(box.width / map.width, box.height / map.height);
@@ -498,6 +643,11 @@ function levelOverview(id) {
   const seek = (e) => {
     const r = strip.getBoundingClientRect();
     moveCameraByHand();
+    const c = mapCanvas(id);
+    if (c) {
+      const view = roomView(id, c);
+      roomView(id).zoom = view.zoom = Math.max(view.zoom, closeUpZoom(c));
+    }
     const x = ((e.clientX - r.left) / r.width) * map.width, y = ((e.clientY - r.top) / r.height) * map.height;
     scrollRoom(id, game.vertical ? { y } : { x, y });
     drawMap(performance.now());
@@ -547,6 +697,19 @@ function drawOverview(strip, now) {
     for (const p of swarmRooms.get(id) || [])
       ctx.fillRect(Math.round((p.x + 8) * kx - dot / 2), Math.round((p.y + 8) * ky - dot / 2), dot, dot);
   }
+  const { drawnSegments, hovering } = shownTrail();
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  for (const [color, width] of [["rgba(22,30,36,.5)", hovering ? 5 : 4], ["#fff0b3", hovering ? 3 : 2]]) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width * (game.vertical ? 1 : strip.width / 1600 + 0.5);
+    for (const segment of drawnSegments) {
+      if (segment[0]?.level !== id) continue;
+      ctx.beginPath();
+      segment.forEach((p, i) => (i ? ctx.lineTo(p.x * kx, (p.y - 8) * ky) : ctx.moveTo(p.x * kx, (p.y - 8) * ky)));
+      ctx.stroke();
+    }
+  }
   const c = mapCanvas(id);
   if (!c) return;
   const view = roomView(id, c), panel = canvasPanel(c);
@@ -572,12 +735,7 @@ function moveCameraByHand() {
   if (camera.follow) camera.manual = performance.now() + 10000;
 }
 function followSearch() {
-  camera.overview = false;
-  camera.manual = 0;
-  camera.only = null;
-  camera.targets = new Map();
-    camera.follow = true;
-  camera.focus = null;
+  resumeFollowing(camera);
 }
 function levelIndex(room) {
   return catalog.levels.findIndex((level) => level.rooms.includes(room));
@@ -620,13 +778,14 @@ function followRoom(now, immediate = false) {
     return lead === mapLevel ? null : lead;
   }
   const live = (id) => swarmRooms.get(id)?.length || 0;
+  const occupied = live(mapLevel) > 0;
   const busiest = levelRooms().reduce((best, id) => (live(id) > live(best) * 1.5 ? id : best), mapLevel);
-  if (busiest === mapLevel || (!immediate && now - camera.roomSince < ROOM_DWELL_MS)) {
+  if (busiest === mapLevel || (!immediate && occupied && now - camera.roomSince < ROOM_DWELL_MS)) {
     camera.busierSince = 0;
     return null;
   }
   camera.busierSince ||= now;
-  return immediate || now - camera.busierSince > 2500 ? busiest : null;
+  return immediate || now - camera.busierSince > (occupied ? 2500 : 250) ? busiest : null;
 }
 function showPathLevel(level) {
   const room = catalog.levels.find((entry) => entry.id === level)?.rooms[0];
@@ -634,9 +793,18 @@ function showPathLevel(level) {
   if (branchPreview) branchPreview.room = room;
   else setRoom(room);
 }
+function followPathExit(from, to, now) {
+  const shown = roomLevel(branchPreview?.room ?? mapLevel);
+  const following = shown === path.level || path.show?.from === shown;
+  if (!followExit(path, from, to, catalog.levels)) return;
+  path.since = now;
+  path.idle = 0;
+  if (following) path.show = { level: path.level, from: shown };
+}
 function followStalledPath(now) {
-  if (!ready || path.level == null) return;
-  if (path.show) {
+  if (!ready || path.level == null || paused) return;
+  const canFollow = camera.follow && !camera.focus && camera.pinned == null && camera.manual <= now && camera.held <= now;
+  if (path.show && canFollow) {
     const rooms = catalog.levels.find((entry) => entry.id === path.show.level)?.rooms || [];
     if (roomLevel(branchPreview?.room ?? mapLevel) !== path.show.from) path.show = null;
     else if (rooms.reduce((n, id) => n + (swarmRooms.get(id)?.length || 0), 0) >= 3) {
@@ -644,30 +812,38 @@ function followStalledPath(now) {
       path.show = null;
     }
   }
-  if (paused) return;
   const counts = new Map();
   for (const [room, points] of swarmRooms) {
     const level = roomLevel(room);
     if (points.length && level != null) counts.set(level, (counts.get(level) || 0) + points.length);
   }
   const deepest = busierDeeperLevel(trailsSeen ? counts : pointLevels, path.level);
-  if (deepest == null || (!path.leftRoot && now - path.since < PATH_STALL_MS)) {
+  const occupied = (counts.get(path.level) || 0) > 0;
+  if (deepest == null || (occupied && !path.leftRoot && now - path.since < PATH_STALL_MS)) {
     path.idle = 0;
     return;
   }
   path.idle ||= now;
-  if (!path.leftRoot && now - path.idle < PATH_STALL_MS) return;
+  if (!path.leftRoot && now - path.idle < (occupied ? PATH_STALL_MS : 250)) return;
   path.leftRoot = false;
-  const onPath = roomLevel(branchPreview?.room ?? mapLevel) === path.level;
+  const shown = roomLevel(branchPreview?.room ?? mapLevel);
+  const onPath = shown === path.level || path.show?.from === shown;
   path.level = deepest;
   if (!path.levels.includes(deepest)) path.levels.push(deepest);
   path.since = now;
   path.idle = 0;
-  if (onPath) showPathLevel(deepest);
+  renderLevelStrip();
+  if (onPath) {
+    if (canFollow) {
+      showPathLevel(deepest);
+      path.show = null;
+    } else path.show = { level: deepest, from: shown };
+  }
 }
 function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
+  resumeFollowing(camera);
   const introRoom = intro ? mapLevel : null;
-  Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
+  Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), calm: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
   for (const room of drivenRooms()) {
     const c = mapCanvas(room);
     if (c) steerCamera(room, c, game.grid ? game.entry(room) : { x: 0, y: maps.get(room).height }, closeUpZoom(c) * (room === introRoom ? INTRO_SCALE : 1), 1, 1);
@@ -676,7 +852,13 @@ function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null)
 function updateCamera(now) {
   const dt = Math.min(0.1, camera.last ? (now - camera.last) / 1000 : 0);
   camera.last = now;
-  document.querySelector(".map-wrap").dataset.camera = camera.focus ? "focus" : camera.follow ? "follow" : "idle";
+  const wrap = document.querySelector(".map-wrap");
+  wrap.dataset.camera = camera.focus ? "focus" : camera.follow ? "follow" : "idle";
+  const away = !camera.focus && !paused && (!camera.follow || camera.manual > now);
+  wrap.dataset.away = away;
+  $("follow-camera").hidden = !away;
+  resetRetreat(camera, mapLevel);
+  if (!ready || branchPreview || camera.focus || !camera.follow || paused || camera.held > now || camera.manual > now) resetRetreat(camera);
   if (!ready || branchPreview) return;
   const smooth = (seconds) => (reducedMotion.matches ? 1 : 1 - Math.exp(-dt / seconds));
   if (camera.focus) {
@@ -697,9 +879,9 @@ function updateCamera(now) {
   const t = now - camera.introStart;
   const scale = camera.introDone ? 1 : t < 1500 ? INTRO_SCALE : INTRO_SCALE + (1 - INTRO_SCALE) * ease(Math.min(1, (t - 1500) / 800));
   if (!camera.introDone && t >= 2300) camera.introDone = true;
-  if (reducedMotion.matches && now - camera.jumped < 2000) return;
-  camera.jumped = now;
-  if (camera.pinned == null) {
+  const steer = !reducedMotion.matches || now - camera.jumped >= 2000;
+  if (steer) camera.jumped = now;
+  if (steer && camera.pinned == null) {
     const room = followRoom(now);
     if (room != null) {
       setRoom(room, true);
@@ -710,26 +892,23 @@ function updateCamera(now) {
   }
   for (const room of drivenRooms()) {
     const held = camera.targets.get(room);
-    let point = frontier(room);
-    if (held?.goal && (!point || cameraProgress(room, point) < cameraProgress(room, held.goal) - 32)) {
-      const goal = held.goal, ahead = cameraProgress(room, goal);
-      const near = (swarmRooms.get(room) || []).filter((p) => Math.hypot(p.x + 8 - goal.x, p.y - goal.y) < 192 || cameraProgress(room, { x: p.x + 8, y: p.y }) > ahead).length;
-      if (near >= 2) held.behind = 0;
-      else held.behind ||= now;
-      if (!point || !held.behind || now - held.behind < CAMERA_RETREAT_MS) point = goal;
-    } else if (held) held.behind = 0;
-    if (!point) continue;
+    const next = frontier(room);
+    const point = game.calmCamera ? calmGoal(room, next, now) : trackingGoal(held, next, swarmRooms.get(room) || [], now,
+      (point) => cameraProgress(room, point), CAMERA_RETREAT_MS);
+    if (!point || !steer) continue;
     const c = mapCanvas(room, point);
     if (!c) continue;
     const view = roomView(room, c);
     let target = held;
-    if (target?.canvas !== c) camera.targets.set(room, (target = { canvas: c, x: view.x, y: view.y, behind: held?.behind ?? 0 }));
+    if (target?.canvas !== c) camera.targets.set(room, (target = { canvas: c, behind: held?.behind ?? 0 }));
     target.goal = point;
-    const gap = Math.hypot(point.x - target.x, point.y - target.y);
-    const settle = reducedMotion.matches ? 1 : 1 - Math.exp((-dt * (1 + gap / 120)) / 0.5);
-    target.x += (point.x - target.x) * settle;
-    target.y += (point.y - target.y) * settle;
-    steerCamera(room, c, target, closeUpZoom(c) * (room === camera.introRoom ? scale : 1), smooth(0.6), 1);
+    const zoom = closeUpZoom(c) * (room === camera.introRoom ? scale : 1);
+    if (reducedMotion.matches) steerCamera(room, c, point, zoom, 1, 1);
+    else {
+      const calm = game.calmCamera;
+      Object.assign(view, followView(view, calm ? calmAim(view, point, dt) : point, canvasPanel(c), c, zoom, dt, liveView || calm));
+      roomView(room).zoom = view.zoom;
+    }
   }
 }
 let searchChoices = [{ id: 0, parent: null }],
@@ -1012,8 +1191,10 @@ function addAreaMap(id, bitmap) {
 }
 function drawLevelPreview(preview, image) {
   const bitmap = image.small || image;
-  const height = bitmap.height, width = Math.min(bitmap.width, Math.round((height * preview.width) / preview.height));
-  preview.getContext("2d").drawImage(bitmap, 0, 0, width, height, 0, 0, preview.width, preview.height);
+  const cropped = game.previewBottom,
+    height = cropped ? Math.min(bitmap.height, Math.round((bitmap.width * preview.height) / preview.width)) : bitmap.height,
+    width = cropped ? bitmap.width : Math.min(bitmap.width, Math.round((height * preview.width) / preview.height));
+  preview.getContext("2d").drawImage(bitmap, 0, cropped ? bitmap.height - height : 0, width, height, 0, 0, preview.width, preview.height);
 }
 function panorama(level) {
   if (game.buildMap) {
@@ -1061,12 +1242,22 @@ function fail(error) {
   updateSearchControl();
   $("status-dot").className = "paused";
 }
+const PLAY_LABELS = { play: "Replay", pause: "Pause", replay: "Replay again" };
+function setPlayState(state) {
+  const play = $("play");
+  play.dataset.state = state;
+  play.setAttribute("aria-label", PLAY_LABELS[state]);
+  play.title = PLAY_LABELS[state];
+}
 function paintFilm() {
   if (!engine) return;
   const preview = routeHover?.pixels,
     p = preview || (currentFrame === 0 && originPixels ? originPixels : engine.pixels());
   film.putImageData(new ImageData(p.data, p.width, p.height), 0, 0);
   $("film").dataset.previewRoute = preview ? routeHover.id : "";
+  const scrub = $("scrub"), total = Number(scrub.max) || 0;
+  scrub.style.setProperty("--progress", `${total ? Math.min(100, (100 * Number(scrub.value)) / total).toFixed(1) : 0}%`);
+  $("film").closest(".screen").toggleAttribute("data-playing", playing);
   $("frame-label").textContent = preview
     ? `${routeName(routeHover.id)} · ${replayTime(routeHover.frames)}`
     : `FRAME ${fmt(currentFrame)} / ${fmt(current?.frames)}`;
@@ -1188,6 +1379,7 @@ function equal(a, b) {
 }
 const yieldChannel = new MessageChannel(), yieldQueue = [];
 yieldChannel.port1.onmessage = () => yieldQueue.shift()?.();
+scope.onDispose(() => yieldChannel.port1.close());
 function yieldToBrowser() {
   return new Promise((resolve) => {
     yieldQueue.push(resolve);
@@ -1244,13 +1436,14 @@ async function seek(target) {
       seeking = false;
       $("film").closest(".screen").classList.remove("updating");
       updateBranchControls();
-      $("play").textContent = "▶ Replay";
+      setPlayState("play");
       $("scrub").value = currentFrame;
     }
   }
 }
 async function selectState(state, autoplay = false) {
   if (!engine) return;
+  heat.select(selectedCell, state.id);
   stopControl();
   current = state;
   const shared = timeline.reset(state.actions, state.frames);
@@ -1285,7 +1478,7 @@ async function selectState(state, autoplay = false) {
     if (userSelected && music.context) startAudio();
     playing = true;
     viewerReplay = userSelected;
-    $("play").textContent = "Ⅱ Pause";
+    setPlayState("pause");
   }
   if (!autoplay) routePreviews.remember(state.id, state.frames === 0 ? originPixels : engine.pixels());
   if (!autoplay && revealNext) startTraceReveal(performance.now() - selectionStarted < 350);
@@ -1352,7 +1545,9 @@ function renderStates() {
     : "";
   $("state-list").replaceChildren(
     ...ids.map((id) => {
+      const renderedHeat = heat, renderedCell = selectedCell;
       const state = current?.id === id ? current : stateCache.get(id),
+        ordinal = renderedCell?.routes.get(id),
         selected = current?.id === id,
         button = document.createElement("button"),
         marker = document.createElement("span"),
@@ -1391,16 +1586,19 @@ function renderStates() {
       button.onfocus = () => previewRoute(id, button);
       button.onpointerleave = button.onblur = hideRoutePreview;
       button.onclick = () => {
+        if (branchBusy || heat !== renderedHeat || selectedCell !== renderedCell) return;
         hideRoutePreview();
         if (tourSession) tourSession.interacted = true;
         userSelected = true;
         revealReplayRoom = true;
         revealNext = true;
-        ++request;
-        if (state) selectState(state).then(revealTransport).catch(fail);
-        else {
+        if (state) {
+          heat.select(renderedCell, state.id, ordinal);
+          invalidateStateRequest();
+          selectState(state).then(revealTransport).catch(fail);
+        } else {
           transportPending = true;
-          worker.postMessage({ type: "states", ids: [id], request: ++request });
+          requestStates([id], renderedCell, ordinal);
         }
       };
       return button;
@@ -1410,7 +1608,7 @@ function renderStates() {
 function revealTransport(ok) {
   transportPending = false;
   if (ok && compactReplay.matches && !$("inspector").hidden)
-    document.querySelector(".transport").scrollIntoView({ block: "nearest", behavior: "instant" });
+    document.querySelector(".screen").scrollIntoView({ block: "nearest", behavior: "instant" });
 }
 function inspect(cell) {
   hideRoutePreview();
@@ -1420,10 +1618,11 @@ function inspect(cell) {
   stopControl();
   music.stop();
   playing = false;
-  ++request;
+  invalidateStateRequest();
   $("inspector").dataset.empty = cell.ids.length ? "false" : "true";
   $("selection-hint").hidden = !!cell.ids.length;
   userSelected = true;
+  clearRouteSelection();
   selectedCell = cell.ids.length ? cell : null;
   revealReplayRoom = true;
   ++replayEpoch;
@@ -1440,13 +1639,14 @@ function inspect(cell) {
   renderStates();
   if (cell.ids.length) {
     openInspector();
-    worker.postMessage({ type: "states", ids: cell.ids, request: ++request });
+    requestStates(cell.ids, cell);
   } else {
     closeInspector({ restoreFocus: false });
     applyCameraMode();
   }
 }
 function startSearch(level = bootLevel) {
+  terminalDrain = null;
   if (!catalog.levels.some((entry) => entry.id === level)) throw new Error("Unknown level");
   bootLevel = level;
   if (engine) {
@@ -1479,6 +1679,7 @@ function startSearch(level = bootLevel) {
   swarmRooms = new Map();
   stateCache = new StateCache();
   selectedCell = null;
+  clearRouteSelection();
   current = null;
   replayEpoch++;
   playing = false;
@@ -1497,11 +1698,11 @@ function startSearch(level = bootLevel) {
   arrivals.clear();
   seenMaps.clear();
   cleared.clear();
-  wins.clear();
   path = { level: bootLevel, levels: [bootLevel], since: 0, idle: 0 };
   latestBest = null;
   lastAuto = 0;
   stats = {};
+  for (const counter of Object.values(counters)) counter.reset();
   for (const id of ["play", "scrub"]) $(id).disabled = true;
   $("details").replaceChildren();
   $("state-list").replaceChildren();
@@ -1566,8 +1767,9 @@ function startSearch(level = bootLevel) {
           saveSearchView();
         }
         pendingOrigin = null;
-        ++request;
+        invalidateStateRequest();
         selectedCell = hoverCell = null;
+        clearRouteSelection();
         paused = data.paused;
         branchBusy = false;
         $("branch-message").hidden = true;
@@ -1585,8 +1787,6 @@ function startSearch(level = bootLevel) {
         stateCache.set(state.id, state);
         if (fresh) {
           mergeProgress(cleared, levelProgress(state.observation), bootLevel);
-          for (const level of completedLevels(levelProgress(state.observation), bootLevel))
-            wins.set(level, state.id);
           const start = roomLevel(state.observation.level) ?? bootLevel;
           const leftRoot = finishedLevel(levelProgress(state.observation), start) != null;
           Object.assign(path, { level: start, levels: [start], since: performance.now(), idle: 0, leftRoot });
@@ -1594,7 +1794,7 @@ function startSearch(level = bootLevel) {
         if (isMapEvidence(state.observation, catalog.levels)) {
           seenMaps.add(state.observation.level);
             if (fresh) {
-            bestByMap.set(state.observation.level, state.observation.x);
+            bestByMap.set(state.observation.level, mapProgress(state.observation));
             bestStates.set(state.observation.level, state.id);
             heat.visit(
               {
@@ -1621,13 +1821,14 @@ function startSearch(level = bootLevel) {
           $("branch-tree").querySelector(`[data-search="${activeSearch}"]`).focus({ preventScroll: true });
 
         }
-        if (engine) selectState(state, initial).catch(fail);
+        if (tapeUrl) startTape();
+        else if (engine) selectState(state, initial).catch(fail);
         updateStats();
         drawMap(performance.now());
       } else if (data.type === "batch") {
         if (data.active !== activeSearch) return;
         const { motion, finishes, exits, ...batchStats } = data;
-        swarm.add(activeSearch, motion || [], heat.clock(performance.now()), finishes);
+        swarm.add(activeSearch, motion || [], heat.clock(performance.now()), finishes, liveView && !data.stopped ? 100 : 0);
         if (motion?.length) trailsSeen = true;
         else if (liveView && !trailsSeen) {
           for (const [level, count] of pointLevels) pointLevels.set(level, count * 0.9);
@@ -1638,16 +1839,17 @@ function startSearch(level = bootLevel) {
           if (++traillessBatches === 20 && visualization === "movement") setVisualization("heat");
         }
         stats = batchStats;
+        if (liveView) for (const [key, counter] of Object.entries(counters)) counter.push(batchStats[key] || 0, performance.now());
         gameWon ||= data.won;
         const now = performance.now();
-        heat.visitMotion(data.motion || [], maps, now);
+        heat.visitMotion(data.motion || [], maps, now, game.exactCellRows);
         for (const point of data.points) {
           const o = point.observation,
             map = maps.get(o.level),
             finished = finishedLevel(levelProgress(o), roomLevel(o.level));
           if (finished != null) {
             cleared.add(finished);
-            if (!wins.has(finished) && point.retained !== null) wins.set(finished, point.retained);
+            if (!game.levelsCleared) followPathExit(finished, levelProgress(o).cleared, now);
           }
           if (!map && !o.loading && o.health) discoverArea(o.level);
           if (!map || !isMapEvidence(o, catalog.levels)) continue;
@@ -1656,22 +1858,19 @@ function startSearch(level = bootLevel) {
           if (point.retained !== null && !arrivals.has(o.level))
             arrivals.set(o.level, point.retained);
           const best = bestByMap.get(o.level) || 0;
-          if (o.x > best && point.retained !== null) {
-            bestByMap.set(o.level, o.x);
+          if (mapProgress(o) > best && point.retained !== null) {
+            bestByMap.set(o.level, mapProgress(o));
             bestStates.set(o.level, point.retained);
             if (o.level === mapLevel || first) latestBest = point.retained;
           }
-          heat.retain({ ...point, observation: project(o, map) }, now);
+          // Exact-row games draw a cell from its raw row, so the cell key uses the raw y.
+          heat.retain({ ...point, observation: game.exactCellRows ? { ...project(o, map), y: o.y } : project(o, map) }, now);
         }
         (finishes || []).forEach((index, i) => {
           const from = roomLevel(trailRoom(motion[index]));
           if (from == null || game.levelsCleared) return;
           cleared.add(from);
-          const onPath = roomLevel(branchPreview?.room ?? mapLevel) === path.level;
-          if (!followExit(path, from, exits?.[i], catalog.levels)) return;
-          path.since = now;
-          path.idle = 0;
-          if (onPath) path.show = { level: path.level, from: roomLevel(branchPreview?.room ?? mapLevel) };
+          followPathExit(from, exits?.[i], now);
         });
         if (
           latestBest !== null &&
@@ -1686,7 +1885,7 @@ function startSearch(level = bootLevel) {
         offerTour();
       } else if (data.type === "states") {
         for (const state of data.states) stateCache.set(state.id, state);
-        if (data.missing?.length) replaceDropped(heat.forget(data.missing));
+        if (data.missing?.length) replaceDropped(heat.forget(data.missing, data.request));
         if (data.request === -2001) {
           if (routeHover) showRoutePreview(stateCache.get(routeHover.id), routeHover);
         } else if (data.request === 0) {
@@ -1697,12 +1896,14 @@ function startSearch(level = bootLevel) {
         } else if (data.request === request) {
           renderStates();
           if (data.states[0])
-            selectState(data.states[0], watchRequested).then((ok) => transportPending && revealTransport(ok)).catch(fail);
+            selectState(data.states[0]).then((ok) => transportPending && revealTransport(ok)).catch(fail);
           else $("verification").textContent = "The search no longer keeps a path to this spot";
-          watchRequested = false;
+          heat.releasePending(data.request);
         }
       } else if (data.type === "limit") {
-        paused = true;
+        const clock = heat.clock(performance.now()), end = swarm.endTime(activeSearch, clock);
+        terminalDrain = !paused && !reducedMotion.matches && end > clock ? { branch: activeSearch, end } : null;
+        paused = !terminalDrain;
         replayPaused = false;
         const ended = data.finished ? "Search finished" : "Memory limit reached";
         $("status").textContent = data.won ? "Game won" : ended;
@@ -1722,14 +1923,18 @@ function startSearch(level = bootLevel) {
   const starting = worker;
   mapBuilt(bootLevel).then(() => starting.postMessage(init, ports));
 }
-function updateSearchControl() {
-  heat.setRunning(ready && !paused && !stats.stopped, performance.now());
+function renderPauseButton() {
   $("pause").innerHTML = paused
     ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l14 8-14 8z"/></svg>'
     : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>';
   const label = paused ? "Resume Search" : "Pause Search";
   $("pause").setAttribute("aria-label", label);
   $("pause").title = label;
+}
+function updateSearchControl() {
+  if (paused || terminalDrain?.branch !== activeSearch) terminalDrain = null;
+  heat.setRunning(ready && !paused && (!stats.stopped || !!terminalDrain), performance.now());
+  renderPauseButton();
   $("goal-status").textContent = !ready
     ? "Loading…"
     : paused
@@ -1746,7 +1951,10 @@ function setRoom(level, preserveSelection = false) {
   canvas.dataset.map = level;
   canvas.dataset.mapWidth = mapWidth;
   canvas.dataset.mapHeight = mapHeight;
-  if (!preserveSelection) selectedCell = null;
+  if (!preserveSelection) {
+    selectedCell = null;
+    clearRouteSelection();
+  }
   hoverCell = null;
   const owner = catalog.levels.find((l) => l.rooms.includes(level));
   focusedLevel = owner?.id ?? 0;
@@ -1759,46 +1967,27 @@ function browseRoom(level) {
   stopControl();
   music.stop();
   playing = false;
-  $("play").textContent = "▶ Replay";
+  setPlayState("play");
   setRoom(level);
   const id = bestStates.get(level);
   if (id !== undefined) {
-    watchRequested = false;
-    worker.postMessage({ type: "states", ids: [id], request: ++request });
+    requestStates([id]);
   }
 }
 function replaceDropped(replacements) {
   for (const [dropped, next] of replacements) {
     if (latestBest === dropped) latestBest = next;
-    for (const states of [bestStates, arrivals, wins])
+    for (const states of [bestStates, arrivals])
       for (const [level, id] of states)
         if (id === dropped) next === null ? states.delete(level) : states.set(level, next);
   }
 }
+function mapProgress(observation) {
+  return game.mapProgress ? game.mapProgress(observation) : observation.x;
+}
 function levelProgress(observation) {
   return game.levelsCleared ? { ...observation, cleared: game.levelsCleared(observation) } : observation;
 }
-function levelLabel(id) {
-  return catalog.levels.find((level) => level.id === id)?.label ?? `Level ${id + 1}`;
-}
-function completionWitness() {
-  if (wins.has(focusedLevel))
-    return {
-      id: wins.get(focusedLevel),
-      label: `Watch ${levelLabel(focusedLevel)} finish`,
-    };
-  return null;
-}
-$("completion").onclick = () => {
-  music.unlock().catch(audioError);
-  const witness = completionWitness();
-  if (!witness) return;
-  userSelected = true;
-  openInspector();
-  selectedCell = null;
-  watchRequested = true;
-  worker.postMessage({ type: "states", ids: [witness.id], request: ++request });
-};
 function setText(id, text) {
   const node = $(id);
   if (node.textContent !== text) node.textContent = text;
@@ -1807,10 +1996,19 @@ function setTitle(id, text) {
   const node = $(id);
   if (node.title !== text) node.title = text;
 }
-function updateStats() {
+function shown(key) {
+  return liveView && !paused ? counters[key].read(performance.now()) : stats[key];
+}
+function updateCounters() {
   const others = [...searchViews].filter(([id]) => id !== activeSearch).map(([, view]) => view.stats || {});
-  const total = (key) => others.reduce((sum, other) => sum + (other[key] || 0), stats[key] || 0);
+  const total = (key) => others.reduce((sum, other) => sum + (other[key] || 0), shown(key) || 0);
   setText("hero-timelines", fmt(total("executions")));
+  setText("attempts", fmt(shown("executions")));
+  setText("states", fmt(shown("states")));
+  setText("work", fmt(shown("frames")));
+}
+function updateStats() {
+  updateCounters();
   const anyVisited = !!$("room-tabs").querySelector(".visited");
   for (const tab of $("room-tabs").children) {
     const seen = seenMaps.has(Number(tab.dataset.map));
@@ -1821,15 +2019,9 @@ function updateStats() {
     }
     tab.classList.toggle("visited", seen);
   }
-  setText("attempts", fmt(stats.executions));
-  setText("states", fmt(stats.states));
   setText("cells", fmt(heat.cells.size));
   renderLevelStrip();
-  const witness = completionWitness();
-  $("completion").hidden = !witness;
-  if (witness) setText("completion", witness.label);
   setTitle("states", `Shared snapshot memory: ${fmt(stats.snapshot_bytes / 1048576)} MiB; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`);
-  setText("work", fmt(stats.frames));
   setText("memory", `${((stats.snapshot_bytes || 0) / 1000000).toFixed(1)} MB`);
   setTitle("memory", "Retained snapshots across all search branches");
   setText("workers", fmt(stats.workers ?? budget.workers));
@@ -1844,12 +2036,13 @@ function renderLevelStrip() {
     after = path.levels.findIndex((id) => id > focusedLevel),
     ids = path.levels.includes(focusedLevel) ? path.levels : path.levels.toSpliced(after < 0 ? path.levels.length : after, 0, focusedLevel),
     levels = ids.map((id) => catalog.levels.find((level) => level.id === id)).filter(Boolean),
-    recent = new Set(levels.slice(-2).map((level) => level.id).concat(focusedLevel)),
+    phone = phoneLayout.matches,
+    recent = new Set((phone ? [live] : levels.slice(-2).map((level) => level.id)).concat(focusedLevel)),
     hidden = levels.filter((level) => !recent.has(level.id)),
-    collapse = hidden.length > 1,
+    collapse = hidden.length > (phone ? 0 : 1),
     shown = collapse && !levelsExpanded ? levels.filter((level) => recent.has(level.id)) : levels,
     locked = !ready || branchBusy || controlMode,
-    key = `${levels.map((level) => `${level.id}${cleared.has(level.id) ? "c" : ""}`)}|${focusedLevel}|${live}|${gameWon}|${locked}|${collapse && levelsExpanded}`;
+    key = `${levels.map((level) => `${level.id}${cleared.has(level.id) ? "c" : ""}`)}|${focusedLevel}|${live}|${gameWon}|${locked}|${phone}|${collapse && levelsExpanded}`;
   const strip = $("level-strip"),
     trail = $("level-trail");
   if (strip.dataset.key === key) return;
@@ -1908,6 +2101,7 @@ new ResizeObserver(() => {
   revealLevel($("level-trail").querySelector('[aria-pressed="true"]'));
   fadeTrail();
 }).observe($("level-trail"));
+phoneLayout.addEventListener("change", renderLevelStrip);
 $("level-more").onclick = () => {
   levelsExpanded = !levelsExpanded;
   renderLevelStrip();
@@ -1934,7 +2128,9 @@ function renderMapRows(owner) {
     const tab = document.createElement("button");
     tab.dataset.map = id;
     const label = maps.get(id).label, same = rooms.filter((room) => maps.get(room).label === label);
-    tab.textContent = same.length > 1 ? `${label} ${same.indexOf(id) + 1}` : label;
+    const inLevel = rooms.length > 1 && owner?.label && label.startsWith(owner.label) ? label.slice(owner.label.length).replace(/^[\s:·–—-]+/, "") || "Main" : label;
+    tab.textContent = same.length > 1 ? `${inLevel} ${same.indexOf(id) + 1}` : inLevel;
+    tab.title = label;
     tab.setAttribute("aria-pressed", id === mapLevel);
     tab.classList.toggle("visited", seenMaps.has(id));
     tab.onclick = () => {
@@ -1962,7 +2158,7 @@ function renderMapRows(owner) {
         part.className = "room-part";
         const c = id === mapLevel && index === 0 ? canvas : document.createElement("canvas");
         c.className = "area-map";
-        const viewports = game.vertical ? TALL_CAMERA_VIEWPORT : game.grid ? GRID_CAMERA_VIEWPORT : CAMERA_VIEWPORT;
+        const viewports = game.vertical ? game.tallViewport ?? TALL_CAMERA_VIEWPORT : game.grid ? GRID_CAMERA_VIEWPORT : CAMERA_VIEWPORT;
         const viewport = phoneLayout.matches ? viewports.phone : viewports.desktop;
         c.width = viewport.width;
         c.height = viewport.height;
@@ -2030,13 +2226,19 @@ function panEdge(c, dir, axis = "x") {
   const mine = () => holdingPan(c, dir, axis);
   const start = () => holdPan(c, dir, axis);
   const end = () => releasePan(c, dir, axis);
-  edge.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && mine()) panHold = null; });
+  edge.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") camera.held = performance.now() + 3000; });
+  edge.addEventListener("pointerleave", (e) => {
+    if (e.pointerType !== "mouse") return;
+    camera.held = Math.min(camera.held, performance.now() + 600);
+    if (mine()) panHold = null;
+  });
   edge.addEventListener("pointerdown", (e) => { e.preventDefault(); if (e.pointerType !== "mouse") start(); });
   edge.addEventListener("pointerup", (e) => { if (e.pointerType !== "mouse") end(); });
   edge.addEventListener("pointercancel", () => { if (panHold?.canvas === c) panHold = null; });
   const forward = (type, e) => c.dispatchEvent(new PointerEvent(type, { clientX: e.clientX, clientY: e.clientY, pointerType: "mouse", bubbles: true }));
   edge.addEventListener("pointermove", (e) => {
     if (e.pointerType !== "mouse") return;
+    if (e.movementX || e.movementY) camera.held = performance.now() + 3000;
     if (!mine() && (e.movementX || e.movementY)) start();
     forward("pointermove", e);
   });
@@ -2093,6 +2295,9 @@ function drawMap(now) {
     updateRoomChrome(c);
   }
   for (const strip of document.querySelectorAll(".level-overview")) drawOverview(strip, now);
+  if (recording.state === "recording") {
+    try { paintRecording(); } catch (error) { recording.fail(error); }
+  }
   drawCost = drawCost * 0.9 + (performance.now() - start) * 0.1;
   const behind = drawCost > 6 && frameGap > 20, ahead = drawCost < 4 || frameGap < 18;
   spriteBudget = Math.min(swarm.maxTrails, Math.max(256, spriteBudget * (behind ? 0.9 : ahead ? 1.02 : 1)));
@@ -2183,11 +2388,17 @@ function drawArea(canvas, now) {
   canvas.dataset.zoom = areaZoom;
   canvas.dataset.centerX = areaCenter;
   canvas.dataset.centerY = areaCenterY;
-  const focus = preview ? null : hoverCell || selectedCell;
+  const focus = preview ? null : hoverCell || ($("inspector").hidden ? null : selectedCell);
   if (focus?.level === mapLevel) {
-    ctx.strokeStyle = "#fff0bd";
-    ctx.lineWidth = 1.5 / areaZoom;
-    ctx.strokeRect(focus.x * 32 + 1, cellTop(focus.y) + 1, 30, 30);
+    const top = cellTop(focus.y);
+    ctx.fillStyle = "rgba(255, 240, 189, .26)";
+    ctx.fillRect(focus.x * 32 + 1, top + 1, 30, 30);
+    ctx.strokeStyle = "rgba(20, 24, 28, .8)";
+    ctx.lineWidth = 4 / areaZoom;
+    ctx.strokeRect(focus.x * 32 + 1, top + 1, 30, 30);
+    ctx.strokeStyle = "#fffbe6";
+    ctx.lineWidth = 2 / areaZoom;
+    ctx.strokeRect(focus.x * 32 + 1, top + 1, 30, 30);
   }
   const o = preview ? areaOrigin?.point : routeHover ? routeHover.point : $("inspector").hidden
     ? areaOrigin?.point
@@ -2237,6 +2448,11 @@ function bindMap(c) {
   let pinch;
   c.addEventListener("wheel", (e) => {
     const r = c.getBoundingClientRect(), size = game.vertical ? r.height : r.width;
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      zoomBy(Math.exp(-Math.max(-30, Math.min(30, e.deltaY * wheelUnit(e, r.height))) * 0.01), c, e);
+      return;
+    }
     if (game.grid) {
       const unit = wheelUnit(e, r.height);
       if (scrollView(Number(c.dataset.map), c, (e.deltaX * unit * c.width) / r.width, (e.deltaY * unit * c.height) / r.height)) e.preventDefault();
@@ -2245,12 +2461,6 @@ function bindMap(c) {
     const delta = wheelDelta(e, size);
     if (delta && scrollAlong(Number(c.dataset.map), c, (delta * (game.vertical ? c.height : c.width)) / size)) e.preventDefault();
   }, { passive: false });
-  c.addEventListener("pointermove", (e) => {
-    if (e.pointerType === "mouse" && (e.movementX || e.movementY)) camera.held = performance.now() + 3000;
-  });
-  c.addEventListener("pointerleave", (e) => {
-    if (e.pointerType === "mouse") camera.held = Math.min(camera.held, performance.now() + 600);
-  });
   c.addEventListener("pointerdown", (e) => {
     if (e.pointerType !== "mouse") camera.held = performance.now() + 2500;
   });
@@ -2271,7 +2481,6 @@ function bindMap(c) {
     dragged = true;
     pointerStart = null;
     hoverCell = null;
-    $("hover").hidden = true;
     moveCameraByHand();
   }, { passive: false });
   c.addEventListener("touchmove", (event) => {
@@ -2280,6 +2489,7 @@ function bindMap(c) {
     const id = Number(c.dataset.map), room = roomView(id, c), map = canvasPanel(c);
     const point = pair(event.touches), r = c.getBoundingClientRect();
     room.zoom = Math.max(1, Math.min(maxZoom(c), pinch.zoom * point.distance / Math.max(1, pinch.distance)));
+    camera.zoomScale = room.zoom / baseZoom(c);
     const scale = Math.min(c.width / map.width, c.height / map.height) * room.zoom;
     const center = panelCenter(map, room.zoom, {
       x: pinch.worldX - (point.x - r.left - r.width / 2) * c.width / r.width / scale,
@@ -2348,16 +2558,12 @@ function bindMap(c) {
       cell = heat.cells.get(`${point.level}:${point.x}:${point.y}`);
     hoverCell = cell?.ids.length ? point : null;
     c.style.cursor = hoverCell ? "pointer" : "default";
-    $("hover").hidden = !cell?.visits && !cell?.ids.length;
-    $("hover").textContent =
-      `${cell?.visits || 0} visits · ${cell?.ids.length || 0} states`;
   });
   c.addEventListener("pointerleave", (e) => {
     if (c.hasPointerCapture(e.pointerId)) return;
     pointerStart = null;
     hoverCell = null;
     c.style.cursor = "default";
-    $("hover").hidden = true;
   });
   c.addEventListener("click", (e) => {
     if (branchBusy) return;
@@ -2407,20 +2613,24 @@ function setSearchPaused(value) {
   $("status").textContent = value ? "Paused" : "Exploring";
   $("status-dot").className = value ? "paused" : "";
 }
+let inspectorHeld = false;
 function holdSearchForReplay() {
-  const watching = playing && viewerReplay && !controlMode;
+  const inspecting = !$("inspector").hidden,
+    watching = inspecting || (playing && viewerReplay && !controlMode);
   if (watching === replayWatching) return;
   replayWatching = watching;
   if (watching && !paused && ready && !stats.stopped) {
     replayPaused = true;
+    inspectorHeld = inspecting;
     setSearchPaused(true);
   } else if (!watching && replayPaused) {
     replayPaused = false;
+    inspectorHeld = false;
     if (paused && ready && !stats.stopped && !playSession && !branchBusy && !tourSession) setSearchPaused(false);
   }
 }
 $("pause").onclick = () => {
-  replayPaused = false;
+  if (!inspectorHeld) replayPaused = false;
   setSearchPaused(!paused);
 };
 $("reset").onclick = () => {
@@ -2442,7 +2652,7 @@ $("play").onclick = async () => {
   if (playing) {
     playing = false;
     music.stop();
-    $("play").textContent = "▶ Replay";
+    setPlayState("play");
     return;
   }
   music.unlock().catch(audioError);
@@ -2456,15 +2666,38 @@ $("play").onclick = async () => {
   viewerReplay = true;
   frameCredit = 0;
   startAudio();
-  $("play").textContent = "Ⅱ Pause";
+  setPlayState("pause");
 };
 $("speed").onchange = () => {
   if (playing) startAudio();
 };
-$("scrub").oninput = () => {
+let scrubResume = false,
+  scrubbing = false;
+function resumeAfterScrub() {
+  if (scrubbing || seeking) return;
+  const resume = scrubResume && current && currentFrame < current.frames;
+  scrubResume = false;
+  if (!resume) return;
+  playing = true;
+  viewerReplay = true;
+  frameCredit = 0;
+  startAudio();
+  setPlayState("pause");
+}
+$("scrub").oninput = async () => {
   userSelected = true;
-  seek(Number($("scrub").value));
+  if (playing) scrubResume = true;
+  await seek(Number($("scrub").value));
+  resumeAfterScrub();
 };
+$("scrub").onpointerdown = () => {
+  scrubbing = true;
+};
+for (const type of ["pointerup", "pointercancel", "change"])
+  $("scrub").addEventListener(type, () => {
+    scrubbing = false;
+    resumeAfterScrub();
+  });
 const showInfo = (html) => {
   $("info-content").innerHTML = html;
   $("info").showModal();
@@ -2473,8 +2706,22 @@ $("close-info").onclick = () => $("info").close();
 $("info").onclick = (e) => {
   if (e.target === $("info")) $("info").close();
 };
-$("credits").onclick = async () =>
-  showInfo(typeof game.credits === "function" ? await game.credits(base) : game.credits);
+const creditsHeader = /^<span class="eyebrow">[^<]*<\/span><h2>[^<]*<\/h2>/;
+$("credits").onclick = async () => {
+  const listed = [...GAMES.values()].filter((choice) => !choice.family || choice.id === choice.family),
+    sections = await Promise.all(
+      listed.map(async (choice) => {
+        const html = typeof choice.credits === "function" ? await choice.credits(base) : choice.credits;
+        const open = choice === game || (!!choice.family && choice.family === game.family);
+        return `<details class="credit-game"${open ? " open" : ""}><summary>${choice.title}</summary>${(html || "").replace(creditsHeader, "")}</details>`;
+      }),
+    );
+  showInfo(`<span class="eyebrow">CREDITS & LICENSING</span><h2>Harmony</h2>
+<p>Created by <a href="https://ph14.dev">pH14</a>. <a href="https://github.com/pH14/harmony">Available on GitHub</a> and licensed under the AGPL-3.0.</p>
+<p>As much of the text as possible has been written by me, a human, though sometimes LLMs sneak in random slop text that I miss.</p>
+<p>Having said that, the following credits and licensing attribution are auto-generated:</p>
+<hr>${sections.join("")}`);
+};
 function hideHistoryRail() {
   $("history-rail").hidden = true;
   $("workspace").classList.remove("history-collapsed");
@@ -2494,7 +2741,9 @@ function closeInspector({ restoreFocus = true } = {}) {
   stopControl();
   music.stop();
   playing = false;
-  $("play").textContent = "▶ Replay";
+  scrubResume = false;
+  scrubbing = false;
+  setPlayState("play");
   $("inspector").hidden = true;
   $("workspace").classList.remove("inspect-open");
   if (playSession) {
@@ -2502,11 +2751,12 @@ function closeInspector({ restoreFocus = true } = {}) {
     const resume = playSession.branch === activeSearch && !branchBusy && ready && !stats.stopped;
     playSession = null;
     current = selectedCell = null;
+    clearRouteSelection();
     trace = segments = [];
     historyVerified = false;
     ++replayEpoch;
     seeking = false;
-    ++request;
+    invalidateStateRequest();
     if (resume) {
       paused = false;
       worker.postMessage({ type: "resume" });
@@ -2522,11 +2772,6 @@ compactReplay.addEventListener("change", () => {
   if (tour.open && tour.ready) tour.setInteraction(tour.steps[tour.index].interactive?.() || []);
 });
 function updateBranchControls() {
-  const soundParent = document.querySelector(!controlMode ? ".replay-actions" : ".history-controls");
-  if ($("sound").parentElement !== soundParent) {
-    if (soundParent.classList.contains("history-controls")) soundParent.prepend($("sound"));
-    else soundParent.append($("sound"));
-  }
   $("new-search").disabled = !ready || !engine || branchBusy || controlMode;
   renderLevelStrip();
   if (missingRom && !askedForRom && !$("new-search").disabled) {
@@ -2544,7 +2789,9 @@ function updateBranchControls() {
     !!frameObservation?.health;
   $("take-control").disabled = controlMode ? false : !usable;
   const draft = !!playSession && !!current?.branch?.manual;
-  $("take-control").hidden = controlMode;
+  const actions = $("take-control").parentElement;
+  actions.dataset.mode = draft ? "draft" : "browse";
+  $("take-control").hidden = draft;
   $("search-here").hidden = $("discard-branch").hidden = !draft;
   $("search-here").disabled = !usable || !draft;
   $("discard-branch").disabled = branchBusy;
@@ -2654,6 +2901,7 @@ $("take-control").onclick = () => {
   recordTrail();
   segments = trailSegments(trace);
   selectedCell = null;
+  clearRouteSelection();
   $("cell-title").textContent = "Your branch";
   $("film-title").textContent = "History";
   $("branch-message").hidden = true;
@@ -2662,7 +2910,7 @@ $("take-control").onclick = () => {
   if (matchMedia("(max-width: 800px)").matches) expandInspector(true);
   timeline.trim(currentFrame);
   startAudio();
-  $("play").textContent = "▶ Replay";
+  setPlayState("play");
   renderStates();
   updateBranchControls();
   $("film").focus({ preventScroll: true });
@@ -2686,7 +2934,7 @@ $("search-here").onclick = async () => {
   worker.postMessage({ type: "pause" });
   updateSearchControl();
   branchBusy = true;
-  ++request;
+  invalidateStateRequest();
   const branchFrame = currentFrame,
     observation = engine.observation(),
     point = isMapEvidence(observation, catalog.levels)
@@ -2745,9 +2993,10 @@ function deleteSearch(id) {
   hideRoutePreview();
   closeInspector();
   branchBusy = true;
-  ++request;
+  invalidateStateRequest();
   ++replayEpoch;
   current = null;
+  clearRouteSelection();
   trace = segments = [];
   historyVerified = false;
   updateBranchControls();
@@ -2775,9 +3024,10 @@ function switchSearch(id) {
   ++replayEpoch;
   seeking = false;
   current = null;
+  clearRouteSelection();
   trace = segments = [];
   historyVerified = false;
-  ++request;
+  invalidateStateRequest();
   updateSearchControl();
   updateBranchControls();
   if (phoneLayout.matches) followSearch();
@@ -2800,6 +3050,7 @@ $("sound").onclick = () => {
   updateSoundControl();
 };
 updateSoundControl();
+if (liveView) $("search-speed").closest(".search-speed").style.display = "none";
 $("search-speed").max = paceStops.length - 1;
 showPace();
 $("search-speed").oninput = () => {
@@ -2856,11 +3107,12 @@ window.addEventListener("keyup", (e) => {
 });
 window.addEventListener("blur", stopControl);
 document.addEventListener("visibilitychange", () => {
+  resetRetreat(camera);
   if (document.hidden) {
     stopControl();
     music.stop();
     playing = false;
-    $("play").textContent = "▶ Replay";
+    setPlayState("play");
     holdSearchForReplay();
   }
 });
@@ -2926,12 +3178,16 @@ function revealedSegments(drawn) {
   }
   return { segments, head: segments.at(-1)?.at(-1) };
 }
-function drawTrail(ctx, level, scale, override) {
+function shownTrail(override) {
   const selected = override ?? ($("inspector").hidden
     ? branchOrigin?.segments || []
     : routeHover ? routeHover.segments || [] : segments);
   const hovering = !override && !!routeHover?.segments;
   const { segments: drawnSegments, head } = override || hovering || $("inspector").hidden ? { segments: selected, head: null } : revealedSegments(selected);
+  return { drawnSegments, head, hovering };
+}
+function drawTrail(ctx, level, scale, override) {
+  const { drawnSegments, head, hovering } = shownTrail(override);
   let count = 0;
   ctx.save();
   ctx.lineJoin = "round";
@@ -2979,6 +3235,12 @@ function drawTrail(ctx, level, scale, override) {
 }
 
 function animate(now) {
+  if (terminalDrain && (reducedMotion.matches || heat.clock(now) >= terminalDrain.end)) {
+    heat.setRunning(false, reducedMotion.matches ? now : now - (heat.clock(now) - terminalDrain.end));
+    terminalDrain = null;
+    paused = true;
+    renderPauseButton();
+  }
   const wallElapsed = lastTime ? now - lastTime : 0,
     elapsed = Math.min(100, wallElapsed);
   lastTime = now;
@@ -2987,7 +3249,7 @@ function animate(now) {
   if (statsDirty) {
     statsDirty = false;
     updateStats();
-  }
+  } else if (liveView && !paused) updateCounters();
   if (mapMoving || now - lastMapPaint >= 1000 / 30) {
     drawMap(now);
     lastMapPaint = now;
@@ -3002,7 +3264,7 @@ function animate(now) {
     for (let i = 0; i < frames; i++) {
       if (
         currentFrame >= 200000 ||
-        !appendInput(current.actions, controller.buttons(), 1)
+        !appendInput(current.actions, controller.buttons(), 1, Math.min(120, game.maxActionFrames))
       ) {
         stopControl();
         $("branch-message").hidden = false;
@@ -3035,7 +3297,7 @@ function animate(now) {
       if (currentFrame === current.frames) {
         playing = false;
         music.stop();
-        $("play").textContent = "↺ Replay";
+        setPlayState("replay");
         verify().then(updateBranchControls).catch(replayError);
       }
     }
@@ -3130,7 +3392,7 @@ const tour = new GuidedTour({
       title: "Multiverse exploration",
       copy: [
         "Harmony plays games by creating a multiverse of timelines.",
-        "It continually tries small actions all over the areas it has explored, and keeps the ones that produce progress.",
+        "It continually attempts actions from all the areas it has explored, and keeps the ones that produce progress.",
       ],
       targets: () => activeRoomSpotlights(),
       interactive: () => [$("map-rows"), $("pause")],
@@ -3199,7 +3461,7 @@ const tour = new GuidedTour({
     userSelected = true;
     playing = false;
     music.stop();
-    $("play").textContent = "▶ Replay";
+    setPlayState("play");
   },
   async beforeStep(index, valid) {
     hideRoutePreview();
@@ -3213,7 +3475,7 @@ const tour = new GuidedTour({
     if (index !== STEP.one) {
       playing = false;
       if (!controlMode) music.stop();
-      $("play").textContent = "▶ Replay";
+      setPlayState("play");
     }
     if (index === STEP.fork && tourSession.gameplay) {
       paused = !!playSession;
@@ -3285,8 +3547,9 @@ const tour = new GuidedTour({
     tourSession = null;
     let restoration;
     if (!interacted && previous && current !== previous) {
-      ++request;
+      invalidateStateRequest();
       selectedCell = null;
+      clearRouteSelection();
       restoration = selectState(previous)
         .then(async (success) => {
           if (!success) return;
@@ -3325,32 +3588,68 @@ function offerTour() {
     beginTour();
 }
 $("tour-open").onclick = beginTour;
+function familyOf(choice) {
+  return choice.family ? [...GAMES.values()].filter((member) => member.family === choice.family) : [choice];
+}
+const storedRoms = new Set();
+function needsRom(choice) {
+  return choice.rom.upload && !bundled.has(choice.id) && !storedRoms.has(choice.id) && (choice !== requested || !!missingRom);
+}
+function gameMeta(choice) {
+  if (needsRom(choice)) return "Needs ROM";
+  if (ready && (choice === game || (choice.family && choice.family === game.family))) return "Playing";
+  return "";
+}
 $("new-search").onclick = () => {
   const wasPlaying = playing;
-  if (wasPlaying) { playing = false; music.stop(); $("play").textContent = "▶ Replay"; }
+  if (wasPlaying) { playing = false; music.stop(); setPlayState("play"); }
   const games = [...GAMES.values()].filter((choice) => !choice.family || choice.id === choice.family),
-    family = game.family ? [...GAMES.values()].filter((choice) => choice.family === game.family) : [game];
+    family = familyOf(game);
+  pickerGames = [];
+  for (const choice of games)
+    if (choice.rom.upload && !bundled.has(choice.id) && !storedRoms.has(choice.id))
+      load(choice.id).then((stored) => {
+        if (!stored || !scope.alive) return;
+        storedRoms.add(choice.id);
+        for (const entry of pickerGames) if (entry.choice === choice) entry.button.dataset.meta = gameMeta(choice);
+      });
   const buttons = games.map((choice) => {
     const button = document.createElement("button");
+    button.className = "game-row";
+    button.type = "button";
     button.textContent = choice.title;
+    button.dataset.meta = gameMeta(choice);
     button.setAttribute("aria-pressed", choice === game);
+    pickerGames.push({ button, choice });
     const play = () => {
       const url = new URL(location.href);
       url.searchParams.set("game", choice.id);
-      location.assign(url);
+      scope.navigate(url, { label: choice.title });
     };
-    button.onclick = () => {
-      if (choice.rom.upload && !bundled.has(choice.id) && (choice !== requested || missingRom)) showRomPanel(choice, play);
-      else if (choice === game || (choice.family && choice.family === game.family)) showLevelGrid();
+    button.onclick = async () => {
+      if (nativeTarget) showNativeLevels(choice);
+      else if (needsRom(choice)) {
+        if (await load(choice.id)) {
+          storedRoms.add(choice.id);
+          play();
+        } else showRomPanel(choice, play);
+      } else if (choice === game || (choice.family && choice.family === game.family)) showLevelGrid();
       else play();
     };
     return button;
   });
   $("homebrew-games").replaceChildren(...buttons.filter((_, i) => !games[i].rom.upload));
   $("rom-games").replaceChildren(...buttons.filter((_, i) => games[i].rom.upload));
+  renderLevels(family);
   const shown = missingRom && [...GAMES.values()].find((choice) => choice === missingRom);
-  if (shown) showRomPanel(shown, () => location.reload());
+  if (shown) showRomPanel(shown, () => scope.navigate(location.href, { replace: true }));
   else showLevelGrid();
+  applyTarget();
+  if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
+  $("level-picker").showModal();
+  launcher?.activate();
+};
+function renderLevels(family) {
   $("level-grid").replaceChildren();
   for (const member of family) {
     if (family.length > 1) {
@@ -3380,7 +3679,7 @@ $("new-search").onclick = () => {
       }
       caption.textContent = level.label;
       card.append(image, caption);
-      card.onclick = current
+      const open = current
         ? () => {
             $("level-picker").close();
             tour.finish();
@@ -3392,29 +3691,95 @@ $("new-search").onclick = () => {
             const url = new URL(location.href);
             url.searchParams.set("game", member.id);
             url.searchParams.set("level", level.id);
-            location.assign(url);
+            scope.navigate(url, { label: member.title });
           };
+      card.onclick = () => (nativeTarget ? showHardware(member, level, card) : open());
       $("level-grid").append(card);
     }
   }
-  if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
-  $("level-picker").showModal();
+}
+$("zoom-in").onclick = () => zoomMaps(1.4);
+$("zoom-out").onclick = () => zoomMaps(1 / 1.4);
+addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]") || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  if (e.key === "+" || e.key === "=") zoomMaps(1.4);
+  else if (e.key === "-" || e.key === "_") zoomMaps(1 / 1.4);
+  else if (e.key === "0") {
+    for (const c of document.querySelectorAll(".area-map")) if (c.offsetParent) zoomBy(baseZoom(c) / roomView(Number(c.dataset.map), c).zoom, c);
+    camera.zoomScale = 1;
+  } else return;
+  e.preventDefault();
+});
+$("follow-camera").onclick = () => {
+  applyCameraMode();
 };
 $("close-level-picker").onclick = () => $("level-picker").close();
+$("picker-back").onclick = () => ($("picker-body").dataset.view = "games");
+$("runs-open").onclick = () => showRuns();
+let launcher = null, nativeTarget = null, pickerGames = [], nativeChoice = game;
+function renderTargetRow() {
+  $("run-target").hidden = !launcher || !$("rom-panel").hidden || !$("runs-panel").hidden;
+  if (!launcher) return $("run-target").replaceChildren();
+  const heading = document.createElement("h3");
+  heading.textContent = "Run on";
+  $("run-target").replaceChildren(heading, segmentButtons([["", "This browser"], ...launcher.machines.map((name) => [name, name])], nativeTarget ?? "", (name) => {
+    nativeTarget = name || null;
+    if (nativeTarget) launcher.setMachine(nativeTarget);
+    applyTarget();
+  }));
+}
+function nativeGame(choice) {
+  return [...GAMES.values()].some((member) => (member.family ?? member.id) === (choice.family ?? choice.id) && launcher.available(member.id));
+}
+function applyTarget() {
+  renderTargetRow();
+  for (const { button, choice } of pickerGames) button.disabled = !!nativeTarget && !nativeGame(choice);
+  if (nativeTarget) showNativeLevels(nativeGame(nativeChoice) ? nativeChoice : pickerGames.find(({ choice }) => nativeGame(choice))?.choice ?? game);
+  else if ($("rom-panel").hidden && $("runs-panel").hidden) {
+    renderLevels(familyOf(game));
+    showLevelGrid();
+  }
+}
+function showNativeLevels(choice) {
+  nativeChoice = choice;
+  if (!choice.levels || !choice.assets) return showHardware(choice);
+  renderLevels(familyOf(choice));
+  showLevelGrid(choice);
+}
+function showHardware(member, level, card) {
+  pressGame(nativeChoice);
+  $("detail-meta").textContent = `Set up a run on ${nativeTarget}`;
+  launcher.setLevel(member.id, level, card?.querySelector("img, canvas"), () => showNativeLevels(nativeChoice));
+  showPanel("hardware");
+}
 let playthroughPlayer = null;
 function pressGame(choice) {
-  for (const button of $("game-choice").querySelectorAll("button")) button.setAttribute("aria-pressed", button.textContent === choice.title);
+  for (const button of $("game-choice").querySelectorAll("#homebrew-games button, #rom-games button")) button.setAttribute("aria-pressed", button.textContent === choice.title);
+  $("detail-title").textContent = choice.title;
 }
-function showLevelGrid() {
-  pressGame(game);
-  $("rom-panel").hidden = true;
-  $("level-grid").hidden = false;
+const PANELS = { levels: "level-grid", rom: "rom-panel", hardware: "native-panel", runs: "runs-panel" };
+function showPanel(name) {
+  for (const [key, id] of Object.entries(PANELS)) $(id).hidden = key !== name;
   closePlaythrough();
+  $("runs-open").setAttribute("aria-pressed", name === "runs");
+  $("run-target").hidden = !launcher || name === "rom" || name === "runs";
+  $("picker-body").dataset.view = "detail";
+}
+function showLevelGrid(choice = game) {
+  pressGame(choice);
+  $("detail-meta").textContent = nativeTarget ? `Pick a level to set up a run on ${nativeTarget}` : "";
+  showPanel("levels");
+}
+function showRuns() {
+  pressGame({ title: "" });
+  $("detail-title").textContent = "Runs";
+  $("detail-meta").textContent = "Searches running on your machines";
+  showPanel("runs");
 }
 function showRomPanel(choice, play) {
   pressGame(choice);
-  $("level-grid").hidden = true;
-  $("rom-panel").hidden = false;
+  $("detail-meta").textContent = "This game’s ROM is not bundled with the demo";
+  showPanel("rom");
   $("rom-panel").dataset.game = choice.id;
   $("rom-title").textContent = `To explore ${choice.title} please supply the game’s ROM`;
   $("rom-message").hidden = true;
@@ -3485,6 +3850,7 @@ function youtubeApi() {
 }
 $("level-picker").addEventListener("close", () => {
   closePlaythrough();
+  launcher?.deactivate();
   if (!worker) startSearch();
 });
 async function acceptRom(choice, file, play) {
@@ -3497,6 +3863,43 @@ async function acceptRom(choice, file, play) {
   else play();
 }
 
+const tapeUrl = params.get("tape");
+let tapeStarted = false;
+function startTape() {
+  if (tapeStarted || !engine || !ready) return;
+  tapeStarted = true;
+  watchTape().catch(fail);
+}
+async function watchTape() {
+  const response = await fetch(new URL(tapeUrl, location.href));
+  if (!response.ok) throw new Error("Tape not found");
+  const tape = await response.json();
+  if (!Array.isArray(tape.actions) || !tape.actions.length || tape.actions.length > 10000) throw new Error("Unsupported tape");
+  const actions = tape.actions.map((a) => ({ buttons: a.buttons, frames: a.frames ?? a.hold_frames }));
+  for (const a of actions)
+    if (!Number.isInteger(a.buttons) || a.buttons < 0 || a.buttons > 255 || !Number.isInteger(a.frames) || a.frames < 1 || a.frames > game.maxActionFrames)
+      throw new Error("Invalid controller action");
+  const frames = actions.reduce((total, a) => total + a.frames, 0);
+  engine.restore(origin);
+  let batch = 0;
+  for (const a of actions) {
+    engine.run(a.buttons, a.frames);
+    batch += a.frames;
+    if (batch >= 1200) {
+      batch = 0;
+      await new Promise((resolve) => setTimeout(resolve));
+    }
+  }
+  const observation = engine.observation();
+  engine.restore(origin);
+  userSelected = true;
+  paused = true;
+  worker?.postMessage({ type: "pause" });
+  updateSearchControl();
+  mergeProgress(cleared, levelProgress(observation), bootLevel);
+  openInspector();
+  await selectState({ id: "tape", boot_level: bootLevel, actions, frames, observation }, true);
+}
 requestAnimationFrame(animate);
 createEngine(base, game, engineInputs)
   .then((e) => {
@@ -3505,15 +3908,39 @@ createEngine(base, game, engineInputs)
     originPixels = e.pixels();
     drawFilm();
     $("verification").textContent = "Original game";
+    if (tapeUrl) return startTape();
     const state = stateCache.get(0);
     if (state) selectState(state, true).catch(fail);
   })
   .catch(fail);
 const linkedLevel = params.has("level") ? Number(params.get("level")) : null;
 if (catalog.levels.some((level) => level.id === linkedLevel)) startSearch(linkedLevel);
-else if (liveView) startSearch(catalog.levels[0].id);
+else if (liveView || tapeUrl) startSearch(catalog.levels[0].id);
 else {
   askedForRom = true;
   $("new-search").onclick();
 }
-nativeRuns(game.id, document.querySelector(".view-tools")).catch(() => {});
+requestAnimationFrame(() => requestAnimationFrame(() => delete document.documentElement.dataset.booting));
+setTimeout(() => delete document.documentElement.dataset.booting, 2000);
+detectLauncher()
+  .then((options) => {
+    if (!options) return;
+    launcher = nativePanel(options, [...GAMES.values()], game.id);
+    $("native-panel").replaceChildren(launcher.element);
+    $("runs-panel").replaceChildren(launcher.runsElement);
+    $("runs-entry").hidden = false;
+    launcher.onActive = (count) => ($("runs-open").dataset.meta = count ? `${count} running` : "");
+    launcher.onStarted = showRuns;
+    renderTargetRow();
+    if ($("level-picker").open) launcher.activate();
+  })
+  .catch(() => {});
+scope.onDispose(() => {
+  worker?.terminate();
+  tour.dispose();
+  music.dispose();
+  launcher?.deactivate();
+  if (recording.state === "recording") recording.stop("The game changed");
+  if (recordingURL) URL.revokeObjectURL(recordingURL);
+});
+}

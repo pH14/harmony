@@ -161,6 +161,10 @@ impl HashWork {
             .ram_bytes
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
     }
+    #[cfg(test)]
+    pub(crate) fn ram_bytes(&self) -> u64 {
+        self.cost.ram_bytes
+    }
     pub(crate) fn suffix(&mut self, bytes: usize) {
         self.cost.suffix_bytes = self
             .cost

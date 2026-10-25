@@ -1,0 +1,15 @@
+setup /opt/harmony/setup.sh 3
+node m1 /opt/harmony/node.sh 1 3
+node m2 /opt/harmony/node.sh 2 3
+node m3 /opt/harmony/node.sh 3 3
+log m1 /tmp/etcd/m1.log
+log m2 /tmp/etcd/m2.log
+log m3 /tmp/etcd/m3.log
+hook 1 /opt/harmony/harness-net partition
+hook 2 /opt/harmony/harness-net isolate
+hook 3 /opt/harmony/harness-net delay
+hook 4 /opt/harmony/harness-net heal
+heal 4
+ready /opt/harmony/etcd-harness ready
+workload /opt/harmony/etcd-harness drive
+check /opt/harmony/etcd-harness check

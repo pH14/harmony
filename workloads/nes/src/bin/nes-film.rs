@@ -8,11 +8,17 @@ use std::{
 };
 
 use nes_workload::{
+    castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
+    donkey_kong::campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
     famidash::{
         campaign::{FamidashCampaignRun, FamidashGame},
         levels::{Side, Stage},
     },
     film::{Capture, FilmMetadata, Filmable, Reel},
+    ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
+    joust::campaign::{JoustCampaignRun, JoustGame},
+    pac_man::campaign::{PacManCampaignRun, PacManGame},
+    punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::archive::Input,
     stb::{
         campaign::{StbCampaignRun, StbGame},
@@ -20,6 +26,7 @@ use nes_workload::{
     },
     twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
     witness::replay_witness,
+    zelda::campaign::{ZeldaCampaignRun, ZeldaGame},
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -272,6 +279,28 @@ fn main() -> Result<()> {
                 identity,
             )
         }
+        "castlevania" => {
+            if args.ai.is_some() {
+                return Err("Castlevania takes no ai option".into());
+            }
+            produce(
+                CastlevaniaGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                CastlevaniaCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        "punchout" => {
+            if args.ai.is_some() {
+                return Err("Punch-Out!! takes no ai option".into());
+            }
+            produce(
+                PunchOutGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                PunchOutCampaignRun,
+                &args,
+                identity,
+            )
+        }
         "famidash" => {
             if args.ai.is_some() {
                 return Err("Famidash takes no ai option".into());
@@ -292,7 +321,65 @@ fn main() -> Result<()> {
                 identity,
             )
         }
-        _ => Err("nes-film renders the STB, Twin Dragons and Famidash scenarios".into()),
+        "zelda" => {
+            if args.ai.is_some() {
+                return Err("Zelda takes no ai option".into());
+            }
+            produce(
+                ZeldaGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                ZeldaCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        "donkey-kong" => {
+            if args.ai.is_some() {
+                return Err("Donkey Kong takes no ai option".into());
+            }
+            produce(
+                DonkeyKongGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                DonkeyKongCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        "ice-climbers" => {
+            if args.ai.is_some() {
+                return Err("Ice Climbers takes no ai option".into());
+            }
+            produce(
+                IceClimbersGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                IceClimbersCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        "pac-man" => {
+            if args.ai.is_some() {
+                return Err("Pac-Man takes no ai option".into());
+            }
+            produce(
+                PacManGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                PacManCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        "joust" => {
+            if args.ai.is_some() {
+                return Err("Joust takes no ai option".into());
+            }
+            produce(
+                JoustGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
+                JoustCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        _ => Err(
+            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda, Donkey Kong, Ice Climbers, Pac-Man and Joust scenarios"
+                .into(),
+        ),
     }
 }
 

@@ -1,0 +1,11 @@
+namespaces:
+  - name: default
+    initialShardCount: 1
+    replicationFactor: 3
+servers:
+  - public: 10.77.0.1:6648
+    internal: 10.77.0.1:6649
+  - public: 10.77.0.2:6648
+    internal: 10.77.0.2:6649
+  - public: 10.77.0.3:6648
+    internal: 10.77.0.3:6649

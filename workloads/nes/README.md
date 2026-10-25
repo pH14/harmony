@@ -194,7 +194,14 @@ and platform evidence is not uniform:
 | Mega Man 2/native | All eight independent stage origins and the whole-game origin pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
 | Twin Dragons/native | Unit tests are checked in and `twin-dragons-campaign` passes local replay qualification; no CI lane runs it yet. | Host QuickNES core and the pinned silent-effects release ROM. |
+| Zelda/native | Unit tests are checked in and `nes-eval` runs a cold campaign from the first overworld screen; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed The Legend of Zelda (USA) (Rev 1) ROM. |
+| Donkey Kong/native | Unit tests are checked in and `nes-eval` clears eight rounds from power-on on seeds 1 to 3 and ten rounds on seed 3, each with a replayed witness; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Donkey Kong (World, Rev 1) ROM. |
+| Castlevania/native | Unit tests are checked in and a short cold `nes-eval` probe replays its witness; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Castlevania (USA) (Rev 1) ROM. |
 | Famidash/native | Unit tests are checked in, and `nes-eval` clears Stereo Madness with a replayed victory witness on seeds 1 to 5; no CI lane runs it yet. | Host QuickNES core with the four-screen state patch and the four official 1.2.8 release ROMs. |
+| Ice Climber/native | Unit tests are checked in. Three `nes-eval` searches from power-on (seeds 21, 31 and 32, 1 to 2.5 hours) clear mountains 1 to 4 with a tape that replays from power-on in a fresh `castlevania-probe` process; none clears mountain 5. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Ice Climber (USA) ROM. |
+| Pac-Man/native | Unit tests are checked in and `nes-eval` runs a cold campaign from the first maze; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Pac-Man (Namco, NES) ROM. |
+| Ice Climber/native | Unit tests are checked in. Three `nes-eval` searches from power-on (seeds 21 to 23, 5 workers, 29 to 50 minutes) clear all 32 mountains with a replayed victory witness, in 6.9M, 10.1M and 11.3M executions. Each tape replays from power-on in a fresh `castlevania-probe` process and ends with `$59` = 32 and 3 lives. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Ice Climber (USA) ROM. |
+| Punch-Out!!/native | Unit tests are checked in and `nes-eval` runs a cold campaign from the first round against Glass Joe; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Punch-Out!! (USA) ROM. |
 | Super Tilt Bro/native | The `STB` job in `Checks / Dissonance Workloads / NES` runs a bounded search on affected pull requests. The `Benchmarks / Dissonance Workloads / NES` capability panel evaluates Easy/Fair/Hard AI in independent case jobs through `nes-eval`. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
 
 On Linux/KVM, the shared oracle is invoked as:
@@ -217,15 +224,20 @@ that game's vocabulary, with occasional Start and Select taps, and writes the
 tape, system RAM after every frame, and system RAM, cartridge RAM and the
 canonical core state at every action boundary. `--play` turns on video and
 audio capture. `demos/twin-dragons/tests/core-oracle.mjs` runs it and
-compares the browser core frame by frame.
+compares the browser core frame by frame. `--tape INPUT_JSON` replaces the
+seeded chords with a recorded input, such as a search's `witness-input.json`,
+played after the genesis prefix the search used. It supports Metroid and
+Super Mario Bros and refuses other games. Two QuickNES builds behave
+identically on that tape when their `frames.bin` and `boundaries.bin` match
+byte for byte.
 
 ```sh
 cargo test --manifest-path workloads/nes/Cargo.toml
 cargo clippy --manifest-path workloads/nes/Cargo.toml --all-features --all-targets -- -D warnings
 ```
 
-The [Mega Man 2](src/mm2/README.md) and
-[Metroid](src/metroid/README.md) READMEs document their input and observation maps. Campaign streams
+The [Mega Man 2](src/mm2/README.md),
+[Metroid](src/metroid/README.md), [Castlevania](src/castlevania/README.md), [Punch-Out!!](src/punchout/README.md), [Zelda](src/zelda/README.md), [Donkey Kong](src/donkey_kong/README.md), [Ice Climber](src/ice_climbers/README.md), [Pac-Man](src/pac_man/README.md) and [Joust](src/joust/README.md) READMEs document their input and observation maps. Campaign streams
 and checkpoints retain their versioned workload identities across crate moves.
 
 The `tools` directory contains NES movie conversion and trace utilities.
@@ -332,8 +344,8 @@ protocol and validation machinery without copying the evaluation loop.
 
 ## Live view
 
-Every `nes-eval` campaign of Super Mario Bros., Mega Man 2, Metroid, Twin
-Dragons or Famidash serves the arcade page's view of itself over HTTP on a
+Every `nes-eval` campaign of Super Mario Bros., Mega Man 2, Metroid,
+Castlevania, Twin Dragons, Famidash, Punch-Out!!, Zelda, Donkey Kong, Ice Climber, Pac-Man or Joust serves the arcade page's view of itself over HTTP on a
 loopback port. It prints `live view listening on 127.0.0.1:PORT` and writes
 `live.json` with the address, the page's game id, the process id and, on Linux,
 the process start time from `/proc/self/stat`, to its output directory. It
@@ -345,13 +357,28 @@ directory. To watch from another machine, forward the port over SSH, for
 example `ssh -L 8790:127.0.0.1:PORT HOST`, or use the arcade launcher in
 [`demos/twin-dragons`](../../demos/twin-dragons/README.md#native-runs).
 
-The view costs nothing per job while no viewer is connected: workers skip the
-trail and per-action records, and the coordinator turns off admission records.
-Six paired one-worker runs of Famidash and Twin Dragons at 30,000 executions
-differed by 0.2% on average, within run-to-run noise. A connected viewer turns
-the records back on. A viewer that connects first gets a sample of the archive,
-up to 1,000 states with the newest 250 among them, decoded from their
-snapshots, so a long run shows where it has reached without keeping a history.
+Every game has a client definition in
+[`demos/twin-dragons/src/games`](../../demos/twin-dragons/src/games), so the
+arcade page draws each live view.
+
+Without a connected viewer, workers skip motion trails and detailed observation
+records. With viewers, the service bounds detailed trails per 100 ms tick and
+retains level-completion points even when transport sampling omits the trail.
+Archive sampling selects a bounded set of states without scanning the whole
+archive, and decodes one selected state at a time. These are observation limits;
+they do not change search selection, admission order or retained search state.
+
+Completion sends retained progress before the terminal event, including to a
+late viewer, and drains active event streams for a bounded interval. State
+lookups racing shutdown receive explicit missing-state replies instead of
+waiting on a coordinator that has exited. Root and lookup states retain their
+actual archived identity, replay input and game-frame count.
+
+The viewing browser renders the event stream and records the same camera and
+mini-map to 1920×1080 video at display cadence. Encoding runs on the viewing
+machine; the native server needs no display or video encoder. Recording controls,
+file streaming limits and qualification checks are documented in the
+[arcade README](../../demos/twin-dragons/README.md#record-the-search-view).
 
 A request with `live` set to a loopback address such as `127.0.0.1:8790` runs
 the arcade game from genesis with its own draw mixture and a `Traced` core, as
@@ -372,7 +399,8 @@ through a fresh target when the archived input does not hold every frame the
 core ran, as the browser does. Requests are limited to 64 KiB with 10-second
 read and write timeouts, and the server holds at most 64 connections. Open
 `http://127.0.0.1:8790/?game=GAME&live` to watch. The page ids are
-`super-mario-bros`, `mega-man-2`, `metroid`, `twin-dragons` and the five
+`super-mario-bros`, `mega-man-2`, `metroid`, `castlevania`, `donkey-kong`, `ice-climbers`,
+`pac-man`, `joust`, `punch-out`, `zelda`, `twin-dragons` and the five
 Famidash groups `famidash`, `famidash-community`, `famidash-b`, `famidash-c` and
 `famidash-d`; a Famidash campaign reports the group that holds its stage.
 
@@ -390,7 +418,7 @@ the package checks the on-disk core before constructing a target, and the
 QuickNES loader checks its private copy against the same digest on every load.
 Before a native campaign creates its identity, it prepares a digest of the
 executable QuickNES load, including its loaded dependency closure. SMB, Mega Man
-2, Metroid, Super Tilt Bro, Famidash and Twin Dragons bind this prepared
+2, Metroid, Super Tilt Bro, Famidash, Twin Dragons, Punch-Out!!, Zelda, Donkey Kong, Ice Climber and Pac-Man bind this prepared
 execution digest in the recorded emulator policy, and the native live view loads
 its machines against the same digest. Each campaign worker checks that digest while loading
 its private core and before running the ROM. Native prepared.json, evaluation

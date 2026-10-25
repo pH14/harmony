@@ -130,11 +130,11 @@ where
     if request.live.is_some() {
         return Err("this game has no live view".into());
     }
-    evaluate_watched(game, run, request, execution_sha256, out, started, &())
+    evaluate_watched(&game, run, request, execution_sha256, out, started, &())
 }
 
 pub fn evaluate_watched<G: Workload, W: CampaignWatch<G>>(
-    game: G,
+    game: &G,
     run: G::Run,
     request: &Request,
     execution_sha256: &str,
@@ -219,7 +219,7 @@ where
     phase(out, "search", started)?;
     let search_started = telemetry_now();
     let (report, checkpoint) = run_campaign_watched(
-        &game,
+        game,
         &config,
         &origin,
         &mut stream,
@@ -228,6 +228,7 @@ where
             work_budget: request.frames,
             checkpoints,
             placement: None,
+            interrupt: None,
         },
         watch,
     )?;
@@ -260,8 +261,8 @@ where
     let export_seconds = export_started.elapsed().as_secs_f64();
     phase(out, "verification", started)?;
     let verify_started = telemetry_now();
-    let first = replay_witness(&game, &run, &witness)?;
-    let second = replay_witness(&game, &run, &witness)?;
+    let first = replay_witness(game, &run, &witness)?;
+    let second = replay_witness(game, &run, &witness)?;
     if first != second {
         return Err("witness replay endpoint is nondeterministic".into());
     }
@@ -270,8 +271,7 @@ where
     }
     if full {
         let bytes = fs::read(out.join("stream.jsonl"))?;
-        let (replayed, replay_checkpoint) =
-            replay_campaign_checkpointed(&game, &bytes, None, None)?;
+        let (replayed, replay_checkpoint) = replay_campaign_checkpointed(game, &bytes, None, None)?;
         if serde_json::to_value(&replayed)? != serde_json::to_value(&report)?
             || checkpoint != replay_checkpoint
         {
@@ -288,8 +288,8 @@ where
         for path in paths {
             let bytes = fs::read(&path)?;
             let input: Input<G::Action> = serde_json::from_slice(&bytes)?;
-            let replay = replay_witness(&game, &run, &input)?;
-            if replay != replay_witness(&game, &run, &input)? {
+            let replay = replay_witness(game, &run, &input)?;
+            if replay != replay_witness(game, &run, &input)? {
                 return Err("milestone witness replay is nondeterministic".into());
             }
             let name = path

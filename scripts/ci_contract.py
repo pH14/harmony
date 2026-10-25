@@ -69,6 +69,7 @@ PR_ARTIFACT_BUILD_BUDGETS = {
 }
 PR_EXTENDED_CHECK_BUDGETS = {
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "C Investigation"): 35,
+    (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Harness Kit"): 30,
     (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"): 45,
 }
 PR_TIMEOUT_EXPRESSIONS = {
@@ -222,7 +223,7 @@ LIB_PARTITIONS = {
         ),
         "Virtual Time": ("virtual_time",),
         "Snapshot and Restore": (
-            "snapshot", "portable_snapshot", "engine_state",
+            "snapshot", "portable_snapshot", "engine_state", "state_digest",
             "vendor::x86::logical_identity_live_tests",
         ),
         "Execution Protocol": (
@@ -689,7 +690,7 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
     owner="Harmony Workloads",
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
-        Job("Change Selection", "pr", 5, selects=("harmony_languages",)),
+        Job("Change Selection", "pr", 5, selects=("harmony_languages", "harmony_harness")),
         Job("Language Guest Runtime", "pr", 45,
             exception="A guest runtime missing from the cache is built from source once before bounded consumers.",
             select="harmony_languages"),
@@ -707,6 +708,9 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
             select="harmony_languages"),
         Job("UML Command Replay", "pr", 15, select="harmony_languages"),
+        Job("Harness Kit", "pr", 30,
+            exception="The job builds the etcd target from pinned source through the Go instrumentation and runs its checker natively.",
+            select="harmony_harness"),
         Job("Packaged Composition", "pr", 15, select="harmony_languages"),
     ),
 )
@@ -927,6 +931,7 @@ SCOPE_KINDS = {
     "dissonance_stb": (DISSONANCE_NES_CHECKS.name,),
     "harmony_oci": (HARMONY_OCI_CHECKS.name,),
     "harmony_languages": (HARMONY_LANGUAGES_CHECKS.name,),
+    "harmony_harness": (HARMONY_LANGUAGES_CHECKS.name,),
     "consonance_platform": (CONSONANCE_CHECKS.name, HARMONY_OCI_CHECKS.name),
     "consonance_kvm": (CONSONANCE_CHECKS.name,),
     "kani": (CONSONANCE_ANALYSIS.name,),

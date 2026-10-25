@@ -175,6 +175,10 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for SmbGame<M> {
         wram(&observation.wram).map_or(0, cleared)
     }
 
+    fn snapshot_frame_count(snapshot: &SmbSnapshot) -> u64 {
+        snapshot.frame_count()
+    }
+
     fn emulator_state(snapshot: &SmbSnapshot) -> &[u8] {
         snapshot.emulator_state()
     }

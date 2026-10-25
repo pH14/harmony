@@ -47,7 +47,7 @@ pub fn enter_strict_host() -> Result<u8> {
     }
 }
 
-pub fn enter_prepared_host(request: std::fs::File) -> Result<u8> {
+pub fn enter_prepared_host(request: std::fs::File, wait: bool) -> Result<u8> {
     use std::os::{fd::AsRawFd, unix::process::CommandExt};
     let host = packaged_host()?;
     rustix::io::fcntl_setfd(&request, rustix::io::FdFlags::empty())?;
@@ -69,6 +69,13 @@ pub fn enter_prepared_host(request: std::fs::File) -> Result<u8> {
     command
         .arg("--prepared")
         .arg(format!("{descriptor}/{}", request.as_raw_fd()));
+    if wait {
+        let status = command.status()?;
+        return Ok(status
+            .code()
+            .and_then(|code| u8::try_from(code).ok())
+            .unwrap_or(2));
+    }
     Err(command.exec().into())
 }
 

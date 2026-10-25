@@ -1,0 +1,30 @@
+ui = false
+disable_mlock = true
+disable_standby_reads = true
+api_addr = "http://10.77.0.@INDEX@:8200"
+cluster_addr = "https://10.77.0.@INDEX@:8201"
+
+listener "tcp" {
+  address = "10.77.0.@INDEX@:8200"
+  cluster_address = "10.77.0.@INDEX@:8201"
+  tls_disable = true
+}
+
+storage "raft" {
+  path = "/tmp/bao/n@INDEX@"
+  node_id = "n@INDEX@"
+  retry_join {
+    leader_api_addr = "http://10.77.0.1:8200"
+  }
+  retry_join {
+    leader_api_addr = "http://10.77.0.2:8200"
+  }
+  retry_join {
+    leader_api_addr = "http://10.77.0.3:8200"
+  }
+}
+
+seal "static" {
+  current_key_id = "harness-1"
+  current_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+}

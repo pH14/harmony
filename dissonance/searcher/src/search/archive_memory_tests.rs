@@ -280,6 +280,7 @@ fn measured(mut archive: LevelArchive, baseline: isize) -> Usage {
     let cells = freed(&mut |archive| {
         archive.slots.clear();
         archive.cells.clear();
+        archive.seen_slots.clear();
         archive.tiers.clear();
         archive.active_ids = ActiveIds::default();
     });
@@ -292,6 +293,7 @@ fn measured(mut archive: LevelArchive, baseline: isize) -> Usage {
         archive.productive = Vec::new();
         archive.opened_cell = Vec::new();
         archive.opened_slot = Vec::new();
+        archive.opened_novel_slot = Vec::new();
         archive.cost_in_group = Vec::new();
         archive.replacement_preferences = Vec::new();
         archive.in_place_lengths = Vec::new();

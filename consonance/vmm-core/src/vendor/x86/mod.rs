@@ -119,6 +119,10 @@ impl Vendor for X86 {
         vmm.devices().lapic.as_ref()?.next_timer_deadline()
     }
 
+    fn coverage_callback_vns() -> u64 {
+        contract::virtual_time_timing().coverage_callback_vns
+    }
+
     fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)> {
         let lapic = vmm.devices().lapic.as_ref()?;
         Some((
