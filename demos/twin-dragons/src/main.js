@@ -717,6 +717,19 @@ function drawOverview(strip, now) {
     for (const p of swarmRooms.get(id) || [])
       ctx.fillRect(Math.round((p.x + 8) * kx - dot / 2), Math.round((p.y + 8) * ky - dot / 2), dot, dot);
   }
+  const { drawnSegments, hovering } = shownTrail();
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  for (const [color, width] of [["rgba(22,30,36,.5)", hovering ? 5 : 4], ["#fff0b3", hovering ? 3 : 2]]) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width * (game.vertical ? 1 : strip.width / 1600 + 0.5);
+    for (const segment of drawnSegments) {
+      if (segment[0]?.level !== id) continue;
+      ctx.beginPath();
+      segment.forEach((p, i) => (i ? ctx.lineTo(p.x * kx, (p.y - 8) * ky) : ctx.moveTo(p.x * kx, (p.y - 8) * ky)));
+      ctx.stroke();
+    }
+  }
   const c = mapCanvas(id);
   if (!c) return;
   const view = roomView(id, c), panel = canvasPanel(c);
@@ -3148,12 +3161,16 @@ function revealedSegments(drawn) {
   }
   return { segments, head: segments.at(-1)?.at(-1) };
 }
-function drawTrail(ctx, level, scale, override) {
+function shownTrail(override) {
   const selected = override ?? ($("inspector").hidden
     ? branchOrigin?.segments || []
     : routeHover ? routeHover.segments || [] : segments);
   const hovering = !override && !!routeHover?.segments;
   const { segments: drawnSegments, head } = override || hovering || $("inspector").hidden ? { segments: selected, head: null } : revealedSegments(selected);
+  return { drawnSegments, head, hovering };
+}
+function drawTrail(ctx, level, scale, override) {
+  const { drawnSegments, head, hovering } = shownTrail(override);
   let count = 0;
   ctx.save();
   ctx.lineJoin = "round";
