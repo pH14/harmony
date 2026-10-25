@@ -910,10 +910,15 @@ milestones. `rust/src/castlevania.rs` decodes the page's observation, and
 The map builder loads each stage by writing its stage number and the door
 mode, then walks Simon right with health full and his height held. It tracks the
 camera from the change in the scroll byte at `$FD` on each frame, and copies the
-play area below the 40-row status bar into a strip. A stage ends its map when
-Simon stops moving, when the camera stops, or at the edge of the strip. Some
-stages stop at a locked room or a staircase, so their maps are partial. Stages
-4 to 7 and 14 to 18 come out one screen wide for that reason.
+play area below the 40-row status bar into a strip. The camera is the 16-bit
+value of the byte at `$2F` (high) and `$FD` (low). Each stage's strip starts at the
+camera x it enters at, listed as `ENTRY` in `src/games/castlevania.js` and in
+`arcade/castlevania.rs`. Trail and heat x are Simon's x minus that origin, so
+they line up with the strip. Samples in another section, or left of the origin,
+are not drawn. A stage ends its map when Simon stops moving, when the camera
+stops, or at the edge of the strip. Some stages stop at a locked room or a
+staircase, so their maps are partial. Stages 4 to 7 and 14 to 18 come out one
+screen wide for that reason.
 
 The sprite sheet holds Simon's idle pose in both directions. The builder turns
 him right and left, reads the facing bit at `$15` (1 for right), and writes each

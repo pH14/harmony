@@ -22,6 +22,35 @@ use super::{ArcadeGame, HIDDEN, Machines};
 const MAP_ROW_OFFSET: u16 = 40;
 const FACING: usize = 0x15;
 
+const ENTRY: [(u16, u8); 18] = [
+    (0, 0),
+    (0, 1),
+    (0, 0),
+    (256, 0),
+    (512, 0),
+    (512, 0),
+    (512, 0),
+    (0, 0),
+    (0, 0),
+    (0, 0),
+    (0, 0),
+    (0, 0),
+    (0, 0),
+    (1024, 0),
+    (768, 0),
+    (1280, 0),
+    (512, 0),
+    (512, 0),
+];
+
+fn map_x(state: CastlevaniaMechanicalState) -> Option<u16> {
+    if !(1..=FINAL_STAGE).contains(&state.stage) {
+        return None;
+    }
+    let (origin, section) = ENTRY[usize::from(state.stage - 1)];
+    (state.section == section && state.x >= origin).then(|| state.x - origin)
+}
+
 #[derive(Clone, Copy, Deserialize, Serialize)]
 pub struct View {
     level: u8,
@@ -40,12 +69,13 @@ pub struct View {
 }
 
 fn view(state: CastlevaniaMechanicalState) -> View {
+    let x = map_x(state);
     View {
-        level: state.stage.saturating_sub(1),
+        level: x.map_or(u8::MAX, |_| state.stage - 1),
         stage: state.stage,
         section: state.section,
         mode: state.mode,
-        x: state.x,
+        x: x.unwrap_or(state.x),
         y: u16::from(state.y).saturating_sub(MAP_ROW_OFFSET),
         health: state.health,
         lives: state.lives,
@@ -83,12 +113,15 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for CastlevaniaGame<M> {
 
     fn motion(wram: &[u8; WRAM_SIZE]) -> [u16; 4] {
         match decode_state(wram) {
-            Ok(state) if state.playing() && (1..=FINAL_STAGE).contains(&state.stage) => [
-                u16::from(state.stage - 1),
-                state.x,
-                u16::from(state.y).saturating_sub(MAP_ROW_OFFSET),
-                u16::from(wram[FACING] & 1 == 0),
-            ],
+            Ok(state) if state.playing() => match map_x(state) {
+                Some(x) => [
+                    u16::from(state.stage - 1),
+                    x,
+                    u16::from(state.y).saturating_sub(MAP_ROW_OFFSET),
+                    u16::from(wram[FACING] & 1 == 0),
+                ],
+                None => [HIDDEN, 0, 0, 0],
+            },
             _ => [HIDDEN, 0, 0, 0],
         }
     }
