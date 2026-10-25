@@ -3839,7 +3839,15 @@ async function watchTape() {
       throw new Error("Invalid controller action");
   const frames = actions.reduce((total, a) => total + a.frames, 0);
   engine.restore(origin);
-  for (const a of actions) engine.run(a.buttons, a.frames);
+  let batch = 0;
+  for (const a of actions) {
+    engine.run(a.buttons, a.frames);
+    batch += a.frames;
+    if (batch >= 1200) {
+      batch = 0;
+      await new Promise((resolve) => setTimeout(resolve));
+    }
+  }
   const observation = engine.observation();
   engine.restore(origin);
   userSelected = true;
