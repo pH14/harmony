@@ -194,7 +194,14 @@ async function measurePlayback() {
   );
 }
 try {
-  await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?level=0&workers=1&pace=0`);
+  await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?game=twin-dragons&level=0&workers=1&pace=0`);
+  await page.evaluate(() => {
+    window.overlappingActions = 0;
+    const visible = (id) => { const e = document.getElementById(id); return !!e && getComputedStyle(e).display !== "none" && !e.hidden; };
+    const check = () => { if (visible("take-control") && (visible("search-here") || visible("discard-branch"))) window.overlappingActions++; };
+    new MutationObserver(check).observe(document.documentElement, { subtree: true, attributes: true, childList: true });
+    setInterval(check, 20);
+  });
   await page.waitForFunction(
     () =>
       document.querySelector("#verification")?.textContent === "Original game",
@@ -206,7 +213,7 @@ try {
     await page.locator("#screenshot,#export,#import,#history-file").count(),
     0,
   );
-  assert.equal(await page.locator(".brand").innerText(), "harmony");
+  assert.equal(await page.locator(".brand").innerText(), "pH14/harmony");
   const heroLayout = await page.evaluate(() => {
     const totals = document.querySelector(".hero-stats").getBoundingClientRect(),
       goal = document.querySelector(".goal").getBoundingClientRect(),
@@ -223,7 +230,8 @@ try {
   });
   assert.ok(heroLayout.totalsBottom <= heroLayout.goalTop, "Live totals sit above the level title");
   assert.equal(await page.locator("#branches .search-details").count(), 1, "Per-search counters sit in the Searches pane");
-  assert.equal(heroLayout.detailsOpen, true, "Per-search counters start open");
+  assert.equal(heroLayout.detailsOpen, false, "Per-search counters start closed");
+  assert.equal(await page.locator("#branches > .search-speed").count(), 1, "The search speed slider sits in the Searches pane");
   assert.equal(heroLayout.heading, "Harmony Arcade");
   const originImage = await page
     .locator("#film")
@@ -948,6 +956,7 @@ try {
     "Search descendants must include and reproduce the human input prefix",
   );
   const nestedFrame = childState.frames - 1;
+  if ((await page.locator("#play").getAttribute("data-state")) === "pause") await page.locator("#play").click();
   await page.locator("#scrub").fill(String(nestedFrame));
   await page.waitForFunction((frame) =>
     document.querySelector("#frame-label").textContent.startsWith(`FRAME ${frame} /`) &&
@@ -1143,15 +1152,23 @@ try {
     }
   }
   await page.locator("#credits").click();
+  await page.locator(".credit-game").first().waitFor();
   const credits = await page.locator("#info-content").innerText();
   for (const text of [/Garydos/, /zlib license/, /sound-effect data is zeroed/, /Shiru are not included/, /surt/, /CC BY 3\.0/, /CC BY 4\.0/, /FamiTone2/, /FamiTone5/])
     assert.match(credits, text);
+  assert.match(credits, /^CREDITS & LICENSING\s+Harmony\s+Created by pH14\. Available on GitHub and licensed under the AGPL-3\.0\./);
+  assert.match(credits, /auto-generated:/);
+  assert.equal(await page.locator('#info-content a[href="https://github.com/pH14/harmony"]').first().innerText(), 'Available on GitHub');
+  assert.ok(await page.locator('.credit-game').count() >= 10, 'The credits list every supported game');
+  assert.equal(await page.locator('.credit-game[open] summary').innerText(), 'Twin Dragons');
+  await page.locator('.credit-game:not([open]) summary').first().click();
+  assert.equal(await page.locator('.credit-game[open]').count(), 2);
   assert.equal(await page.locator('#info-content a[href$=".tar.gz"]').evaluateAll(links => links.some(link => /twin-dragons/i.test(link.href))), false);
   await page.locator("#close-info").click();
   assert.equal(await page.locator('.art-credit').count(), 0);
   assert.match(await page.locator('.exploration .game-attribution').innerText(), /Garydos.*surt.*CC BY 3\.0/);
   assert.equal(await page.locator('.game-attribution').count(), 1);
-  assert.match(await page.locator('footer').innerText(), /^harmony\nCredits & source\n(Dark|Light) mode$/);
+  assert.match(await page.locator('footer').innerText(), /^pH14\/harmony\nCredits & source$/);
   assert.equal(await page.locator('.exploration-heading').innerText(), 'Exploration');
   assert.equal(await page.locator('.history-heading h2').innerText(), 'History');
 
@@ -1321,8 +1338,8 @@ try {
     };
   });
   assert.ok(
-    phoneMap.height <= 0.45,
-    "The compact pane must leave most of the viewport to the route map",
+    phoneMap.height <= 0.75,
+    "The compact pane must leave part of the viewport to the route map",
   );
   assert.ok(
     phoneMap.topGap <= 46,
@@ -1333,8 +1350,8 @@ try {
     "Selecting a history in the same room must reveal its map above the pane",
   );
   assert.ok(
-    phoneMap.preview <= 180,
-    "The compact pane should show its preview beside its controls",
+    phoneMap.preview >= 300 && phoneMap.preview <= 384,
+    "The compact pane should show its preview at nearly full width",
   );
   await page.locator("#test-scroll-space").evaluate(e => e.remove());
   const collapsedHeight = (await page.locator("#inspector").boundingBox())
@@ -1457,6 +1474,7 @@ try {
     animations: "disabled",
   });
   assert.equal(await page.locator("#error").isVisible(), false);
+  assert.equal(await page.evaluate(() => window.overlappingActions), 0, "Play from here never shows beside Branch search or Discard branch");
   assert.deepEqual(errors, []);
   console.log(
     "Browser search, exact replay, level-following scrubbing, audible 1x/4x history, manual branching, simplified controls, reset and mobile layout passed.",

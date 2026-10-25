@@ -3,7 +3,7 @@ import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 const browser = await chromium.launch({headless: true, ...(process.env.CHROME_CHANNEL ? {channel: process.env.CHROME_CHANNEL} : {})});
-const url = `${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?level=0&pace=0`;
+const url = `${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?game=twin-dragons&level=0&pace=0`;
 const errors = [];
 async function ready(page, step) {
   await page.waitForFunction((step) => {
@@ -129,11 +129,12 @@ try {
     await exposed(page.locator('#scrub'), true);
     await exposed(page.locator('#sound'), true);
     const audioLayout = await page.evaluate(() => {
-      const replay=document.querySelector('#play').getBoundingClientRect(), sound=document.querySelector('#sound').getBoundingClientRect();
-      return {parent:document.querySelector('#sound').parentElement.className, overlap:Math.min(replay.bottom,sound.bottom)-Math.max(replay.top,sound.top), gap:sound.left-replay.right};
+      const sound = document.querySelector('#sound').getBoundingClientRect(), scrub = document.querySelector('#scrub').getBoundingClientRect();
+      const dx = Math.max(0, sound.left - scrub.right, scrub.left - sound.right), dy = Math.max(0, sound.top - scrub.bottom, scrub.top - sound.bottom);
+      return {parent: document.querySelector('#sound').parentElement.className, separation: Math.hypot(dx, dy)};
     });
-    assert.equal(audioLayout.parent,'replay-actions');
-    assert.ok(audioLayout.overlap > 0 && audioLayout.gap >= 0 && audioLayout.gap <= 10,'Audio sits beside Replay, rather than floating above it');
+    assert.equal(audioLayout.parent, 'transport');
+    assert.ok(audioLayout.separation >= 6, 'Audio keeps clear of the position slider');
     const map = await page.locator('.area-map').evaluateAll((maps) => maps.find((c) => c.dataset.markerFrame && c.dataset.markerFrame !== '')?.dataset.map);
     await exposed(page.locator(`.area-map[data-map="${map}"]`), true);
     await page.screenshot({path:`test-results/tour-mobile-${viewport.width}-replay.png`});

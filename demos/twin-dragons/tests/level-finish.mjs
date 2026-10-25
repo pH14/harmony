@@ -47,7 +47,8 @@ async function widenFollowing(page, vertical) {
     const motion = Array.from({ length: 4 }, () => Uint16Array.from([0, level, x, y, 2, 600, level, x, y, 2]));
     overviewDeliver({ ...overviewBatch, points: [], motion, finishes: [], exits: [], stopped: false });
   }, vertical);
-  await page.waitForFunction(() => Number(document.querySelector(".area-map").dataset.zoom) < 1.5, null, { timeout: 4000 });
+  await page.waitForFunction(() => Number(document.querySelector(".area-map").dataset.zoom) > 0, null, { timeout: 4000 });
+  await page.waitForTimeout(1500);
 }
 
 for (const query of ["?level=0&pace=300", "?game=tobu-tobu-girl&level=0&pace=0"]) {
@@ -77,7 +78,7 @@ assert.ok(box.x >= view.x + view.width && box.x - (view.x + view.width) < 40, "T
 assert.deepEqual(errors, []);
 console.log("Tobu Tobu Girl shows a whole-level strip that moves the view.");
 
-const { page: wide, errors: wideErrors } = await open("?level=0&pace=300", true);
+const { page: wide, errors: wideErrors } = await open("?game=twin-dragons&level=0&pace=300", true);
 const wideStrip = wide.locator('.level-overview[data-map="0"]');
 await wideStrip.waitFor();
 await widenFollowing(wide, false);

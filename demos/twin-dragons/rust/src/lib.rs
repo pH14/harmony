@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 mod campaign;
+mod castlevania;
+mod donkey_kong;
 mod famidash;
+mod ice_climbers;
+mod joust;
 mod mega_man;
 mod metroid;
+mod pac_man;
+mod punchout;
 mod smb;
 mod twin_dragons;
+mod zelda;
 
 use nes_games::arcade::snapshot_digest;
 use searcher::search::{

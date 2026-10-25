@@ -4,12 +4,24 @@ A static demonstration of state-space exploration. Emulators compiled to
 WebAssembly run a game, and a Rust worker uses Dissonance to search it. The
 site plays the NES homebrew games Twin Dragons and Famidash on QuickNES, the
 Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and Super Mario Bros., Mega
-Man 2 and Metroid on QuickNES from ROMs the visitor supplies. The `game` URL
+Man 2, Metroid, Castlevania, Donkey Kong, Ice Climber and The Legend of Zelda on QuickNES from ROMs the visitor supplies. The `game` URL
 parameter picks the game, and the level selector switches between them. The
 page opens the level selector and starts searching once a level is chosen, or
 from the first level if the selector is closed. A `level` URL parameter with a
 level id starts that level's search at once. Each
-game has one map per level. By default, search and rendering run on the
+game has one map per level.
+
+Choosing another game switches in place. `src/host.js` is the page entry. It
+runs `run(scope)` from `src/main.js` with a `Scope` that stands in for `window`,
+`document`, `addEventListener`, timers, animation frames, `matchMedia`, `Worker`
+and `ResizeObserver`, and records each listener, timer, frame, worker and observer
+the game creates. Switching disposes the scope, which releases all of them and
+stops the music, tour and launcher, then pushes the new `?game=` URL and runs
+`main.js` again in a fresh scope. A disposed scope hands inert stubs to code still
+in flight, so it cannot touch the next game's page. The Back button does the same. While a switch runs, `html[data-switching]` shows a Loading overlay with the game's title after a 300 ms delay, so fast switches show nothing.
+After 12 in-place switches, and for any other origin, the page does a full
+navigation so leaked memory cannot build up. `tests/soft-switch.mjs` checks that
+switching loads no new document and leaves no extra workers or listeners. By default, search and rendering run on the
 visitor's computer, so hosting needs only static files. Native runs move the
 search to a Linux machine while the viewing browser renders and records it.
 
@@ -85,7 +97,7 @@ workers import `emulator.js` dynamically and set their message handler first.
 The Famidash module waits for the Rust module when it loads, and a module
 worker drops messages that arrive before its handler is set.
 
-Twin Dragons, Famidash, Super Mario Bros., Mega Man 2 and Metroid run the
+Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Donkey Kong, Ice Climber and The Legend of Zelda run the
 same search as their native workloads. `rust/src/campaign.rs` holds `JsMachine`,
 a `machine::Machine`, `NesBackend` and `NesMemory` that drives the browser
 QuickNES core through `globalThis.harmonyCores`, and a coordinator and rollout
@@ -93,7 +105,9 @@ worker that are generic over `BrowserGame`. `BrowserGame` is the `nes-games`
 `ArcadeGame` over `Traced<JsMachine>`; `ArcadeGame` holds each game's view,
 motion samples and level count, so a native live campaign draws the same page.
 Each game's file (`rust/src/twin_dragons.rs`, `rust/src/famidash.rs`,
-`rust/src/smb.rs`, `rust/src/mega_man.rs`, `rust/src/metroid.rs`) adds its root
+`rust/src/smb.rs`, `rust/src/mega_man.rs`, `rust/src/metroid.rs`, `rust/src/donkey_kong.rs`,
+`rust/src/ice_climbers.rs`, `rust/src/pac_man.rs`, `rust/src/joust.rs`,
+`rust/src/punchout.rs`) adds its root
 snapshot and the page's observation functions. `CampaignSearch` and
 `CampaignWorker` take the game id. The coordinator worker owns a Dissonance
 `CampaignCoordinator`. It sends each planned `JobSpec` to a rollout worker as
@@ -139,7 +153,10 @@ the actions the core really ran. The native live view uses the same rule.
 
 ### Record the search view
 
-For a long experiment, use **Record to file** in Chrome on localhost or HTTPS.
+The recording buttons sit in the map toolbar and show only on a local host
+(`localhost`, `127.0.0.1`, `[::1]` or a `.localhost` name); the published site
+omits them. For a long experiment, use **Record to file** in Chrome on localhost
+or HTTPS.
 Choose a video file, let the search run, then **Stop recording** to finish and
 save it. MediaRecorder chunks write to that file in order as they arrive;
 there is no recording duration or file size limit. The browser holds at most
@@ -276,13 +293,15 @@ tools/launcher.py
 
 and open `http://127.0.0.1:8790/`. On a loopback address the page asks
 `/launcher/machines`; when the launcher answers, the New search picker gains a
-Run on row: This browser, or one of the machines. With a machine chosen,
-the level grid stays and a level opens a second step with that level's preview,
-workers, archive budget, seed and time limit. A Famidash run starts at the chosen
-level through the end of its section (`stage` in the request); other games start
-from power-on. The dialog lists the active runs with Watch and Stop. Starting a
-run opens its live view once it is running. Without a launcher, such as on the published site, the
-picker shows only browser searches. A run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
+Run on control in the game's header: This browser, or one of the machines. With a
+machine chosen, the level grid stays and a level opens a second step with that
+level's preview, workers, archive budget, seed and time limit. A Famidash run starts
+at the chosen level through the end of its section (`stage` in the request); other
+games start from power-on. Starting a run switches the picker to its Runs page, which
+lists the active runs with Watch and Stop and opens the live view once the run is
+running. The Runs entry sits at the bottom of the game list under Your machines and
+shows the number of active runs. Without a launcher, such as on the published site,
+the picker shows only browser searches. A run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
 builds the QuickNES core with `scripts/build-quicknes-core.sh` and `nes-eval`
 there once per commit, uploads the ROM, and starts `nes-eval` with
 `live: 127.0.0.1:0` as a `systemd-run` unit named `harmony-arcade-<id>` with
@@ -302,7 +321,9 @@ stopped once its start returns. A start that fails also stops its unit.
 
 A machine entry with `local = true` and a `dir`, and no `ssh`, runs the campaign
 on the computer that runs the launcher. The first run builds the core and
-`nes-eval` from the working tree with `cargo` into `<dir>/target`. The launcher
+`nes-eval` from the working tree with `cargo` into `<dir>/target`; a cold release
+build takes minutes, and the run's status line shows the crate being compiled.
+Stopping a run during the build ends `cargo`. The launcher
 starts `nes-eval` as a child process, reads its live port from the log and
 serves that port directly, with no tunnel. It enforces no `memory_max_mib`, and
 quitting the launcher stops its local runs.
@@ -404,10 +425,13 @@ sprite PNGs carry the game and artwork credits in their text metadata.
 ## Interaction
 
 The page opens with a one-line pitch, one live total (timelines tried across
-every search branch) and Take the tour. The per-search counters and the
-rollout worker count sit in a collapsed Details disclosure at the bottom of the
-Searches pane. The footer
-holds the Harmony link, Credits & source and the Dark mode / Light mode switch.
+every search branch) and Take the tour. The Searches pane holds the
+timelines-per-second slider. The per-search counters and the rollout worker
+count sit in a Details disclosure below it, closed by default. The footer
+holds a link to the repository and Credits & source. The page has one dark
+theme, which frames the gameplay best. The Credits dialog opens with the Harmony authorship and licence notice,
+then lists every game the arcade supports as a collapsed section; the current
+game's section starts open.
 
 Two toggles, Movement and Heatmap, choose what the map shows. Either or both
 can be on, and the last one on stays on. Movement alone is the default.
@@ -461,9 +485,14 @@ fresh activity after 250 ms instead of waiting through occupied-view dwell
 and stall intervals; active views retain their existing hysteresis. Manual
 holds, selected rooms and focused histories prevent automatic level changes.
 Following pauses
-for 3 seconds after the mouse moves over the map and for 2.5 seconds after a
-touch, so a pointer left resting on the map does not stop it. A drag, pinch or edge pan holds the camera where the
-visitor left it, and following resumes 10 seconds after the last movement.
+for 3 seconds while the pointer rests on a pan arrow and for 2.5 seconds after a
+touch. A drag, pinch or edge pan holds the camera where the
+visitor left it, and following resumes 10 seconds after the last movement, or at
+once from the Follow button, a pill over the top-left corner of the map that
+appears only while the camera is away from the search. Ctrl or ⌘ with the scroll wheel (a trackpad pinch),
+the `+` and `-` keys and the zoom buttons in the toolbar beside the Movement and Heatmap toggle (hidden on touch screens, which pinch) change the zoom for every game, and
+`0` returns to the game's default view. The chosen zoom stays while the camera
+follows the search.
 On a touch screen a one-finger drag on a zoomed view pans it sideways, and up
 and down as well when the level is taller than the view; on a level that fits,
 a vertical swipe scrolls the page.
@@ -569,10 +598,10 @@ steps one game frame per display frame. The map repaints every display frame
 while the search runs and at 30 Hz while it is paused. Replays play the game's
 music. The sound effects are absent from this build.
 
-The Replay button reads Pause while a replay plays and Replay otherwise. A
-replay the visitor starts pauses the search, and the search resumes when the
-replay pauses, ends or closes, unless the visitor paused or resumed the search
-in the meantime. The automatic replay pick plays while the search runs.
+The replay controls (a play or pause icon, the timeline, the volume button and the speed menu) sit over the bottom of the replay screen on a dark backing so they stay visible on any game. They stay visible while the replay is paused and fade out while it plays, and return when the pointer is over the screen or a control has keyboard focus. The play button shows a pause icon while a replay plays, a replay icon after it ends and a play icon otherwise.
+Selecting a cell opens its history and pauses the search so the map stays still.
+Closing the history always resumes a search that opening it paused, whatever the
+visitor did with the Searches pause button in between. The automatic replay pick plays while the search runs.
 
 ## Games
 
@@ -585,7 +614,7 @@ its `*_observation` export and searches with its `nes-games` workload through
 `ended`, `motion`, `levelComplete` and `transition`, and `tests/tobu.mjs` checks
 that its JavaScript and Rust decoders agree. `maxActionFrames` and
 `menuButtons` bound the controller actions an imported history may hold;
-Mega Man 2, Metroid and Tobu Tobu Girl allow Start and Select.
+Mega Man 2, Metroid, Castlevania and Tobu Tobu Girl allow Start and Select.
 
 ### Tobu Tobu Girl Deluxe
 
@@ -738,9 +767,12 @@ ROM with SHA-256 `0b3d9e1f…6dea`, the same ROM as `workloads/nes`. The page
 keeps it in IndexedDB and never uploads it. A visit without a stored ROM shows
 Twin Dragons and asks for the file.
 
-The game picker lists the games the site ships under Homebrew and the games
-that need a visitor's ROM under Bring Your Own ROM. Choosing a game that
-needs a ROM opens a page that takes
+The New search picker has two panes. The left pane lists the games the site
+ships under Homebrew and the games that need a visitor's ROM under Bring Your Own
+ROM, each with its level count, "Playing" for the current game or "Needs ROM". The
+right pane shows the chosen game's header and its levels as preview cards. On a phone
+the panes become two pages with a Games button to go back. Choosing a game that
+needs a ROM opens a page in the right pane that takes
 the file by drag and drop or a file picker. A game with a `playthrough` entry
 also shows that YouTube video below, embedded from youtube-nocookie.com
 through the IFrame Player API, which sets the playback rate to 2. Super Mario
@@ -748,10 +780,14 @@ Bros., Mega Man 2 and Metroid each have one.
 
 A private build can ship ROMs beside the page. At startup the page reads
 `roms/manifest.json`, an object whose `games` lists game ids and whose optional
-`default` names the game a link without `game` opens. It loads `roms/<id>.nes`
+`default` names the game a link without `game` opens. Without `default`, a link opens Super Mario Bros. when the manifest lists it and Famidash otherwise. It loads `roms/<id>.nes`
 for a listed game that has no stored ROM. The file must match the game's size
 and SHA-256. A listed game skips the ROM page. The public site has no manifest,
 so the request fails and every game asks for its ROM.
+`node tools/bundle-roms.mjs <directory>` fills `public/roms` from the `.nes` and
+`.zip` files in a directory. It writes `roms/<id>.nes` and the manifest for every
+registered game whose file matches the registry's size and SHA-256, and lists
+the games it found no file for. `public/roms/` is git-ignored.
 
 The search is the `SmbGame` workload from `nes-games` with the
 `nes_pressable_36` vocabulary and the game-victory objective, as `nes-eval`
@@ -852,7 +888,7 @@ areas Brinstar, Norfair, Kraid's Lair, Ridley's Lair and Tourian. The search
 starts from a new game, and the view follows it between areas the same way it
 follows Super Mario Bros. between bonus areas. The observation's cleared count
 adds items, energy tanks, bosses and the ending, which ranks search progress,
-while the page marks Zebes finished, and offers to watch it, only at the ending.
+while the page marks Zebes finished only at the ending.
 
 Metroid keeps its items in cartridge RAM. The QuickNES shim keeps a 10 KiB copy
 of memory, the 2 KiB console RAM followed by the 8 KiB cartridge RAM at
@@ -894,6 +930,246 @@ a phone, and the strip beside the view draws a reduced copy.
 exactly, and branches from a played history that pauses and resumes with
 Start. It reads the ROM from `METROID_ROM` or `~/workspace/roms/Metroid (USA).nes` and
 skips when it is absent.
+
+### Donkey Kong
+
+The site ships nothing from Donkey Kong. The level selector accepts the ROM with
+SHA-256 `226c6f69…9d27`. A round has three stages, the barrels, the elevators
+and the rivets, and the selector offers each as a level, then offers the same
+three again as "Round 2+" levels for every later round. The first level starts
+from power-on and the others from a forced stage: the loader writes the stage
+byte `$53`, and the round byte `$54` for the later-round levels, 30 frames after
+Start. The observation's cleared count is the round times three plus the stage
+index, so it keeps counting through later rounds, and a later round shows in the
+"Round 2+" level that holds its stage.
+
+The `tape` URL parameter loads a saved winning input list, the `witness-input.json`
+that `nes-eval` writes, and replays it in the history panel with the search paused:
+`?game=donkey-kong&tape=/tapes/round1.json` after copying the file to
+`public/tapes/round1.json`. The replay starts at power-on for the first stage,
+so drag the history slider to the end to see round 1 beaten. The page checks that
+every action is a valid controller input before it runs the tape.
+
+Each map is one 256 × 224 screen. The map builder boots the stage, hides every
+sprite and draws the frame, then blanks the score line, the bonus box and the
+Kong that the forced stage draws white. The sprite sheet is Mario's 16 × 16
+sprite, found by drawing the frame with and without him.
+
+| Address | Meaning |
+| --- | --- |
+| `$46`, `$47` | Mario's x and y; the top-left of his sprite is 5 less in each |
+| `$53` | stage: 1 barrels, 3 elevators, 4 rivets |
+| `$54` | round, counted from 0 |
+| `$55` | lives left after the one in play |
+| `$96` | posture: 1 standing, 2 on a ladder, 4 in the air, `$FF` dead |
+| `$200`–`$203` | Mario's first sprite entry; attribute bit 6 means facing left |
+
+The search is the `DonkeyKongGame` workload from `nes-games`, as `nes-eval`
+runs it. `workloads/nes/src/donkey_kong/README.md` lists the full memory map, the
+archive key and the terminal policy. `rust/src/donkey_kong.rs` roots a search at
+any in-play state. `tests/donkey-kong.mjs` boots the three stages, builds the
+maps and sprite sheet, and replays the highest state of a short search exactly.
+It reads the ROM from `DONKEY_KONG_ROM` or `~/workspace/roms/donkey-kong.nes` and
+skips when it is absent.
+
+### Ice Climber
+
+The site ships nothing from Ice Climber. The level selector accepts the ROM with
+SHA-256 `491898c9…8701`. The game has 32 mountains, one level each. The picker omits Mountain 26, which does not reach its playable state from the title screen; Mountain 25's level shows both maps. The map of a
+mountain is a tall strip drawn from the ROM's intro camera pan: the loader pokes the
+mountain byte at the title screen, hides the sprites by zeroing the object attribute
+memory, and stitches one 256-pixel-wide row band per scroll step into a 256 × 862
+bitmap that runs from the first floor to the bonus stage. The view uses the tall
+camera, as Tobu Tobu Girl does, with the game's `tallViewport` of 432 × 506 so the main canvas shows one
+screen of the mountain and follows the climbers while the mini-map shows the whole mountain. A
+climber is drawn with the standing or the jumping frame, mirrored to its facing. The observation's cleared count is the number of
+mountains finished: it rises when the game advances its mountain byte after the results screen.
+`workloads/nes/src/ice_climbers/README.md` has the RAM map, the key and the setup
+tape. The `tape` URL parameter loads a saved winning input list, the `witness-input.json`
+that `nes-eval` writes for a run from power-on, and replays it in the history panel with the search
+paused: `?game=ice-climbers&tape=/tapes/ice-climbers.json` after copying the file to
+`public/tapes/ice-climbers.json`. The replay starts after the setup tape, so drag the history slider
+to the end to see the mountains cleared. `tests/ice-climbers.mjs` checks the boot, the map and the picker flow; it reads the ROM from
+`ICE_CLIMBERS_ROM` or the arcade ROM folder and skips when it is absent.
+
+### Pac-Man
+
+The arcade does not list this game. Its browser module, Rust adapter and test stay in the tree; adding it back to `GAMES` in `src/emulator.js` and to `test:browser:games` in `package.json` shows it again.
+
+The site ships nothing from Pac-Man. The level selector accepts the Namco NES
+ROM with SHA-256 `a72c6f56…4d80`. The game has one maze, so every level uses
+the same picture, drawn from the emulator with the sprites hidden and the score
+panel cropped away. A level is four mazes cleared: the selector lists six
+levels, "Mazes 1-4" to "Mazes 21+". The observation's cleared count is the
+number of mazes cleared, the page counts a level finished at every fourth, and
+"Level progress" shows the dots eaten in the current maze. A search from a later
+level starts at its first maze with the maze index set in RAM. The game's maze
+index stops at 22, so the page's count from RAM stops at 23 mazes. The native
+evaluator counts further clears itself.
+
+The player sprite is Pac-Man's body in the emulator's frame, taken while he
+walks left with the mouth open and closed, and turned for the other three
+headings.
+
+| Address | Meaning |
+| --- | --- |
+| `$3F` | game mode; 4 is play, 2 ready, 8 death, `$0A` game over, `$0C` maze clear |
+| `$1A`, `$1C` | Pac-Man's x and y; the sprite's top left is `(x - 12, y - 4)` |
+| `$51` | heading: 0 up, 1 left, 2 down, 3 right |
+| `$67` | lives |
+| `$68` | maze index |
+| `$6A` | dots left of 192 |
+| `$70`–`$75` | score digits |
+
+The search is the `PacManGame` workload from `nes-games`, as `nes-eval` runs
+it. `workloads/nes/src/pac_man/README.md` describes its key, chords and terminal
+policy. `rust/src/pac_man.rs` places Pac-Man on the maze map. A history may not
+press Start, which pauses the game. `tests/pac-man.mjs` boots every level,
+searches from the first maze, replays the furthest state exactly and starts a
+search from the picker. It reads the ROM from `PAC_MAN_ROM` or
+`~/workspace/roms/pac-man.nes` and skips when it is absent.
+
+### Joust
+
+The arcade does not list this game. Its browser module, Rust adapter and test stay in the tree; adding it back to `GAMES` in `src/emulator.js` and to `test:browser:games` in `package.json` shows it again.
+
+The site ships nothing from Joust. The level selector accepts the ROM with
+SHA-256 `9c47a479…ee4e`. Joust has no ending, so each of the 49 levels is a wave and wave 50 is the victory bar
+and the cleared count is the number of waves cleared. The search starts from a
+new game with four lives. The page builds a wave's map by playing to that wave
+with the enemy counter set to zero, waiting for the banner to clear and hiding
+the sprites, so the map is the arena as the emulator draws it, with the score
+and lives counter inside the image. The player sprite sheet comes from the
+knight on the first frame, with the sprite hidden for the difference, and the
+other direction is its mirror image.
+
+| Address | Meaning |
+| --- | --- |
+| `$00`, `$02` | game mode and phase; `$90` and 2 is play, `$80` and 3 is game over |
+| `$1E`, `$1F` | player y and x |
+| `$3A`, `$3B` | wave as two decimal digits |
+| `$73`–`$75` | enemies to defeat, spawned and defeated in the wave |
+| `$E9` | lives in reserve |
+| `$EB`–`$ED` | score in BCD |
+
+`workloads/nes/src/joust/README.md` describes the archive key and the
+controller vocabulary. `tests/joust.mjs` boots the game, builds three wave maps
+and the sprite sheet, replays an archived state exactly from power-on and starts a
+search in the page. It reads the ROM from `JOUST_ROM` or
+`~/workspace/roms/Joust (USA).nes` and skips when it is absent.
+
+### Punch-Out!!
+
+The arcade does not list this game. Its browser module, Rust adapter and test stay in the tree; adding it back to `GAMES` in `src/emulator.js` and to `test:browser:games` in `package.json` shows it again.
+
+The site ships nothing from Punch-Out!!. The level selector accepts the ROM
+with SHA-256 `2f068675…b052`. The circuit has fourteen opponents, from Glass
+Joe to Mr. Dream, and each opponent is one level. Each level's map is a ring
+screenshot taken from the emulator, so the picker shows the ring behind every
+opponent.
+
+Opening a level boots the game into a fight against that opponent. The boot
+plays the title screen, the Glass Joe profile and the Start press, then writes
+the opponent index (`$0001`) before the fight starts. The fight then runs with
+the game's own round logic. The cleared count is the opponent index, so it
+counts the opponents beaten before the current fight.
+
+A saved winning tape replays from power-on in the history panel. Copy the
+`witness-input.json` that `nes-eval` writes to `public/tapes/punch-out.json`,
+then open `?game=punch-out&tape=/tapes/punch-out.json`. Drag the history slider
+to the end to see the last state.
+
+The trail and heatmap do not plot Mac's position, because its RAM address is not
+verified yet. A sample's x position is the opponent's health lost across the
+screen. Its y position is Mac's health lost, drawn as a band along the bottom
+edge (rows 201 to 216). The fight therefore reads left to right, and Mac's damage
+shows as the band rises. The Rust native trail uses the same mapping.
+
+The RAM map and the search are described in
+[`workloads/nes/src/punchout/README.md`](../../workloads/nes/src/punchout/README.md).
+`tests/punch-out.mjs` boots all fourteen opponents, checks each ring map, runs a
+short search whose retained states replay exactly, and starts a search from the
+picker. It reads the ROM from `PUNCHOUT_ROM` or
+`~/workspace/harmony/.arcade-local/roms/punch-out.nes` and skips when it is
+absent.
+
+### The Legend of Zelda
+
+The site ships nothing from Zelda. The level selector accepts the ROM with
+SHA-256 `44e33dc0…5a6a`, 131,088 bytes, an MMC1 cartridge. The picker lists one
+level, Hyrule, whose rooms are the overworld and Dungeons 1 to 9. Starting inside
+a dungeon without its items does not give a viable search, so the search always
+starts from a new game in the overworld at room `$77`. The observation's Triforce count ranks search
+progress. The page counts one more level than the Triforce count, and that
+mapping is approximate.
+
+The map for each level is built in the browser from the game's own loader. The
+loader sets the level and room, runs the game until play resumes, and reads the
+screen. Each level is a 16 by 8 grid of 256 × 168 rooms, which is 4096 × 1344.
+A room number `r` sits in column `r & 15` and row `r >> 4`. The build visits only the
+cells that the dungeon marks as rooms. Each dungeon's level block has a submenu map
+mask: 16 column bytes, read as one bit per row, after the columns are rotated by the
+block's rotation byte. The other cells stay blank.
+
+Link's position is the room's cell plus his x and y inside the room. The y
+value is offset by the status bar at the top of the frame. The search
+places Link's facing in the sprite's pose bit. The sprite sheet is cut from the
+ROM by drawing Link with the sprites hidden and with them shown, then keeping
+the pixels that changed.
+
+| Address | Meaning |
+| --- | --- |
+| `$10` | level; 0 is the overworld, 1 to 9 are the dungeons |
+| `$12` | game mode; 5 is play, `$11` is death, `$13` is the ending |
+| `$70`, `$84` | Link's x and y |
+| `$98` | Link's direction; bit `$02` is facing left |
+| `$EB` | current room |
+| `$200`–`$2FF` | sprite table; `$F8` hides a sprite |
+
+Loading a dungeon needs one more step: the game reads the room again during
+modes 3 and 4, so the loader writes `$EB` each frame until play resumes.
+
+The search is the `ZeldaGame` workload from `nes-games`, as `nes-eval` runs it.
+`workloads/nes/src/zelda/README.md` describes its archive key, chords and
+terminal policy. `rust/src/zelda.rs` provides the browser search and the
+observation decoder. `tests/zelda.mjs` builds the overworld and Dungeon 1 maps,
+runs a short search that replays exactly, and then chooses the ROM in the
+picker. It reads the ROM from `ZELDA_ROM` or the laptop path in the file and
+skips when that ROM is absent. The browser section needs Chrome, which
+`CHROME_CHANNEL=chrome` selects.
+
+### Castlevania
+
+The site ships nothing from Castlevania. The level selector accepts the ROM with
+SHA-256 `5e859d77…7800` and 131,088 bytes, and the page keeps it in IndexedDB as
+for the other ROM games. The 18 levels are the numbered stages. Stage 1 starts
+after the courtyard, which the game loads first.
+
+The search is the `CastlevaniaGame` workload from `nes-games`, as `nes-eval`
+runs it. `workloads/nes/src/castlevania/README.md` describes its RAM map and
+milestones. `rust/src/castlevania.rs` decodes the page's observation, and
+`arcade/castlevania.rs` gives the picker and trail their stage and position.
+
+The map builder loads each stage by writing its stage number and the door
+mode, then walks Simon right with health full and his height held. It tracks the
+camera from the change in the scroll byte at `$FD` on each frame, and copies the
+play area below the 40-row status bar into a strip. The camera is the 16-bit
+value of the byte at `$2F` (high) and `$FD` (low). Each stage's strip starts at the
+camera x it enters at, listed as `ENTRY` in `src/games/castlevania.js` and in
+`arcade/castlevania.rs`. Trail and heat x are Simon's x minus that origin, so
+they line up with the strip. Samples in another section, or left of the origin,
+are not drawn. A stage ends its map when Simon stops moving, when the camera
+stops, or at the edge of the strip. Some stages stop at a locked room or a
+staircase, so their maps are partial. Stages 4 to 7 and 14 to 18 come out one
+screen wide for that reason.
+
+The sprite sheet holds Simon's idle pose in both directions. The builder turns
+him right and left, reads the facing bit at `$15` (1 for right), and writes each
+capture into the half for its facing.
+`tests/castlevania.mjs` boots the game, checks the stage map widths and draws
+the sprite sheet. It reads the ROM from `CASTLEVANIA_ROM` or
+`~/workspace/harmony/.arcade-local/roms/castlevania.nes` and skips when it is
+absent.
 
 ## Verification and publishing
 
@@ -962,6 +1238,7 @@ decoders, checks that the stage map is drawn when the first rollouts appear,
 and checks that the stage map and the top and bottom edge chevrons move the
 view.
 `tests/metroid.mjs` does the same for Metroid's five area maps.
+`tests/punch-out.mjs` boots each of Punch-Out!!'s fourteen opponents and builds its ring map.
 `tests/famidash.mjs` boots all 109 levels and checks that each starts in the
 first screen of its map, runs a 2,000 execution search from one random level
 of each group with a random seed and replays its rightmost state exactly, checks the picker order and the grouped
@@ -974,8 +1251,8 @@ level strip and the top and bottom chevrons move the view up and down.
 `tests/arrow-pan.mjs` checks that the arrow keys pan the view in Twin Dragons,
 Famidash and Tobu Tobu Girl without taking control.
 `tests/replay-pause.mjs` checks that the path
-counter stays still while a visitor's replay plays and advances during the
-automatic replay pick and after the replay pauses, ends or closes.
+counter stays still while a history is open, advances during the
+automatic replay pick and resumes when the history closes.
 `CHROME_CHANNEL=chrome` uses an installed Chrome, and
 `DEMO_URL` targets another server.
 
