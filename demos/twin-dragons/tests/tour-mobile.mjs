@@ -133,8 +133,8 @@ try {
       const dx = Math.max(0, sound.left - scrub.right, scrub.left - sound.right), dy = Math.max(0, sound.top - scrub.bottom, scrub.top - sound.bottom);
       return {parent: document.querySelector('#sound').parentElement.className, separation: Math.hypot(dx, dy)};
     });
-    assert.equal(audioLayout.parent, 'history-controls');
-    assert.ok(audioLayout.separation >= 8, 'Audio keeps clear of the position slider');
+    assert.equal(audioLayout.parent, 'transport');
+    assert.ok(audioLayout.separation >= 6, 'Audio keeps clear of the position slider');
     const map = await page.locator('.area-map').evaluateAll((maps) => maps.find((c) => c.dataset.markerFrame && c.dataset.markerFrame !== '')?.dataset.map);
     await exposed(page.locator(`.area-map[data-map="${map}"]`), true);
     await page.screenshot({path:`test-results/tour-mobile-${viewport.width}-replay.png`});

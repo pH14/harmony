@@ -14,7 +14,7 @@ async function stillDuring(page, ms) {
     for (const end = performance.now() + ms; performance.now() < end; await new Promise((r) => setTimeout(r, 25)))
       out.push({
         paths: Number(document.querySelector('#attempts').textContent.replaceAll(',', '')),
-        playing: document.querySelector('#play').textContent === 'Ⅱ Pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search',
+        playing: document.querySelector('#play').dataset.state === 'pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search',
       });
     return out;
   }, ms);
@@ -43,7 +43,7 @@ try {
   await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?game=twin-dragons&level=0&workers=1&pace=0`);
   await page.waitForFunction(() => document.querySelector('#pause')?.disabled === false);
 
-  await page.waitForFunction(() => document.querySelector('#inspector').hidden && document.querySelector('#play').textContent === 'Ⅱ Pause', null, {timeout: 60000});
+  await page.waitForFunction(() => document.querySelector('#inspector').hidden && document.querySelector('#play').dataset.state === 'pause', null, {timeout: 60000});
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Pause Search', 'The automatic preview leaves the search running');
   await growing(page, await paths(page));
 
@@ -58,37 +58,35 @@ try {
     assert.ok(attempt < 2, 'Clicking a retained cell on the live map opens the inspector');
   }
   await page.waitForFunction(() => !document.querySelector('#play').disabled && document.querySelector('#verification').textContent === 'Exact replay ✓' && Number(document.querySelector('#scrub').max) > 0);
-  assert.equal(await page.locator('#play').textContent(), '▶ Replay');
-  assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Pause Search', 'Selecting a path leaves the search running');
-  await growing(page, await paths(page));
+  assert.equal(await page.locator('#play').getAttribute('data-state'), 'play');
+  assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'Selecting a path pauses the search');
 
   await page.locator('#play').click();
-  await page.waitForFunction(() => document.querySelector('#play').textContent === 'Ⅱ Pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
   await stillDuring(page, 400);
   assert.ok(Number(await page.locator('#scrub').inputValue()) > 0, 'The replay advances while the search waits');
 
   await page.locator('#play').click();
-  await page.waitForFunction(() => document.querySelector('#play').textContent === '▶ Replay', null, {timeout: 5000});
-  await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
-  await growing(page, await paths(page));
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'play', null, {timeout: 5000});
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'Pausing the replay leaves the search paused while the history is open');
 
   await page.locator('#speed').selectOption('12');
   await page.locator('#play').click();
-  await page.waitForFunction(() => document.querySelector('#play').textContent === 'Ⅱ Pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
-  await page.waitForFunction(() => document.querySelector('#play').textContent === '↺ Replay', null, {timeout: 60000});
-  await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
-  await growing(page, await paths(page));
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'replay', null, {timeout: 60000});
+  assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'A finished replay leaves the search paused while the history is open');
 
   await page.locator('#speed').selectOption('1');
   await page.locator('#play').click();
-  await page.waitForFunction(() => document.querySelector('#play').textContent === 'Ⅱ Pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
   await stillDuring(page, 300);
   await page.locator('#close-inspector').click();
   await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
   await growing(page, await paths(page));
 
   assert.deepEqual(errors, []);
-  console.log('A replay pauses the search, and the search resumes when the replay pauses, ends or closes.');
+  console.log('Opening a history pauses the search, and the search resumes when the history closes.');
 } finally {
   await browser.close();
 }

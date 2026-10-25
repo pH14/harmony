@@ -118,16 +118,12 @@ async function watchDuringTour(page) {
   await page.screenshot({ path: `test-results/tour-live-${page.viewportSize().width}.png` });
   assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
   await page.locator('#play').click();
-  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Pause') && Number(document.querySelector('#scrub').value) >= 10);
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'pause' && Number(document.querySelector('#scrub').value) >= 10);
   await page.locator('#play').focus();
   assert.equal(await page.evaluate(() => document.activeElement.id), 'play');
   await page.keyboard.press('Space');
-  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Replay'));
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'play');
   await page.keyboard.press('Tab');
-  if (await page.locator('#sound').evaluate((node) => !!node.closest('.transport'))) {
-    assert.equal(await page.evaluate(() => document.activeElement.id), 'sound');
-    await page.keyboard.press('Tab');
-  }
   assert.equal(await page.evaluate(() => document.activeElement.id), 'scrub');
   await page.keyboard.press('Home');
   await page.waitForFunction(() => document.querySelector('#scrub').value === '0' && document.querySelector('#frame-label').textContent.startsWith('FRAME 0'));

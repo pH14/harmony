@@ -213,7 +213,7 @@ try {
     await page.locator("#screenshot,#export,#import,#history-file").count(),
     0,
   );
-  assert.equal(await page.locator(".brand").innerText(), "harmony");
+  assert.equal(await page.locator(".brand").innerText(), "pH14/harmony");
   const heroLayout = await page.evaluate(() => {
     const totals = document.querySelector(".hero-stats").getBoundingClientRect(),
       goal = document.querySelector(".goal").getBoundingClientRect(),
@@ -1150,15 +1150,23 @@ try {
     }
   }
   await page.locator("#credits").click();
+  await page.locator(".credit-game").first().waitFor();
   const credits = await page.locator("#info-content").innerText();
   for (const text of [/Garydos/, /zlib license/, /sound-effect data is zeroed/, /Shiru are not included/, /surt/, /CC BY 3\.0/, /CC BY 4\.0/, /FamiTone2/, /FamiTone5/])
     assert.match(credits, text);
+  assert.match(credits, /^CREDITS & LICENSING\s+Harmony\s+Created by pH14\. Available on GitHub and licensed under the AGPL-3\.0\./);
+  assert.match(credits, /auto-generated:/);
+  assert.equal(await page.locator('#info-content a[href="https://github.com/pH14/harmony"]').first().innerText(), 'Available on GitHub');
+  assert.ok(await page.locator('.credit-game').count() >= 10, 'The credits list every supported game');
+  assert.equal(await page.locator('.credit-game[open] summary').innerText(), 'Twin Dragons');
+  await page.locator('.credit-game:not([open]) summary').first().click();
+  assert.equal(await page.locator('.credit-game[open]').count(), 2);
   assert.equal(await page.locator('#info-content a[href$=".tar.gz"]').evaluateAll(links => links.some(link => /twin-dragons/i.test(link.href))), false);
   await page.locator("#close-info").click();
   assert.equal(await page.locator('.art-credit').count(), 0);
   assert.match(await page.locator('.exploration .game-attribution').innerText(), /Garydos.*surt.*CC BY 3\.0/);
   assert.equal(await page.locator('.game-attribution').count(), 1);
-  assert.match(await page.locator('footer').innerText(), /^harmony\nCredits & source\n(Dark|Light) mode$/);
+  assert.match(await page.locator('footer').innerText(), /^pH14\/harmony\nCredits & source\n(Dark|Light) mode$/);
   assert.equal(await page.locator('.exploration-heading').innerText(), 'Exploration');
   assert.equal(await page.locator('.history-heading h2').innerText(), 'History');
 

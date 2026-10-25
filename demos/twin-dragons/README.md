@@ -153,7 +153,10 @@ the actions the core really ran. The native live view uses the same rule.
 
 ### Record the search view
 
-For a long experiment, use **Record to file** in Chrome on localhost or HTTPS.
+The recording buttons sit in the map toolbar and show only on a local host
+(`localhost`, `127.0.0.1`, `[::1]` or a `.localhost` name); the published site
+omits them. For a long experiment, use **Record to file** in Chrome on localhost
+or HTTPS.
 Choose a video file, let the search run, then **Stop recording** to finish and
 save it. MediaRecorder chunks write to that file in order as they arrive;
 there is no recording duration or file size limit. The browser holds at most
@@ -425,7 +428,10 @@ The page opens with a one-line pitch, one live total (timelines tried across
 every search branch) and Take the tour. The per-search counters and the
 rollout worker count sit in a collapsed Details disclosure at the bottom of the
 Searches pane. The footer
-holds the Harmony link, Credits & source and the Dark mode / Light mode switch.
+holds a link to the repository, Credits & source and the Dark mode / Light mode
+switch. The Credits dialog opens with the Harmony authorship and licence notice,
+then lists every game the arcade supports as a collapsed section; the current
+game's section starts open.
 
 Two toggles, Movement and Heatmap, choose what the map shows. Either or both
 can be on, and the last one on stays on. Movement alone is the default.
@@ -482,7 +488,8 @@ Following pauses
 for 3 seconds while the pointer rests on a pan arrow and for 2.5 seconds after a
 touch. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement, or at
-once from the Follow button. Ctrl or ⌘ with the scroll wheel (a trackpad pinch),
+once from the Follow button, which sits in the toolbar and appears only while the
+camera is away from the search. Ctrl or ⌘ with the scroll wheel (a trackpad pinch),
 the `+` and `-` keys and the zoom buttons in the toolbar beside the Movement and Heatmap toggle change the zoom for every game, and
 `0` returns to the game's default view. The chosen zoom stays while the camera
 follows the search.
@@ -591,10 +598,11 @@ steps one game frame per display frame. The map repaints every display frame
 while the search runs and at 30 Hz while it is paused. Replays play the game's
 music. The sound effects are absent from this build.
 
-The replay controls (Replay or Pause, the timeline and the speed menu) sit over the bottom of the replay screen. They stay visible while the replay is paused and fade out while it plays, and return when the pointer is over the screen or a control has keyboard focus. The Replay button reads Pause while a replay plays and Replay otherwise. A
-replay the visitor starts pauses the search, and the search resumes when the
-replay pauses, ends or closes, unless the visitor paused or resumed the search
-in the meantime. The automatic replay pick plays while the search runs.
+The replay controls (a play or pause icon, the timeline, the volume button and the speed menu) sit over the bottom of the replay screen on a dark backing so they stay visible on any game. They stay visible while the replay is paused and fade out while it plays, and return when the pointer is over the screen or a control has keyboard focus. The play button shows a pause icon while a replay plays, a replay icon after it ends and a play icon otherwise.
+Selecting a cell opens its history and pauses the search so the map stays still.
+The search resumes when the history closes or when the visitor presses the
+Searches play button, unless the visitor paused or resumed the search in the
+meantime. The automatic replay pick plays while the search runs.
 
 ## Games
 
@@ -881,7 +889,7 @@ areas Brinstar, Norfair, Kraid's Lair, Ridley's Lair and Tourian. The search
 starts from a new game, and the view follows it between areas the same way it
 follows Super Mario Bros. between bonus areas. The observation's cleared count
 adds items, energy tanks, bosses and the ending, which ranks search progress,
-while the page marks Zebes finished, and offers to watch it, only at the ending.
+while the page marks Zebes finished only at the ending.
 
 Metroid keeps its items in cartridge RAM. The QuickNES shim keeps a 10 KiB copy
 of memory, the 2 KiB console RAM followed by the 8 KiB cartridge RAM at
@@ -1243,8 +1251,8 @@ level strip and the top and bottom chevrons move the view up and down.
 `tests/arrow-pan.mjs` checks that the arrow keys pan the view in Twin Dragons,
 Famidash and Tobu Tobu Girl without taking control.
 `tests/replay-pause.mjs` checks that the path
-counter stays still while a visitor's replay plays and advances during the
-automatic replay pick and after the replay pauses, ends or closes.
+counter stays still while a history is open, advances during the
+automatic replay pick and resumes when the history closes.
 `CHROME_CHANNEL=chrome` uses an installed Chrome, and
 `DEMO_URL` targets another server.
 
