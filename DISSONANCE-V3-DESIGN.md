@@ -41,6 +41,17 @@ The second part is state for the purpose of exploration: what a lineage
 has caused is part of where it is. Cumulative scalars are directed by
 construction.
 
+An adapter emits scalars at one of two widths of coverage. A **chosen
+vector** is a small set, one to about twenty, of memory fields read at
+their natural width: a 16-bit position is one scalar, a 4-byte counter is
+one scalar. The adapter says which bytes form each scalar and nothing
+else: no name, no order, no direction, no meaning. A **full vector** is
+every byte of the target's state memory, with 16-bit pairs merged where the
+record shows a carry relation. The searcher treats both the same way. The
+chosen vector is how a target is brought up; the full vector is how a
+target with no human attention is explored, and how fields a human missed
+are found.
+
 ## Feature table
 
 A feature is a scalar, or a group of scalars that always change on the

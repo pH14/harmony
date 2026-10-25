@@ -14,14 +14,14 @@ machine it runs on. The claims it ships with:
 2. The Famidash base level set, every level beaten from its start with
    untyped scalars as the observation, within 3x the total tries of the
    current searcher with its hand-written key.
-3. Metroid from power-on to the ending with untyped scalars as the
-   observation, within 3x the tries of the current searcher's run with its
-   hand-written key, with every milestone (bombs, Kraid, high jump, Ridley,
-   Tourian, ending) reached and replayed. The observation may be the full
-   RAM or a subset of unnamed scalars; the searcher is told nothing about
-   what any scalar means.
-4. One NES game that has never had a hand key in this repository, taken
-   further from power-on by the learned key than by a position-only key.
+3. Metroid from power-on to the ending with a chosen vector of unnamed
+   scalars as the observation, within 3x the tries of the current
+   searcher's run with its hand-written key, with every milestone (bombs,
+   Kraid, high jump, Ridley, Tourian, ending) reached and replayed. The
+   searcher is told nothing about what any scalar means.
+4. One NES game that has never had a hand key in this repository, on the
+   full vector, taken further from power-on by the discovered key than by
+   a position-only key.
 5. A faults workload (NATS or rqlite) where promoted features name
    scenario markers nobody wrote down, and the search reaches a failure
    the current searcher does not reach in equal work.
@@ -234,14 +234,16 @@ inputs allow; the dependency graph is below.
 ```mermaid
 flowchart LR
     S0[0 corpus] --> S1[1 observation and record]
-    S1 --> S2[2 feature filter]
+    S1 --> S2a[2a feature kinds, chosen vector]
+    S1 --> S2b[2b field discovery, full vector]
     S1 --> S3[3 graph on hand positions]
-    S2 --> S4[4 graph on learned positions]
+    S2a --> S4[4 graph on learned positions]
     S3 --> S4
     S4 --> S5[5 selection, live]
-    S2 --> S6[6 input and jobs]
+    S2a --> S6[6 input and jobs]
     S5 --> S7[7 claims]
     S6 --> S7
+    S2b --> S7
 ```
 
 ### Stage 0: corpus (ms02, msr1, day one)
@@ -269,24 +271,39 @@ scalars.
 Pass: the hand key of every recorded game is a function of the emitted
 scalars, shown by recomputing it from the v3 record.
 
-### Stage 2: feature filter (Mac, offline)
+### Stage 2a: feature kinds on a chosen vector (Mac, offline, minutes)
 
-Implement the feature table with both feature kinds as a tool over a v3
-record: the four progress tests and the three place tests. Promote per
-region. Learn direction. The concentrating test needs only parents and
-whether their job changed a progress feature, so it is computable on
-retained-only records: compare the spread of the scalar among parents of
+Each game's adapter emits a chosen vector: the fields of its hand key read
+at natural width as unnamed scalars, plus two or three distractors such as
+a frame counter, an animation byte and a sound byte. Implement the feature
+table with both feature kinds over that vector: the four progress tests
+and the three place tests. Promote per region. Learn direction. The
+concentrating test needs only parents and whether their job changed a
+progress feature: compare the spread of a scalar among parents of
 progress-changing jobs against its spread among all parents in the region.
 
-Pass, with negative control: on each recording, the promoted features
-contain every field of the hand key, progress fields as progress features
-and position fields as place features, and the known hidden byte for that
-game, ranked in the top ten inside the region where the hand fix applied;
-a shuffled-scalar control promotes nothing stable. A hidden byte can only
-be scored at a checkpoint where it varies; pick the checkpoint from the
-record. Acquisition fields need their acquisition transitions in the
-record's parent pairs; where the black-box record lacks them, score the
-field on the first v3-recorded corpus and say so. Report false
+Pass, with negative control: on SMB, Metroid and Famidash, every progress
+field is promoted as a progress feature with the correct direction, every
+position field as a place feature, every distractor is rejected, and a
+shuffled-scalar control promotes nothing stable. Run on a uniform sample of
+20,000 residents per checkpoint. Stages 4 and 5 build on this result.
+
+### Stage 2b: field discovery on the full vector (ms02, offline, parallel)
+
+The same tests over every byte of work and cartridge RAM, 16-bit pairs
+merged. Co-change grouping is deferred. Sample 20,000 residents per
+checkpoint; run the full checkpoint only if a sampled result is within a
+factor of two of a threshold.
+
+Pass, with negative control: the promoted features contain every field of
+the hand key and the known hidden byte for that game, ranked in the top
+ten inside the region where the hand fix applied; a shuffled-scalar
+control promotes nothing stable. A hidden byte is scored only at a
+checkpoint where it varies. Acquisition fields need their acquisition
+transitions in the record; where the black-box record lacks them, score on
+the first v3-recorded corpus and say so. This stage holds nothing: it runs
+beside stages 4 to 7, and claim 4, the breadth game, is the live test of
+it. Report false
 promotions and what explains them.
 
 ### Stage 3: graph on hand positions (Mac and ms02, from day one)
@@ -313,7 +330,7 @@ first v3-recorded corpus and does not hold the stage.
 
 ### Stage 4: graph on learned positions (Mac, offline)
 
-Run stage 3's tools on positions built from stage 2's features.
+Run stage 3's tools on positions built from stage 2a's features.
 
 Pass: lead ratios within 1.2x of the hand-position ratios on SMB and
 Metroid, and the hierarchy by change rate reproduces area above room above
