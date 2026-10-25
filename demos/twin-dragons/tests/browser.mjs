@@ -230,7 +230,8 @@ try {
   });
   assert.ok(heroLayout.totalsBottom <= heroLayout.goalTop, "Live totals sit above the level title");
   assert.equal(await page.locator("#branches .search-details").count(), 1, "Per-search counters sit in the Searches pane");
-  assert.equal(heroLayout.detailsOpen, true, "Per-search counters start open");
+  assert.equal(heroLayout.detailsOpen, false, "Per-search counters start closed");
+  assert.equal(await page.locator("#branches > .search-speed").count(), 1, "The search speed slider sits in the Searches pane");
   assert.equal(heroLayout.heading, "Harmony Arcade");
   const originImage = await page
     .locator("#film")
@@ -955,6 +956,7 @@ try {
     "Search descendants must include and reproduce the human input prefix",
   );
   const nestedFrame = childState.frames - 1;
+  if ((await page.locator("#play").getAttribute("data-state")) === "pause") await page.locator("#play").click();
   await page.locator("#scrub").fill(String(nestedFrame));
   await page.waitForFunction((frame) =>
     document.querySelector("#frame-label").textContent.startsWith(`FRAME ${frame} /`) &&
@@ -1166,7 +1168,7 @@ try {
   assert.equal(await page.locator('.art-credit').count(), 0);
   assert.match(await page.locator('.exploration .game-attribution').innerText(), /Garydos.*surt.*CC BY 3\.0/);
   assert.equal(await page.locator('.game-attribution').count(), 1);
-  assert.match(await page.locator('footer').innerText(), /^pH14\/harmony\nCredits & source\n(Dark|Light) mode$/);
+  assert.match(await page.locator('footer').innerText(), /^pH14\/harmony\nCredits & source$/);
   assert.equal(await page.locator('.exploration-heading').innerText(), 'Exploration');
   assert.equal(await page.locator('.history-heading h2').innerText(), 'History');
 

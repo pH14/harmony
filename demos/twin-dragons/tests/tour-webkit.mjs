@@ -5,7 +5,6 @@ import assert from 'node:assert/strict';
 const browser=await webkit.launch({headless:true});
 try {
  const page=await browser.newPage({viewport:{width:390,height:744},isMobile:true,hasTouch:true,reducedMotion:'reduce'});
- await page.addInitScript(()=>localStorage.setItem('harmony.twin-dragons.theme','dark'));
  await mkdir('test-results',{recursive:true});
  await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?game=twin-dragons&level=0&pace=0`);
  const ready=step=>page.waitForFunction(s=>document.querySelector('#guided-tour')?.dataset.step===String(s)&&document.querySelector('.tour-card').getAttribute('aria-busy')==='false'&&document.querySelector('#tour-next').textContent!=='Try again',step,{timeout:60000});

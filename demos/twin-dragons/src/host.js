@@ -127,15 +127,16 @@ async function boot() {
   }
 }
 
-function reboot(url) {
-  root.dataset.switching = "";
+function reboot(url, label = "") {
+  root.dataset.switching = label;
+  document.getElementById("loading-label").textContent = label ? `Loading ${label}…` : "Loading…";
   root.dataset.switched = "";
   scope?.dispose();
   if (url) history.pushState(null, "", url);
   boot().catch(() => location.reload()).finally(() => delete root.dataset.switching);
 }
 
-function navigate(target, { replace = false } = {}) {
+function navigate(target, { replace = false, label = "" } = {}) {
   const url = new URL(target, location.href);
   if (url.origin !== location.origin || softSwitches >= SOFT_SWITCHES_BEFORE_RELOAD) {
     location.assign(url);
@@ -143,7 +144,7 @@ function navigate(target, { replace = false } = {}) {
   }
   softSwitches++;
   if (replace) history.replaceState(null, "", url);
-  reboot(replace ? null : url);
+  reboot(replace ? null : url, label);
 }
 
 addEventListener("popstate", () => reboot(null));

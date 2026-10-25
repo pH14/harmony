@@ -66,11 +66,8 @@ try {
         await page.mouse.move(0,0);
       }
     }
-    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(28, 28, 28)','Dark is the default theme');
-    await page.locator('#theme').click();
-    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(255, 255, 255)');
-    await page.locator('#theme').click();
-    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(28, 28, 28)');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(28, 28, 28)','Dark is the only theme');
+    assert.equal(await page.locator('#theme').count(),0);
     await page.locator('#new-search').click();
     await page.locator('#close-level-picker').click();
     assert.equal(await page.locator('#branch-tree [data-search]').count(),2,'Dismissing the level picker keeps the Timeline');

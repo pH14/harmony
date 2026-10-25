@@ -198,7 +198,7 @@ export default {
   credits: `<span class="eyebrow">CREDITS & LICENSING</span><h2>The Legend of Zelda</h2><p>The Legend of Zelda is © Nintendo. This site does not include the game. It runs from a ROM you supply, which stays in this browser’s storage and is never uploaded. The overworld and dungeon maps and the player sprite are drawn in your browser from that ROM. This demonstration is not endorsed by Nintendo.</p><p>QuickNES library sources: LGPL-2.1-or-later. The compiled libretro browser core, with Harmony’s <a href="licenses/quicknes-idle-loop.patch">idle-loop patch</a>, is distributed under GPL-2.0 terms with a GPL-2.0-or-later C++ shim. The separate Harmony browser interface and Rust search code: AGPL-3.0-or-later.</p><p><a href="licenses/CREDITS.md">Full credits</a> · <a href="licenses/quicknes-source.tar.gz">QuickNES source</a> · <a href="licenses/harmony-source.tar.gz">Harmony source</a> · <a href="licenses/rust-dependencies.tar.gz">Rust dependency sources and notices</a> · <a href="https://github.com/pH14/harmony">Repository and build instructions</a></p>`,
   catalog: {
     maps: NAMES.map((name, id) => ({ id, name, label: name, ...MAP_SIZES[id] })),
-    levels: NAMES.map((name, id) => ({ id, label: name, rooms: [id] })),
+    levels: [{ id: 0, label: "Hyrule", rooms: NAMES.map((_, id) => id) }],
   },
   buildMap,
   buildSprites,

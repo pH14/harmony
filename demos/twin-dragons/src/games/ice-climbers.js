@@ -2,6 +2,7 @@
 import { ice_climbers_observation } from "../../rust/pkg/twin_dragons_browser.js";
 
 const LEVEL_COUNT = 32,
+  UNSTARTABLE = 25,
   LEVEL = 0x59,
   PHASE = 0x5a,
   PLAYER_X = 0x64,
@@ -177,7 +178,7 @@ export default {
   credits: `<span class="eyebrow">CREDITS & LICENSING</span><h2>Ice Climber</h2><p>Ice Climber is © Nintendo. This site does not include the game. It runs from a ROM you supply, which stays in this browser’s storage and is never uploaded. The mountain maps and the player sprite are drawn in your browser from that ROM. This demonstration is not endorsed by Nintendo.</p><p>QuickNES library sources: LGPL-2.1-or-later. The compiled libretro browser core, with Harmony’s <a href="licenses/quicknes-idle-loop.patch">idle-loop patch</a>, is distributed under GPL-2.0 terms with a GPL-2.0-or-later C++ shim. The separate Harmony browser interface and Rust search code: AGPL-3.0-or-later.</p><p><a href="licenses/CREDITS.md">Full credits</a> · <a href="licenses/quicknes-source.tar.gz">QuickNES source</a> · <a href="licenses/harmony-source.tar.gz">Harmony source</a> · <a href="licenses/rust-dependencies.tar.gz">Rust dependency sources and notices</a> · <a href="https://github.com/pH14/harmony">Repository and build instructions</a></p>`,
   catalog: {
     maps: Array.from({ length: LEVEL_COUNT }, (_, id) => ({ id, name: levelName(id), label: levelName(id), ...MAP_SIZES[id] })),
-    levels: Array.from({ length: LEVEL_COUNT }, (_, id) => ({ id, label: levelName(id), rooms: [id] })),
+    levels: Array.from({ length: LEVEL_COUNT }, (_, id) => ({ id, label: levelName(id), rooms: id === UNSTARTABLE - 1 ? [id, UNSTARTABLE] : [id] })).filter(({ id }) => id !== UNSTARTABLE),
   },
   buildMap,
   buildSprites,

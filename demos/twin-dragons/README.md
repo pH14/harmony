@@ -18,7 +18,7 @@ and `ResizeObserver`, and records each listener, timer, frame, worker and observ
 the game creates. Switching disposes the scope, which releases all of them and
 stops the music, tour and launcher, then pushes the new `?game=` URL and runs
 `main.js` again in a fresh scope. A disposed scope hands inert stubs to code still
-in flight, so it cannot touch the next game's page. The Back button does the same.
+in flight, so it cannot touch the next game's page. The Back button does the same. While a switch runs, `html[data-switching]` shows a Loading overlay with the game's title after a 300 ms delay, so fast switches show nothing.
 After 12 in-place switches, and for any other origin, the page does a full
 navigation so leaked memory cannot build up. `tests/soft-switch.mjs` checks that
 switching loads no new document and leaves no extra workers or listeners. By default, search and rendering run on the
@@ -425,11 +425,11 @@ sprite PNGs carry the game and artwork credits in their text metadata.
 ## Interaction
 
 The page opens with a one-line pitch, one live total (timelines tried across
-every search branch) and Take the tour. The per-search counters and the
-rollout worker count sit in a collapsed Details disclosure at the bottom of the
-Searches pane. The footer
-holds a link to the repository, Credits & source and the Dark mode / Light mode
-switch. The page starts in dark mode and remembers a visitor's choice. The Credits dialog opens with the Harmony authorship and licence notice,
+every search branch) and Take the tour. The Searches pane holds the
+timelines-per-second slider. The per-search counters and the rollout worker
+count sit in a Details disclosure below it, closed by default. The footer
+holds a link to the repository and Credits & source. The page has one dark
+theme, which frames the gameplay best. The Credits dialog opens with the Harmony authorship and licence notice,
 then lists every game the arcade supports as a collapsed section; the current
 game's section starts open.
 
@@ -488,9 +488,9 @@ Following pauses
 for 3 seconds while the pointer rests on a pan arrow and for 2.5 seconds after a
 touch. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement, or at
-once from the Follow button, which sits in the toolbar and appears only while the
-camera is away from the search. Ctrl or ⌘ with the scroll wheel (a trackpad pinch),
-the `+` and `-` keys and the zoom buttons in the toolbar beside the Movement and Heatmap toggle change the zoom for every game, and
+once from the Follow button, a pill over the top-left corner of the map that
+appears only while the camera is away from the search. Ctrl or ⌘ with the scroll wheel (a trackpad pinch),
+the `+` and `-` keys and the zoom buttons in the toolbar beside the Movement and Heatmap toggle (hidden on touch screens, which pinch) change the zoom for every game, and
 `0` returns to the game's default view. The chosen zoom stays while the camera
 follows the search.
 On a touch screen a one-finger drag on a zoomed view pans it sideways, and up
@@ -975,7 +975,7 @@ skips when it is absent.
 ### Ice Climber
 
 The site ships nothing from Ice Climber. The level selector accepts the ROM with
-SHA-256 `491898c9…8701`. The game has 32 mountains, one level each. The map of a
+SHA-256 `491898c9…8701`. The game has 32 mountains, one level each. The picker omits Mountain 26, which does not reach its playable state from the title screen; Mountain 25's level shows both maps. The map of a
 mountain is a tall strip drawn from the ROM's intro camera pan: the loader pokes the
 mountain byte at the title screen, hides the sprites by zeroing the object attribute
 memory, and stitches one 256-pixel-wide row band per scroll step into a 256 × 862
@@ -1096,9 +1096,10 @@ absent.
 ### The Legend of Zelda
 
 The site ships nothing from Zelda. The level selector accepts the ROM with
-SHA-256 `44e33dc0…5a6a`, 131,088 bytes, an MMC1 cartridge. The picker lists ten
-levels: the overworld and Dungeons 1 to 9. The search starts from a new game in
-the overworld at room `$77`. The observation's Triforce count ranks search
+SHA-256 `44e33dc0…5a6a`, 131,088 bytes, an MMC1 cartridge. The picker lists one
+level, Hyrule, whose rooms are the overworld and Dungeons 1 to 9. Starting inside
+a dungeon without its items does not give a viable search, so the search always
+starts from a new game in the overworld at room `$77`. The observation's Triforce count ranks search
 progress. The page counts one more level than the Triforce count, and that
 mapping is approximate.
 
