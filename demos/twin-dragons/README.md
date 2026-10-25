@@ -591,7 +591,7 @@ steps one game frame per display frame. The map repaints every display frame
 while the search runs and at 30 Hz while it is paused. Replays play the game's
 music. The sound effects are absent from this build.
 
-The Replay button reads Pause while a replay plays and Replay otherwise. A
+The replay controls (Replay or Pause, the timeline and the speed menu) sit over the bottom of the replay screen. They stay visible while the replay is paused and fade out while it plays, and return when the pointer is over the screen or a control has keyboard focus. The Replay button reads Pause while a replay plays and Replay otherwise. A
 replay the visitor starts pauses the search, and the search resumes when the
 replay pauses, ends or closes, unless the visitor paused or resumed the search
 in the meantime. The automatic replay pick plays while the search runs.
@@ -773,7 +773,7 @@ Bros., Mega Man 2 and Metroid each have one.
 
 A private build can ship ROMs beside the page. At startup the page reads
 `roms/manifest.json`, an object whose `games` lists game ids and whose optional
-`default` names the game a link without `game` opens. It loads `roms/<id>.nes`
+`default` names the game a link without `game` opens. Without `default`, a link opens Super Mario Bros. when the manifest lists it and Famidash otherwise. It loads `roms/<id>.nes`
 for a listed game that has no stored ROM. The file must match the game's size
 and SHA-256. A listed game skips the ROM page. The public site has no manifest,
 so the request fails and every game asks for its ROM.

@@ -42,7 +42,7 @@ const manifest = await fetch(new URL("manifest.json", bundledRoms))
   .then((response) => (response.ok ? response.json() : {}))
   .catch(() => ({}));
 const bundled = new Set(manifest.games || []);
-const requested = GAMES.get(params.get("game")) || GAMES.get(manifest.default) || GAMES.get("twin-dragons");
+const requested = GAMES.get(params.get("game")) || GAMES.get(manifest.default) || GAMES.get(manifest.games?.includes("super-mario-bros") ? "super-mario-bros" : "famidash");
 async function bundledRom(choice) {
   if (!bundled.has(choice.id)) return null;
   const response = await fetch(new URL(`${choice.id}.nes`, bundledRoms)).catch(() => null);
@@ -76,7 +76,7 @@ document.querySelector("#app").innerHTML = `
 <div class="map-footer"><span id="memory-limit" hidden></span><span id="recording-status" role="status" aria-live="polite"></span></div>
 ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 </section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History">›</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="${game.screen.width}" height="${game.screen.height}" aria-label="${game.title} gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><div class="replay-actions"><button id="play" disabled>▶ Replay</button></div><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>${game.controls.a}</span></span><span><kbd>X</kbd><span>${game.controls.b}</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons"><button data-button="2" aria-label="${game.controls.b}">B</button><button data-button="1" aria-label="${game.controls.a}">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><div class="film-frame"><canvas id="film" tabindex="0" width="${game.screen.width}" height="${game.screen.height}" aria-label="${game.title} gameplay replay"></canvas><span id="frame-label" class="visually-hidden">FRAME 0</span><div class="transport"><div class="replay-actions"><button id="play" disabled>▶ Replay</button></div><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div></div></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>${game.controls.a}</span></span>${game.controls.b ? `<span><kbd>X</kbd><span>${game.controls.b}</span></span>` : ""}</div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons">${game.controls.b ? `<button data-button="2" aria-label="${game.controls.b}">B</button>` : ""}<button data-button="1" aria-label="${game.controls.a}">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Saved paths</h2></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
 <footer><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><button id="credits">Credits & source</button><button id="theme" class="theme-button" aria-label="Switch color theme">Dark mode</button></footer>
 <div id="error" role="alert" hidden></div>
@@ -1266,6 +1266,9 @@ function paintFilm() {
     p = preview || (currentFrame === 0 && originPixels ? originPixels : engine.pixels());
   film.putImageData(new ImageData(p.data, p.width, p.height), 0, 0);
   $("film").dataset.previewRoute = preview ? routeHover.id : "";
+  const scrub = $("scrub"), total = Number(scrub.max) || 0;
+  scrub.style.setProperty("--progress", `${total ? Math.min(100, (100 * Number(scrub.value)) / total).toFixed(1) : 0}%`);
+  $("film").closest(".screen").toggleAttribute("data-playing", playing);
   $("frame-label").textContent = preview
     ? `${routeName(routeHover.id)} · ${replayTime(routeHover.frames)}`
     : `FRAME ${fmt(currentFrame)} / ${fmt(current?.frames)}`;
@@ -1615,7 +1618,7 @@ function renderStates() {
 function revealTransport(ok) {
   transportPending = false;
   if (ok && compactReplay.matches && !$("inspector").hidden)
-    document.querySelector(".transport").scrollIntoView({ block: "nearest", behavior: "instant" });
+    document.querySelector(".screen").scrollIntoView({ block: "nearest", behavior: "instant" });
 }
 function inspect(cell) {
   hideRoutePreview();
@@ -2774,7 +2777,9 @@ function updateBranchControls() {
     !!frameObservation?.health;
   $("take-control").disabled = controlMode ? false : !usable;
   const draft = !!playSession && !!current?.branch?.manual;
-  $("take-control").hidden = controlMode;
+  const actions = $("take-control").parentElement;
+  actions.dataset.mode = draft ? "draft" : "browse";
+  $("take-control").hidden = draft;
   $("search-here").hidden = $("discard-branch").hidden = !draft;
   $("search-here").disabled = !usable || !draft;
   $("discard-branch").disabled = branchBusy;
@@ -3375,7 +3380,7 @@ const tour = new GuidedTour({
       title: "Multiverse exploration",
       copy: [
         "Harmony plays games by creating a multiverse of timelines.",
-        "It continually tries small actions all over the areas it has explored, and keeps the ones that produce progress.",
+        "It continually attempts actions from all the areas it has explored, and keeps the ones that produce progress.",
       ],
       targets: () => activeRoomSpotlights(),
       interactive: () => [$("map-rows"), $("pause")],

@@ -78,7 +78,7 @@ assert.ok(box.x >= view.x + view.width && box.x - (view.x + view.width) < 40, "T
 assert.deepEqual(errors, []);
 console.log("Tobu Tobu Girl shows a whole-level strip that moves the view.");
 
-const { page: wide, errors: wideErrors } = await open("?level=0&pace=300", true);
+const { page: wide, errors: wideErrors } = await open("?game=twin-dragons&level=0&pace=300", true);
 const wideStrip = wide.locator('.level-overview[data-map="0"]');
 await wideStrip.waitFor();
 await widenFollowing(wide, false);

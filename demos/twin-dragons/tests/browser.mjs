@@ -194,7 +194,14 @@ async function measurePlayback() {
   );
 }
 try {
-  await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?level=0&workers=1&pace=0`);
+  await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?game=twin-dragons&level=0&workers=1&pace=0`);
+  await page.evaluate(() => {
+    window.overlappingActions = 0;
+    const visible = (id) => { const e = document.getElementById(id); return !!e && getComputedStyle(e).display !== "none" && !e.hidden; };
+    const check = () => { if (visible("take-control") && (visible("search-here") || visible("discard-branch"))) window.overlappingActions++; };
+    new MutationObserver(check).observe(document.documentElement, { subtree: true, attributes: true, childList: true });
+    setInterval(check, 20);
+  });
   await page.waitForFunction(
     () =>
       document.querySelector("#verification")?.textContent === "Original game",
@@ -1457,6 +1464,7 @@ try {
     animations: "disabled",
   });
   assert.equal(await page.locator("#error").isVisible(), false);
+  assert.equal(await page.evaluate(() => window.overlappingActions), 0, "Play from here never shows beside Branch search or Discard branch");
   assert.deepEqual(errors, []);
   console.log(
     "Browser search, exact replay, level-following scrubbing, audible 1x/4x history, manual branching, simplified controls, reset and mobile layout passed.",
