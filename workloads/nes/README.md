@@ -194,7 +194,12 @@ that game's vocabulary, with occasional Start and Select taps, and writes the
 tape, system RAM after every frame, and system RAM, cartridge RAM and the
 canonical core state at every action boundary. `--play` turns on video and
 audio capture. `demos/twin-dragons/tests/core-oracle.mjs` runs it and
-compares the browser core frame by frame.
+compares the browser core frame by frame. `--tape INPUT_JSON` replaces the
+seeded chords with a recorded input, such as a search's `witness-input.json`,
+played after the genesis prefix the search used. It supports Metroid and
+Super Mario Bros and refuses other games. Two QuickNES builds behave
+identically on that tape when their `frames.bin` and `boundaries.bin` match
+byte for byte.
 
 ```sh
 cargo test --manifest-path workloads/nes/Cargo.toml

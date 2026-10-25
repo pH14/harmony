@@ -21,11 +21,17 @@ pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
     let runtime_error = super::config::resolve(&mut c, offline)
         .err()
         .map(|error| error.to_string());
-    let admission = c
-        .image
-        .as_deref()
-        .map(faults_workload::admission::inspect_image)
-        .transpose()?;
+    let builds =
+        c.build.language.is_some() || c.build.dockerfile.is_some() || !c.build.command.is_empty();
+    let admission = match c.image.as_deref() {
+        Some(image) => match faults_workload::admission::inspect_image(image) {
+            Ok(report) => Some(report),
+            Err(_) if builds => None,
+            Err(error) => return Err(error),
+        },
+        None => None,
+    };
+    let unbuilt = builds && admission.is_none();
     let admission_error = admission
         .as_ref()
         .and_then(|report| {
@@ -42,7 +48,8 @@ pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
         .collect::<Vec<_>>();
     let report = serde_json::json!({ "os": std::env::consts::OS, "architecture": std::env::consts::ARCH,
         "blockers": blockers, "backend": c.backend, "kernel": c.kernel, "base_initramfs": c.base_initramfs,
-        "uml_profile": c.uml_profile, "admission": admission, "ready": ready, "bundle": c.bundle()? });
+        "uml_profile": c.uml_profile, "admission": admission, "image_built": !unbuilt, "ready": ready,
+        "bundle": c.bundle()? });
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -67,7 +74,14 @@ pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
                 println!("  instrumented: {}", file.path);
             }
         }
-        println!("next: harmony search");
+        if unbuilt {
+            println!(
+                "image {}: not built yet\nnext: harmony prepare, then harmony search",
+                c.image.as_deref().unwrap_or_default()
+            );
+        } else {
+            println!("next: harmony search");
+        }
     }
     Ok(if ready { 0 } else { 2 })
 }
@@ -194,6 +208,7 @@ pub fn search_prepared(
     bundle: String,
     vocabulary: FaultVocabulary,
 ) -> Result<u8> {
+    let vocabulary = vocabulary.excluding(&c.exclude_faults);
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "search", Some(bundle), true)?;
     capture_runtime(&mut manifest, &out, &artifacts)?;
@@ -246,13 +261,15 @@ pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Sav
                 .budget
                 .executions
                 .unwrap_or(if request.budget.wall_seconds.is_some() {
-                    i64::MAX as u64 - completed
+                    crate::config::UNBOUNDED_EXECUTIONS - completed
                 } else {
-                    1000
+                    crate::config::DEFAULT_EXECUTIONS
                 });
-        shared.search.executions = completed
-            .checked_add(additional)
-            .ok_or("execution budget overflow")?;
+        shared.search.executions = Some(
+            completed
+                .checked_add(additional)
+                .ok_or("execution budget overflow")?,
+        );
         shared.search.wall_seconds = request.budget.wall_seconds;
         shared.validate()?;
         SearchStart::Checkpoint(checkpoint)
@@ -305,6 +322,7 @@ fn search_faults(
             vec!["session-worker".into()],
         )?)
     };
+    let interrupt = consonance_client::termination::install()?;
     let report = package::search(
         &artifacts,
         &vocabulary,
@@ -312,13 +330,14 @@ fn search_faults(
         &resources,
         worker,
         start,
-        None,
+        Some(interrupt),
     )?;
     println!(
-        "{} executions; {} confirmed findings; {} unmet reachability assertions",
+        "{} executions; {} confirmed findings; {} unmet reachability assertions; {} hung jobs",
         report.executions,
         report.bugs.iter().filter(|b| b.confirmed).count(),
-        report.never_satisfied.len()
+        report.never_satisfied.len(),
+        report.watchdog_cutoffs
     );
     Ok(report)
 }

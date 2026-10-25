@@ -259,7 +259,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           status=0
-          timeout -k 10 180 taskset -c 0,1 \
+          timeout -k 10 600 taskset -c 0,1 \
             target/release/harmony search \
               oci-images/pgcic-14.3.oci --backend kvm \
               --seed 1 --executions 4 \

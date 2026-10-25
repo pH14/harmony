@@ -38,6 +38,13 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(self.active("workloads/faults/src/target.rs"), {"harmony_oci", "harmony_languages"})
         self.assertIn("harmony_languages", self.active("workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch"))
 
+    def test_harness_changes_select_only_the_harness_kit(self):
+        for path in ("workloads/harness/kit/family/log.go", "workloads/harness/targets/nats/go.mod",
+                     "workloads/harness/native.py"):
+            with self.subTest(path=path):
+                self.assertEqual(self.active(path), {"harmony_harness"})
+        self.assertFalse(self.active("workloads/harness/README.md"))
+
     def test_historical_publisher_and_report_select_the_oci_composition(self):
         for path in (".github/workflows/harmony-workloads-historical-bugs.yml",
                      "scripts/render-historical-bugs.py"):
@@ -78,6 +85,8 @@ class ScopeTests(unittest.TestCase):
 
     def test_the_shared_emulator_build_selects_every_source_built_game(self):
         self.assertEqual(self.active("scripts/build-quicknes-core.sh"),
+                         {"dissonance_stb"})
+        self.assertEqual(self.active("scripts/quicknes-translate.py"),
                          {"dissonance_stb"})
 
 

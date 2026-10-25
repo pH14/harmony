@@ -42,9 +42,10 @@ struct Connection<'a> {
     status: Option<Status>,
     transcript: File,
     inputs: File,
+    echo: bool,
 }
 impl<'a> Connection<'a> {
-    fn new(target: &'a mut FaultTarget, out: &Path) -> Result<Self> {
+    fn new(target: &'a mut FaultTarget, out: &Path, echo: bool) -> Result<Self> {
         let (cursor, sequence) = target.debug_position()?;
         Ok(Self {
             target,
@@ -53,6 +54,7 @@ impl<'a> Connection<'a> {
             status: None,
             transcript: File::create(out.join("terminal.log"))?,
             inputs: File::create(out.join("terminal-input.jsonl"))?,
+            echo,
         })
     }
     fn step(&mut self, message: Option<&Message>) -> Result<()> {
@@ -62,8 +64,10 @@ impl<'a> Connection<'a> {
         }
         self.transcript.write_all(&progress.output)?;
         self.transcript.flush()?;
-        io::stdout().write_all(&progress.output)?;
-        io::stdout().flush()?;
+        if self.echo {
+            io::stdout().write_all(&progress.output)?;
+            io::stdout().flush()?;
+        }
         Ok(())
     }
     #[allow(clippy::disallowed_methods)]
@@ -111,22 +115,28 @@ impl<'a> Connection<'a> {
         }
     }
 }
+fn run_script(connection: &mut Connection<'_>, script: &[u8]) -> Result<i32> {
+    if script.len() > MAX_SCRIPT {
+        return Err("guest script exceeds 1 MiB".into());
+    }
+    for chunk in script.chunks(MAX_DATA) {
+        connection.send(Operation::Append, chunk.to_vec())?;
+    }
+    connection.send(Operation::Execute, Vec::new())?;
+    connection.wait()
+}
+pub fn capture(target: &mut FaultTarget, out: &Path, script: &[u8]) -> Result<i32> {
+    run_script(&mut Connection::new(target, out, false)?, script)
+}
 pub fn execute(
     target: &mut FaultTarget,
     out: &Path,
     script: Option<&[u8]>,
     interactive: bool,
 ) -> Result<i32> {
-    let mut connection = Connection::new(target, out)?;
+    let mut connection = Connection::new(target, out, true)?;
     if let Some(script) = script {
-        if script.len() > MAX_SCRIPT {
-            return Err("guest script exceeds 1 MiB".into());
-        }
-        for chunk in script.chunks(MAX_DATA) {
-            connection.send(Operation::Append, chunk.to_vec())?;
-        }
-        connection.send(Operation::Execute, Vec::new())?;
-        return connection.wait();
+        return run_script(&mut connection, script);
     }
     if !interactive {
         return Ok(0);

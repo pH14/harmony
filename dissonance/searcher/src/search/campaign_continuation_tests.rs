@@ -684,6 +684,50 @@ fn a_progress_line_reports_the_continuation_accounting() {
     assert!(accounting.energy <= 256);
 }
 
+#[test]
+fn cell_intervals_credit_continuation_dispatches_to_their_cells() {
+    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    let mut progress = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        Some(&mut progress),
+    )
+    .unwrap();
+    let records = String::from_utf8(progress)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<CampaignProgressRecord<serde_json::Value>>(line).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let final_record = records.last().expect("a final progress line");
+    let continuation_selections = final_record
+        .selector
+        .continuation_selections
+        .expect("continuation dispatches were counted");
+    assert!(continuation_selections > 0);
+    let intervals = records
+        .iter()
+        .filter_map(|record| record.selector.cell_interval.as_ref())
+        .collect::<Vec<_>>();
+    let interval_total: u64 = intervals
+        .iter()
+        .map(|interval| interval.totals.continuation)
+        .sum();
+    assert_eq!(interval_total, continuation_selections);
+    for interval in intervals {
+        if interval.cells == interval.top.len() {
+            let row_total: u64 = interval.top.iter().map(|row| row.counts.continuation).sum();
+            assert_eq!(row_total, interval.totals.continuation);
+        }
+        assert!(interval.totals.continuation <= interval.totals.draws);
+    }
+}
+
 fn replay_error(lines: &[String]) -> String {
     replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
         .expect_err("replay accepted a tampered stream")

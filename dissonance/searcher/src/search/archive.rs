@@ -322,6 +322,8 @@ pub struct SelectorDraw {
     pub tier_rank: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub best_preference: Option<u8>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fall_through: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -360,6 +362,52 @@ pub struct SelectorAccounting {
     pub tier_runs: BTreeMap<String, TierRuns>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portfolio: Option<PortfolioAccounting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_interval: Option<CellInterval>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CellDraws {
+    pub draws: u64,
+    pub continuation: u64,
+    pub recent: u64,
+    pub best_holder: u64,
+    pub top_tier: u64,
+    pub fall_through: u64,
+    pub resets: u64,
+    pub opened: u64,
+    pub novel: u64,
+    pub replaced: u64,
+}
+
+impl CellDraws {
+    fn add(&mut self, other: &Self) {
+        self.draws = self.draws.saturating_add(other.draws);
+        self.continuation = self.continuation.saturating_add(other.continuation);
+        self.recent = self.recent.saturating_add(other.recent);
+        self.best_holder = self.best_holder.saturating_add(other.best_holder);
+        self.top_tier = self.top_tier.saturating_add(other.top_tier);
+        self.fall_through = self.fall_through.saturating_add(other.fall_through);
+        self.resets = self.resets.saturating_add(other.resets);
+        self.opened = self.opened.saturating_add(other.opened);
+        self.novel = self.novel.saturating_add(other.novel);
+        self.replaced = self.replaced.saturating_add(other.replaced);
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CellIntervalRow {
+    pub cell: String,
+    #[serde(flatten)]
+    pub counts: CellDraws,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CellInterval {
+    pub since: u64,
+    pub cells: usize,
+    pub totals: CellDraws,
+    pub top: Vec<CellIntervalRow>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -661,6 +709,10 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     continuation_wave: u32,
     continuation_accounting: ContinuationAccounting,
     landed: BTreeSet<u64>,
+    cell_interval: BTreeMap<Cell<K>, CellDraws>,
+    cell_interval_since: u64,
+    #[serde(skip)]
+    cell_interval_reporting: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -1261,6 +1313,9 @@ where
             continuation_wave: 0,
             continuation_accounting: ContinuationAccounting::default(),
             landed: BTreeSet::new(),
+            cell_interval: BTreeMap::new(),
+            cell_interval_since: 0,
+            cell_interval_reporting: false,
         }
     }
 
@@ -2811,6 +2866,15 @@ where
                 );
             }
         }
+        if let Some(parent) = parent_id
+            && let Some(interval) = self.interval_counts(cell_of(self.entries[parent].key))
+        {
+            interval.opened = interval.opened.saturating_add(u64::from(new_cell));
+            interval.novel = interval.novel.saturating_add(u64::from(novel_cell));
+            interval.replaced = interval
+                .replaced
+                .saturating_add(u64::from(!displaced.is_empty()));
+        }
         for replaced in displaced {
             self.replacement_cost_displaced = self.replacement_cost_displaced.saturating_add(1);
             self.deactivate(replaced);
@@ -3025,7 +3089,7 @@ where
         if self.active_ids.is_empty() {
             return Err("archive has no expandable entry".into());
         }
-        let (progress, rank) = self.draw_tier(rand)?;
+        let (progress, rank, fall_through) = self.draw_tier(rand)?;
         debug_assert!(
             self.tiers
                 .get(&progress)
@@ -3047,6 +3111,7 @@ where
                 },
                 tier_rank: Some(rank),
                 best_preference,
+                fall_through,
             },
         ))
     }
@@ -3146,7 +3211,10 @@ where
         }
     }
 
-    fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
+    fn draw_tier(
+        &self,
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<(K::Progress, u8, bool), Box<dyn Error>> {
         let tiers = self.tiers.len();
         let mut ranked = self.tiers.keys().rev().copied().peekable();
         let mut floor = 0_usize;
@@ -3174,7 +3242,12 @@ where
             .nth(index)
             .copied()
             .ok_or("tier draw chose an absent tier")?;
-        Ok((progress, u8::try_from(index).unwrap_or(u8::MAX)))
+        let fall_through = (floor > 0 || halvings > 0) && index <= floor;
+        Ok((
+            progress,
+            u8::try_from(index).unwrap_or(u8::MAX),
+            fall_through,
+        ))
     }
 
     fn draw_cell(
@@ -3306,6 +3379,9 @@ where
             state.draws = 0;
             self.selector_accounting.cell_resets =
                 self.selector_accounting.cell_resets.saturating_add(1);
+            if let Some(interval) = self.interval_counts(cell) {
+                interval.resets = interval.resets.saturating_add(1);
+            }
             if let Some(tier) = self.tiers.get_mut(&cell.0) {
                 tier.weights.set_weight(&cell.1, count_decay(0));
             }
@@ -3619,6 +3695,10 @@ where
             .continuation_selections
             .get_or_insert(0);
         *count = count.saturating_add(1);
+        if let Some(interval) = self.interval_counts(cell_of(self.entries[id].key)) {
+            interval.draws = interval.draws.saturating_add(1);
+            interval.continuation = interval.continuation.saturating_add(1);
+        }
     }
 
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
@@ -3634,6 +3714,25 @@ where
         state.draws_total = state.draws_total.saturating_add(1);
         let place_weight = count_decay(state.draws);
         let holder_weight = count_decay(self.selected[id]);
+        if let Some(interval) = self.interval_counts(cell_of(key)) {
+            interval.draws = interval.draws.saturating_add(1);
+            match draw.path {
+                SelectorPath::Continuation => {
+                    interval.continuation = interval.continuation.saturating_add(1);
+                }
+                SelectorPath::Recent => interval.recent = interval.recent.saturating_add(1),
+                SelectorPath::Tiers => {}
+            }
+            if draw.best_preference.is_some() {
+                interval.best_holder = interval.best_holder.saturating_add(1);
+            }
+            if draw.tier_rank == Some(0) {
+                interval.top_tier = interval.top_tier.saturating_add(1);
+            }
+            if draw.fall_through {
+                interval.fall_through = interval.fall_through.saturating_add(1);
+            }
+        }
         if let Some(tier) = self.tiers.get_mut(&key.progress()) {
             tier.weights.set_weight(&key.place(), place_weight);
             if let Some(members) = tier.places.get_mut(&key.place()) {
@@ -3760,6 +3859,45 @@ where
     #[must_use]
     pub fn selector_counters(&self) -> SelectorAccounting {
         self.selector_accounting.clone()
+    }
+
+    pub fn report_cell_intervals(&mut self, enabled: bool) {
+        self.cell_interval_reporting = enabled;
+    }
+
+    fn interval_counts(&mut self, cell: Cell<K>) -> Option<&mut CellDraws> {
+        self.cell_interval_reporting
+            .then(|| self.cell_interval.entry(cell).or_default())
+    }
+
+    pub fn take_cell_interval(&mut self, executions: u64, top: usize) -> CellInterval {
+        let mut totals = CellDraws::default();
+        let mut rows = std::mem::take(&mut self.cell_interval)
+            .into_iter()
+            .map(|(cell, counts)| {
+                totals.add(&counts);
+                CellIntervalRow {
+                    cell: format!("{cell:?}"),
+                    counts,
+                }
+            })
+            .collect::<Vec<_>>();
+        let cells = rows.len();
+        rows.sort_by(|left, right| {
+            right
+                .counts
+                .draws
+                .cmp(&left.counts.draws)
+                .then_with(|| left.cell.cmp(&right.cell))
+        });
+        rows.truncate(top);
+        let since = std::mem::replace(&mut self.cell_interval_since, executions);
+        CellInterval {
+            since,
+            cells,
+            totals,
+            top: rows,
+        }
     }
 
     pub fn selector_report(&self) -> SelectorAccounting {
@@ -3901,7 +4039,7 @@ where
         if self.active_ids.is_empty() {
             return Err("archive has no expandable entry".into());
         }
-        let (progress, rank) = self.draw_tier(rand)?;
+        let (progress, rank, fall_through) = self.draw_tier(rand)?;
         let recent = self.draw_recent_cell(rand, progress)?;
         let place = match recent {
             Some(place) => place,
@@ -3918,6 +4056,7 @@ where
                 },
                 tier_rank: Some(rank),
                 best_preference,
+                fall_through,
             },
         ))
     }
@@ -4041,8 +4180,8 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::{
-        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
-        HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
+        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellDraws, CellIntervalRow, CellMembers,
+        CellState, HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
         MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
         SharedAllocation, SharedSnapshotMemory, SnapshotRetention, TIER_RANK_SHIFT, TierCells,
         WeightedSet, tier_weight,
@@ -5892,6 +6031,7 @@ mod tests {
                     assert_eq!(
                         archive
                             .draw_tier(&mut actual)
+                            .map(|(progress, rank, _)| (progress, rank))
                             .map_err(|error| error.to_string()),
                         expected
                     );
@@ -6564,6 +6704,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..5 {
             archive.record_selection(first, &draw);
@@ -6591,6 +6732,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..7 {
             archive.record_selection(first, &draw);
@@ -6605,6 +6747,87 @@ mod tests {
         assert_eq!(archive.cell_draws(archive.entries[first].key), 0);
         assert_eq!(archive.cell_draws(archive.entries[opened].key), 0);
         assert_eq!(archive.selector_report().cell_resets, 1);
+    }
+    #[test]
+    fn cell_interval_counts_draw_routes_resets_and_yields_per_cell() {
+        let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
+        archive.report_cell_intervals(true);
+        archive.rebuild_selector_index();
+        let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
+        let recent = SelectorDraw {
+            path: SelectorPath::Recent,
+            tier_rank: Some(0),
+            best_preference: Some(0),
+            fall_through: false,
+        };
+        let lower = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(1),
+            best_preference: None,
+            fall_through: true,
+        };
+        let continuation = SelectorDraw {
+            path: SelectorPath::Continuation,
+            tier_rank: None,
+            best_preference: None,
+            fall_through: false,
+        };
+        for draw in [&recent, &recent, &lower, &continuation] {
+            archive.record_selection(first, draw);
+        }
+        let holder = insert_resource(&mut archive, Some(first), 2, [1, 1, 1], 6).expect("holder");
+        let opened = insert_resource(&mut archive, Some(holder), 3, [2, 1, 1], 5).expect("opened");
+        assert!(archive.opened_new_cell(opened));
+        archive.record_selection(opened, &recent);
+        let interval = archive.take_cell_interval(100, 1);
+        assert_eq!(interval.since, 0);
+        assert_eq!(interval.cells, 2);
+        assert_eq!(
+            interval.top,
+            vec![CellIntervalRow {
+                cell: "((), [1, 1, 1])".to_owned(),
+                counts: CellDraws {
+                    draws: 4,
+                    continuation: 1,
+                    recent: 2,
+                    best_holder: 2,
+                    top_tier: 2,
+                    fall_through: 1,
+                    resets: 1,
+                    opened: 1,
+                    novel: 1,
+                    replaced: 1,
+                },
+            }]
+        );
+        assert_eq!(interval.totals.draws, 5);
+        assert_eq!(interval.totals.recent, 3);
+        assert_eq!(archive.selector_report().cell_resets, 1);
+        let next = archive.take_cell_interval(200, 1);
+        assert_eq!((next.since, next.cells), (100, 0));
+        assert!(next.top.is_empty());
+        assert_eq!(next.totals, CellDraws::default());
+    }
+    #[test]
+    fn cell_interval_counts_stay_empty_while_reporting_is_off() {
+        let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
+        archive.rebuild_selector_index();
+        let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
+        let draw = SelectorDraw {
+            path: SelectorPath::Continuation,
+            tier_rank: Some(0),
+            best_preference: Some(0),
+            fall_through: false,
+        };
+        for _ in 0..8 {
+            archive.record_selection(first, &draw);
+        }
+        archive.record_isolated_continuation(first);
+        insert_resource(&mut archive, Some(first), 2, [2, 1, 1], 5).expect("opened");
+        let interval = archive.take_cell_interval(10, 4);
+        assert_eq!(interval.cells, 0);
+        assert!(interval.top.is_empty());
+        assert_eq!(interval.totals, CellDraws::default());
     }
     #[test]
     fn a_slot_with_no_exits_is_never_queued() {
@@ -7637,6 +7860,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..4 {
             archive.record_selection(1, &draw);
@@ -7839,6 +8063,7 @@ mod tests {
     #[test]
     fn continuation_attempts_do_not_count_as_cell_draws() {
         let mut archive = archive_with_prunable_history();
+        archive.report_cell_intervals(true);
         let id = archive.active.iter().position(|active| *active).unwrap();
         let key = archive.entries[id].key;
         for _ in 0..20 {
@@ -7847,12 +8072,17 @@ mod tests {
         assert_eq!(archive.selected[id], 0);
         assert_eq!(archive.cell_draws(key), 0);
         assert_eq!(archive.selector_report().continuation_selections, Some(20));
+        let interval = archive.take_cell_interval(100, 1);
+        assert_eq!(interval.totals.continuation, 20);
+        assert_eq!(interval.totals.draws, 20);
+        assert_eq!(interval.top[0].counts.continuation, 20);
         archive.record_selection(
             id,
             &SelectorDraw {
                 path: SelectorPath::Tiers,
                 tier_rank: Some(0),
                 best_preference: None,
+                fall_through: false,
             },
         );
         assert_eq!(archive.selected[id], 1);
@@ -7867,6 +8097,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..19 {
             archive.record_selection(0, &draw);
@@ -8466,6 +8697,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..3 {
             archive.record_selection(survivor, &draw);
@@ -9420,6 +9652,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..64 {
             archive.record_selection(0, &draw);
@@ -9438,6 +9671,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for id in [0, 1] {
             for _ in 0..64 {
@@ -9463,6 +9697,7 @@ mod tests {
                 path: SelectorPath::Tiers,
                 tier_rank: Some(rank),
                 best_preference: None,
+                fall_through: false,
             };
             for _ in 0..draws {
                 archive.record_selection(id, &draw);
@@ -9475,6 +9710,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(1),
             best_preference: None,
+            fall_through: false,
         };
         let mut key = probe_key(2, 1, 5, 0);
         key.state_fingerprint = 7;
@@ -9523,6 +9759,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..64 {
             archive.record_selection(0, &top);
@@ -9539,6 +9776,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(1),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..64 {
             archive.record_selection(1, &next);
@@ -9558,6 +9796,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..64 {
             archive.record_selection(1, &top);
@@ -9571,6 +9810,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(1),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..64 {
             archive.record_selection(2, &middle);
@@ -9586,6 +9826,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for id in [0, 1] {
             for _ in 0..64 {
@@ -9664,6 +9905,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..1024 {
             archive.record_selection(1, &draw);
@@ -9687,6 +9929,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..4096 {
             archive.record_selection(1, &draw);
@@ -9719,6 +9962,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..64 {
             archive.record_selection(0, &draw);
@@ -9745,6 +9989,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..64 {
             archive.record_selection(0, &draw);
@@ -9819,6 +10064,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..1000 {
             archive.record_selection(0, &draw);
@@ -9837,6 +10083,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
         for _ in 0..1000 {
             archive.record_selection(0, &draw);

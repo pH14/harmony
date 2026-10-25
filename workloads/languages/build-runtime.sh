@@ -16,5 +16,10 @@ print(value.hexdigest())
 PY
 )
 tag="harmony-language-runtime:$key"
-"${HARMONY_CONTAINER_TOOL:-docker}" build --file workloads/languages/runtime/Dockerfile --tag "$tag" . >&2
+tool=${HARMONY_CONTAINER_TOOL:-}
+if [ -z "$tool" ]; then
+    tool=docker
+    command -v docker >/dev/null 2>&1 || tool=podman
+fi
+"$tool" build --file workloads/languages/runtime/Dockerfile --tag "$tag" . >&2
 printf '%s\n' "$tag"

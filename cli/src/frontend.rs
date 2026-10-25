@@ -87,6 +87,56 @@ enum Command {
         #[arg(long, help = "Save the branch without executing the original suffix")]
         stop: bool,
     },
+    #[command(about = "Replace faults with waits until only those the finding needs remain")]
+    Shrink {
+        #[command(flatten)]
+        selection: Selection,
+        #[command(flatten)]
+        destination: Destination,
+        #[arg(long, default_value_t = 1, help = "Replays to run at once")]
+        jobs: usize,
+    },
+    #[command(
+        about = "Shrink a finding and report the logs, data and client history around each remaining fault"
+    )]
+    Explain {
+        #[command(flatten)]
+        selection: Selection,
+        #[command(flatten)]
+        destination: Destination,
+        #[arg(long, default_value_t = 1, help = "Replays to run at once")]
+        jobs: usize,
+        #[arg(
+            long = "log",
+            value_name = "GUEST_PATH",
+            help = "Guest log file or glob whose new lines are shown around each fault"
+        )]
+        logs: Vec<String>,
+        #[arg(
+            long = "data",
+            value_name = "GUEST_DIR",
+            help = "Guest directory or glob whose file changes are shown around each fault"
+        )]
+        data: Vec<String>,
+        #[arg(
+            long,
+            value_name = "COMMAND",
+            help = "Guest shell text whose output shows the client history at the violation"
+        )]
+        history: Option<String>,
+        #[arg(
+            long,
+            value_name = "COMMAND",
+            help = "Host shell text run on guest files copied out at the violation; write each guest path as @/path"
+        )]
+        host_history: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "finding",
+            help = "Probe the recorded actions as they are, without shrinking"
+        )]
+        no_shrink: bool,
+    },
     #[command(about = "List saved searches and branches")]
     List {
         #[arg(long)]
@@ -253,6 +303,50 @@ fn execute(command: Command) -> Result<u8> {
                 ..Default::default()
             });
         }
+        Command::Shrink {
+            selection,
+            destination,
+            jobs,
+        } => {
+            return workflow::saved(Request {
+                operation: Operation::Shrink,
+                selection: Some(selection),
+                destination,
+                jobs,
+                ..Default::default()
+            });
+        }
+        Command::Explain {
+            selection,
+            destination,
+            jobs,
+            logs,
+            data,
+            history,
+            host_history,
+            no_shrink,
+        } => {
+            let destination = destination.pinned()?;
+            let out = destination.path().filter(|out| !out.exists());
+            let result = workflow::saved(Request {
+                operation: Operation::Explain,
+                selection: Some(selection),
+                destination,
+                jobs,
+                explain: adapters::faults::config::Explain {
+                    logs,
+                    data,
+                    history,
+                    host_history,
+                },
+                skip_shrink: no_shrink,
+                ..Default::default()
+            });
+            let host = out.map_or(Ok(()), |out| adapters::faults::explain::host_history(&out));
+            let code = result?;
+            host?;
+            return Ok(code);
+        }
         Command::List { json } => return workflow::list(json),
         Command::Show {
             selection,
@@ -334,8 +428,40 @@ fn execute_debug(command: DebugCommand) -> Result<u8> {
     };
     adapters::dispatch(request)
 }
+fn cpu_list(cpus: &[usize]) -> String {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for &cpu in cpus {
+        match ranges.last_mut() {
+            Some((_, last)) if *last + 1 == cpu => *last = cpu,
+            _ => ranges.push((cpu, cpu)),
+        }
+    }
+    ranges
+        .iter()
+        .map(|&(first, last)| {
+            if first == last {
+                first.to_string()
+            } else {
+                format!("{first}-{last}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 pub fn main() -> ExitCode {
-    let result = execute(Cli::parse().command);
+    let cli = Cli::parse();
+    if !matches!(cli.command, Command::SessionWorker) {
+        match consonance_client::placement::keep_one_core_type() {
+            Ok(Some(cpus)) => eprintln!(
+                "hybrid CPU: running on one core type, CPUs {}",
+                cpu_list(&cpus)
+            ),
+            Ok(None) => {}
+            Err(error) => eprintln!("warning: could not select one core type: {error}"),
+        }
+    }
+    let result = execute(cli.command);
     match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
@@ -348,6 +474,11 @@ pub fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cpu_lists_collapse_contiguous_runs() {
+        assert_eq!(cpu_list(&[0, 1, 2, 3, 8, 10, 11]), "0-3,8,10-11");
+        assert_eq!(cpu_list(&[]), "");
+    }
     #[test]
     fn surface_exposes_search_show_and_branch_without_old_aliases() {
         for args in [
@@ -382,6 +513,40 @@ mod tests {
                 "5000",
             ],
             vec!["harmony", "search", "--from", "debugging"],
+            vec![
+                "harmony",
+                "shrink",
+                "baseline",
+                "--finding",
+                "1",
+                "--jobs",
+                "4",
+            ],
+            vec![
+                "harmony",
+                "explain",
+                "baseline",
+                "--finding",
+                "1",
+                "--jobs",
+                "4",
+                "--log",
+                "/tmp/app/*.log",
+                "--data",
+                "/tmp/app/data",
+                "--history",
+                "/app/check",
+                "--out",
+                "baseline-explained",
+            ],
+            vec![
+                "harmony",
+                "explain",
+                "baseline",
+                "--no-shrink",
+                "--host-history",
+                "harness-check -family register @/tmp/harness/journal",
+            ],
             vec!["harmony", "list"],
             vec!["harmony", "check"],
         ] {

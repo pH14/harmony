@@ -124,19 +124,96 @@ fn tape(game: &Game, seed: u64, frames: u64) -> Result<Vec<ButtonChord>, Box<dyn
     Ok(tape)
 }
 
+fn genesis_prefix(name: &str, rom: &Path, core: &Path) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
+    let rom = fs::read(rom)?;
+    let core_sha256 = format!("{:x}", Sha256::digest(fs::read(core)?));
+    match name {
+        "metroid" => {
+            Ok(
+                metroid::target::MetroidTarget::from_rom_bytes_headless(&rom, core, &core_sha256)?
+                    .genesis_prefix()
+                    .to_vec(),
+            )
+        }
+        "super-mario-bros" => {
+            let mut machine = QuickNesMachine::from_rom_bytes(&rom, core, &core_sha256)?;
+            let mut prefix = smb::target::BOOT_WALK.to_vec();
+            nes::run_actions(&mut machine, &prefix)?;
+            let idle = ButtonChord::new(0, 1);
+            while !smb::target::smb_is_playing(&machine.read_wram()?) {
+                if prefix.len() > smb::target::BOOT_WALK.len() + 900 {
+                    return Err("Super Mario Bros did not reach play".into());
+                }
+                nes::run_actions(&mut machine, &[idle])?;
+                prefix.push(idle);
+            }
+            Ok(prefix)
+        }
+        other => Err(format!("--tape has no genesis prefix for {other}").into()),
+    }
+}
+
+fn recorded_tape(path: &Path) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
+    let input: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+    let actions = input["actions"]
+        .as_array()
+        .ok_or("tape has no actions array")?;
+    actions
+        .iter()
+        .map(|action| {
+            let field = |name: &str| -> Result<u8, Box<dyn Error>> {
+                Ok(u8::try_from(
+                    action[name]
+                        .as_u64()
+                        .ok_or_else(|| format!("tape action has no {name}"))?,
+                )?)
+            };
+            Ok(ButtonChord::new(field("buttons")?, field("hold_frames")?))
+        })
+        .collect()
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let (play, args) = match args.split_first() {
-        Some((flag, rest)) if flag == "--play" => (true, rest),
-        _ => (false, args.as_slice()),
-    };
-    let [name, rom, core, seed, frames, out] = args else {
-        return Err(
-            "usage: nes-core-oracle [--play] GAME ROM CORE SEED RANDOM_FRAMES OUT_DIR".into(),
-        );
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut play = false;
+    let mut recorded = None;
+    loop {
+        match args.first().map(String::as_str) {
+            Some("--play") => {
+                play = true;
+                args.remove(0);
+            }
+            Some("--tape") if args.len() > 1 => {
+                recorded = Some(PathBuf::from(args.remove(1)));
+                args.remove(0);
+            }
+            _ => break,
+        }
+    }
+    let usage = "usage: nes-core-oracle [--play] GAME ROM CORE SEED RANDOM_FRAMES OUT_DIR\n       nes-core-oracle [--play] --tape INPUT_JSON GAME ROM CORE OUT_DIR";
+    let (name, rom, core, out, tape, seed, setup_actions) = match (&recorded, args.as_slice()) {
+        (None, [name, rom, core, seed, frames, out]) => {
+            let game = game(name)?;
+            let seed: u64 = seed.parse()?;
+            (
+                name,
+                rom,
+                core,
+                out,
+                tape(&game, seed, frames.parse()?)?,
+                Some(seed),
+                game.setup.len(),
+            )
+        }
+        (Some(path), [name, rom, core, out]) => {
+            let mut tape = genesis_prefix(name, Path::new(rom), Path::new(core))?;
+            let setup_actions = tape.len();
+            tape.extend(recorded_tape(path)?);
+            (name, rom, core, out, tape, None, setup_actions)
+        }
+        _ => return Err(usage.into()),
     };
     let game = game(name)?;
-    let tape = tape(&game, seed.parse()?, frames.parse()?)?;
     let rom = fs::read(rom)?;
     let image = if game.cartridge_ram {
         nes::with_cartridge_ram(&rom)?
@@ -197,8 +274,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect();
     let manifest = json!({
         "game": name,
-        "seed": seed.parse::<u64>()?,
-        "setup_actions": game.setup.len(),
+        "seed": seed,
+        "setup_actions": setup_actions,
         "cartridge_ram": game.cartridge_ram,
         "state_len": state_len,
         "frames": frame_wram.len() / 2048,
