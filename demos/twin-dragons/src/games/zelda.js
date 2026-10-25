@@ -191,7 +191,7 @@ export default {
   system: "NES",
   assets: "",
   screen: { width: FRAME_WIDTH, height: FRAME_HEIGHT },
-  closeUp: { width: ROOM_WIDTH, height: ROOM_HEIGHT },
+  closeUp: { width: ROOM_WIDTH * 3, height: ROOM_HEIGHT * 3 },
   sprite: { width: 48, height: 48, originX: 16, originY: 16, icon: [16, 16, 16, 16] },
   controls: { a: "Sword", b: "Item", select: "Items" },
   campaign: true,

@@ -68,7 +68,7 @@ document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Arcade</h1><p class="hero-lede">Watch and join Harmony in playing games through multiverse state exploration.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details" open><summary>Details</summary><label class="search-speed"><span>Timelines per second <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
 <div class="goal"><div class="level-nav"><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><nav id="level-strip" class="level-strip" aria-label="Levels in this search" data-key=""><button id="level-more" class="level-more" aria-controls="level-trail" aria-expanded="false" hidden></button><div id="level-trail" class="level-trail"></div></nav><span id="goal-status" hidden></span></div><div class="view-tools"><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
 <div class="recording-controls" role="group" aria-label="Record exploration"><button id="record-to-file" hidden>Record to file</button><button id="record-view" aria-pressed="false">Record clip</button><a id="download-recording" hidden>Download video</a></div>
-<div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys pan; Enter inspects the cell under the pointer or at the center."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><button id="follow-camera" class="follow-camera" type="button" tabindex="-1" aria-label="Follow the search again" title="Follow the search again"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/></svg>Follow</button></div>
+<div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys pan; Enter inspects the cell under the pointer or at the center."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div class="zoom-controls" role="group" aria-label="Zoom the map"><button id="zoom-out" type="button" tabindex="-1" aria-label="Zoom out" title="Zoom out (-, or Ctrl and scroll)">−</button><button id="zoom-in" type="button" tabindex="-1" aria-label="Zoom in" title="Zoom in (+, or Ctrl and scroll)">+</button></div><button id="follow-camera" class="follow-camera" type="button" tabindex="-1" aria-label="Follow the search again" title="Follow the search again"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/></svg>Follow</button></div>
 <div class="map-footer"><span id="memory-limit" hidden></span><span id="recording-status" role="status" aria-live="polite"></span></div>
 ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 </section>
@@ -76,7 +76,7 @@ ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Saved paths</h2></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
 <footer><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><button id="credits">Credits & source</button><button id="theme" class="theme-button" aria-label="Switch color theme">Dark mode</button></footer>
 <div id="error" role="alert" hidden></div>
-<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><h2 id="level-picker-title">New search</h2><button id="close-level-picker" class="close" aria-label="Close level selector">×</button></div><div id="picker-body" class="picker-body" data-view="detail"><nav id="game-choice" class="game-choice" aria-label="Games"><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="game-list" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring your own ROM</h3><div id="rom-games" class="game-list" role="group" aria-labelledby="byo-rom-title"></div></section><section id="runs-entry" class="game-group" aria-labelledby="runs-title" hidden><h3 id="runs-title">Your machines</h3><div class="game-list"><button id="runs-open" class="game-row" type="button" aria-pressed="false">Runs</button></div></section></nav><div class="picker-detail"><div class="picker-detail-head"><button id="picker-back" class="picker-back" type="button">‹ Games</button><div class="picker-detail-title"><h3 id="detail-title"></h3><p id="detail-meta"></p></div><section id="run-target" class="run-target" hidden></section></div><div class="picker-detail-body"><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><section id="native-panel" class="native-panel" hidden></section><section id="runs-panel" class="native-panel" hidden></section><div id="level-grid" class="level-grid"></div></div></div></div></dialog>
+<dialog id="level-picker" aria-labelledby="level-picker-title" tabindex="-1" autofocus><div class="level-picker-heading"><h2 id="level-picker-title">New search</h2><button id="close-level-picker" class="close" aria-label="Close level selector">×</button></div><div id="picker-body" class="picker-body" data-view="detail"><nav id="game-choice" class="game-choice" aria-label="Games"><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="game-list" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring your own ROM</h3><div id="rom-games" class="game-list" role="group" aria-labelledby="byo-rom-title"></div></section><section id="runs-entry" class="game-group" aria-labelledby="runs-title" hidden><h3 id="runs-title">Your machines</h3><div class="game-list"><button id="runs-open" class="game-row" type="button" aria-pressed="false">Runs</button></div></section></nav><div class="picker-detail"><div class="picker-detail-head"><button id="picker-back" class="picker-back" type="button">‹ Games</button><div class="picker-detail-title"><h3 id="detail-title"></h3><p id="detail-meta"></p></div><section id="run-target" class="run-target" hidden></section></div><div class="picker-detail-body"><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><section id="native-panel" class="native-panel" hidden></section><section id="runs-panel" class="native-panel" hidden></section><div id="level-grid" class="level-grid"></div></div></div></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 const recordingCanvas = document.createElement("canvas");
 recordingCanvas.width = 1920;
@@ -473,16 +473,19 @@ const INTRO_SCALE = 1.3,
   PATH_STALL_MS = 8000,
   ROOM_DWELL_MS = 10000,
   CAMERA_RETREAT_MS = 1500,
-  CALM_HOLD_MS = 4000,
-  CALM_REANCHOR_MS = 20000,
-  CALM_PAN_PX_PER_S = 300,
-  CALM_PAN_SECONDS = 1.5;
-const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), calm: new Map() };
+  CALM_HOLD_MS = 2000,
+  CALM_REANCHOR_MS = 8000,
+  CALM_PAN_PX_PER_S = 1200,
+  CALM_PAN_SECONDS = 0.7;
+const camera = { zoomScale: 1, mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), calm: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
-function closeUpZoom(c) {
+function baseZoom(c) {
   const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
   const view = game.closeUp || game.screen;
   return Math.max(1, Math.min(c.width / view.width, c.height / view.height) / fit);
+}
+function closeUpZoom(c) {
+  return Math.max(1, baseZoom(c) * camera.zoomScale);
 }
 function frameRoute() {
   for (const room of cameraRooms()) {
@@ -615,6 +618,25 @@ function wheelUnit(e, size) {
 function wheelDelta(e, size) {
   const unit = wheelUnit(e, size);
   return (game.vertical ? e.deltaY : Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : 0) * unit;
+}
+function zoomBy(factor, c, at) {
+  const id = Number(c.dataset.map), view = roomView(id, c), panel = canvasPanel(c);
+  const fit = Math.min(c.width / panel.width, c.height / panel.height);
+  const zoom = Math.max(1, Math.min(maxZoom(c), view.zoom * factor));
+  if (zoom === view.zoom) return;
+  const r = c.getBoundingClientRect();
+  const ox = at ? ((at.clientX - r.left) / r.width - 0.5) * c.width : 0, oy = at ? ((at.clientY - r.top) / r.height - 0.5) * c.height : 0;
+  const before = fit * view.zoom, after = fit * zoom;
+  const center = panelCenter(panel, zoom, { x: view.x + ox / before - ox / after, y: view.y + oy / before - oy / after }, c);
+  camera.zoomScale = zoom / baseZoom(c);
+  Object.assign(view, center, { zoom });
+  roomView(id).zoom = zoom;
+  camera.overview = false;
+  if (at) moveCameraByHand();
+  drawMap(performance.now());
+}
+function zoomMaps(factor) {
+  for (const c of document.querySelectorAll(".area-map")) if (c.offsetParent) zoomBy(factor, c);
 }
 function levelOverview(id) {
   const map = maps.get(id), strip = document.createElement("canvas");
@@ -2437,6 +2459,11 @@ function bindMap(c) {
   let pinch;
   c.addEventListener("wheel", (e) => {
     const r = c.getBoundingClientRect(), size = game.vertical ? r.height : r.width;
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      zoomBy(Math.exp(-Math.max(-30, Math.min(30, e.deltaY * wheelUnit(e, r.height))) * 0.01), c, e);
+      return;
+    }
     if (game.grid) {
       const unit = wheelUnit(e, r.height);
       if (scrollView(Number(c.dataset.map), c, (e.deltaX * unit * c.width) / r.width, (e.deltaY * unit * c.height) / r.height)) e.preventDefault();
@@ -2473,6 +2500,7 @@ function bindMap(c) {
     const id = Number(c.dataset.map), room = roomView(id, c), map = canvasPanel(c);
     const point = pair(event.touches), r = c.getBoundingClientRect();
     room.zoom = Math.max(1, Math.min(maxZoom(c), pinch.zoom * point.distance / Math.max(1, pinch.distance)));
+    camera.zoomScale = room.zoom / baseZoom(c);
     const scale = Math.min(c.width / map.width, c.height / map.height) * room.zoom;
     const center = panelCenter(map, room.zoom, {
       x: pinch.worldX - (point.x - r.left - r.width / 2) * c.width / r.width / scale,
@@ -3557,7 +3585,7 @@ $("new-search").onclick = () => {
     const play = () => {
       const url = new URL(location.href);
       url.searchParams.set("game", choice.id);
-      location.assign(url);
+      leaveTo(url);
     };
     button.onclick = () => {
       if (nativeTarget) showNativeLevels(choice);
@@ -3620,13 +3648,25 @@ function renderLevels(family) {
             const url = new URL(location.href);
             url.searchParams.set("game", member.id);
             url.searchParams.set("level", level.id);
-            location.assign(url);
+            leaveTo(url);
           };
       card.onclick = () => (nativeTarget ? showHardware(member, level, card) : open());
       $("level-grid").append(card);
     }
   }
 }
+$("zoom-in").onclick = () => zoomMaps(1.4);
+$("zoom-out").onclick = () => zoomMaps(1 / 1.4);
+addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]") || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  if (e.key === "+" || e.key === "=") zoomMaps(1.4);
+  else if (e.key === "-" || e.key === "_") zoomMaps(1 / 1.4);
+  else if (e.key === "0") {
+    for (const c of document.querySelectorAll(".area-map")) if (c.offsetParent) zoomBy(baseZoom(c) / roomView(Number(c.dataset.map), c).zoom, c);
+    camera.zoomScale = 1;
+  } else return;
+  e.preventDefault();
+});
 $("follow-camera").onclick = () => {
   applyCameraMode();
 };
@@ -3823,6 +3863,10 @@ createEngine(base, game, engineInputs)
     if (state) selectState(state, true).catch(fail);
   })
   .catch(fail);
+function leaveTo(url) {
+  document.documentElement.dataset.leaving = "";
+  setTimeout(() => location.assign(url), matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 130);
+}
 const linkedLevel = params.has("level") ? Number(params.get("level")) : null;
 if (catalog.levels.some((level) => level.id === linkedLevel)) startSearch(linkedLevel);
 else if (liveView || tapeUrl) startSearch(catalog.levels[0].id);
@@ -3830,6 +3874,8 @@ else {
   askedForRom = true;
   $("new-search").onclick();
 }
+requestAnimationFrame(() => requestAnimationFrame(() => delete document.documentElement.dataset.booting));
+setTimeout(() => delete document.documentElement.dataset.booting, 2000);
 detectLauncher()
   .then((options) => {
     if (!options) return;
