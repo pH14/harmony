@@ -41,16 +41,11 @@ The second part is state for the purpose of exploration: what a lineage
 has caused is part of where it is. Cumulative scalars are directed by
 construction.
 
-An adapter emits scalars at one of two widths of coverage. A **chosen
-vector** is a small set, one to about twenty, of memory fields read at
-their natural width: a 16-bit position is one scalar, a 4-byte counter is
-one scalar. The adapter says which bytes form each scalar and nothing
-else: no name, no order, no direction, no meaning. A **full vector** is
-every byte of the target's state memory, with 16-bit pairs merged where the
-record shows a carry relation. The searcher treats both the same way. The
-chosen vector is how a target is brought up; the full vector is how a
-target with no human attention is explored, and how fields a human missed
-are found.
+An adapter emits a small set of scalars, one to about twenty, each a
+memory field read at its natural width: a 16-bit position is one scalar, a
+4-byte counter is one scalar. The adapter says which bytes form each scalar
+and nothing else: no name, no order, no direction, no meaning. Everything
+the searcher knows about a scalar it learns from the record.
 
 ## Feature table
 
@@ -221,7 +216,7 @@ rerunning it.
 
 | concept | NES game | service under the VMM |
 |---|---|---|
-| observation scalars | each byte of work and cartridge RAM; 16-bit pairs merged | counters per process, cumulative coverage edges, fired assertions, log template ids |
+| observation scalars | chosen memory fields at natural width, unnamed | counters per process, cumulative coverage edges, fired assertions, log template ids |
 | slow progress features | level, items held, area | scenario markers: leader elected, partition applied, snapshot taken |
 | fast progress features | room, boss phase, boss health | coverage within a scenario, retry counts |
 | place features | horizontal and vertical position, camera scroll | queue depths, in-flight request count, replication lag |

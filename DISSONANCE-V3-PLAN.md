@@ -19,9 +19,10 @@ machine it runs on. The claims it ships with:
    searcher's run with its hand-written key, with every milestone (bombs,
    Kraid, high jump, Ridley, Tourian, ending) reached and replayed. The
    searcher is told nothing about what any scalar means.
-4. One NES game that has never had a hand key in this repository, on the
-   full vector, taken further from power-on by the discovered key than by
-   a position-only key.
+4. Castlevania as the held-out game: untouched during development, then
+   given a chosen vector at the end and run from power-on, within 3x the
+   tries of the current searcher's run with its hand-written key. It shows
+   the searcher works on a game it was not built against.
 5. A faults workload (NATS or rqlite) where promoted features name
    scenario markers nobody wrote down, and the search reaches a failure
    the current searcher does not reach in equal work.
@@ -76,10 +77,6 @@ Every part of the design is either already running or already measured.
 - Throughput is at parity with the best public number: SMB power-on to
   ending cost 49 worker-minutes on ms02. The gains left are in the key and
   the allocation, which is all of v3.
-- Six hidden progress bytes that humans found by hand are known answers
-  for the feature filter: Metroid Zebetite health, Mega Man 2 Boobeam
-  count, Famidash phase `$04A8`, Punch-Out `$0096`, Castlevania `$0045`,
-  and SMB loop progress.
 
 ## Method
 
@@ -162,16 +159,14 @@ is t_label / t_search. Pass is a ratio at or below 0.2 on at least one
 early milestone. Calibration values measured on these recordings: energy tank 0.13,
 missile capacity 0.17, long beam 0.48, Kraid 0.8 to 0.95, SMB best 0.08.
 
-**Feature filter.** Build the scalar vector for every resident state at
-each checkpoint by reading its snapshot. Compute the four tests per scalar
-per region, using the recording's own hand key only to define regions for
-this test. The known answers are the hand key fields and the hidden byte
-for the game. For Metroid, Zebetite health is the byte to find in the
-Tourian region; the recording does not reach Tourian, so that case waits
-for a longer recording and the test on this one is the hand key fields.
-The negative control is a copy of the vector with scalar indices shuffled
-per state; it must promote nothing stable. Report the top ten per region
-and the rank of each known answer.
+**Feature kinds.** Build the chosen vector for every sampled resident at
+each checkpoint by reading its snapshot. Compute the progress and place
+tests per scalar per region, using the recording's own hand key only to
+define regions for this test. The known answers are the hand key fields:
+each should come out as the right kind with the right direction, and each
+distractor should be rejected. The negative control is a copy of the vector
+with scalar indices shuffled per state; it must promote nothing stable.
+Report every scalar's test values and kind per region.
 
 **Regions and bottlenecks.** Cluster the transition graph at each
 checkpoint. Compare the partition to the hand key's room and area fields
@@ -234,16 +229,14 @@ inputs allow; the dependency graph is below.
 ```mermaid
 flowchart LR
     S0[0 corpus] --> S1[1 observation and record]
-    S1 --> S2a[2a feature kinds, chosen vector]
-    S5 --> S2b[2b field discovery, parked]
+    S1 --> S2[2 feature kinds, chosen vector]
     S1 --> S3[3 graph on hand positions]
-    S2a --> S4[4 graph on learned positions]
+    S2 --> S4[4 graph on learned positions]
     S3 --> S4
     S4 --> S5[5 selection, live]
-    S2a --> S6[6 input and jobs]
+    S2 --> S6[6 input and jobs]
     S5 --> S7[7 claims]
     S6 --> S7
-    S2b --> S7
 ```
 
 ### Stage 0: corpus (ms02, msr1, day one)
@@ -271,7 +264,7 @@ scalars.
 Pass: the hand key of every recorded game is a function of the emitted
 scalars, shown by recomputing it from the v3 record.
 
-### Stage 2a: feature kinds on a chosen vector (Mac, offline, minutes)
+### Stage 2: feature kinds on a chosen vector (Mac, offline, minutes)
 
 Each game's adapter emits a chosen vector: the fields of its hand key read
 at natural width as unnamed scalars, plus two or three distractors such as
@@ -287,31 +280,7 @@ field is promoted as a progress feature with the correct direction, every
 position field as a place feature, every distractor is rejected, and a
 shuffled-scalar control promotes nothing stable. Run on a uniform sample of
 20,000 residents per checkpoint. Stages 4 and 5 build on this result.
-
-### Stage 2b: field discovery (parked until stage 5 has a live result)
-
-Discovery removes the human choice of fields. It runs in two rungs, each
-after stage 5 has shown the searcher works on a chosen vector, because a
-discovered key proves nothing until there is a searcher to put it in.
-
-Rung 1, the chosen span: the adapter hands over one block of memory that
-is all state and nothing else, with no widths and no field boundaries. On
-SMB that is a few hundred bytes once sprite shadow, sound and scratch are
-left out. The tests must find the fields: 16-bit pairs by carry relation,
-counters by the progress tests, coordinates by the place tests, and reject
-the rest. Pass: the promoted features reproduce the chosen vector of stage
-2a, with a shuffled control promoting nothing stable.
-
-Rung 2, full state RAM: work and cartridge RAM, no video memory. Sample
-20,000 residents per checkpoint; run a full checkpoint only within a
-factor of two of a threshold. Co-change grouping is deferred. Pass: the
-hand key fields and the known hidden byte for the game ranked in the top
-ten inside the region where the hand fix applied, hidden bytes scored only
-where they vary. Claim 4, Castlevania held out, is the live test of this
-rung.
-
-Until stage 5 passes, no machine time goes to either rung beyond keeping
-the existing tools building.
+Castlevania gets no chosen vector until stage 7.
 
 ### Stage 3: graph on hand positions (Mac and ms02, from day one)
 
@@ -337,7 +306,7 @@ first v3-recorded corpus and does not hold the stage.
 
 ### Stage 4: graph on learned positions (Mac, offline)
 
-Run stage 3's tools on positions built from stage 2a's features.
+Run stage 3's tools on positions built from stage 2's features.
 
 Pass: lead ratios within 1.2x of the hand-position ratios on SMB and
 Metroid, and the hierarchy by change rate reproduces area above room above
