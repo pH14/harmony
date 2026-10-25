@@ -14,6 +14,7 @@ use crate::search::{
     continuation::{Continuation, ContinuationBank},
     draw::SUFFIX_DOUBLING_LIMIT,
     heap,
+    labels::{LabelAccounting, LabelGraph},
     rand::RomuDuoJrRand,
     weighted_set::WeightedSet,
 };
@@ -709,6 +710,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     failed_compaction: Option<(usize, usize)>,
     input_reconstructions: std::cell::Cell<u64>,
     continuations: Option<ContinuationBank<Position<K>, A>>,
+    labels: Option<LabelGraph<A, K>>,
     continuation_wave: u32,
     continuation_accounting: ContinuationAccounting,
     landed: BTreeSet<u64>,
@@ -1313,6 +1315,7 @@ where
             failed_compaction: None,
             input_reconstructions: std::cell::Cell::new(0),
             continuations: None,
+            labels: None,
             continuation_wave: 0,
             continuation_accounting: ContinuationAccounting::default(),
             landed: BTreeSet::new(),
@@ -1491,6 +1494,9 @@ where
         };
         if remove_slot {
             self.slots.remove(&slot_key);
+            if let Some(labels) = &mut self.labels {
+                labels.holder_removed(key);
+            }
         }
         if let Some(state) = self.cells.get_mut(&cell_of(key)) {
             state.active = state.active.saturating_sub(1);
@@ -1634,6 +1640,7 @@ where
     }
 
     pub(crate) fn maintain_memory_budget(&mut self) -> Result<(), &'static str> {
+        self.relax_labels();
         self.compact_history_if_needed()?;
         self.enforce_snapshot_memory_budget()
     }
@@ -1827,13 +1834,18 @@ where
         self.cells.retain(|_, state| state.active > 0);
         self.retain_indexed_landings();
 
-        if let Some(bank) = &mut self.continuations {
+        if self.continuations.is_some() || self.labels.is_some() {
             let live = self
                 .entries
                 .iter()
                 .map(|entry| position_of(entry.key))
                 .collect::<BTreeSet<_>>();
-            bank.retain(&live);
+            if let Some(bank) = &mut self.continuations {
+                bank.retain(&live);
+            }
+            if let Some(labels) = &mut self.labels {
+                labels.retain(&live);
+            }
         }
 
         self.deepest_leaf = self
@@ -2869,6 +2881,25 @@ where
                 );
             }
         }
+        if let Some(labels) = &mut self.labels {
+            if let Some(parent) = parent_id {
+                let entry = &self.entries[parent];
+                let tail_cost: u64 = suffix
+                    .as_ref()
+                    .iter()
+                    .map(|action| (self.action_cost)(action))
+                    .sum();
+                labels.record(
+                    entry.key,
+                    key,
+                    entry.id,
+                    self.next_entry_id,
+                    suffix.as_ref(),
+                    tail_cost,
+                );
+            }
+            labels.holder_changed(key, queue_tier.map(usize::from));
+        }
         if let Some(parent) = parent_id
             && let Some(interval) = self.interval_counts(cell_of(self.entries[parent].key))
         {
@@ -3497,10 +3528,41 @@ where
             (None, true) => self.continuations = Some(ContinuationBank::new(longest_edge)),
             (_, false) => self.continuations = None,
         }
+        match (&mut self.labels, K::preferences() > 0) {
+            (Some(labels), true) => labels.set_longest_edge(longest_edge),
+            (None, true) => self.labels = Some(LabelGraph::new(longest_edge)),
+            (_, false) => self.labels = None,
+        }
     }
 
     pub(crate) fn enable_continuations(&mut self, longest_edge: usize) {
         self.continuations = (K::preferences() > 0).then(|| ContinuationBank::new(longest_edge));
+        self.labels = (K::preferences() > 0).then(|| LabelGraph::new(longest_edge));
+    }
+
+    pub(crate) fn relax_labels(&mut self) -> usize {
+        let Some(labels) = &mut self.labels else {
+            return 0;
+        };
+        let slots = &self.slots;
+        let entries = &self.entries;
+        let best_holder = |slot: Slot<K>, preference: usize| -> Option<K> {
+            slots
+                .get(&slot)?
+                .iter()
+                .map(|index| entries[*index].key)
+                .max_by(|a, b| a.preference_cmp(preference, *b))
+        };
+        let budget = labels.relaxation_budget();
+        labels.relax(budget, &best_holder, &|_| true)
+    }
+
+    #[must_use]
+    pub fn label_report(&self) -> LabelAccounting {
+        self.labels
+            .as_ref()
+            .map(LabelGraph::accounting)
+            .unwrap_or_default()
     }
 
     pub(crate) fn set_admission_wave(&mut self, wave: u32) {
@@ -3634,6 +3696,7 @@ where
                     .as_ref()
                     .map_or(0, ContinuationBank::memory_bytes),
             )
+            .saturating_add(self.labels.as_ref().map_or(0, LabelGraph::memory_bytes))
     }
 
     #[must_use]
@@ -6312,6 +6375,13 @@ mod tests {
             self.first.cmp(&other.first)
         }
 
+        fn carry(self, _donor: Self, leaf: Self, _weight: (u32, u32)) -> Self {
+            Self {
+                first: self.first.max(leaf.first),
+                ..leaf
+            }
+        }
+
         type Lineage = ();
 
         fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -6319,6 +6389,24 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn a_better_holder_upstream_labels_the_positions_it_reaches_and_the_label_survives_a_checkpoint()
+     {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        archive.enable_continuations(4);
+        let left = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
+        insert_region_at(&mut archive, None, 3, (1, 0, 9));
+        while archive.relax_labels() > 0 {}
+        let report = archive.label_report();
+        assert_eq!(report.labels, 1);
+        assert_eq!(report.queued, 0);
+        let bytes = postcard::to_allocvec(&archive).unwrap();
+        let restored: Archive<u8, RegionKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.label_report(), report);
+        assert!(archive.history_memory_bytes() > 0);
     }
 
     fn insert_region_at(

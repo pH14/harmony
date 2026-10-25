@@ -16,7 +16,7 @@ pub const LABEL_IDENTIFIER: &str = "slot_labels_edge_reliability_v1";
 
 pub const MAX_LABEL_PREFERENCES: usize = 8;
 
-pub const RELAXATION_FLOOR: usize = 64;
+pub const RELAXATION_FLOOR: usize = 8;
 
 pub const RELAXATION_QUEUE_SHARE: usize = 64;
 
@@ -220,7 +220,7 @@ impl<A: Clone, K: ArchiveKey> LabelGraph<A, K> {
         LabelAccounting {
             edges: self.edges.len(),
             labels: self.labels.len(),
-            queued: self.queue.len(),
+            queued: self.queue.len() + self.stale.len(),
             relaxations: self.relaxations,
             examinations: self.examinations,
             changed: self.changed,

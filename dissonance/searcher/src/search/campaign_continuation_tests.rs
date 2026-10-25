@@ -682,6 +682,9 @@ fn a_progress_line_reports_the_continuation_accounting() {
     assert!(accounting.replaced <= accounting.landed);
     assert!(accounting.opened_new_cell <= accounting.jobs);
     assert!(accounting.energy <= 256);
+    let labels = record.labels;
+    assert!(labels.edges > 0);
+    assert!(labels.relaxations > 0);
 }
 
 #[test]

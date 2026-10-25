@@ -58,11 +58,12 @@ struct Milestone<K: ArchiveKey> {
 
 struct Point {
     executions: u64,
+    queued: usize,
     edges: usize,
     labels: usize,
     dominating: usize,
     holders: usize,
-    examinations: usize,
+    examinations: u64,
 }
 
 fn named_first_seen(campaign: &Path) -> Result<BTreeMap<String, u64>, Box<dyn Error>> {
@@ -214,6 +215,15 @@ fn run<K: ArchiveKey>(
             landed += u64::from(arrived);
             graph.transfer_attempted(position_of(*donor), position_of(*leaf), arrived);
         }
+        {
+            let best_holder = |slot: Slot<K>, preference: usize| -> Option<K> {
+                holders
+                    .get(&slot)
+                    .map(|held| held[preference.min(held.len() - 1)])
+            };
+            let budget = graph.relaxation_budget();
+            graph.relax(budget, &best_holder, &raisable);
+        }
         let due = report_points.contains(&job.sequence) || job.sequence >= last_report + every;
         if due {
             last_report = job.sequence;
@@ -321,6 +331,7 @@ fn run<K: ArchiveKey>(
         "accounting": serde_json::to_value(graph.accounting())?,
         "points": points.iter().map(|point| json!({
             "executions": point.executions,
+            "queued": point.queued,
             "edges": point.edges,
             "labels": point.labels,
             "holders": point.holders,
@@ -350,13 +361,15 @@ fn report<K: ArchiveKey>(
             .get(&slot)
             .map(|held| held[preference.min(held.len() - 1)])
     };
-    let examinations = graph.relax_fully(&best_holder, raisable);
+    let _ = raisable;
+    let examinations = graph.accounting().examinations;
     let dominating = graph
         .labels()
         .filter(|(slot, _)| graph.dominating(**slot, 0, &best_holder).is_some())
         .count();
     points.push(Point {
         executions,
+        queued: graph.queue_len(),
         edges: graph.edge_count(),
         labels: graph.label_count(),
         dominating,
