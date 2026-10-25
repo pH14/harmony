@@ -127,23 +127,11 @@ async function boot() {
   }
 }
 
-const FADE_MS = 200;
-let pending = Promise.resolve();
-
 function reboot(url) {
   root.dataset.switching = "";
-  root.dataset.booting = "";
-  pending = pending.then(async () => {
-    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) await new Promise((resolve) => setTimeout(resolve, FADE_MS));
-    scope?.dispose();
-    if (url) history.pushState(null, "", url);
-    try {
-      await boot();
-    } catch {
-      location.reload();
-    }
-    delete root.dataset.switching;
-  });
+  scope?.dispose();
+  if (url) history.pushState(null, "", url);
+  boot().catch(() => location.reload()).finally(() => delete root.dataset.switching);
 }
 
 function navigate(target, { replace = false } = {}) {
