@@ -129,11 +129,12 @@ try {
     await exposed(page.locator('#scrub'), true);
     await exposed(page.locator('#sound'), true);
     const audioLayout = await page.evaluate(() => {
-      const replay=document.querySelector('#play').getBoundingClientRect(), sound=document.querySelector('#sound').getBoundingClientRect();
-      return {parent:document.querySelector('#sound').parentElement.className, overlap:Math.min(replay.bottom,sound.bottom)-Math.max(replay.top,sound.top), gap:sound.left-replay.right};
+      const sound = document.querySelector('#sound').getBoundingClientRect(), scrub = document.querySelector('#scrub').getBoundingClientRect();
+      const dx = Math.max(0, sound.left - scrub.right, scrub.left - sound.right), dy = Math.max(0, sound.top - scrub.bottom, scrub.top - sound.bottom);
+      return {parent: document.querySelector('#sound').parentElement.className, separation: Math.hypot(dx, dy)};
     });
-    assert.equal(audioLayout.parent,'replay-actions');
-    assert.ok(audioLayout.overlap > 0 && audioLayout.gap >= 0 && audioLayout.gap <= 10,'Audio sits beside Replay, rather than floating above it');
+    assert.equal(audioLayout.parent, 'history-controls');
+    assert.ok(audioLayout.separation >= 8, 'Audio keeps clear of the position slider');
     const map = await page.locator('.area-map').evaluateAll((maps) => maps.find((c) => c.dataset.markerFrame && c.dataset.markerFrame !== '')?.dataset.map);
     await exposed(page.locator(`.area-map[data-map="${map}"]`), true);
     await page.screenshot({path:`test-results/tour-mobile-${viewport.width}-replay.png`});
