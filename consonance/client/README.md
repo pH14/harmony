@@ -246,7 +246,7 @@ and travels neither in the worker protocol nor in any identity.
 
 `SparseSnapshot` is the explicit `consonance-whole-vm-v2` archive shape used
 by adapters that need page and sidecar sharing across related checkpoints.
-Its serde fields remain `base`, `image_identity`, `pages`, and `sidecar`; the
+Its serde fields are `assurance_identity`, `base`, `image_identity`, `pages`, and `sidecar`; the
 sharing metadata is host-local and is never written to the wire. An export
 base must have the same setup and identity, and unchanged pages/chunks are
 retained by reference until a snapshot is serialized. The embedded sidecar

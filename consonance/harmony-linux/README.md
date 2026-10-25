@@ -64,7 +64,8 @@ therefore does not change the accepted source bytes.
   interfaces; build scripts verify source and artifact hashes.
 - `uml/` builds the User-mode Linux profile: the pinned kernel as a static
   host executable, a fixture initramfs, and the profile that hashes them. It
-  applies `linux/patches/common` and `linux/patches/um`.
+  applies `linux/patches/common`, then `linux/patches/um` on x86-64 or
+  `linux/patches/um-arm64` on arm64.
 - `libvoidstar/` implements the SDK-facing dynamic ABI and communicates with
   `/dev/harmony`.
 - `sdk/` provides the no-std event, state, assertion, lifecycle, and entropy
