@@ -429,7 +429,7 @@ every search branch) and Take the tour. The per-search counters and the
 rollout worker count sit in a collapsed Details disclosure at the bottom of the
 Searches pane. The footer
 holds a link to the repository, Credits & source and the Dark mode / Light mode
-switch. The Credits dialog opens with the Harmony authorship and licence notice,
+switch. The page starts in dark mode and remembers a visitor's choice. The Credits dialog opens with the Harmony authorship and licence notice,
 then lists every game the arcade supports as a collapsed section; the current
 game's section starts open.
 
@@ -600,9 +600,8 @@ music. The sound effects are absent from this build.
 
 The replay controls (a play or pause icon, the timeline, the volume button and the speed menu) sit over the bottom of the replay screen on a dark backing so they stay visible on any game. They stay visible while the replay is paused and fade out while it plays, and return when the pointer is over the screen or a control has keyboard focus. The play button shows a pause icon while a replay plays, a replay icon after it ends and a play icon otherwise.
 Selecting a cell opens its history and pauses the search so the map stays still.
-The search resumes when the history closes or when the visitor presses the
-Searches play button, unless the visitor paused or resumed the search in the
-meantime. The automatic replay pick plays while the search runs.
+Closing the history always resumes a search that opening it paused, whatever the
+visitor did with the Searches pause button in between. The automatic replay pick plays while the search runs.
 
 ## Games
 

@@ -393,9 +393,7 @@ function applyTheme(value) {
   $("theme").setAttribute("aria-label", `Switch to ${value === "dark" ? "light" : "dark"} mode`);
   $("theme").textContent = value === "dark" ? "Light mode" : "Dark mode";
 }
-const themeMedia = matchMedia("(prefers-color-scheme: dark)");
-applyTheme(theme === "light" || theme === "dark" ? theme : themeMedia.matches ? "dark" : "light");
-themeMedia.addEventListener("change", () => { if (!theme) applyTheme(themeMedia.matches ? "dark" : "light"); });
+applyTheme(theme === "light" ? "light" : "dark");
 $("theme").onclick = () => {
   theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   applyTheme(theme);
@@ -2402,9 +2400,15 @@ function drawArea(canvas, now) {
   canvas.dataset.centerY = areaCenterY;
   const focus = preview ? null : hoverCell || selectedCell;
   if (focus?.level === mapLevel) {
-    ctx.strokeStyle = "#fff0bd";
-    ctx.lineWidth = 1.5 / areaZoom;
-    ctx.strokeRect(focus.x * 32 + 1, cellTop(focus.y) + 1, 30, 30);
+    const top = cellTop(focus.y);
+    ctx.fillStyle = "rgba(255, 240, 189, .26)";
+    ctx.fillRect(focus.x * 32 + 1, top + 1, 30, 30);
+    ctx.strokeStyle = "rgba(20, 24, 28, .8)";
+    ctx.lineWidth = 4 / areaZoom;
+    ctx.strokeRect(focus.x * 32 + 1, top + 1, 30, 30);
+    ctx.strokeStyle = "#fffbe6";
+    ctx.lineWidth = 2 / areaZoom;
+    ctx.strokeRect(focus.x * 32 + 1, top + 1, 30, 30);
   }
   const o = preview ? areaOrigin?.point : routeHover ? routeHover.point : $("inspector").hidden
     ? areaOrigin?.point
@@ -2619,20 +2623,24 @@ function setSearchPaused(value) {
   $("status").textContent = value ? "Paused" : "Exploring";
   $("status-dot").className = value ? "paused" : "";
 }
+let inspectorHeld = false;
 function holdSearchForReplay() {
-  const watching = !$("inspector").hidden || (playing && viewerReplay && !controlMode);
+  const inspecting = !$("inspector").hidden,
+    watching = inspecting || (playing && viewerReplay && !controlMode);
   if (watching === replayWatching) return;
   replayWatching = watching;
   if (watching && !paused && ready && !stats.stopped) {
     replayPaused = true;
+    inspectorHeld = inspecting;
     setSearchPaused(true);
   } else if (!watching && replayPaused) {
     replayPaused = false;
+    inspectorHeld = false;
     if (paused && ready && !stats.stopped && !playSession && !branchBusy && !tourSession) setSearchPaused(false);
   }
 }
 $("pause").onclick = () => {
-  replayPaused = false;
+  if (!inspectorHeld) replayPaused = false;
   setSearchPaused(!paused);
 };
 $("reset").onclick = () => {
@@ -2673,10 +2681,33 @@ $("play").onclick = async () => {
 $("speed").onchange = () => {
   if (playing) startAudio();
 };
-$("scrub").oninput = () => {
+let scrubResume = false,
+  scrubbing = false;
+function resumeAfterScrub() {
+  if (scrubbing || seeking) return;
+  const resume = scrubResume && current && currentFrame < current.frames;
+  scrubResume = false;
+  if (!resume) return;
+  playing = true;
+  viewerReplay = true;
+  frameCredit = 0;
+  startAudio();
+  setPlayState("pause");
+}
+$("scrub").oninput = async () => {
   userSelected = true;
-  seek(Number($("scrub").value));
+  if (playing) scrubResume = true;
+  await seek(Number($("scrub").value));
+  resumeAfterScrub();
 };
+$("scrub").onpointerdown = () => {
+  scrubbing = true;
+};
+for (const type of ["pointerup", "pointercancel", "change"])
+  $("scrub").addEventListener(type, () => {
+    scrubbing = false;
+    resumeAfterScrub();
+  });
 const showInfo = (html) => {
   $("info-content").innerHTML = html;
   $("info").showModal();

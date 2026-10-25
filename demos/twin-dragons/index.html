@@ -15,6 +15,11 @@
     <title>Harmony Arcade</title>
     <script>
       document.documentElement.dataset.booting = "";
+      try {
+        document.documentElement.dataset.theme = localStorage.getItem("harmony.twin-dragons.theme") === "light" ? "light" : "dark";
+      } catch {
+        document.documentElement.dataset.theme = "dark";
+      }
     </script>
   </head>
   <body>

@@ -66,7 +66,7 @@ try {
         await page.mouse.move(0,0);
       }
     }
-    await page.locator('#theme').click();
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(28, 28, 28)','Dark is the default theme');
     await page.locator('#theme').click();
     assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(255, 255, 255)');
     await page.locator('#theme').click();

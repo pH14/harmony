@@ -1316,8 +1316,7 @@ html:not([data-switched]) .workspace:not(.timeline-collapsed) .branches nav { an
 .branches button:has(.branch-icon)::before { content: none !important; }
 .timeline-row > button[data-search] { padding-inline: 9px 6px; }
 main { padding-top: 40px; }
-footer .brand { color: var(--text); font-size: 15px; }
-footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
+footer .theme-button { margin-left: auto; }
 .room-bar { display: flex; align-items: center; gap: 6px; padding: 6px; background: var(--surface); line-height: normal; }
 .map-wrap[data-rooms="1"] .room-bar { display: none; }
 #room-tabs { display: flex; flex: 1; flex-wrap: wrap; gap: 2px; min-width: 0; }
@@ -1579,8 +1578,10 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
 }
 .controlling .transport :is(#play, #scrub, #speed) { display: none; }
 
-footer .brand { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; }
-footer .brand svg { width: 16px; height: 16px; }
+footer :is(.brand, button) { color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1.4; text-decoration: none; }
+footer :is(.brand, button):hover { color: var(--text); }
+footer .brand { display: inline-flex; align-items: center; gap: 7px; }
+footer .brand svg { width: 14px; height: 14px; }
 #info-content hr { margin: 20px 0 8px; border: 0; border-top: 1px solid var(--line); }
 .credit-game { border-bottom: 1px solid var(--line); }
 .credit-game summary { display: flex; align-items: center; justify-content: space-between; padding: 10px 4px; font-size: 14px; font-weight: 600; cursor: pointer; list-style: none; }

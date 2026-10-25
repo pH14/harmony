@@ -66,6 +66,14 @@ try {
   await stillDuring(page, 400);
   assert.ok(Number(await page.locator('#scrub').inputValue()) > 0, 'The replay advances while the search waits');
 
+  await page.evaluate(() => {
+    const scrub = document.querySelector('#scrub');
+    scrub.value = 10;
+    scrub.dispatchEvent(new Event('input', {bubbles: true}));
+    scrub.dispatchEvent(new Event('change', {bubbles: true}));
+  });
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'pause' && Number(document.querySelector('#scrub').value) > 10, null, {timeout: 5000});
+
   await page.locator('#play').click();
   await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'play', null, {timeout: 5000});
   await page.waitForTimeout(400);
@@ -81,6 +89,9 @@ try {
   await page.locator('#play').click();
   await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
   await stillDuring(page, 300);
+  await page.locator('#pause').click();
+  await page.locator('#pause').click();
+  assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search');
   await page.locator('#close-inspector').click();
   await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
   await growing(page, await paths(page));
