@@ -483,7 +483,7 @@ for 3 seconds while the pointer rests on a pan arrow and for 2.5 seconds after a
 touch. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement, or at
 once from the Follow button. Ctrl or ⌘ with the scroll wheel (a trackpad pinch),
-the `+` and `-` keys and the zoom buttons change the zoom for every game, and
+the `+` and `-` keys and the zoom buttons in the toolbar beside the Movement and Heatmap toggle change the zoom for every game, and
 `0` returns to the game's default view. The chosen zoom stays while the camera
 follows the search.
 On a touch screen a one-finger drag on a zoomed view pans it sideways, and up

@@ -1504,15 +1504,11 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
 #record-view[aria-pressed="true"] { color: #ff6c77; }
 #recording-status { font-size: 12px; }
 
-.follow-camera { position: absolute; right: 14px; bottom: 12px; z-index: 3; display: flex; align-items: center; gap: 6px; padding: 6px 11px; border: 1px solid #ffffff2e; border-radius: 999px; background: #10161dcc; color: #fff; font-size: 11px; font-weight: 500; opacity: 0; pointer-events: none; transition: opacity .3s ease; backdrop-filter: blur(4px); }
-.zoom-controls { position: absolute; left: 14px; bottom: 12px; z-index: 3; display: flex; border: 1px solid #ffffff2e; border-radius: 999px; background: #10161dcc; backdrop-filter: blur(4px); opacity: .55; transition: opacity .2s ease; overflow: hidden; }
-.zoom-controls:hover, .zoom-controls:focus-within, .map-wrap:hover .zoom-controls { opacity: .9; }
-.zoom-controls button { width: 32px; height: 28px; padding: 0; border: 0; border-radius: 0; background: transparent; color: #fff; font-size: 16px; line-height: 1; }
+.follow-camera { position: absolute; right: 14px; top: 12px; z-index: 3; display: flex; align-items: center; gap: 6px; padding: 6px 11px; border: 1px solid #ffffff2e; border-radius: 999px; background: #10161dcc; color: #fff; font-size: 11px; font-weight: 500; opacity: 0; pointer-events: none; transition: opacity .3s ease; backdrop-filter: blur(4px); }
 @media (pointer: coarse) {
   .zoom-controls { display: none; }
 }
-.zoom-controls button + button { border-left: 1px solid #ffffff2e; }
-.zoom-controls button:hover { background: #ffffff1f; }
+.goal .zoom-controls button { width: 30px; justify-content: center; padding-inline: 0; font-size: 15px; }
 .follow-camera svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .map-wrap[data-away="true"] .follow-camera { opacity: .6; pointer-events: auto; }
 .map-wrap[data-away="true"] .follow-camera:hover, .follow-camera:focus-visible { opacity: 1; }
