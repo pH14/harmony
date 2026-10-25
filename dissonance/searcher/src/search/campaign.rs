@@ -6322,7 +6322,9 @@ mod tests {
         }
 
         fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
-            Ok(TestKey(if ALIVE_TEST.get() == 7 {
+            Ok(TestKey(if ALIVE_TEST.get() == 10 {
+                u8::from(target.value > 0)
+            } else if ALIVE_TEST.get() == 7 {
                 if target.value % 2 == 1 {
                     target.value
                 } else {
@@ -10776,12 +10778,62 @@ mod tests {
     }
 
     #[test]
+    fn alive_rollout_leaves_known_cell_after_complete_initial_suffix() {
+        ALIVE_TEST.set(10);
+        let (workload, _, mut core, mut target) = test_core();
+        core.archive
+            .insert(
+                Some(0),
+                1,
+                crate::search::archive::ArchiveCandidate {
+                    suffix: vec![TestAction::new(1, 1)],
+                    key: TestKey(1),
+                    milestones: (),
+                },
+                1,
+            )
+            .unwrap();
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        let draw_state =
+            crate::search::draw_tables::DrawTables::new(workload.draw_table_parameters(&()))
+                .unwrap();
+        let context = super::input::InputExecutionContext {
+            workload: &workload,
+            config: &config,
+            archive: &core.archive,
+            draw_state: &draw_state,
+            parent: 0,
+            mutation_seed: 1,
+            mixture_weight: 1,
+            splice_weight: 1,
+        };
+        let job = super::coordinator::JobSpec::<TestWorkload> {
+            reservation: 0,
+            planned_finish: 0,
+            snapshot: std::sync::Arc::new(0),
+            replay: vec![],
+            replay_certificates: vec![],
+            parent_milestones: (),
+            suffix: vec![TestAction::new(1, 1); 2],
+        };
+        let (outcome, trace) =
+            super::input::execute_input_job(&context, &mut target, &job, false, true, 100).unwrap();
+        assert_eq!(outcome.result.actions.len(), 2);
+        assert_eq!(trace.blocks.len(), 1);
+        assert_eq!(trace.blocks[0].would_retain, Some(false));
+        assert_eq!(trace.stop_reason, "left_source_cell");
+        ALIVE_TEST.set(0);
+    }
+
+    #[test]
     fn alive_rollouts_stop_on_retention_stasis_death_and_budget() {
         for (mode, input, budget, expected, block_len, actions) in [
             (1, 1, 100, 4, 1, 4),
             (8, 1, 100, 3, 1, 3),
             (8, 1, 100, 2, 2, 3),
-            (9, 1, 6, 5, 2, 6),
+            (9, 1, 6, 3, 2, 6),
             (2, 0, 100, 1, 1, 1),
             (5, 1, 100, 1, 1, 1),
             (6, 1, 7, 3, 1, 7),
@@ -10815,7 +10867,11 @@ mod tests {
             let (outcome, trace) = coordinator
                 .run_input_job(&mut target, &job, false, true, budget)
                 .unwrap();
-            assert_eq!(trace.blocks.len(), expected);
+            assert_eq!(
+                trace.blocks.len(),
+                expected,
+                "mode={mode} block_len={block_len} trace={trace:?}"
+            );
             if mode == 9 {
                 assert_eq!(
                     outcome
@@ -10828,7 +10884,7 @@ mod tests {
                 );
                 assert_eq!(
                     trace.blocks.iter().map(|b| b.work).collect::<Vec<_>>(),
-                    vec![2, 1, 1, 1, 1]
+                    vec![2, 2, 2]
                 );
             }
             if mode == 8 {

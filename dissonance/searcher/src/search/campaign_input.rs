@@ -5,7 +5,10 @@ use super::{
     coordinator::{JobOutcome, JobSpec, run_job},
 };
 use crate::search::{
-    archive::Archive, draw::MixtureDraw, draw_tables::DrawTables, rand::RomuDuoJrRand,
+    archive::{Archive, cell_of},
+    draw::MixtureDraw,
+    draw_tables::DrawTables,
+    rand::RomuDuoJrRand,
 };
 use serde::Serialize;
 use std::{error::Error, num::NonZeroU64};
@@ -62,6 +65,12 @@ pub(crate) fn execute_input_job<G: Workload>(
     let workload = context.workload;
     let config = context.config;
     let parent = context.parent;
+    let source_cell = cell_of(
+        context
+            .archive
+            .entry_key(parent)
+            .ok_or("missing input parent")?,
+    );
     let before = workload.execution_work(target);
     let prepared = workload.execute_job_certified(
         &config.run,
@@ -94,8 +103,6 @@ pub(crate) fn execute_input_job<G: Workload>(
     let mut previous_key = None;
     let mut suffix = job.suffix.clone();
     let block_len = suffix.len();
-    let mut suffix_offset = 0;
-    let mut initial_block = true;
     let minimum_work = if chaining {
         workload.continuation_block_work(&config.run)
     } else {
@@ -150,15 +157,13 @@ pub(crate) fn execute_input_job<G: Workload>(
         let block_start = workload.execution_work(target);
         let mut retained = false;
         loop {
-            while suffix_offset < suffix.len() {
-                let action = suffix[suffix_offset];
-                suffix_offset += 1;
+            for action in &suffix {
                 let mut block = crate::search::rollout::execute_live_suffix(
                     workload,
                     &config.run,
                     target,
                     milestones,
-                    std::slice::from_ref(&action),
+                    std::slice::from_ref(action),
                     config.retention,
                     config.stop_rollout_on_objective,
                 )?;
@@ -166,7 +171,7 @@ pub(crate) fn execute_input_job<G: Workload>(
                     break;
                 };
                 milestones = last.milestones;
-                path.push(action);
+                path.push(*action);
                 retained = false;
                 if let Some(candidate) = &last.candidate {
                     let key =
@@ -180,12 +185,7 @@ pub(crate) fn execute_input_job<G: Workload>(
                 }
                 let stopped = last.outcome.should_stop(config.stop_rollout_on_objective);
                 result.actions.append(&mut block.actions);
-                if stopped
-                    || workload.execution_work(target).saturating_sub(before) >= work_limit
-                    || (!initial_block
-                        && workload.execution_work(target).saturating_sub(block_start)
-                            >= minimum_work.get())
-                {
+                if stopped || workload.execution_work(target).saturating_sub(before) >= work_limit {
                     break;
                 }
             }
@@ -206,7 +206,6 @@ pub(crate) fn execute_input_job<G: Workload>(
                     input,
                     NonZeroU64::new(remaining).ok_or("empty sticky refill")?,
                 )?;
-                suffix_offset = 0;
                 continue;
             }
             let seed = rand.next_u64();
@@ -223,7 +222,6 @@ pub(crate) fn execute_input_job<G: Workload>(
             )?;
             workload.refresh_selected_input_timing(&config.run, seed, &mut suffix)?;
             suffix.truncate(block_len);
-            suffix_offset = 0;
             if suffix.is_empty() {
                 break;
             }
@@ -248,6 +246,8 @@ pub(crate) fn execute_input_job<G: Workload>(
             Some("retained")
         } else if !chaining {
             Some("single_block")
+        } else if previous_key.is_some_and(|key| cell_of(key) != source_cell) {
+            Some("left_source_cell")
         } else if !changed {
             Some("unchanged")
         } else if repeated {
@@ -259,11 +259,6 @@ pub(crate) fn execute_input_job<G: Workload>(
             trace.stop_reason = reason.into();
             break;
         }
-        initial_block = false;
-        if suffix_offset < suffix.len() {
-            continue;
-        }
-        suffix_offset = 0;
         if let Some(input) = &mut sticky_input {
             suffix = workload.sticky_actions(&config.run, input, minimum_work)?;
             continue;
