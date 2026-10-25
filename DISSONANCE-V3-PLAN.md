@@ -271,13 +271,19 @@ scalars, shown by recomputing it from the v3 record.
 
 ### Stage 2: feature filter (Mac, offline)
 
-Implement the feature table and the four tests as a tool over a v3 record.
-Promote per region. Learn direction.
+Implement the feature table with both feature kinds as a tool over a v3
+record: the four progress tests and the three place tests. Promote per
+region. Learn direction.
 
 Pass, with negative control: on each recording, the promoted features
-contain every field of the hand key and the known hidden byte for that
+contain every field of the hand key, progress fields as progress features
+and position fields as place features, and the known hidden byte for that
 game, ranked in the top ten inside the region where the hand fix applied;
-a shuffled-scalar control promotes nothing stable. Report false
+a shuffled-scalar control promotes nothing stable. A hidden byte can only
+be scored at a checkpoint where it varies; pick the checkpoint from the
+record. Acquisition fields need their acquisition transitions in the
+record's parent pairs; where the black-box record lacks them, score the
+field on the first v3-recorded corpus and say so. Report false
 promotions and what explains them.
 
 ### Stage 3: graph on hand positions (Mac and ms02, from day one)
@@ -289,9 +295,12 @@ keys so it can be scored before stage 2 lands.
 
 Pass: label lead ratios at or below 0.2 on at least one early milestone of
 SMB and of Metroid; regions agree with room and area fields better than a
-random partition of equal size; at each checkpoint, the region holding the
-next milestone ranks in the top three regions by depth or by recent yield,
-with both ranks reported. Depth alone picks the frontier on a linear game
+random partition of equal size; the region holding the next milestone's
+lineage ranks in the top three by recent yield at the checkpoint before
+each arrival, and yield ranks it at or above depth on a majority of
+checkpoints, with both ranks reported at every checkpoint. Checkpoints
+where it misses both ranks are a stall, and the stall's length and the
+regions that outranked it are recorded as input to stage 5. Depth alone picks the frontier on a linear game
 and fails where the map branches, which is the case the two-level
 allocation in stage 5 exists for, so a depth miss with a yield hit is a
 pass and a design input. The stage passes on retained-only records,

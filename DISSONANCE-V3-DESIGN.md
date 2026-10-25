@@ -44,8 +44,13 @@ construction.
 ## Feature table
 
 A feature is a scalar, or a group of scalars that always change on the
-same step, that the searcher has promoted because it behaves like
-progress. The searcher keeps one table with a row per scalar or group.
+same step, that the searcher has promoted. There are two kinds. A
+**progress feature** behaves like a counter of advancement: it changes
+rarely and in one direction. A **place feature** behaves like a coordinate:
+it changes often, by small steps relative to its range, in either
+direction, and states that differ in it have different futures. Horizontal
+position is a place feature; items held is a progress feature. The searcher
+keeps one table with a row per scalar or group.
 
 Global columns, computed over the whole search:
 
@@ -65,18 +70,27 @@ Per-region columns, computed inside each region:
 - promotion status and learned direction.
 
 Every endpoint updates its row, kept or not, with time decay so the table
-follows the search. Four tests decide promotion in a region: rare,
-directed, predictive, unexplained. A clock is rare and directed but fails
-the last two, since work explains it and terminal lineages carry it too. A
-feature is demoted in a region when its separation there ends.
+follows the search. Four tests promote a progress feature in a region:
+rare, directed, predictive, unexplained. A clock is rare and directed but
+fails the last two, since work explains it and terminal lineages carry it
+too. Three tests promote a place feature in a region: local, meaning the
+change per step is small against the range of values seen; separating,
+meaning lineages at different values have different futures conditional on
+the progress features; and unexplained by work. A sprite animation counter
+is local but does not separate. A feature is demoted in a region when its
+separation there ends.
 
 ```mermaid
 flowchart LR
     R[endpoints<br/>parent, scalars, outcome] --> C[feature table<br/>global: rate, direction, group<br/>per region: lift, separation]
-    C --> K{rare, directed,<br/>predictive, unexplained<br/>in this region?}
-    K -- yes --> A[promoted feature of the region]
+    C --> K{rare, directed,<br/>predictive, unexplained?}
+    C --> L{local, separating,<br/>unexplained?}
+    K -- yes --> A[progress feature of the region]
+    L -- yes --> B[place feature of the region]
     K -- no --> D[stays a scalar]
+    L -- no --> D
     A --> M[demoted when separation ends]
+    B --> M
 ```
 
 The rate is global. The relevance is local. One scalar can form positions
@@ -84,14 +98,15 @@ in one region and be noise in another.
 
 ## Positions and hierarchy
 
-Promoted features are ordered by change rate. The slowest features are
-global by construction and define regions. Faster features promoted inside
-a region define positions there.
+Progress features are ordered by change rate. The slowest are global by
+construction and define regions. Faster progress features promoted inside a
+region, and the region's place features bucketed to a width learned from
+their step size, define positions there.
 
 - A **region** is the set of states sharing the values of the slow
-  features.
-- A **position** is the tuple of the region's promoted feature values at a
-  state.
+  progress features.
+- A **position** is the tuple of the region's promoted progress feature
+  values and bucketed place feature values at a state.
 - A **bottleneck** is a transition on which a slow feature changes.
 - **Depth** is the number of bottlenecks from power-on.
 
@@ -194,8 +209,9 @@ rerunning it.
 | concept | NES game | service under the VMM |
 |---|---|---|
 | observation scalars | each byte of work and cartridge RAM; 16-bit pairs merged | counters per process, cumulative coverage edges, fired assertions, log template ids |
-| slow features | level, items held, area | scenario markers: leader elected, partition applied, snapshot taken |
-| fast features | room, boss phase, position buckets | coverage within a scenario, queue depths, retry counts |
+| slow progress features | level, items held, area | scenario markers: leader elected, partition applied, snapshot taken |
+| fast progress features | room, boss phase, boss health | coverage within a scenario, retry counts |
+| place features | horizontal and vertical position, camera scroll | queue depths, in-flight request count, replication lag |
 | stock | items, health, ammunition | cumulative coverage and assertion set carried by the lineage |
 | terminal state | game over, soft lock | crash, process exit, harness timeout, unrecoverable cluster |
 | bottleneck | boss fight, locked door, timed sequence | precondition most setups fail to reach, such as a fault landing inside an election |
