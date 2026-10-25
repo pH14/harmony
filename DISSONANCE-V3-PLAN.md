@@ -235,7 +235,7 @@ inputs allow; the dependency graph is below.
 flowchart LR
     S0[0 corpus] --> S1[1 observation and record]
     S1 --> S2a[2a feature kinds, chosen vector]
-    S1 --> S2b[2b field discovery, full vector]
+    S5 --> S2b[2b field discovery, parked]
     S1 --> S3[3 graph on hand positions]
     S2a --> S4[4 graph on learned positions]
     S3 --> S4
@@ -288,23 +288,30 @@ position field as a place feature, every distractor is rejected, and a
 shuffled-scalar control promotes nothing stable. Run on a uniform sample of
 20,000 residents per checkpoint. Stages 4 and 5 build on this result.
 
-### Stage 2b: field discovery on the full vector (ms02, offline, parallel)
+### Stage 2b: field discovery (parked until stage 5 has a live result)
 
-The same tests over every byte of work and cartridge RAM, 16-bit pairs
-merged. Co-change grouping is deferred. Sample 20,000 residents per
-checkpoint; run the full checkpoint only if a sampled result is within a
-factor of two of a threshold.
+Discovery removes the human choice of fields. It runs in two rungs, each
+after stage 5 has shown the searcher works on a chosen vector, because a
+discovered key proves nothing until there is a searcher to put it in.
 
-Pass, with negative control: the promoted features contain every field of
-the hand key and the known hidden byte for that game, ranked in the top
-ten inside the region where the hand fix applied; a shuffled-scalar
-control promotes nothing stable. A hidden byte is scored only at a
-checkpoint where it varies. Acquisition fields need their acquisition
-transitions in the record; where the black-box record lacks them, score on
-the first v3-recorded corpus and say so. This stage holds nothing: it runs
-beside stages 4 to 7, and claim 4, Castlevania held out, is the live test of
-it. Report false
-promotions and what explains them.
+Rung 1, the chosen span: the adapter hands over one block of memory that
+is all state and nothing else, with no widths and no field boundaries. On
+SMB that is a few hundred bytes once sprite shadow, sound and scratch are
+left out. The tests must find the fields: 16-bit pairs by carry relation,
+counters by the progress tests, coordinates by the place tests, and reject
+the rest. Pass: the promoted features reproduce the chosen vector of stage
+2a, with a shuffled control promoting nothing stable.
+
+Rung 2, full state RAM: work and cartridge RAM, no video memory. Sample
+20,000 residents per checkpoint; run a full checkpoint only within a
+factor of two of a threshold. Co-change grouping is deferred. Pass: the
+hand key fields and the known hidden byte for the game ranked in the top
+ten inside the region where the hand fix applied, hidden bytes scored only
+where they vary. Claim 4, Castlevania held out, is the live test of this
+rung.
+
+Until stage 5 passes, no machine time goes to either rung beyond keeping
+the existing tools building.
 
 ### Stage 3: graph on hand positions (Mac and ms02, from day one)
 
