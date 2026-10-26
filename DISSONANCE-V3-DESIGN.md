@@ -192,11 +192,11 @@ flowchart TB
 
 ## Jobs and input
 
-A job restores a state and runs drawn input until a scalar changes, the
-state becomes terminal, or the position's work allowance runs out. The
+A job restores a state and runs drawn input until its position changes,
+the state becomes terminal, or the position's work allowance runs out. The
 allowance is learned per position: a job that ends on the allowance with
-no scalar change doubles it for the next job from that position, and a
-scalar change resets it to the region's median job length. A state that
+no position change doubles it for the next job from that position, and a
+position change resets it to the region's median job length. A state that
 sits still for a long stretch, such as a cutscene or a slow service
 operation, is therefore run through, never redrawn from the start of the
 stretch. Job boundaries come from observed events, never from a fixed
