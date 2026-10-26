@@ -122,6 +122,15 @@ When a region's promoted set changes, that region's positions are rebuilt
 from its resident states. Other regions are untouched. The hierarchy is a
 measured property of the data and moves as the table moves.
 
+Before any feature is promoted there is one region, and every chosen
+scalar is a place feature bucketed to the smallest step it has shown so
+far. A position is then the tuple of every scalar's bucket, so any state
+whose vector lands in a new tuple is kept. Promotion and demotion rebuild
+positions from this starting point by the rule above; buckets widen as the
+record shows larger steps and scalars leave the position when the table
+rejects them. There is no separate bootstrap, no handoff and no model
+learned ahead of the run.
+
 ## Graph
 
 The search keeps the graph it walks.
