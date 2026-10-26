@@ -125,18 +125,15 @@ measured property of the data and moves as the table moves.
 Before any feature is promoted there is one region, and every chosen
 scalar is a place feature bucketed by the square-root rule for histogram
 bins: width is the scalar's observed range divided by the square root of
-its count of distinct values, rounded up. The width depends only on the
-values seen, never on job length, and grows as the range grows. A position is then the
+its count of distinct values, rounded up to a power of two. The width
+depends only on the values seen, never on job length, and grows as the
+range grows. Rounding to a power of two means positions are rebuilt only
+when a width doubles, a number of times logarithmic in the range. A position is then the
 tuple of every scalar's bucket, so any state whose vector lands in a new
 tuple is kept. Promotion and demotion rebuild positions from this starting
 point by the rule above; bucket widths follow the record and scalars leave
 the position when the table rejects them. There is no separate bootstrap, no handoff and no model
 learned ahead of the run.
-
-Widths must not be estimated from job displacement: jobs already stop at
-bucket boundaries, so that estimate feeds its own stopping rule. In the
-stalled SMB record this held the widths at `[1, 3, 1]` and the median job
-at one frame. The observed-value histogram removes that feedback.
 
 ## Graph
 
@@ -199,31 +196,15 @@ flowchart TB
 
 ## Jobs and input
 
-A job restores a state and runs drawn input until it reaches a position
-that was not known at dispatch, the state becomes terminal, or the starting
-position's work allowance runs out. The position classifier and the set of
-known positions are frozen together at dispatch and bound into the job's
-replay evidence. Crossing between already known positions does not end the
-job. A stale set may report a position another worker has just discovered;
-admission resolves that duplication without changing the recorded stopping
-rule.
-
-The allowance is learned per starting position: exhaustion without reaching
-a dispatch-new position doubles it for the next job from that position.
-Reaching a dispatch-new position resets it to the region's median job length.
-An ordinary crossing into a known position neither terminates the job nor
-resets its allowance. Terminal states still end execution immediately. Job
-boundaries come from observed discoveries, never from a fixed amount of work.
-
-R36 exposed the reason for this distinction: 57.72 percent of its
-position-change stops reached an identical vector already observed by the
-published dispatch cut. Both crossing jobs and allowance-limited jobs had a
-median of two frames, and ordinary crossings repeatedly reset allowances
-from four, eight, or sixteen frames back to two. That rule measured local
-boundary oscillation rather than time to a discovery. Wider histogram
-buckets alone did not remove this feedback; continuing through known
-positions removes those revisits from the stopping and reset events. This
-is a design correction to test, not a claim that R36 reached an ending.
+A job restores a state and runs drawn input until its position changes,
+the state becomes terminal, or the position's work allowance runs out. The
+allowance is learned per position: a job that ends on the allowance with
+no position change doubles it for the next job from that position, and a
+position change resets it to the region's median job length. A state that
+sits still for a long stretch, such as a cutscene or a slow service
+operation, is therefore run through, never redrawn from the start of the
+stretch. Job boundaries come from observed events, never from a fixed
+amount of work.
 
 Input is a set of independent control processes. Each control is on or
 off, and the time to its next change is drawn from a hold distribution
