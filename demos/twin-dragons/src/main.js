@@ -1305,8 +1305,9 @@ function advanceFilm(target, paint = true, renderAt = target) {
     recordTrail();
   if (paint) drawFilm();
 }
+let scrubSeeks = 0;
 function markerPoint() {
-  if (seeking)
+  if (seeking && !scrubSeeks)
     return (
       trailPoint(trace, requestedFrame) ||
       (requestedFrame === current?.frames &&
@@ -1334,12 +1335,19 @@ function followReplayRoom(point) {
   if (changed || changedPart || (phone && revealReplayRoom)) {
     revealReplayRoom = false;
     if (phone && $("inspector").classList.contains("expanded")) return;
-    const bounds = row.getBoundingClientRect(),
-      sheet = $("inspector").getBoundingClientRect(),
-      bottom = phone ? sheet.top - 12 : innerHeight - 20;
-    if (bounds.top < 20 || bounds.bottom > bottom)
+    if (phone) return showMapAboveSheet(row);
+    const bounds = row.getBoundingClientRect();
+    if (bounds.top < 20 || bounds.bottom > innerHeight - 20)
       window.scrollBy({ top: bounds.top - 24, behavior: "instant" });
   }
+}
+function showMapAboveSheet(row) {
+  const mapRow = row.closest(".map-row") || row,
+    toolbar = document.querySelector(".goal"),
+    room = innerHeight - $("inspector").offsetHeight - 16,
+    toolbarTop = toolbar.getBoundingClientRect().top,
+    anchor = mapRow.getBoundingClientRect().bottom - toolbarTop <= room ? toolbar : mapRow;
+  window.scrollBy({ top: anchor.getBoundingClientRect().top - 8, behavior: "instant" });
 }
 function recordTrail() {
   timeline.trail = trace;
@@ -2417,7 +2425,7 @@ function drawArea(canvas, now) {
       : routeHover && !preview ? routeHover.frames : preview || $("inspector").hidden
         ? areaOrigin.frame
         : seeking
-          ? requestedFrame
+          ? scrubSeeks ? renderedFrame : requestedFrame
           : currentFrame;
   if (o?.level === mapLevel) {
     ctx.strokeStyle = "#fff5cc";
@@ -2687,7 +2695,12 @@ function resumeAfterScrub() {
 $("scrub").oninput = async () => {
   userSelected = true;
   if (playing) scrubResume = true;
-  await seek(Number($("scrub").value));
+  scrubSeeks++;
+  try {
+    await seek(Number($("scrub").value));
+  } finally {
+    scrubSeeks--;
+  }
   resumeAfterScrub();
 };
 $("scrub").onpointerdown = () => {
@@ -2847,6 +2860,7 @@ $("close-inspector").onclick = () => {
 };
 $("history-reopen").onclick = () => {
   openInspector();
+  followReplayRoom(markerPoint());
   $("close-inspector").focus({ preventScroll: true });
 };
 function expandInspector(expanded) {
@@ -3382,6 +3396,12 @@ function searchesSpotlight() {
     getBoundingClientRect: () => element.getBoundingClientRect(),
     scrollIntoView: (options) => element.scrollIntoView(options) };
 }
+function inspectorSpotlight() {
+  const element = $("inspector"), phone = document.body.classList.contains("tour-phone");
+  return { element, padding: phone ? 0 : 6, radius: phone ? 14 : undefined,
+    getBoundingClientRect: () => element.getBoundingClientRect(),
+    scrollIntoView: (options) => element.scrollIntoView(options) };
+}
 const STEP = { many: 0, one: 1, you: 2, fork: 3, tree: 4 };
 const tour = new GuidedTour({
   occluders: () => [$("inspector"), ...(document.body.classList.contains("tour-phone") && tour.index >= STEP.fork ? [$("branches")] : [])],
@@ -3403,13 +3423,13 @@ const tour = new GuidedTour({
       title: "Zooming in",
       ping: () => (traceReveal ? null : tourCellRect()),
       copy: [
-        "Harmony can zoom in on any single timeline it has explored. You can press Replay to watch how it reached this one particular state.",
+        "Harmony can zoom in on any single timeline it has explored. You can watch how it reached this one particular state.",
       ],
       targets: () => [
         segments.length
           ? rowsSpotlight([...new Set([tourSession?.cell?.level, ...segments.flat().map((p) => p.level)])].map((room) => mapCanvas(room)))
           : tourCellRect(),
-        $("inspector"),
+        inspectorSpotlight(),
       ],
       interactive: () => [document.querySelector(".transport"), $("sound"), $("state-list"), $("map-rows"), $("take-control")],
     },
@@ -3529,9 +3549,10 @@ const tour = new GuidedTour({
     if (!valid()) return;
     if (index === STEP.one) {
       frameRoute();
-      $("state-list")
-        .querySelector(".selected")
-        ?.scrollIntoView({ block: "nearest", behavior: "instant" });
+      if (!document.body.classList.contains("tour-phone"))
+        $("state-list")
+          .querySelector(".selected")
+          ?.scrollIntoView({ block: "nearest", behavior: "instant" });
     }
     if (index >= STEP.fork && !document.body.classList.contains("tour-phone"))
       $("branches").scrollIntoView({
@@ -3561,9 +3582,14 @@ const tour = new GuidedTour({
         .catch(fail);
     }
     if (ready && !stats.stopped) {
-      paused = false;
-      worker.postMessage({ type: "resume" });
-      updateSearchControl();
+      if ($("inspector").hidden) {
+        paused = false;
+        worker.postMessage({ type: "resume" });
+        updateSearchControl();
+      } else {
+        replayWatching = replayPaused = inspectorHeld = true;
+        setSearchPaused(true);
+      }
     }
     applyCameraMode();
     return restoration;

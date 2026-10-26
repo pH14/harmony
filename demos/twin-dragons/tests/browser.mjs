@@ -1353,6 +1353,21 @@ try {
     phoneMap.preview >= 300 && phoneMap.preview <= 384,
     "The compact pane should show its preview at nearly full width",
   );
+  assert.equal(
+    await page.evaluate(() => getComputedStyle(document.documentElement).overflow),
+    "hidden",
+    "The page behind a phone history sheet does not scroll",
+  );
+  const pinned = await page.locator("#inspector").evaluate((panel) => {
+    const top = () => panel.querySelector(".screen").getBoundingClientRect().top;
+    const before = top();
+    panel.querySelector(".state-picker").scrollTop = 9999;
+    return { moved: Math.abs(top() - before), inspectorScroll: panel.scrollTop };
+  });
+  assert.ok(
+    pinned.moved < 1 && pinned.inspectorScroll === 0,
+    `Scrolling the saved paths keeps the replay screen in view (${JSON.stringify(pinned)})`,
+  );
   await page.locator("#test-scroll-space").evaluate(e => e.remove());
   const collapsedHeight = (await page.locator("#inspector").boundingBox())
     .height;
@@ -1384,6 +1399,19 @@ try {
   assert.ok(
     mapVisible,
     "Collapsing after playback must reveal the selected path again",
+  );
+  await page.locator("#close-inspector").click();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.locator("#history-reopen").click();
+  assert.ok(
+    await page
+      .locator('.area-map[data-marker-frame]:not([data-marker-frame=""])').first()
+      .evaluate(
+        (map) =>
+          map.getBoundingClientRect().bottom <=
+          document.querySelector("#inspector").getBoundingClientRect().top,
+      ),
+    "Reopening History from the docked bar reveals the selected path above the sheet",
   );
   await page.locator("#take-control").click();
   assert.equal(

@@ -583,15 +583,19 @@ jumps and X breathes fire. Branch search from here verifies the controller
 prefix and starts a separate search rooted at that state. The fork point
 ripples in gold, the camera centers on it for 2.6 seconds, and the new row
 slides into Searches. Each Searches row shows the idle dragon sprite as its
-icon. On phones History is a full-width bottom sheet; closing it leaves a
-History bar docked at the bottom edge that reopens it.
+icon. On phones History is a bottom sheet with a fixed height of 58% of the
+screen, and the page behind it does not scroll. The map, its minimap and the
+selected route stay in the top part, centered on the replay marker and following
+it as it moves. Closing the sheet leaves a History bar docked at the bottom edge
+that reopens it.
 
 The guided tour has five steps: Multiverse exploration spotlights the live
 map; Zooming in selects a cell, draws its route and lights History; Your turn
 covers Play from here; Hand it back covers branching or discarding the played
 draft; and Search branches spotlights the Searches pane. Next on Your turn
 skips Hand it back until the visitor has played. The tour opens once after the
-opening camera finishes and the search has populated a cell.
+opening camera finishes and the search has populated a cell. When the tour ends
+with History open, the search stays paused until History closes.
 
 Replay and play round the frame count owed to elapsed time, so a 60 Hz display
 steps one game frame per display frame. The map repaints every display frame
