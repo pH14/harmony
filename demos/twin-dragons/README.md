@@ -472,7 +472,7 @@ search draws earlier states; the camera moves back only after fewer than two
 sprites have been near its target for 1.5 seconds of continuous visible
 frontier evidence (a gap, camera hold or hidden tab resets that interval), and
 it eases toward a new target in time rather than jumping faster across large
-gaps. Distant work first widens the view, then returns to close-up following.
+gaps. Distant work first widens the view, then returns to close-up following. Widening holds the view's edge farthest from the new work in place, so the view grows only toward the work.
 Following bounds the combined pan and zoom displacement of the previous
 viewport's corners to two normalized viewport lengths per second, including
 zoom-induced movement. This keeps the display cadence independent of how
