@@ -123,12 +123,12 @@ from its resident states. Other regions are untouched. The hierarchy is a
 measured property of the data and moves as the table moves.
 
 Before any feature is promoted there is one region, and every chosen
-scalar is a place feature bucketed to the smallest step it has shown so
-far. A position is then the tuple of every scalar's bucket, so any state
-whose vector lands in a new tuple is kept. Promotion and demotion rebuild
-positions from this starting point by the rule above; buckets widen as the
-record shows larger steps and scalars leave the position when the table
-rejects them. There is no separate bootstrap, no handoff and no model
+scalar is a place feature bucketed to the median change it shows over one
+job, so one job can reach a neighboring position. A position is then the
+tuple of every scalar's bucket, so any state whose vector lands in a new
+tuple is kept. Promotion and demotion rebuild positions from this starting
+point by the rule above; bucket widths follow the record and scalars leave
+the position when the table rejects them. There is no separate bootstrap, no handoff and no model
 learned ahead of the run.
 
 ## Graph
@@ -172,8 +172,11 @@ work elsewhere is credited there without a rule.
 Within a region, a position's weight is its label gap, the distance between
 its label and its holder's stock, times the route's reliability. Positions
 without a gap share the remainder in proportion to recent novelty from
-them, discounted by their terminal edges. A drawn position with a gap is
-realized first, then explored from the arriving state.
+them, discounted by their terminal edges. A position that has not been
+drawn yet is credited the region's mean novelty per draw, so untried
+positions carry most of the remainder until they have been tried; this
+is what moves the search outward before any label exists. A drawn position
+with a gap is realized first, then explored from the arriving state.
 
 ```mermaid
 flowchart TB
