@@ -123,8 +123,10 @@ from its resident states. Other regions are untouched. The hierarchy is a
 measured property of the data and moves as the table moves.
 
 Before any feature is promoted there is one region, and every chosen
-scalar is a place feature bucketed to the median change it shows over one
-job, so one job can reach a neighboring position. A position is then the
+scalar is a place feature bucketed by the square-root rule for histogram
+bins: width is the scalar's observed range divided by the square root of
+its count of distinct values, rounded up. The width depends only on the
+values seen, never on job length, and grows as the range grows. A position is then the
 tuple of every scalar's bucket, so any state whose vector lands in a new
 tuple is kept. Promotion and demotion rebuild positions from this starting
 point by the rule above; bucket widths follow the record and scalars leave
