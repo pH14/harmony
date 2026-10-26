@@ -133,6 +133,11 @@ point by the rule above; bucket widths follow the record and scalars leave
 the position when the table rejects them. There is no separate bootstrap, no handoff and no model
 learned ahead of the run.
 
+Widths must not be estimated from job displacement: jobs already stop at
+bucket boundaries, so that estimate feeds its own stopping rule. In the
+stalled SMB record this held the widths at `[1, 3, 1]` and the median job
+at one frame. The observed-value histogram removes that feedback.
+
 ## Graph
 
 The search keeps the graph it walks.
