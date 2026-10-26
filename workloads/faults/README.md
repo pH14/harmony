@@ -21,6 +21,7 @@ in the platform supervisor's bundle format:
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |
 | `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
 | `disk <node> <path> <size> [checksummed]` | gives that node an ext4 filesystem at `path`, sized `16M` through `1G` in whole 4 KiB pages, which power-loss and disk actions act on |
+| `log <node> <path>` | names a log file the node writes, which `harmony explain` reads |
 
 A `disk` line names a node declared by a `node` line, and each node has at most
 one disk. The image must contain `mkfs.ext4`. The `checksummed` flag declares
@@ -1118,5 +1119,5 @@ root, and validates it before encoding/deduplication and after decoding.
 Changing assurance is refused even if the receipt root and frame checksum are
 recomputed. The codec does not upgrade an ordinary execution into a qualified
 composition. Older DAG-v1 codecs and flat snapshot envelopes are refused;
-whole-search checkpoints require the distinct v10 envelope. The current
+whole-search checkpoints require the distinct v12 envelope. The current
 execution identity remains v11 and ordered event history remains v3.

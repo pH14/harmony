@@ -3,9 +3,9 @@
 # Jepsen NATS baseline
 
 This directory runs Jepsen's own NATS JetStream test
-([jepsen-io/nats](https://github.com/jepsen-io/nats)) against the NATS
-versions the `targets/nats` harness tests, so the two tools can be compared on
-the same system.
+([jepsen-io/nats](https://github.com/jepsen-io/nats)) against NATS 2.10.20
+and 2.10.23, which `targets/nats` also builds, so the two tools can be compared on
+the same system. The node image also carries 2.12.1.
 
 ## Layout
 

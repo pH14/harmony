@@ -107,7 +107,7 @@ that the recorded policy could not have produced. When the recorded policy
 stops the campaign on an objective, replay rejects work selected after it and
 expects the jobs reserved in the admission window at that point as `cancel`
 records. When cumulative work reaches the recorded work budget, replay allows
-the jobs already reserved in the admission window to finish. Schema version 14
+the jobs already reserved in the admission window to finish. Schema version 15
 requires the loaded executable identity and records the reservation that owns each
 duplicate skip. Replay checks that skips follow
 selection order, stay within the admission window, and do not exceed the live
@@ -1117,7 +1117,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 9; a checkpoint from another
+match. The search checkpoint format is `dissonance-search-checkpoint-v12`; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation
@@ -1247,7 +1247,7 @@ preserve existing body bytes without first materializing unbounded temporary
 vectors. These contracts prepare bounded publication images; frozen state does
 not grant execution or import trust.
 
-Whole-search checkpoint v10 uses the same workload codec in a typed `HMSTORE2`
+The whole-search checkpoint uses the same workload codec in a typed `HMSTORE2`
 append store. Snapshot frames refer to semantic shared keys using checksummed
 physical ranges. Shared frames carry earlier parent locators, so resume validates
 the reachable graph iteratively without a global dictionary in each checkpoint.
@@ -1265,8 +1265,8 @@ Appended unreferenced tails may remain after a fatal failure. The bounded immuta
 image and publication worker described above own persistence; synchronous pressure
 handback uses this same codec and publication order.
 
-Whole-search checkpoint v10 combines the current coordinator/archive body with
-shared snapshot frames. Both earlier v9 layouts are refused before decoding a
+The whole-search checkpoint combines the current coordinator/archive body with
+shared snapshot frames. Earlier layouts are refused before decoding a
 body: upstream's flat snapshot store and the earlier shared-frame layout used
 by the integration branch. There is no legacy format fallback. The shared
 codec remains workload-owned; assurance metadata is interpreted and validated

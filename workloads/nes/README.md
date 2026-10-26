@@ -1,6 +1,6 @@
 # NES workload package
 
-This standalone Rust workspace adapts SMB, Mega Man 2, Metroid, and Super Tilt Bro
+This standalone Rust workspace adapts SMB, Mega Man 2, Metroid, Super Tilt Bro, Twin Dragons and Famidash
 to Dissonance.
 It owns campaign drivers, binaries, films, evaluation and workload reporting.
 Game interpretation and controller policies come from
@@ -99,7 +99,8 @@ Tilt Bro campaign's own witness is checked.
 
 `nes-games/src/chord.rs` draws the controller chords for every game. An action is a chord
 held for a short hold of 2–12 frames or a long hold, with equal odds. The long
-hold is 96–120 frames for SMB and 48–120 frames for the other games. Each game
+hold is 96–120 frames for SMB and 48–120 frames for Mega Man 2, Metroid and Super Tilt Bro.
+Twin Dragons uses a 6–40 frame long hold, and Famidash uses 1–4 frame short holds and 6–40 frame long holds. Each game
 names its held chords and at most one tap button: Select for Metroid, Start for
 Mega Man 2, none for SMB and Super Tilt Bro.
 
@@ -298,7 +299,7 @@ Unsupported overlay or workload semantics fail closed.
 python3 workloads/guest-images/test_verify_prepared_admission.py -v
 ```
 
-The quality workflow runs these composition mutation checks. The `admission`
+The `Checks / Repository` workflow runs these composition mutation checks. The `admission`
 module writes candidate manifests from the actual OCI preparation API for
 default Linux x86 sessions. It does not broaden the controlled workload scope.
 
@@ -352,8 +353,9 @@ file streaming limits and qualification checks are documented in the
 
 A request with `live` set to a loopback address such as `127.0.0.1:8790` runs
 the arcade game from genesis with its own draw mixture and a `Traced` core, as
-the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
-`resume` and `mixture`. `live_site` names a directory with the built arcade
+the browser does, and rejects `ai`, `root_input`, `metroid_terminal`,
+`resume` and `mixture`. It rejects `stage` except for Famidash, where `stage` names
+the level the campaign starts from. `live_site` names a directory with the built arcade
 page and its `roms` directory, which the server serves at `/`. Other campaigns
 keep their own game setup and mixture, and their view has no motion trails;
 its root is the campaign's first archived state.
