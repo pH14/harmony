@@ -199,15 +199,31 @@ flowchart TB
 
 ## Jobs and input
 
-A job restores a state and runs drawn input until its position changes,
-the state becomes terminal, or the position's work allowance runs out. The
-allowance is learned per position: a job that ends on the allowance with
-no position change doubles it for the next job from that position, and a
-position change resets it to the region's median job length. A state that
-sits still for a long stretch, such as a cutscene or a slow service
-operation, is therefore run through, never redrawn from the start of the
-stretch. Job boundaries come from observed events, never from a fixed
-amount of work.
+A job restores a state and runs drawn input until it reaches a position
+that was not known at dispatch, the state becomes terminal, or the starting
+position's work allowance runs out. The position classifier and the set of
+known positions are frozen together at dispatch and bound into the job's
+replay evidence. Crossing between already known positions does not end the
+job. A stale set may report a position another worker has just discovered;
+admission resolves that duplication without changing the recorded stopping
+rule.
+
+The allowance is learned per starting position: exhaustion without reaching
+a dispatch-new position doubles it for the next job from that position.
+Reaching a dispatch-new position resets it to the region's median job length.
+An ordinary crossing into a known position neither terminates the job nor
+resets its allowance. Terminal states still end execution immediately. Job
+boundaries come from observed discoveries, never from a fixed amount of work.
+
+R36 exposed the reason for this distinction: 57.72 percent of its
+position-change stops reached an identical vector already observed by the
+published dispatch cut. Both crossing jobs and allowance-limited jobs had a
+median of two frames, and ordinary crossings repeatedly reset allowances
+from four, eight, or sixteen frames back to two. That rule measured local
+boundary oscillation rather than time to a discovery. Wider histogram
+buckets alone did not remove this feedback; continuing through known
+positions removes those revisits from the stopping and reset events. This
+is a design correction to test, not a claim that R36 reached an ending.
 
 Input is a set of independent control processes. Each control is on or
 off, and the time to its next change is drawn from a hold distribution
