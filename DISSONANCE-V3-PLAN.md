@@ -51,8 +51,9 @@ carrying and precedes any power-on run.
 Fast still means fast. Every run uses every core it can. Every live run
 reports, at every checkpoint: jobs, jobs per second, cores busy, residents,
 the furthest value of each scalar reached, and the median job length in
-work. A run below 80% of its cores is stopped and the cause is fixed
-before any run continues; workers never wait on each other to run a job.
+work. A run below 80% of its cores has a defect that is fixed before the
+next launch; a run below half its cores is stopped. Workers never wait on
+each other to run a job.
 A number that is implausible on its face, such as a search that does not
 leave its first screen after tens of thousands of jobs or a counter that
 visibly increments and is not promoted, is a bug to find, never a result
