@@ -118,17 +118,21 @@ every shuffle.
 Gating, change rate and direction then set the kind. An informative scalar
 that gates an effect is a stock feature, with the enabling side as its
 direction. Of the rest, one that changes rarely and in one direction along
-lineages is a progress feature, and one that changes often is a place
-feature. Rates are measured over jobs that did not end terminal. The
-boundary between rare and frequent, and the share of changes that counts
-as one direction, come from the record's own distribution of rates and
-directions, never from fixed constants. A scalar that is not informative is
-not promoted, however it moves.
+lineages is a progress feature, and every other one is a place feature.
+Rates are measured over jobs that did not end terminal: a scalar's change
+rate is the share of those jobs that change it. The informative scalars
+are sorted by change rate, and the rare ones are those below the largest
+gap in the logarithm of change rate. A scalar changes in one direction
+when no job in the evaluation window moved it the other way. Both splits
+come from the record, never from fixed constants. A scalar that is not
+informative is not promoted, however it moves.
 
 | Scalar | What moves it | Outcome depends on it at fixed position | Rate, direction | Result |
 |---|---|---|---|---|
 | level | indirect | yes | rare, one way | progress |
 | x, y | direct | yes | frequent, both ways | place |
+| room in a game with revisited areas | indirect | yes | rare, both ways | place |
+| scroll in a runner | direct | yes | frequent, one way | place |
 | ammunition | direct; gates firing on door energy | yes | frequent, both ways | stock |
 | score | indirect | no | rare, one way | none |
 | frame or animation counter | none | | frequent | none |
@@ -164,19 +168,18 @@ flowchart LR
 
 ## Positions and hierarchy
 
-Progress features are ordered by change rate. The slowest are global by
-construction and define regions. Faster progress features promoted inside a
-region, and the region's place features bucketed to a width learned from
-their step size, define positions there.
+Progress features are the slow end of the change-rate order. They are
+global by construction and define regions. A region's place features,
+bucketed to a width learned from their step size, define positions there.
 
-- A **region** is the set of states sharing the values of the slow
-  progress features.
-- A **position** is the tuple of the region's promoted progress feature
-  values and bucketed place feature values at a state, paired with the
-  tuple the job left to reach it. A state reached by a transition no job
+- A **region** is the set of states sharing the values of the progress
+  features. A lineage never returns to a region it has left, since
+  progress features never move back.
+- A **position** is the tuple of the region's bucketed place feature
+  values at a state, paired with the tuple the job left to reach it. A state reached by a transition no job
   has made is kept even when its tuple has been seen, so state the chosen
   scalars miss still shows up as new transitions.
-- A **bottleneck** is a transition on which a slow feature changes.
+- A **bottleneck** is a transition on which a progress feature changes.
 - **Depth** is the number of bottlenecks from power-on.
 
 When a region's promoted set changes, that region's positions are rebuilt
@@ -210,9 +213,12 @@ The search keeps the graph it walks.
 - An **edge** records that a job went from one position to another with a
   given input suffix and cost. Each edge keeps a landing rate,
   (landed + 1) / (attempted + 2).
+- A **finding** is a state that meets the search's goal: the ending of a
+  game, or a failed check or a crash in a service. A finding is recorded
+  as a result and is never a terminal edge.
 - A **terminal edge** goes from a position to the terminal sink when a job
-  from it ended at a state no job can continue from, with no gain. It
-  lowers the reliability of every route through that position.
+  from it ended at a state no job can continue from that is not a finding.
+  It lowers the reliability of every route through that position.
 - A **label** on a position is the best stock any route of edges can bring
   there, with the route, its cost and its reliability. Labels are kept
   current by bounded relaxation over edges whenever a holder changes.
@@ -232,24 +238,35 @@ Realizing a label replays its route from the holder at its start.
 Work is allocated at two levels.
 
 Across regions, a region's share is its recent yield: novel positions and
-label improvements per unit of work, discounted by terminal edges. A
-bottleneck region that has not been crossed keeps a floor that does not
-decay: the uncrossed regions together get at least the combined share of
-the crossed ones. Only an uncrossed region is credited one novel position
-in advance; a crossed region's share falls with its yield to a small floor. A region is
-crossed once any job leaves it, including a job that started in an earlier
-region. Leaving it is worthwhile only when a label says a better-stocked
+label improvements per unit of work, discounted by terminal edges. Every
+region is credited one novel position in advance against ten median job
+lengths of work, so no share reaches zero. A region is crossed once any
+job leaves it, including a job that started in an earlier region. Since a
+lineage never returns to a region it left, crossing means an exit has been
+found; areas a game lets the player leave and re-enter are place
+features. A region's yield when it is first crossed is its **entry
+yield**. An uncrossed region is credited at least the median entry yield
+of the crossed regions, the yield regions showed until their exit was
+found, so a bottleneck keeps the share a region has while it is the
+frontier. Leaving a crossed region is worthwhile only when a label says a better-stocked
 state can be brought in, or when another region is still yielding. Stock
 found anywhere becomes a label at the bottleneck through relaxation, so
 work elsewhere is credited there without a rule.
 
 Within a region, a position's weight is its label gap, the distance between
 its label and its holder's stock, times the route's reliability. Positions
-without a gap share the remainder in proportion to recent novelty from
-them, discounted by their terminal edges. A position that has not been
-drawn yet is credited the region's mean novelty per draw, so untried
-positions carry most of the remainder until they have been tried; this
-is what moves the search outward before any label exists. A drawn position
+without a gap share the remainder in proportion to the novel positions
+found from them per unit of work, with the region's median job length as
+prior work. Every position's weight is multiplied by its holder's
+survival, (children that did not end terminal + 1) / (children + 2),
+counted from when the holder was installed. A holder whose children keep
+dying is learned as cold and drawn rarely, never at zero; a state low on a
+supply such as health is cold this way, while a state with more of it at
+the same place is a different position when the supply is a place
+feature. A position that has not been drawn yet is credited the region's
+mean novelty per unit of work, so untried positions carry most of the
+remainder until they have been tried; this is what moves the search
+outward before any label exists. A drawn position
 with a gap is realized first, then explored from the arriving state.
 
 ```mermaid
@@ -319,11 +336,11 @@ rerunning it.
 | concept | NES game | service under the VMM |
 |---|---|---|
 | observation scalars | chosen memory fields at natural width, unnamed | counters per process, cumulative coverage edges, fired assertions, log template ids |
-| slow progress features | level, items held, area | scenario markers: leader elected, partition applied, snapshot taken |
-| fast progress features | room, boss phase, boss health | coverage within a scenario, retry counts |
-| place features | horizontal and vertical position, camera scroll | queue depths, in-flight request count, replication lag |
+| progress features | level, items held, bosses defeated | cumulative coverage, fired assertions, scenario markers that never revert |
+| place features | horizontal and vertical position, camera scroll, room, health, boss health | queue depths, in-flight request count, replication lag, retry counts |
 | stock | ammunition, keys | resources that gate an action's effect: live replicas, open connections, retry budget |
-| terminal state | game over, soft lock | crash, process exit, harness timeout, unrecoverable cluster |
+| finding | the ending | failed safety or liveness check, crash |
+| terminal state | game over, soft lock | process exit, harness timeout, unrecoverable cluster with every check passing |
 | bottleneck | boss fight, locked door, timed sequence | precondition most setups fail to reach, such as a fault landing inside an election |
 | control | one controller button | one fault or one workload action |
 | moved by nothing the search does | frame counter, timer, random number state | clocks, background timers, scheduler noise |
