@@ -57,7 +57,7 @@ same step, that the searcher has promoted. Features are ordered by how fast
 they change, and that order builds the hierarchy. There are three kinds. A
 **progress feature** changes rarely and in one direction, like the level or
 items held. A **place feature** changes often, in either direction, like
-horizontal position. A **stock feature** gates what an input can do, like
+horizontal position. A **stock feature** guards what an input can do, like
 ammunition: firing lowers a door's energy only while ammunition is above
 zero. The searcher keeps one table with a row per scalar or group.
 
@@ -87,15 +87,15 @@ Each scalar gets one of three results:
   a timer or a frame counter. Such a scalar is something done to the
   target, never by the search, and is not promoted.
 
-An effect that holds from some starts and fails from others has a gate.
+An effect that holds from some starts and fails from others has a guard.
 Among starts that share a position, the searcher finds the scalar that best
 separates the starts where the effect held from those where it failed, the
 split a decision tree would choose, and records that scalar and the side of
 the split that enables the effect. Comparing starts at one position keeps
-the position itself from being chosen as the gate. Searching for gates only
+the position itself from being chosen as the guard. Searching for guards only
 behind inconsistent effects keeps the cost near controls times scalars.
-Chains form through gates: firing moves ammunition and door energy, and
-ammunition gates the effect on door energy.
+Chains form through guards: firing moves ammunition and door energy, and
+ammunition guards the effect on door energy.
 
 ### Promotion
 
@@ -115,8 +115,8 @@ has one part per position scalar plus terminal; each part is scored
 against its own shuffles, and the best part must beat the best part of
 every shuffle.
 
-Gating, change rate and direction then set the kind. An informative scalar
-that gates an effect is a stock feature, with the enabling side as its
+Guarding, change rate and direction then set the kind. An informative scalar
+that guards an effect is a stock feature, with the enabling side as its
 direction. Of the rest, one that changes rarely and in one direction along
 lineages is a progress feature, and every other one is a place feature.
 Rates are measured over jobs that did not end terminal: a scalar's change
@@ -133,7 +133,7 @@ informative is not promoted, however it moves.
 | x, y | direct | yes | frequent, both ways | place |
 | room in a game with revisited areas | indirect | yes | rare, both ways | place |
 | scroll in a runner | direct | yes | frequent, one way | place |
-| ammunition | direct; gates firing on door energy | yes | frequent, both ways | stock |
+| ammunition | direct; guards firing on door energy | yes | frequent, both ways | stock |
 | score | indirect | no | rare, one way | none |
 | frame or animation counter | none | | frequent | none |
 | timer | none | | steady, one way | none |
@@ -156,7 +156,7 @@ flowchart LR
     E -- no --> D[stays a scalar]
     E -- yes --> I{informative<br/>beyond position and work?}
     I -- no --> D
-    I -- yes --> G{gates a<br/>control's effect?}
+    I -- yes --> G{guards a<br/>control's effect?}
     G -- yes --> S[stock feature]
     G -- no --> K{rare and<br/>one way?}
     K -- yes --> A[progress feature]
@@ -338,7 +338,7 @@ rerunning it.
 | observation scalars | chosen memory fields at natural width, unnamed | counters per process, cumulative coverage edges, fired assertions, log template ids |
 | progress features | level, items held, bosses defeated | cumulative coverage, fired assertions, scenario markers that never revert |
 | place features | horizontal and vertical position, camera scroll, room, health, boss health | queue depths, in-flight request count, replication lag, retry counts |
-| stock | ammunition, keys | resources that gate an action's effect: live replicas, open connections, retry budget |
+| stock | ammunition, keys | resources that guard an action's effect: live replicas, open connections, retry budget |
 | finding | the ending | failed safety or liveness check, crash |
 | terminal state | game over, soft lock | process exit, harness timeout, unrecoverable cluster with every check passing |
 | bottleneck | boss fight, locked door, timed sequence | precondition most setups fail to reach, such as a fault landing inside an election |
