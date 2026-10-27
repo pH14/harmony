@@ -180,8 +180,9 @@ Work is allocated at two levels.
 Across regions, a region's share is its recent yield: novel positions and
 label improvements per unit of work, discounted by terminal edges. A
 bottleneck region that has not been crossed keeps a floor that does not
-decay, and only such a region is credited one novel position in advance; a
-crossed region's share falls with its yield to a small floor. A region is
+decay: the uncrossed regions together get at least the combined share of
+the crossed ones. Only an uncrossed region is credited one novel position
+in advance; a crossed region's share falls with its yield to a small floor. A region is
 crossed once any job leaves it, including a job that started in an earlier
 region. Leaving it is worthwhile only when a label says a better-stocked
 state can be brought in, or when another region is still yielding. Stock
