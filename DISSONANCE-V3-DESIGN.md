@@ -120,7 +120,10 @@ their step size, define positions there.
 - A **region** is the set of states sharing the values of the slow
   progress features.
 - A **position** is the tuple of the region's promoted progress feature
-  values and bucketed place feature values at a state.
+  values and bucketed place feature values at a state, paired with the
+  tuple the job left to reach it. A state reached by a transition no job
+  has made is kept even when its tuple has been seen, so state the chosen
+  scalars miss still shows up as new transitions.
 - A **bottleneck** is a transition on which a slow feature changes.
 - **Depth** is the number of bottlenecks from power-on.
 
@@ -130,11 +133,14 @@ measured property of the data and moves as the table moves.
 
 Before any feature is promoted there is one region, and every chosen
 scalar is a place feature bucketed by the square-root rule for histogram
-bins: width is the scalar's observed range divided by the square root of
-its count of distinct values, rounded up to a power of two. The width
-depends only on the values seen, never on job length, and grows as the
-range grows. Rounding to a power of two means positions are rebuilt only
-when a width doubles, a number of times logarithmic in the range. A position is then the
+bins: width is the range the scalar's observed values cover divided by the
+square root of its count of distinct values, rounded up to a power of two.
+A gap between consecutive values counts toward the covered range at most
+one width, so a distant cluster of values does not widen every bucket; the
+width is the fixed point of that equation. The width depends only on the
+values seen, never on job length. Rounding to a power of two means
+positions are rebuilt only when a width changes, a number of times
+logarithmic in the range. A position is then the
 tuple of every scalar's bucket, so any state whose vector lands in a new
 tuple is kept. Promotion and demotion rebuild positions from this starting
 point by the rule above; bucket widths follow the record and scalars leave
@@ -174,7 +180,10 @@ Work is allocated at two levels.
 Across regions, a region's share is its recent yield: novel positions and
 label improvements per unit of work, discounted by terminal edges. A
 bottleneck region that has not been crossed keeps a floor that does not
-decay. Leaving it is worthwhile only when a label says a better-stocked
+decay, and only such a region is credited one novel position in advance; a
+crossed region's share falls with its yield to a small floor. A region is
+crossed once any job leaves it, including a job that started in an earlier
+region. Leaving it is worthwhile only when a label says a better-stocked
 state can be brought in, or when another region is still yielding. Stock
 found anywhere becomes a label at the bottleneck through relaxation, so
 work elsewhere is credited there without a rule.
@@ -231,7 +240,8 @@ workload action, and a hold is how long it stays applied.
 
 A position keeps one holder per stock ordering. An endpoint replaces the
 holder when its stock is better, or ties with a lower cost from power-on.
-Every endpoint, kept or not, contributes its edge, its scalars to the
+A job that enters a known position below its holder's cost offers that
+state the same way and continues. Every endpoint, kept or not, contributes its edge, its scalars to the
 feature table, and a terminal edge if it was terminal. A position whose
 children keep ending terminal keeps its holder and is drawn rarely, never
 at zero. Nothing about a state is decided at admission from one sample.
