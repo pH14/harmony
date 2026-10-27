@@ -50,11 +50,13 @@ the searcher knows about a scalar it learns from the record.
 ## Feature table
 
 A feature is a scalar, or a group of scalars that always change on the
-same step, that the searcher has promoted. There are two kinds. A
+same step, that the searcher has promoted. There are three kinds. A
 **progress feature** behaves like a counter of advancement: it changes
 rarely and in one direction. A **place feature** behaves like a coordinate:
-it changes often, in either direction. Horizontal position is a place
-feature; items held is a progress feature. The searcher keeps one table
+it changes often, in either direction. A **stock feature** behaves like a
+supply: at a fixed position, more of it means a job is less likely to end
+terminal. Horizontal position is a place feature; items held is a progress
+feature; health is a stock feature. The searcher keeps one table
 with a row per scalar or group.
 
 One test decides whether a scalar is a feature at all: whether it is
@@ -76,13 +78,19 @@ every shuffle.
 Rate and direction then set the kind, measured over jobs that did not end
 terminal. An informative scalar that changes in fewer than half of those
 jobs, and in one direction in at least 95% of its changes, is a progress
-feature. An informative scalar that changes more often is a place feature.
+feature. Otherwise an informative scalar is a stock feature when, among
+starts that share a position, the job that did not end terminal started
+with the higher value in at least 65% of pairs of one terminal and one
+non-terminal job, and that direction holds in at least 90% of the
+positions with both outcomes. Any other informative scalar is a place
+feature.
 A scalar that is not informative is not promoted, however it moves.
 
 | Scalar | Outcome depends on it at fixed position | Rate, direction | Result |
 |---|---|---|---|
 | level | yes | rare, one way | progress |
 | x, y | yes | frequent, both ways | place |
+| health | yes, more survives | frequent, both ways | stock |
 | score | no | rare, one way | none |
 | frame or animation counter | no | frequent | none |
 | timer | only through work | steady, one way | none |
@@ -152,7 +160,9 @@ learned ahead of the run.
 The search keeps the graph it walks.
 
 - A **node** is a position with its holder, the state with the best stock
-  observed there. Stock is the vector of slow directed features.
+  observed there. Stock is the vector of stock features; one state has
+  better stock than another when it is at least as high in every stock
+  feature and higher in one. Stock features are not part of the position.
 - An **edge** records that a job went from one position to another with a
   given input suffix and cost. Each edge keeps a landing rate,
   (landed + 1) / (attempted + 2).
