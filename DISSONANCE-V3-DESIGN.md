@@ -53,56 +53,56 @@ A feature is a scalar, or a group of scalars that always change on the
 same step, that the searcher has promoted. There are two kinds. A
 **progress feature** behaves like a counter of advancement: it changes
 rarely and in one direction. A **place feature** behaves like a coordinate:
-it changes often, by small steps relative to its range, in either
-direction, and states that differ in it have different futures. Horizontal
-position is a place feature; items held is a progress feature. The searcher
-keeps one table with a row per scalar or group.
+it changes often, in either direction. Horizontal position is a place
+feature; items held is a progress feature. The searcher keeps one table
+with a row per scalar or group.
 
-Global columns, computed over the whole search:
+One test decides whether a scalar is a feature at all: whether it is
+**informative**. Take the jobs that started from one position, with the
+candidate scalar left out of the position, and ask whether the
+candidate's value at the start predicts the job's outcome: the position it
+reached and whether it ended terminal. In standard terms this is the
+conditional mutual information between outcome and scalar given position
+and work. The threshold comes from a permutation test: the candidate's
+values are shuffled among the starts that share a position, and the scalar
+is informative when its real value exceeds what the shuffles produce.
+Including work in the conditioning rejects a clock.
 
-- change rate, how seldom the value changes relative to work;
-- direction, whether the value moves one way along lineages, or stays set
-  once set;
-- co-change group membership.
+Rate and direction then set the kind. An informative scalar that changes
+rarely and one way along lineages is a progress feature. An informative
+scalar that changes often is a place feature. A scalar that is not
+informative is not promoted, however it moves.
 
-Per-region columns, computed inside each region:
+| Scalar | Outcome depends on it at fixed position | Rate, direction | Result |
+|---|---|---|---|
+| level | yes | rare, one way | progress |
+| x, y | yes | frequent, both ways | place |
+| score | no | rare, one way | none |
+| frame or animation counter | no | frequent | none |
+| timer | only through work | steady, one way | none |
 
-- lift, how often a change precedes an event the graph treats as
-  interesting in that region: a new region, a crossed bottleneck, an
-  improved label, a burst of novel positions; terminal lineages count
-  against;
-- separation, whether the scalar still distinguishes lineages that
-  continue from lineages that stop, conditional on the current position;
-- promotion status and learned direction.
+The test runs per region, so one scalar can form positions in one region
+and be noise in another. Rate and direction are global.
 
-Every endpoint updates its row, kept or not, with time decay so the table
-follows the search. Four tests promote a progress feature in a region:
-rare, directed, predictive, unexplained. A clock is rare and directed but
-fails the last two, since work explains it and terminal lineages carry it
-too. Three tests promote a place feature in a region: local, meaning the
-change per step is small against the range of values seen; concentrating,
-meaning the states whose next job changed a progress feature occupy a
-narrow band of its values against the spread over all states in the
-region, so crossing a bottleneck requires being somewhere in particular;
-and unexplained by work. A sprite animation counter is local but crossings
-are spread over all its values, so it does not concentrate. A feature is demoted in a region when its
-separation there ends.
+Every endpoint, kept or not, adds to the table. Promotion and demotion are
+evaluated at checkpoints, since the permutation test needs many starts and
+every change rebuilds positions. A feature is demoted in a region only
+after it has failed across a window in which it changed at least as many
+times as in the evidence that promoted it. A slow feature therefore needs
+long contrary evidence to lose its place, and a fast one is re-tested
+quickly.
 
 ```mermaid
 flowchart LR
-    R[endpoints<br/>parent, scalars, outcome] --> C[feature table<br/>global: rate, direction, group<br/>per region: lift, separation]
-    C --> K{rare, directed,<br/>predictive, unexplained?}
-    C --> L{local, concentrating,<br/>unexplained?}
-    K -- yes --> A[progress feature of the region]
-    L -- yes --> B[place feature of the region]
-    K -- no --> D[stays a scalar]
-    L -- no --> D
-    A --> M[demoted when separation ends]
+    R[endpoints<br/>start position, scalars, outcome, work] --> C[feature table<br/>global: rate, direction, group<br/>per region: informativeness]
+    C --> I{informative<br/>beyond position and work?}
+    I -- no --> D[stays a scalar]
+    I -- yes --> K{rare and<br/>one way?}
+    K -- yes --> A[progress feature]
+    K -- no --> B[place feature]
+    A --> M[demoted after failing over<br/>its own promotion window]
     B --> M
 ```
-
-The rate is global. The relevance is local. One scalar can form positions
-in one region and be noise in another.
 
 ## Positions and hierarchy
 

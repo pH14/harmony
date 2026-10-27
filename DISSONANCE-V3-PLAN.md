@@ -275,11 +275,8 @@ scalars, shown by recomputing it from the v3 record.
 Each game's adapter emits a chosen vector: the fields of its hand key read
 at natural width as unnamed scalars, plus two or three distractors such as
 a frame counter, an animation byte and a sound byte. Implement the feature
-table with both feature kinds over that vector: the four progress tests
-and the three place tests. Promote per region. Learn direction. The
-concentrating test needs only parents and whether their job changed a
-progress feature: compare the spread of a scalar among parents of
-progress-changing jobs against its spread among all parents in the region.
+table over that vector: the informativeness test, with kind set by rate
+and direction. Promote per region. Learn direction.
 
 Pass, with negative control: on SMB, Metroid and Famidash, every progress
 field is promoted as a progress feature with the correct direction, every
