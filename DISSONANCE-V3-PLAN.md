@@ -131,6 +131,27 @@ Rules that make this fast:
   number, mark the stage passed, move on. Never rerun, retune or refine a
   measurement to chase a threshold, and never block a stage on a miss
   smaller than the measurement can resolve.
+- Every design rule is general. Its reason is stated without naming a
+  target. Before it enters the design it fires on at least two workloads,
+  one of them the faults workload once that runs, and the design commit
+  names the workloads and the runs that show it firing. A rule that fires on
+  one workload is a defect, however much it helps there; rework it until it
+  is general or remove it.
+- Thresholds come from the data: permutation tests or the record's own
+  distribution. A fixed constant in a rule is a defect unless the commit
+  shows in one clause that it is the same for every target.
+- After every rule change, rerun every finished claim before the next rule
+  lands: SMB from power-on and every Famidash level. A claim that no longer
+  holds blocks the change.
+- Each game's chosen vector is fixed and written in the attempts log before
+  its first run. It is never changed in response to a stall. A changed
+  vector restarts that game's claim, and the write-up reports every vector
+  that game was run with.
+- The agent that writes a rule does not judge whether it is general. Each
+  design commit gets a review by a separate agent that has only the design
+  diff, the commit body and this section, and asks: does the reason name a
+  target, which workloads does the rule fire on, which constants are fixed.
+  The commit lands only when that review finds nothing.
 - Never ask for approval. Decide, record, proceed. A turn ends only when
   every machine has work in flight that cannot yet be analyzed, and then
   the turn schedules its own check.
@@ -377,7 +398,10 @@ branch is complete.
 - Read any existing searcher code under `dissonance/`. Use its binary and
   its documented file formats only.
 - Write a per-game key, progress rule, or probe into the searcher. The
-  adapter supplies scalars and nothing else.
+  adapter supplies scalars and nothing else. A repository check fails when
+  searcher code outside the adapters names a target, a memory address or a
+  target-specific constant.
+- Look at Castlevania, or tune anything on it, before stage 7.
 - Decide a state's fate at admission from one sample. A terminal outcome
   is a learned edge weight, never a filter.
 - Treat a budget hit as a failure, a tie as a verdict, or a 0 of N control
