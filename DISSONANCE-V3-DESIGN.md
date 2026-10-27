@@ -17,7 +17,7 @@ The searcher sees every target the same way.
 flowchart TB
     T[Target: deterministic execution,<br/>snapshot, restore, replay]
     O[Observation: N untyped scalars per state]
-    F[Feature table: which scalars behave like progress, where]
+    F[Feature table: what inputs move, which scalars behave like progress, where]
     P[Positions and hierarchy: rate bands of features]
     G[Graph: edges, labels, terminal sink, regions, bottlenecks]
     S[Selection: regions by yield, positions by label gap]
@@ -41,25 +41,65 @@ The second part is state for the purpose of exploration: what a lineage
 has caused is part of where it is. Cumulative scalars are directed by
 construction.
 
-An adapter emits a small set of scalars, one to about twenty, each a
-memory field read at its natural width: a 16-bit position is one scalar, a
-4-byte counter is one scalar. The adapter says which bytes form each scalar
-and nothing else: no name, no order, no direction, no meaning. Everything
-the searcher knows about a scalar it learns from the record.
+An adapter emits scalars, from a handful to a few thousand, each a memory
+field read at its natural width: a 16-bit position is one scalar, a 4-byte
+counter is one scalar. A game adapter can emit every RAM byte; a service
+adapter emits its counters and coverage. The adapter says which bytes form
+each scalar and nothing else: no name, no order, no direction, no meaning.
+Everything the searcher knows about a scalar it learns from the record,
+including whether it matters: input effects, below, decide which scalars
+the searcher keeps.
 
 ## Feature table
 
 A feature is a scalar, or a group of scalars that always change on the
-same step, that the searcher has promoted. There are three kinds. A
-**progress feature** behaves like a counter of advancement: it changes
-rarely and in one direction. A **place feature** behaves like a coordinate:
-it changes often, in either direction. A **stock feature** behaves like a
-supply: at a fixed position, more of it means a job is less likely to end
-terminal. Horizontal position is a place feature; items held is a progress
-feature; health is a stock feature. The searcher keeps one table
-with a row per scalar or group.
+same step, that the searcher has promoted. Features are ordered by how fast
+they change, and that order builds the hierarchy. There are three kinds. A
+**progress feature** changes rarely and in one direction, like the level or
+items held. A **place feature** changes often, in either direction, like
+horizontal position. A **stock feature** gates what an input can do, like
+ammunition: firing lowers a door's energy only while ammunition is above
+zero. The searcher keeps one table with a row per scalar or group.
 
-One test decides whether a scalar is a feature at all: whether it is
+### Input effects
+
+A target takes input through controls: a controller button for a game, a
+fault or a workload action for a service. The searcher measures what each
+control does to each scalar. Jobs that start from the same state and differ
+in input are controlled experiments, since the target is deterministic. For
+a control and a scalar, the searcher compares the scalar's change in a
+window of work after the control turns on with its change over the same
+window in jobs from the same start where the control stays off. The window
+covers delayed effects, such as a shot that lands some steps after the
+press. The threshold comes from a permutation test that shuffles control
+timings among jobs from the same start. Every pair is scored against the
+best pair of every shuffle, so testing more scalars admits no more false
+effects.
+
+Each scalar gets one of three results:
+
+- **direct**: some control has an effect on it, as left and right do on
+  horizontal position;
+- **indirect**: no control moves it directly, but preceding changes of
+  directly moved scalars predict its changes, as horizontal position
+  predicts the level;
+- **none**: neither controls nor moved scalars predict its changes, as with
+  a timer or a frame counter. Such a scalar is something done to the
+  target, never by the search, and is not promoted.
+
+An effect that holds from some starts and fails from others has a gate.
+Among starts that share a position, the searcher finds the scalar that best
+separates the starts where the effect held from those where it failed, the
+split a decision tree would choose, and records that scalar and the side of
+the split that enables the effect. Comparing starts at one position keeps
+the position itself from being chosen as the gate. Searching for gates only
+behind inconsistent effects keeps the cost near controls times scalars.
+Chains form through gates: firing moves ammunition and door energy, and
+ammunition gates the effect on door energy.
+
+### Promotion
+
+One test decides whether a moved scalar is a feature: whether it is
 **informative**. Take the jobs that started from one position, with the
 candidate scalar left out of the position, and ask whether the
 candidate's value at the start predicts the job's outcome: the position it
@@ -75,31 +115,31 @@ has one part per position scalar plus terminal; each part is scored
 against its own shuffles, and the best part must beat the best part of
 every shuffle.
 
-Rate and direction then set the kind, measured over jobs that did not end
-terminal. An informative scalar that changes in fewer than half of those
-jobs, and in one direction in at least 95% of its changes, is a progress
-feature. Otherwise an informative scalar is a stock feature when, among
-starts that share a position, the job that did not end terminal started
-with the higher value in at least 65% of pairs of one terminal and one
-non-terminal job, and that direction holds in at least 90% of the
-positions with both outcomes. Any other informative scalar is a place
-feature.
-A scalar that is not informative is not promoted, however it moves.
+Gating, change rate and direction then set the kind. An informative scalar
+that gates an effect is a stock feature, with the enabling side as its
+direction. Of the rest, one that changes rarely and in one direction along
+lineages is a progress feature, and one that changes often is a place
+feature. Rates are measured over jobs that did not end terminal. The
+boundary between rare and frequent, and the share of changes that counts
+as one direction, come from the record's own distribution of rates and
+directions, never from fixed constants. A scalar that is not informative is
+not promoted, however it moves.
 
-| Scalar | Outcome depends on it at fixed position | Rate, direction | Result |
-|---|---|---|---|
-| level | yes | rare, one way | progress |
-| x, y | yes | frequent, both ways | place |
-| health | yes, more survives | frequent, both ways | stock |
-| score | no | rare, one way | none |
-| frame or animation counter | no | frequent | none |
-| timer | only through work | steady, one way | none |
+| Scalar | What moves it | Outcome depends on it at fixed position | Rate, direction | Result |
+|---|---|---|---|---|
+| level | indirect | yes | rare, one way | progress |
+| x, y | direct | yes | frequent, both ways | place |
+| ammunition | direct; gates firing on door energy | yes | frequent, both ways | stock |
+| score | indirect | no | rare, one way | none |
+| frame or animation counter | none | | frequent | none |
+| timer | none | | steady, one way | none |
 
-The test runs per region, so one scalar can form positions in one region
-and be noise in another. Rate and direction are global.
+Informativeness runs per region, so one scalar can form positions in one
+region and be noise in another. Input effects, rate and direction are
+global.
 
-Every endpoint, kept or not, adds to the table. Promotion and demotion are
-evaluated at checkpoints, since the permutation test needs many starts and
+Every job, kept or not, adds to the table. Promotion and demotion are
+evaluated at checkpoints, since the permutation tests need many starts and
 every change rebuilds positions. A feature is demoted in a region only
 after it has failed across a window in which it changed at least as many
 times as in the evidence that promoted it. A slow feature therefore needs
@@ -108,14 +148,18 @@ quickly.
 
 ```mermaid
 flowchart LR
-    R[endpoints<br/>start position, scalars, outcome, work] --> C[feature table<br/>global: rate, direction, group<br/>per region: informativeness]
-    C --> I{informative<br/>beyond position and work?}
-    I -- no --> D[stays a scalar]
-    I -- yes --> K{rare and<br/>one way?}
+    R[jobs<br/>start, controls, scalar changes,<br/>outcome, work] --> E{moved by a control,<br/>directly or through<br/>moved scalars?}
+    E -- no --> D[stays a scalar]
+    E -- yes --> I{informative<br/>beyond position and work?}
+    I -- no --> D
+    I -- yes --> G{gates a<br/>control's effect?}
+    G -- yes --> S[stock feature]
+    G -- no --> K{rare and<br/>one way?}
     K -- yes --> A[progress feature]
     K -- no --> B[place feature]
     A --> M[demoted after failing over<br/>its own promotion window]
     B --> M
+    S --> M
 ```
 
 ## Positions and hierarchy
@@ -161,8 +205,8 @@ The search keeps the graph it walks.
 
 - A **node** is a position with its holder, the state with the best stock
   observed there. Stock is the vector of stock features; one state has
-  better stock than another when it is at least as high in every stock
-  feature and higher in one. Stock features are not part of the position.
+  better stock than another when it is at least as far to the enabling
+  side in every stock feature and further in one. Stock features are not part of the position.
 - An **edge** records that a job went from one position to another with a
   given input suffix and cost. Each edge keeps a landing rate,
   (landed + 1) / (attempted + 2).
@@ -244,7 +288,9 @@ whose rate is chosen per job from a small log-spaced set. Combinations
 arise from overlapping holds. A second generator splices input suffixes
 from recorded edges that moved a feature in the current region. An energy
 mixture over generators and hold rates adapts their shares on novel
-positions per unit of work. For a service, a control is a fault or a
+positions per unit of work. Within a region, each control's share is
+weighted by its measured effect on the region's features, so input goes to
+what moves there. For a service, a control is a fault or a
 workload action, and a hold is how long it stays applied.
 
 ## Retention
@@ -260,7 +306,8 @@ at zero. Nothing about a state is decided at admission from one sample.
 ## Record and replay
 
 The search writes a stream of every job: parent position, input suffix,
-endpoint scalars, outcome, and the retention decision. Checkpoints hold
+the steps at which each scalar changed, endpoint scalars, outcome, and the
+retention decision. Checkpoints hold
 the graph and the resident states. Any kept state replays from power-on
 under a second instance of the target and must match. Feature promotion,
 label relaxation and region structure can all be recomputed offline from
@@ -275,8 +322,9 @@ rerunning it.
 | slow progress features | level, items held, area | scenario markers: leader elected, partition applied, snapshot taken |
 | fast progress features | room, boss phase, boss health | coverage within a scenario, retry counts |
 | place features | horizontal and vertical position, camera scroll | queue depths, in-flight request count, replication lag |
-| stock | items, health, ammunition | cumulative coverage and assertion set carried by the lineage |
+| stock | ammunition, keys | resources that gate an action's effect: live replicas, open connections, retry budget |
 | terminal state | game over, soft lock | crash, process exit, harness timeout, unrecoverable cluster |
 | bottleneck | boss fight, locked door, timed sequence | precondition most setups fail to reach, such as a fault landing inside an election |
 | control | one controller button | one fault or one workload action |
+| moved by nothing the search does | frame counter, timer, random number state | clocks, background timers, scheduler noise |
 | work | emulated steps | wall or virtual time under the VMM |
