@@ -64,14 +64,20 @@ candidate's value at the start predicts the job's outcome: the position it
 reached and whether it ended terminal. In standard terms this is the
 conditional mutual information between outcome and scalar given position
 and work. The threshold comes from a permutation test: the candidate's
-values are shuffled among the starts that share a position, and the scalar
-is informative when its real value exceeds what the shuffles produce.
-Including work in the conditioning rejects a clock.
+values are shuffled among the starts that share a position and fall in the
+same stretch of the record, and the scalar is informative when its real
+value exceeds what the shuffles produce. Including work in the
+conditioning rejects a clock. Shuffling only within a stretch of the record
+rejects a scalar that tracks only how long the search has run. The outcome
+has one part per position scalar plus terminal; each part is scored
+against its own shuffles, and the best part must beat the best part of
+every shuffle.
 
-Rate and direction then set the kind. An informative scalar that changes
-rarely and one way along lineages is a progress feature. An informative
-scalar that changes often is a place feature. A scalar that is not
-informative is not promoted, however it moves.
+Rate and direction then set the kind, measured over jobs that did not end
+terminal. An informative scalar that changes in fewer than half of those
+jobs, and in one direction in at least 95% of its changes, is a progress
+feature. An informative scalar that changes more often is a place feature.
+A scalar that is not informative is not promoted, however it moves.
 
 | Scalar | Outcome depends on it at fixed position | Rate, direction | Result |
 |---|---|---|---|
