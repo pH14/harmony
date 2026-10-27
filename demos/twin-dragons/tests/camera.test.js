@@ -102,6 +102,26 @@ test("a distant frontier becomes visible before close-up following settles", () 
   }
 });
 
+test("widening toward a far frontier never moves the trailing edge away from it", () => {
+  const panel = { x: 0, y: 0, width: 14283, height: 305 }, viewport = { width: 1280, height: 320 };
+  const fit = Math.min(viewport.width / panel.width, viewport.height / panel.height), zoom = 16;
+  const edges = (view) => {
+    const half = viewport.width / (2 * fit * view.zoom);
+    return { left: view.x - half, right: view.x + half };
+  };
+  for (const [start, point, sign] of [[3000, 9000, 1], [9000, 3000, -1]]) {
+    let view = { x: start, y: 193, zoom }, previous = edges(view), widest = zoom;
+    for (let i = 0; i < 60 * 4; i++) {
+      view = followView(view, { x: point, y: 193 }, panel, viewport, zoom, 1 / 60);
+      const now = edges(view), trailing = sign > 0 ? now.left - previous.left : previous.right - now.right;
+      assert.ok(trailing >= -1e-6, `The ${sign > 0 ? "left" : "right"} edge moved backward by ${-trailing} at frame ${i}`);
+      widest = Math.min(widest, view.zoom);
+      previous = now;
+    }
+    assert.ok(widest < zoom / 2, "The view still widens to bring the far frontier on screen");
+  }
+});
+
 test("a fixed-zoom follow keeps the zoom and closes on a far point", () => {
   const panel = { x: 0, y: 0, width: 15000, height: 480 }, viewport = { width: 1280, height: 320 };
   let view = { x: 1000, y: 240, zoom: 14 };
