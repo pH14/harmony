@@ -106,3 +106,18 @@ points separately from sampled motion, so downsampling and terminal delivery
 can preserve progress. Sampling affects presentation only. The native live
 service uses the existing campaign coordinator and full admission-observation
 interface; search selection and admission policy remain unchanged.
+
+## Punch-Out!! victory and loss
+
+A Punch-Out!! run is won when the opponent index (RAM `$01`) is 14 and the mode
+(RAM `$00`) is `$FE`, `$FC` or `$FA`. The post-fight routine at `$ADF7` reads the
+table at `$A10D`, whose Mr. Dream entry is `0E 0E`, so a win and a loss both set
+`$01` to 14. Its caller at `$A90D` takes the win path only for those three modes.
+After a win the mode stays `$FC` through the credits. After a loss to Mr. Dream
+the mode is `$FD`. The title-screen attract demo writes `$01 = $13` at `$A50A`
+and never reaches a win mode.
+
+Mac is dead when he is knocked down during a fight (`$05 = 2` with `$00 = $01`),
+when the mode is `$FD` (lost) or when it is `$FB` (lost by technical knockout).
+A dead or won state is terminal. The count of defeated opponents is `$01` capped
+at 14, and it does not depend on the mode.

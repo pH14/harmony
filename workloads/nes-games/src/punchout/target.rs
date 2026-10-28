@@ -43,6 +43,8 @@ pub const MODE_ROUND_BREAK: u8 = 0xff;
 pub const MODE_WON: u8 = 0xfe;
 pub const MODE_TKO: u8 = 0xfc;
 pub const MODE_LOST: u8 = 0xfd;
+pub const MODE_TKO_LOST: u8 = 0xfb;
+pub const MODE_WON_FA: u8 = 0xfa;
 const STOP_MAC_DOWN: u8 = 2;
 
 const MODE: usize = 0x00;
@@ -95,7 +97,7 @@ impl PunchOutMechanicalState {
 
     #[must_use]
     pub fn dead(self) -> bool {
-        self.knocked_down() || self.mode == MODE_LOST
+        self.knocked_down() || matches!(self.mode, MODE_LOST | MODE_TKO_LOST)
     }
 
     #[must_use]
@@ -105,7 +107,7 @@ impl PunchOutMechanicalState {
 
     #[must_use]
     pub fn victory(self) -> bool {
-        self.opponents_defeated() >= OPPONENT_COUNT
+        self.opponent == OPPONENT_COUNT && matches!(self.mode, MODE_WON | MODE_TKO | MODE_WON_FA)
     }
 
     #[must_use]
@@ -840,6 +842,51 @@ mod tests {
         assert!(!won.terminal());
         wram[OPPONENT] = OPPONENT_COUNT;
         assert!(decode_state(&wram).unwrap().victory());
+    }
+
+    #[test]
+    fn a_final_fight_win_is_victory_in_every_win_mode() {
+        for mode in [MODE_WON, MODE_TKO, MODE_WON_FA] {
+            let mut wram = fighting_wram();
+            wram[MODE] = mode;
+            wram[OPPONENT] = OPPONENT_COUNT;
+            let state = decode_state(&wram).unwrap();
+            assert!(state.victory() && state.terminal() && !state.dead());
+        }
+    }
+
+    #[test]
+    fn a_loss_to_the_last_opponent_is_dead_and_not_victory() {
+        let mut wram = fighting_wram();
+        wram[MODE] = MODE_LOST;
+        wram[OPPONENT] = OPPONENT_COUNT;
+        let state = decode_state(&wram).unwrap();
+        assert!(state.dead() && state.terminal() && !state.victory());
+    }
+
+    #[test]
+    fn a_technical_knockout_loss_is_dead() {
+        let mut wram = fighting_wram();
+        wram[MODE] = MODE_TKO_LOST;
+        wram[OPPONENT] = 3;
+        let state = decode_state(&wram).unwrap();
+        assert!(state.dead() && state.terminal() && !state.victory());
+    }
+
+    #[test]
+    fn the_attract_demo_opponent_value_is_not_victory() {
+        let mut wram = fighting_wram();
+        wram[OPPONENT] = 0x13;
+        assert!(!decode_state(&wram).unwrap().victory());
+        wram[MODE] = MODE_WON;
+        assert!(!decode_state(&wram).unwrap().victory());
+    }
+
+    #[test]
+    fn the_last_opponent_is_not_victory_until_the_fight_is_won() {
+        let mut wram = fighting_wram();
+        wram[OPPONENT] = OPPONENT_COUNT;
+        assert!(!decode_state(&wram).unwrap().victory());
     }
 
     #[test]
