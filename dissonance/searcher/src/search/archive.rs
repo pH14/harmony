@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::search::{
-    continuation::{Continuation, ContinuationBank},
+    continuation::{CONTINUATION_SHARE_SCALE, Continuation, ContinuationBank},
     draw::SUFFIX_DOUBLING_LIMIT,
     heap,
     rand::RomuDuoJrRand,
@@ -2376,6 +2376,44 @@ where
         }
     }
 
+    fn cell_best_preference(&self, key: K) -> Option<u8> {
+        let preferences = K::preferences();
+        if preferences == 0 {
+            return None;
+        }
+        let cell = cell_of(key);
+        let members = self
+            .tiers
+            .get(&key.progress())
+            .and_then(|tier| tier.places.get(&key.place()))
+            .filter(|members| !members.ids.is_empty());
+        let unindexed = || {
+            self.slots
+                .iter()
+                .filter(|((held, _), _)| *held == cell)
+                .flat_map(|(_, holders)| holders.iter().map(|id| self.entries[*id].key))
+        };
+        (0..preferences)
+            .find(|preference| {
+                let best = match members {
+                    Some(members) => match members.ranked.get(*preference) {
+                        Some(ranked) if ranked.len() == members.ids.len() => {
+                            ranked.last().map(|rank| rank.key)
+                        }
+                        _ => members
+                            .ids
+                            .iter()
+                            .map(|id| self.entries[id].key)
+                            .max_by(|a, b| a.preference_cmp(*preference, *b)),
+                    },
+                    None if self.selector_indexed => None,
+                    None => unindexed().max_by(|a, b| a.preference_cmp(*preference, *b)),
+                };
+                best.is_none_or(|best| key.preference_cmp(*preference, best) == Ordering::Greater)
+            })
+            .map(|preference| u8::try_from(preference).unwrap_or(u8::MAX))
+    }
+
     fn cell_ranks(&self, ids: &WeightedSet<usize>) -> Vec<BTreeSet<HolderRank<K>>> {
         (0..K::preferences())
             .map(|preference| {
@@ -2825,15 +2863,20 @@ where
                     key.preference_cmp(*preference, self.entries[*held].key) == Ordering::Greater
                 })
             });
-        let queue_tier = won_preferences
-            .iter()
-            .filter(|preference| {
-                slot.iter().any(|held| {
-                    key.preference_cmp(**preference, self.entries[*held].key) == Ordering::Greater
+        let queue_tier = if self.continuation_wave > 0 {
+            won_preferences
+                .iter()
+                .filter(|preference| {
+                    slot.iter().any(|held| {
+                        key.preference_cmp(**preference, self.entries[*held].key)
+                            == Ordering::Greater
+                    })
                 })
-            })
-            .min()
-            .map(|preference| u8::try_from(*preference).unwrap_or(u8::MAX));
+                .min()
+                .map(|preference| u8::try_from(*preference).unwrap_or(u8::MAX))
+        } else {
+            self.cell_best_preference(key)
+        };
         if let Some(bank) = &mut self.continuations {
             if let Some(tier) = queue_tier {
                 bank.improved(
@@ -3577,6 +3620,15 @@ where
             accounting.opened_new_cell = accounting.opened_new_cell.saturating_add(1);
         }
         accounting.longest_wave = accounting.longest_wave.max(wave);
+    }
+
+    #[must_use]
+    pub(crate) fn continuation_share(&self) -> u16 {
+        let accounting = &self.continuation_accounting;
+        let wins = u128::from(accounting.replaced).saturating_add(1);
+        let jobs = u128::from(accounting.jobs).saturating_add(2);
+        u16::try_from(u128::from(CONTINUATION_SHARE_SCALE) * wins / jobs)
+            .unwrap_or(CONTINUATION_SHARE_SCALE)
     }
 
     pub(crate) fn record_continuation_dispatch(&mut self, gaining: bool) {
@@ -6357,6 +6409,46 @@ mod tests {
         assert_eq!((taken.source, taken.destination), ((1, 0), (1, 3)));
         assert_eq!(archive.index_of_id(taken.parent), Some(richer));
         assert!(archive.outranks_slot_holders(richer, taken.destination, taken.preference));
+    }
+
+    #[test]
+    fn an_ordinary_arrival_queues_its_position_only_as_the_best_of_its_cell() {
+        for indexed in [false, true] {
+            let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+            archive.enable_continuations(4);
+            let origin = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+            if indexed {
+                archive.prepare_selection();
+            }
+            insert_region_at(&mut archive, Some(origin), 2, (1, 3, 5));
+            insert_region_at(&mut archive, None, 3, (1, 7, 20));
+            assert_eq!(archive.continuation_pending(), 0);
+            insert_region_at(&mut archive, None, 4, (1, 0, 9));
+            assert_eq!(archive.continuation_pending(), 0);
+            let best = insert_region_at(&mut archive, None, 5, (1, 0, 25));
+            assert_eq!(archive.continuation_pending(), 1);
+            let taken = archive
+                .pop_continuation(false)
+                .expect("the new cell best is queued");
+            assert_eq!(archive.index_of_id(taken.parent), Some(best));
+        }
+    }
+
+    #[test]
+    fn a_continuation_landing_queues_its_position_on_any_slot_win() {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        archive.enable_continuations(4);
+        let origin = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        insert_region_at(&mut archive, Some(origin), 2, (1, 3, 5));
+        insert_region_at(&mut archive, None, 3, (1, 7, 20));
+        archive.set_admission_wave(1);
+        let landing = insert_region_at(&mut archive, None, 4, (1, 0, 9));
+        archive.set_admission_wave(0);
+        assert_eq!(archive.continuation_pending(), 1);
+        let taken = archive
+            .pop_continuation(false)
+            .expect("the landing is queued");
+        assert_eq!(archive.index_of_id(taken.parent), Some(landing));
     }
 
     #[test]
