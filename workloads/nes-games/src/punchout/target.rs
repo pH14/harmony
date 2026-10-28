@@ -102,7 +102,11 @@ impl PunchOutMechanicalState {
 
     #[must_use]
     pub fn opponents_defeated(self) -> u8 {
-        self.opponent.min(OPPONENT_COUNT)
+        if self.victory() {
+            OPPONENT_COUNT
+        } else {
+            self.opponent.min(OPPONENT_COUNT - 1)
+        }
     }
 
     #[must_use]
@@ -862,6 +866,37 @@ mod tests {
         wram[OPPONENT] = OPPONENT_COUNT;
         let state = decode_state(&wram).unwrap();
         assert!(state.dead() && state.terminal() && !state.victory());
+    }
+
+    #[test]
+    fn a_loss_to_mr_dream_counts_thirteen_defeated_opponents() {
+        let mut wram = fighting_wram();
+        wram[MODE] = MODE_LOST;
+        wram[OPPONENT] = OPPONENT_COUNT;
+        assert_eq!(
+            decode_state(&wram).unwrap().opponents_defeated(),
+            OPPONENT_COUNT - 1
+        );
+        wram[MODE] = MODE_WON;
+        assert_eq!(
+            decode_state(&wram).unwrap().opponents_defeated(),
+            OPPONENT_COUNT
+        );
+    }
+
+    #[test]
+    fn the_attract_demo_opponent_value_counts_thirteen_defeated_opponents() {
+        let mut wram = fighting_wram();
+        wram[OPPONENT] = 0x13;
+        assert_eq!(
+            decode_state(&wram).unwrap().opponents_defeated(),
+            OPPONENT_COUNT - 1
+        );
+        wram[MODE] = MODE_WON;
+        assert_eq!(
+            decode_state(&wram).unwrap().opponents_defeated(),
+            OPPONENT_COUNT - 1
+        );
     }
 
     #[test]

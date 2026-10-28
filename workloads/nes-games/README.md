@@ -119,5 +119,6 @@ and never reaches a win mode.
 
 Mac is dead when he is knocked down during a fight (`$05 = 2` with `$00 = $01`),
 when the mode is `$FD` (lost) or when it is `$FB` (lost by technical knockout).
-A dead or won state is terminal. The count of defeated opponents is `$01` capped
-at 14, and it does not depend on the mode.
+A dead or won state is terminal. The count of defeated opponents is 14 only in a
+won state. Otherwise it is `$01` capped at 13, so a loss to Mr. Dream and the
+attract demo's `$01 = $13` both count 13.
