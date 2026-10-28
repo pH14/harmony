@@ -505,11 +505,11 @@ mod tests {
                 let report = run(&w, crate::test_seed(), 1000, true).unwrap();
                 assert_eq!(report["verified"], true);
                 assert!(
-                    report["pre_objective_continuation_jobs"].as_u64().unwrap()
-                        <= report["continuation_jobs"].as_u64().unwrap()
+                    report["pre_objective_realized_jobs"].as_u64().unwrap()
+                        <= report["realized_jobs"].as_u64().unwrap()
                 );
                 assert!(
-                    report["pre_objective_continuation_work"].as_u64().unwrap()
+                    report["pre_objective_realized_work"].as_u64().unwrap()
                         <= report["first_objective_work"]
                             .as_u64()
                             .unwrap_or(report["work"].as_u64().unwrap())

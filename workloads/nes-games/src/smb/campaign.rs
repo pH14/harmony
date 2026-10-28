@@ -55,9 +55,9 @@ pub use crate::search::campaign::{
     RESUME_IDENTIFIER, TreeImportCounts as SmbTreeImportCounts, derive_selection_seed,
 };
 
-pub type SmbCampaignJobRecord = CampaignJobRecord<EmpiricalStepCheckpoint>;
-pub type SmbCampaignSkipRecord = CampaignSkipRecord<EmpiricalStepCheckpoint>;
-pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint>;
+pub type SmbCampaignJobRecord = CampaignJobRecord<EmpiricalStepCheckpoint, SmbArchiveKey>;
+pub type SmbCampaignSkipRecord = CampaignSkipRecord<EmpiricalStepCheckpoint, SmbArchiveKey>;
+pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint, SmbArchiveKey>;
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v3";
 

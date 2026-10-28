@@ -64,6 +64,16 @@ MP4. `nes-film` renders the evaluation matrices. It reads the input and `result.
 recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search.
 
+`nes-hindsight GAME CAMPAIGN_DIR [EVERY]` reads a campaign's `stream.jsonl`
+after the fact and rebuilds the archive graph from the retained keys each job
+record carries: an edge per parent-to-child position pair, the holders per slot,
+and the route labels the searcher's `labels` module would have predicted. It
+reports, at every checkpoint and every `EVERY` tries, how many holders a label
+dominates, and for each milestone position the try at which a label first
+predicted the stock the search finally arrived with there against the try at
+which the search itself arrived with it. Only Metroid and Super Mario Bros.
+keys are supported.
+
 A witness's `snapshot_sha256` hashes snapshots after `SnapshotState::logical_identity`. The Super Tilt Bro
 campaign result digest covers the complete job result, including preparation
 failures and retained QuickNES snapshots. Replay therefore detects a latent

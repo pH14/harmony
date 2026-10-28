@@ -30,6 +30,10 @@ consonance = ["machine/consonance", "nes-games/consonance"]
 name = "nes-film"
 path = "src/bin/nes-film.rs"
 
+[[bin]]
+name = "nes-hindsight"
+path = "src/bin/nes-hindsight.rs"
+
 [dev-dependencies]
 consonance-client = { path = "../../consonance/client", version = "=0.1.0", features = ["in-process"] }
 machine = { path = "../nes-machine", version = "=0.1.0", features = ["test-loopback"] }

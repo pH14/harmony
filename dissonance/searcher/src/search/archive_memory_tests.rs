@@ -239,7 +239,7 @@ struct Usage {
     entries: usize,
     inputs: usize,
     cells: usize,
-    continuations: usize,
+    labels: usize,
     snapshots: usize,
     total: usize,
 }
@@ -249,10 +249,10 @@ fn charged(archive: &LevelArchive) -> Usage {
         entries: archive.entry_metadata_memory_bytes(),
         inputs: archive.input_index_memory_bytes(),
         cells: archive.cell_memory_bytes(),
-        continuations: archive
-            .continuations
+        labels: archive
+            .labels
             .as_ref()
-            .map_or(0, |bank| bank.memory_bytes()),
+            .map_or(0, |labels| labels.memory_bytes()),
         snapshots: archive.resident_snapshot_bytes() + archive.snapshot_header_memory_bytes(),
         total: archive.resident_memory_bytes(),
     }
@@ -284,7 +284,7 @@ fn measured(mut archive: LevelArchive, baseline: isize) -> Usage {
         archive.tiers.clear();
         archive.active_ids = ActiveIds::default();
     });
-    let continuations = freed(&mut |archive| archive.continuations = None);
+    let labels = freed(&mut |archive| archive.labels = None);
     let entries = freed(&mut |archive| {
         archive.entries = Vec::new();
         archive.id_to_index.clear();
@@ -321,7 +321,7 @@ fn measured(mut archive: LevelArchive, baseline: isize) -> Usage {
         entries,
         inputs,
         cells,
-        continuations,
+        labels,
         snapshots,
         total,
     }
@@ -341,7 +341,7 @@ fn assert_charges_cover_heap(slots_per_cell: i32, bounded: bool, shared: bool) {
     if shared {
         archive.set_snapshot_shared_allocations(shared_history);
     }
-    archive.enable_continuations(usize::from(SUFFIX_DOUBLING_LIMIT));
+    archive.enable_labels(usize::from(SUFFIX_DOUBLING_LIMIT));
     admissions.admit(&mut archive, 10_000);
     if bounded {
         archive.memory_limit = Some(archive.resident_memory_bytes() / 2);
@@ -354,7 +354,7 @@ fn assert_charges_cover_heap(slots_per_cell: i32, bounded: bool, shared: bool) {
         measured.entries <= charged.entries
             && measured.inputs <= charged.inputs
             && measured.cells <= charged.cells
-            && measured.continuations <= charged.continuations
+            && measured.labels <= charged.labels
             && measured.snapshots <= charged.snapshots
             && measured.total <= charged.total,
         "heap {measured:?} exceeds charges {charged:?}"

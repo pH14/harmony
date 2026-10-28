@@ -3,7 +3,6 @@
 pub mod archive;
 pub mod campaign;
 pub mod checkpoint;
-mod continuation;
 pub mod draw;
 pub mod draw_tables;
 pub mod duration;
@@ -19,4 +18,6 @@ pub mod telemetry;
 mod weighted_set;
 
 pub mod job_observation;
+pub mod labels;
 pub mod locality;
+pub mod survival;

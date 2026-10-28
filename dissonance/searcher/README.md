@@ -113,8 +113,7 @@ duplicate skip. Replay checks that skips follow
 selection order, stay within the admission window, and do not exceed the live
 limit of 1,024 attempts for one reservation. Each skip must occur during the
 initial window fill or immediately after the admission that opens its later
-reservation slot. A reservation that takes a continuation cannot record a
-duplicate skip because continuation dispatch bypasses ordinary selection. A
+reservation slot. A
 terminal record follows only
 after the campaign has drained its jobs and finished
 successfully. Replay requires that record and checks its job, skip, and
@@ -252,7 +251,7 @@ campaign.
 
 The archive charges its own heap from logical counts: entries, stored suffix
 actions, live prefix nodes, slots, cells, active entries, tiers, pins, landing
-markers, continuation edges and shared snapshot allocations. A checkpoint
+markers, label edges and labels, and shared snapshot allocations. A checkpoint
 restores those counts, so a resumed or replayed archive charges what the live
 one did. Each count is multiplied by a worst-case size under glibc malloc. An
 allocation of n bytes takes n plus an 8-byte header, rounded up to 16 bytes, and
@@ -288,7 +287,7 @@ free for each retained single-child node. The opt-in
 with rebuilding every map in the same binary. Its timings cover prefix-tree
 compaction, not whole-search throughput.
 
-Compaction also removes stale continuation-landing markers by walking their
+Compaction also removes stale realization-landing markers by walking their
 sorted IDs together with the rebuilt entry-ID index. It does not build another
 set of every live ID or perform a tree lookup for each marker. The retained
 markers and logical memory accounting are unchanged.
@@ -545,7 +544,7 @@ a new context follows the same FIFO eviction and history allocation rules.
 The context table must fit a fixed reserve that the archive's memory budget
 excludes. The coordinator checks the table against that reserve after each
 admission.
-Deterministic continuation still requires the same seed, workload identity,
+Deterministic replay still requires the same seed, workload identity,
 stable units, and ordered admission. The policy contains no wall-clock or
 workload-specific vocabulary.
 
@@ -671,8 +670,8 @@ cells with any count in the interval, `totals` the sums over all of them, and
 Each cell reports these counts:
 
 - `draws`: selections of an entry in the cell.
-- `continuation`: draws dispatched from the continuation bank, credited to the
-  cell of the entry they continue.
+- `realized`: draws whose job first ran the route to the drawn position's
+  label. These draws also count in `draws`.
 - `recent`: draws whose cell came from the recent window. The other tier draws
   chose the cell by its count-decay weight.
 - `best_holder`: draws whose holder came from the best-holder share. The other
@@ -691,26 +690,6 @@ keeps none, so neither grows the archive. The counts are left out of the archive
 memory estimate, so snapshot eviction runs on the same schedule as without
 them. A 100M-execution run writes about 350 of these reports, about 1.2 MB or
 under 3% of its `progress.jsonl`.
-
-Continuation edges copy their action tail only after the existing-cost check
-accepts the edge; equal-cost and more expensive routes leave the bank unchanged
-without allocating an action vector.
-Pending-source updates use one tree-entry lookup, reusing the vacant position
-when queuing a source for the first time. Existing-source refreshes keep their
-sequence and update the same fields; a preference change moves the same queue
-entry. This changes neither dispatch order nor serialized state or memory charges.
-
-The pending-entry differential test compares serialized bank state and dispatches
-through mixed recording, queuing, popping, removal, and saturated-counter cases.
-An opt-in paired benchmark compares the original and single-lookup queue updates
-in the same release binary, alternating ABBA/BAAB timing blocks:
-
-```sh
-DISSONANCE_BENCHMARK_PENDING_ENTRY=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib pending_entry -- --nocapture --test-threads=1
-```
-
-Modes 0–3 measure new-source insertion, reprioritization, same-preference refresh,
-and the no-outgoing-edge control respectively.
 
 The energy mixtures choose among three input strategies: the retained-input
 table, the alphabet, and a splice, which appends to the parent the recorded
@@ -765,7 +744,7 @@ twice the longest such job since the last reset, up to 64 actions. A job that
 kept a state or left the place resets it to one action. A job that
 ended in a terminal state without either leaves it unchanged. The archive holds
 the length per entry, so checkpoints carry it and compaction drops it with its
-entry. Splices and continuations run their recorded tails and leave it
+entry. Splices run their recorded tails and leave it
 unchanged.
 
 The campaign also keeps one reach length, `SuffixReach`, shared by every
@@ -804,74 +783,87 @@ repeat the same test.
 Replay rebuilds the parent's length and the limits held by earlier in-flight
 reservations before accepting each recorded job limit. It cuts the redrawn
 suffix to the recorded limit. It rejects a drawn job whose limit is missing or
-outside 1 to 64, and a spliced or continued job that records a limit. Replay also checks each drawn skip limit against the in-flight reservations at
+outside 1 to 64, and a spliced job that records a limit. Replay also checks each drawn skip limit against the in-flight reservations at
 its selection point, including skips before the first admission. Reservations
 prefilled later in the window are excluded from that earlier selection state.
 
-Continuation replay carries a better state at one position to the positions
-reached from it. A position is a place paired with an identity, the `Position`
-type, so two holders that differ only in what they carry share one set of
-exits. Every retained parent and child whose positions differ records an edge
-between the two positions, inside one place or across two, holding the
-cheapest action tail observed between them, the donor and leaf it came from,
-and the preferences the tail gained from its source to its arrival. Edges
-inside a place give nearly every position on a route an exit, so an
-improvement anywhere queues. When a replacement wins its slot under
-`preference_cmp` with `Ordering::Greater`, its position is queued at the index
-of the lowest preference it took. A reservation that takes the queue examines
-at most 8 exits, skipping stale parents and prefixes already archived. Among the rest it dispatches the first whose holder beats
-every current holder of the slot it would land in, the parent's progress at the
-destination position, under the preference it won, and otherwise the first edge
-that gains a preference; an edge that does neither is skipped. An edge inside
-one place lands only on its destination position; an edge into another place
-lands anywhere in that place, and the arrival's own position is what queues
-next. Acceptance there is the ordinary slot rule after replay. Replay runs one
-edge per job, so each hop's landing check stops divergence from compounding. A
-result that lands and wins there queues its own position in turn; that chain is
-a wave, and `longest_wave` reports the deepest one.
+### Route labels
 
-The queue holds one entry per position, not per edge, ordered by preference
-index and then by arrival. Queuing a source is two map operations whatever its
-degree. A source queued again takes the parent and the preference index of its
-latest improvement and keeps its arrival order, so the check before replay
-compares the parent on the preference it won. A pop takes the next exit after
-the front source's cursor, advances the cursor and moves the source to the back
-of its preference index, so sources rotate and a source improved on every
-reservation cannot hold the front. One pop in four takes the highest preference
-index present instead of the lowest, so a preference that improves rarely still
-propagates. A source whose
-exits run out leaves the queue, and removing a position releases its
-edges and the pending entries that depended on them.
+A route label predicts the best state the search could reach at a slot by
+running known routes from better holders elsewhere. A position is a place
+paired with an identity, the `Position` type, so holders that differ only in
+what they carry share one set of routes.
 
-One reservation in four attempts a continuation while the queue is not empty.
-The share is fixed rather than fed back from how the replays are doing: one in
-eight starves the chain and one in two crowds out ordinary exploration. The
-draw is `RomuDuoJrRand::with_seed(campaign_seed ^ reservation)`, so replay
-recomputes it at each reconstructed reservation and rejects a record whose
-`continuation_energy` disagrees; the tier draw salts the same seed.
+Every retained child whose position differs from its parent's records an edge
+between the two positions. The edge holds the cheapest action tail seen between
+them, the donor and leaf keys it came from, and counts of how often a replay of
+it was attempted and landed. `ArchiveKey::carry` predicts the key a different
+source holder would reach by running that tail. It takes the source key, the
+edge's donor and leaf keys, and the edge weight `(landed + 1, attempted + 2)`.
+The default returns the leaf. A key that carries resources returns the leaf's
+place with the source's resources moved by what the tail gained or spent. An
+edge whose landed share falls below one in four stops carrying.
 
-The bank exists only for a workload whose key declares a preference. Without
-one nothing is recorded, nothing is charged, and the stream is unchanged.
-Edges and pending entries are charged as they are held rather than reserved up
-front, and compaction drops the edges of positions the archive no longer
-holds. Dispatch records the complete action tail, so later donor
-reclamation cannot change serial replay. The check before dispatch compares
-the parent's key at the source position with the holders of the destination
-slot under `preference_cmp`, and for an edge into another place those keys sit
-in different places. This assumes a workload's preferences compare the same way
-in every place.
+Each slot holds one label per preference: the best carried key that beats the
+slot's holder, with its parent slot and route cost. Labels are corrected
+incrementally. An admission or a raised label pushes its slot's exits onto a
+queue ordered by preference and cost. A lowered, replaced or removed holder, a
+replaced edge, or a missed replay first clears every label whose parent chain
+runs through the change, then marks those slots for a full recompute. Clearing
+runs before any recompute, so a cycle of labels cannot rebuild itself from its
+own stale values. A lowered, replaced or removed holder also recomputes its
+own slot. After each admission the archive relaxes until it has visited
+max(8, queue length / 64) edges or neighbouring slots. Every scan of exits or
+entrances stops at that count and resumes on the next admission, so relaxation
+work stays proportional to search work.
 
-`ContinuationAccounting` rides every live progress line under `continuations`:
-`edges` and `pending` for the bank's size, `jobs`, `execution_work`, `landed`,
-`replaced`, `opened_new_cell` and `useful` for what the replays did, where a
-useful landing is one whose entry later bred a retained child,
-`gaining_dispatched` for edges dispatched on their gain alone, `longest_wave`,
-and `energy`, `reservations_drawn` and `reservations_taken` for the share.
+When the selector draws a holder whose slot label beats it, the job first
+replays the route to that label. The preference is the draw's best-holder
+preference, or else the lowest preference where the label beats the holder.
+The route walks label parents back to a realized holder, the root. The job
+starts from the root and runs the route's hops in order while their total
+actions stay within the longest edge in the graph, at least one hop. The
+ordinary suffix drawn for the drawn holder follows. Admission applies the
+ordinary slot rule to every state along the way. Each hop counts as landed when
+an admitted or duplicate state reaches its destination position; hops stop
+counting at the first miss. The drawn holder keeps the selection credit, so
+draw weights and tier statistics see one draw.
+
+The job record names the root as `parent_id` and carries `realization`: the
+drawn holder's ID, the preference, the hop count and the replayed action tail.
+Replay rebuilds the labels from the stream, recomputes the realization at each
+reservation and rejects a record that disagrees. Labels, edges, counters and
+the queue are saved in search checkpoints.
+
+Each entry keeps a `Survival` estimate: jobs drawn from it and jobs that ended
+terminal without an objective. A finished job credits its drawn holder with
+the full count and its ancestors with the count decay of their distance, for
+as long as that weight stays at least 1/64 of the direct one. The estimate is
+(survivors + 1) / (draws + 2), so an unseen entry sits at one half. It
+multiplies the holder's draw weight. A histogram of the estimates over resident
+entries gives the archive median. Relaxation does not raise the label of a
+slot whose holders all sit below that median. The job record carries `died`
+for a job that ended terminal without an objective, and replay rejects a
+record whose replayed outcome differs. The same type folds deaths in
+`nes-hindsight ... deaths`.
+
+Labels exist only for a key that declares a preference. Without one nothing is
+recorded, charged or realized, and the stream is unchanged. `LabelAccounting`
+rides every live progress line under `labels`: `edges`, `labels` and `queued`
+for the graph's size, `relaxations`, `examinations` and `changed` for its
+work, and `realized`, `hops_attempted`, `hops_landed`, `arrived`, `replaced`,
+`useful` and `execution_work` for the realized jobs, and `held_back`,
+`job_ends`, `deaths` and `survival_median` (in 64ths) for survival. A useful
+arrival is one whose entry later bred a retained child.
+
+`nes-hindsight` in `workloads/nes` builds the same labels offline from a
+recorded stream and reports when each milestone's stock was first predicted
+against when the search first reached it.
 
 Search experiments are promoted through paired workload panels, fresh
 completion results, and resource costs in
 [`benchmarks/search`](../../benchmarks/search/README.md). The generic resource
-fixture exercises actual continuation dispatch, snapshot eviction, concurrent
+fixture exercises realization on draw, snapshot eviction, concurrent
 reservations, exact report/checkpoint replay, and planted recording corruption
 without a workload runtime or external artifact.
 
@@ -986,7 +978,7 @@ without a work-budget cutoff.
 
 `CampaignExecutionOptions::checkpoints` writes the whole search state during a
 run: the coordinator counters, the archive with its cells, lineages and
-continuation queue, the workload evidence, the draw tables, the adaptive
+route labels, the workload evidence, the draw tables, the adaptive
 duration policies, the worker random states, and every reserved job that is not
 yet admitted. A checkpoint is written after an admission and the selection that
 follows it, so resuming re-executes the unadmitted jobs and admits them in the
@@ -1120,7 +1112,7 @@ and the workload policies that give stored inputs and keys their meaning must
 match. The search checkpoint format is version 9; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
-and either objective-stop setting at runtime. The selector and continuation
+and either objective-stop setting at runtime. The selector and label
 identifiers are compiled constants; draw-table and preference identifiers come
 from workload behavior. The resume policy map structurally permits differences
 in these identifiers, but any change requiring a rebuilt executable fails the

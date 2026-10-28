@@ -11,10 +11,11 @@ use std::{
 };
 
 use crate::search::{
-    continuation::{Continuation, ContinuationBank},
     draw::SUFFIX_DOUBLING_LIMIT,
     heap,
+    labels::{Hop, LabelAccounting, LabelGraph, label_preferences},
     rand::RomuDuoJrRand,
+    survival::{Survival, SurvivalHistogram, fold_weights},
     weighted_set::WeightedSet,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -164,6 +165,9 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn preference_cmp(self, _preference: usize, _other: Self) -> Ordering {
         Ordering::Equal
     }
+    fn carry(self, _donor: Self, leaf: Self, _weight: (u32, u32)) -> Self {
+        leaf
+    }
     type Lineage: Clone + Default + Serialize + DeserializeOwned;
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self;
     fn record(lineage: &mut Self::Lineage, key: Self);
@@ -259,7 +263,8 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_progress_cascade_pace_yield_cell_recent_count_decay_v2";
+pub const SELECTOR_IDENTIFIER: &str =
+    "tier_progress_cascade_pace_yield_cell_recent_count_decay_survival_v3";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -271,12 +276,12 @@ const _: () = assert!(TIER_RANK_SHIFT * (TIER_RANK_CAP as u32) < u64::BITS);
 
 const COUNT_DECAY_EXPONENT: u32 = 2;
 
-const COUNT_DECAY_SCALE: u64 = 1 << 32;
+pub const COUNT_DECAY_SCALE: u64 = 1 << 32;
 
 const BEST_HOLDER_SHARE_DENOMINATOR: usize = 4;
 
 #[must_use]
-fn count_decay(draws: u64) -> u64 {
+pub fn count_decay(draws: u64) -> u64 {
     let divisor = draws
         .saturating_add(1)
         .saturating_pow(COUNT_DECAY_EXPONENT)
@@ -310,7 +315,6 @@ fn draw_weighted(
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectorPath {
-    Continuation,
     Tiers,
     Recent,
 }
@@ -326,27 +330,18 @@ pub struct SelectorDraw {
     pub fall_through: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ContinuationAccounting {
-    pub edges: usize,
-    pub pending: usize,
-    pub jobs: u64,
-    pub execution_work: u64,
-    pub landed: u64,
-    pub replaced: u64,
-    pub opened_new_cell: u64,
-    pub useful: u64,
-    pub gaining_dispatched: u64,
-    pub longest_wave: u32,
-    pub energy: u16,
-    pub reservations_drawn: u64,
-    pub reservations_taken: u64,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Realization<A, K: ArchiveKey> {
+    pub root: usize,
+    pub preference: u8,
+    pub hops: Vec<Hop<K>>,
+    pub actions: Vec<A>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SelectorAccounting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub continuation_selections: Option<u64>,
+    pub realized_selections: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recent_selections: Option<u64>,
     pub cell_selections: u64,
@@ -369,7 +364,7 @@ pub struct SelectorAccounting {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CellDraws {
     pub draws: u64,
-    pub continuation: u64,
+    pub realized: u64,
     pub recent: u64,
     pub best_holder: u64,
     pub top_tier: u64,
@@ -383,7 +378,7 @@ pub struct CellDraws {
 impl CellDraws {
     fn add(&mut self, other: &Self) {
         self.draws = self.draws.saturating_add(other.draws);
-        self.continuation = self.continuation.saturating_add(other.continuation);
+        self.realized = self.realized.saturating_add(other.realized);
         self.recent = self.recent.saturating_add(other.recent);
         self.best_holder = self.best_holder.saturating_add(other.best_holder);
         self.top_tier = self.top_tier.saturating_add(other.top_tier);
@@ -647,6 +642,10 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub rejected: u64,
     selected: Vec<u64>,
     productive: Vec<u64>,
+    survival: Vec<Survival>,
+    survival_histogram: SurvivalHistogram,
+    job_ends: u64,
+    deaths: u64,
     opened_cell: Vec<bool>,
     opened_slot: Vec<bool>,
     opened_novel_slot: Vec<bool>,
@@ -705,9 +704,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     #[serde(skip)]
     failed_compaction: Option<(usize, usize)>,
     input_reconstructions: std::cell::Cell<u64>,
-    continuations: Option<ContinuationBank<Position<K>, A>>,
-    continuation_wave: u32,
-    continuation_accounting: ContinuationAccounting,
+    labels: Option<LabelGraph<A, K>>,
+    realization_accounting: LabelAccounting,
     landed: BTreeSet<u64>,
     cell_interval: BTreeMap<Cell<K>, CellDraws>,
     cell_interval_since: u64,
@@ -1258,6 +1256,10 @@ where
             rejected: 0,
             selected: Vec::new(),
             productive: Vec::new(),
+            survival: Vec::new(),
+            survival_histogram: SurvivalHistogram::default(),
+            job_ends: 0,
+            deaths: 0,
             opened_cell: Vec::new(),
             opened_slot: Vec::new(),
             opened_novel_slot: Vec::new(),
@@ -1309,9 +1311,8 @@ where
             keep_releases: 0,
             failed_compaction: None,
             input_reconstructions: std::cell::Cell::new(0),
-            continuations: None,
-            continuation_wave: 0,
-            continuation_accounting: ContinuationAccounting::default(),
+            labels: None,
+            realization_accounting: LabelAccounting::default(),
             landed: BTreeSet::new(),
             cell_interval: BTreeMap::new(),
             cell_interval_since: 0,
@@ -1488,6 +1489,11 @@ where
         };
         if remove_slot {
             self.slots.remove(&slot_key);
+            if let Some(labels) = &mut self.labels {
+                labels.holder_removed(key);
+            }
+        } else if let Some(labels) = &mut self.labels {
+            labels.holder_demoted(key);
         }
         if let Some(state) = self.cells.get_mut(&cell_of(key)) {
             state.active = state.active.saturating_sub(1);
@@ -1631,6 +1637,7 @@ where
     }
 
     pub(crate) fn maintain_memory_budget(&mut self) -> Result<(), &'static str> {
+        self.relax_labels();
         self.compact_history_if_needed()?;
         self.enforce_snapshot_memory_budget()
     }
@@ -1761,10 +1768,16 @@ where
                 self.take_snapshot(index);
             }
         }
+        for (index, keep) in keep.iter().enumerate() {
+            if !keep {
+                self.survival_histogram.remove(self.survival[index]);
+            }
+        }
         self.entries = retain_marked(std::mem::take(&mut self.entries), &keep);
         self.active = retain_marked(std::mem::take(&mut self.active), &keep);
         self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
+        self.survival = retain_marked(std::mem::take(&mut self.survival), &keep);
         self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_novel_slot = retain_marked(std::mem::take(&mut self.opened_novel_slot), &keep);
@@ -1824,13 +1837,13 @@ where
         self.cells.retain(|_, state| state.active > 0);
         self.retain_indexed_landings();
 
-        if let Some(bank) = &mut self.continuations {
+        if let Some(labels) = &mut self.labels {
             let live = self
                 .entries
                 .iter()
                 .map(|entry| position_of(entry.key))
                 .collect::<BTreeSet<_>>();
-            bank.retain(&live);
+            labels.retain(&live);
         }
 
         self.deepest_leaf = self
@@ -2082,6 +2095,7 @@ where
             column(&self.active, entries),
             column(&self.selected, entries),
             column(&self.productive, entries),
+            column(&self.survival, entries),
             column(&self.opened_cell, entries),
             column(&self.opened_slot, entries),
             column(&self.opened_novel_slot, entries),
@@ -2323,7 +2337,7 @@ where
         let rank = self.holder_rank(0, id);
         let (progress, place) = (rank.key.progress(), rank.key.place());
         let place_weight = self.place_weight(progress, place);
-        let holder_weight = count_decay(self.selected[id]);
+        let holder_weight = self.holder_weight(id);
         let tier = self.tiers.entry(progress).or_default();
         tier.weights.insert(place, place_weight);
         let members = tier.places.entry(place).or_default();
@@ -2332,6 +2346,56 @@ where
         for (preference, ranked) in members.ranked.iter_mut().enumerate() {
             ranked.insert(HolderRank { preference, ..rank });
         }
+    }
+
+    fn holder_weight(&self, id: usize) -> u64 {
+        self.survival
+            .get(id)
+            .copied()
+            .unwrap_or_default()
+            .scale(count_decay(self.selected[id]))
+    }
+
+    pub fn record_job_end(&mut self, id: usize, died: bool) {
+        self.job_ends = self.job_ends.saturating_add(1);
+        self.deaths = self.deaths.saturating_add(u64::from(died));
+        self.sync_parent_index();
+        let mut ancestor = id;
+        for weight in fold_weights() {
+            let Some(survival) = self.survival.get_mut(ancestor) else {
+                break;
+            };
+            self.survival_histogram.remove(*survival);
+            survival.record(weight, died);
+            self.survival_histogram.add(*survival);
+            self.refresh_holder_weight(ancestor);
+            ancestor = self
+                .parent_index
+                .get(ancestor)
+                .copied()
+                .unwrap_or(usize::MAX);
+        }
+    }
+
+    fn refresh_holder_weight(&mut self, id: usize) {
+        if !self.active.get(id).copied().unwrap_or(false) {
+            return;
+        }
+        let key = self.entries[id].key;
+        let weight = self.holder_weight(id);
+        if let Some(members) = self
+            .tiers
+            .get_mut(&key.progress())
+            .and_then(|tier| tier.places.get_mut(&key.place()))
+            && members.ids.weight(&id).is_some()
+        {
+            members.ids.set_weight(&id, weight);
+        }
+    }
+
+    #[must_use]
+    pub fn survival(&self, id: usize) -> Survival {
+        self.survival[id]
     }
 
     fn place_weight(&self, progress: K::Progress, place: K::Place) -> u64 {
@@ -2396,10 +2460,7 @@ where
             );
             for members in tier.places.values_mut() {
                 let ids = WeightedSet::from_sorted(
-                    members
-                        .ids
-                        .iter()
-                        .map(|id| (id, count_decay(self.selected[id]))),
+                    members.ids.iter().map(|id| (id, self.holder_weight(id))),
                 );
                 members.ranked = self.cell_ranks(&ids);
                 members.ids = ids;
@@ -2619,8 +2680,10 @@ where
         }
         self.portfolio_replacements
             .resize(K::preferences().max(1), 0);
-        if let Some(bank) = &mut self.continuations {
-            bank.retain_preferences(K::preferences());
+        if retired > 0
+            && let Some(labels) = &mut self.labels
+        {
+            labels.reset_labels();
         }
         retired
     }
@@ -2834,37 +2897,23 @@ where
             })
             .min()
             .map(|preference| u8::try_from(*preference).unwrap_or(u8::MAX));
-        if let Some(bank) = &mut self.continuations {
-            if let Some(tier) = queue_tier {
-                bank.improved(
-                    position_of(key),
-                    self.next_entry_id,
-                    self.continuation_wave,
-                    tier,
-                );
-            }
-            if let Some(parent) = parent_id {
-                let tail_cost: u64 = suffix
-                    .as_ref()
-                    .iter()
-                    .map(|action| (self.action_cost)(action))
-                    .sum();
-                let entry = &self.entries[parent];
-                let gains = (0..K::preferences().min(8))
-                    .filter(|preference| {
-                        key.preference_cmp(*preference, entry.key) == Ordering::Greater
-                    })
-                    .fold(0_u8, |mask, preference| mask | (1 << preference));
-                bank.record(
-                    position_of(entry.key),
-                    position_of(key),
-                    entry.id,
-                    self.next_entry_id,
-                    suffix.as_ref(),
-                    tail_cost,
-                    gains,
-                );
-            }
+        if let Some(labels) = &mut self.labels
+            && let Some(parent) = parent_id
+        {
+            let entry = &self.entries[parent];
+            let tail_cost: u64 = suffix
+                .as_ref()
+                .iter()
+                .map(|action| (self.action_cost)(action))
+                .sum();
+            labels.record(
+                entry.key,
+                key,
+                entry.id,
+                self.next_entry_id,
+                suffix.as_ref(),
+                tail_cost,
+            );
         }
         if let Some(parent) = parent_id
             && let Some(interval) = self.interval_counts(cell_of(self.entries[parent].key))
@@ -2878,6 +2927,9 @@ where
         for replaced in displaced {
             self.replacement_cost_displaced = self.replacement_cost_displaced.saturating_add(1);
             self.deactivate(replaced);
+        }
+        if let Some(labels) = &mut self.labels {
+            labels.holder_changed(key, queue_tier.map(usize::from));
         }
         self.next_entry_id = next_entry_id;
         self.historical_input_actions = self.historical_input_actions.saturating_add(input_len);
@@ -2944,6 +2996,8 @@ where
         }
         self.selected.push(0);
         self.productive.push(0);
+        self.survival.push(Survival::default());
+        self.survival_histogram.add(Survival::default());
         self.opened_cell.push(new_cell);
         self.opened_slot.push(new_slot);
         self.opened_novel_slot.push(novel_slot);
@@ -3270,7 +3324,7 @@ where
                     && members
                         .ids
                         .iter()
-                        .all(|id| members.ids.weight(&id) == Some(count_decay(self.selected[id])))
+                        .all(|id| members.ids.weight(&id) == Some(self.holder_weight(id)))
                     && members.ranked.len() == K::preferences()
                     && members
                         .ranked
@@ -3488,137 +3542,179 @@ where
         self.stored_input_actions
     }
 
-    pub(crate) fn resume_continuations(&mut self, longest_edge: usize) {
-        match (&mut self.continuations, K::preferences() > 0) {
-            (Some(bank), true) => bank.set_longest_edge(longest_edge),
-            (None, true) => self.continuations = Some(ContinuationBank::new(longest_edge)),
-            (_, false) => self.continuations = None,
+    pub(crate) fn resume_labels(&mut self, longest_edge: usize) {
+        match (&mut self.labels, K::preferences() > 0) {
+            (Some(labels), true) => labels.set_longest_edge(longest_edge),
+            (None, true) => self.labels = Some(LabelGraph::new(longest_edge)),
+            (_, false) => self.labels = None,
         }
     }
 
-    pub(crate) fn enable_continuations(&mut self, longest_edge: usize) {
-        self.continuations = (K::preferences() > 0).then(|| ContinuationBank::new(longest_edge));
+    pub(crate) fn enable_labels(&mut self, longest_edge: usize) {
+        self.labels = (K::preferences() > 0).then(|| LabelGraph::new(longest_edge));
     }
 
-    pub(crate) fn set_admission_wave(&mut self, wave: u32) {
-        self.continuation_wave = wave;
-    }
-
-    pub(crate) fn pop_continuation(
-        &mut self,
-        from_highest_preference: bool,
-    ) -> Option<Continuation<Position<K>, A>> {
-        self.continuations.as_mut()?.pop(from_highest_preference)
-    }
-
-    #[must_use]
-    pub(crate) fn outranks_slot_holders(
-        &self,
-        parent_index: usize,
-        destination: Position<K>,
-        tier: u8,
-    ) -> bool {
-        let Some(entry) = self.entries.get(parent_index) else {
-            return false;
+    pub(crate) fn relax_labels(&mut self) -> usize {
+        let Some(labels) = &mut self.labels else {
+            return 0;
         };
-        let key = entry.key;
-        let preference = usize::from(tier);
-        let (place, identity) = destination;
-        let slot = ((key.progress(), place), identity);
-        self.slots.get(&slot).is_none_or(|holders| {
-            holders.iter().all(|held| {
-                self.entries.get(*held).is_none_or(|holder| {
-                    key.preference_cmp(preference, holder.key) == Ordering::Greater
-                })
-            })
-        })
+        let slots = &self.slots;
+        let entries = &self.entries;
+        let best_holder = |slot: Slot<K>, preference: usize| -> Option<K> {
+            slots
+                .get(&slot)?
+                .iter()
+                .map(|index| entries[*index].key)
+                .max_by(|a, b| a.preference_cmp(preference, *b))
+        };
+        let survival = &self.survival;
+        let median = self.survival_histogram.median();
+        let raisable = |slot: Slot<K>| {
+            slots
+                .get(&slot)
+                .is_none_or(|held| held.iter().any(|index| survival[*index].bucket() >= median))
+        };
+        let budget = labels.relaxation_budget();
+        labels.relax(budget, &best_holder, &raisable)
     }
 
     #[must_use]
-    pub(crate) fn continuation_pending(&self) -> usize {
-        self.continuations
+    pub fn label_report(&self) -> LabelAccounting {
+        let graph = self
+            .labels
             .as_ref()
-            .map_or(0, ContinuationBank::pending_count)
+            .map(LabelGraph::accounting)
+            .unwrap_or_default();
+        LabelAccounting {
+            edges: graph.edges,
+            labels: graph.labels,
+            queued: graph.queued,
+            relaxations: graph.relaxations,
+            examinations: graph.examinations,
+            changed: graph.changed,
+            held_back: graph.held_back,
+            job_ends: self.job_ends,
+            deaths: self.deaths,
+            survival_median: self.survival_histogram.median(),
+            ..self.realization_accounting.clone()
+        }
+    }
+
+    fn best_slot_holder(&self, slot: Slot<K>, preference: usize) -> Option<usize> {
+        self.slots
+            .get(&slot)?
+            .iter()
+            .copied()
+            .filter(|index| self.active.get(*index).copied().unwrap_or(false))
+            .max_by(|a, b| {
+                self.entries[*a]
+                    .key
+                    .preference_cmp(preference, self.entries[*b].key)
+            })
     }
 
     #[must_use]
-    pub fn continuation_report(&self) -> ContinuationAccounting {
-        ContinuationAccounting {
-            edges: self
-                .continuations
-                .as_ref()
-                .map_or(0, ContinuationBank::edge_count),
-            pending: self.continuation_pending(),
-            ..self.continuation_accounting.clone()
-        }
-    }
-
-    pub(crate) fn record_continuation_outcome(
-        &mut self,
-        landed: Option<usize>,
-        replaced: bool,
-        opened_new_cell: bool,
-        wave: u32,
-    ) {
-        if let Some(id) = landed
-            && let Some(entry) = self.entries.get(id)
-        {
-            self.landed.insert(entry.id);
-        }
-        let accounting = &mut self.continuation_accounting;
-        accounting.jobs = accounting.jobs.saturating_add(1);
-        if landed.is_some() {
-            accounting.landed = accounting.landed.saturating_add(1);
-        }
-        if replaced {
-            accounting.replaced = accounting.replaced.saturating_add(1);
-        }
-        if opened_new_cell {
-            accounting.opened_new_cell = accounting.opened_new_cell.saturating_add(1);
-        }
-        accounting.longest_wave = accounting.longest_wave.max(wave);
-    }
-
-    pub(crate) fn record_continuation_dispatch(&mut self, gaining: bool) {
-        if gaining {
-            self.continuation_accounting.gaining_dispatched = self
-                .continuation_accounting
-                .gaining_dispatched
-                .saturating_add(1);
-        }
-    }
-
-    pub(crate) fn record_continuation_reservation(&mut self, energy: u16, taken: bool) {
-        let accounting = &mut self.continuation_accounting;
-        accounting.energy = energy;
-        accounting.reservations_drawn = accounting.reservations_drawn.saturating_add(1);
-        if taken {
-            accounting.reservations_taken = accounting.reservations_taken.saturating_add(1);
-        }
-    }
-
-    pub(crate) fn add_continuation_execution_work(&mut self, work: u64) {
-        self.continuation_accounting.execution_work = self
-            .continuation_accounting
-            .execution_work
-            .saturating_add(work);
-    }
-
-    #[must_use]
-    pub(crate) fn lands_on_edge(
+    pub(crate) fn realization(
         &self,
-        id: usize,
-        source: Position<K>,
-        destination: Position<K>,
-    ) -> bool {
-        self.entries.get(id).is_some_and(|entry| {
-            let position = position_of(entry.key);
-            if source.0 == destination.0 {
-                position == destination
-            } else {
-                position.0 == destination.0
+        drawn: usize,
+        preference: Option<u8>,
+    ) -> Option<Realization<A, K>> {
+        let labels = self.labels.as_ref()?;
+        let slot = slot_of_key(self.entries.get(drawn)?.key);
+        let best_holder = |slot: Slot<K>, preference: usize| -> Option<K> {
+            self.best_slot_holder(slot, preference)
+                .map(|index| self.entries[index].key)
+        };
+        let preference = match preference {
+            Some(preference) => usize::from(preference),
+            None => (0..label_preferences::<K>())
+                .find(|preference| labels.dominating(slot, *preference, &best_holder).is_some())?,
+        };
+        labels.dominating(slot, preference, &best_holder)?;
+        let (root_slot, route) = labels.route(slot, preference, &best_holder)?;
+        let root = self.best_slot_holder(root_slot, preference)?;
+        let mut hops = Vec::new();
+        let mut actions: Vec<A> = Vec::new();
+        for (from, to) in route {
+            let edge = labels.edge(from, to)?;
+            if !hops.is_empty()
+                && actions.len().saturating_add(edge.actions.len()) > labels.longest_edge()
+            {
+                break;
             }
+            actions.extend(edge.actions.iter().cloned());
+            hops.push((from, to));
+        }
+        if actions.is_empty() {
+            return None;
+        }
+        Some(Realization {
+            root,
+            preference: u8::try_from(preference).ok()?,
+            hops,
+            actions,
         })
+    }
+
+    pub(crate) fn record_realization_outcome(
+        &mut self,
+        hops: &[Hop<K>],
+        arrivals: &[(usize, bool)],
+        execution_work: u64,
+    ) {
+        let accounting = &mut self.realization_accounting;
+        accounting.realized = accounting.realized.saturating_add(1);
+        accounting.execution_work = accounting.execution_work.saturating_add(execution_work);
+        let reached = |position: Position<K>| {
+            arrivals
+                .iter()
+                .find(|(index, _)| {
+                    self.entries
+                        .get(*index)
+                        .is_some_and(|entry| position_of(entry.key) == position)
+                })
+                .copied()
+        };
+        let arrivals: Vec<Option<(usize, bool)>> =
+            hops.iter().map(|(_, to)| reached(*to)).collect();
+        let mut final_arrival = None;
+        for (index, ((from, to), arrival)) in hops.iter().zip(&arrivals).enumerate() {
+            let accounting = &mut self.realization_accounting;
+            accounting.hops_attempted = accounting.hops_attempted.saturating_add(1);
+            if arrival.is_some() {
+                accounting.hops_landed = accounting.hops_landed.saturating_add(1);
+            }
+            if let Some(labels) = &mut self.labels {
+                labels.transfer_attempted(*from, *to, arrival.is_some());
+            }
+            if arrival.is_none() {
+                break;
+            }
+            if index + 1 == hops.len() {
+                final_arrival = *arrival;
+            }
+        }
+        if let Some((index, retained)) = final_arrival {
+            let accounting = &mut self.realization_accounting;
+            accounting.arrived = accounting.arrived.saturating_add(1);
+            if retained {
+                accounting.replaced = accounting.replaced.saturating_add(1);
+            }
+            if let Some(entry) = self.entries.get(index) {
+                self.landed.insert(entry.id);
+            }
+        }
+    }
+
+    pub(crate) fn record_realized_selection(&mut self, id: usize) {
+        let count = self
+            .selector_accounting
+            .realized_selections
+            .get_or_insert(0);
+        *count = count.saturating_add(1);
+        if let Some(interval) = self.interval_counts(cell_of(self.entries[id].key)) {
+            interval.realized = interval.realized.saturating_add(1);
+        }
     }
 
     #[must_use]
@@ -3626,11 +3722,7 @@ where
         self.entry_metadata_memory_bytes()
             .saturating_add(self.input_index_memory_bytes())
             .saturating_add(self.cell_memory_bytes())
-            .saturating_add(
-                self.continuations
-                    .as_ref()
-                    .map_or(0, ContinuationBank::memory_bytes),
-            )
+            .saturating_add(self.labels.as_ref().map_or(0, LabelGraph::memory_bytes))
     }
 
     #[must_use]
@@ -3688,19 +3780,6 @@ where
         self.cells.len()
     }
 
-    pub(crate) fn record_isolated_continuation(&mut self, id: usize) {
-        self.referenced[id] = true;
-        let count = self
-            .selector_accounting
-            .continuation_selections
-            .get_or_insert(0);
-        *count = count.saturating_add(1);
-        if let Some(interval) = self.interval_counts(cell_of(self.entries[id].key)) {
-            interval.draws = interval.draws.saturating_add(1);
-            interval.continuation = interval.continuation.saturating_add(1);
-        }
-    }
-
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
         self.selected[id] = self.selected[id].saturating_add(1);
         self.referenced[id] = true;
@@ -3713,15 +3792,11 @@ where
         state.draws = state.draws.saturating_add(1);
         state.draws_total = state.draws_total.saturating_add(1);
         let place_weight = count_decay(state.draws);
-        let holder_weight = count_decay(self.selected[id]);
+        let holder_weight = self.holder_weight(id);
         if let Some(interval) = self.interval_counts(cell_of(key)) {
             interval.draws = interval.draws.saturating_add(1);
-            match draw.path {
-                SelectorPath::Continuation => {
-                    interval.continuation = interval.continuation.saturating_add(1);
-                }
-                SelectorPath::Recent => interval.recent = interval.recent.saturating_add(1),
-                SelectorPath::Tiers => {}
+            if draw.path == SelectorPath::Recent {
+                interval.recent = interval.recent.saturating_add(1);
             }
             if draw.best_preference.is_some() {
                 interval.best_holder = interval.best_holder.saturating_add(1);
@@ -3739,23 +3814,12 @@ where
                 members.ids.set_weight(&id, holder_weight);
             }
         }
-        match draw.path {
-            SelectorPath::Continuation => {
-                let count = self
-                    .selector_accounting
-                    .continuation_selections
-                    .get_or_insert(0);
-                *count = count.saturating_add(1);
-            }
-            SelectorPath::Tiers | SelectorPath::Recent => {
-                if draw.path == SelectorPath::Recent {
-                    let count = self.selector_accounting.recent_selections.get_or_insert(0);
-                    *count = count.saturating_add(1);
-                }
-                self.selector_accounting.cell_selections =
-                    self.selector_accounting.cell_selections.saturating_add(1);
-            }
+        if draw.path == SelectorPath::Recent {
+            let count = self.selector_accounting.recent_selections.get_or_insert(0);
+            *count = count.saturating_add(1);
         }
+        self.selector_accounting.cell_selections =
+            self.selector_accounting.cell_selections.saturating_add(1);
         if let Some(count) = draw.best_preference.and_then(|preference| {
             self.selector_accounting
                 .best_holder_draws
@@ -3789,8 +3853,8 @@ where
             .get(id)
             .is_some_and(|entry| self.landed.contains(&entry.id))
         {
-            self.continuation_accounting.useful =
-                self.continuation_accounting.useful.saturating_add(1);
+            self.realization_accounting.useful =
+                self.realization_accounting.useful.saturating_add(1);
         }
     }
 
@@ -4117,7 +4181,7 @@ where
         }
         let weights = ids
             .iter()
-            .map(|id| count_decay(self.selected[*id]))
+            .map(|id| self.holder_weight(*id))
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, weights.iter().copied())?;
         Ok((ids[index], None))
@@ -4180,13 +4244,15 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::{
-        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellDraws, CellIntervalRow, CellMembers,
-        CellState, HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
-        MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
-        SharedAllocation, SharedSnapshotMemory, SnapshotRetention, TIER_RANK_SHIFT, TierCells,
-        WeightedSet, tier_weight,
+        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, COUNT_DECAY_SCALE, CellDraws,
+        CellIntervalRow, CellMembers, CellState, HISTORY_COMPACTION_MIN_DROPS,
+        HISTORY_COMPACTION_SHARE, Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY,
+        SelectorAccounting, SelectorDraw, SelectorPath, SharedAllocation, SharedSnapshotMemory,
+        SnapshotRetention, TIER_RANK_SHIFT, TierCells, WeightedSet, count_decay, tier_weight,
     };
-    use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand};
+    use crate::search::{
+        draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand, survival::Survival,
+    };
     use serde::{Deserialize, Serialize};
     use std::{collections::BTreeMap, sync::Arc};
 
@@ -6208,15 +6274,14 @@ mod tests {
     }
 
     #[test]
-    fn resuming_continuations_follows_the_key_preference_count() {
+    fn resuming_labels_follows_the_key_preference_count() {
         let mut portfolio = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
-        assert!(portfolio.continuations.is_none());
-        portfolio.resume_continuations(4);
-        assert!(portfolio.continuations.is_some());
+        assert!(portfolio.labels.is_none());
+        portfolio.resume_labels(4);
+        assert!(portfolio.labels.is_some());
         let mut plain = Archive::<u8, TestKey, (), ()>::new(|_| 1);
-        plain.continuations = Some(crate::search::continuation::ContinuationBank::new(4));
-        plain.resume_continuations(4);
-        assert!(plain.continuations.is_none());
+        plain.enable_labels(4);
+        assert!(plain.labels.is_none());
     }
 
     #[test]
@@ -6309,6 +6374,13 @@ mod tests {
             self.first.cmp(&other.first)
         }
 
+        fn carry(self, _donor: Self, leaf: Self, _weight: (u32, u32)) -> Self {
+            Self {
+                first: self.first.max(leaf.first),
+                ..leaf
+            }
+        }
+
         type Lineage = ();
 
         fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -6316,6 +6388,24 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn a_better_holder_upstream_labels_the_positions_it_reaches_and_the_label_survives_a_checkpoint()
+     {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        archive.enable_labels(4);
+        let left = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
+        insert_region_at(&mut archive, None, 3, (1, 0, 9));
+        while archive.relax_labels() > 0 {}
+        let report = archive.label_report();
+        assert_eq!(report.labels, 1);
+        assert_eq!(report.queued, 0);
+        let bytes = postcard::to_allocvec(&archive).unwrap();
+        let restored: Archive<u8, RegionKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.label_report(), report);
+        assert!(archive.history_memory_bytes() > 0);
     }
 
     fn insert_region_at(
@@ -6344,19 +6434,142 @@ mod tests {
     }
 
     #[test]
-    fn a_move_inside_one_region_records_an_edge_and_an_improvement_there_queues_it() {
+    fn a_drawn_holder_beaten_by_its_label_realizes_the_route_from_the_better_holder() {
         let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
-        archive.enable_continuations(4);
+        archive.enable_labels(4);
         let left = insert_region_at(&mut archive, None, 1, (1, 0, 5));
-        insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
-        assert_eq!(archive.continuation_pending(), 0);
+        let right = insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
+        while archive.relax_labels() > 0 {}
+        assert_eq!(archive.realization(right, None), None);
         let richer = insert_region_at(&mut archive, None, 3, (1, 0, 9));
-        let taken = archive
-            .pop_continuation(false)
-            .expect("the improved position is queued");
-        assert_eq!((taken.source, taken.destination), ((1, 0), (1, 3)));
-        assert_eq!(archive.index_of_id(taken.parent), Some(richer));
-        assert!(archive.outranks_slot_holders(richer, taken.destination, taken.preference));
+        while archive.relax_labels() > 0 {}
+        let realization = archive
+            .realization(right, None)
+            .expect("the label at the right spot beats its holder");
+        assert_eq!(realization.root, richer);
+        assert_eq!(realization.preference, 0);
+        assert_eq!(realization.hops, vec![((1, 0), (1, 3))]);
+        assert_eq!(realization.actions, vec![2]);
+        assert_eq!(archive.realization(right, Some(0)), Some(realization));
+        assert_eq!(archive.realization(richer, None), None);
+    }
+
+    #[test]
+    fn a_death_folds_into_its_ancestors_with_the_count_decay_and_lowers_their_draw_weight() {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        let left = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        let right = insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
+        archive.rebuild_selector_index();
+        let before = archive.holder_weight(right);
+        archive.record_job_end(right, true);
+        archive.record_job_end(left, false);
+        assert_eq!(
+            archive.survival(right),
+            Survival {
+                draws: COUNT_DECAY_SCALE,
+                deaths: COUNT_DECAY_SCALE,
+            }
+        );
+        assert_eq!(
+            archive.survival(left),
+            Survival {
+                draws: COUNT_DECAY_SCALE + count_decay(1),
+                deaths: count_decay(1),
+            }
+        );
+        assert!(archive.holder_weight(right) < before);
+        let members = &archive.tiers[&()].places[&1];
+        assert_eq!(
+            members.ids.weight(&right),
+            Some(archive.holder_weight(right))
+        );
+        assert_eq!(members.ids.weight(&left), Some(archive.holder_weight(left)));
+        let report = archive.label_report();
+        assert_eq!((report.job_ends, report.deaths), (2, 1));
+        let bytes = postcard::to_allocvec(&archive).unwrap();
+        let restored: Archive<u8, RegionKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.survival(right), archive.survival(right));
+        assert_eq!(restored.label_report(), report);
+    }
+
+    #[test]
+    fn a_position_whose_holder_keeps_dying_keeps_its_label_below_the_median() {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        archive.enable_labels(4);
+        let left = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        let right = insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
+        for spot in 0..3 {
+            insert_region_at(&mut archive, None, 4, (2, spot, 1));
+        }
+        for _ in 0..4 {
+            archive.record_job_end(right, true);
+        }
+        while archive.relax_labels() > 0 {}
+        insert_region_at(&mut archive, None, 3, (1, 0, 9));
+        while archive.relax_labels() > 0 {}
+        assert_eq!(archive.realization(right, None), None);
+        let report = archive.label_report();
+        assert!(report.held_back > 0);
+        assert!(report.survival_median > archive.survival(right).bucket());
+    }
+
+    #[test]
+    fn replacing_the_only_holder_keeps_its_slot_occupied_in_the_label_graph() {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        archive.enable_labels(4);
+        let first = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        let better = insert_region_at(&mut archive, None, 2, (1, 0, 9));
+        assert!(!archive.active[first]);
+        assert!(archive.active[better]);
+        let occupied = archive
+            .labels
+            .as_ref()
+            .unwrap()
+            .occupied_at((1, 0))
+            .collect::<Vec<_>>();
+        assert_eq!(occupied, vec![(((), 1), 0)]);
+    }
+
+    #[test]
+    fn a_landed_hop_counts_and_an_edge_that_keeps_missing_stops_carrying() {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        archive.enable_labels(4);
+        let left = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        let right = insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
+        let richer = insert_region_at(&mut archive, None, 3, (1, 0, 9));
+        while archive.relax_labels() > 0 {}
+        let hops = archive
+            .realization(right, None)
+            .expect("a realization")
+            .hops;
+        let arrived = insert_region_at(&mut archive, Some(richer), 2, (1, 3, 9));
+        archive.record_realization_outcome(&hops, &[(arrived, true)], 7);
+        let report = archive.label_report();
+        assert_eq!(
+            (
+                report.realized,
+                report.hops_attempted,
+                report.hops_landed,
+                report.arrived,
+                report.replaced,
+                report.execution_work
+            ),
+            (1, 1, 1, 1, 1, 7)
+        );
+        let second = insert_region_at(&mut archive, None, 4, (1, 0, 12));
+        while archive.relax_labels() > 0 {}
+        assert_eq!(
+            archive
+                .realization(arrived, None)
+                .map(|realization| realization.root),
+            Some(second)
+        );
+        for _ in 0..8 {
+            archive.record_realization_outcome(&hops, &[], 1);
+        }
+        while archive.relax_labels() > 0 {}
+        assert_eq!(archive.realization(arrived, None), None);
+        assert_eq!(archive.label_report().hops_landed, 1);
     }
 
     #[test]
@@ -6371,18 +6584,6 @@ mod tests {
         assert!(!archive.opened_new_slot(richer));
         assert!(archive.opened_novel_slot(origin) && archive.opened_novel_slot(beside));
         assert!(!archive.opened_novel_slot(richer));
-    }
-
-    #[test]
-    fn an_edge_inside_a_region_lands_on_its_position_and_one_across_lands_anywhere_there() {
-        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
-        let origin = insert_region_at(&mut archive, None, 1, (1, 0, 5));
-        let beside = insert_region_at(&mut archive, Some(origin), 2, (1, 4, 5));
-        let across = insert_region_at(&mut archive, Some(origin), 3, (2, 6, 5));
-        assert!(archive.lands_on_edge(beside, (1, 0), (1, 4)));
-        assert!(!archive.lands_on_edge(beside, (1, 0), (1, 3)));
-        assert!(archive.lands_on_edge(across, (1, 0), (2, 1)));
-        assert!(!archive.lands_on_edge(beside, (1, 0), (2, 1)));
     }
 
     fn insert_portfolio(
@@ -6407,59 +6608,6 @@ mod tests {
                 (),
             )
             .expect("insert portfolio entry")
-    }
-
-    fn insert_portfolio_at(
-        archive: &mut Archive<u8, PortfolioKey, (), ()>,
-        parent: Option<usize>,
-        suffix: Vec<u8>,
-        slot: u8,
-        first: u8,
-        second: u8,
-    ) -> Option<usize> {
-        archive
-            .insert(
-                parent,
-                0,
-                ArchiveCandidate {
-                    suffix,
-                    key: PortfolioKey {
-                        slot,
-                        first,
-                        second,
-                    },
-                    milestones: (),
-                },
-                (),
-            )
-            .expect("insert portfolio entry")
-    }
-
-    fn portfolio_bank() -> Archive<u8, PortfolioKey, (), ()> {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
-        archive.enable_continuations(4);
-        archive
-    }
-
-    #[test]
-    fn a_cheaper_arrival_at_equal_preference_queues_no_slot() {
-        let mut archive = portfolio_bank();
-        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
-        insert_portfolio_at(&mut archive, Some(origin), vec![2, 2], 2, 10, 20).expect("exit");
-        assert_eq!(archive.continuation_pending(), 0);
-        insert_portfolio_at(&mut archive, Some(origin), vec![3], 2, 10, 20).expect("cheaper");
-        assert_eq!(archive.continuation_pending(), 0);
-    }
-
-    #[test]
-    fn a_strictly_preferred_arrival_queues_its_slot_once() {
-        let mut archive = portfolio_bank();
-        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
-        insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 10, 20).expect("exit");
-        insert_portfolio_at(&mut archive, Some(origin), vec![3], 1, 12, 30).expect("preferred");
-        assert_eq!(archive.continuation_pending(), 1);
-        insert_portfolio_at(&mut archive, Some(origin), vec![4], 1, 14, 40).expect("both again");
-        assert_eq!(archive.continuation_pending(), 1);
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -6766,15 +6914,10 @@ mod tests {
             best_preference: None,
             fall_through: true,
         };
-        let continuation = SelectorDraw {
-            path: SelectorPath::Continuation,
-            tier_rank: None,
-            best_preference: None,
-            fall_through: false,
-        };
-        for draw in [&recent, &recent, &lower, &continuation] {
+        for draw in [&recent, &recent, &lower, &lower] {
             archive.record_selection(first, draw);
         }
+        archive.record_realized_selection(first);
         let holder = insert_resource(&mut archive, Some(first), 2, [1, 1, 1], 6).expect("holder");
         let opened = insert_resource(&mut archive, Some(holder), 3, [2, 1, 1], 5).expect("opened");
         assert!(archive.opened_new_cell(opened));
@@ -6788,11 +6931,11 @@ mod tests {
                 cell: "((), [1, 1, 1])".to_owned(),
                 counts: CellDraws {
                     draws: 4,
-                    continuation: 1,
+                    realized: 1,
                     recent: 2,
                     best_holder: 2,
                     top_tier: 2,
-                    fall_through: 1,
+                    fall_through: 2,
                     resets: 1,
                     opened: 1,
                     novel: 1,
@@ -6814,7 +6957,7 @@ mod tests {
         archive.rebuild_selector_index();
         let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
         let draw = SelectorDraw {
-            path: SelectorPath::Continuation,
+            path: SelectorPath::Recent,
             tier_rank: Some(0),
             best_preference: Some(0),
             fall_through: false,
@@ -6822,7 +6965,7 @@ mod tests {
         for _ in 0..8 {
             archive.record_selection(first, &draw);
         }
-        archive.record_isolated_continuation(first);
+        archive.record_realized_selection(first);
         insert_resource(&mut archive, Some(first), 2, [2, 1, 1], 5).expect("opened");
         let interval = archive.take_cell_interval(10, 4);
         assert_eq!(interval.cells, 0);
@@ -6830,20 +6973,11 @@ mod tests {
         assert_eq!(interval.totals, CellDraws::default());
     }
     #[test]
-    fn a_slot_with_no_exits_is_never_queued() {
-        let mut archive = portfolio_bank();
-        insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
-        insert_portfolio_at(&mut archive, None, vec![2], 1, 12, 30).expect("preferred");
-        assert_eq!(archive.continuation_pending(), 0);
-    }
-
-    #[test]
-    fn a_key_declaring_no_preference_holds_no_bank() {
+    fn a_key_declaring_no_preference_holds_no_labels() {
         let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
-        archive.enable_continuations(4);
-        assert_eq!(archive.continuation_pending(), 0);
-        assert_eq!(archive.continuation_report().edges, 0);
-        assert!(archive.continuations.is_none());
+        archive.enable_labels(4);
+        assert_eq!(archive.label_report().edges, 0);
+        assert!(archive.labels.is_none());
     }
 
     #[test]
@@ -6989,44 +7123,6 @@ mod tests {
             assert_eq!(archive.selector_report().best_holder_draws, expected);
         }
         assert!(recent_best.iter().all(|count| *count > 0));
-    }
-
-    #[test]
-    fn taking_one_preference_from_a_surviving_holder_queues_its_exits() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
-        archive.enable_continuations(4);
-        let holder = insert_portfolio_at(&mut archive, None, vec![1], 7, 10, 20)
-            .expect("the first holder is kept");
-        insert_portfolio_at(&mut archive, Some(holder), vec![2], 8, 10, 20)
-            .expect("an exit is recorded");
-        assert!(
-            archive.pop_continuation(false).is_none(),
-            "recording an exit queues nothing on its own"
-        );
-        insert_portfolio_at(&mut archive, None, vec![3], 7, 5, 200)
-            .expect("the second-resource candidate is admitted beside the first-resource holder");
-        assert_eq!(archive.slots.get(&(((), 7), ())).map(Vec::len), Some(2));
-        assert!(
-            archive.pop_continuation(false).is_some(),
-            "improving one preference queues the slot's exits"
-        );
-    }
-
-    #[test]
-    fn a_queued_source_reaches_a_neighbour_only_by_beating_the_holders_of_its_slot() {
-        let mut archive = portfolio_bank();
-        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
-        insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 20, 20)
-            .expect("the neighbour slot holds a state with more of the resource");
-        let weaker = insert_portfolio_at(&mut archive, None, vec![3], 1, 12, 30)
-            .expect("a candidate that takes a preference in its own slot");
-        assert_eq!(archive.continuation_pending(), 1);
-        let taken = archive.pop_continuation(false).expect("the slot is queued");
-        assert_eq!((taken.destination, taken.preference), ((2, ()), 0));
-        assert!(!archive.outranks_slot_holders(weaker, taken.destination, taken.preference));
-        let stronger = insert_portfolio_at(&mut archive, None, vec![4], 1, 30, 40)
-            .expect("a candidate that also beats the neighbour");
-        assert!(archive.outranks_slot_holders(stronger, taken.destination, taken.preference));
     }
 
     #[test]
@@ -8061,21 +8157,20 @@ mod tests {
         );
     }
     #[test]
-    fn continuation_attempts_do_not_count_as_cell_draws() {
+    fn realized_draws_are_counted_beside_the_cell_draws() {
         let mut archive = archive_with_prunable_history();
         archive.report_cell_intervals(true);
         let id = archive.active.iter().position(|active| *active).unwrap();
         let key = archive.entries[id].key;
         for _ in 0..20 {
-            archive.record_isolated_continuation(id);
+            archive.record_realized_selection(id);
         }
         assert_eq!(archive.selected[id], 0);
         assert_eq!(archive.cell_draws(key), 0);
-        assert_eq!(archive.selector_report().continuation_selections, Some(20));
+        assert_eq!(archive.selector_report().realized_selections, Some(20));
         let interval = archive.take_cell_interval(100, 1);
-        assert_eq!(interval.totals.continuation, 20);
-        assert_eq!(interval.totals.draws, 20);
-        assert_eq!(interval.top[0].counts.continuation, 20);
+        assert_eq!(interval.totals.realized, 20);
+        assert_eq!(interval.top[0].counts.realized, 20);
         archive.record_selection(
             id,
             &SelectorDraw {
@@ -10091,60 +10186,5 @@ mod tests {
         let before = archive.selected.clone();
         let counts = draw_counts(&mut archive, 0x7ea1_0004, 256);
         assert!(counts[1] - before[1] > (counts[0] - before[0]) * 8);
-    }
-
-    #[test]
-    fn a_landed_continuation_that_breeds_counts_as_useful() {
-        let mut archive = portfolio_bank();
-        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
-        let neighbour =
-            insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 5, 5).expect("neighbour");
-        archive.record_continuation_outcome(Some(neighbour), true, true, 1);
-        archive.record_continuation_outcome(None, false, false, 1);
-        let report = archive.continuation_report();
-        assert_eq!((report.jobs, report.landed, report.replaced), (2, 1, 1));
-        assert_eq!(report.opened_new_cell, 1);
-        archive.record_selection_outcome(neighbour, true);
-        archive.record_selection_outcome(origin, true);
-        archive.record_selection_outcome(neighbour, false);
-        assert_eq!(archive.continuation_report().useful, 1);
-    }
-
-    #[test]
-    fn an_edge_records_the_preferences_its_tail_gains() {
-        let mut archive = portfolio_bank();
-        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
-        insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 30, 5).expect("gaining");
-        insert_portfolio_at(&mut archive, None, vec![3], 1, 12, 30).expect("improved origin");
-        let taken = archive.pop_continuation(false).expect("the queued source");
-        assert_eq!(taken.gains, 0b01);
-        assert_eq!(taken.destination, (2, ()));
-    }
-
-    #[test]
-    fn positions_ignore_the_resources_a_holder_carries() {
-        let mut archive = portfolio_bank();
-        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
-        insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 5, 5).expect("neighbour");
-        let richer =
-            insert_portfolio_at(&mut archive, None, vec![3], 1, 40, 40).expect("richer origin");
-        assert_eq!(archive.continuation_pending(), 1);
-        let taken = archive
-            .pop_continuation(false)
-            .expect("the richer origin is queued");
-        assert_eq!(archive.index_of_id(taken.parent), Some(richer));
-    }
-
-    #[test]
-    fn a_destination_holder_check_looks_at_every_holder_of_the_slot() {
-        let mut archive = portfolio_bank();
-        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
-        insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 20, 20).expect("holder");
-        let weaker = insert_portfolio_at(&mut archive, None, vec![3], 1, 12, 30).expect("weaker");
-        assert!(!archive.outranks_slot_holders(weaker, (2, ()), 0));
-        assert!(archive.outranks_slot_holders(weaker, (3, ()), 0));
-        let stronger =
-            insert_portfolio_at(&mut archive, None, vec![4], 1, 30, 40).expect("stronger");
-        assert!(archive.outranks_slot_holders(stronger, (2, ()), 0));
     }
 }
