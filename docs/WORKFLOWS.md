@@ -397,7 +397,9 @@ If a compiled kernel fails qualification, the evidence artifact retains its
 unpublished `vmlinux`, matching boot components, configuration, alternatives and
 KVM disassembly for review.
 On Intel VMX, the job also runs `inner_operation_api_smoke` and
-`sdk_operations::outer_operation_sdk_smoke`, then runs the standard
+`sdk_operations::outer_operation_sdk_smoke`. The SDK smoke opens a public
+Session, so it is built as a static musl test and launched through
+`scripts/linux-sealed-test-runner.py`. The job then runs the standard
 `harmony search --package nested` with 100 executions and a five-minute wall
 budget, followed by a replay of its recorded campaign and a replay of that
 replayed run. Intel evidence includes the 36 ordered
