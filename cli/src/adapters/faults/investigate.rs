@@ -584,7 +584,8 @@ pub fn logs(
     Ok(0)
 }
 
-#[cfg(all(test, feature = "frontend"))]
+#[cfg(test)]
+#[cfg(feature = "frontend")]
 mod tests {
     use super::*;
     use faults_workload::FaultOperation;

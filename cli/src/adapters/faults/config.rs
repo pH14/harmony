@@ -459,7 +459,8 @@ pub fn resolve(config: &mut Config, offline: bool) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(test, feature = "frontend"))]
+#[cfg(test)]
+#[cfg(feature = "frontend")]
 mod tests {
     use super::*;
 
