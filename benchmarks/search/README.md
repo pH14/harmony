@@ -148,7 +148,7 @@ because their stream starts at the checkpoint.
 | `ci.json` | Source-built STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
 | `nightly.json` | Scheduled/manual source-built capability panel: STB Easy/Fair/Hard across seeds 1–3. Long runs use bounded witness replay; STB Hard retains its distinct outcome semantics. |
 | `pilot.json` | Three exploratory seeds on SMB, Metal Man, Metroid new game and STB Hard. |
-| `alphabet-control.json` | The same development pilot origins with alphabet-only mutation. Its SMB case uses 600,000 executions and 80 million frames; the other cases keep the pilot budgets. This exploratory panel does not require every case to solve. |
+| `alphabet-control.json` | The same development pilot origins with alphabet-only mutation. Its SMB case uses 600,000 executions and 80 million frames; the other cases keep the pilot execution and frame budgets. This exploratory panel does not require every case to solve. |
 | `metroid-long-horizon.json` | Metroid new game on three reused historical seeds (3, 4 and 5) at 3 million executions, 4 workers and 8 GiB, with alphabet-only mutation. |
 | `metroid-long-horizon-energy-splice.json` | The same three seeds and budgets drawing through the retained-input table, against the alphabet-only arm of `metroid-long-horizon.json`. |
 | `metroid-ladder.json` | One case per Metroid chain segment, each starting from that segment's recorded `root_input`, on seeds 11–13 at 4 workers, 6 GiB and 3 million executions. Score it with `eval.py ladder`. |
