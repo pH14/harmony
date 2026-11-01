@@ -1,6 +1,6 @@
 # NES workload package
 
-This standalone Rust workspace adapts SMB, Mega Man 2, Metroid, Super Tilt Bro, Twin Dragons and Famidash
+This standalone Rust workspace adapts SMB, Mega Man 2, Metroid, Super Tilt Bro, Twin Dragons, Famidash, Castlevania, Punch-Out!!, Zelda, Donkey Kong, Ice Climber, Pac-Man and Joust
 to Dissonance.
 It owns campaign drivers, binaries, films, evaluation and workload reporting.
 Game interpretation and controller policies come from
@@ -390,7 +390,7 @@ the package checks the on-disk core before constructing a target, and the
 QuickNES loader checks its private copy against the same digest on every load.
 Before a native campaign creates its identity, it prepares a digest of the
 executable QuickNES load, including its loaded dependency closure. SMB, Mega Man
-2, Metroid, Super Tilt Bro, Famidash, Twin Dragons, Punch-Out!!, Zelda, Donkey Kong, Ice Climber and Pac-Man bind this prepared
+2, Metroid, Super Tilt Bro, Famidash, Twin Dragons, Punch-Out!!, Zelda, Donkey Kong, Ice Climber, Pac-Man, Castlevania and Joust bind this prepared
 execution digest in the recorded emulator policy, and the native live view loads
 its machines against the same digest. Each campaign worker checks that digest while loading
 its private core and before running the ROM. Native prepared.json, evaluation
