@@ -300,7 +300,7 @@ target is the file name of the workflow. A change selects the jobs unless every
 changed path is one of these:
 
 - Documentation: Markdown, `docs/`, `LICENSE`, `.agents/`, `.claude/`,
-  `.githooks/` and `benchmarks/`.
+  `.githooks/` and `benchmarks/search/`.
 - A tool only the Repository workflow runs, listed in
   `scripts/rust_scope.py`. `scripts/test_rust_scope.py` fails when another
   workflow or action starts naming one.
@@ -723,10 +723,10 @@ judgment and judges all workflows again. The file keeps at most
 
 The `Segment Benchmark` job in `Checks / Repository` lints and tests
 `benchmarks/segments`, the runner and scorer that compare search arms on fixed
-game segments. It runs on every pull request, because `rust_checks` treats
-`benchmarks/` as documentation. Its tests need no ROM: a stub adapter draws
-work to milestone from a seeded exponential distribution, and the test checks
-that the verdict passes a faster arm and fails slower and equal arms.
+game segments. It runs on every pull request. Its tests need no ROM: a stub
+adapter draws work to milestone from a seeded exponential distribution, and the
+test checks that the log-rank verdict passes a faster arm and fails slower and
+equal arms.
 
 ## Verification
 

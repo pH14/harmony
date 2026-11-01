@@ -20,7 +20,7 @@ WORKFLOW_DIR = ".github/workflows/"
 
 DOCUMENTATION = (
     "*.md", "docs/**", "LICENSE", ".agents/**", ".claude/**", ".githooks/**",
-    "benchmarks/**",
+    "benchmarks/search/**",
 )
 
 # Tooling that only the Repository workflow runs. `test_rust_scope.py` fails
