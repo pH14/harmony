@@ -638,6 +638,7 @@ REPOSITORY_CHECKS = Workflow(
     jobs=(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("Formatting, Boundaries and Tooling", "pr", 15),
+        Job("Segment Benchmark", "pr", 15, crates=("segment-bench",)),
         Job("Semantic Lints", "pr", 15),
         Job("Ignored Tests — <Host>", "pr", 15, select="rust_checks"),
     ),
