@@ -22,9 +22,10 @@ and static OCI runtime sources. It tries a mirror when the upstream host fails:
 BusyBox and musl. Workload packages own their separate fetch entrypoints.
 `test-libvoidstar` runs the portable ABI and device-transaction checks.
 `test-linux` builds the Linux artifacts twice and runs the image check; it
-requires Linux, or a Linux/amd64 build container on macOS. Build output lives
-in `consonance/harmony-linux/build/`; `GUEST_BUILD_ROOT` can select another
-build root.
+requires Linux, or a Linux/amd64 build container on macOS. Artifacts land in
+`consonance/harmony-linux/build/`, and `HARMONY_ARTIFACT_DIR` selects another
+directory. Intermediate build trees live under `GUEST_BUILD_ROOT`, which
+defaults to `/tmp/harmony-linux-build`.
 
 The root `flake.nix` provides separate locked platform and workload image
 entrypoints on native Linux:
@@ -64,7 +65,8 @@ therefore does not change the accepted source bytes.
   interfaces; build scripts verify source and artifact hashes.
 - `uml/` builds the User-mode Linux profile: the pinned kernel as a static
   host executable, a fixture initramfs, and the profile that hashes them. It
-  applies `linux/patches/common` and `linux/patches/um`.
+  applies `linux/patches/common`, then `linux/patches/um` on x86-64 or
+  `linux/patches/um-arm64` on arm64.
 - `libvoidstar/` implements the SDK-facing dynamic ABI and communicates with
   `/dev/harmony`.
 - `sdk/` provides the no-std event, state, assertion, lifecycle, and entropy

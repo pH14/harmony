@@ -3,7 +3,7 @@
 `telemetry` provides a read-only observation tap and a small standard-library
 web console for the deterministic VMM. It observes events already produced by
 the VMM; it does not feed data back into guest state or participate in state
-hashes. The per-exit VMM wiring is owned by `vmm-core`.
+hashes.
 
 ## Events and observers
 

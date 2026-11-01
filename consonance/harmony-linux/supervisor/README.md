@@ -191,9 +191,10 @@ The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the
 generic process actions and event protocol and does not depend on that workload.
 
-`bundle`, `disk`, `reconcile`, `recovery`, and `supervise` are portable library
-modules. Linux block-device wiring lives in the Linux-only `blockdev` module,
-and process wiring is isolated to the binary. The
+`bundle`, `disk`, `evidence`, `memory`, `process`, `reconcile`, `recovery`, `regs`,
+and `supervise` are portable library modules. Linux block-device wiring lives in
+the Linux-only `blockdev` module, terminal wiring in the Linux-only `debug`
+module, and process wiring is isolated to the binary. The
 standalone crate can be checked on a development host with:
 
 ```sh
