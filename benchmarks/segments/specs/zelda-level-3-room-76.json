@@ -1,10 +1,10 @@
 {
-  "name": "zelda-r76b",
+  "name": "zelda-level-3-room-76",
   "game": "zelda",
   "rom_sha256": "44e33dc0a6fb663b98908ea761b33bbd77ca5092f25c624b10bf2a97e5406a5a",
   "cartridge_ram": false,
   "start": {
-    "tape": "zelda-r76b.tape",
+    "tape": "zelda-level-3-room-76.tape",
     "tape_sha256": "49c7f0f349ca5de350f938f789b7eb3d3bc25343fe2a8978e82c8a678386eaef",
     "core_state_sha256": "50ebdbe2984958b3fe42cd23f61806dbd440a8df76d01561c5e60b8d469f7365"
   },

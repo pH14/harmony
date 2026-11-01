@@ -1,10 +1,10 @@
 {
-  "name": "metroid-door-4",
+  "name": "metroid-red-door",
   "game": "metroid",
   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
   "cartridge_ram": true,
   "start": {
-    "tape": "metroid-door-4.tape",
+    "tape": "metroid-red-door.tape",
     "tape_sha256": "02cc77c687f471c335777dad0838e8ae2ea5f52092b63be08744c93a9026129b",
     "core_state_sha256": "a8f9f77e7bbc41e7d6827abe0624af55d933a37e14fc3e8e5e55d4d0139ce0a1"
   },

@@ -240,12 +240,12 @@ three times the control's Kaplan-Meier median at 16 seeds.
 
 | spec | game | start | milestone |
 |---|---|---|---|
-| `famidash-l17` | Famidash | start of level 17 | level complete (`$0498` = 3) |
-| `ice-f4` | Ice Climbers | on mountain 16 | mountain 17 (`$59` ≥ 17) |
-| `metroid-r7c29` | Metroid | Brinstar, map row 7, column 29 | the screen at column 30 |
-| `metroid-door-4` | Metroid | on the red door screen at row 5, column 26, with four missiles | four hits on the door (`$039F` = 1) |
+| `famidash-level-17` | Famidash | start of level 17 | level complete (`$0498` = 3) |
+| `ice-mountain-16` | Ice Climbers | on mountain 16 | mountain 17 (`$59` ≥ 17) |
+| `metroid-row-7-column-29` | Metroid | Brinstar, map row 7, column 29 | the screen at column 30 |
+| `metroid-red-door` | Metroid | on the red door screen at row 5, column 26, with four missiles | four hits on the door (`$039F` = 1) |
 | `smb-8-4` | Super Mario Bros. | inside world 8-4 | game won (`$0770` = 2, `$075F` = 7) |
-| `zelda-r76b` | The Legend of Zelda | level 3, room 76 | first Triforce piece (`$0671` ≥ 1) |
+| `zelda-level-3-room-76` | The Legend of Zelda | level 3, room 76 | first Triforce piece (`$0671` ≥ 1) |
 
 ## Repository rules
 
