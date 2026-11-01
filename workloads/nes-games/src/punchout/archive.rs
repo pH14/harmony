@@ -9,11 +9,9 @@ use crate::{
     punchout::target::{
         ButtonChord, FULL_HEALTH, HEALTH_BUCKET, MODE_FIGHT, MODE_ROUND_BREAK, MODE_TKO, MODE_WON,
         OPPONENT_COUNT, PunchOutInput, PunchOutMechanicalState, PunchOutObservations,
-        PunchOutSnapshot,
     },
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
 };
 
@@ -29,9 +27,6 @@ const PHASE_FIGHT: u8 = 0;
 const PHASE_ROUND_BREAK: u8 = 1;
 const PHASE_WON: u8 = 2;
 const PHASE_OTHER: u8 = 3;
-
-pub type PunchOutArchive =
-    Archive<ButtonChord, PunchOutArchiveKey, PunchOutMilestones, PunchOutSnapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct PunchOutTier {

@@ -6,12 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     chord::{ChordVocabulary, Tap},
-    joust::target::{
-        ButtonChord, GRID_SHIFT, JoustInput, JoustMechanicalState, JoustObservations, JoustSnapshot,
-    },
+    joust::target::{ButtonChord, GRID_SHIFT, JoustInput, JoustMechanicalState, JoustObservations},
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
 };
 
@@ -20,8 +17,6 @@ pub const KEY_POLICY_IDENTIFIER: &str =
     "joust_waves_cleared_then_defeated_tier_stable_wave_grid_32_place_lives_score_preference_v1";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
-
-pub type JoustArchive = Archive<ButtonChord, JoustArchiveKey, JoustMilestones, JoustSnapshot>;
 
 pub const WAVE_MARKS: usize = 32;
 

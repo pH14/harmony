@@ -31,12 +31,10 @@ use crate::{
         archive::RetentionPolicy,
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
-            CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
-            CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, Reporting,
-            SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_semantic_result_sha256,
-            postcard_value_sha256,
+            CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignTypes, Evaluation,
+            InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+            postcard_semantic_result_sha256, postcard_value_sha256,
         },
-        draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
@@ -384,9 +382,7 @@ impl Mm2CampaignEvidence {
 pub type Mm2CampaignOrigin<M> = CampaignOrigin<Mm2Game<M>>;
 pub type Mm2CampaignCheckpoint = CampaignCheckpoint<Mm2Snapshot>;
 pub type Mm2SnapshotCheckpoint = SnapshotCheckpoint<Mm2Snapshot>;
-pub type Mm2CampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type Mm2CampaignModeReport = CampaignModeReport<ButtonChord, Mm2ArchiveReport>;
-pub type Mm2CampaignProgressRecord = CampaignProgressRecord<Mm2ArchiveKey>;
 pub type Mm2CampaignActionResult<M> = CampaignActionResult<Mm2Game<M>>;
 pub type Mm2CampaignJobResult<M> = CampaignJobResult<Mm2Game<M>>;
 

@@ -8,11 +8,10 @@ use crate::{
     chord::ChordVocabulary,
     pac_man::target::{
         ButtonChord, DOWN, GRID_SHIFT, LEFT, MAZES, PacManInput, PacManMechanicalState,
-        PacManObservations, PacManSnapshot, RIGHT, UP,
+        PacManObservations, RIGHT, UP,
     },
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
 };
 
@@ -21,8 +20,6 @@ pub const KEY_POLICY_IDENTIFIER: &str =
     "pac_man_maze_dots_tier_grid_8_power_place_lives_score_preference_v1";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
-
-pub type PacManArchive = Archive<ButtonChord, PacManArchiveKey, PacManMilestones, PacManSnapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct PacManTier {
