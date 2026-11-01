@@ -721,6 +721,13 @@ to `docs/WORKFLOWS.md` or the registry changes the context of every workflow
 judgment and judges all workflows again. The file keeps at most
 `CACHE_ENTRY_LIMIT` judgments and drops the oldest first.
 
+The `Segment Benchmark` job in `Checks / Repository` lints and tests
+`benchmarks/segments`, the runner and scorer that compare search arms on fixed
+game segments. It runs on every pull request, because `rust_checks` treats
+`benchmarks/` as documentation. Its tests need no ROM: a stub adapter draws
+work to milestone from a seeded exponential distribution, and the test checks
+that the verdict passes a faster arm and fails slower and equal arms.
+
 ## Verification
 
 ```sh
@@ -729,6 +736,7 @@ python3 -m unittest discover -s scripts -p 'test_semantic_lints.py'
 python3 -m unittest discover -s scripts -p 'test_ci_*.py'
 python3 -m unittest discover -s scripts -p 'test_*scope.py'
 python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+cargo test --locked -p segment-bench
 python3 scripts/custom-lints.py
 python3 scripts/check-test-partition.py ignored
 node --test scripts/benchmark-report.test.cjs
