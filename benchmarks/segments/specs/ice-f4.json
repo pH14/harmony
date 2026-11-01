@@ -1,0 +1,20 @@
+{
+  "name": "ice-f4",
+  "game": "ice-climbers",
+  "rom_sha256": "491898c9b0bf6b242d08bb0841141ca404f8e54383a1814cdb7feab451da8701",
+  "cartridge_ram": false,
+  "start": {
+    "tape": "ice-f4.tape",
+    "tape_sha256": "9df41e36d11083cf2e9f5acdcada7ffd7e934463dd894a5a4e410bd960bed627",
+    "core_state_sha256": "24ea320eb12a11d39186dcbdeebc18f514eeceeb8996aa20b4b7b29670a63a82"
+  },
+  "milestone": [
+    {
+      "address": 89,
+      "ge": 17
+    }
+  ],
+  "work_budget": 22020096,
+  "workers": 4,
+  "memory_limit": 4294967296
+}

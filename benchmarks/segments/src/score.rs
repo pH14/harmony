@@ -19,11 +19,11 @@ pub fn observation(outcome: &Outcome, budget: u64) -> Option<Observation> {
             time: work,
             event: true,
         }),
-        Stop::Milestone | Stop::Budget | Stop::Memory => Some(Observation {
+        Stop::Milestone | Stop::Budget => Some(Observation {
             time: work.min(budget_f),
             event: false,
         }),
-        Stop::StartMismatch | Stop::RomMismatch | Stop::Error => None,
+        Stop::Memory | Stop::StartMismatch | Stop::RomMismatch | Stop::Error => None,
     }
 }
 
@@ -84,6 +84,8 @@ pub struct Row {
     pub direction: Option<Direction>,
     pub wall_median_seconds: Option<f64>,
     pub memory_stops: usize,
+    pub failed: usize,
+    pub incomplete: bool,
     #[serde(skip)]
     observations: Vec<Observation>,
 }
@@ -124,6 +126,7 @@ pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected,
             let mut observations = Vec::new();
             let mut walls = Vec::new();
             let mut memory_stops = 0;
+            let mut failed = 0;
             let Ok(seeds) = fs::read_dir(segment_dir.join(&arm)) else {
                 continue;
             };
@@ -158,21 +161,31 @@ pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected,
                             walls.push(wall);
                         }
                     }
-                    None => failures
-                        .entry(spec.name.clone())
-                        .or_default()
-                        .push(Failure {
-                            arm: arm.clone(),
-                            seed,
-                            stop: outcome.stop,
-                            message: outcome.message,
-                        }),
+                    None => {
+                        failed += 1;
+                        failures
+                            .entry(spec.name.clone())
+                            .or_default()
+                            .push(Failure {
+                                arm: arm.clone(),
+                                seed,
+                                stop: outcome.stop,
+                                message: outcome.message,
+                            });
+                    }
                 }
             }
-            if observations.is_empty() {
+            if observations.is_empty() && failed == 0 {
                 continue;
             }
-            let interval = stats::bootstrap_interval(&observations, bootstrap_seed(&spec.name));
+            let (median, interval) = if observations.is_empty() {
+                (None, (f64::INFINITY, f64::INFINITY))
+            } else {
+                (
+                    finite(stats::km_median(&observations)),
+                    stats::bootstrap_interval(&observations, bootstrap_seed(&spec.name)),
+                )
+            };
             segment_rows.push(Row {
                 segment: spec.name.clone(),
                 game: spec.game.clone(),
@@ -181,7 +194,7 @@ pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected,
                 seeds: observations.len(),
                 reached: observations.iter().filter(|o| o.event).count(),
                 budget: spec.work_budget,
-                median: finite(stats::km_median(&observations)),
+                median,
                 low: finite(interval.0),
                 high: finite(interval.1),
                 logrank_p: None,
@@ -189,15 +202,21 @@ pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected,
                 direction: None,
                 wall_median_seconds: stats::median(&mut walls),
                 memory_stops,
+                failed,
+                incomplete: failed > 0,
                 observations,
             });
         }
-        if let Some(base) = segment_rows
+        if let Some((base, base_failed)) = segment_rows
             .iter()
             .find(|r| r.arm == control)
-            .map(|r| r.observations.clone())
+            .map(|r| (r.observations.clone(), r.failed))
         {
             for row in segment_rows.iter_mut().filter(|r| r.arm != control) {
+                row.incomplete |= base_failed > 0;
+                if row.incomplete {
+                    continue;
+                }
                 let result = stats::logrank(&row.observations, &base);
                 row.logrank_p = Some(result.p);
                 row.logrank_o_minus_e = Some(result.observed_minus_expected);
@@ -219,11 +238,19 @@ pub struct Verdict {
     pub better: Vec<String>,
     pub worse: Vec<String>,
     pub games: Vec<String>,
+    pub incomplete: Vec<String>,
 }
 
 pub fn verdicts(rows: &[Row], control: &str) -> BTreeMap<String, Verdict> {
     let mut out: BTreeMap<String, Verdict> = BTreeMap::new();
     for row in rows.iter().filter(|r| r.arm != control) {
+        if row.incomplete {
+            out.entry(row.arm.clone())
+                .or_default()
+                .incomplete
+                .push(row.segment.clone());
+            continue;
+        }
         let Some(direction) = row.direction else {
             continue;
         };
@@ -241,7 +268,8 @@ pub fn verdicts(rows: &[Row], control: &str) -> BTreeMap<String, Verdict> {
     }
     for verdict in out.values_mut() {
         verdict.games.sort();
-        verdict.pass = verdict.games.len() >= 2 && verdict.worse.is_empty();
+        verdict.pass =
+            verdict.games.len() >= 2 && verdict.worse.is_empty() && verdict.incomplete.is_empty();
     }
     out
 }
@@ -276,7 +304,11 @@ pub fn render(
             r.logrank_p.map_or("-".to_owned(), |p| format!("{p:.3}")),
             r.logrank_o_minus_e
                 .map_or("-".to_owned(), |d| format!("{d:+.1}")),
-            r.direction.map_or("-", Direction::label),
+            if r.incomplete {
+                "incomplete"
+            } else {
+                r.direction.map_or("-", Direction::label)
+            },
             r.wall_median_seconds
                 .map_or("-".to_owned(), |w| format!("{w:.1}")),
         ));
@@ -286,6 +318,13 @@ pub fn render(
         "Work in Mi frames (2^20). Control arm: {control}. Direction is the log-rank result at p < {SIGNIFICANCE}; the KM median and its interval are information only."
     ));
     for (arm, v) in verdicts {
+        if !v.incomplete.is_empty() {
+            out.push(format!(
+                "{arm}: INCOMPLETE. Run the failed seeds again on {} before reading a verdict.",
+                v.incomplete.join(", ")
+            ));
+            continue;
+        }
         out.push(format!(
             "{arm}: {}. Faster than {control} on {} (games: {}); slower on {}.",
             if v.pass { "PASS" } else { "FAIL" },
@@ -308,7 +347,7 @@ pub fn render(
     }
     for (segment, count) in memory.into_iter().filter(|(_, count)| *count > 0) {
         out.push(format!(
-            "Memory stops on {segment}: {count}. Raise memory_limit until no control seed stops for memory."
+            "Memory stops on {segment}: {count}. Each one invalidates its seed: raise memory_limit in the spec and run every arm on the segment again."
         ));
     }
     for (segment, arms) in &collected.stale {
@@ -360,8 +399,8 @@ pub fn calibrate(rows: &[Row], control: &str) -> Vec<Calibration> {
             budget: r.budget,
             median: r.median,
             suggested_budget: r.median.map(suggested_budget),
-            refit: r.reached == 0,
-            raise_budget: r.median.is_none(),
+            refit: r.seeds > 0 && r.reached == 0,
+            raise_budget: r.seeds > 0 && r.median.is_none(),
             memory_stops: r.memory_stops,
             raise_memory_limit: r.memory_stops > 0,
         })
@@ -454,14 +493,12 @@ mod tests {
                 event: false
             })
         );
-        assert_eq!(
-            observation(&outcome(Stop::Memory, 40), 100),
-            Some(Observation {
-                time: 40.0,
-                event: false
-            })
-        );
-        for stop in [Stop::StartMismatch, Stop::RomMismatch, Stop::Error] {
+        for stop in [
+            Stop::Memory,
+            Stop::StartMismatch,
+            Stop::RomMismatch,
+            Stop::Error,
+        ] {
             assert_eq!(observation(&outcome(stop, 10), 100), None);
         }
     }
@@ -483,6 +520,8 @@ mod tests {
             direction,
             wall_median_seconds: None,
             memory_stops: 0,
+            failed: 0,
+            incomplete: false,
             observations: Vec::new(),
         }
     }
@@ -515,6 +554,12 @@ mod tests {
             row("a", "g1", "z", Some(Faster)),
             row("b", "g2", "z", Some(Faster)),
             row("d", "g1", "z", Some(Slower)),
+            row("a", "g1", "w", Some(Faster)),
+            row("b", "g2", "w", Some(Faster)),
+            Row {
+                incomplete: true,
+                ..row("d", "g1", "w", None)
+            },
         ];
         let v = verdicts(&rows, "c");
         assert!(v["x"].pass);
@@ -522,6 +567,8 @@ mod tests {
         assert!(!v["y"].pass, "two segments of one game");
         assert!(!v["z"].pass);
         assert_eq!(v["z"].worse, vec!["d"]);
+        assert!(!v["w"].pass, "a segment with failed seeds");
+        assert_eq!(v["w"].incomplete, vec!["d"]);
     }
 
     #[test]

@@ -50,7 +50,7 @@ Each segment is one JSON file in `specs/`:
 - `workers` is the number of workers every run of the segment uses.
 - `memory_limit` is the most resident memory, in bytes, that the search may
   use at once, summed over every process and worker of the search. Set it high
-  enough that no control seed stops for memory.
+  enough that no seed of any arm reaches it.
 
 The seed is not in the spec. The runner adds it to each run.
 
@@ -86,7 +86,12 @@ The adapter must:
 The memory measure is resident memory summed over every process and worker of
 the search, the same for every arm. The searcher may size its stores from
 `memory_limit`, so every arm on a segment sees the same limit. A run that would
-exceed it stops with `memory`, censored at its work.
+exceed it stops with `memory`. So does a run that frees or evicts search state
+to stay under it, because the limit then shaped the search.
+
+A memory stop invalidates the seed. Memory must never cap a search, and an arm
+that keeps more states would otherwise reach the limit sooner and be censored
+for a reason unrelated to how well it searches.
 
 Work is the number of emulated frames the searcher runs from the start state,
 summed over all workers and counted in the searcher's deterministic order.
@@ -108,7 +113,7 @@ spec's budget counts as censored at the spec's budget.
 
 - `stop` is one of `milestone`, `budget`, `memory`, `start_mismatch`,
   `rom_mismatch` or `error`. The run reached the milestone when `stop` is
-  `milestone`. `budget` and `memory` are censored at their `work`.
+  `milestone`. `budget` is censored at its `work`. `memory`,
   `start_mismatch`, `rom_mismatch` and `error` are failures: they are left out
   of scoring and listed in the score output.
 - `work` is the work as defined above.
@@ -135,10 +140,13 @@ status). It runs `--jobs` adapters at once. A run whose stored request equals
 the new one and whose result is valid and not `error` is skipped, so an
 interrupted `run` resumes, and a spec change runs the affected seeds again.
 When the requests differ only in `work_budget`, a stored result is also kept
-if it reached the milestone with work at or below the new budget, or if it
-stopped at `budget` with a stored budget at or above the new one. The search
-reads the budget only to stop, so a rerun would repeat those results. Raising
-a budget therefore reruns only the seeds that stopped at the old one.
+if it stopped at `milestone`, at `memory` with work below the new budget, or at
+`budget` with a stored budget at or above the new one. The search reads the
+budget only to
+stop, so a rerun would repeat those results up to the new budget, and a kept
+result whose work is above the new budget counts as censored at it. Raising a
+budget therefore reruns only the seeds that stopped at the old one, and
+lowering a budget reruns nothing.
 `--seeds` takes ranges and lists such as `1-16` or `1-4,9`, and runs a seed
 listed twice once.
 
@@ -190,6 +198,12 @@ regressions on none. Any other arm fails. `score` prints each arm's verdict
 with the segments behind it, and a count of `memory` stops per segment so the
 limit can be raised.
 
+A row is incomplete when a seed of that arm, or of the control on that
+segment, failed. An incomplete row shows `incomplete` in place of a direction
+and runs no log-rank test, and its arm gets no verdict until those seeds run
+again. A memory stop is fixed by raising the spec's `memory_limit`. That
+changes the request, so every arm on the segment runs again.
+
 With work to milestone drawn from an exponential distribution and every seed
 finishing, the log-rank test at p < 0.05 detects about a 2.7-fold difference
 in work with 80% power at 16 against 16 seeds, about 2.0-fold at 32 against
@@ -207,8 +221,9 @@ The `refit` flag marks a control at 0/n: the segment needs a new milestone or
 start. The `raise budget` flag marks a control whose median is undefined at the
 spec's budget, so three times the median cannot be computed; raise the budget
 and run again. The `raise memory_limit` flag marks a segment where any control
-seed stopped for memory. Because a raised budget reruns only the seeds that stopped at
-the old one, calibration can raise a budget step by step.
+seed stopped for memory. A raised budget reruns only the seeds that stopped at
+the old one and a lowered budget reruns none, so a segment can be calibrated
+at a generous budget and then lowered to the suggestion.
 
 ## Choosing a segment
 
@@ -216,6 +231,21 @@ A segment starts where control runs spent the most work per milestone: the
 place a whole-game run takes longest to get through. The start state is a kept
 state from such a run just before that place, and the milestone is the first
 RAM change that shows the place is behind.
+
+## Committed segments
+
+Each start in `specs/` is a state kept by an earlier whole-game run, shortly
+before a place where those runs spent the most work. Each budget is about
+three times the control's Kaplan-Meier median at 16 seeds.
+
+| spec | game | start | milestone |
+|---|---|---|---|
+| `famidash-l17` | Famidash | start of level 17 | level complete (`$0498` = 3) |
+| `ice-f4` | Ice Climbers | on mountain 16 | mountain 17 (`$59` ≥ 17) |
+| `metroid-r7c29` | Metroid | Brinstar, map row 7, column 29 | the screen at column 30 |
+| `metroid-door-4` | Metroid | on the red door screen at row 5, column 26, with four missiles | four hits on the door (`$039F` = 1) |
+| `smb-8-4` | Super Mario Bros. | inside world 8-4 | game won (`$0770` = 2, `$075F` = 7) |
+| `zelda-r76b` | The Legend of Zelda | level 3, room 76 | first Triforce piece (`$0671` ≥ 1) |
 
 ## Repository rules
 

@@ -1,0 +1,20 @@
+{
+  "name": "zelda-r76b",
+  "game": "zelda",
+  "rom_sha256": "44e33dc0a6fb663b98908ea761b33bbd77ca5092f25c624b10bf2a97e5406a5a",
+  "cartridge_ram": false,
+  "start": {
+    "tape": "zelda-r76b.tape",
+    "tape_sha256": "49c7f0f349ca5de350f938f789b7eb3d3bc25343fe2a8978e82c8a678386eaef",
+    "core_state_sha256": "50ebdbe2984958b3fe42cd23f61806dbd440a8df76d01561c5e60b8d469f7365"
+  },
+  "milestone": [
+    {
+      "address": 1649,
+      "ge": 1
+    }
+  ],
+  "work_budget": 31457280,
+  "workers": 4,
+  "memory_limit": 4294967296
+}

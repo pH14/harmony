@@ -89,7 +89,8 @@ pub fn answers(stored: &Value, outcome: &Outcome, request: &Value) -> bool {
         return false;
     };
     match outcome.stop {
-        Stop::Milestone => outcome.work <= budget,
+        Stop::Milestone => true,
+        Stop::Memory => outcome.work < budget,
         Stop::Budget => stored_budget >= budget,
         _ => false,
     }
@@ -329,13 +330,13 @@ mod tests {
         assert!(still_valid(&request(400), &reached, &request(400)));
         assert!(still_valid(&request(400), &reached, &request(800)));
         assert!(still_valid(&request(400), &reached, &request(300)));
-        assert!(!still_valid(&request(400), &reached, &request(200)));
+        assert!(still_valid(&request(400), &reached, &request(200)));
         let stopped = outcome(Stop::Budget, 400);
         assert!(still_valid(&request(400), &stopped, &request(200)));
         assert!(!still_valid(&request(400), &stopped, &request(800)));
         let memory = outcome(Stop::Memory, 100);
-        assert!(still_valid(&request(400), &memory, &request(400)));
-        assert!(!still_valid(&request(400), &memory, &request(800)));
+        assert!(still_valid(&request(400), &memory, &request(800)));
+        assert!(!still_valid(&request(400), &memory, &request(50)));
         let other_seed = json!({"name": "a", "seed": 2, "work_budget": 800});
         assert!(!still_valid(&request(400), &reached, &other_seed));
         assert!(!still_valid(
