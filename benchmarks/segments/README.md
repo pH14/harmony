@@ -161,8 +161,8 @@ adapter. Run it on each host before counting a table.
 `score` and `calibrate` use only results that answer the current spec. A
 stored result counts when its `request.json` equals the request the spec gives
 for that seed, or differs only in `work_budget` under the reuse rule of `run`.
-The request holds the absolute tape path and `tape_sha256`, so a moved or
-changed tape also makes a result stale. Stale results are left out and listed
+The comparison ignores the tape's path and keeps `tape_sha256`, so results
+copied to another machine still count, and a changed tape makes them stale. Stale results are left out and listed
 with a count per segment and arm. A result stopped at `budget` below the spec's
 budget is stale, because it cannot be scored at the larger budget.
 
