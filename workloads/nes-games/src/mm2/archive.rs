@@ -10,12 +10,10 @@ use crate::{
     },
     mm2::target::{
         BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
-        MM2_WEAPONS, Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, Mm2Tier,
-        preference_tuple,
+        MM2_WEAPONS, Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Tier, preference_tuple,
     },
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
 };
 
@@ -23,8 +21,6 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_castle_kill_boss_intro_weapon_balance_v22";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
-
-pub type Mm2Archive = Archive<ButtonChord, Mm2ArchiveKey, Mm2Milestones, Mm2Snapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveKey {

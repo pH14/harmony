@@ -26,12 +26,10 @@ use crate::{
     search::{
         archive::RetentionPolicy,
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
-            CampaignJobResult, CampaignModeReport, CampaignStreamHeader, CampaignTypes, Evaluation,
-            InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignJobResult,
+            CampaignTypes, Evaluation, InputPolicy, Reporting, TargetExecution, WorkloadPolicies,
             postcard_semantic_result_sha256, postcard_value_sha256,
         },
-        draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
@@ -133,10 +131,6 @@ pub struct JoustCampaignEvidence {
     champion_key: Option<JoustProgressWatermark>,
 }
 
-pub type JoustCampaignCheckpoint = CampaignCheckpoint<JoustSnapshot>;
-pub type JoustSnapshotCheckpoint = SnapshotCheckpoint<JoustSnapshot>;
-pub type JoustCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
-pub type JoustCampaignModeReport = CampaignModeReport<ButtonChord, JoustArchiveReport>;
 type JoustCampaignActionResult<M> = CampaignActionResult<JoustGame<M>>;
 type JoustCampaignJobResult<M> = CampaignJobResult<JoustGame<M>>;
 

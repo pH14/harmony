@@ -24,15 +24,12 @@ pub const TRACKED_STAGES: usize = GOAL_ROUNDS as usize * STAGES_PER_ROUND as usi
 pub const STAGE_BARRELS: u8 = 1;
 pub const STAGE_ELEVATORS: u8 = 3;
 pub const STAGE_RIVETS: u8 = 4;
-pub const STAGE_ORDER: [u8; STAGES_PER_ROUND as usize] =
-    [STAGE_BARRELS, STAGE_ELEVATORS, STAGE_RIVETS];
 pub const RIVETS: u8 = 8;
 pub const STATUS_DEAD: u8 = 0xff;
 pub const START_X: u8 = 0x35;
 pub const START_Y: u8 = 0xcc;
 pub const START_LIVES: u8 = 2;
 pub const START_BONUS: u8 = 0x49;
-pub const FLOOR_TOP: u8 = 7;
 
 const BONUS: usize = 0x2e;
 const STAGE: usize = 0x53;
