@@ -3,8 +3,9 @@
 `benchmarks/search/README.md` describes the runner, manifests and assets. Each
 workload's README describes its milestones, tapes, film tool and probe. This
 file lists what the process uses and the details that cost time when missed.
-Rooted starts, milestone tapes, named milestones and `milestones.py` exist for
-Metroid and Mega Man 2 today, and the ladder exists for Metroid only; another
+Rooted starts, milestone tapes and named milestones exist for
+Metroid and Mega Man 2 today, `milestones.py` covers Metroid, Mega Man 2,
+Punch-Out!!, Zelda, Pac-Man, Castlevania and Joust, and the ladder exists for Metroid only; another
 game adds them in step 1.
 
 ## Runner
@@ -76,7 +77,7 @@ game adds them in step 1.
   per place. A stopped run writes no census.
 - Film the witness and the milestone tapes with the game's film tool, and read
   bytes with its probe, both in `workloads/nes/src/bin`. `eval.py film` renders
-  the STB benchmarks only.
+  every completed cell with `nes-film`.
 - A run keeps inputs only for the witness and the milestone tapes. Filming
   other archive states needs their inputs written out.
 
