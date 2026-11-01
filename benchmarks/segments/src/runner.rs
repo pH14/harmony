@@ -60,8 +60,11 @@ pub struct Outcome {
     pub message: String,
 }
 
-fn without_budget(request: &Value) -> (Value, Option<u64>) {
+fn comparable(request: &Value) -> (Value, Option<u64>) {
     let mut rest = request.clone();
+    if let Some(start) = rest.get_mut("start").and_then(Value::as_object_mut) {
+        start.remove("tape");
+    }
     let budget = rest
         .as_object_mut()
         .and_then(|fields| fields.remove("work_budget"))
@@ -74,20 +77,22 @@ pub fn still_valid(stored: &Value, outcome: &Outcome, request: &Value) -> bool {
 }
 
 pub fn answers(stored: &Value, outcome: &Outcome, request: &Value) -> bool {
-    if stored == request {
+    let (stored_rest, stored_budget) = comparable(stored);
+    let (rest, budget) = comparable(request);
+    if stored_rest != rest {
+        return false;
+    }
+    if stored_budget == budget {
         return true;
     }
-    let (stored_rest, stored_budget) = without_budget(stored);
-    let (rest, budget) = without_budget(request);
     let (Some(stored_budget), Some(budget)) = (stored_budget, budget) else {
         return false;
     };
-    stored_rest == rest
-        && match outcome.stop {
-            Stop::Milestone => outcome.work <= budget,
-            Stop::Budget => stored_budget >= budget,
-            _ => false,
-        }
+    match outcome.stop {
+        Stop::Milestone => outcome.work <= budget,
+        Stop::Budget => stored_budget >= budget,
+        _ => false,
+    }
 }
 
 pub fn read_request(dir: &Path) -> Option<Value> {
@@ -337,6 +342,31 @@ mod tests {
             &request(400),
             &outcome(Stop::Error, 0),
             &request(400)
+        ));
+    }
+
+    #[test]
+    fn a_moved_tape_with_the_same_hash_still_answers_the_request() {
+        let request = |path: &str, sha: &str| {
+            json!({"name": "a", "seed": 1, "work_budget": 400,
+                   "start": {"tape": path, "tape_sha256": sha}})
+        };
+        let reached = Outcome {
+            stop: Stop::Milestone,
+            work: 300,
+            job_stream_sha256: String::new(),
+            message: String::new(),
+        };
+        let stored = request("/host/specs/a.tape", "aa");
+        assert!(answers(
+            &stored,
+            &reached,
+            &request("/laptop/specs/a.tape", "aa")
+        ));
+        assert!(!answers(
+            &stored,
+            &reached,
+            &request("/host/specs/a.tape", "bb")
         ));
     }
 
