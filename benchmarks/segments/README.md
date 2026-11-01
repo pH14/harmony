@@ -133,6 +133,14 @@ reads the budget only to stop, so a rerun would repeat those results. Raising
 a budget therefore reruns only the seeds that stopped at the old one.
 `--seeds` takes ranges and lists such as `1-16` or `1-4,9`.
 
+Check an adapter once before relying on that reuse. Run one seed at two
+budgets above its work to milestone: both runs must report the same work and
+`job_stream_sha256`. Run it again at a budget below that work: its decision
+stream must be a prefix of the longer run's. An adapter that passes the budget
+into anything that shapes the search, such as a memory limit, a schedule or
+another stop rule, fails this check. With such an adapter, delete the arm's
+stored results whenever a budget changes, so every seed runs again.
+
 `determinism` runs one segment and seed twice, first at the spec's workers and
 then at `--other-workers` (default half the spec's workers, or 2 when the spec
 has 1), and passes when stop, work and `job_stream_sha256` agree. Run it on
