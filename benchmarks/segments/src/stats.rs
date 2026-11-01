@@ -77,7 +77,14 @@ pub fn erfc(x: f64) -> f64 {
     if x >= 0.0 { value } else { 2.0 - value }
 }
 
-pub fn logrank(a: &[Observation], b: &[Observation]) -> (f64, f64) {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogRank {
+    pub chi2: f64,
+    pub p: f64,
+    pub observed_minus_expected: f64,
+}
+
+pub fn logrank(a: &[Observation], b: &[Observation]) -> LogRank {
     let mut times: Vec<f64> = a
         .iter()
         .chain(b)
@@ -107,11 +114,20 @@ pub fn logrank(a: &[Observation], b: &[Observation]) -> (f64, f64) {
             variance += n1 * n2 * d * (n - d) / (n * n * (n - 1.0));
         }
     }
+    let observed_minus_expected = observed - expected;
     if variance <= 0.0 {
-        return (0.0, 1.0);
+        return LogRank {
+            chi2: 0.0,
+            p: 1.0,
+            observed_minus_expected,
+        };
     }
-    let chi2 = (observed - expected).powi(2) / variance;
-    (chi2, erfc((chi2 / 2.0).sqrt()))
+    let chi2 = observed_minus_expected.powi(2) / variance;
+    LogRank {
+        chi2,
+        p: erfc((chi2 / 2.0).sqrt()),
+        observed_minus_expected,
+    }
 }
 
 pub fn median(values: &mut [f64]) -> Option<f64> {
@@ -197,18 +213,27 @@ mod tests {
     #[test]
     fn logrank_matches_the_aml_example() {
         let (maintained, nonmaintained) = aml();
-        let (chi2, p) = logrank(&maintained, &nonmaintained);
-        assert!((chi2 - 3.396_388_698_977_598).abs() < 1e-9, "{chi2}");
-        assert!((p - 0.065_339_322_040_505).abs() < 1e-6, "{p}");
+        let result = logrank(&maintained, &nonmaintained);
+        assert!(
+            (result.chi2 - 3.396_388_698_977_598).abs() < 1e-9,
+            "{result:?}"
+        );
+        assert!(
+            (result.p - 0.065_339_322_040_505).abs() < 1e-6,
+            "{result:?}"
+        );
+        assert!(result.observed_minus_expected < 0.0, "{result:?}");
+        assert!(logrank(&nonmaintained, &maintained).observed_minus_expected > 0.0);
     }
 
     #[test]
     fn logrank_hand_worked() {
-        let (chi2, _) = logrank(
+        let result = logrank(
             &obs(&[(1.0, true), (3.0, true)]),
             &obs(&[(2.0, true), (4.0, true)]),
         );
-        assert!((chi2 - 8.0 / 13.0).abs() < 1e-12);
+        assert!((result.chi2 - 8.0 / 13.0).abs() < 1e-12);
+        assert!((result.observed_minus_expected - 2.0 / 3.0).abs() < 1e-12);
     }
 
     #[test]

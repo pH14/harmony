@@ -35,6 +35,38 @@ pub struct Failure {
     pub message: String,
 }
 
+pub const SIGNIFICANCE: f64 = 0.05;
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    Faster,
+    Slower,
+    None,
+}
+
+impl Direction {
+    fn of(result: &stats::LogRank) -> Self {
+        if result.p >= SIGNIFICANCE {
+            Self::None
+        } else if result.observed_minus_expected > 0.0 {
+            Self::Faster
+        } else if result.observed_minus_expected < 0.0 {
+            Self::Slower
+        } else {
+            Self::None
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Faster => "faster",
+            Self::Slower => "slower",
+            Self::None => "none",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Row {
     pub segment: String,
@@ -48,11 +80,11 @@ pub struct Row {
     pub low: Option<f64>,
     pub high: Option<f64>,
     pub logrank_p: Option<f64>,
+    pub logrank_o_minus_e: Option<f64>,
+    pub direction: Option<Direction>,
     pub wall_median_seconds: Option<f64>,
     #[serde(skip)]
     observations: Vec<Observation>,
-    #[serde(skip)]
-    interval: (f64, f64),
 }
 
 fn finite(value: f64) -> Option<f64> {
@@ -137,9 +169,10 @@ pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected,
                 low: finite(interval.0),
                 high: finite(interval.1),
                 logrank_p: None,
+                logrank_o_minus_e: None,
+                direction: None,
                 wall_median_seconds: stats::median(&mut walls),
                 observations,
-                interval,
             });
         }
         if let Some(base) = segment_rows
@@ -148,7 +181,10 @@ pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected,
             .map(|r| r.observations.clone())
         {
             for row in segment_rows.iter_mut().filter(|r| r.arm != control) {
-                row.logrank_p = Some(stats::logrank(&row.observations, &base).1);
+                let result = stats::logrank(&row.observations, &base);
+                row.logrank_p = Some(result.p);
+                row.logrank_o_minus_e = Some(result.observed_minus_expected);
+                row.direction = Some(Direction::of(&result));
             }
         }
         rows.extend(segment_rows);
@@ -165,24 +201,21 @@ pub struct Verdict {
 }
 
 pub fn verdicts(rows: &[Row], control: &str) -> BTreeMap<String, Verdict> {
-    let base: BTreeMap<&str, &Row> = rows
-        .iter()
-        .filter(|r| r.arm == control)
-        .map(|r| (r.segment.as_str(), r))
-        .collect();
     let mut out: BTreeMap<String, Verdict> = BTreeMap::new();
     for row in rows.iter().filter(|r| r.arm != control) {
-        let Some(ctrl) = base.get(row.segment.as_str()) else {
+        let Some(direction) = row.direction else {
             continue;
         };
         let verdict = out.entry(row.arm.clone()).or_default();
-        if row.interval.1 < ctrl.interval.0 {
-            verdict.better.push(row.segment.clone());
-            if !verdict.games.contains(&row.rom_sha256) {
-                verdict.games.push(row.rom_sha256.clone());
+        match direction {
+            Direction::Faster => {
+                verdict.better.push(row.segment.clone());
+                if !verdict.games.contains(&row.rom_sha256) {
+                    verdict.games.push(row.rom_sha256.clone());
+                }
             }
-        } else if row.interval.0 > ctrl.interval.1 {
-            verdict.worse.push(row.segment.clone());
+            Direction::Slower => verdict.worse.push(row.segment.clone()),
+            Direction::None => {}
         }
     }
     for verdict in out.values_mut() {
@@ -205,12 +238,12 @@ pub fn render(
     control: &str,
 ) -> String {
     let mut out = vec![
-        "| segment | game | arm | reached | KM median work | 95% interval | log-rank p | median wall s |".to_owned(),
-        "|---|---|---|---|---|---|---|---|".to_owned(),
+        "| segment | game | arm | reached | KM median work | 95% interval | log-rank p | O-E | direction | median wall s |".to_owned(),
+        "|---|---|---|---|---|---|---|---|---|---|".to_owned(),
     ];
     for r in &collected.rows {
         out.push(format!(
-            "| {} | {} | {} | {}/{} | {} | {} .. {} | {} | {} |",
+            "| {} | {} | {} | {}/{} | {} | {} .. {} | {} | {} | {} | {} |",
             r.segment,
             r.game,
             r.arm,
@@ -220,15 +253,20 @@ pub fn render(
             frames(r.low, r.budget),
             frames(r.high, r.budget),
             r.logrank_p.map_or("-".to_owned(), |p| format!("{p:.3}")),
+            r.logrank_o_minus_e
+                .map_or("-".to_owned(), |d| format!("{d:+.1}")),
+            r.direction.map_or("-", Direction::label),
             r.wall_median_seconds
                 .map_or("-".to_owned(), |w| format!("{w:.1}")),
         ));
     }
     out.push(String::new());
-    out.push(format!("Work in Mi frames (2^20). Control arm: {control}."));
+    out.push(format!(
+        "Work in Mi frames (2^20). Control arm: {control}. Direction is the log-rank result at p < {SIGNIFICANCE}; the KM median and its interval are information only."
+    ));
     for (arm, v) in verdicts {
         out.push(format!(
-            "{arm}: {}. Better than {control} on {} ({} games); worse on {}.",
+            "{arm}: {}. Faster than {control} on {} (games: {}); slower on {}.",
             if v.pass { "PASS" } else { "FAIL" },
             if v.better.is_empty() {
                 "no segment".to_owned()
@@ -260,8 +298,17 @@ pub struct Calibration {
     pub seeds: usize,
     pub reached: usize,
     pub budget: u64,
+    pub median: Option<f64>,
     pub suggested_budget: Option<u64>,
     pub refit: bool,
+    pub raise_budget: bool,
+}
+
+pub const BUDGET_FACTOR: f64 = 3.0;
+
+fn suggested_budget(median: f64) -> u64 {
+    let unit = f64::from(1u32 << 20);
+    (BUDGET_FACTOR * median / unit).ceil().max(1.0) as u64 * (1 << 20)
 }
 
 pub fn calibrate(rows: &[Row], control: &str) -> Vec<Calibration> {
@@ -272,31 +319,52 @@ pub fn calibrate(rows: &[Row], control: &str) -> Vec<Calibration> {
             seeds: r.seeds,
             reached: r.reached,
             budget: r.budget,
-            suggested_budget: r
-                .median
-                .map(|m| (m / f64::from(1u32 << 20)).ceil().max(1.0) as u64 * (1 << 20)),
-            refit: r.reached == 0 || r.reached == r.seeds,
+            median: r.median,
+            suggested_budget: r.median.map(suggested_budget),
+            refit: r.reached == 0,
+            raise_budget: r.median.is_none(),
         })
         .collect()
 }
 
 pub fn render_calibration(list: &[Calibration]) -> String {
     let mut out = vec![
-        "| segment | control reached | spec budget | suggested budget | refit |".to_owned(),
-        "|---|---|---|---|---|".to_owned(),
+        "| segment | control reached | spec budget | KM median | suggested budget | flags |"
+            .to_owned(),
+        "|---|---|---|---|---|---|".to_owned(),
     ];
     for c in list {
         out.push(format!(
-            "| {} | {}/{} | {} | {} | {} |",
+            "| {} | {}/{} | {} | {} | {} | {} |",
             c.segment,
             c.reached,
             c.seeds,
             c.budget,
+            c.median.map_or("-".to_owned(), |m| format!("{m:.0}")),
             c.suggested_budget.map_or("-".to_owned(), |b| b.to_string()),
-            if c.refit { "yes" } else { "no" },
+            flags(c),
         ));
     }
+    out.push(String::new());
+    out.push(format!(
+        "Suggested budget is {BUDGET_FACTOR}x the control's KM median, rounded up to a multiple of 2^20."
+    ));
     out.join("\n")
+}
+
+fn flags(c: &Calibration) -> String {
+    let mut list = Vec::new();
+    if c.refit {
+        list.push("refit");
+    }
+    if c.raise_budget {
+        list.push("raise budget");
+    }
+    if list.is_empty() {
+        "-".to_owned()
+    } else {
+        list.join(", ")
+    }
 }
 
 #[cfg(test)]
@@ -354,7 +422,7 @@ mod tests {
         }
     }
 
-    fn row(segment: &str, rom: &str, arm: &str, interval: (f64, f64)) -> Row {
+    fn row(segment: &str, rom: &str, arm: &str, direction: Option<Direction>) -> Row {
         Row {
             segment: segment.into(),
             game: rom.into(),
@@ -367,26 +435,41 @@ mod tests {
             low: None,
             high: None,
             logrank_p: None,
+            logrank_o_minus_e: None,
+            direction,
             wall_median_seconds: None,
             observations: Vec::new(),
-            interval,
         }
     }
 
     #[test]
+    fn direction_needs_significance_and_takes_the_sign_of_observed_minus_expected() {
+        let result = |p, observed_minus_expected| stats::LogRank {
+            chi2: 0.0,
+            p,
+            observed_minus_expected,
+        };
+        assert_eq!(Direction::of(&result(0.01, 3.0)), Direction::Faster);
+        assert_eq!(Direction::of(&result(0.01, -3.0)), Direction::Slower);
+        assert_eq!(Direction::of(&result(0.05, 3.0)), Direction::None);
+        assert_eq!(Direction::of(&result(0.2, -3.0)), Direction::None);
+    }
+
+    #[test]
     fn verdict_rule() {
+        use Direction::{Faster, None as Same, Slower};
         let rows = vec![
-            row("a", "g1", "c", (40.0, 60.0)),
-            row("b", "g2", "c", (40.0, 60.0)),
-            row("d", "g1", "c", (40.0, 60.0)),
-            row("a", "g1", "x", (10.0, 30.0)),
-            row("b", "g2", "x", (10.0, 39.0)),
-            row("d", "g1", "x", (30.0, 50.0)),
-            row("a", "g1", "y", (10.0, 30.0)),
-            row("d", "g1", "y", (10.0, 30.0)),
-            row("a", "g1", "z", (10.0, 30.0)),
-            row("b", "g2", "z", (10.0, 30.0)),
-            row("d", "g1", "z", (61.0, f64::INFINITY)),
+            row("a", "g1", "c", None),
+            row("b", "g2", "c", None),
+            row("d", "g1", "c", None),
+            row("a", "g1", "x", Some(Faster)),
+            row("b", "g2", "x", Some(Faster)),
+            row("d", "g1", "x", Some(Same)),
+            row("a", "g1", "y", Some(Faster)),
+            row("d", "g1", "y", Some(Faster)),
+            row("a", "g1", "z", Some(Faster)),
+            row("b", "g2", "z", Some(Faster)),
+            row("d", "g1", "z", Some(Slower)),
         ];
         let v = verdicts(&rows, "c");
         assert!(v["x"].pass);
@@ -397,13 +480,21 @@ mod tests {
     }
 
     #[test]
-    fn calibration_rounds_up_to_whole_mebiframes() {
-        let mut r = row("a", "g", "c", (0.0, 0.0));
+    fn calibration_suggests_three_times_the_median_in_whole_mebiframes() {
+        let mut r = row("a", "g", "c", None);
         r.median = Some(1.5 * f64::from(1u32 << 20));
-        let list = calibrate(&[r.clone()], "c");
-        assert_eq!(list[0].suggested_budget, Some(2 << 20));
+        let list = calibrate(std::slice::from_ref(&r), "c");
+        assert_eq!(list[0].suggested_budget, Some(5 << 20));
         assert!(!list[0].refit);
-        r.reached = 16;
-        assert!(calibrate(&[r], "c")[0].refit);
+        assert!(!list[0].raise_budget);
+        r.median = None;
+        let list = calibrate(std::slice::from_ref(&r), "c");
+        assert_eq!(list[0].suggested_budget, None);
+        assert!(list[0].raise_budget);
+        assert!(!list[0].refit);
+        r.reached = 0;
+        let list = calibrate(&[r], "c");
+        assert!(list[0].refit);
+        assert!(list[0].raise_budget);
     }
 }
