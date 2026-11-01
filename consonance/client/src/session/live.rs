@@ -766,35 +766,6 @@ impl Session {
         self.cleanup_handles([handle], result)
     }
 
-    pub fn apply_payload(
-        &mut self,
-        snapshot: &PortableSnapshot,
-        payload: Vec<u8>,
-    ) -> Result<PortableSnapshot, Box<dyn Error>> {
-        let base = self.import_snapshot(snapshot)?;
-        let mut temporary_handles = vec![base];
-        let result = (|| {
-            branch_payload(&mut self.client, base, vec![payload], self.config.seed)?;
-            let stop_at = run_to_snapshot(
-                &mut self.client,
-                snapshot.at,
-                self.config.run_budget,
-                self.config.wall_limit,
-                &mut self.abandoned,
-            )?;
-            let target = snapshot_handle(&mut self.client, "action snapshot")?;
-            temporary_handles.push(target.id);
-            if stop_at != target.at {
-                return Err(SessionError::Control(
-                    "action lifecycle point and action seal have different V-times".into(),
-                )
-                .into());
-            }
-            self.export_snapshot(target.id, target.at)
-        })();
-        self.cleanup_handles(temporary_handles, result)
-    }
-
     pub fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
         self.sdk_events_since(0)
     }
