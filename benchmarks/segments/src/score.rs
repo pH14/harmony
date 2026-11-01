@@ -6,7 +6,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    runner::{Outcome, Stop, read_outcome, read_wall},
+    runner::{Outcome, Stop, answers, read_outcome, read_request, read_wall},
     spec::Loaded,
     stats::{self, Observation},
 };
@@ -83,6 +83,7 @@ pub struct Row {
     pub logrank_o_minus_e: Option<f64>,
     pub direction: Option<Direction>,
     pub wall_median_seconds: Option<f64>,
+    pub memory_stops: usize,
     #[serde(skip)]
     observations: Vec<Observation>,
 }
@@ -99,11 +100,13 @@ fn bootstrap_seed(segment: &str) -> u64 {
 pub struct Collected {
     pub rows: Vec<Row>,
     pub failures: BTreeMap<String, Vec<Failure>>,
+    pub stale: BTreeMap<String, BTreeMap<String, usize>>,
 }
 
 pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected, String> {
     let mut rows = Vec::new();
     let mut failures: BTreeMap<String, Vec<Failure>> = BTreeMap::new();
+    let mut stale: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     for loaded in specs {
         let spec = &loaded.spec;
         let segment_dir = out.join(&spec.name);
@@ -120,6 +123,7 @@ pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected,
         for arm in arm_names {
             let mut observations = Vec::new();
             let mut walls = Vec::new();
+            let mut memory_stops = 0;
             let Ok(seeds) = fs::read_dir(segment_dir.join(&arm)) else {
                 continue;
             };
@@ -135,6 +139,18 @@ pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected,
                 let Some(outcome) = read_outcome(&dir) else {
                     continue;
                 };
+                let request = spec.request(&loaded.tape, seed, None)?;
+                if !read_request(&dir).is_some_and(|stored| answers(&stored, &outcome, &request)) {
+                    *stale
+                        .entry(spec.name.clone())
+                        .or_default()
+                        .entry(arm.clone())
+                        .or_default() += 1;
+                    continue;
+                }
+                if outcome.stop == Stop::Memory {
+                    memory_stops += 1;
+                }
                 match observation(&outcome, spec.work_budget) {
                     Some(obs) => {
                         observations.push(obs);
@@ -172,6 +188,7 @@ pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected,
                 logrank_o_minus_e: None,
                 direction: None,
                 wall_median_seconds: stats::median(&mut walls),
+                memory_stops,
                 observations,
             });
         }
@@ -189,7 +206,11 @@ pub fn collect(specs: &[Loaded], out: &Path, control: &str) -> Result<Collected,
         }
         rows.extend(segment_rows);
     }
-    Ok(Collected { rows, failures })
+    Ok(Collected {
+        rows,
+        failures,
+        stale,
+    })
 }
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
@@ -281,6 +302,22 @@ pub fn render(
             },
         ));
     }
+    let mut memory: BTreeMap<&str, usize> = BTreeMap::new();
+    for r in &collected.rows {
+        *memory.entry(r.segment.as_str()).or_default() += r.memory_stops;
+    }
+    for (segment, count) in memory.into_iter().filter(|(_, count)| *count > 0) {
+        out.push(format!(
+            "Memory stops on {segment}: {count}. Raise memory_limit until no control seed stops for memory."
+        ));
+    }
+    for (segment, arms) in &collected.stale {
+        for (arm, count) in arms {
+            out.push(format!(
+                "Stale results, left out: {segment} {arm}: {count} (stored request differs from the spec)"
+            ));
+        }
+    }
     for (segment, list) in &collected.failures {
         for f in list {
             out.push(format!(
@@ -302,6 +339,8 @@ pub struct Calibration {
     pub suggested_budget: Option<u64>,
     pub refit: bool,
     pub raise_budget: bool,
+    pub memory_stops: usize,
+    pub raise_memory_limit: bool,
 }
 
 pub const BUDGET_FACTOR: f64 = 3.0;
@@ -323,6 +362,8 @@ pub fn calibrate(rows: &[Row], control: &str) -> Vec<Calibration> {
             suggested_budget: r.median.map(suggested_budget),
             refit: r.reached == 0,
             raise_budget: r.median.is_none(),
+            memory_stops: r.memory_stops,
+            raise_memory_limit: r.memory_stops > 0,
         })
         .collect()
 }
@@ -359,6 +400,9 @@ fn flags(c: &Calibration) -> String {
     }
     if c.raise_budget {
         list.push("raise budget");
+    }
+    if c.raise_memory_limit {
+        list.push("raise memory_limit");
     }
     if list.is_empty() {
         "-".to_owned()
@@ -438,6 +482,7 @@ mod tests {
             logrank_o_minus_e: None,
             direction,
             wall_median_seconds: None,
+            memory_stops: 0,
             observations: Vec::new(),
         }
     }
@@ -493,8 +538,11 @@ mod tests {
         assert!(list[0].raise_budget);
         assert!(!list[0].refit);
         r.reached = 0;
-        let list = calibrate(&[r], "c");
+        let list = calibrate(std::slice::from_ref(&r), "c");
         assert!(list[0].refit);
         assert!(list[0].raise_budget);
+        assert!(!list[0].raise_memory_limit);
+        r.memory_stops = 1;
+        assert!(calibrate(&[r], "c")[0].raise_memory_limit);
     }
 }

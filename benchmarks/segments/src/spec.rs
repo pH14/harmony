@@ -99,14 +99,16 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 impl Spec {
     pub fn validate(&self) -> Result<(), String> {
-        let name_ok = !self.name.is_empty()
-            && self
-                .name
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-        if !name_ok {
+        if !valid_name(&self.name) {
             return Err("name must be lower case letters, digits and hyphens".into());
         }
         if self.game.is_empty() {

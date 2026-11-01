@@ -127,6 +127,7 @@ fn score(specs: &Path, out: &Path, control: &str) -> Result<(), String> {
         "rows": collected.rows,
         "verdicts": verdicts,
         "failures": collected.failures,
+        "stale": collected.stale,
     });
     fs::write(
         out.join("score.json"),
@@ -178,6 +179,9 @@ fn determinism(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    for task in &tasks {
+        task.clear()?;
+    }
     let dirs: Vec<PathBuf> = tasks.iter().map(|t| t.dir.clone()).collect();
     runner::run_all(tasks, 2)?;
     let outcomes: Vec<runner::Outcome> = dirs
