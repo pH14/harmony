@@ -55,6 +55,35 @@ pub struct Outcome {
     pub message: String,
 }
 
+fn without_budget(request: &Value) -> (Value, Option<u64>) {
+    let mut rest = request.clone();
+    let budget = rest
+        .as_object_mut()
+        .and_then(|fields| fields.remove("work_budget"))
+        .and_then(|value| value.as_u64());
+    (rest, budget)
+}
+
+pub fn still_valid(stored: &Value, outcome: &Outcome, request: &Value) -> bool {
+    if outcome.stop == Stop::Error {
+        return false;
+    }
+    if stored == request {
+        return true;
+    }
+    let (stored_rest, stored_budget) = without_budget(stored);
+    let (rest, budget) = without_budget(request);
+    let (Some(stored_budget), Some(budget)) = (stored_budget, budget) else {
+        return false;
+    };
+    stored_rest == rest
+        && match outcome.stop {
+            Stop::Milestone => outcome.work <= budget,
+            Stop::Budget => stored_budget >= budget,
+            _ => false,
+        }
+}
+
 pub fn read_outcome(dir: &Path) -> Option<Outcome> {
     serde_json::from_slice(&fs::read(dir.join("result.json")).ok()?).ok()
 }
@@ -101,11 +130,13 @@ impl Task {
     }
 
     pub fn done(&self) -> bool {
-        let same_request = fs::read(self.dir.join("request.json"))
+        let Some(stored) = fs::read(self.dir.join("request.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .is_some_and(|stored| stored == self.request);
-        same_request && read_outcome(&self.dir).is_some_and(|o| o.stop != Stop::Error)
+        else {
+            return false;
+        };
+        read_outcome(&self.dir).is_some_and(|outcome| still_valid(&stored, &outcome, &self.request))
     }
 
     fn execute(&self) -> Result<Outcome, String> {
@@ -245,6 +276,35 @@ mod tests {
         assert_eq!(parse_seeds("1-3,7").unwrap(), vec![1, 2, 3, 7]);
         assert!(parse_seeds("3-1").is_err());
         assert!(parse_seeds("x").is_err());
+    }
+
+    #[test]
+    fn a_budget_change_keeps_results_the_new_budget_would_repeat() {
+        let request = |budget: u64| json!({"name": "a", "seed": 1, "work_budget": budget});
+        let outcome = |stop, work| Outcome {
+            stop,
+            work,
+            job_stream_sha256: String::new(),
+            message: String::new(),
+        };
+        let reached = outcome(Stop::Milestone, 300);
+        assert!(still_valid(&request(400), &reached, &request(400)));
+        assert!(still_valid(&request(400), &reached, &request(800)));
+        assert!(still_valid(&request(400), &reached, &request(300)));
+        assert!(!still_valid(&request(400), &reached, &request(200)));
+        let stopped = outcome(Stop::Budget, 400);
+        assert!(still_valid(&request(400), &stopped, &request(200)));
+        assert!(!still_valid(&request(400), &stopped, &request(800)));
+        let memory = outcome(Stop::Memory, 100);
+        assert!(still_valid(&request(400), &memory, &request(400)));
+        assert!(!still_valid(&request(400), &memory, &request(800)));
+        let other_seed = json!({"name": "a", "seed": 2, "work_budget": 800});
+        assert!(!still_valid(&request(400), &reached, &other_seed));
+        assert!(!still_valid(
+            &request(400),
+            &outcome(Stop::Error, 0),
+            &request(400)
+        ));
     }
 
     #[test]

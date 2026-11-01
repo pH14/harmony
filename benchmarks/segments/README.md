@@ -126,6 +126,11 @@ segment-bench determinism --specs <file> --arms <arms.json> --arm NAME [--seed S
 status). It runs `--jobs` adapters at once. A run whose stored request equals
 the new one and whose result is valid and not `error` is skipped, so an
 interrupted `run` resumes, and a spec change runs the affected seeds again.
+When the requests differ only in `work_budget`, a stored result is also kept
+if it reached the milestone with work at or below the new budget, or if it
+stopped at `budget` with a stored budget at or above the new one. The search
+reads the budget only to stop, so a rerun would repeat those results. Raising
+a budget therefore reruns only the seeds that stopped at the old one.
 `--seeds` takes ranges and lists such as `1-16` or `1-4,9`.
 
 `determinism` runs one segment and seed twice, first at the spec's workers and
@@ -145,29 +150,37 @@ each host before counting a table.
   seeds from a ChaCha generator with a fixed seed per segment, so the table is
   the same on every run. A resample with no median counts as infinite, so an
   interval bound can be infinite.
-- The log-rank p-value against the control arm (chi-square with one degree of
-  freedom).
+- The log-rank test against the control arm: the p-value (chi-square with one
+  degree of freedom) and the arm's observed minus expected finishes (O-E).
+- The direction: `faster` when p < 0.05 and O-E is positive, `slower` when
+  p < 0.05 and O-E is negative, and `none` otherwise.
 - The median wall time per seed.
 
-An arm passes when its interval lies entirely below the control's on at least
-two segments from different games (different `rom_sha256`) and entirely above
-the control's on none. Any other arm fails. `score` prints each arm's verdict
+The median and its interval are information only. The verdict uses the
+direction. A segment where the arm is `faster` is an improvement, and one
+where it is `slower` is a regression. An arm passes with improvements on at
+least two segments from different games (different `rom_sha256`) and
+regressions on none. Any other arm fails. `score` prints each arm's verdict
 with the segments behind it.
 
-Sixteen seeds resolve only large differences. With work to milestone drawn
-from an exponential distribution, the 95% interval of a 16-seed median spans
-about a factor of four, so even a 2.5-fold difference in work can leave the
-intervals overlapping. The synthetic test uses 64 seeds for that reason.
+With work to milestone drawn from an exponential distribution and every seed
+finishing, the log-rank test at p < 0.05 detects about a 2.7-fold difference
+in work with 80% power at 16 against 16 seeds, about 2.0-fold at 32 against
+32, and about 1.6-fold at 64 against 64. The required number of finishes is
+4(1.96 + 0.84)^2 / ln(ratio)^2. Seeds censored at the budget lower the power.
 
 ## Calibration
 
 `calibrate` prints, for each segment, the control's reached k/n at the spec's
-budget, a suggested budget (the control's Kaplan-Meier median rounded up to a
-multiple of 2^20) and a refit flag. A budget should let the control reach the
-milestone on about half of the seeds. 0/16 or 16/16 means the segment needs a
-new budget or a new milestone. Calibrate from control runs at a generous
-budget. Because the search reads the budget only to stop, those runs score
-correctly at the smaller budget.
+budget, its Kaplan-Meier median, a suggested budget and flags. A budget should
+let the control reach the milestone on most seeds, so the suggested budget is
+three times the control's median, rounded up to a multiple of 2^20. Under an
+exponential distribution that budget lets about seven in eight seeds finish.
+The `refit` flag marks a control at 0/n: the segment needs a new milestone or
+start. The `raise budget` flag marks a control whose median is undefined at the
+spec's budget, so three times the median cannot be computed; raise the budget
+and run again. Because a raised budget reruns only the seeds that stopped at
+the old one, calibration can raise a budget step by step.
 
 ## Choosing a segment
 
@@ -190,6 +203,8 @@ cargo test -p segment-bench
 The tests need no ROM. `segment-bench stub-adapter` is a hidden adapter that
 draws work from an exponential distribution seeded by the segment name and
 seed, scaled by `--factor`, with a job stream hash keyed by `--stream-key`.
-Three synthetic segments across two fake games in `tests/specs` check that a
-faster arm passes, a slower arm fails with regressions and an arm equal to the
-control fails with none.
+Three synthetic segments across two fake games in `tests/specs` check, at 32
+seeds, that a faster arm (0.4 times the control's work) passes, a slower arm
+(2.5 times) fails with regressions and an arm equal to the control fails with
+none. Another test raises and lowers a budget and checks that `run` reruns
+only the seeds the change affects.

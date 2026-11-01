@@ -34,8 +34,10 @@ fn bench(args: &[&str]) -> (bool, String) {
     (output.status.success(), text)
 }
 
+const SEEDS: &str = "1-32";
+
 #[test]
-fn the_verdict_separates_faster_slower_and_same_arms() {
+fn the_verdict_separates_faster_slower_and_same_arms_at_32_seeds() {
     let tmp = tempfile::tempdir().unwrap();
     let arms = arms(tmp.path());
     let out = tmp.path().join("out");
@@ -47,17 +49,17 @@ fn the_verdict_separates_faster_slower_and_same_arms() {
     let specs = specs.to_str().unwrap();
     let run = [
         "run", "--specs", specs, "--arms", &arms, "--arm", "control", "--arm", "faster", "--arm",
-        "slower", "--arm", "same", "--seeds", "1-64", "--jobs", "8", "--out", &out,
+        "slower", "--arm", "same", "--seeds", SEEDS, "--jobs", "8", "--out", &out,
     ];
     let (ok, text) = bench(&run);
     assert!(ok, "{text}");
     assert!(
-        text.contains("768 runs: 0 already have a result, 768 to run"),
+        text.contains("384 runs: 0 already have a result, 384 to run"),
         "{text}"
     );
     let (ok, text) = bench(&run);
     assert!(
-        ok && text.contains("768 runs: 768 already have a result, 0 to run"),
+        ok && text.contains("384 runs: 384 already have a result, 0 to run"),
         "{text}"
     );
     let (ok, text) = bench(&[
@@ -100,6 +102,92 @@ fn the_verdict_separates_faster_slower_and_same_arms() {
         "control",
     ]);
     assert!(ok && text.contains("| alpha-boss |"), "{text}");
+}
+
+fn spec_with_budget(dir: &Path, budget: u64) -> PathBuf {
+    let mut spec: Value =
+        serde_json::from_slice(&fs::read(specs().join("alpha-door.json")).unwrap()).unwrap();
+    spec["work_budget"] = json!(budget);
+    let specs_dir = dir.join("specs");
+    fs::create_dir_all(&specs_dir).unwrap();
+    fs::copy(
+        specs().join("alpha-door.tape"),
+        specs_dir.join("alpha-door.tape"),
+    )
+    .unwrap();
+    let path = specs_dir.join("alpha-door.json");
+    fs::write(&path, serde_json::to_vec(&spec).unwrap()).unwrap();
+    path
+}
+
+fn stops(out: &Path) -> Vec<(String, u64)> {
+    (1..=16)
+        .map(|seed| {
+            let result: Value = serde_json::from_slice(
+                &fs::read(out.join(format!("alpha-door/control/s{seed}/result.json"))).unwrap(),
+            )
+            .unwrap();
+            (
+                result["stop"].as_str().unwrap().to_owned(),
+                result["work"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_budget_change_reruns_only_the_seeds_it_affects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let arms = arms(tmp.path());
+    let out = tmp.path().join("out");
+    let run = |budget: u64| {
+        bench(&[
+            "run",
+            "--specs",
+            spec_with_budget(tmp.path(), budget).to_str().unwrap(),
+            "--arms",
+            arms.to_str().unwrap(),
+            "--arm",
+            "control",
+            "--seeds",
+            "1-16",
+            "--out",
+            out.to_str().unwrap(),
+        ])
+    };
+    let small = 1 << 21;
+    let large = 1 << 24;
+    let (ok, text) = run(small);
+    assert!(ok, "{text}");
+    let first = stops(&out);
+    let reached = first.iter().filter(|(stop, _)| stop == "milestone").count();
+    assert!(reached > 0 && reached < 16, "{first:?}");
+    let (ok, text) = run(large);
+    assert!(
+        ok && text.contains(&format!(
+            "16 runs: {reached} already have a result, {} to run",
+            16 - reached
+        )),
+        "{text}"
+    );
+    let second = stops(&out);
+    for (before, after) in first.iter().zip(&second) {
+        if before.0 == "milestone" {
+            assert_eq!(before, after);
+        }
+    }
+    let at_most_small = second
+        .iter()
+        .filter(|(stop, work)| stop == "budget" || *work <= small)
+        .count();
+    let (ok, text) = run(small);
+    assert!(
+        ok && text.contains(&format!(
+            "16 runs: {at_most_small} already have a result, {} to run",
+            16 - at_most_small
+        )),
+        "{text}"
+    );
 }
 
 #[test]
