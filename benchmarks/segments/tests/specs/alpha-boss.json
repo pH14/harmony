@@ -1,0 +1,20 @@
+{
+  "name": "alpha-boss",
+  "game": "alpha",
+  "rom_sha256": "bd2888ab357bc3c186fc1aeec0bf591ea5b04a462af37ce0ebe382dc03596d82",
+  "cartridge_ram": true,
+  "start": {
+    "tape": "alpha-boss.tape",
+    "tape_sha256": "7ede86007033f3ddb1325487adf6900562f6b3b28568e1c392b0975124fa9139",
+    "core_state_sha256": "16c0e289eb81ad978c2e9f3bedd10338bf22cf8a838cdf3c263f738e5a5ba4eb"
+  },
+  "milestone": [
+    {
+      "address": 24576,
+      "bits": 3
+    }
+  ],
+  "work_budget": 16777216,
+  "workers": 4,
+  "memory_limit": 1073741824
+}

@@ -1,0 +1,20 @@
+[package]
+name = "segment-bench"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Compares search arms on fixed game segments by work to milestone"
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rand_chacha = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
