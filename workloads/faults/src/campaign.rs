@@ -17,12 +17,12 @@ use searcher::{
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
             CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
-            Reporting, SnapshotCheckpoint, TargetExecution, ThreadPlacement, WorkloadPolicies,
-            default_window, postcard_value_sha256, run_campaign_checkpointed_with_options,
+            CampaignTypes, Evaluation, InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution,
+            ThreadPlacement, WorkloadPolicies, default_window, postcard_value_sha256,
+            run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, MixtureDraw, draw_suffix},
-        draw_tables::{DrawTableHeader, DrawTables, biased_step},
+        draw_tables::{DrawTables, biased_step},
         duration::{DurationDraw, DurationRequest},
         empirical_steps::EmpiricalStepCheckpoint,
         rand::RomuDuoJrRand,
@@ -166,9 +166,7 @@ impl FaultCampaignEvidence {
 
 pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
 pub type FaultSnapshotCheckpoint = SnapshotCheckpoint<FaultSnapshot>;
-pub type FaultCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type FaultCampaignModeReport = CampaignModeReport<FaultAction, FaultArchiveReport>;
-pub type FaultCampaignProgressRecord = CampaignProgressRecord<FaultArchiveKey>;
 type FaultCampaignActionResult = CampaignActionResult<FaultWorkload>;
 type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 
@@ -1291,16 +1289,6 @@ impl Evaluation for FaultWorkload {
             .map(|entry| entry.input.clone())
             .ok_or_else(|| "the fault source archive has no retained entries".into())
     }
-}
-
-pub fn run_fault_campaign_checkpointed(
-    game: &FaultWorkload,
-    config: &FaultCampaignConfig,
-    origin: &FaultCampaignOrigin,
-    stream: &mut dyn Write,
-    progress: Option<&mut dyn Write>,
-) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
-    run_fault_campaign_with_plan(game, config, origin, stream, progress, None, None)
 }
 
 pub fn run_fault_campaign_with_plan(
