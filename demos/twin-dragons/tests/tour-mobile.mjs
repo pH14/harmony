@@ -3,7 +3,7 @@ import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 const browser = await chromium.launch({headless: true, ...(process.env.CHROME_CHANNEL ? {channel: process.env.CHROME_CHANNEL} : {})});
-const url = `${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?level=0&pace=0`;
+const url = `${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?game=twin-dragons&level=0&pace=0`;
 const errors = [];
 async function ready(page, step) {
   await page.waitForFunction((step) => {
@@ -124,16 +124,20 @@ try {
     await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && !document.querySelector('#take-control').disabled, chosen);
     await ready(page, 1);
     assert.equal(await page.locator(`#state-list .state[data-state-id="${chosen}"]`).getAttribute('aria-pressed'), 'true');
-    if (viewport.width < viewport.height) await exposed(page.locator(`#state-list .state[data-state-id="${chosen}"]`), true);
+    if (viewport.width < viewport.height) {
+      const film = await page.locator('#film').boundingBox();
+      assert.ok(film.width >= 64 && film.height >= 64, 'The stacked history video stays visible');
+    }
     await exposed(page.locator('#play'), true);
     await exposed(page.locator('#scrub'), true);
     await exposed(page.locator('#sound'), true);
     const audioLayout = await page.evaluate(() => {
-      const replay=document.querySelector('#play').getBoundingClientRect(), sound=document.querySelector('#sound').getBoundingClientRect();
-      return {parent:document.querySelector('#sound').parentElement.className, overlap:Math.min(replay.bottom,sound.bottom)-Math.max(replay.top,sound.top), gap:sound.left-replay.right};
+      const sound = document.querySelector('#sound').getBoundingClientRect(), scrub = document.querySelector('#scrub').getBoundingClientRect();
+      const dx = Math.max(0, sound.left - scrub.right, scrub.left - sound.right), dy = Math.max(0, sound.top - scrub.bottom, scrub.top - sound.bottom);
+      return {parent: document.querySelector('#sound').parentElement.className, separation: Math.hypot(dx, dy)};
     });
-    assert.equal(audioLayout.parent,'replay-actions');
-    assert.ok(audioLayout.overlap > 0 && audioLayout.gap >= 0 && audioLayout.gap <= 10,'Audio sits beside Replay, rather than floating above it');
+    assert.equal(audioLayout.parent, 'transport');
+    assert.ok(audioLayout.separation >= 6, 'Audio keeps clear of the position slider');
     const map = await page.locator('.area-map').evaluateAll((maps) => maps.find((c) => c.dataset.markerFrame && c.dataset.markerFrame !== '')?.dataset.map);
     await exposed(page.locator(`.area-map[data-map="${map}"]`), true);
     await page.screenshot({path:`test-results/tour-mobile-${viewport.width}-replay.png`});
@@ -231,7 +235,10 @@ try {
       await play(page);
       const playingPaths = await page.locator('#attempts').textContent();
       await page.locator('#tour-skip').tap();
-      await page.waitForFunction((n) => !document.querySelector('#inspector').classList.contains('controlling') && document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search' && Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > Number(n.replaceAll(',','')),playingPaths);
+      await page.waitForFunction(() => !document.querySelector('#inspector').classList.contains('controlling') && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
+      assert.equal(await page.locator('#inspector').isVisible(), true);
+      await page.locator('#close-inspector').tap();
+      await page.waitForFunction((n) => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search' && Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > Number(n.replaceAll(',','')),playingPaths);
     }
     await page.goto('about:blank');
     await page.close();

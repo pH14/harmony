@@ -25,6 +25,17 @@ test("a mid-action branch discards the old future without changing its parent", 
     { buttons: 0, frames: 1 },
   ]);
 });
+test("appended input never exceeds the game's action length limit", () => {
+  const actions = [];
+  appendInput(actions, 0, 150, 60);
+  assert.deepEqual(actions, [
+    { buttons: 0, frames: 60 },
+    { buttons: 0, frames: 60 },
+    { buttons: 0, frames: 30 },
+  ]);
+  appendInput(actions, 0, 40, 60);
+  assert.deepEqual(actions.map((a) => a.frames), [60, 60, 60, 10]);
+});
 test("controller resolves opposing directions and independently releases aliases", () => {
   const c = new Controller();
   c.press("left", 64);

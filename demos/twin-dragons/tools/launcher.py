@@ -38,12 +38,14 @@ import os
 import re
 import secrets
 import shlex
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -77,6 +79,10 @@ GAMES: dict[str, Game] = {
     "super-mario-bros": Game("smb", "super-mario-bros.nes", False),
     "mega-man-2": Game("mm2", "mega-man-2.nes", False),
     "metroid": Game("metroid", "metroid.nes", False),
+    "donkey-kong": Game("donkey-kong", "donkey-kong.nes", False),
+    "ice-climbers": Game("ice-climbers", "ice-climbers.nes", False),
+    "zelda": Game("zelda", "zelda.nes", False),
+    "castlevania": Game("castlevania", "castlevania.nes", False),
 }
 
 
@@ -382,19 +388,45 @@ class Cancelled(Exception):
     pass
 
 
-def build_logged(command: list[str], log: Path, environment: dict[str, str] | None = None) -> None:
+def build_logged(
+    command: list[str],
+    log: Path,
+    environment: dict[str, str] | None = None,
+    cancelled: Callable[[], bool] = lambda: False,
+    progress: Callable[[str], None] = lambda text: None,
+) -> None:
     with log.open("wb") as output:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
             stdout=output,
             stderr=subprocess.STDOUT,
             env={**os.environ, **(environment or {})},
-            check=False,
+            start_new_session=True,
         )
-    if result.returncode != 0:
+        while True:
+            try:
+                process.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                if cancelled():
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait()
+                    raise Cancelled
+                progress(build_progress(log))
+    if process.returncode != 0:
         tail = log.read_text(errors="replace").strip().splitlines()[-5:]
         raise RuntimeError(f"{command[0]} failed: " + " / ".join(tail))
+
+
+def build_progress(log: Path) -> str:
+    lines = log.read_text(errors="replace").splitlines()
+    compiled = [line.split()[1] for line in lines if line.lstrip().startswith("Compiling ")]
+    if lines and "waiting for file lock" in lines[-1]:
+        return "Waiting for another build on this machine to finish"
+    if not compiled:
+        return "Building the QuickNES core and nes-eval"
+    return f"Building nes-eval: {len(compiled)} crates compiled, now {compiled[-1]}"
 
 
 class Launcher:
@@ -488,6 +520,7 @@ class Launcher:
 
     def deploy_local(self, run: Run, machine: Machine, settings: Settings) -> None:
         try:
+            root = Path(machine.dir).expanduser()
             root = Path(machine.dir).expanduser().resolve()
             directory = root / "runs" / run.id
             directory.mkdir(parents=True)
@@ -498,7 +531,11 @@ class Launcher:
             core = root / ("quicknes_libretro.dylib" if sys.platform == "darwin" else "quicknes_libretro.so")
             run.message = "Building the QuickNES core and nes-eval"
             if not core.is_file():
-                build_logged(["bash", str(REPOSITORY / "scripts/build-quicknes-core.sh"), str(core)], directory / "core.log")
+                build_logged(
+                    ["bash", str(REPOSITORY / "scripts/build-quicknes-core.sh"), str(core)],
+                    directory / "core.log",
+                    cancelled=lambda: self.cancelled(run),
+                )
             self.check_cancelled(run)
             eval_binary = root / "target/release/nes-eval"
             build_logged(
@@ -506,6 +543,8 @@ class Launcher:
                  "--manifest-path", str(REPOSITORY / "workloads/nes/Cargo.toml")],
                 directory / "build.log",
                 {"CARGO_TARGET_DIR": str(root / "target")},
+                cancelled=lambda: self.cancelled(run),
+                progress=lambda text: setattr(run, "message", text),
             )
             self.check_cancelled(run)
             request = run_request(

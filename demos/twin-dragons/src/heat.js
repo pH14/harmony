@@ -109,14 +109,14 @@ export class Heatmap {
     this.peaks = null;
     return cell;
   }
-  visitMotion(trails, maps, now) {
+  visitMotion(trails, maps, now, exactRows = false) {
     for (const samples of trails) {
       this.work++;
       const visited = new Set();
       for (let i = 0; i < samples.length; i += MOTION_STRIDE) {
         const level = samples[i + 1], map = maps.get(level);
         if (level === NO_ROOM || !map || samples[i + 2] >= map.width) continue;
-        const x = samples[i + 2] + 8, y = samples[i + 3] + 8;
+        const x = samples[i + 2] + 8, y = samples[i + 3] + (exactRows ? 0 : 8);
         if (x >= map.width || y >= map.height) continue;
         const key = (level * 4096 + Math.floor(x / CELL_SIZE)) * 64 + cellRow(y);
         if (visited.has(key)) continue;

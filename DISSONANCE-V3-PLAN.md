@@ -9,31 +9,31 @@ machine it runs on. The claims it ships with:
 
 1. Super Mario Bros. from power-on to the ending with three untyped
    scalars as the observation (horizontal position, vertical position,
-   level), on all of ms02, within 3x the tries and wall time of the
-   current searcher's run with its hand-written key.
+   level), on all of ms02, in one sitting.
 2. The Famidash base level set, every level beaten from its start with
-   untyped scalars as the observation, within 3x the total tries of the
-   current searcher with its hand-written key.
-3. Metroid from power-on to the ending with untyped scalars as the
-   observation, within 3x the tries of the current searcher's run with its
-   hand-written key, with every milestone (bombs, Kraid, high jump, Ridley,
-   Tourian, ending) reached and replayed. The observation may be the full
-   RAM or a subset of unnamed scalars; the searcher is told nothing about
-   what any scalar means.
-4. One NES game that has never had a hand key in this repository, taken
-   further from power-on by the learned key than by a position-only key.
+   untyped scalars as the observation.
+3. Metroid from power-on to the ending with a chosen vector of unnamed
+   scalars as the observation, every milestone (bombs, Kraid, high jump,
+   Ridley, Tourian, ending) reached and replayed. The searcher is told
+   nothing about what any scalar means. No searcher has finished Metroid
+   from power-on.
+4. Castlevania as the held-out game: untouched during development, then
+   given a chosen vector at the end and run from power-on to the ending,
+   every stage reached and replayed. No searcher has finished Castlevania.
+   It shows the searcher works on a game it was not built against.
 5. A faults workload (NATS or rqlite) where promoted features name
-   scenario markers nobody wrote down, and the search reaches a failure
-   the current searcher does not reach in equal work.
+   scenario markers nobody wrote down, and the search reaches a confirmed
+   failure from them.
 
-Capability first, then speed. The current searcher cannot do claims 1, 2,
-4 or 5 at all, because it needs a hand-written key. Finishing these games
-and workloads with no key is the result. Once a claim holds, the ratio to
-the current searcher is reported as information and becomes the target of
-a second phase of measured improvements, one change at a time, on the
-recordings the first phase produced. A working mechanism is never thrown
-out because a ratio came in at 1.02x or 1.5x. It is kept, recorded, and
-improved.
+These are outcomes, not comparisons. v3 is a different design from the
+current searcher, and its stages are checked against what the design says
+each layer must do, on recorded data, never against how the current
+searcher performs. The current searcher appears in this plan in one role:
+a black box that records the corpus in stage 0. Its tries and wall time
+are not pass lines anywhere. After every claim holds, stage 8 measures v3
+against it and against published systems as information for the write-up.
+A working mechanism is never removed because some number is worse than the
+old searcher's. It is kept, recorded, and improved.
 
 Live work runs in that order because feedback time differs by a thousand
 fold: SMB from power-on takes three minutes and its failure modes are the
@@ -48,10 +48,16 @@ mechanism built for Metroid waits on a Metroid run to be tested. The
 Metroid rooted segment in stage 5 is the first live check of stock
 carrying and precedes any power-on run.
 
-Fast still means fast. Every run uses every core it can. A run that takes
-hours where the current searcher takes minutes is a defect to diagnose,
-and the diagnosis goes in the log beside the result, but it does not stop
-the claim from being pursued.
+Fast still means fast. Every run uses every core it can. Every live run
+reports, at every checkpoint: jobs, jobs per second, cores busy, residents,
+the furthest value of each scalar reached, and the median job length in
+work. A run below 80% of its cores has a defect that is fixed before the
+next launch; a run below half its cores is stopped. Workers never wait on
+each other to run a job.
+A number that is implausible on its face, such as a search that does not
+leave its first screen after tens of thousands of jobs or a counter that
+visibly increments and is not promoted, is a bug to find, never a result
+to record.
 
 The design is `DISSONANCE-V3-DESIGN.md`. Read it first, then this file.
 
@@ -76,10 +82,6 @@ Every part of the design is either already running or already measured.
 - Throughput is at parity with the best public number: SMB power-on to
   ending cost 49 worker-minutes on ms02. The gains left are in the key and
   the allocation, which is all of v3.
-- Six hidden progress bytes that humans found by hand are known answers
-  for the feature filter: Metroid Zebetite health, Mega Man 2 Boobeam
-  count, Famidash phase `$04A8`, Punch-Out `$0096`, Castlevania `$0045`,
-  and SMB loop progress.
 
 ## Method
 
@@ -90,29 +92,66 @@ component as a tool that reads a record, score it by hindsight against
 what the recorded search did, and only then put it in the live loop.
 
 Hindsight scoring is the same for every component: for each milestone the
-recorded search reached, find the earliest point at which the component
-would have pointed the search at it. Report the ratio of that time to the
-recorded time. A component that does not shorten the ratio on the record
-will not shorten the live run.
+recording contains, find the earliest point at which the component would
+have pointed the search at it, and report that point as a fraction of the
+time the recording took to get there. This measures the component's
+predictive power on real data. The recording is data; what produced it is
+irrelevant to the score.
 
 Rules that make this fast:
 
 - Record once, analyze many times. Keep every checkpoint and the full
   stream. Delete nothing that a pass line cites.
-- Preregister every run: question, pass line, budget, seeds, binary hash.
-  Append it to the attempts log before the run and the result after. The
-  attempts log is `dissonance-v3/ATTEMPTS.local.md`, a new file that starts
-  empty with this work. It is the only record of runs; nothing else in the
-  repository is consulted for history. A run that reaches its budget is recorded as reaching the budget,
+- Preregister every scored run: question, pass line, budget, seeds, binary
+  hash. Append it to the attempts log before the run and the result after.
+  The attempts log is `dissonance-v3/ATTEMPTS.local.md`, a new file that
+  starts empty with this work. It is the only record of runs; nothing else
+  in the repository is consulted for history. A scored run is one whose
+  result bears on a pass line. Builds, unit tests, lint, file copies,
+  storage work and diagnostics are not preregistered and not logged; one
+  entry per scored run, at most fifteen lines, result included.
+- Infrastructure is not the work. Storage formats, memory layouts, disk
+  guards and tool speed get attention only when a pass line cannot be
+  computed at all. A hindsight pass that needs four hours and 30 GB on ms02
+  is run that way, once, before any optimization. A recording that is not
+  cited by a pass line is deleted when disk is short. A run that reaches its budget is recorded as reaching the budget,
   never as a failure.
 - A test is uninformative when the control is at 0 of N or N of N, when
   arms tie, or when the mechanism did not fire. An uninformative test is a
   defect in the test. Fix it and rerun.
-- Live comparisons use rooted segments: same root snapshot, same budget,
-  three fresh seeds per arm, median tries to a replayed witness. Power-on
-  runs come last and confirm.
+- Live checks use rooted segments: same root snapshot, same budget, three
+  fresh seeds, median tries to a replayed witness. Power-on runs come last
+  and confirm.
 - Positive and negative controls in every harness: a known-good key must
   pass, a shuffled key must fail, before any candidate is scored.
+- Pass lines are coarse by design. Every measurement has a granularity, such
+  as the report cadence in a hindsight pass, and a result within one
+  granularity step of its threshold meets it. A result of 0.2008 against a
+  threshold of 0.2 measured in steps of 250,000 tries is a pass. Record the
+  number, mark the stage passed, move on. Never rerun, retune or refine a
+  measurement to chase a threshold, and never block a stage on a miss
+  smaller than the measurement can resolve.
+- Every design rule is general. Its reason is stated without naming a
+  target. Before it enters the design it fires on at least two workloads,
+  one of them the faults workload once that runs, and the design commit
+  names the workloads and the runs that show it firing. A rule that fires on
+  one workload is a defect, however much it helps there; rework it until it
+  is general or remove it.
+- Thresholds come from the data: permutation tests or the record's own
+  distribution. A fixed constant in a rule is a defect unless the commit
+  shows in one clause that it is the same for every target.
+- After every rule change, rerun every finished claim before the next rule
+  lands: SMB from power-on and every Famidash level. A claim that no longer
+  holds blocks the change.
+- Each game's chosen vector is fixed and written in the attempts log before
+  its first run. It is never changed in response to a stall. A changed
+  vector restarts that game's claim, and the write-up reports every vector
+  that game was run with.
+- The agent that writes a rule does not judge whether it is general. Each
+  design commit gets a review by a separate agent that has only the design
+  diff, the commit body and this section, and asks: does the reason name a
+  target, which workloads does the rule fire on, which constants are fixed.
+  The commit lands only when that review finds nothing.
 - Never ask for approval. Decide, record, proceed. A turn ends only when
   every machine has work in flight that cannot yet be analyzed, and then
   the turn schedules its own check.
@@ -136,30 +175,33 @@ with milestone files giving the try count and input tape at each milestone.
 
 **Labels.** Replay the stream in order, maintaining positions, holders and
 edges. At each report point (every 250,000 tries), run relaxation and
-record every position's label. For each milestone, take the position where
-it was realized and the stock the search realized there. t_search is the
+record every position's label. The ratio is quantized by the cadence, so
+a ratio within one report step of a threshold meets it; a finer cadence may
+be used when it is cheap, never to rescue a near miss. For each milestone,
+take the position where it was realized and the stock the search realized
+there. t_search is the
 try at which the search realized it. t_label is the first report point at
 which the label at that position already predicted that stock. Lead ratio
 is t_label / t_search. Pass is a ratio at or below 0.2 on at least one
 early milestone. Calibration values measured on these recordings: energy tank 0.13,
 missile capacity 0.17, long beam 0.48, Kraid 0.8 to 0.95, SMB best 0.08.
 
-**Feature filter.** Build the scalar vector for every resident state at
-each checkpoint by reading its snapshot. Compute the four tests per scalar
-per region, using the recording's own hand key only to define regions for
-this test. The known answers are the hand key fields and the hidden byte
-for the game. For Metroid, Zebetite health is the byte to find in the
-Tourian region; the recording does not reach Tourian, so that case waits
-for a longer recording and the test on this one is the hand key fields.
-The negative control is a copy of the vector with scalar indices shuffled
-per state; it must promote nothing stable. Report the top ten per region
-and the rank of each known answer.
+**Feature kinds.** Build the chosen vector for every sampled resident at
+each checkpoint by reading its snapshot. Compute the progress and place
+tests per scalar per region, using the recording's own hand key only to
+define regions for this test. The known answers are the hand key fields:
+each should come out as the right kind with the right direction, and each
+distractor should be rejected. The negative control is a copy of the vector
+with scalar indices shuffled per state; it must promote nothing stable.
+Report every scalar's test values and kind per region.
 
 **Regions and bottlenecks.** Cluster the transition graph at each
 checkpoint. Compare the partition to the hand key's room and area fields
 with a standard agreement measure against a random partition of the same
-sizes. For bottlenecks, at each checkpoint find the deepest region and
-check whether the next milestone the search reached lies past it.
+sizes. For bottlenecks, at each checkpoint rank regions by depth and by
+recent yield (novel positions and holder improvements in the last report
+interval per unit of work) and report both ranks of the region holding the
+next milestone the search reached.
 
 **Terminal edges.** Mark every job whose endpoint was terminal. Rerun the
 labels pass with reliability discounted by terminal edges. Pass is that the
@@ -196,7 +238,7 @@ records its own corpus and the black-box recordings are retired.
 |---|---|---|
 | ms02 (24 cores: 8 P, 16 E, fastest) | recordings, live rooted segments, power-on runs | unrestricted; delete any file or process to free disk and memory; keep it saturated |
 | this Mac (6 cores, 24 GB) | builds, offline hindsight tools, tiny worlds, unit tests | hard limit 6 cores and 24 GB across everything |
-| msr1 (12 arm64 cores, slow) | breadth-game recordings, replay verification, long benchmarks | unrestricted; same deletion rights |
+| msr1 (12 arm64 cores, slow) | held-out and secondary game recordings, replay verification, long benchmarks | unrestricted; same deletion rights |
 
 Saturate all three at all times. Recordings are embarrassingly parallel
 across games and seeds. Hindsight analyses are parallel across recordings
@@ -214,7 +256,7 @@ inputs allow; the dependency graph is below.
 ```mermaid
 flowchart LR
     S0[0 corpus] --> S1[1 observation and record]
-    S1 --> S2[2 feature filter]
+    S1 --> S2[2 feature kinds, chosen vector]
     S1 --> S3[3 graph on hand positions]
     S2 --> S4[4 graph on learned positions]
     S3 --> S4
@@ -229,7 +271,7 @@ flowchart LR
 Record power-on runs with full stream and every checkpoint, using the
 current searcher as a black box: SMB to the ending, every Famidash base
 level, Metroid to the ending or as far as it goes, Mega Man 2, Punch-Out,
-Castlevania, one breadth game with no hand key, and one faults workload run
+Castlevania with a position-only key, and one faults workload run
 with coverage, assertion and log-template output. Three seeds each where
 the game allows.
 
@@ -249,16 +291,20 @@ scalars.
 Pass: the hand key of every recorded game is a function of the emitted
 scalars, shown by recomputing it from the v3 record.
 
-### Stage 2: feature filter (Mac, offline)
+### Stage 2: feature kinds on a chosen vector (Mac, offline, minutes)
 
-Implement the feature table and the four tests as a tool over a v3 record.
-Promote per region. Learn direction.
+Each game's adapter emits a chosen vector: the fields of its hand key read
+at natural width as unnamed scalars, plus two or three distractors such as
+a frame counter, an animation byte and a sound byte. Implement the feature
+table over that vector: the informativeness test, with kind set by rate
+and direction. Promote per region. Learn direction.
 
-Pass, with negative control: on each recording, the promoted features
-contain every field of the hand key and the known hidden byte for that
-game, ranked in the top ten inside the region where the hand fix applied;
-a shuffled-scalar control promotes nothing stable. Report false
-promotions and what explains them.
+Pass, with negative control: on SMB, Metroid and Famidash, every progress
+field is promoted as a progress feature with the correct direction, every
+position field as a place feature, every distractor is rejected, and a
+shuffled-scalar control promotes nothing stable. Run on a uniform sample of
+20,000 residents per checkpoint. Stages 4 and 5 build on this result.
+Castlevania gets no chosen vector until stage 7.
 
 ### Stage 3: graph on hand positions (Mac and ms02, from day one)
 
@@ -268,32 +314,41 @@ bottlenecks. Run it offline on positions taken from the recordings' hand
 keys so it can be scored before stage 2 lands.
 
 Pass: label lead ratios at or below 0.2 on at least one early milestone of
-SMB and of Metroid; terminal edges move the SMB 5-4 prediction earlier;
-regions agree with room and area fields better than a random partition of
-equal size; the deepest region at each checkpoint predicts the next
-milestone.
+SMB and of Metroid; regions agree with room and area fields better than a
+random partition of equal size; the region holding the next milestone's
+lineage ranks in the top three by recent yield at the checkpoint before
+each arrival, and yield ranks it at or above depth on a majority of
+checkpoints, with both ranks reported at every checkpoint. Checkpoints
+where it misses both ranks are a stall, and the stall's length and the
+regions that outranked it are recorded as input to stage 5. Depth alone picks the frontier on a linear game
+and fails where the map branches, which is the case the two-level
+allocation in stage 5 exists for, so a depth miss with a yield hit is a
+pass and a design input. The stage passes on retained-only records,
+which is all the black-box recordings contain. The terminal-edge check,
+that terminal edges move the SMB 5-4 prediction earlier, waits for the
+first v3-recorded corpus and does not hold the stage.
 
 ### Stage 4: graph on learned positions (Mac, offline)
 
 Run stage 3's tools on positions built from stage 2's features.
 
-Pass: lead ratios within 1.2x of the hand-position ratios on SMB and
-Metroid, and the hierarchy by change rate reproduces area above room above
-position.
+Pass: labels on learned positions predict the same early milestones at or
+below 0.2 on SMB and Metroid, and the hierarchy by change rate reproduces
+area above room above position.
 
 ### Stage 5: selection, live (ms02)
 
 Build the v3 live loop: parallel workers, region-by-yield allocation with
 the bottleneck floor, the label-gap draw with realization, the terminal
-discount. Rooted segments against the current searcher, in this order: SMB 5-4
-to 6-1, a Famidash level that stalls the current searcher, Metroid
-post-Kraid to high jump; three seeds per arm.
+discount. Rooted segments, in this order: SMB 5-4 to 6-1, the Famidash
+level with the longest stall in the stage 0 recordings, Metroid post-Kraid
+to high jump; three seeds each.
 
-Pass: v3 arrives on at least 2 of 3 seeds on every segment within 3x the
-control's median tries, every witness replayed. Report the median ratio,
-the hop landing rate and wall time per try at equal worker count as
-information. A ratio above 1 is a note for the improvement phase, never a
-reason to remove the mechanism.
+Pass: v3 arrives on at least 2 of 3 seeds on every segment, every witness
+replayed, and the selection log shows the design working: draw share
+tracks region yield, the bottleneck floor holds, labels pointed at the
+arriving lineage before it arrived. Report median tries, hop landing rate
+and wall time per try as information.
 
 ### Stage 6: input and jobs (Mac, then ms02)
 
@@ -303,9 +358,8 @@ mixture over both.
 
 Pass: a tiny-worlds panel built for v3 with positive and negative controls
 and no failed rule, and a Metroid rooted segment that arrives on at least
-2 of 3 seeds with selection held at stage 5's build. Report the ratio to
-the fixed-work control on the calibrated climb world and the segment as
-information.
+2 of 3 seeds with selection held at stage 5's build. Report tries to
+arrival on the calibrated climb world and the segment as information.
 
 ### Stage 7: the claims (ms02, msr1)
 
@@ -344,17 +398,26 @@ branch is complete.
 - Read any existing searcher code under `dissonance/`. Use its binary and
   its documented file formats only.
 - Write a per-game key, progress rule, or probe into the searcher. The
-  adapter supplies scalars and nothing else.
+  adapter supplies scalars and nothing else. A repository check fails when
+  searcher code outside the adapters names a target, a memory address or a
+  target-specific constant.
+- Look at Castlevania, or tune anything on it, before stage 7.
 - Decide a state's fate at admission from one sample. A terminal outcome
   is a learned edge weight, never a filter.
 - Treat a budget hit as a failure, a tie as a verdict, or a 0 of N control
   as evidence.
 - Keep a fixed-work job rule. Jobs end on observed events.
-- Throw out a working mechanism over a ratio. Capability is the result;
-  speed is the next phase. Log the ratio and move on.
-- Accept slow silently. A v3 run far slower per try than the current
-  searcher at equal workers gets a diagnosis in the log, alongside the
-  claim it is pursuing.
+- Throw out a working mechanism over a number. Capability is the result;
+  speed is the next phase. Log the number and move on.
+- Score any stage against the current searcher's tries or wall time. The
+  design is checked against itself and the record; the comparison comes
+  in stage 8.
+- Chase a threshold. A miss smaller than the measurement granularity is a
+  pass. A larger miss is a result to record and diagnose in one paragraph,
+  then the plan continues.
+- Accept slow silently. A run with idle cores or a try spent mostly
+  outside the emulator gets a diagnosis in the log, alongside the claim it
+  is pursuing.
 - Write `unsafe`. The substrate's interfaces are safe; if one is not, the
   fix goes in the substrate.
 - Stop. A closed line needs the cause named and shown in the log. Six

@@ -256,6 +256,18 @@ test("manual capture requires a requestFrame-capable video track and releases un
   assert.deepEqual(f.completions, []);
 });
 
+test("a stream that requests frames itself records when its track cannot", () => {
+  const f = fixture();
+  delete f.track.requestFrame;
+  let requested = 0;
+  const captureStream = f.canvas.captureStream;
+  f.canvas.captureStream = fps => Object.assign(captureStream(fps), { requestFrame() { requested++; } });
+  f.recording.start(f.canvas);
+  assert.equal(f.recording.frame(), true);
+  assert.equal(requested, 1);
+  f.recording.stop();
+});
+
 test("frame request failure aborts file capture once and releases its track", async () => {
   let aborts = 0;
   const f = fixture();

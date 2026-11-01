@@ -22,7 +22,7 @@ try {
         }
       };
     });
-    await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?level=0&pace=0`);
+    await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?game=twin-dragons&level=0&pace=0`);
     await page.locator('#new-search').waitFor({state:'visible'});
     await page.waitForFunction(() => !document.querySelector('#new-search').disabled);
     for (const level of [1,2,0]) {
@@ -66,11 +66,8 @@ try {
         await page.mouse.move(0,0);
       }
     }
-    await page.locator('#theme').click();
-    await page.locator('#theme').click();
-    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(255, 255, 255)');
-    await page.locator('#theme').click();
-    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(28, 28, 28)');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(28, 28, 28)','Dark is the only theme');
+    assert.equal(await page.locator('#theme').count(),0);
     await page.locator('#new-search').click();
     await page.locator('#close-level-picker').click();
     assert.equal(await page.locator('#branch-tree [data-search]').count(),2,'Dismissing the level picker keeps the Timeline');
@@ -101,6 +98,16 @@ try {
     }
     await page.close();
   }
+  const fresh = await browser.newPage({viewport:{width:1440,height:1000}});
+  await fresh.addInitScript(() => localStorage.setItem('harmony.twin-dragons.tour.v1','seen'));
+  await fresh.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?game=twin-dragons&pace=0`);
+  await fresh.locator('#level-picker[open]').waitFor();
+  assert.equal(await fresh.locator('#homebrew-games .game-row[aria-pressed="true"]').getAttribute('data-meta'),'','The picker does not say Playing before a search starts');
+  await fresh.locator('#level-grid button').first().click();
+  await fresh.waitForFunction(() => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > 0);
+  await fresh.locator('#new-search').click();
+  assert.equal(await fresh.locator('#homebrew-games .game-row[aria-pressed="true"]').getAttribute('data-meta'),'Playing');
+  await fresh.close();
   assert.deepEqual(errors,[]);
   console.log('Desktop/phone level picker: 3 cards, three repeated real warps, exact route replay and gameplay forks, pinch zoom and vertical page scroll passed.');
 } finally { await browser.close(); }

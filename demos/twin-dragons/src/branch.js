@@ -9,16 +9,16 @@ export function prefixAt(actions, frame) {
   }
   return prefix;
 }
-export function appendInput(actions, buttons, frames) {
+export function appendInput(actions, buttons, frames, limit = 120) {
   while (frames > 0) {
     const last = actions.at(-1);
-    if (last?.buttons === buttons && last.frames < 120) {
-      const n = Math.min(frames, 120 - last.frames);
+    if (last?.buttons === buttons && last.frames < limit) {
+      const n = Math.min(frames, limit - last.frames);
       last.frames += n;
       frames -= n;
     } else {
       if (actions.length >= 10000) return false;
-      const n = Math.min(frames, 120);
+      const n = Math.min(frames, limit);
       actions.push({ buttons, frames: n });
       frames -= n;
     }

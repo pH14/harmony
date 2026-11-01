@@ -28,7 +28,7 @@ async function open(options) {
       }
     };
   }, TOUR_KEY);
-  await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?level=0&workers=1&pace=0`);
+  await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?game=twin-dragons&level=0&workers=1&pace=0`);
   await page.waitForFunction(() => window.tdReady && !document.querySelector('#pause').disabled);
   return page;
 }
@@ -152,16 +152,16 @@ try {
   await inspectRoot(phone, true);
   await play(phone);
   assert.equal(await phone.locator('.state-picker').isVisible(), false, 'Playing hides the retained-route list');
-  assert.equal(await phone.locator('.transport').isVisible(), false, 'Replay controls take no space while playing');
-  assert.equal(await phone.locator('#sound').isVisible(), true, 'Audio remains available in the header');
+  assert.equal(await phone.locator('#scrub').isVisible(), false, 'Replay controls are hidden while playing');
+  assert.equal(await phone.locator('#sound').isVisible(), true, 'Audio remains available over the game');
   const layout = await phone.evaluate(() => {
     const box = q => document.querySelector(q).getBoundingClientRect();
     const screen=box('.screen'), controller=box('#game-controls'), actions=box('.branch-actions'), header=box('.drawer-top'), sound=box('#sound'), b=box('[data-button="2"]'), a=box('[data-button="1"]');
-    return {screenBottom:screen.bottom, controllerTop:controller.top, controllerBottom:controller.bottom, actionsTop:actions.top, soundTop:sound.top, soundBottom:sound.bottom, headerTop:header.top, headerBottom:header.bottom, actionGap:a.left-b.right, overflow:document.documentElement.scrollWidth>innerWidth};
+    return {screenTop:screen.top, screenBottom:screen.bottom, controllerTop:controller.top, controllerBottom:controller.bottom, actionsTop:actions.top, soundTop:sound.top, soundBottom:sound.bottom, headerTop:header.top, headerBottom:header.bottom, actionGap:a.left-b.right, overflow:document.documentElement.scrollWidth>innerWidth};
   });
   assert.ok(layout.controllerTop >= layout.screenBottom && layout.controllerTop-layout.screenBottom <= 24);
   assert.ok(layout.actionsTop >= layout.controllerBottom);
-  assert.ok(layout.soundTop >= layout.headerTop && layout.soundBottom <= layout.headerBottom);
+  assert.ok(layout.soundTop >= layout.screenTop && layout.soundBottom <= layout.screenBottom);
   assert.ok(layout.actionGap >= 12, 'The A and B buttons need comfortable separation');
   assert.equal(layout.overflow, false);
   const cdp = await phone.context().newCDPSession(phone);

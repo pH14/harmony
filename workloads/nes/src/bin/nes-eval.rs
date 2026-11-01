@@ -2,11 +2,15 @@
 
 use nes_games::arcade::{ArcadeGame, famidash};
 use nes_workload::{
+    castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
+    donkey_kong::campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
     eval::{Request, Result, evaluate, run_cli},
     famidash::{
         campaign::{FamidashCampaignRun, FamidashGame},
         levels::{GROUPS, Side, Stage},
     },
+    ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
+    joust::campaign::{JoustCampaignRun, JoustGame},
     live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
@@ -16,6 +20,8 @@ use nes_workload::{
         campaign::{Mm2CampaignRun, Mm2Game},
         target::{Mm2Input, Mm2Stage},
     },
+    pac_man::campaign::{PacManCampaignRun, PacManGame},
+    punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::campaign::TargetExecution,
     smb::campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
     stb::{
@@ -23,6 +29,7 @@ use nes_workload::{
         target::StbAi,
     },
     twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
+    zelda::campaign::{ZeldaCampaignRun, ZeldaGame},
 };
 use std::{fs, io::BufReader, path::Path, time::Instant};
 
@@ -101,9 +108,34 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "famidash-b" => evaluate_live::<LiveFamidash<2>>(rom, request, out, started, "famidash-b"),
         "famidash-c" => evaluate_live::<LiveFamidash<3>>(rom, request, out, started, "famidash-c"),
         "famidash-d" => evaluate_live::<LiveFamidash<4>>(rom, request, out, started, "famidash-d"),
+        "castlevania" => evaluate_live::<
+            nes_games::castlevania::campaign::CastlevaniaGame<NativeMachine>,
+        >(rom, request, out, started, "castlevania"),
+        "punchout" => evaluate_live::<nes_games::punchout::campaign::PunchOutGame<NativeMachine>>(
+            rom,
+            request,
+            out,
+            started,
+            "punch-out",
+        ),
         "twin-dragons" => evaluate_live::<
             nes_games::twin_dragons::campaign::TwinDragonsGame<NativeMachine>,
         >(rom, request, out, started, "twin-dragons"),
+        "zelda" => evaluate_live::<nes_games::zelda::campaign::ZeldaGame<NativeMachine>>(
+            rom, request, out, started, "zelda",
+        ),
+        "donkey-kong" => evaluate_live::<
+            nes_games::donkey_kong::campaign::DonkeyKongGame<NativeMachine>,
+        >(rom, request, out, started, "donkey-kong"),
+        "ice-climbers" => evaluate_live::<
+            nes_games::ice_climbers::campaign::IceClimbersGame<NativeMachine>,
+        >(rom, request, out, started, "ice-climbers"),
+        "pac-man" => evaluate_live::<nes_games::pac_man::campaign::PacManGame<NativeMachine>>(
+            rom, request, out, started, "pac-man",
+        ),
+        "joust" => evaluate_live::<nes_games::joust::campaign::JoustGame<NativeMachine>>(
+            rom, request, out, started, "joust",
+        ),
         _ => Err("this game has no live view".into()),
     }
 }
@@ -159,7 +191,8 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons"
+            "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
+            | "ice-climbers" | "pac-man" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -268,6 +301,94 @@ fn main() -> Result<()> {
                 started,
                 "twin-dragons",
                 <TwinDragonsGame>::memory_view,
+            ),
+            "castlevania" => evaluate_watching(
+                CastlevaniaGame::new(&rom, p, h, &execution_sha256)
+                    .with_milestone_input_dir(out.join("milestone-inputs")),
+                CastlevaniaCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "castlevania",
+                <CastlevaniaGame>::memory_view,
+            ),
+            "punchout" => evaluate_watching(
+                PunchOutGame::new(&rom, p, h, &execution_sha256),
+                PunchOutCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "punch-out",
+                <PunchOutGame>::memory_view,
+            ),
+            "zelda" => evaluate_watching(
+                ZeldaGame::new(&rom, p, h, &execution_sha256),
+                ZeldaCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "zelda",
+                <ZeldaGame>::memory_view,
+            ),
+            "donkey-kong" => evaluate_watching(
+                DonkeyKongGame::new(&rom, p, h, &execution_sha256),
+                DonkeyKongCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "donkey-kong",
+                <DonkeyKongGame>::memory_view,
+            ),
+            "ice-climbers" => evaluate_watching(
+                match root_actions::<nes_games::ice_climbers::target::IceClimbersInput>(
+                    request.root_input.as_deref(),
+                )? {
+                    Some(input) if input.actions.is_empty() => {
+                        return Err("root input carries no actions".into());
+                    }
+                    Some(input) => {
+                        IceClimbersGame::new_rooted(&rom, p, h, &execution_sha256, input.actions)
+                    }
+                    None => IceClimbersGame::new(&rom, p, h, &execution_sha256),
+                },
+                IceClimbersCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "ice-climbers",
+                <IceClimbersGame>::memory_view,
+            ),
+            "pac-man" => evaluate_watching(
+                PacManGame::new(&rom, p, h, &execution_sha256),
+                PacManCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "pac-man",
+                <PacManGame>::memory_view,
+            ),
+            "joust" => evaluate_watching(
+                JoustGame::new(&rom, p, h, &execution_sha256),
+                JoustCampaignRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "joust",
+                <JoustGame>::memory_view,
             ),
             "famidash" => {
                 let stage = famidash_stage(&rom, request.stage, request.whole_game)?;

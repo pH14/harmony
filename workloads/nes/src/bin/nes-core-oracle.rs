@@ -13,7 +13,8 @@ use machine::{
     quicknes::{QuickNesMachine, STATE_HEADER_LEN},
 };
 use nes_workload::{
-    chord::ChordVocabulary, famidash, metroid, mm2, search::rand::RomuDuoJrRand, smb, twin_dragons,
+    castlevania, chord::ChordVocabulary, donkey_kong, famidash, ice_climbers, joust, metroid, mm2,
+    pac_man, punchout, search::rand::RomuDuoJrRand, smb, twin_dragons, zelda,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -55,6 +56,41 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             setup: metroid::target::power_on_walk(),
             chords: metroid::archive::CHORDS,
             cartridge_ram: true,
+        },
+        "castlevania" => Game {
+            setup: castlevania::target::setup_tape(),
+            chords: castlevania::archive::CHORDS,
+            cartridge_ram: false,
+        },
+        "punchout" => Game {
+            setup: punchout::target::setup_tape(),
+            chords: punchout::archive::CHORDS,
+            cartridge_ram: false,
+        },
+        "zelda" => Game {
+            setup: zelda::target::setup_tape(),
+            chords: zelda::archive::CHORDS,
+            cartridge_ram: false,
+        },
+        "donkey-kong" => Game {
+            setup: donkey_kong::target::setup_tape(),
+            chords: donkey_kong::archive::CHORDS,
+            cartridge_ram: false,
+        },
+        "ice-climbers" => Game {
+            setup: ice_climbers::target::setup_tape(),
+            chords: ice_climbers::archive::CHORDS,
+            cartridge_ram: false,
+        },
+        "pac-man" => Game {
+            setup: pac_man::target::setup_tape(),
+            chords: pac_man::archive::CHORDS,
+            cartridge_ram: false,
+        },
+        "joust" => Game {
+            setup: joust::target::setup_tape(),
+            chords: joust::archive::CHORDS,
+            cartridge_ram: false,
         },
         other => return Err(format!("unknown game {other}").into()),
     })
