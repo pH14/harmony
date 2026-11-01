@@ -275,8 +275,6 @@ pub struct VtimeSnapshot {
 
 const EVENT_TRACE_CAP: usize = 4096;
 
-pub const PVCLOCK_REFRESH_TRACE_CAP: usize = EVENT_TRACE_CAP;
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StampKind {
     Refresh,
