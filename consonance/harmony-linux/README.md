@@ -22,9 +22,10 @@ and static OCI runtime sources. It tries a mirror when the upstream host fails:
 BusyBox and musl. Workload packages own their separate fetch entrypoints.
 `test-libvoidstar` runs the portable ABI and device-transaction checks.
 `test-linux` builds the Linux artifacts twice and runs the image check; it
-requires Linux, or a Linux/amd64 build container on macOS. Build output lives
-in `consonance/harmony-linux/build/`; `GUEST_BUILD_ROOT` can select another
-build root.
+requires Linux, or a Linux/amd64 build container on macOS. Artifacts land in
+`consonance/harmony-linux/build/`, and `HARMONY_ARTIFACT_DIR` selects another
+directory. Intermediate build trees live under `GUEST_BUILD_ROOT`, which
+defaults to `/tmp/harmony-linux-build`.
 
 The root `flake.nix` provides separate locked platform and workload image
 entrypoints on native Linux:
