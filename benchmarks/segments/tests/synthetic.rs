@@ -180,16 +180,22 @@ fn a_budget_change_reruns_only_the_seeds_it_affects() {
             assert_eq!(before, after);
         }
     }
-    let at_most_small = second
-        .iter()
-        .filter(|(stop, work)| stop == "budget" || *work <= small)
-        .count();
     let (ok, text) = run(small);
     assert!(
-        ok && text.contains(&format!(
-            "16 runs: {at_most_small} already have a result, {} to run",
-            16 - at_most_small
-        )),
+        ok && text.contains("16 runs: 16 already have a result, 0 to run"),
+        "{text}"
+    );
+    let (ok, text) = bench(&[
+        "score",
+        "--specs",
+        spec_with_budget(tmp.path(), small).to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+        "--control",
+        "control",
+    ]);
+    assert!(
+        ok && text.contains(&format!("| {reached}/16 |")) && !text.contains("Stale"),
         "{text}"
     );
 }
@@ -256,19 +262,29 @@ fn results_from_an_earlier_milestone_are_left_out_as_stale() {
 }
 
 #[test]
-fn memory_stops_are_counted_and_flag_the_limit() {
+fn a_memory_stop_invalidates_its_seed_and_withholds_the_verdict() {
     let tmp = tempfile::tempdir().unwrap();
     let arms = arms(tmp.path());
     let out = tmp.path().join("out");
     let spec = write_spec(tmp.path(), |_| {});
-    run_arms(&spec, &arms, &["control"], "1-4", &out);
+    run_arms(&spec, &arms, &["control", "faster"], "1-4", &out);
     fs::write(
         out.join("alpha-door/control/s2/result.json"),
         json!({"stop": "memory", "work": 1000, "job_stream_sha256": "", "message": ""}).to_string(),
     )
     .unwrap();
     let (score, text, calibrated) = score_and_calibrate(&spec, &out);
-    assert_eq!(score["rows"][0]["memory_stops"], 1, "{text}");
+    let control = &score["rows"][0];
+    assert_eq!(control["memory_stops"], 1, "{text}");
+    assert_eq!(control["seeds"], 3, "{text}");
+    assert_eq!(control["incomplete"], true, "{text}");
+    assert_eq!(score["rows"][1]["incomplete"], true, "{text}");
+    assert_eq!(
+        score["failures"]["alpha-door"][0]["stop"], "memory",
+        "{text}"
+    );
+    assert_eq!(score["verdicts"]["faster"]["pass"], false, "{text}");
+    assert!(text.contains("faster: INCOMPLETE."), "{text}");
     assert!(text.contains("Memory stops on alpha-door: 1."), "{text}");
     assert!(calibrated.contains("raise memory_limit"), "{calibrated}");
 }
@@ -369,4 +385,15 @@ fn a_spec_whose_tape_differs_from_its_hash_is_refused() {
         tmp.path().join("out").to_str().unwrap(),
     ]);
     assert!(!ok && text.contains("does not match tape_sha256"), "{text}");
+}
+
+#[test]
+fn the_committed_segments_load_and_span_at_least_two_games() {
+    let loaded =
+        segment_bench::spec::load_all(&Path::new(env!("CARGO_MANIFEST_DIR")).join("specs"))
+            .unwrap();
+    let mut games: Vec<&str> = loaded.iter().map(|l| l.spec.rom_sha256.as_str()).collect();
+    games.sort_unstable();
+    games.dedup();
+    assert!(games.len() >= 2, "{games:?}");
 }
