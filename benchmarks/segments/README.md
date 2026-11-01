@@ -48,14 +48,17 @@ Each segment is one JSON file in `specs/`:
   differs from the same quotient at the start state).
 - `work_budget` is the work at which a seed is censored.
 - `workers` is the number of workers every run of the segment uses.
-- `memory_limit` is in bytes.
+- `memory_limit` is the most resident memory, in bytes, that the search may
+  use at once, summed over every process and worker of the search. Set it high
+  enough that no control seed stops for memory.
 
 The seed is not in the spec. The runner adds it to each run.
 
 ## Adapter contract
 
 An arm is a command line in a local arms file, which stays out of the
-repository:
+repository. Arm names follow the segment name rule: lower case letters,
+digits and hyphens.
 
 ```json
 {
@@ -77,8 +80,13 @@ The adapter must:
    after the last tape frame equals `start.core_state_sha256`, or stop with
    `start_mismatch`.
 3. Search from that state until the milestone holds, the work reaches
-   `work_budget`, or the search's memory reaches `memory_limit`, using exactly
+   `work_budget`, or the search would exceed `memory_limit`, using exactly
    `workers` workers.
+
+The memory measure is resident memory summed over every process and worker of
+the search, the same for every arm. The searcher may size its stores from
+`memory_limit`, so every arm on a segment sees the same limit. A run that would
+exceed it stops with `memory`, censored at its work.
 
 Work is the number of emulated frames the searcher runs from the start state,
 summed over all workers and counted in the searcher's deterministic order.
@@ -131,7 +139,8 @@ if it reached the milestone with work at or below the new budget, or if it
 stopped at `budget` with a stored budget at or above the new one. The search
 reads the budget only to stop, so a rerun would repeat those results. Raising
 a budget therefore reruns only the seeds that stopped at the old one.
-`--seeds` takes ranges and lists such as `1-16` or `1-4,9`.
+`--seeds` takes ranges and lists such as `1-16` or `1-4,9`, and runs a seed
+listed twice once.
 
 Check an adapter once before relying on that reuse. Run one seed at two
 budgets above its work to milestone: both runs must report the same work and
@@ -143,10 +152,19 @@ stored results whenever a budget changes, so every seed runs again.
 
 `determinism` runs one segment and seed twice, first at the spec's workers and
 then at `--other-workers` (default half the spec's workers, or 2 when the spec
-has 1), and passes when stop, work and `job_stream_sha256` agree. Run it on
-each host before counting a table.
+has 1), and passes when stop, work and `job_stream_sha256` agree. It deletes
+its earlier run directories first, so both runs always execute the current
+adapter. Run it on each host before counting a table.
 
 ## Scoring and verdict
+
+`score` and `calibrate` use only results that answer the current spec. A
+stored result counts when its `request.json` equals the request the spec gives
+for that seed, or differs only in `work_budget` under the reuse rule of `run`.
+The request holds the absolute tape path and `tape_sha256`, so a moved or
+changed tape also makes a result stale. Stale results are left out and listed
+with a count per segment and arm. A result stopped at `budget` below the spec's
+budget is stale, because it cannot be scored at the larger budget.
 
 `score` prints one Markdown table line per segment and arm and writes
 `DIR/score.json`. A line holds:
@@ -169,7 +187,8 @@ direction. A segment where the arm is `faster` is an improvement, and one
 where it is `slower` is a regression. An arm passes with improvements on at
 least two segments from different games (different `rom_sha256`) and
 regressions on none. Any other arm fails. `score` prints each arm's verdict
-with the segments behind it.
+with the segments behind it, and a count of `memory` stops per segment so the
+limit can be raised.
 
 With work to milestone drawn from an exponential distribution and every seed
 finishing, the log-rank test at p < 0.05 detects about a 2.7-fold difference
@@ -187,7 +206,8 @@ exponential distribution that budget lets about seven in eight seeds finish.
 The `refit` flag marks a control at 0/n: the segment needs a new milestone or
 start. The `raise budget` flag marks a control whose median is undefined at the
 spec's budget, so three times the median cannot be computed; raise the budget
-and run again. Because a raised budget reruns only the seeds that stopped at
+and run again. The `raise memory_limit` flag marks a segment where any control
+seed stopped for memory. Because a raised budget reruns only the seeds that stopped at
 the old one, calibration can raise a budget step by step.
 
 ## Choosing a segment

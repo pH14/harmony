@@ -14,7 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::spec::Loaded;
+use crate::spec::{Loaded, valid_name};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +27,11 @@ pub fn load_arms(path: &Path) -> Result<BTreeMap<String, Arm>, String> {
     let arms: BTreeMap<String, Arm> =
         serde_json::from_slice(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     for (name, arm) in &arms {
+        if !valid_name(name) {
+            return Err(format!(
+                "arm name '{name}' must be lower case letters, digits and hyphens"
+            ));
+        }
         if arm.command.is_empty() {
             return Err(format!("arm {name} has an empty command"));
         }
@@ -65,9 +70,10 @@ fn without_budget(request: &Value) -> (Value, Option<u64>) {
 }
 
 pub fn still_valid(stored: &Value, outcome: &Outcome, request: &Value) -> bool {
-    if outcome.stop == Stop::Error {
-        return false;
-    }
+    outcome.stop != Stop::Error && answers(stored, outcome, request)
+}
+
+pub fn answers(stored: &Value, outcome: &Outcome, request: &Value) -> bool {
     if stored == request {
         return true;
     }
@@ -82,6 +88,10 @@ pub fn still_valid(stored: &Value, outcome: &Outcome, request: &Value) -> bool {
             Stop::Budget => stored_budget >= budget,
             _ => false,
         }
+}
+
+pub fn read_request(dir: &Path) -> Option<Value> {
+    serde_json::from_slice(&fs::read(dir.join("request.json")).ok()?).ok()
 }
 
 pub fn read_outcome(dir: &Path) -> Option<Outcome> {
@@ -130,13 +140,18 @@ impl Task {
     }
 
     pub fn done(&self) -> bool {
-        let Some(stored) = fs::read(self.dir.join("request.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        else {
+        let Some(stored) = read_request(&self.dir) else {
             return false;
         };
         read_outcome(&self.dir).is_some_and(|outcome| still_valid(&stored, &outcome, &self.request))
+    }
+
+    pub fn clear(&self) -> Result<(), String> {
+        match fs::remove_dir_all(&self.dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("{}: {e}", self.dir.display())),
+        }
     }
 
     fn execute(&self) -> Result<Outcome, String> {
@@ -260,6 +275,8 @@ pub fn parse_seeds(text: &str) -> Result<Vec<u64>, String> {
             seeds.push(part.trim().parse().map_err(|_| bad())?);
         }
     }
+    let mut seen = std::collections::BTreeSet::new();
+    seeds.retain(|seed| seen.insert(*seed));
     Ok(seeds)
 }
 
@@ -276,6 +293,22 @@ mod tests {
         assert_eq!(parse_seeds("1-3,7").unwrap(), vec![1, 2, 3, 7]);
         assert!(parse_seeds("3-1").is_err());
         assert!(parse_seeds("x").is_err());
+        assert_eq!(parse_seeds("1,1").unwrap(), vec![1]);
+        assert_eq!(parse_seeds("3-5,4,1-3").unwrap(), vec![3, 4, 5, 1, 2]);
+    }
+
+    #[test]
+    fn arm_names_follow_the_segment_name_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arms.json");
+        let load = |name: &str| {
+            fs::write(&path, json!({name: {"command": ["true"]}}).to_string()).unwrap();
+            load_arms(&path)
+        };
+        assert!(load("candidate-2").is_ok());
+        for bad in ["candidate/v2", "/abs", "..", "Upper", "", "a b"] {
+            assert!(load(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
