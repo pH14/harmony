@@ -129,7 +129,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - name: Continuations, entropy and the adapter interface
+      - name: Route labels, entropy and the adapter interface
         run: |
           set -euo pipefail
           filter=$(python3 scripts/ci_contract.py nextest-filter searcher 'Search Coordination')

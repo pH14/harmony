@@ -1021,9 +1021,7 @@ mod tests {
         let accounting = live.archive.selector;
         assert!(accounting.recent_selections.unwrap_or(0) > 0);
         assert_eq!(
-            accounting
-                .cell_selections
-                .checked_add(accounting.continuation_selections.unwrap_or(0)),
+            Some(accounting.cell_selections),
             live.executions_completed
                 .checked_add(live.duplicates_skipped)
         );

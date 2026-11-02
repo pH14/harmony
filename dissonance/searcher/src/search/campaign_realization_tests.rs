@@ -50,6 +50,10 @@ impl ArchiveKey for TestKey {
     }
     type Lineage = ();
 
+    fn carry(self, donor: Self, leaf: Self, _weight: (u32, u32)) -> Self {
+        Self(self.0.wrapping_add(leaf.0.wrapping_sub(donor.0)))
+    }
+
     fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
         self
     }
@@ -306,7 +310,7 @@ impl Evaluation for TestWorkload {
     }
 }
 
-fn continuation_config(
+fn realization_config(
     workers: u32,
     mixture: DrawMixture,
     budget_mib: usize,
@@ -331,97 +335,14 @@ fn continuation_config(
 }
 
 #[test]
-fn replay_rejects_duplicate_skip_for_taken_continuation() {
-    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
-    config.stop_campaign_on_objective = false;
-    let mut stream = Vec::new();
-    run_campaign_checkpointed(
-        &TestWorkload,
-        &config,
-        &CampaignOrigin::Genesis,
-        &mut stream,
-        None,
-    )
-    .unwrap();
-    let records = std::str::from_utf8(&stream)
-        .unwrap()
-        .lines()
-        .skip(1)
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .collect::<Vec<_>>();
-    replay_campaign_checkpointed(&TestWorkload, &stream, None, None).unwrap();
-    let reservation = 18_u64;
-    let job = records
-        .iter()
-        .find(|record| record["event"] == "job" && record["reservation"] == reservation)
-        .unwrap();
-    assert_eq!(job["selector"]["path"], "continuation");
-    let mut skip = records
-        .iter()
-        .find(|record| record["event"] == "skip")
-        .unwrap()
-        .clone();
-    skip["reservation"] = serde_json::json!(reservation);
-    skip["draw_checkpoint_before"] = job["draw_checkpoint_before"].clone();
-    let mut after = skip["draw_checkpoint_before"].clone();
-    after["records"] = serde_json::json!(after["records"].as_u64().unwrap() + 1);
-    skip["draw_checkpoint_after"] = after;
-    let mut changed = records.clone();
-    let insert_at = changed
-        .iter()
-        .enumerate()
-        .filter(|(_, record)| record["event"] == "job")
-        .nth(usize::try_from(reservation).unwrap() - config.window)
-        .unwrap()
-        .0
-        + 1;
-    changed.insert(insert_at, skip);
-    for record in changed.iter_mut().skip(insert_at + 1) {
-        if record["event"] != "job" && record["event"] != "skip" {
-            continue;
-        }
-        if record["reservation"].as_u64().unwrap() >= reservation {
-            let before = &mut record["draw_checkpoint_before"];
-            before["records"] = serde_json::json!(before["records"].as_u64().unwrap() + 1);
-        }
-        let after = &mut record["draw_checkpoint_after"];
-        if !after.is_null() {
-            after["records"] = serde_json::json!(after["records"].as_u64().unwrap() + 1);
-        }
-    }
-    let end = changed.last_mut().unwrap();
-    assert_eq!(end["event"], "end");
-    end["skips"] = serde_json::json!(end["skips"].as_u64().unwrap() + 1);
-    let mut changed_stream = std::str::from_utf8(&stream)
-        .unwrap()
-        .lines()
-        .next()
-        .unwrap()
-        .to_owned();
-    changed_stream.push('\n');
-    for record in &changed {
-        changed_stream.push_str(&serde_json::to_string(record).unwrap());
-        changed_stream.push('\n');
-    }
-    let error = replay_campaign_checkpointed(&TestWorkload, changed_stream.as_bytes(), None, None)
-        .expect_err("a taken continuation cannot skip an ordinary duplicate");
-    assert!(
-        error
-            .to_string()
-            .contains("skip before a taken continuation"),
-        "{error}"
-    );
-}
-
-#[test]
-fn continuations_replay_exactly_under_snapshot_pressure() {
+fn realizations_replay_exactly_under_snapshot_pressure() {
     for (workers, mixture, budget_mib) in [
         (1, DrawMixture::EnergySplice { scale: 6 }, 12),
         (4, DrawMixture::EnergySplice { scale: 6 }, 12),
         (4, DrawMixture::Energy { scale: 6 }, 18),
         (4, DrawMixture::BiasedHalf, 12),
     ] {
-        let config = continuation_config(workers, mixture, budget_mib);
+        let config = realization_config(workers, mixture, budget_mib);
         let mut bytes = Vec::new();
         let (live, checkpoint) = run_campaign_checkpointed(
             &TestWorkload,
@@ -432,14 +353,11 @@ fn continuations_replay_exactly_under_snapshot_pressure() {
         )
         .unwrap();
         let text = std::str::from_utf8(&bytes).unwrap();
-        let continuations = text
+        let realizations = text
             .lines()
-            .filter(|line| line.contains("\"path\":\"continuation\""))
+            .filter(|line| line.contains("\"realization\":"))
             .count();
-        assert!(
-            continuations > 0,
-            "{workers} workers never dispatched a continuation"
-        );
+        assert!(realizations > 0, "{workers} workers never realized a label");
         assert!(
             live.snapshot_evictions > 0,
             "{workers} workers never met memory pressure"
@@ -453,7 +371,7 @@ fn continuations_replay_exactly_under_snapshot_pressure() {
 
 #[test]
 fn replay_rejects_a_splice_weight_impossible_for_the_recorded_energy_policy() {
-    let config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 18);
+    let config = realization_config(1, DrawMixture::Energy { scale: 6 }, 18);
     let mut stream = Vec::new();
     run_campaign_checkpointed(
         &TestWorkload,
@@ -472,7 +390,7 @@ fn replay_rejects_a_splice_weight_impossible_for_the_recorded_energy_policy() {
         .iter_mut()
         .find(|line| {
             let value: serde_json::Value = serde_json::from_str(line).unwrap();
-            if value["event"] != "job" || value["selector"]["path"] == "continuation" {
+            if value["event"] != "job" || value["realization"].is_object() {
                 return false;
             }
             let seed = value["mutation_seed"].as_u64().unwrap();
@@ -490,7 +408,7 @@ fn replay_rejects_a_splice_weight_impossible_for_the_recorded_energy_policy() {
 
 #[test]
 fn replay_rejects_an_adaptive_weight_not_derived_from_prior_admissions() {
-    let config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
+    let config = realization_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
     let mut stream = Vec::new();
     run_campaign_checkpointed(
         &TestWorkload,
@@ -510,7 +428,7 @@ fn replay_rejects_an_adaptive_weight_not_derived_from_prior_admissions() {
         .iter_mut()
         .find(|line| {
             let value: serde_json::Value = serde_json::from_str(line).unwrap();
-            if value["event"] != "job" || value["selector"]["path"] == "continuation" {
+            if value["event"] != "job" || value["realization"].is_object() {
                 return false;
             }
             if value["reservation"].as_u64().unwrap() < config.window as u64 {
@@ -534,7 +452,7 @@ fn replay_rejects_an_adaptive_weight_not_derived_from_prior_admissions() {
 
 #[test]
 fn replay_rejects_a_skip_weight_not_derived_from_the_energy_policy() {
-    let config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 18);
+    let config = realization_config(1, DrawMixture::Energy { scale: 6 }, 18);
     let mut stream = Vec::new();
     run_campaign_checkpointed(
         &TestWorkload,
@@ -566,7 +484,7 @@ fn replay_rejects_a_skip_weight_not_derived_from_the_energy_policy() {
 
 #[test]
 fn replay_rejects_selector_tiers_beyond_the_archive_population_limit() {
-    let config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 18);
+    let config = realization_config(1, DrawMixture::Energy { scale: 6 }, 18);
     let mut stream = Vec::new();
     run_campaign_checkpointed(
         &TestWorkload,
@@ -587,7 +505,7 @@ fn replay_rejects_selector_tiers_beyond_the_archive_population_limit() {
             .iter_mut()
             .find(|line| {
                 let value: serde_json::Value = serde_json::from_str(line).unwrap();
-                value["event"] == kind && value["selector"]["path"] != "continuation"
+                value["event"] == kind && !value["realization"].is_object()
             })
             .expect("an ordinary tier selection");
         let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -602,8 +520,8 @@ fn replay_rejects_selector_tiers_beyond_the_archive_population_limit() {
 }
 
 #[test]
-fn a_tampered_continuation_record_fails_its_replay() {
-    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+fn a_tampered_realization_record_fails_its_replay() {
+    let config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     let mut bytes = Vec::new();
     run_campaign_checkpointed(
         &TestWorkload,
@@ -617,31 +535,32 @@ fn a_tampered_continuation_record_fails_its_replay() {
     for (label, expected, tamper) in [
         (
             "tail",
-            "disagrees with the replayed queue entry",
+            "disagrees with the realization",
             (|value: &mut serde_json::Value| {
-                value["splice"]["tail_postcard"] = serde_json::json!([1, 255, 120]);
+                value["realization"]["tail_postcard"] = serde_json::json!([1, 255, 120]);
             }) as fn(&mut serde_json::Value),
         ),
         (
-            "path",
-            "which is an ordinary job",
+            "preference",
+            "disagrees with the realization",
             |value: &mut serde_json::Value| {
-                value["selector"]["path"] = serde_json::json!("tiers");
+                value["realization"]["preference"] = serde_json::json!(7);
             },
         ),
         (
-            "share",
-            "disagrees with the rebuilt continuation share",
+            "hops",
+            "disagrees with the realization",
             |value: &mut serde_json::Value| {
-                value["continuation_energy"] = serde_json::json!(3);
+                let hops = value["realization"]["hops"].as_u64().unwrap();
+                value["realization"]["hops"] = serde_json::json!(hops + 1);
             },
         ),
     ] {
         let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
         let line = lines
             .iter_mut()
-            .find(|line| line.contains("\"path\":\"continuation\""))
-            .expect("a continuation record");
+            .find(|line| line.contains("\"realization\":"))
+            .expect("a realized record");
         let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
         tamper(&mut value);
         *line = serde_json::to_string(&value).unwrap();
@@ -657,8 +576,8 @@ fn a_tampered_continuation_record_fails_its_replay() {
 }
 
 #[test]
-fn a_progress_line_reports_the_continuation_accounting() {
-    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+fn a_progress_line_reports_the_realization_accounting() {
+    let config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     let mut bytes = Vec::new();
     let mut progress = Vec::new();
     run_campaign_checkpointed(
@@ -672,21 +591,20 @@ fn a_progress_line_reports_the_continuation_accounting() {
     let text = String::from_utf8(progress).unwrap();
     let last = text.lines().last().expect("a progress line");
     let record: CampaignProgressRecord<serde_json::Value> = serde_json::from_str(last).unwrap();
-    let accounting = record.continuations;
-    assert!(accounting.edges > 0);
-    assert!(accounting.jobs > 0);
-    assert!(accounting.execution_work > 0);
-    assert!(accounting.reservations_taken > 0);
-    assert!(accounting.reservations_taken <= accounting.reservations_drawn);
-    assert!(accounting.landed <= accounting.jobs);
-    assert!(accounting.replaced <= accounting.landed);
-    assert!(accounting.opened_new_cell <= accounting.jobs);
-    assert!(accounting.energy <= 256);
+    let labels = record.labels;
+    assert!(labels.edges > 0);
+    assert!(labels.relaxations > 0);
+    assert!(labels.realized > 0);
+    assert!(labels.hops_attempted >= labels.realized);
+    assert!(labels.hops_landed <= labels.hops_attempted);
+    assert!(labels.arrived <= labels.realized);
+    assert!(labels.replaced <= labels.arrived);
+    assert!(labels.execution_work > 0);
 }
 
 #[test]
-fn cell_intervals_credit_continuation_dispatches_to_their_cells() {
-    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+fn cell_intervals_credit_realized_draws_to_their_cells() {
+    let config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     let mut bytes = Vec::new();
     let mut progress = Vec::new();
     run_campaign_checkpointed(
@@ -705,26 +623,26 @@ fn cell_intervals_credit_continuation_dispatches_to_their_cells() {
         })
         .collect::<Vec<_>>();
     let final_record = records.last().expect("a final progress line");
-    let continuation_selections = final_record
+    let realized_selections = final_record
         .selector
-        .continuation_selections
-        .expect("continuation dispatches were counted");
-    assert!(continuation_selections > 0);
+        .realized_selections
+        .expect("realized draws were counted");
+    assert!(realized_selections > 0);
     let intervals = records
         .iter()
         .filter_map(|record| record.selector.cell_interval.as_ref())
         .collect::<Vec<_>>();
     let interval_total: u64 = intervals
         .iter()
-        .map(|interval| interval.totals.continuation)
+        .map(|interval| interval.totals.realized)
         .sum();
-    assert_eq!(interval_total, continuation_selections);
+    assert_eq!(interval_total, realized_selections);
     for interval in intervals {
         if interval.cells == interval.top.len() {
-            let row_total: u64 = interval.top.iter().map(|row| row.counts.continuation).sum();
-            assert_eq!(row_total, interval.totals.continuation);
+            let row_total: u64 = interval.top.iter().map(|row| row.counts.realized).sum();
+            assert_eq!(row_total, interval.totals.realized);
         }
-        assert!(interval.totals.continuation <= interval.totals.draws);
+        assert!(interval.totals.realized <= interval.totals.draws);
     }
 }
 
@@ -744,7 +662,7 @@ fn with_header_field(lines: &[String], field: &str, value: &str) -> Vec<String> 
 
 #[test]
 fn replay_rejects_a_stream_whose_header_or_draw_state_was_changed() {
-    let config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
+    let config = realization_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
     let mut bytes = Vec::new();
     let live = run_campaign_checkpointed(
         &TestWorkload,
@@ -843,7 +761,7 @@ fn history_growth_before_maintenance_does_not_stop_the_campaign() {
         let config = CampaignConfig {
             campaign_seed,
             execution_budget: 300,
-            ..continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 8)
+            ..realization_config(workers, DrawMixture::EnergySplice { scale: 6 }, 8)
         };
         let mut stream = Vec::new();
         let live = run_campaign_checkpointed(
@@ -871,7 +789,7 @@ fn a_budget_that_fits_the_bootstrap_state_finishes_the_campaign() {
         let config = CampaignConfig {
             campaign_seed,
             execution_budget: 300,
-            ..continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 7)
+            ..realization_config(workers, DrawMixture::EnergySplice { scale: 6 }, 7)
         };
         let mut stream = Vec::new();
         let (live, checkpoint) = run_campaign_checkpointed(
@@ -945,7 +863,7 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
     ] {
         let label = format!("resume-{workers}-{budget_mib}");
         let directory = checkpoint_directory(&label);
-        let mut config = continuation_config(workers, mixture, budget_mib);
+        let mut config = realization_config(workers, mixture, budget_mib);
         config.stop_campaign_on_objective = false;
         let (plain, plain_progress) = run_with_checkpoints(&config, &CampaignOrigin::Genesis, None);
         let (original, original_progress) = run_with_checkpoints(
@@ -1009,7 +927,7 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
 #[test]
 fn a_campaign_and_checkpoint_reject_another_loaded_executable() {
     let directory = checkpoint_directory("loaded-executable");
-    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    let mut config = realization_config(1, DrawMixture::Energy { scale: 6 }, 12);
     config.stop_campaign_on_objective = false;
     config.execution_budget = 8;
     TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Ok("build-A"))));
@@ -1086,7 +1004,7 @@ fn a_campaign_and_checkpoint_reject_another_loaded_executable() {
 #[test]
 fn unavailable_loaded_executable_fails_before_campaign_output() {
     let directory = checkpoint_directory("unavailable-executable");
-    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    let mut config = realization_config(1, DrawMixture::Energy { scale: 6 }, 12);
     config.execution_budget = 8;
     TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Err("unavailable executable"))));
     let mut stream = Vec::new();
@@ -1120,7 +1038,7 @@ fn unavailable_loaded_executable_fails_before_campaign_output() {
 #[test]
 fn a_pinned_checkpoint_refuses_a_valid_swap_after_selection() {
     let directory = checkpoint_directory("pinned-swap");
-    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    let mut config = realization_config(1, DrawMixture::Energy { scale: 6 }, 12);
     config.stop_campaign_on_objective = false;
     config.execution_budget = 320;
     run_with_checkpoints(
@@ -1183,7 +1101,7 @@ fn a_pinned_checkpoint_refuses_a_valid_swap_after_selection() {
 #[test]
 fn a_fixed_window_writes_the_same_stream_at_any_worker_count() {
     let streams = [1, 4, 16, 64].map(|workers| {
-        let mut config = continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 24);
+        let mut config = realization_config(workers, DrawMixture::EnergySplice { scale: 6 }, 24);
         config.window = 16;
         config.execution_budget = 1600;
         config.stop_campaign_on_objective = false;
@@ -1208,8 +1126,8 @@ fn a_fixed_window_writes_the_same_stream_at_any_worker_count() {
         assert!(
             std::str::from_utf8(&stream)
                 .unwrap()
-                .contains("\"path\":\"continuation\""),
-            "{workers} workers dispatched no continuation"
+                .contains("\"realization\":"),
+            "{workers} workers realized no label"
         );
         stream
     });
@@ -1224,7 +1142,7 @@ fn a_fixed_window_writes_the_same_stream_at_any_worker_count() {
 #[test]
 fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
     let directory = checkpoint_directory("worker-count");
-    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     config.window = 8;
     config.stop_campaign_on_objective = false;
     let (original, original_progress) = run_with_checkpoints(
@@ -1305,7 +1223,7 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
 #[test]
 fn a_short_campaign_finishes_with_a_checkpoint_that_can_extend_its_budget() {
     let directory = checkpoint_directory("short-final");
-    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut config = realization_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
     config.execution_budget = 7;
     config.stop_campaign_on_objective = false;
     let (first, _) = run_with_checkpoints(
@@ -1354,7 +1272,7 @@ fn a_short_campaign_finishes_with_a_checkpoint_that_can_extend_its_budget() {
 #[test]
 fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
     let directory = checkpoint_directory("reseed");
-    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     config.stop_campaign_on_objective = false;
     let (_, original_progress) = run_with_checkpoints(
         &config,
@@ -1408,7 +1326,7 @@ fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
 #[test]
 fn a_resume_under_a_changed_search_policy_records_the_change() {
     let directory = checkpoint_directory("policy-change");
-    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     config.stop_campaign_on_objective = false;
     run_with_checkpoints(
         &config,
@@ -1457,7 +1375,7 @@ fn rewrite_checkpoint_policy(path: &std::path::Path, field: &str, value: &str) {
 #[test]
 fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
     let directory = checkpoint_directory("policy-fields");
-    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 64);
+    let mut config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 64);
     config.stop_campaign_on_objective = false;
     config.archive_entry_limit = 4096;
     let (_, original_progress) = run_with_checkpoints(
@@ -1477,7 +1395,7 @@ fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
     let recorded = std::fs::read(&checkpoint).unwrap();
     for field in [
         "parent_scheduler",
-        "continuation_policy",
+        "label_policy",
         PREFERENCE_PORTFOLIO_FIELD,
         PREFERENCE_POLICY_FIELD,
         DRAW_TABLE_POLICY_FIELD,
@@ -1508,7 +1426,7 @@ fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
 #[test]
 fn a_checkpoint_with_no_jobs_in_flight_resumes_under_a_larger_budget() {
     let directory = checkpoint_directory("drained");
-    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     config.stop_campaign_on_objective = false;
     run_with_checkpoints(
         &config,
@@ -1550,7 +1468,7 @@ fn a_checkpoint_with_no_jobs_in_flight_resumes_under_a_larger_budget() {
 fn a_drain_checkpoint_refills_the_original_admission_window_on_resume() {
     let source = checkpoint_directory("drain-window-source");
     let resumed_directory = checkpoint_directory("drain-window-resumed");
-    let mut config = continuation_config(2, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut config = realization_config(2, DrawMixture::EnergySplice { scale: 6 }, 12);
     config.execution_budget = 15;
     config.stop_campaign_on_objective = false;
     run_with_checkpoints(
@@ -1653,7 +1571,7 @@ fn a_resume_refuses_a_changed_workload_policy() {
 
 #[test]
 fn doubled_suffix_limits_are_recorded_replayed_and_checked() {
-    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     let mut bytes = Vec::new();
     let (live, checkpoint) = run_campaign_checkpointed(
         &TestWorkload,
@@ -1713,7 +1631,7 @@ fn doubled_suffix_limits_are_recorded_replayed_and_checked() {
 
 #[test]
 fn replay_rejects_forged_post_admission_skip_suffix_limits() {
-    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
+    let mut config = realization_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
     config.execution_budget = 1600;
     config.campaign_seed = 3;
     let mut stream = Vec::new();
@@ -1757,7 +1675,7 @@ fn replay_rejects_forged_post_admission_skip_suffix_limits() {
 
 #[test]
 fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
-    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     let mut stream = Vec::new();
     run_campaign_checkpointed(
         &TestWorkload,
@@ -1810,5 +1728,68 @@ fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
     assert!(
         error.contains("suffix limit diverged at reservation"),
         "{error}"
+    );
+}
+
+#[test]
+fn a_flipped_death_record_fails_its_replay() {
+    let config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap().to_owned();
+    let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+    let line = lines
+        .iter_mut()
+        .find(|line| line.contains("\"event\":\"job\""))
+        .expect("a job record");
+    let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+    let died = value["died"].as_bool().unwrap_or(false);
+    value["died"] = serde_json::json!(!died);
+    *line = serde_json::to_string(&value).unwrap();
+    let error =
+        replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
+            .expect_err("replay accepted a flipped death record")
+            .to_string();
+    assert!(
+        error.contains("terminal outcome diverged"),
+        "a flipped death record failed for another reason: {error}"
+    );
+}
+
+#[test]
+fn a_record_missing_its_retained_keys_fails_its_replay() {
+    let config = realization_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap().to_owned();
+    let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+    let line = lines
+        .iter_mut()
+        .find(|line| line.contains("\"retained_keys\":"))
+        .expect("a record that retained an entry");
+    let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+    value.as_object_mut().unwrap().remove("retained_keys");
+    *line = serde_json::to_string(&value).unwrap();
+    let error =
+        replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
+            .expect_err("replay accepted a record without its retained keys")
+            .to_string();
+    assert!(
+        error.contains("retained keys diverged"),
+        "a record without its retained keys failed for another reason: {error}"
     );
 }

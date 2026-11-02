@@ -138,6 +138,43 @@ impl ArchiveKey for MetroidArchiveKey {
         }
     }
 
+    fn carry(self, donor: Self, leaf: Self, weight: (u32, u32)) -> Self {
+        let carried = |have: u32, before: u32, after: u32| -> u32 {
+            if after >= before {
+                let gained =
+                    u64::from(after - before) * u64::from(weight.0) / u64::from(weight.1.max(1));
+                u32::try_from(u64::from(have).saturating_add(gained))
+                    .unwrap_or(u32::MAX)
+                    .min(have.max(after))
+            } else {
+                have.saturating_sub(before - after)
+            }
+        };
+        let energy_tanks = self.energy_tanks.max(leaf.energy_tanks);
+        let missile_capacity = self.missile_capacity.max(leaf.missile_capacity);
+        let health = carried(
+            u32::from(self.health),
+            u32::from(donor.health),
+            u32::from(leaf.health),
+        )
+        .min(health_cap(energy_tanks));
+        let missiles = carried(
+            u32::from(self.missiles),
+            u32::from(donor.missiles),
+            u32::from(leaf.missiles),
+        )
+        .min(u32::from(missile_capacity));
+        Self {
+            items: self.items.max(leaf.items),
+            tanks: self.tanks.max(leaf.tanks),
+            health: u16::try_from(health).unwrap_or(u16::MAX),
+            missiles: u8::try_from(missiles).unwrap_or(u8::MAX),
+            missile_capacity,
+            energy_tanks,
+            ..leaf
+        }
+    }
+
     type Lineage = MetroidLineage;
 
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -372,6 +409,66 @@ mod tests {
     use super::*;
     use crate::search::archive::ArchiveCandidate;
     use crate::search::rand::RomuDuoJrRand;
+
+    #[test]
+    fn carry_shifts_consumables_by_the_edge_and_scales_gains_by_reliability() {
+        let base = archive_key(MetroidMechanicalState::default());
+        let donor = MetroidArchiveKey {
+            health: 300,
+            missiles: 2,
+            missile_capacity: 5,
+            ..base
+        };
+        let leaf = MetroidArchiveKey {
+            area: 0x12,
+            map_x: 4,
+            health: 250,
+            missiles: 10,
+            missile_capacity: 10,
+            ..donor
+        };
+        let source = MetroidArchiveKey {
+            health: 999,
+            missiles: 5,
+            missile_capacity: 15,
+            energy_tanks: 1,
+            tanks: 1,
+            ..donor
+        };
+        let carried = source.carry(donor, leaf, (1, 2));
+        assert_eq!(carried.place(), leaf.place());
+        assert_eq!(carried.health, 949);
+        assert_eq!(carried.missiles, 9);
+        assert_eq!(carried.missile_capacity, 15);
+        assert_eq!((carried.tanks, carried.energy_tanks), (1, 1));
+        let certain = source.carry(donor, leaf, (3, 3));
+        assert_eq!(certain.missiles, 10);
+        let poorer = MetroidArchiveKey {
+            missiles: 1,
+            ..source
+        }
+        .carry(donor, leaf, (3, 3));
+        assert_eq!(poorer.missiles, 9);
+        let reliable = MetroidArchiveKey {
+            missiles: 1,
+            ..source
+        }
+        .carry(donor, leaf, (u32::MAX - 1, u32::MAX));
+        assert_eq!(reliable.missiles, 8);
+        let capped = MetroidArchiveKey {
+            health: 1990,
+            ..source
+        }
+        .carry(
+            donor,
+            MetroidArchiveKey {
+                health: 1995,
+                ..leaf
+            },
+            (3, 3),
+        );
+        assert_eq!(capped.health, 1995);
+    }
 
     #[test]
     fn the_area_byte_does_not_rank_one_boss_area_over_the_other() {

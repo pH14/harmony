@@ -97,6 +97,22 @@ impl ArchiveKey for SmbArchiveKey {
         self.clock.cmp(&other.clock)
     }
 
+    fn carry(self, donor: Self, leaf: Self, weight: (u32, u32)) -> Self {
+        let clock = if leaf.clock >= donor.clock {
+            let gained = u64::from(leaf.clock - donor.clock) * u64::from(weight.0)
+                / u64::from(weight.1.max(1));
+            u32::try_from(u64::from(self.clock).saturating_add(gained))
+                .unwrap_or(u32::MAX)
+                .min(u32::from(self.clock.max(leaf.clock)))
+        } else {
+            u32::from(self.clock.saturating_sub(donor.clock - leaf.clock))
+        };
+        Self {
+            clock: u16::try_from(clock).unwrap_or(u16::MAX),
+            ..leaf
+        }
+    }
+
     type Lineage = Vec<SmbRoomIdentity>;
 
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -382,6 +398,43 @@ mod tests {
             ],
             lineage_band: 0,
         }
+    }
+
+    #[test]
+    fn carry_moves_the_clock_by_the_edge_and_takes_the_leaf_place() {
+        let donor = SmbArchiveKey {
+            clock: 300,
+            ..key(100, [1, 2])
+        };
+        let leaf = SmbArchiveKey {
+            clock: 280,
+            ..key(140, [1, 2])
+        };
+        let source = SmbArchiveKey {
+            clock: 320,
+            ..donor
+        };
+        let carried = source.carry(donor, leaf, (1, 2));
+        assert_eq!(carried.place(), leaf.place());
+        assert_eq!(carried.clock, 300);
+        let gained = source.carry(donor, SmbArchiveKey { clock: 310, ..leaf }, (1, 2));
+        assert_eq!(gained.clock, 320);
+        let poorer = SmbArchiveKey {
+            clock: 290,
+            ..source
+        }
+        .carry(donor, SmbArchiveKey { clock: 310, ..leaf }, (1, 2));
+        assert_eq!(poorer.clock, 295);
+        let reliable = SmbArchiveKey {
+            clock: 280,
+            ..source
+        }
+        .carry(
+            donor,
+            SmbArchiveKey { clock: 310, ..leaf },
+            (u32::MAX - 1, u32::MAX),
+        );
+        assert_eq!(reliable.clock, 289);
     }
 
     #[test]

@@ -176,16 +176,17 @@ pub fn summarize(
             ),
             _ => (None, None),
         };
-        let path = crate::path_name(record.selector.path);
+        let realized = record.realization.is_some();
+        let path = if realized {
+            "realized"
+        } else {
+            crate::path_name(record.selector.path)
+        };
         let before_objective = first_objective_path.is_none();
         let upgraded_advance = actions
             .iter()
             .any(|a| a.before.phase == 2 && a.after.position > a.before.position);
-        if before_objective
-            && path == "continuation"
-            && actions[0].before.phase == 2
-            && upgraded_advance
-        {
+        if before_objective && realized && actions[0].before.phase == 2 && upgraded_advance {
             transfers.push(serde_json::json!({"sequence":sequence,"work":work,"parent":actions[0].before,
                 "donor":donor,"leaf":leaf,"after":actions.last().unwrap().after,
                 "non_upgraded_donor":donor.is_some_and(|d| d.phase < 2) && leaf.is_some_and(|l| l.phase < 2),
@@ -241,7 +242,7 @@ pub fn summarize(
         return Err("unmatched route trace".into());
     }
     Ok(
-        serde_json::json!({"first_upgraded_arrivals":first_arrivals,"upgraded_continuation_transfers":transfers,
+        serde_json::json!({"first_upgraded_arrivals":first_arrivals,"upgraded_realized_transfers":transfers,
         "first_objective_path":first_objective_path,"first_endpoint":first_endpoint,"first_acquisition":first_acquisition,"first_alignment":first_alignment}),
     )
 }
@@ -324,7 +325,7 @@ mod tests {
             let report = crate::run(&workload, crate::test_seed(), 4000, true).unwrap();
             assert_eq!(report["verified"], true);
             assert!(report["route_evidence"]["first_upgraded_arrivals"].is_object());
-            let transfers = report["route_evidence"]["upgraded_continuation_transfers"]
+            let transfers = report["route_evidence"]["upgraded_realized_transfers"]
                 .as_array()
                 .unwrap();
             for transfer in transfers {

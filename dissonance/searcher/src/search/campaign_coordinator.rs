@@ -19,19 +19,17 @@ use super::{
     CampaignJobResult, CampaignOrigin, CampaignOriginRecord, CampaignOutcome,
     CampaignProgressRecord, CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader,
     CampaignStreamRecord, CampaignTypes, CompletedBuffer, CompletedJob, CoordinatorCore,
-    JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob,
-    StreamWriter, Workload, archive_entry_limit_is_valid, bootstrap_campaign, build_report,
-    completed_job_records, continuation_arrival, continuation_attempt, derive_selection_seed,
-    execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
-    mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
-    progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
-    restore_search_checkpoint, retained_archive_indexes, search_checkpoint_header,
+    JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, PlannedRealization,
+    SelectedJob, StreamWriter, Workload, archive_entry_limit_is_valid, bootstrap_campaign,
+    build_report, completed_job_records, derive_selection_seed, execution_work_delta,
+    finish_record, initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
+    profile_elapsed, profile_now, progress_checkpoint_due, progress_record, realization_arrivals,
+    record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
+    retained_archive_indexes, retained_keys, search_checkpoint_header,
     stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
     with_coordinator_session, write_live_progress, write_search_checkpoint,
 };
-use crate::search::archive::{
-    Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
-};
+use crate::search::archive::{Archive, ArchiveKey, CampaignSpliceTail, Input};
 use crate::search::checkpoint::{CheckpointReader, publisher::CheckpointPublisher};
 use crate::search::draw::{EnergyStrategy, MixtureDraw, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
@@ -382,7 +380,7 @@ where
                 .ok_or("search checkpoint in-flight job has no stored snapshot")?;
             coordinator
                 .core
-                .start_suffix_job(job.pending.parent_id, job.pending.suffix_limit);
+                .start_suffix_job(job.pending.drawn_id(), job.pending.suffix_limit);
             let key = (job.pending.planned_finish, job.reservation);
             coordinator.schedule.insert(key);
             coordinator.queued.insert(
@@ -445,9 +443,18 @@ where
             }
         }
         for (reservation, job) in dropped {
-            self.core.finish_suffix_job(job.parent_id, job.suffix_limit);
+            self.core
+                .finish_suffix_job(job.drawn_id(), job.suffix_limit);
             self.core.archive.unpin_job_origin(job.snapshot_id);
             self.core.archive.unpin_metadata(job.parent_id);
+            if let Some(realization) = &job.realization {
+                self.core.archive.unpin_metadata(realization.drawn_id);
+            }
+            let realization = job
+                .realization
+                .as_ref()
+                .map(PlannedRealization::record)
+                .transpose()?;
             self.writer.write_line(
                 &CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::Cancel(
                     CampaignCancelRecord {
@@ -455,6 +462,7 @@ where
                         parent_id: job.parent_id,
                         mutation_seed: job.mutation_seed,
                         splice: job.splice,
+                        realization,
                         selector: job.selector,
                         suffix_limit: job.suffix_limit,
                     },
@@ -975,10 +983,8 @@ where
         let objectives_before = core.objectives_reached;
         let stopped_before = core.hang_stop.is_some();
         let admission_started = profile_now();
-        core.archive
-            .set_admission_wave(pending_job.continuation_wave);
-        core.finish_suffix_job(pending_job.parent_id, pending_job.suffix_limit);
-        let (sequence, decisions, duration_admission) = core.admit_job_tracking(
+        core.finish_suffix_job(pending_job.drawn_id(), pending_job.suffix_limit);
+        let (sequence, decisions, admission) = core.admit_job_tracking(
             workload,
             pending_job.parent_id,
             result,
@@ -989,14 +995,14 @@ where
                 })
             },
         )?;
-        if duration_admission.applied {
+        if admission.applied {
             let draw = pending_job
                 .duration_draw
                 .ok_or("duration application was reported without a duration draw")?;
             duration_policies.observe(
                 draw.context,
                 draw.duration,
-                duration_admission.useful,
+                admission.useful,
                 NonZeroU64::new(execution_work)
                     .ok_or("duration application requires positive execution work")?,
             )?;
@@ -1009,43 +1015,29 @@ where
             .saturating_add(profile_elapsed(admission_started));
         coordinator_profile.admissions = coordinator_profile.admissions.saturating_add(1);
         let bookkeeping_started = profile_now();
-        let parent_index = core
+        let drawn_index = core
             .archive
-            .index_of_id(pending_job.parent_id)
-            .ok_or("completed job parent is no longer resident")?;
-        let isolated_continuation = pending_job.selector.path == SelectorPath::Continuation;
-        if isolated_continuation {
-            core.archive.record_isolated_continuation(parent_index);
-        } else {
-            core.archive
-                .record_selection(parent_index, &pending_job.selector);
-        }
+            .index_of_id(pending_job.drawn_id())
+            .ok_or("completed job draw is no longer resident")?;
+        core.archive
+            .record_selection(drawn_index, &pending_job.selector);
         let retained_ids = retained_archive_indexes(core, &decisions);
-        let new_cell_descendant = retained_ids
-            .iter()
-            .any(|id| core.archive.opened_new_cell(*id));
+        let retained_keys = retained_keys::<G>(&core.archive, &decisions)?;
         let new_slot_descendant = retained_ids
             .iter()
             .any(|id| core.archive.opened_new_slot(*id));
-        if !isolated_continuation {
+        core.archive
+            .record_selection_outcome(drawn_index, !retained_ids.is_empty());
+        core.archive.record_job_end(drawn_index, admission.died);
+        if let Some(realization) = &pending_job.realization {
+            core.archive.record_realized_selection(drawn_index);
+            let arrivals = realization_arrivals::<G>(&core.archive, &decisions);
             core.archive
-                .record_selection_outcome(parent_index, !retained_ids.is_empty());
-        }
-        if isolated_continuation {
-            let (landed, replaced) =
-                continuation_arrival::<G>(&core.archive, pending_job.continuation_edge, &decisions);
-            core.archive.record_continuation_outcome(
-                landed,
-                replaced,
-                new_cell_descendant,
-                pending_job.continuation_wave,
-            );
-            core.archive.add_continuation_execution_work(execution_work);
+                .record_realization_outcome(&realization.hops, &arrivals, execution_work);
         }
         record_mixture_outcome(
             &mut core.mixture_energy,
             config.mixture,
-            pending_job.selector.path,
             pending_job.mutation_seed,
             (pending_job.mixture_weight, pending_job.splice_weight),
             new_slot_descendant,
@@ -1071,6 +1063,14 @@ where
         }
         core.archive.unpin_job_origin(pending_job.snapshot_id);
         core.archive.unpin_metadata(pending_job.parent_id);
+        let realization = pending_job
+            .realization
+            .as_ref()
+            .map(|realization| {
+                core.archive.unpin_metadata(realization.drawn_id);
+                realization.record()
+            })
+            .transpose()?;
         let compaction_started = profile_now();
         let compactions_before = core.archive.history_compactions();
         core.archive.maintain_memory_budget()?;
@@ -1092,7 +1092,6 @@ where
         }
         let stream_started = profile_now();
         writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
-            continuation_energy: pending_job.continuation_energy,
             sequence,
             reservation: u64::try_from(reservation)?,
             parent_id: pending_job.parent_id,
@@ -1100,9 +1099,12 @@ where
             execution_work,
             result_sha256,
             decisions,
+            retained_keys,
             mixture_weight: pending_job.mixture_weight,
             splice_weight: pending_job.splice_weight,
             splice: pending_job.splice,
+            realization,
+            died: admission.died,
             selector: pending_job.selector,
             draw_checkpoint_before: pending_job.draw_checkpoint_before,
             draw_checkpoint_after,
@@ -1241,67 +1243,6 @@ where
             return Ok(None);
         }
         let mut consecutive_skips = 0_u64;
-        let (continuation_energy, continuation) =
-            continuation_attempt(core, config.campaign_seed, *reserved);
-        if let Some(continuation) = continuation {
-            let parent_index = continuation.parent_index;
-            let suffix = continuation.suffix;
-            let (mixture_weight, splice_weight) = (0, u8::MAX);
-            let mut mutation_seed = rand.next_u64();
-            while energy_strategy(mutation_seed, mixture_weight, splice_weight)?
-                != EnergyStrategy::Splice
-            {
-                mutation_seed = rand.next_u64();
-            }
-            let parent_id = continuation.parent_id;
-            let selector = SelectorDraw {
-                path: SelectorPath::Continuation,
-                tier_rank: None,
-                best_preference: None,
-                fall_through: false,
-            };
-            let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
-            let splice = Some(CampaignSpliceRecord::Tail {
-                donor_id: continuation.donor,
-                leaf_id: continuation.leaf,
-                tail_postcard: postcard::to_allocvec(&suffix)?,
-            });
-            *reserved = reserved.saturating_add(1);
-            core.archive.pin_metadata(parent_id)?;
-            let (snapshot, replay, replay_certificates, snapshot_id) =
-                core.archive.pin_job_origin(parent_index)?;
-            let entry = &core.archive.entries[parent_index];
-            return Ok(Some((
-                JobSpec {
-                    reservation: 0,
-                    planned_finish: 0,
-                    snapshot,
-                    replay,
-                    replay_certificates,
-                    parent_milestones: entry.milestones,
-                    suffix,
-                },
-                PendingJob {
-                    snapshot_id,
-                    parent_id,
-                    continuation_energy,
-                    continuation_wave: continuation.wave.saturating_add(1),
-                    continuation_edge: Some((continuation.source, continuation.destination)),
-                    mutation_seed,
-                    mixture_weight,
-                    splice_weight,
-                    splice,
-                    selector,
-                    draw_checkpoint_before,
-                    duration_draw: None,
-                    duration_admission_sequence_at_draw: None,
-                    duration_remaining_work: None,
-                    duration_checkpoint_at_draw: None,
-                    suffix_limit: None,
-                    planned_finish: 0,
-                },
-            )));
-        }
         loop {
             let (parent_index, selector) = core.archive.select_parent(rand)?;
             let parent_id = core
@@ -1448,6 +1389,21 @@ where
             *reserved = reserved.saturating_add(1);
             core.start_suffix_job(parent_id, suffix_limit);
             core.archive.pin_metadata(parent_id)?;
+            let realization = PlannedRealization::plan(&core.archive, parent_index, &selector);
+            let (parent_index, parent_id) = match &realization {
+                Some(realization) => {
+                    let mut tail = realization.actions.clone();
+                    tail.append(&mut suffix);
+                    suffix = tail;
+                    let root_index = core
+                        .archive
+                        .index_of_id(realization.root_id)
+                        .ok_or("realization root slot is missing")?;
+                    core.archive.pin_metadata(realization.root_id)?;
+                    (root_index, realization.root_id)
+                }
+                None => (parent_index, parent_id),
+            };
             let (snapshot, replay, replay_certificates, snapshot_id) =
                 core.archive.pin_job_origin(parent_index)?;
             let entry = &core.archive.entries[parent_index];
@@ -1464,9 +1420,7 @@ where
                 PendingJob {
                     snapshot_id,
                     parent_id,
-                    continuation_energy,
-                    continuation_wave: 0,
-                    continuation_edge: None,
+                    realization,
                     mutation_seed,
                     mixture_weight,
                     splice_weight,

@@ -15,9 +15,9 @@ Any other arrival at execution one counts as a reach at execution one, since
 the first searched job carries that stamp too. A milestone passes when at
 least two distinct seeds reach it, and the score is the number of passed
 milestones in a row from the front of the ladder. Several sources print side
-by side, one column per build. A second table gives each root's continuation
-graph counters per build: jobs, landings, replacements and the longest wave,
-ranged over the root's cells, and a third gives the input actions and
+by side, one column per build. A second table gives each root's route label
+counters per build: realized jobs, hops that landed, arrivals and
+replacements, ranged over the root's cells, and a third gives the input actions and
 emulator work per execution, the share of executions that replayed a splice
 donor's route, and the hours each cell ran, so builds compare on emulation as
 well as executions. A seed that reaches the ending has passed every milestone
@@ -53,7 +53,7 @@ PASS_SEEDS = 2
 
 FORMAT = "harmony-metroid-ladder-v3"
 
-GRAPH = ["jobs", "landed", "replaced", "longest_wave"]
+GRAPH = ["realized", "hops_landed", "arrived", "replaced"]
 
 
 def first_seen(summary, cell_dir):
@@ -69,7 +69,7 @@ def first_seen(summary, cell_dir):
         {name: stamps[name] for name in LADDER if name in stamps},
         min(stamps.values(), default=None),
         progress.get("executions"),
-        progress.get("continuations") or {},
+        progress.get("labels") or {},
         {
             "suffix_actions": (progress.get("coordinator") or {}).get("suffix_actions"),
             "suffix_cost": (progress.get("coordinator") or {}).get("suffix_cost"),
@@ -104,7 +104,7 @@ def collect(source):
         if request.get("game") != "metroid" or segment(summary.get("case")) is None:
             continue
         build = build or ((summary.get("build") or {}).get("binary_sha256") or "")[:12]
-        seen, observed, executions, continuations, cost = first_seen(summary, cell)
+        seen, observed, executions, labels, cost = first_seen(summary, cell)
         root = roots.setdefault(
             summary.get("case"),
             {"root_input": request.get("root_input"), "cells": {}},
@@ -116,7 +116,7 @@ def collect(source):
             "executions": executions,
             "first_execution": seen,
             "first_observation": observed,
-            "continuations": {name: continuations.get(name) for name in GRAPH},
+            "labels": {name: labels.get(name) for name in GRAPH},
             "cost": cost,
         }
     return {
@@ -253,15 +253,15 @@ def graph_detail(root):
     parts = []
     for name in GRAPH:
         values = sorted(
-            cell.get("continuations", {}).get(name)
+            cell.get("labels", {}).get(name)
             for cell in root["cells"].values()
-            if cell.get("continuations", {}).get(name) is not None
+            if cell.get("labels", {}).get(name) is not None
         )
         if not values:
             return "-"
         low, high = compact(values[0]), compact(values[-1])
         span = low if low == high else f"{low}-{high}"
-        parts.append(f"{name.replace('longest_', '')} {span}")
+        parts.append(f"{name.replace('hops_', '')} {span}")
     return ", ".join(parts)
 
 
