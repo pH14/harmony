@@ -57,6 +57,7 @@ workload_packages = [
     "workloads/tiny-worlds",
 ]
 composition_apps_tests = [
+    "benchmarks/segments",
     "demos/twin-dragons/rust",
     "consonance/nested-driver",
     "consonance/host-code-identity/tests/witness",

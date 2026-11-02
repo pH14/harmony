@@ -1,0 +1,20 @@
+{
+  "name": "famidash-level-17",
+  "game": "famidash",
+  "rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+  "cartridge_ram": false,
+  "start": {
+    "tape": "famidash-level-17.tape",
+    "tape_sha256": "7eb16588e131c0c766d2f1ae9d1cc54097fb4423d433055fbcf2650a4e9279e6",
+    "core_state_sha256": "9a78153d4fdeafff2431fc0a0510e2a9146600ca1ed4ff6d591f584a73ebba7a"
+  },
+  "milestone": [
+    {
+      "address": 1176,
+      "eq": 3
+    }
+  ],
+  "work_budget": 12582912,
+  "workers": 4,
+  "memory_limit": 4294967296
+}

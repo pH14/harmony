@@ -52,7 +52,7 @@ jobs:
     name: macOS Arm64
     needs: scope
     if: needs.scope.outputs.rust_checks == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -121,7 +121,7 @@ jobs:
     name: macOS Consonance Host Package
     needs: scope
     if: needs.scope.outputs.rust_checks == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

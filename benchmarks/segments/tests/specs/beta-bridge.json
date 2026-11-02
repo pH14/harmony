@@ -1,0 +1,24 @@
+{
+  "name": "beta-bridge",
+  "game": "beta",
+  "rom_sha256": "3dfe6f69f1e0400853677aece14bf2407a575cc6137cbe53298840aee575c518",
+  "cartridge_ram": false,
+  "start": {
+    "tape": "beta-bridge.tape",
+    "tape_sha256": "4d38fabd650f1538f72266d966c865b863a2c7671f1797970d253d69c7f98e46",
+    "core_state_sha256": "45ec2a7d276a9db46d1e7fe8be54e304d2a664ab1470c9f854fd5dfab13a3c69"
+  },
+  "milestone": [
+    {
+      "address": 89,
+      "ge": 2
+    },
+    {
+      "address": 32,
+      "le": 2
+    }
+  ],
+  "work_budget": 16777216,
+  "workers": 4,
+  "memory_limit": 1073741824
+}

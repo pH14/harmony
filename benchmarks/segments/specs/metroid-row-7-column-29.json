@@ -1,0 +1,28 @@
+{
+  "name": "metroid-row-7-column-29",
+  "game": "metroid",
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "cartridge_ram": true,
+  "start": {
+    "tape": "metroid-row-7-column-29.tape",
+    "tape_sha256": "6c6d7fe3a9bad6c933f79d90daa139ab82343ba5be3ebf458c8638d9255494e5",
+    "core_state_sha256": "a2a5643017020e9f0a8dea7d507eb37a2ad772f632eacbc5a5d28056f4f29ed1"
+  },
+  "milestone": [
+    {
+      "address": 116,
+      "eq": 0
+    },
+    {
+      "address": 79,
+      "eq": 7
+    },
+    {
+      "address": 80,
+      "eq": 30
+    }
+  ],
+  "work_budget": 83886080,
+  "workers": 4,
+  "memory_limit": 4294967296
+}

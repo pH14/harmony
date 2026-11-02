@@ -93,7 +93,7 @@ The CLI's shared application tests run through its library target; the reviewed
 UML profile consumer selects that same library test explicitly. Both shipped
 binary entrypoints remain separate, including under all-feature builds.
 
-`Checks / Harmony Host Compatibility` has a separate macOS-14 package job
+`Checks / Harmony Host Compatibility` has a separate macOS 15 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed
 host admission, paired frontend routing, native QuickNES routing, and CLI
@@ -102,7 +102,7 @@ release. The Arm64 Linux package job likewise checks readiness with the musl
 host beside its frontend.
 
 `Checks / Harmony Host Compatibility / macOS Arm64` runs the portable workspace
-suites on `macos-14`. Its existing `host-tests.log` must contain exact nextest
+suites on `macos-15`. Its existing `host-tests.log` must contain exact nextest
 PASS records for the Darwin descriptor receive-bound and frame-remainder
 qualification tests. Missing in-process feature selection, a skipped test or a
 failed test cannot satisfy this check. It does not add another Cargo build.
@@ -300,7 +300,7 @@ target is the file name of the workflow. A change selects the jobs unless every
 changed path is one of these:
 
 - Documentation: Markdown, `docs/`, `LICENSE`, `.agents/`, `.claude/`,
-  `.githooks/` and `benchmarks/`.
+  `.githooks/` and `benchmarks/search/`.
 - A tool only the Repository workflow runs, listed in
   `scripts/rust_scope.py`. `scripts/test_rust_scope.py` fails when another
   workflow or action starts naming one.
@@ -721,6 +721,13 @@ to `docs/WORKFLOWS.md` or the registry changes the context of every workflow
 judgment and judges all workflows again. The file keeps at most
 `CACHE_ENTRY_LIMIT` judgments and drops the oldest first.
 
+The `Segment Benchmark` job in `Checks / Repository` lints and tests
+`benchmarks/segments`, the runner and scorer that compare search arms on fixed
+game segments. It runs on every pull request. Its tests need no ROM: a stub
+adapter draws work to milestone from a seeded exponential distribution, and the
+test checks that the log-rank verdict passes a faster arm and fails slower and
+equal arms.
+
 ## Verification
 
 ```sh
@@ -729,6 +736,7 @@ python3 -m unittest discover -s scripts -p 'test_semantic_lints.py'
 python3 -m unittest discover -s scripts -p 'test_ci_*.py'
 python3 -m unittest discover -s scripts -p 'test_*scope.py'
 python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+cargo test --locked -p segment-bench
 python3 scripts/custom-lints.py
 python3 scripts/check-test-partition.py ignored
 node --test scripts/benchmark-report.test.cjs

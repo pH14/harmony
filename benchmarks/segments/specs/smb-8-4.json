@@ -1,0 +1,24 @@
+{
+  "name": "smb-8-4",
+  "game": "smb",
+  "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+  "cartridge_ram": false,
+  "start": {
+    "tape": "smb-8-4.tape",
+    "tape_sha256": "357cd0a5a611b850af6de6fc30cb6ea8d91af806634740c16792bfcf8a481998",
+    "core_state_sha256": "0d5776fece8ada26985c032cbe8a54374f8a685478e4f8a3d0c3bb973518928b"
+  },
+  "milestone": [
+    {
+      "address": 1904,
+      "eq": 2
+    },
+    {
+      "address": 1887,
+      "eq": 7
+    }
+  ],
+  "work_budget": 123731968,
+  "workers": 4,
+  "memory_limit": 4294967296
+}

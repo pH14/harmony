@@ -130,6 +130,21 @@ jobs:
           python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
           python3 scripts/fit-vtime-costs.py --self-test
 
+  segment-benchmark:
+    name: Segment Benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - name: Lint the segment benchmark
+        run: cargo clippy --locked -p segment-bench --all-targets -- -D warnings
+      - name: Statistics, spec checks and the synthetic segments
+        run: cargo test --locked -p segment-bench
+
   semantic-lints:
     name: Semantic Lints
     runs-on: ubuntu-latest
@@ -187,7 +202,7 @@ jobs:
             host: Linux x86-64
           - runner: ubuntu-24.04-arm
             host: Linux Arm64
-          - runner: macos-14
+          - runner: macos-15
             host: macOS Arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
