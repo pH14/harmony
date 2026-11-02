@@ -557,9 +557,9 @@ macOS 26.6.2, build 25G83, Darwin 25.6.0/XNU 12377.161.14~5, newer than every
 audited tag; no matching public source was inspected. The ordinary
 `Checks / Harmony Host Compatibility / macOS Arm64` job on `macos-15` checks
 exact PASS records in its existing workspace test log for both native Darwin
-qualification tests. Those records supply macOS 14 runtime evidence. Missing
+qualification tests. Those records supply macOS 15 runtime evidence. Missing
 feature selection or a skipped test fails that check without another Cargo
-build. No macOS 15 native run was performed.
+build. No other macOS native run was performed.
 
 Sacrificial subprocess tests cover protocol limits, maximum accepted and
 oversized kernel sends, multiple headers, queued sends, zero-data controls,
