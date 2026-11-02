@@ -93,7 +93,7 @@ The CLI's shared application tests run through its library target; the reviewed
 UML profile consumer selects that same library test explicitly. Both shipped
 binary entrypoints remain separate, including under all-feature builds.
 
-`Checks / Harmony Host Compatibility` has a separate macOS-14 package job
+`Checks / Harmony Host Compatibility` has a separate macOS 15 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed
 host admission, paired frontend routing, native QuickNES routing, and CLI
@@ -102,7 +102,7 @@ release. The Arm64 Linux package job likewise checks readiness with the musl
 host beside its frontend.
 
 `Checks / Harmony Host Compatibility / macOS Arm64` runs the portable workspace
-suites on `macos-14`. Its existing `host-tests.log` must contain exact nextest
+suites on `macos-15`. Its existing `host-tests.log` must contain exact nextest
 PASS records for the Darwin descriptor receive-bound and frame-remainder
 qualification tests. Missing in-process feature selection, a skipped test or a
 failed test cannot satisfy this check. It does not add another Cargo build.

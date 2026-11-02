@@ -15,7 +15,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
             platform: macOS Arm64
             triple: aarch64-apple-darwin
           - runner: ubuntu-24.04
