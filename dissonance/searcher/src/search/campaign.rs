@@ -23,7 +23,7 @@ use crate::search::archive::{
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, SEARCH_CHECKPOINT_FORMAT,
 };
-use crate::search::continuation::CONTINUATION_IDENTIFIER;
+use crate::search::continuation::{CONTINUATION_IDENTIFIER, CONTINUATION_SHARE_SCALE};
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT, SuffixReach,
     draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
@@ -1264,8 +1264,8 @@ fn continuation_attempt<G: Workload + ?Sized>(
     if core.archive.continuation_pending() == 0 {
         return (None, None);
     }
-    let energy = CONTINUATION_ATTEMPT_SHARE;
-    let takes = draws_continuation(campaign_seed, reservation);
+    let energy = core.archive.continuation_share();
+    let takes = draws_continuation(campaign_seed, reservation, energy);
     core.archive.record_continuation_reservation(energy, takes);
     let taken = takes
         .then(|| {
@@ -1401,11 +1401,7 @@ pub(super) fn mixture_weights(energy: &MixtureEnergy, mixture: DrawMixture) -> (
 
 pub(crate) const CONTINUATION_EXITS_PER_RESERVATION: usize = 8;
 
-pub(crate) const CONTINUATION_ATTEMPT_IN: usize = 4;
-
 pub(crate) const CONTINUATION_HIGHEST_TIER_IN: usize = 4;
-
-const CONTINUATION_ATTEMPT_SHARE: u16 = 64;
 
 const CONTINUATION_TIER_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
 
@@ -1417,8 +1413,9 @@ fn draws_one_in(seed: u64, one_in: usize) -> bool {
 }
 
 #[must_use]
-pub(crate) fn draws_continuation(campaign_seed: u64, reservation: u64) -> bool {
-    draws_one_in(campaign_seed ^ reservation, CONTINUATION_ATTEMPT_IN)
+pub(crate) fn draws_continuation(campaign_seed: u64, reservation: u64, share: u16) -> bool {
+    let bound = NonZeroUsize::new(usize::from(CONTINUATION_SHARE_SCALE)).expect("nonzero scale");
+    RomuDuoJrRand::with_seed(campaign_seed ^ reservation).below(bound) < usize::from(share)
 }
 
 #[must_use]
@@ -12283,22 +12280,24 @@ mod tests {
     }
 
     #[test]
-    fn the_continuation_draw_takes_a_fixed_one_reservation_in_four() {
-        let taken = (0..4096)
-            .filter(|reservation| draws_continuation(11, *reservation))
-            .count();
-        assert!(
-            (896..1152).contains(&taken),
-            "one in four of 4096 reservations, got {taken}"
-        );
+    fn the_continuation_draw_takes_its_share_of_reservations() {
+        for (share, low, high) in [(64, 896, 1152), (16, 192, 320), (240, 3712, 3968)] {
+            let taken = (0..4096)
+                .filter(|reservation| draws_continuation(11, *reservation, share))
+                .count();
+            assert!(
+                (low..high).contains(&taken),
+                "share {share} of 256 over 4096 reservations, got {taken}"
+            );
+        }
     }
 
     #[test]
     fn the_continuation_draw_is_seeded_by_the_campaign_and_the_reservation() {
-        assert_eq!(draws_continuation(11, 3), draws_continuation(11, 3));
+        assert_eq!(draws_continuation(11, 3, 64), draws_continuation(11, 3, 64));
         assert!(
-            (0..512).any(|reservation| draws_continuation(11, reservation)
-                != draws_continuation(12, reservation))
+            (0..512).any(|reservation| draws_continuation(11, reservation, 64)
+                != draws_continuation(12, reservation, 64))
         );
     }
 
@@ -12313,7 +12312,7 @@ mod tests {
         );
         assert!(
             (0..512).any(|reservation| draws_highest_preference(11, reservation)
-                != draws_continuation(11, reservation))
+                != draws_continuation(11, reservation, 64))
         );
     }
 

@@ -350,12 +350,15 @@ fn replay_rejects_duplicate_skip_for_taken_continuation() {
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .collect::<Vec<_>>();
     replay_campaign_checkpointed(&TestWorkload, &stream, None, None).unwrap();
-    let reservation = 18_u64;
     let job = records
         .iter()
-        .find(|record| record["event"] == "job" && record["reservation"] == reservation)
-        .unwrap();
-    assert_eq!(job["selector"]["path"], "continuation");
+        .find(|record| {
+            record["event"] == "job"
+                && record["selector"]["path"] == "continuation"
+                && record["reservation"].as_u64().unwrap() >= config.window as u64
+        })
+        .expect("a continuation job past the first window");
+    let reservation = job["reservation"].as_u64().unwrap();
     let mut skip = records
         .iter()
         .find(|record| record["event"] == "skip")
