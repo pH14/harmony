@@ -789,7 +789,7 @@ class HostCompatibilityTests(unittest.TestCase):
 
     def test_arm64_host_runs_the_real_direct_export_copy_accounting_case(self):
         host = self.hosts["macos-arm64"]
-        self.assertEqual(host["runs-on"], "macos-14")
+        self.assertEqual(host["runs-on"], "macos-15")
         step = next(step for step in host["steps"]
                     if step.get("name") == "Verify direct extent export copy accounting on Arm64")
         command = step["run"]
@@ -826,8 +826,8 @@ class HostCompatibilityTests(unittest.TestCase):
         self.assertEqual(
             runners,
             {
-                "macOS Arm64": "macos-14",
-                "macOS Consonance Host Package": "macos-14",
+                "macOS Arm64": "macos-15",
+                "macOS Consonance Host Package": "macos-15",
                 "Linux Arm64": "ubuntu-24.04-arm",
                 "Linux Arm64 Dissonance": "ubuntu-24.04-arm",
                 "Linux Arm64 Qualification": "ubuntu-24.04-arm",

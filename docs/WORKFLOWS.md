@@ -102,7 +102,7 @@ release. The Arm64 Linux package job likewise checks readiness with the musl
 host beside its frontend.
 
 `Checks / Harmony Host Compatibility / macOS Arm64` runs the portable workspace
-suites on `macos-14`. Its existing `host-tests.log` must contain exact nextest
+suites on `macos-15`. Its existing `host-tests.log` must contain exact nextest
 PASS records for the Darwin descriptor receive-bound and frame-remainder
 qualification tests. Missing in-process feature selection, a skipped test or a
 failed test cannot satisfy this check. It does not add another Cargo build.
