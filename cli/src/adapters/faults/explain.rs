@@ -2137,6 +2137,222 @@ mod tests {
         assert_eq!(alive(0b101, &names), vec!["n1", "n3"]);
     }
 
+    #[test]
+    fn every_fault_operation_has_its_own_description() {
+        let names = names(BUNDLE);
+        let cases = [
+            (FaultOperation::Wait(ticks(50)), "wait 0.50 s"),
+            (FaultOperation::Kill(0, ticks(100)), "kill n1 for 1.00 s"),
+            (
+                FaultOperation::KillAll(ticks(25)),
+                "kill every node for 0.25 s",
+            ),
+            (
+                FaultOperation::Pause(9, ticks(3)),
+                "pause node 9 for 0.03 s",
+            ),
+            (
+                FaultOperation::Restart(1, ticks(400)),
+                "restart n2 (back after 1.00 s)",
+            ),
+            (
+                FaultOperation::Restart(1, ticks(3)),
+                "restart n2 (back after 0.01 s)",
+            ),
+            (FaultOperation::Hook(4, ticks(1)), "run hook 4"),
+            (
+                FaultOperation::EventKill {
+                    node: 2,
+                    rarity: 7,
+                    ticks: ticks(1),
+                },
+                "kill n3 at an instrumented event (rarity 7)",
+            ),
+            (
+                FaultOperation::EventPark {
+                    node: 0,
+                    edges: 12,
+                    hold_us: 3500,
+                    ticks: ticks(1),
+                    target: None,
+                },
+                "park n1 after 12 edges for 3500 us",
+            ),
+            (
+                FaultOperation::PowerLoss(1, ticks(200)),
+                "cut power to n2 for 2.00 s (unflushed writes lost)",
+            ),
+            (
+                FaultOperation::PowerLossAll(ticks(10)),
+                "cut power to every node for 0.10 s (unflushed writes lost)",
+            ),
+            (
+                FaultOperation::DiskError(2, ticks(64)),
+                "fail n3's disk I/O for 0.64 s",
+            ),
+            (
+                FaultOperation::DiskCorrupt(0, ticks(1)),
+                "flip one bit of a write on n1's disk and restart it",
+            ),
+            (
+                FaultOperation::Clock {
+                    node: 0,
+                    offset_ms: -250,
+                    rate_ppm: 500,
+                    ticks: ticks(100),
+                },
+                "step the wall clock -250 ms, then drift 500 ppm on n1 for 1.00 s",
+            ),
+            (
+                FaultOperation::Clock {
+                    node: 0,
+                    offset_ms: 5,
+                    rate_ppm: process_proto::CLOCK_RATE_STOPPED_PPM + 1,
+                    ticks: ticks(1),
+                },
+                "step the wall clock 5 ms, then drift -999999 ppm on n1 for 0.01 s",
+            ),
+            (
+                FaultOperation::ClockAll {
+                    offset_ms: 1000,
+                    rate_ppm: -20,
+                    ticks: ticks(300),
+                },
+                "step the wall clock 1000 ms, then drift -20 ppm on every node, scaled per node, for 3.00 s",
+            ),
+            (
+                FaultOperation::ClockAll {
+                    offset_ms: 0,
+                    rate_ppm: process_proto::CLOCK_RATE_STOPPED_PPM,
+                    ticks: ticks(1),
+                },
+                "stop the wall clock after a 0 ms step on every node, scaled per node, for 0.01 s",
+            ),
+        ];
+        for (operation, description) in cases {
+            assert_eq!(describe(&operation, &names), description, "{operation:?}");
+        }
+        assert_eq!(alive(0, &names), Vec::<String>::new());
+        assert_eq!(alive(1 << 5 | 1 << 63, &names), vec!["node 5", "node 63"]);
+    }
+
+    #[test]
+    fn data_changes_render_removed_added_then_changed_and_cap_the_list() {
+        let entry = |path: &str| Entry {
+            path: path.into(),
+            files: 2,
+            bytes: 30,
+        };
+        let mut text = String::new();
+        render_data(
+            &mut text,
+            &DataChanges {
+                root: "/data".into(),
+                present_before: true,
+                present_after: true,
+                added: vec![entry("/data/new")],
+                removed: vec![entry("/data/old")],
+                changed: vec![Change {
+                    path: "/data/log".into(),
+                    before: 5,
+                    after: 9,
+                }],
+            },
+        );
+        assert_eq!(
+            text,
+            concat!(
+                "- `/data`:\n",
+                "  - removed `/data/old` (2 files, 30 bytes)\n",
+                "  - added `/data/new` (2 files, 30 bytes)\n",
+                "  - changed `/data/log` (5 -> 9 bytes)\n",
+            )
+        );
+        for (before, after, word) in [(false, true, "appeared"), (true, false, "disappeared")] {
+            let mut text = String::new();
+            render_data(
+                &mut text,
+                &DataChanges {
+                    root: "/data".into(),
+                    present_before: before,
+                    present_after: after,
+                    ..DataChanges::default()
+                },
+            );
+            assert_eq!(text, format!("- `/data`: {word}\n"));
+        }
+        let mut text = String::new();
+        render_data(
+            &mut text,
+            &DataChanges {
+                root: "/d".into(),
+                present_before: true,
+                present_after: true,
+                added: (0..DATA_ENTRIES)
+                    .map(|index| entry(&format!("/d/{index}")))
+                    .collect(),
+                changed: (0..3)
+                    .map(|index| Change {
+                        path: format!("/d/c{index}"),
+                        before: 1,
+                        after: 2,
+                    })
+                    .collect(),
+                ..DataChanges::default()
+            },
+        );
+        let lines = text.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), DATA_ENTRIES + 2);
+        assert_eq!(
+            lines[DATA_ENTRIES],
+            format!("  - added `/d/{}` (2 files, 30 bytes)", DATA_ENTRIES - 1)
+        );
+        assert_eq!(
+            lines[DATA_ENTRIES + 1],
+            "  - 3 more changes in explain.json"
+        );
+        let mut text = String::new();
+        render_data(
+            &mut text,
+            &DataChanges {
+                root: "/d".into(),
+                present_before: true,
+                present_after: true,
+                removed: (0..DATA_ENTRIES)
+                    .map(|index| entry(&format!("/d/{index}")))
+                    .collect(),
+                ..DataChanges::default()
+            },
+        );
+        assert_eq!(text.lines().count(), DATA_ENTRIES + 1);
+        assert!(!text.contains("more changes"));
+    }
+
+    #[test]
+    fn histories_print_objects_pretty_and_stop_after_the_line_limit() {
+        assert_eq!(
+            pretty_history("{\"op\":\"read\",\"key\":1}\n[1,2]\nnot json"),
+            "{\n  \"key\": 1,\n  \"op\": \"read\"\n}\n[1,2]\nnot json"
+        );
+        let long = (0..HISTORY_LINES + 7)
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let shown = pretty_history(&long);
+        let lines = shown.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), HISTORY_LINES + 1);
+        assert_eq!(lines[HISTORY_LINES - 1], (HISTORY_LINES - 1).to_string());
+        assert_eq!(lines[HISTORY_LINES], "... 7 more lines in explain.json");
+        let exact = (0..HISTORY_LINES)
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(pretty_history(&exact), exact);
+        assert_eq!(fence("plain"), "```\nplain\n```\n");
+        assert_eq!(fence("a ``` b"), "````\na ``` b\n````\n");
+        assert_eq!(fence("a ```` b ```"), "`````\na ```` b ```\n`````\n");
+    }
+
     fn summary(actions: &[FaultAction]) -> ReplaySummary {
         let mut summary =
             ReplaySummary::from_observation(&FaultObservations::default(), Some([0; 32]), 0, 0);
