@@ -42,6 +42,8 @@ pub struct Game {
     pub controls: Vec<u8>,
     pub start_input: bool,
     pub goal: Vec<Predicate>,
+    #[serde(default)]
+    pub over: Vec<Predicate>,
 }
 
 pub const GAMES: [(&str, &str); 5] = [
@@ -116,6 +118,10 @@ impl Predicate {
 }
 
 impl Game {
+    pub fn over(&self, wram: &[u8], cart: &[u8]) -> bool {
+        !self.over.is_empty() && self.over.iter().all(|p| p.holds(wram, cart, 0))
+    }
+
     pub fn kinds(&self) -> Vec<Kind> {
         self.scalars.iter().map(|s| s.kind).collect()
     }
@@ -168,7 +174,7 @@ mod tests {
         for (name, _) in GAMES {
             let g = by_name(name).unwrap();
             assert!(!g.scalars.is_empty() && g.scalars.len() <= 24, "{name}");
-            for p in &g.goal {
+            for p in g.goal.iter().chain(&g.over) {
                 p.validate(g.cartridge_ram).unwrap();
             }
             let all = g.chord_inputs() - 1;
@@ -191,6 +197,16 @@ mod tests {
         let mut out = Vec::new();
         g.scalars_into(&wram, &[], &mut out);
         assert_eq!(out[0], 0x1234);
+    }
+
+    #[test]
+    fn ice_climbers_game_over_ends_play() {
+        let g = by_name("ice-climbers").unwrap();
+        let mut wram = vec![0u8; WRAM_LEN];
+        wram[0x20] = 0;
+        assert!(!g.over(&wram, &[]));
+        wram[0x20] = 0xff;
+        assert!(g.over(&wram, &[]));
     }
 
     #[test]

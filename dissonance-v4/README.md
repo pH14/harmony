@@ -101,6 +101,10 @@ Preparation rule used for the practice games:
   phases. Vertical velocity is identity when the player cannot stop moving
   (Famidash's flying modes).
 - Posture, animation and scroll bytes are left out.
+- A game may declare `over` predicates. A job stops at the first frame
+  where they all hold, so the engine never sees a state after a game over.
+  Ice Climber declares one because its title screen sets the mountain
+  counter directly.
 
 A multi-byte scalar marked `signed` is read as two's complement and stored
 with its sign bit flipped, which keeps numeric order.

@@ -157,6 +157,10 @@ impl Worker for NesWorker {
                 let milestone = self.milestone_holds();
                 let mut scalars = std::mem::take(&mut self.scalars);
                 let (wram, cart) = self.ram();
+                if !milestone && self.game.over(wram, cart) {
+                    self.scalars = scalars;
+                    return Ok(work);
+                }
                 self.game.scalars_into(wram, cart, &mut scalars);
                 let want = probe.observe(
                     Position { action: i, step: s },
