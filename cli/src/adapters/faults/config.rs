@@ -534,4 +534,395 @@ mod tests {
             assert!(explain.validate().is_err(), "{bad}");
         }
     }
+
+    fn refusal(config: &Config) -> String {
+        config.validate().unwrap_err().to_string()
+    }
+
+    fn node(command: &[&str]) -> Node {
+        Node {
+            command: command.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn validation_refuses_each_malformed_setting_with_its_own_reason() {
+        Config::default().validate().unwrap();
+        let huge = i64::MAX as u64 + 1;
+        assert_eq!(
+            refusal(&Config {
+                seed: huge,
+                ..Config::default()
+            }),
+            "seed exceeds TOML's maximum integer (9223372036854775807)"
+        );
+        assert_eq!(
+            refusal(&Config {
+                executions: Some(huge),
+                ..Config::default()
+            }),
+            "executions exceeds TOML's maximum integer (9223372036854775807)"
+        );
+        assert_eq!(
+            refusal(&Config {
+                wall_seconds: Some(huge),
+                ..Config::default()
+            }),
+            "wall_seconds exceeds TOML's maximum integer (9223372036854775807)"
+        );
+        Config {
+            seed: i64::MAX as u64,
+            ..Config::default()
+        }
+        .validate()
+        .unwrap();
+        for config in [
+            Config {
+                executions: Some(0),
+                ..Config::default()
+            },
+            Config {
+                ram_mib: 0,
+                ..Config::default()
+            },
+            Config {
+                wall_seconds: Some(0),
+                ..Config::default()
+            },
+        ] {
+            assert_eq!(
+                refusal(&config),
+                "executions, ram_mib and wall_seconds must be positive"
+            );
+        }
+        for backend in [Backend::Auto, Backend::Uml] {
+            Config {
+                backend,
+                uml_profile: Some("profile".into()),
+                ..Config::default()
+            }
+            .validate()
+            .unwrap();
+        }
+        assert_eq!(
+            refusal(&Config {
+                backend: Backend::Kvm,
+                uml_profile: Some("profile".into()),
+                ..Config::default()
+            }),
+            "uml_profile requires backend = 'uml' or 'auto'"
+        );
+        for name in ["", "a b", "n.1", "n/1"] {
+            assert_eq!(
+                refusal(&Config {
+                    nodes: BTreeMap::from([(name.to_owned(), node(&["/app/node"]))]),
+                    ..Config::default()
+                }),
+                format!("invalid node or hook name {name:?}; use letters, digits, '_' or '-'")
+            );
+            assert_eq!(
+                refusal(&Config {
+                    nodes: BTreeMap::from([("n1".to_owned(), node(&["/app/node"]))]),
+                    hooks: BTreeMap::from([(name.to_owned(), vec!["/app/hook".to_owned()])]),
+                    ..Config::default()
+                }),
+                format!("invalid node or hook name {name:?}; use letters, digits, '_' or '-'")
+            );
+        }
+        let args = |name: &str| BTreeMap::from([(name.to_owned(), "1".to_owned())]);
+        assert_eq!(
+            refusal(&Config {
+                build: Build {
+                    args: args("VERSION"),
+                    ..Build::default()
+                },
+                ..Config::default()
+            }),
+            "build.args applies to build.dockerfile"
+        );
+        for name in ["", "A=B", "A\nB", "A\0B"] {
+            assert_eq!(
+                refusal(&Config {
+                    build: Build {
+                        args: args(name),
+                        dockerfile: Some("Dockerfile".into()),
+                        ..Build::default()
+                    },
+                    ..Config::default()
+                }),
+                "build.args names must be nonempty without '=', newlines or NUL"
+            );
+        }
+        Config {
+            build: Build {
+                args: args("Node_VERSION-1"),
+                dockerfile: Some("Dockerfile".into()),
+                ..Build::default()
+            },
+            ..Config::default()
+        }
+        .validate()
+        .unwrap();
+        assert_eq!(
+            refusal(&Config {
+                explain: Explain {
+                    logs: vec![String::new()],
+                    ..Explain::default()
+                },
+                ..Config::default()
+            }),
+            "explain path \"\" must be nonempty without newlines or NUL"
+        );
+    }
+
+    #[test]
+    fn explain_paths_and_history_must_be_plain_text() {
+        for path in ["", "/logs/a\nb", "/logs/a\rb", "/logs/a\0b"] {
+            for explain in [
+                Explain {
+                    logs: vec![path.into()],
+                    ..Explain::default()
+                },
+                Explain {
+                    data: vec![path.into()],
+                    ..Explain::default()
+                },
+            ] {
+                assert_eq!(
+                    explain.validate().unwrap_err().to_string(),
+                    format!("explain path {path:?} must be nonempty without newlines or NUL")
+                );
+            }
+        }
+        for history in ["", "  \n", "cat\0/x"] {
+            assert_eq!(
+                Explain {
+                    history: Some(history.into()),
+                    ..Explain::default()
+                }
+                .validate()
+                .unwrap_err()
+                .to_string(),
+                "explain history must be nonempty shell text without NUL"
+            );
+        }
+        for command in ["", " ", "check @/x\0"] {
+            assert_eq!(
+                Explain {
+                    host_history: Some(command.into()),
+                    ..Explain::default()
+                }
+                .validate()
+                .unwrap_err()
+                .to_string(),
+                "explain host history must be nonempty shell text without NUL"
+            );
+        }
+        assert_eq!(
+            Explain {
+                host_history: Some("check /tmp/j".into()),
+                ..Explain::default()
+            }
+            .validate()
+            .unwrap_err()
+            .to_string(),
+            "explain host history names no guest path; write one as @/guest/path"
+        );
+        for (command, path) in [
+            ("check @/tmp/./j", "/tmp/./j"),
+            ("check @/tmp//j", "/tmp//j"),
+            ("check @/tmp/..", "/tmp/.."),
+        ] {
+            assert_eq!(
+                Explain {
+                    host_history: Some(command.into()),
+                    ..Explain::default()
+                }
+                .validate()
+                .unwrap_err()
+                .to_string(),
+                format!("explain host history path {path:?} must be a plain absolute guest path")
+            );
+        }
+        Explain {
+            logs: vec!["/logs/n1.log".into()],
+            data: vec!["/data".into()],
+            history: Some("cat /history".into()),
+            host_history: Some("check @/history".into()),
+        }
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn command_line_explain_settings_fall_back_to_the_saved_ones_field_by_field() {
+        let saved = Explain {
+            logs: vec!["/saved.log".into()],
+            data: vec!["/saved".into()],
+            history: Some("cat /saved".into()),
+            host_history: Some("check @/saved".into()),
+        };
+        assert!(Explain::default().is_empty());
+        assert!(!saved.is_empty());
+        assert_eq!(Explain::default().or(&saved), saved);
+        assert_eq!(saved.or(&Explain::default()), saved);
+        let given = Explain {
+            logs: vec!["/given.log".into()],
+            data: Vec::new(),
+            history: None,
+            host_history: Some("check @/given".into()),
+        };
+        assert_eq!(
+            given.or(&saved),
+            Explain {
+                logs: vec!["/given.log".into()],
+                data: vec!["/saved".into()],
+                history: Some("cat /saved".into()),
+                host_history: Some("check @/given".into()),
+            }
+        );
+        let data = Explain {
+            data: vec!["/given".into()],
+            history: Some("cat /given".into()),
+            ..Explain::default()
+        };
+        assert_eq!(
+            data.or(&saved),
+            Explain {
+                logs: vec!["/saved.log".into()],
+                data: vec!["/given".into()],
+                history: Some("cat /given".into()),
+                host_history: Some("check @/saved".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn the_bundle_lists_nodes_hooks_and_phases_as_quoted_argv() {
+        assert_eq!(Config::default().bundle().unwrap(), None);
+        for config in [
+            Config {
+                setup: vec!["/app/setup".into()],
+                ..Config::default()
+            },
+            Config {
+                ready: vec!["/app/ready".into()],
+                ..Config::default()
+            },
+            Config {
+                workload: vec!["/app/workload".into()],
+                ..Config::default()
+            },
+            Config {
+                check: vec!["/app/check".into()],
+                ..Config::default()
+            },
+            Config {
+                hooks: BTreeMap::from([("partition".to_owned(), vec!["/app/net".to_owned()])]),
+                ..Config::default()
+            },
+        ] {
+            assert_eq!(
+                config.bundle().unwrap_err().to_string(),
+                "declare nodes when supplying setup, ready, workload, check or hooks"
+            );
+        }
+        let config = Config {
+            nodes: BTreeMap::from([
+                ("n1".to_owned(), node(&["/app/node", "--id", "1"])),
+                ("n2".to_owned(), node(&["/app/node", "say \"hi\" \\ now"])),
+            ]),
+            hooks: BTreeMap::from([
+                (
+                    "heal".to_owned(),
+                    vec!["/app/net".to_owned(), "heal".to_owned()],
+                ),
+                (
+                    "cut".to_owned(),
+                    vec!["/app/net".to_owned(), "cut".to_owned()],
+                ),
+            ]),
+            setup: vec!["/app/setup".into()],
+            workload: vec!["/app/workload".into(), "--ops".into(), "10".into()],
+            check: vec!["/app/check".into()],
+            ..Config::default()
+        };
+        assert_eq!(
+            config.bundle().unwrap().unwrap(),
+            concat!(
+                "node n1 \"/app/node\" \"--id\" \"1\"\n",
+                "node n2 \"/app/node\" \"say \\\"hi\\\" \\\\ now\"\n",
+                "hook 1 \"/app/net\" \"cut\"\n",
+                "hook 2 \"/app/net\" \"heal\"\n",
+                "setup \"/app/setup\"\n",
+                "workload \"/app/workload\" \"--ops\" \"10\"\n",
+                "check \"/app/check\"\n",
+            )
+        );
+        config.validate().unwrap();
+        assert_eq!(
+            Config {
+                nodes: BTreeMap::from([("n1".to_owned(), node(&[]))]),
+                ..Config::default()
+            }
+            .bundle()
+            .unwrap_err()
+            .to_string(),
+            "node and hook commands must not be empty"
+        );
+        assert_eq!(
+            Config {
+                nodes: BTreeMap::from([("n1".to_owned(), node(&["/app/node"]))]),
+                hooks: BTreeMap::from([("cut".to_owned(), Vec::new())]),
+                ..Config::default()
+            }
+            .bundle()
+            .unwrap_err()
+            .to_string(),
+            "node and hook commands must not be empty"
+        );
+        for arg in ["a\nb", "a\rb", "a\0b"] {
+            assert_eq!(
+                Config {
+                    nodes: BTreeMap::from([("n1".to_owned(), node(&["/app/node", arg]))]),
+                    ..Config::default()
+                }
+                .bundle()
+                .unwrap_err()
+                .to_string(),
+                "command arguments cannot contain newlines or NUL"
+            );
+        }
+    }
+
+    #[test]
+    fn languages_have_lowercase_names_and_limits_follow_the_search_budget() {
+        assert_eq!(
+            [
+                Language::C,
+                Language::Rust,
+                Language::Go,
+                Language::Python,
+                Language::Java
+            ]
+            .map(Language::name),
+            ["c", "rust", "go", "python", "java"]
+        );
+        for (executions, wall_seconds, limit) in [
+            (None, None, 1000),
+            (Some(5), None, 5),
+            (None, Some(9), i64::MAX as u64),
+            (Some(5), Some(9), 5),
+        ] {
+            assert_eq!(
+                Config {
+                    executions,
+                    wall_seconds,
+                    ..Config::default()
+                }
+                .execution_limit(),
+                limit
+            );
+        }
+    }
 }
