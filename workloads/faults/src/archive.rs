@@ -217,24 +217,19 @@ pub fn sample_action(
     )
 }
 
-pub fn sample_profiled_action(
-    rand: &mut RomuDuoJrRand,
-    vocabulary: &FaultVocabulary,
-    event_ready: u64,
-    ticks: NonZeroU16,
-    view: Option<DrawView<'_, FaultAction>>,
-    profile: DrawProfile,
-) -> Result<FaultAction, Box<dyn Error>> {
-    let pick = |rand: &mut RomuDuoJrRand, len: usize| -> Result<usize, Box<dyn Error>> {
-        Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
-    };
-    let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
-    let node_mask = u64::MAX >> (64 - vocabulary.nodes());
-    let event_ready = event_ready & node_mask;
+fn pick(rand: &mut RomuDuoJrRand, len: usize) -> Result<usize, Box<dyn Error>> {
+    Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
+}
+
+pub const EVENT_KILL_ALTERNATIVE: u8 = 5;
+pub const EVENT_PARK_ALTERNATIVE: u8 = 6;
+
+#[must_use]
+pub fn alternatives(vocabulary: &FaultVocabulary, events_ready: bool) -> Vec<u8> {
     let several = vocabulary.nodes() > 1;
     let disks = !vocabulary.disks().is_empty();
-    let events = vocabulary.instrumented_events() && event_ready != 0;
-    let offered = [
+    let events = vocabulary.instrumented_events() && events_ready;
+    [
         (FaultKind::Kill, 1, true),
         (FaultKind::Pause, 2, true),
         (FaultKind::Restart, 3, true),
@@ -255,13 +250,59 @@ pub fn sample_profiled_action(
             14,
             vocabulary.clock_faults() && several,
         ),
-        (FaultKind::EventKill, 5, events),
-        (FaultKind::EventPark, 6, events),
+        (FaultKind::EventKill, EVENT_KILL_ALTERNATIVE, events),
+        (FaultKind::EventPark, EVENT_PARK_ALTERNATIVE, events),
     ]
     .into_iter()
     .filter(|&(kind, _, offered)| offered && vocabulary.draws(kind))
     .map(|(_, alternative, _)| alternative)
-    .collect::<Vec<_>>();
+    .collect()
+}
+
+fn ready_nodes(vocabulary: &FaultVocabulary, event_ready: u64) -> u64 {
+    event_ready & (u64::MAX >> (64 - vocabulary.nodes()))
+}
+
+pub fn alternative_action(
+    rand: &mut RomuDuoJrRand,
+    vocabulary: &FaultVocabulary,
+    alternative: u8,
+    event_ready: u64,
+    ticks: NonZeroU16,
+    view: Option<DrawView<'_, FaultAction>>,
+) -> Result<FaultAction, Box<dyn Error>> {
+    let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
+    let event_ready = ready_nodes(vocabulary, event_ready);
+    let alternative = match alternative {
+        EVENT_KILL_ALTERNATIVE | EVENT_PARK_ALTERNATIVE
+            if event_ready == 0 || !vocabulary.instrumented_events() =>
+        {
+            0
+        }
+        other => other,
+    };
+    build_action(
+        rand,
+        vocabulary,
+        alternative,
+        node,
+        event_ready,
+        ticks,
+        view,
+    )
+}
+
+pub fn sample_profiled_action(
+    rand: &mut RomuDuoJrRand,
+    vocabulary: &FaultVocabulary,
+    event_ready: u64,
+    ticks: NonZeroU16,
+    view: Option<DrawView<'_, FaultAction>>,
+    profile: DrawProfile,
+) -> Result<FaultAction, Box<dyn Error>> {
+    let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
+    let event_ready = ready_nodes(vocabulary, event_ready);
+    let offered = alternatives(vocabulary, event_ready != 0);
     let kept = offered
         .iter()
         .copied()
@@ -272,6 +313,26 @@ pub fn sample_profiled_action(
     let alternative = drawn
         .checked_sub(profile.wait_weight)
         .map_or(0, |index| faults[index]);
+    build_action(
+        rand,
+        vocabulary,
+        alternative,
+        node,
+        event_ready,
+        ticks,
+        view,
+    )
+}
+
+fn build_action(
+    rand: &mut RomuDuoJrRand,
+    vocabulary: &FaultVocabulary,
+    alternative: u8,
+    node: u16,
+    event_ready: u64,
+    ticks: NonZeroU16,
+    view: Option<DrawView<'_, FaultAction>>,
+) -> Result<FaultAction, Box<dyn Error>> {
     let event_node = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
         let index = pick(rand, event_ready.count_ones() as usize)?;
         let mut bits = event_ready;
@@ -770,6 +831,70 @@ mod tests {
 
     fn vocabulary() -> FaultVocabulary {
         FaultVocabulary::new(1, vec![1, 2]).expect("vocabulary")
+    }
+
+    #[test]
+    fn a_chosen_alternative_draws_its_own_parameters_and_waits_when_no_event_is_ready() {
+        let vocabulary = FaultVocabulary::new(3, vec![4])
+            .expect("vocabulary")
+            .with_instrumented_events(true);
+        assert_eq!(alternatives(&vocabulary, false), vec![1, 2, 3, 4, 7]);
+        assert_eq!(alternatives(&vocabulary, true), vec![1, 2, 3, 4, 7, 5, 6]);
+        let draw = |seed: u64, alternative: u8, ready: u64| {
+            alternative_action(
+                &mut RomuDuoJrRand::with_seed(seed),
+                &vocabulary,
+                alternative,
+                ready,
+                TICKS,
+                None,
+            )
+            .expect("draw")
+        };
+        for seed in 0..200 {
+            assert_eq!(draw(seed, 1, 0), draw(seed, 1, 0));
+            assert!(matches!(
+                draw(seed, 0, 0b111).operation,
+                FaultOperation::Wait(_)
+            ));
+            assert!(
+                matches!(draw(seed, 1, 0).operation, FaultOperation::Kill(node, _) if node < 3)
+            );
+            assert!(matches!(
+                draw(seed, 4, 0).operation,
+                FaultOperation::Hook(4, _)
+            ));
+            assert!(matches!(
+                draw(seed, 5, 0).operation,
+                FaultOperation::Wait(_)
+            ));
+            assert!(matches!(
+                draw(seed, 6, 0b1000).operation,
+                FaultOperation::Wait(_)
+            ));
+            assert!(matches!(
+                draw(seed, 5, 0b010).operation,
+                FaultOperation::EventKill { node: 1, .. }
+            ));
+            assert!(matches!(
+                draw(seed, 6, 0b100).operation,
+                FaultOperation::EventPark { node: 2, .. }
+            ));
+        }
+        let plain = FaultVocabulary::new(3, vec![]).expect("vocabulary");
+        assert!(matches!(
+            alternative_action(
+                &mut RomuDuoJrRand::with_seed(1),
+                &plain,
+                5,
+                0b111,
+                TICKS,
+                None
+            )
+            .expect("draw")
+            .operation,
+            FaultOperation::Wait(_)
+        ));
     }
 
     #[test]

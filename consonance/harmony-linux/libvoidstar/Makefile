@@ -5,6 +5,7 @@ BUILD_DIR ?= build
 WARNINGS := -Wall -Wextra -Werror -Wconversion -Wpedantic
 LIB := $(BUILD_DIR)/libvoidstar.so
 ABI_TEST := $(BUILD_DIR)/abi-test
+GUIDANCE_TEST := $(BUILD_DIR)/guidance-test
 UNAME_S := $(shell uname -s)
 
 ifeq ($(UNAME_S),Darwin)
@@ -26,8 +27,12 @@ $(LIB): voidstar.c | $(BUILD_DIR)
 $(ABI_TEST): tests/abi_test.c voidstar.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(WARNINGS) -pthread -o $@ tests/abi_test.c
 
-check: $(LIB) $(ABI_TEST)
+$(GUIDANCE_TEST): tests/guidance_test.c harmony_guidance.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(WARNINGS) -o $@ tests/guidance_test.c
+
+check: $(LIB) $(ABI_TEST) $(GUIDANCE_TEST)
 	$(ABI_TEST)
+	$(GUIDANCE_TEST)
 	./check-symbols.sh $(LIB)
 
 clean:

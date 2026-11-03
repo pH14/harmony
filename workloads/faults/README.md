@@ -520,6 +520,14 @@ distinct assertions a workload declares. Every process's records feed the key.
 passed is a campaign failure: it appears under `never_satisfied` in both
 `campaign-summary.json` and `report.json`, and the search prints one
 `FAIL: assertion never satisfied` line for each.
+Numeric guidance records (`antithesis_guidance` with `guidance_type`
+`numeric`) are keyed the same way. Each keeps its direction (`maximize`) and
+the best `left - right` value seen on the timeline: the largest for a
+maximized id, the smallest otherwise. A record with `hit` false declares the id
+without a value. Integer operands subtract exactly; other numbers subtract as
+floating point and truncate toward zero; the value saturates at the `i64`
+range. Guidance appears in `FaultObservations.guidance` and does not enter the
+archive key or the violation set.
 A harness check that stops checking some keys at its step budget writes
 `{"harmony_check":{"undecided_keys":N}}`. The host keeps the count from the
 process that ran the check, and the completed check's evidence carries it as

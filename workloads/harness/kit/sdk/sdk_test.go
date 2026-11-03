@@ -113,6 +113,72 @@ func TestAssertionsWriteOneRecordPerLine(t *testing.T) {
 	}
 }
 
+func TestGuideWritesOneNumericGuidanceRecordPerCall(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ANTITHESIS_OUTPUT_DIR", dir)
+	DeclareGuide("follower lag", true)
+	Guide("follower lag", 17, true)
+	Guide("follower lag", 3, true)
+	Guide("term gap", -4, false)
+
+	file, err := os.Open(filepath.Join(dir, "sdk.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	type guidance struct {
+		Guidance struct {
+			Data *struct {
+				Left  int64 `json:"left"`
+				Right int64 `json:"right"`
+			} `json:"guidance_data"`
+			Type     string `json:"guidance_type"`
+			Message  string `json:"message"`
+			ID       string `json:"id"`
+			Maximize bool   `json:"maximize"`
+			Hit      bool   `json:"hit"`
+			Location struct {
+				Function  string `json:"function"`
+				BeginLine int    `json:"begin_line"`
+			} `json:"location"`
+		} `json:"antithesis_guidance"`
+	}
+	var records []guidance
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var record guidance
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+			t.Fatalf("line %q: %v", scanner.Text(), err)
+		}
+		records = append(records, record)
+	}
+	if len(records) != 4 {
+		t.Fatalf("got %d records", len(records))
+	}
+	if records[0].Guidance.Hit || records[0].Guidance.Data != nil {
+		t.Errorf("a declaration carries a value: %+v", records[0].Guidance)
+	}
+	values := []int64{17, 3, -4}
+	for index, record := range records[1:] {
+		g := record.Guidance
+		if !g.Hit || g.Data == nil || g.Data.Left != values[index] || g.Data.Right != 0 {
+			t.Errorf("record %d = %+v", index+1, g)
+		}
+	}
+	for index, record := range records {
+		g := record.Guidance
+		if g.Type != "numeric" || g.ID != g.Message || g.ID == "" {
+			t.Errorf("record %d type %q id %q message %q", index, g.Type, g.ID, g.Message)
+		}
+		if g.Location.Function == "" || g.Location.BeginLine == 0 {
+			t.Errorf("record %d has no caller location", index)
+		}
+	}
+	if !records[1].Guidance.Maximize || records[3].Guidance.Maximize {
+		t.Error("the direction is not recorded")
+	}
+}
+
 func TestCheckUndecidedWritesOneRecordOnlyForUndecidedKeys(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("ANTITHESIS_OUTPUT_DIR", dir)

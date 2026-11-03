@@ -51,6 +51,13 @@ does not define a fault protocol or make fault decisions; workloads compose
 the runtime they need with this ABI shim. Calls remain harmless when no runtime
 provides the hook.
 
+`harmony_guidance.h` is a header-only helper for C workloads that report
+numeric guidance. `harmony_guide(id, value, maximize)` sends one Antithesis
+numeric guidance record through `fuzz_json_data`, with `left` set to the
+`int64_t` value, `right` set to 0 and the caller's file, line and function as
+the location. `harmony_declare_guide(id, maximize)` sends the record without a
+value. An empty id or a failed allocation aborts the process.
+
 Build and test it with:
 
 ```sh

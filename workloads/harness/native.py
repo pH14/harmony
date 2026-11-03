@@ -12,7 +12,9 @@ the heal hooks and a final check.
 
 The container has no /dev/harmony, so the script deletes the image's
 libvoidstar.so inside the container. Without it the Antithesis Go SDK in
-instrumented binaries falls back to its local handler instead of aborting.
+instrumented binaries falls back to its local handler instead of aborting. The
+script points that handler, through ANTITHESIS_SDK_LOCAL_OUTPUT, at the same
+sdk.jsonl the harness driver writes.
 """
 
 import argparse
@@ -127,7 +129,9 @@ class Run:
 
     def exec_argv(self, argv, env=None):
         command = [self.tool, "exec"]
-        for key, value in {"ANTITHESIS_OUTPUT_DIR": SDK_DIR, "HARNESS_SEED": self.seed(), **(env or {})}.items():
+        defaults = {"ANTITHESIS_OUTPUT_DIR": SDK_DIR, "ANTITHESIS_SDK_LOCAL_OUTPUT": SDK_DIR + "/sdk.jsonl",
+                    "HARNESS_SEED": self.seed()}
+        for key, value in {**defaults, **(env or {})}.items():
             command += ["-e", f"{key}={value}"]
         return command + [self.name, *argv]
 

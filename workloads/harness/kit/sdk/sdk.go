@@ -128,6 +128,26 @@ func Declare(kind Kind, message string) {
 	emit(kind, false, false, message, nil, 2)
 }
 
+func Guide(id string, value int64, maximize bool) {
+	guide(id, &value, maximize, 2)
+}
+
+func DeclareGuide(id string, maximize bool) {
+	guide(id, nil, maximize, 2)
+}
+
+func guide(id string, value *int64, maximize bool, skip int) {
+	dir := os.Getenv("ANTITHESIS_OUTPUT_DIR")
+	if dir == "" {
+		return
+	}
+	line, err := GuidanceRecord(id, value, maximize, caller(skip+1))
+	if err != nil {
+		panic("encode guidance: " + err.Error())
+	}
+	write(dir, line)
+}
+
 func emit(kind Kind, hit, cond bool, message string, details map[string]any, skip int) {
 	dir := os.Getenv("ANTITHESIS_OUTPUT_DIR")
 	if dir == "" {
@@ -215,6 +235,31 @@ func Record(kind Kind, hit, cond bool, message string, details map[string]any, a
 			"details": encodedDetails,
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+	return append(line, '\n'), nil
+}
+
+func GuidanceRecord(id string, value *int64, maximize bool, at Location) ([]byte, error) {
+	record := map[string]any{
+		"guidance_type": "numeric",
+		"message":       id,
+		"id":            id,
+		"maximize":      maximize,
+		"hit":           value != nil,
+		"location": map[string]any{
+			"class":        "",
+			"function":     at.Function,
+			"file":         at.File,
+			"begin_line":   at.Line,
+			"begin_column": 0,
+		},
+	}
+	if value != nil {
+		record["guidance_data"] = map[string]int64{"left": *value, "right": 0}
+	}
+	line, err := json.Marshal(map[string]any{"antithesis_guidance": record})
 	if err != nil {
 		return nil, err
 	}

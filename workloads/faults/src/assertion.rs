@@ -136,6 +136,49 @@ impl Assertions {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GuidanceOutcome {
+    pub maximize: bool,
+    pub message: String,
+    pub location: String,
+    pub best: Option<i64>,
+}
+
+impl GuidanceOutcome {
+    pub fn merge(&mut self, other: &Self) {
+        self.best = match (self.best, other.best) {
+            (Some(a), Some(b)) if self.maximize => Some(a.max(b)),
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Guidance(pub BTreeMap<String, GuidanceOutcome>);
+
+impl Guidance {
+    pub fn record(&mut self, id: String, outcome: GuidanceOutcome) {
+        match self.0.get_mut(&id) {
+            Some(existing) => existing.merge(&outcome),
+            None => {
+                self.0.insert(id, outcome);
+            }
+        }
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        for (id, outcome) in &other.0 {
+            match self.0.get_mut(id) {
+                Some(existing) => existing.merge(outcome),
+                None => {
+                    self.0.insert(id.clone(), outcome.clone());
+                }
+            }
+        }
+    }
+}
+
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
 )]
@@ -205,6 +248,7 @@ impl AssertionSet {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct JsonEvent {
     pub assertion: Option<(String, AssertionOutcome)>,
+    pub guidance: Option<(String, GuidanceOutcome)>,
     pub setup_complete: bool,
     pub pid: Option<u64>,
     pub park: Option<ParkReport>,
@@ -221,6 +265,7 @@ pub struct ParkReport {
 #[derive(Deserialize)]
 struct RawEvent {
     antithesis_assert: Option<RawAssert>,
+    antithesis_guidance: Option<RawGuidance>,
     antithesis_setup: Option<serde_json::Value>,
     harmony_attribution: Option<RawAttribution>,
     harmony_park: Option<ParkReport>,
@@ -251,6 +296,67 @@ fn must_hit_default() -> bool {
 }
 
 #[derive(Deserialize)]
+struct RawGuidance {
+    id: Option<String>,
+    message: Option<String>,
+    guidance_type: String,
+    #[serde(default)]
+    maximize: bool,
+    hit: bool,
+    guidance_data: Option<serde_json::Value>,
+    location: Option<RawLocation>,
+}
+
+#[derive(Deserialize)]
+struct RawOperands {
+    left: serde_json::Number,
+    right: serde_json::Number,
+}
+
+fn integer(number: &serde_json::Number) -> Option<i128> {
+    number
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| number.as_u64().map(i128::from))
+}
+
+impl RawOperands {
+    fn gap(&self) -> Option<i64> {
+        let gap = match (integer(&self.left), integer(&self.right)) {
+            (Some(left), Some(right)) => left - right,
+            _ => {
+                let gap = self.left.as_f64()? - self.right.as_f64()?;
+                if gap.is_nan() {
+                    return None;
+                }
+                gap as i128
+            }
+        };
+        Some(gap.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64)
+    }
+}
+
+fn location_text(location: Option<RawLocation>) -> String {
+    location
+        .map(|location| {
+            format!(
+                "{}:{} {}",
+                location.file.unwrap_or_default(),
+                location.begin_line.unwrap_or_default(),
+                location.function.unwrap_or_default()
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn named(id: Option<String>, message: &str) -> Option<String> {
+    let id = id
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| message.to_owned());
+    (!id.is_empty()).then_some(id)
+}
+
+#[derive(Deserialize)]
 struct RawLocation {
     file: Option<String>,
     function: Option<String>,
@@ -268,24 +374,8 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
     let assertion = raw.antithesis_assert.and_then(|record| {
         let kind = AssertionKind::from_record(&record.assert_type, record.must_hit)?;
         let message = record.message.unwrap_or_default();
-        let id = record
-            .id
-            .filter(|id| !id.is_empty())
-            .unwrap_or(message.clone());
-        if id.is_empty() {
-            return None;
-        }
-        let location = record
-            .location
-            .map(|location| {
-                format!(
-                    "{}:{} {}",
-                    location.file.unwrap_or_default(),
-                    location.begin_line.unwrap_or_default(),
-                    location.function.unwrap_or_default()
-                )
-            })
-            .unwrap_or_default();
+        let id = named(record.id, &message)?;
+        let location = location_text(record.location);
         let (passed, failed) = if record.hit {
             (record.condition, !record.condition)
         } else {
@@ -306,6 +396,31 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
             },
         ))
     });
+    let guidance = raw.antithesis_guidance.and_then(|record| {
+        if record.guidance_type != "numeric" {
+            return None;
+        }
+        let message = record.message.unwrap_or_default();
+        let id = named(record.id, &message)?;
+        let best = if record.hit {
+            Some(
+                serde_json::from_value::<RawOperands>(record.guidance_data?)
+                    .ok()?
+                    .gap()?,
+            )
+        } else {
+            None
+        };
+        Some((
+            id,
+            GuidanceOutcome {
+                maximize: record.maximize,
+                message,
+                location: location_text(record.location),
+                best,
+            },
+        ))
+    });
     let setup_complete = raw.antithesis_setup.is_some_and(|setup| {
         setup
             .get("status")
@@ -314,6 +429,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
     });
     Some(JsonEvent {
         assertion,
+        guidance,
         setup_complete,
         pid: raw
             .harmony_attribution
@@ -397,6 +513,83 @@ mod tests {
     fn the_message_names_an_assertion_without_an_id() {
         let (id, _) = decode(br#"{"antithesis_assert":{"assert_type":"sometimes","hit":true,"condition":true,"message":"only a message"}}"#);
         assert_eq!(id, "only a message");
+    }
+
+    fn guide(id: &str, maximize: bool, hit: bool, left: &str, right: &str) -> Vec<u8> {
+        let data = if hit {
+            format!(r#""guidance_data":{{"left":{left},"right":{right}}},"#)
+        } else {
+            String::new()
+        };
+        format!(
+            r#"{{"harmony_attribution":{{"pid":5}},"antithesis_guidance":{{{data}"location":{{"class":"c","function":"f","file":"g.go","begin_line":3,"begin_column":1}},"guidance_type":"numeric","message":"{id}","id":"{id}","maximize":{maximize},"hit":{hit}}}}}"#
+        )
+        .into_bytes()
+    }
+
+    fn guidance(bytes: &[u8]) -> (String, GuidanceOutcome) {
+        decode_json_event(bytes)
+            .and_then(|event| event.guidance)
+            .expect("a guidance record")
+    }
+
+    #[test]
+    fn numeric_guidance_is_left_minus_right_and_declarations_have_no_value() {
+        let (id, lag) = guidance(&guide("lag", true, true, "17", "4"));
+        assert_eq!(id, "lag");
+        assert!(lag.maximize);
+        assert_eq!(lag.best, Some(13));
+        assert_eq!(lag.location, "g.go:3 f");
+        let (_, declared) = guidance(&guide("lag", true, false, "0", "0"));
+        assert_eq!(declared.best, None);
+        let (_, negative) = guidance(&guide("gap", false, true, "-5", "7"));
+        assert!(!negative.maximize);
+        assert_eq!(negative.best, Some(-12));
+        let (_, unsigned) = guidance(&guide("u", true, true, "18446744073709551615", "0"));
+        assert_eq!(unsigned.best, Some(i64::MAX));
+        let (_, below) = guidance(&guide("u", true, true, "0", "18446744073709551615"));
+        assert_eq!(below.best, Some(i64::MIN));
+        let (_, float) = guidance(&guide("f", true, true, "2.5", "0.6"));
+        assert_eq!(float.best, Some(1));
+        let boolean = decode_json_event(
+            br#"{"antithesis_guidance":{"guidance_type":"boolean","message":"b","id":"b","maximize":true,"hit":true,"guidance_data":{"x":true}}}"#,
+        )
+        .unwrap();
+        assert!(boolean.guidance.is_none());
+        let broken = decode_json_event(
+            br#"{"antithesis_guidance":{"guidance_type":"numeric","message":"m","maximize":true,"hit":true}}"#,
+        )
+        .unwrap();
+        assert!(broken.guidance.is_none());
+        let unnamed = decode_json_event(
+            br#"{"antithesis_guidance":{"guidance_type":"numeric","maximize":true,"hit":false}}"#,
+        )
+        .unwrap();
+        assert!(unnamed.guidance.is_none());
+    }
+
+    #[test]
+    fn guidance_keeps_the_best_value_in_its_direction() {
+        let mut up = Guidance::default();
+        for (hit, left) in [(false, "0"), (true, "3"), (true, "9"), (true, "-2")] {
+            let (id, outcome) = guidance(&guide("lag", true, hit, left, "0"));
+            up.record(id, outcome);
+        }
+        assert_eq!(up.0["lag"].best, Some(9));
+        let mut down = Guidance::default();
+        for left in ["3", "-4", "8"] {
+            let (id, outcome) = guidance(&guide("gap", false, true, left, "0"));
+            down.record(id, outcome);
+        }
+        assert_eq!(down.0["gap"].best, Some(-4));
+        let mut merged = Guidance::default();
+        let (id, declared) = guidance(&guide("lag", true, false, "0", "0"));
+        merged.record(id, declared);
+        assert_eq!(merged.0["lag"].best, None);
+        merged.merge(&up);
+        merged.merge(&down);
+        assert_eq!(merged.0["lag"].best, Some(9));
+        assert_eq!(merged.0["gap"].best, Some(-4));
     }
 
     #[test]

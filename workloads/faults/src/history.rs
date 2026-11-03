@@ -438,6 +438,12 @@ impl searcher::search::snapshot_codec::CheckpointSnapshot for crate::target::Fau
             budget.array::<u8>(outcome.message.capacity())?;
             budget.array::<u8>(outcome.location.capacity())?;
         }
+        for (name, outcome) in &self.observation.guidance.0 {
+            budget.map_entry::<String, crate::assertion::GuidanceOutcome>()?;
+            budget.array::<u8>(name.capacity())?;
+            budget.array::<u8>(outcome.message.capacity())?;
+            budget.array::<u8>(outcome.location.capacity())?;
+        }
         for node in self.history.nodes() {
             if !budget.shared(
                 "fault-history-node",
@@ -941,8 +947,30 @@ mod tests {
             outcome.location.push_str(&"location".repeat(1024));
             value_capacities += outcome.message.capacity() + outcome.location.capacity();
         }
+        let with_values = charge(&snapshot);
+        assert_eq!(with_values - before_values, value_capacities);
+        let mut guidance_bytes = 0;
+        for index in 0..3 {
+            let name = format!("guidance-{index}{}", "n".repeat(1024));
+            let outcome = crate::assertion::GuidanceOutcome {
+                maximize: index % 2 == 0,
+                message: "m".repeat(2048),
+                location: "l".repeat(512),
+                best: Some(index),
+            };
+            let mut entry = ImageBudget::new(usize::MAX);
+            entry
+                .map_entry::<String, crate::assertion::GuidanceOutcome>()
+                .unwrap();
+            guidance_bytes += entry.bytes()
+                + name.capacity()
+                + outcome.message.capacity()
+                + outcome.location.capacity();
+            snapshot.observation.guidance.0.insert(name, outcome);
+        }
         let exact = charge(&snapshot);
-        assert_eq!(exact - before_values, value_capacities);
+        assert_eq!(exact - with_values, guidance_bytes);
+        let value_capacities = value_capacities + guidance_bytes;
         let mut budget = ImageBudget::new(exact);
         snapshot.checkpoint_image_charge(&mut budget).unwrap();
         assert_eq!(budget.remaining(), 0);

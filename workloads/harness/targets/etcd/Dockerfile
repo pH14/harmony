@@ -94,17 +94,50 @@ RUN sdk_cache_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-g
     && grep -F -q 'linux && (amd64 || arm64) && cgo' \
        /build/antithesis-sdk-go/internal/voidstar_handler.go
 
+# Patches for a version add SDK assertions to etcd. The SDK copy then gets a
+# go.mod with no requirements, so it adds no modules to etcd's build list, and
+# the raft and server modules move to go 1.18, the first version with generics.
+# The server module then requires the SDK, so the toolexec takes the SDK
+# archives from the server build itself. Archives built in the SDK directory
+# fail at link time with a fingerprint mismatch.
+COPY workloads/harness/targets/etcd/patches /build/patches
+RUN patches="/build/patches/${ETCD_VERSION}" \
+    && if [ -d "${patches}" ]; then \
+        for p in "${patches}"/*.patch; do \
+            patch --batch --forward --fuzz=0 -d /build/etcd -p1 < "$p"; \
+        done \
+        && printf 'module github.com/antithesishq/antithesis-sdk-go\n\ngo 1.18\n' > /build/antithesis-sdk-go/go.mod \
+        && rm -f /build/antithesis-sdk-go/go.sum \
+        && for m in raft server; do \
+            (cd "/build/etcd/${m}" && go mod edit -go=1.18 \
+                -require="github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
+                -replace=github.com/antithesishq/antithesis-sdk-go=/build/antithesis-sdk-go); \
+        done \
+        && (cd /build/etcd/server && go list -mod=mod -deps . > /dev/null); \
+    fi
+
 RUN mkdir -p /out/etcd /out/symbols /out/stdlib \
     && sdk_dir=/build/antithesis-sdk-go \
+    && sdk_module_dir="${sdk_dir}" \
+    && verbose= \
+    && if [ -d "/build/patches/${ETCD_VERSION}" ]; then sdk_module_dir= && verbose=1; fi \
     && (cd /build/etcd/server \
         && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
            bash /build/configure-instrumentation.sh "${sdk_dir}" /out/stdlib . > /out/stdlib/instrumentation.env \
         && source /out/stdlib/instrumentation.env \
         && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
-           ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
+           ANTITHESIS_SDK_MODULE_DIR="${sdk_module_dir}" \
            ANTITHESIS_SYMBOLS_DIR=/out/symbols \
            ANTITHESIS_SYMBOL_PREFIX=etcd-server \
-           go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/etcd/etcd .) \
+           ANTITHESIS_VERBOSE="${verbose}" \
+           go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/etcd/etcd . 2> /out/build.log \
+           || { cat /out/build.log >&2; exit 1; }) \
+    && if [ -n "${verbose}" ]; then \
+        grep -F 'Cataloged go.etcd.io/etcd/' /out/build.log \
+        && for pkg in raft/v3 server/v3/etcdserver server/v3/wal; do \
+            grep -q "Cataloged go.etcd.io/etcd/${pkg}: " /out/build.log; \
+        done; \
+    fi \
     && test -x /out/etcd/etcd \
     && set -- /out/symbols/*.sym.tsv \
     && test -s "$1" \
@@ -163,7 +196,14 @@ LABEL org.opencontainers.image.description="upstream etcd source built through t
 ARG HARNESS_BUNDLE=bundle
 COPY workloads/harness/targets/etcd/${HARNESS_BUNDLE} /etc/harmony/bundle
 COPY workloads/harness/targets/etcd/setup.sh workloads/harness/targets/etcd/node.sh /opt/harmony/
+COPY workloads/harness/targets/etcd/flags /tmp/etcd-flags
 
-RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh
+RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh \
+    && if [ -f "/tmp/etcd-flags/${ETCD_VERSION}" ]; then \
+        cp "/tmp/etcd-flags/${ETCD_VERSION}" /opt/etcd/flags; \
+    else \
+        : > /opt/etcd/flags; \
+    fi \
+    && rm -r /tmp/etcd-flags
 
 CMD ["/opt/harmony/node.sh", "1", "1"]

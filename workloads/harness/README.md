@@ -11,7 +11,7 @@ generic operations onto the target's client API.
 
 | path | contents |
 |---|---|
-| `kit/sdk` | `Random()` and the SDK assertions |
+| `kit/sdk` | `Random()`, the SDK assertions and numeric guidance |
 | `kit/history` | the JSONL journal writer and loader |
 | `kit/family` | operation families: generators and checkers |
 | `kit/runner` | `Run`, `Check` and `Main` |
@@ -269,6 +269,13 @@ the check prints and the `harness-check` output both have `undecided_keys`.
 The supervisor gives every child `ANTITHESIS_OUTPUT_DIR=/run/antithesis`,
 where `sdk.jsonl` links to `/dev/harmony`. Each record is one `write`.
 Assertion ids are the messages.
+
+`sdk.Guide(id, value, maximize)` reports one value of a quantity the search
+should push up (`maximize` true) or down. It writes an Antithesis numeric
+guidance record with `left` set to the value and `right` set to 0.
+`sdk.DeclareGuide(id, maximize)` writes the same record without a value, so a
+search knows the id from setup. The host keeps the best value per id on each
+timeline.
 
 ## Network faults
 
@@ -537,7 +544,9 @@ runs one member on 127.0.0.1 without `harness-net`, which needs two nodes.
 Data lives under `/tmp/etcd/<member>` and logs in `/tmp/etcd/<member>.log`,
 which both bundles declare with `log` lines. `bundle-single` also makes the
 member's data directory a 256 MiB node disk: etcd preallocates a 64 MiB WAL
-file. Members use etcd's default flags.
+file. Members use etcd's default flags plus the words in `flags/<version>`
+when that file exists. The Dockerfile copies it to `/opt/etcd/flags`, and
+`node.sh` appends it to the command line.
 
 `write` is a put, `read` is a range on one key with etcd's default
 linearizable consistency, and `cas` is a transaction that compares the value
@@ -560,6 +569,46 @@ The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
 (default), `v3.5.5`, `v3.5.27` and `v3.5.28`; pass `ETCD_SOURCE_SHA256` for
 other versions. Build the single-member image with
 `--build-arg HARNESS_BUNDLE=bundle-single`.
+
+### Assertions in v3.5.4
+
+The Dockerfile applies every patch in `patches/<version>/` when that
+directory exists, so other versions build unchanged. The `v3.5.4` patches add
+Antithesis SDK assertions to `raft`, `etcdserver` and `wal`, and backport the
+`--experimental-snapshot-catchup-entries` flag from v3.5.14. A build with
+patches gives the SDK copy a `go.mod` with no requirements, so the SDK adds no
+module to etcd's build list. It also moves the `raft` and `server` modules to
+`go 1.18`, the first version with generics, which the rich assertions need.
+The build logs the toolexec catalog lines and fails unless `raft`,
+`etcdserver` and `wal` each have a catalog.
+
+`flags/v3.5.4` sets `--snapshot-count` and
+`--experimental-snapshot-catchup-entries` far below their defaults of 100000
+and 5000 entries, to 200 and 100. Each member then snapshots every 200
+applied entries and keeps 100 entries behind the snapshot in its raft log. A
+follower that misses 100 to 300 entries, a few seconds of writes, falls below
+the leader's first index and gets a snapshot.
+
+The assertions cover two paths, each as a chain of steps.
+
+- Snapshot install. Guidance on how far a follower's log ends below the commit
+  index, then on how far its next index is below the leader's first index.
+  Then the leader sends a snapshot, the follower's raft restores it, and the
+  member finishes applying it. `Always` assertions check that the member's
+  revision does not go back, that its consistent index reaches the snapshot
+  index, and that the snapshot term is not below the member's applied term.
+- A leader steps down with uncommitted entries. Guidance on how many entries
+  it holds above the commit index, then on how many a follower truncates when
+  they conflict with the new leader, then on how many entries WAL replay
+  replaces after that member restarts. `Unreachable` and `Always` assertions
+  check that no committed entry is replaced in the raft log or in the WAL.
+
+The linearizable read loop has one `Always`: the read index is not below the
+commit index the member had before the request. It has no `Sometimes`. Read
+index requests across a leader change are the trigger of stale-read fixes in
+v3.5.28 (etcd #21387, #21399 and #21421). Compaction racing a lagging watcher
+has no assertions. The harness opens no watches and never compacts the key
+space, and that path is the trigger of the v3.5.14 watch fix (etcd #17612).
 
 ## Redis-Raft
 
@@ -1196,7 +1245,10 @@ between 10 ms and 10 s. A node death the runner did not cause, with a nonzero
 status, writes the supervisor's `workload node ends only by a fault the search
 injected` assertion. The runner stops at the first failing `Always` or
 reached `Unreachable` and prints one JSON line. The container runs
-privileged so `harness-net` can create namespaces.
+privileged so `harness-net` can create namespaces. The runner deletes
+`libvoidstar.so` in the container and sets `ANTITHESIS_SDK_LOCAL_OUTPUT`, so
+binaries built with cgo write SDK records to the same `sdk.jsonl` as the
+driver.
 
 When the bundle declares hooks, each random fault runs a random hook with
 probability 0.3. When the run time ends, the runner stops faults and checks,

@@ -10,7 +10,9 @@ use process_proto::registers as reg;
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 
-use crate::assertion::{AssertionKind, AssertionOutcome, Assertions, decode_json_event};
+use crate::assertion::{
+    AssertionKind, AssertionOutcome, Assertions, Guidance, GuidanceOutcome, decode_json_event,
+};
 
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
 pub const SUPERVISOR_TICK_MICROS: u64 = SUPERVISOR_TICK_NANOS / 1_000;
@@ -641,6 +643,8 @@ pub struct SdkCapture {
     pub undecided_keys: u64,
     pub parks: Vec<ParkLanding>,
     pub park_reads: Vec<ParkRead>,
+    #[serde(default)]
+    pub guidance: Guidance,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -770,6 +774,17 @@ impl SdkDecoder {
                     + outcome.location.capacity()
             })
             .sum::<usize>();
+        bytes += capture
+            .guidance
+            .0
+            .iter()
+            .map(|(id, outcome)| {
+                tree_entry::<String, GuidanceOutcome>()
+                    + id.capacity()
+                    + outcome.message.capacity()
+                    + outcome.location.capacity()
+            })
+            .sum::<usize>();
         bytes += self
             .state
             .check_passes
@@ -835,6 +850,9 @@ impl SdkDecoder {
                             check_passes.entry(pid).or_default().insert(id.clone());
                         }
                         capture.assertions.record(id, outcome);
+                    }
+                    if let Some((id, outcome)) = event.guidance {
+                        capture.guidance.record(id, outcome);
                     }
                 }
                 continue;
@@ -990,6 +1008,9 @@ fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapt
                     }
                     capture.assertions.record(id, outcome);
                 }
+                if let Some((id, outcome)) = event.guidance {
+                    capture.guidance.record(id, outcome);
+                }
             }
             continue;
         }
@@ -1113,6 +1134,8 @@ pub struct FaultObservations {
     pub parks: Vec<ParkLanding>,
     #[serde(default)]
     pub park_reads: Vec<ParkRead>,
+    #[serde(default)]
+    pub guidance: Guidance,
 }
 
 impl FaultObservations {
@@ -1157,6 +1180,7 @@ impl FaultObservations {
             infrastructure_failure: false,
             parks: capture.parks.clone(),
             park_reads: capture.park_reads.clone(),
+            guidance: capture.guidance.clone(),
         }
     }
 
@@ -1243,6 +1267,8 @@ mod tests {
             state_event(reg::CHECKS_STARTED, STATE_SET, 2),
             state_event(reg::COMPLETED_CHECK_RUN, STATE_SET, 8),
             json_pass(40, "second"),
+            json_guide("lag", true, Some(6)),
+            json_guide("lag", true, Some(3)),
             state_event(reg::COMPLETED_CHECK_RUN, STATE_SET, 9),
             (99, 0, b"{malformed".to_vec()),
             (2, u32::MAX, vec![1, 2, 3]),
@@ -2075,6 +2101,21 @@ mod tests {
         )
     }
 
+    fn json_guide(id: &str, maximize: bool, value: Option<i64>) -> (u64, u32, Vec<u8>) {
+        let data = value
+            .map(|value| format!(r#""guidance_data":{{"left":{value},"right":0}},"#))
+            .unwrap_or_default();
+        let hit = value.is_some();
+        (
+            0,
+            JSON_EVENT_ID,
+            format!(
+                r#"{{"antithesis_guidance":{{{data}"guidance_type":"numeric","message":"{id}","id":"{id}","maximize":{maximize},"hit":{hit}}}}}"#
+            )
+            .into_bytes(),
+        )
+    }
+
     fn completion(pid: u64, run: u64, generation: u64) -> Vec<(u64, u32, Vec<u8>)> {
         vec![
             state_event(reg::COMPLETED_CHECK_PID, STATE_SET, pid),
@@ -2311,6 +2352,43 @@ mod tests {
             BTreeSet::from(["kept".to_owned()])
         );
         assert!(observation.is_bug());
+    }
+
+    #[test]
+    fn guidance_records_keep_the_timeline_best_and_count_in_retained_memory() {
+        let mut decoder = SdkDecoder::default();
+        decoder
+            .append(&[
+                json_guide("lag", true, None),
+                json_guide("gap", false, None),
+            ])
+            .unwrap();
+        let declared = FaultObservations::new(0, decoder.capture(), FaultStop::Deadline);
+        assert_eq!(declared.guidance.0.len(), 2);
+        assert!(declared.guidance.0.values().all(|g| g.best.is_none()));
+        let (_, before) = decoder.retained_allocation();
+        decoder
+            .append(&[
+                json_guide("lag", true, Some(4)),
+                json_guide("gap", false, Some(9)),
+                json_guide("lag", true, Some(11)),
+                json_guide("gap", false, Some(-3)),
+                json_guide("lag", true, Some(2)),
+                json_guide("gap", false, Some(5)),
+            ])
+            .unwrap();
+        let observation = FaultObservations::new(0, decoder.capture(), FaultStop::Deadline);
+        assert_eq!(observation.guidance.0["lag"].best, Some(11));
+        assert_eq!(observation.guidance.0["gap"].best, Some(-3));
+        assert!(!observation.is_bug());
+        decoder.begin_action(1);
+        assert_eq!(decoder.capture().guidance, observation.guidance);
+        let mut wide = SdkDecoder::default();
+        let long = "g".repeat(4096);
+        wide.append(&[json_guide(&long, true, Some(1))]).unwrap();
+        let (_, charged) = wide.retained_allocation();
+        assert!(charged >= SdkDecoder::default().retained_allocation().1 + 2 * long.len());
+        assert!(before > SdkDecoder::default().retained_allocation().1);
     }
 
     #[test]

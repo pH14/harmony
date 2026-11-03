@@ -2579,6 +2579,21 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
                 })
                 .sum::<usize>(),
         )
+        .saturating_add(
+            snapshot
+                .observation
+                .guidance
+                .0
+                .iter()
+                .map(|(id, outcome)| {
+                    size_of::<String>()
+                        + id.len()
+                        + outcome.message.len()
+                        + outcome.location.len()
+                        + size_of::<crate::assertion::GuidanceOutcome>()
+                })
+                .sum::<usize>(),
+        )
         .saturating_add(snapshot.observation.check.as_ref().map_or(0, |check| {
             check
                 .points
@@ -2699,6 +2714,15 @@ mod tests {
             };
             string_bytes += id.len() + outcome.message.len() + outcome.location.len();
             snapshot.observation.assertions.record(id, outcome);
+            let guide = format!("{index}{}", "g".repeat(2048));
+            let guidance = crate::assertion::GuidanceOutcome {
+                maximize: true,
+                message: "m".repeat(1024),
+                location: "l".repeat(512),
+                best: Some(index),
+            };
+            string_bytes += guide.len() + guidance.message.len() + guidance.location.len();
+            snapshot.observation.guidance.record(guide, guidance);
         }
         snapshot.endpoint = Some(FaultEndpointCertificate::KvmWholeState([17; 32]));
         snapshot.event_history = Some((0, [0; 32]));

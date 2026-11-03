@@ -19,6 +19,7 @@ if [ "$members" -eq 1 ]; then
   cluster="m1=http://127.0.0.1:2380"
   run=""
 fi
+flags=$(cat /opt/etcd/flags)
 
 exec ${run} /opt/etcd/etcd \
   --name "${name}" \
@@ -30,4 +31,5 @@ exec ${run} /opt/etcd/etcd \
   --initial-cluster "${cluster}" \
   --initial-cluster-state new \
   --initial-cluster-token harmony-harness \
+  ${flags} \
   >>"/tmp/etcd/${name}.log" 2>&1

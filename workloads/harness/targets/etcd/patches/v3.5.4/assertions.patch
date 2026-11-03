@@ -1,0 +1,174 @@
+--- a/raft/log.go
++++ b/raft/log.go
+@@ -18,6 +18,7 @@
+ 	"fmt"
+ 	"log"
+ 
++	"github.com/antithesishq/antithesis-sdk-go/assert"
+ 	pb "go.etcd.io/etcd/raft/v3/raftpb"
+ )
+ 
+@@ -92,8 +93,10 @@
+ 		switch {
+ 		case ci == 0:
+ 		case ci <= l.committed:
++			assert.Unreachable("Follower replaces a committed log entry", map[string]any{"conflict": ci, "committed": l.committed})
+ 			l.logger.Panicf("entry %d conflict with committed entry [committed(%d)]", ci, l.committed)
+ 		default:
++			assert.SometimesGreaterThan(l.lastIndex()+1, ci, "Follower truncates uncommitted entries that conflict with the leader", nil)
+ 			offset := index + 1
+ 			l.append(ents[ci-offset:]...)
+ 		}
+--- a/raft/raft.go
++++ b/raft/raft.go
+@@ -25,6 +25,7 @@
+ 	"sync"
+ 	"time"
+ 
++	"github.com/antithesishq/antithesis-sdk-go/assert"
+ 	"go.etcd.io/etcd/raft/v3/confchange"
+ 	"go.etcd.io/etcd/raft/v3/quorum"
+ 	pb "go.etcd.io/etcd/raft/v3/raftpb"
+@@ -434,6 +435,9 @@
+ 	if pr.IsPaused() {
+ 		return false
+ 	}
++	if fi := r.raftLog.firstIndex(); fi > 1 {
++		assert.SometimesGreaterThan(fi, pr.Next, "Leader with a compacted log has a follower whose next index is below its first index", nil)
++	}
+ 	m := pb.Message{}
+ 	m.To = to
+ 
+@@ -467,6 +471,7 @@
+ 			r.id, r.raftLog.firstIndex(), r.raftLog.committed, sindex, sterm, to, pr)
+ 		pr.BecomeSnapshot(sindex)
+ 		r.logger.Debugf("%x paused sending replication messages to %x [%s]", r.id, to, pr)
++		assert.Reachable("Leader sends a snapshot to a follower that is behind its compacted log", nil)
+ 	} else {
+ 		m.Type = pb.MsgApp
+ 		m.Index = pr.Next - 1
+@@ -678,6 +683,9 @@
+ }
+ 
+ func (r *raft) becomeFollower(term uint64, lead uint64) {
++	if r.state == StateLeader {
++		assert.SometimesGreaterThan(r.raftLog.lastIndex(), r.raftLog.committed, "Leader steps down while it holds uncommitted entries", nil)
++	}
+ 	r.step = stepFollower
+ 	r.reset(term)
+ 	r.tick = r.tickElection
+@@ -1123,6 +1131,7 @@
+ 			// described below.
+ 			r.logger.Debugf("%x received MsgAppResp(rejected, hint: (index %d, term %d)) from %x for index %d",
+ 				r.id, m.RejectHint, m.LogTerm, m.From, m.Index)
++			assert.SometimesGreaterThan(r.raftLog.committed, m.RejectHint, "Leader finds a follower whose log ends below the commit index", nil)
+ 			nextProbeIdx := m.RejectHint
+ 			if m.LogTerm > 0 {
+ 				// If the follower has an uncommitted log tail, we would end up
+@@ -1604,6 +1613,7 @@
+ 
+ 	r.logger.Infof("%x [commit: %d, lastindex: %d, lastterm: %d] restored snapshot [index: %d, term: %d]",
+ 		r.id, r.raftLog.committed, r.raftLog.lastIndex(), r.raftLog.lastTerm(), s.Metadata.Index, s.Metadata.Term)
++	assert.Reachable("Follower raft restores a snapshot from the leader", nil)
+ 	return true
+ }
+ 
+--- a/server/etcdserver/server.go
++++ b/server/etcdserver/server.go
+@@ -31,6 +31,7 @@
+ 	"sync/atomic"
+ 	"time"
+ 
++	"github.com/antithesishq/antithesis-sdk-go/assert"
+ 	"github.com/coreos/go-semver/semver"
+ 	humanize "github.com/dustin/go-humanize"
+ 	"github.com/prometheus/client_golang/prometheus"
+@@ -1230,6 +1231,8 @@
+ 	}()
+ 
+ 	if apply.snapshot.Metadata.Index <= ep.appliedi {
++		assert.Unreachable("Member applies a leader snapshot at or below its applied index", map[string]any{
++			"applied-index": ep.appliedi, "snapshot-index": apply.snapshot.Metadata.Index})
+ 		lg.Panic(
+ 			"unexpected leader snapshot from outdated index",
+ 			zap.Uint64("current-snapshot-index", ep.snapi),
+@@ -1239,6 +1242,10 @@
+ 		)
+ 	}
+ 
++	assert.Always(apply.snapshot.Metadata.Term >= ep.appliedt, "Leader snapshot term is not below the member's applied term", map[string]any{
++		"applied-term": ep.appliedt, "snapshot-term": apply.snapshot.Metadata.Term})
++	revBefore := s.kv.Rev()
++
+ 	// wait for raftNode to persist snapshot onto the disk
+ 	<-apply.notifyc
+ 
+@@ -1269,6 +1276,11 @@
+ 	if err := s.kv.Restore(newbe); err != nil {
+ 		lg.Panic("failed to restore mvcc store", zap.Error(err))
+ 	}
++	revAfter, cindex := s.kv.Rev(), s.consistIndex.ConsistentIndex()
++	assert.Always(revAfter >= revBefore, "Member revision does not go back when it applies a leader snapshot", map[string]any{
++		"revision-before": revBefore, "revision-after": revAfter})
++	assert.Always(cindex >= apply.snapshot.Metadata.Index, "Consistent index after a leader snapshot is at or above the snapshot index", map[string]any{
++		"consistent-index": cindex, "snapshot-index": apply.snapshot.Metadata.Index})
+ 
+ 	newbe.SetTxPostLockInsideApplyHook(s.getTxPostLockInsideApplyHook())
+ 	lg.Info("restored mvcc store", zap.Uint64("consistent-index", s.consistIndex.ConsistentIndex()))
+@@ -1346,6 +1358,7 @@
+ 	ep.appliedi = apply.snapshot.Metadata.Index
+ 	ep.snapi = ep.appliedi
+ 	ep.confState = apply.snapshot.Metadata.ConfState
++	assert.Reachable("Member finishes applying a leader snapshot", nil)
+ }
+ 
+ func (s *EtcdServer) applyEntries(ep *etcdProgress, apply *apply) {
+--- a/server/etcdserver/v3_server.go
++++ b/server/etcdserver/v3_server.go
+@@ -22,6 +22,7 @@
+ 	"strconv"
+ 	"time"
+ 
++	"github.com/antithesishq/antithesis-sdk-go/assert"
+ 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
+ 	"go.etcd.io/etcd/api/v3/membershippb"
+ 	"go.etcd.io/etcd/pkg/v3/traceutil"
+@@ -753,6 +754,7 @@
+ 		s.readNotifier = nextnr
+ 		s.readMu.Unlock()
+ 
++		committedIndex := s.getCommittedIndex()
+ 		confirmedIndex, err := s.requestCurrentIndex(leaderChangedNotifier, requestId)
+ 		if isStopped(err) {
+ 			return
+@@ -761,6 +763,8 @@
+ 			nr.notify(err)
+ 			continue
+ 		}
++		assert.Always(confirmedIndex >= committedIndex, "Read index is not below the commit index the member had before the request", map[string]any{
++			"committed-index": committedIndex, "read-index": confirmedIndex})
+ 
+ 		trace.Step("read index received")
+ 
+--- a/server/wal/wal.go
++++ b/server/wal/wal.go
+@@ -26,6 +26,7 @@
+ 	"sync"
+ 	"time"
+ 
++	"github.com/antithesishq/antithesis-sdk-go/assert"
+ 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
+ 	"go.etcd.io/etcd/pkg/v3/pbutil"
+ 	"go.etcd.io/etcd/raft/v3"
+@@ -449,6 +450,11 @@
+ 				if up > uint64(len(ents)) {
+ 					// return error before append call causes runtime panic
+ 					return nil, state, nil, ErrSliceOutOfRange
++				}
++				assert.SometimesGreaterThan(uint64(len(ents)), up, "WAL replay replaces uncommitted entries from an earlier leader", nil)
++				if up < uint64(len(ents)) {
++					assert.Always(e.Index > state.Commit, "WAL replay never replaces an entry at or below the recorded commit index", map[string]any{
++						"index": e.Index, "commit": state.Commit})
+ 				}
+ 				// The line below is potentially overriding some 'uncommitted' entries.
+ 				ents = append(ents[:up], e)
