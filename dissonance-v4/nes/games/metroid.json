@@ -1,0 +1,144 @@
+{
+ "name": "metroid",
+ "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+ "cartridge_ram": true,
+ "scalars": [
+  {
+   "bytes": [
+    116
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    79
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    80
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    781
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    782
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    26744
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    26746
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    26743
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    26747
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    26748
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    262,
+    263
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    26745
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    927
+   ],
+   "kind": "lower"
+  },
+  {
+   "bytes": [
+    1883
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    1891
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    1899
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    1907
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    1915
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    153
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    152
+   ],
+   "kind": "identity"
+  }
+ ],
+ "controls": [
+  0,
+  1,
+  2,
+  4,
+  5,
+  6,
+  7
+ ],
+ "start_input": true,
+ "goal": [
+  {
+   "address": 26755,
+   "ne": 0
+  }
+ ]
+}

@@ -1,0 +1,91 @@
+{
+ "name": "smb",
+ "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+ "cartridge_ram": false,
+ "scalars": [
+  {
+   "bytes": [
+    134,
+    109
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    206,
+    181
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1884,
+    1887
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1878
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    1870,
+    1871
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1753
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1754
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1884,
+    1887
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    9
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    2040
+   ],
+   "kind": "identity"
+  }
+ ],
+ "controls": [
+  0,
+  1,
+  4,
+  5,
+  6,
+  7
+ ],
+ "start_input": true,
+ "goal": [
+  {
+   "address": 1904,
+   "eq": 2
+  },
+  {
+   "address": 1887,
+   "eq": 7
+  }
+ ]
+}

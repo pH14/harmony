@@ -1,0 +1,58 @@
+{
+ "name": "ice-climbers",
+ "rom_sha256": "491898c9b0bf6b242d08bb0841141ca404f8e54383a1814cdb7feab451da8701",
+ "cartridge_ram": false,
+ "scalars": [
+  {
+   "bytes": [
+    89
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    90
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    19
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    100
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    102
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    32
+   ],
+   "kind": "higher"
+  }
+ ],
+ "controls": [
+  0,
+  1,
+  4,
+  5,
+  6,
+  7
+ ],
+ "start_input": true,
+ "goal": [
+  {
+   "address": 89,
+   "ge": 31
+  }
+ ]
+}

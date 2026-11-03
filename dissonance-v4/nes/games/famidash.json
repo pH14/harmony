@@ -1,0 +1,88 @@
+{
+ "name": "famidash",
+ "rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+ "cartridge_ram": false,
+ "scalars": [
+  {
+   "bytes": [
+    1186,
+    1187,
+    1188,
+    1189
+   ],
+   "kind": "identity",
+   "signed": true
+  },
+  {
+   "bytes": [
+    1090
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1190,
+    1191
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    122
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1101
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1186,
+    1187,
+    1188,
+    1189
+   ],
+   "kind": "higher",
+   "signed": true
+  },
+  {
+   "bytes": [
+    1097,
+    1098
+   ],
+   "kind": "identity",
+   "signed": true
+  },
+  {
+   "bytes": [
+    1118
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1103
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    150
+   ],
+   "kind": "identity"
+  }
+ ],
+ "controls": [
+  0
+ ],
+ "start_input": false,
+ "goal": [
+  {
+   "address": 1176,
+   "eq": 3
+  }
+ ]
+}

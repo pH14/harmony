@@ -196,9 +196,14 @@ workflow and a full Benchmarks workflow, and requires each workflow to actually
 run its registered backend.
 
 The `NES Adapter` job in `Checks / Harmony` lints and tests the host-side NES
-manifests, `workloads/nes-games` among them. It also checks that
+manifests, `workloads/nes-games` and the `dissonance-v4` engine and NES
+adapter among them. It also checks that
 `workloads/nes-games` builds for `wasm32-unknown-unknown`, so the browser demo
 can use the same game logic as the native workload.
+
+The `Fault Injection` job in `Checks / Harmony` lints and tests
+`workloads/fault-policy`, `workloads/faults` and the `dissonance-v4` fault
+adapter. It also runs the guest instrumentation runtime checks.
 
 `Checks / Consonance` and `Checks / Harmony Workloads / OCI` each start with an
 `Exact Runtime Artifacts` job. It runs the shared `exact-platform-runtime`

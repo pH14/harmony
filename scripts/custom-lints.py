@@ -201,6 +201,7 @@ SEARCHER_DIRS = [
 
 # The fault adapter drives the searcher and names its campaign checkpoints.
 FAULT_ADAPTER_DIRS = [
+    "dissonance-v4/faults/src",
     "workloads/faults/src",
 ]
 
@@ -1751,6 +1752,7 @@ TOPLEVEL_DIR_ALLOWLIST = {
     "cli",
     "consonance",
     "dissonance",
+    "dissonance-v4",
     "demos",
     "docs",
     "scripts",

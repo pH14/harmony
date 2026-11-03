@@ -1,0 +1,24 @@
+[package]
+name = "dissonance-v4-faults"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+engine = { package = "dissonance-v4-engine", version = "=0.1.0", path = "../engine" }
+faults-workload = { path = "../../workloads/faults", version = "=0.1.0", features = ["consonance"] }
+consonance-client = { path = "../../consonance/client", version = "=0.1.0" }
+searcher = { path = "../../dissonance/searcher", version = "=0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "=1.1.4", features = ["fs"] }
+
+[[bin]]
+name = "v4-faults"
+path = "src/main.rs"
+
+[lints]
+workspace = true

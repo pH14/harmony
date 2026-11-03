@@ -10,6 +10,7 @@ version = 1
 
 [groups]
 search_core = [
+    "dissonance-v4/engine",
     "dissonance/searcher",
 ]
 execution_core = [
@@ -48,6 +49,7 @@ guest_linux_platform = [
     "consonance/harmony-linux/supervisor",
 ]
 workload_packages = [
+    "dissonance-v4/nes",
     "workloads/nes-guest",
     "workloads/fault-policy",
     "workloads/faults",
@@ -58,6 +60,7 @@ workload_packages = [
 ]
 composition_apps_tests = [
     "benchmarks/segments",
+    "dissonance-v4/faults",
     "demos/twin-dragons/rust",
     "consonance/nested-driver",
     "consonance/host-code-identity/tests/witness",

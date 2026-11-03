@@ -235,6 +235,7 @@ jobs:
             workloads/nes-machine -> target
             workloads/nes-protocol -> target
             workloads/nes-guest -> target
+            dissonance-v4 -> target
       - name: Host-side NES adapter and machine
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
@@ -252,6 +253,10 @@ jobs:
           cargo test --locked --manifest-path workloads/nes-games/Cargo.toml --release --all-features
           cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml --all-features
           cargo test --locked --manifest-path workloads/nes-protocol/Cargo.toml --all-features
+          cargo clippy --locked --manifest-path dissonance-v4/Cargo.toml --release \
+            -p dissonance-v4-engine -p dissonance-v4-nes --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path dissonance-v4/Cargo.toml --release \
+            -p dissonance-v4-engine -p dissonance-v4-nes --all-features
       - name: Guest-side NES agent on its own manifest
         run: |
           set -euo pipefail
@@ -283,6 +288,7 @@ jobs:
           workspaces: |
             workloads/fault-policy -> target
             workloads/faults -> target
+            dissonance-v4 -> target
       - name: Fault policy, package and tooling
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
@@ -293,5 +299,8 @@ jobs:
             cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
             cargo test --locked --manifest-path "$manifest" --all-features
           done
+          cargo clippy --locked --manifest-path dissonance-v4/Cargo.toml -p dissonance-v4-faults \
+            --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path dissonance-v4/Cargo.toml -p dissonance-v4-faults --all-features
       - name: Guest-side instrumentation runtime
         run: make -C workloads/faults/runtime check

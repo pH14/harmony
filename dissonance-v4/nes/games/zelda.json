@@ -1,0 +1,154 @@
+{
+ "name": "zelda",
+ "rom_sha256": "44e33dc0a6fb663b98908ea761b33bbd77ca5092f25c624b10bf2a97e5406a5a",
+ "cartridge_ram": false,
+ "scalars": [
+  {
+   "bytes": [
+    16
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    235
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    112
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    132
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1647
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    1648
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    1623
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1645
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    1624
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    1626
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1627
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1628
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1631
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1632
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1633
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1635
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1636
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1637
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1646
+   ],
+   "kind": "higher"
+  },
+  {
+   "bytes": [
+    1649
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1652
+   ],
+   "kind": "identity"
+  },
+  {
+   "bytes": [
+    1653
+   ],
+   "kind": "identity"
+  }
+ ],
+ "controls": [
+  0,
+  1,
+  4,
+  5,
+  6,
+  7
+ ],
+ "start_input": true,
+ "goal": [
+  {
+   "address": 18,
+   "eq": 19
+  }
+ ]
+}
