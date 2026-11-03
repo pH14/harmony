@@ -624,7 +624,8 @@ fn rooted_search_start(
     ))
 }
 
-#[cfg(all(test, feature = "frontend"))]
+#[cfg(test)]
+#[cfg(feature = "frontend")]
 fn continue_search<R: crate::native::Runner>(request: Request) -> Result<u8> {
     let saved = crate::runs::Saved::read(
         &request
@@ -784,7 +785,8 @@ fn record_witness(
     Ok(())
 }
 
-#[cfg(all(test, feature = "frontend"))]
+#[cfg(test)]
+#[cfg(feature = "frontend")]
 mod tests {
     use super::*;
     use searcher::search::checkpoint::{
