@@ -102,6 +102,7 @@ pub struct Archive {
     pub weights: Fenwick,
     pub edges: BTreeMap<(u32, u32), u64>,
     pub ladders: Vec<Vec<u64>>,
+    pub next_prune: usize,
 }
 
 fn weight_of(since_change: u64, rank: u64) -> f64 {
@@ -142,6 +143,7 @@ impl Archive {
             weights: Fenwick::default(),
             edges: BTreeMap::new(),
             ladders: Vec::new(),
+            next_prune: 0,
         }
     }
 
@@ -375,6 +377,9 @@ impl Archive {
             cell.front.push(s);
         }
         for s in 0..self.states.len() {
+            if self.states[s].scalars.is_empty() && !self.kinds.is_empty() {
+                continue;
+            }
             let old_cell = self.states[s].cell;
             let key = self.key(&self.states[s].scalars);
             if let Some(&c) = self.index.get(&key) {
@@ -396,6 +401,40 @@ impl Archive {
                 cell.first_parent_cell = remap.get(&pc).copied();
             }
         }
+    }
+
+    pub fn maybe_prune(&mut self) {
+        if self.states.len() >= self.next_prune {
+            let live = self.prune_routes();
+            self.next_prune = self.states.len() + live.max(1);
+        }
+    }
+
+    pub fn prune_routes(&mut self) -> usize {
+        let mut live = vec![false; self.states.len()];
+        for cell in &self.cells {
+            for &h in &cell.front {
+                let mut at = Some(h);
+                while let Some(s) = at {
+                    if live[s as usize] {
+                        break;
+                    }
+                    live[s as usize] = true;
+                    at = self.states[s as usize].parent;
+                }
+            }
+        }
+        let mut kept = 0;
+        for (rec, keep) in self.states.iter_mut().zip(live) {
+            if keep {
+                kept += 1;
+            } else {
+                rec.actions = Vec::new();
+                rec.scalars = Vec::new();
+                rec.snapshot = None;
+            }
+        }
+        kept
     }
 
     pub fn holders(&self) -> usize {
@@ -470,6 +509,42 @@ mod tests {
         assert_eq!(a.holders(), 2);
         assert_eq!(a.groups.len(), 1);
         assert_eq!(a.groups[0].cells.len(), 2);
+    }
+
+    #[test]
+    fn prune_keeps_holders_and_their_ancestors() {
+        let kinds = vec![Kind::Identity, Kind::Higher];
+        let mut a = Archive::new(kinds);
+        let step = Action {
+            input: 1,
+            arg: 0,
+            hold: 1,
+        };
+        let add = |a: &mut Archive, parent, x: u64, p: u64| {
+            let mut r = rec(parent, vec![x, p], x);
+            r.actions = vec![step];
+            let k = a.key(&[x, p]);
+            a.admit(r, k).unwrap().0
+        };
+        let root = add(&mut a, None, 0, 0);
+        let mid = add(&mut a, Some(root), 1, 0);
+        let leaf = add(&mut a, Some(mid), 2, 0);
+        let mid2 = add(&mut a, Some(root), 1, 5);
+        let dead = add(&mut a, Some(mid2), 3, 0);
+        let better = add(&mut a, Some(root), 1, 9);
+        a.admit(rec(Some(root), vec![3, 1], 3), a.key(&[3, 1]))
+            .unwrap();
+        a.prune_routes();
+        for s in [root, mid, leaf, better] {
+            assert_eq!(a.states[s as usize].actions.len(), 1, "{s}");
+            assert_eq!(a.states[s as usize].scalars.len(), 2, "{s}");
+        }
+        for s in [mid2, dead] {
+            assert!(a.states[s as usize].actions.is_empty(), "{s}");
+            assert!(a.states[s as usize].snapshot.is_none(), "{s}");
+        }
+        a.rekey(vec![2 + FINE_LEVELS, 0]);
+        assert_eq!(a.holders(), 1);
     }
 
     #[test]

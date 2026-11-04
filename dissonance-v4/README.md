@@ -50,7 +50,9 @@ NES). Restoring a snapshot costs nothing.
 - **Retention.** Each fine cell keeps a Pareto front over the progress scalars. A
   new state enters when no holder is at least as good on every progress
   scalar; equal progress keeps the shorter route from the start. Dominated
-  holders drop their snapshots; every admitted state keeps its route record.
+  holders drop their snapshots. Route records are kept for holders and their
+  ancestors; the rest are cleared whenever the states added since the last
+  clearing outnumber the states it kept.
 - **Selection.** A coarse cell is drawn with weight
   `1 / (sqrt(1 + n) * (1 + r))`, then one of its fine cells with the same
   formula over that fine cell's own counts. `n` counts the times the cell was

@@ -419,6 +419,7 @@ impl Campaign {
                     self.archive.rekey(shifts);
                 }
                 self.archive.refresh_ranks();
+                self.archive.maybe_prune();
             }
             progress(self);
         }
