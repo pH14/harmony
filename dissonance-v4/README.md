@@ -65,7 +65,9 @@ NES). Restoring a snapshot costs nothing.
   steps. A job from a cell runs `base * 2^L(e + 1)` steps, where `L` is the
   exponent of the Luby restart sequence (1, 1, 2, 1, 1, 2, 4, ...) and `e`
   counts consecutive jobs from that cell that admitted nothing, so short jobs
-  keep recurring while the longest length grows without bound.
+  keep recurring while the longest length grows without bound. A re-key gives
+  each new cell the largest `e` of the old cells merged into it, so widths
+  that change often do not hold every job at the base length.
 - **Random arm.** `root_only` takes every job from the start state at the base
   length, with the same executor and accounting.
 - **Determinism.** Jobs are planned and admitted in fixed batches of 32 in

@@ -353,6 +353,7 @@ impl Archive {
             let states = &mut self.states;
             let cell = &mut self.cells[c as usize];
             cell.found = cell.found.min(old_cell.found);
+            cell.empty_streak = cell.empty_streak.max(old_cell.empty_streak);
             let rec_scalars = states[s as usize].scalars.clone();
             let rec_route = states[s as usize].route;
             let dominated = cell.front.iter().any(|&h| {
@@ -457,10 +458,15 @@ mod tests {
             a.admit(rec(None, vec![x, p], x), k).unwrap();
         }
         assert_eq!(a.cells.len(), 4);
+        for (c, e) in [(0usize, 3u64), (1, 7), (2, 5), (3, 2)] {
+            a.cells[c].empty_streak = e;
+        }
         a.rekey(vec![2 + FINE_LEVELS, 0]);
         assert_eq!(a.cells.len(), 2);
         let c0 = a.index[&vec![0]];
         assert_eq!(a.cells[c0 as usize].front, vec![1]);
+        assert_eq!(a.cells[c0 as usize].empty_streak, 7);
+        assert_eq!(a.cells[a.index[&vec![2]] as usize].empty_streak, 2);
         assert_eq!(a.holders(), 2);
         assert_eq!(a.groups.len(), 1);
         assert_eq!(a.groups[0].cells.len(), 2);
