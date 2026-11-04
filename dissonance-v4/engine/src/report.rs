@@ -25,6 +25,7 @@ struct FrontLine<'a> {
     state: u32,
     route: u64,
     found: u64,
+    job: u64,
     scalars: &'a [u64],
 }
 
@@ -82,6 +83,7 @@ pub fn write_cells(archive: &Archive, out: &mut dyn Write) -> std::io::Result<()
                         state: s,
                         route: st.route,
                         found: st.found,
+                        job: st.job,
                         scalars: &st.scalars,
                     }
                 })

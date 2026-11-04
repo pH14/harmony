@@ -645,6 +645,8 @@ pub struct SdkCapture {
     pub park_reads: Vec<ParkRead>,
     #[serde(default)]
     pub guidance: Guidance,
+    #[serde(default)]
+    pub state: BTreeMap<String, i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -785,6 +787,11 @@ impl SdkDecoder {
                     + outcome.location.capacity()
             })
             .sum::<usize>();
+        bytes += capture
+            .state
+            .keys()
+            .map(|key| tree_entry::<String, i64>() + key.capacity())
+            .sum::<usize>();
         bytes += self
             .state
             .check_passes
@@ -854,6 +861,7 @@ impl SdkDecoder {
                     if let Some((id, outcome)) = event.guidance {
                         capture.guidance.record(id, outcome);
                     }
+                    capture.state.extend(event.state);
                 }
                 continue;
             }
@@ -1011,6 +1019,7 @@ fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapt
                 if let Some((id, outcome)) = event.guidance {
                     capture.guidance.record(id, outcome);
                 }
+                capture.state.extend(event.state);
             }
             continue;
         }
@@ -1136,6 +1145,8 @@ pub struct FaultObservations {
     pub park_reads: Vec<ParkRead>,
     #[serde(default)]
     pub guidance: Guidance,
+    #[serde(default)]
+    pub state: BTreeMap<String, i64>,
 }
 
 impl FaultObservations {
@@ -1181,6 +1192,7 @@ impl FaultObservations {
             parks: capture.parks.clone(),
             park_reads: capture.park_reads.clone(),
             guidance: capture.guidance.clone(),
+            state: capture.state.clone(),
         }
     }
 
@@ -2221,6 +2233,39 @@ mod tests {
             )
             .into_bytes(),
         )
+    }
+
+    fn json_state(body: &str) -> (u64, u32, Vec<u8>) {
+        (
+            0,
+            JSON_EVENT_ID,
+            format!(r#"{{"harmony_state":{{{body}}}}}"#).into_bytes(),
+        )
+    }
+
+    #[test]
+    fn state_events_keep_the_latest_value_of_each_key() {
+        let events = vec![
+            json_state(r#""raft a role":0,"raft a max lag":5"#),
+            json_state(r#""raft b role":1"#),
+            json_state(r#""raft a role":1"#),
+        ];
+        let mut decoder = SdkDecoder::default();
+        decoder.append(&events[..2]).unwrap();
+        decoder.append(&events[2..]).unwrap();
+        assert_eq!(
+            decoder.capture(),
+            &decode_sdk_events_reference(&events).unwrap()
+        );
+        let observation = FaultObservations::new(1, decoder.capture(), FaultStop::Deadline);
+        assert_eq!(
+            observation.state,
+            BTreeMap::from([
+                ("raft a max lag".to_owned(), 5),
+                ("raft a role".to_owned(), 1),
+                ("raft b role".to_owned(), 1),
+            ])
+        );
     }
 
     #[test]

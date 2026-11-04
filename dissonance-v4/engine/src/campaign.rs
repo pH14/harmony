@@ -8,13 +8,13 @@ use std::{
     thread,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
     archive::{Archive, Key, StateRec, improves},
     rng::Rng,
-    target::{Action, Kind, Position, Probe, Vocabulary, Want, Worker},
+    target::{Action, JobId, Kind, Position, Probe, Vocabulary, Want, Worker},
 };
 
 #[derive(Clone, Debug)]
@@ -188,6 +188,13 @@ impl Probe for JobProbe<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stretch {
+    pub job: u64,
+    pub steps: u64,
+    pub jobs_since_previous: u64,
+}
+
 pub fn prefix(actions: &[Action], at: Position) -> Vec<Action> {
     let mut out: Vec<Action> = actions[..at.action].to_vec();
     if let Some(a) = actions.get(at.action) {
@@ -290,6 +297,7 @@ impl Campaign {
                 scalars: root_scalars,
                 snapshot: Some(root.clone()),
                 cell: 0,
+                job: 0,
             },
             key,
         );
@@ -419,9 +427,11 @@ impl Campaign {
                     self.archive.rekey(shifts);
                 }
                 self.archive.refresh_ranks();
-                self.archive.maybe_prune();
             }
             progress(self);
+            if self.batches.is_multiple_of(self.config.rekey_every) {
+                self.archive.maybe_prune();
+            }
         }
     }
 
@@ -436,6 +446,7 @@ impl Campaign {
         let archive = &self.archive;
         let n = archive.kinds.len();
         let limits = &self.step_limits;
+        let batch = self.batches;
         thread::scope(|scope| {
             for worker in workers.iter_mut() {
                 let next = &next;
@@ -462,16 +473,23 @@ impl Campaign {
                             walks: (0..n).map(|i| Walk::new(limits[i])).collect(),
                             milestone: None,
                         };
-                        let result =
-                            worker
-                                .run(&start, &job.actions, &mut probe)
-                                .map(|work| JobOut {
-                                    work,
-                                    spans: probe.walks.iter().map(Walk::span).collect(),
-                                    steps: probe.walks.iter().map(|w| w.steps).collect(),
-                                    cands: probe.cands,
-                                    milestone: probe.milestone,
-                                });
+                        let result = worker
+                            .run(
+                                JobId {
+                                    batch,
+                                    index: j as u64,
+                                },
+                                &start,
+                                &job.actions,
+                                &mut probe,
+                            )
+                            .map(|work| JobOut {
+                                work,
+                                spans: probe.walks.iter().map(Walk::span).collect(),
+                                steps: probe.walks.iter().map(|w| w.steps).collect(),
+                                cands: probe.cands,
+                                milestone: probe.milestone,
+                            });
                         *slots[j].lock().expect("slot lock") = Some(result);
                     }
                 });
@@ -516,6 +534,7 @@ impl Campaign {
                     .snapshot
                     .map(|b| Arc::new(lz4_flex::compress_prepend_size(&b))),
                 cell: 0,
+                job: self.jobs,
             };
             if rec.snapshot.is_none() {
                 continue;
@@ -543,6 +562,7 @@ impl Campaign {
                 scalars,
                 snapshot: None,
                 cell: u32::MAX,
+                job: self.jobs,
             };
             let id = self.archive.states.len() as u32;
             let parent_cell = self.archive.states[job.parent as usize].cell;
@@ -564,6 +584,33 @@ impl Campaign {
             job_stream_sha256: digest.iter().map(|b| format!("{b:02x}")).collect(),
             milestone_state,
         }
+    }
+
+    pub fn stretches(&self, state: u32) -> Vec<Stretch> {
+        let mut chain = Vec::new();
+        let mut s = Some(state);
+        while let Some(id) = s {
+            let rec = &self.archive.states[id as usize];
+            if rec.parent.is_some() {
+                chain.push(id);
+            }
+            s = rec.parent;
+        }
+        let mut prev = 0;
+        chain
+            .iter()
+            .rev()
+            .map(|&id| {
+                let rec = &self.archive.states[id as usize];
+                let out = Stretch {
+                    job: rec.job,
+                    steps: rec.actions.iter().map(|a| u64::from(a.hold)).sum(),
+                    jobs_since_previous: rec.job - prev,
+                };
+                prev = rec.job;
+                out
+            })
+            .collect()
     }
 
     pub fn route(&self, state: u32) -> Vec<Action> {

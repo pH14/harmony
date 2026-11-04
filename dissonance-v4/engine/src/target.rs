@@ -61,10 +61,17 @@ pub struct Observation {
     pub milestone: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct JobId {
+    pub batch: u64,
+    pub index: u64,
+}
+
 pub trait Worker: Send {
     fn observe_start(&mut self, start: &[u8]) -> Result<Observation, String>;
     fn run(
         &mut self,
+        job: JobId,
         start: &[u8],
         actions: &[Action],
         probe: &mut dyn Probe,

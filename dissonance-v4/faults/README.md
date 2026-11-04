@@ -44,8 +44,12 @@ as a finding.
 
 The byte array holds one bit per Sometimes or Reachable assertion that passed,
 one bit per Always, AlwaysOrUnreachable or Unreachable assertion that was
-violated, then the edge digest and edge crossing count, eight little-endian
-bytes each.
+violated, then one byte per key of `FaultObservations.state` in key order: the
+bit length of the latest value, 0 for a value at or below 0. Targets report
+relative values there (a role code, a lag, a count), so the byte tells apart
+states whose scalars tie, such as a follower one entry behind and one
+hundreds of entries behind. The edge digest and edge crossing count change at
+almost every action and stay out of the array.
 
 ## Snapshots and workers
 
@@ -74,17 +78,17 @@ ends the job, and that state is not offered to the engine.
 - `cells.jsonl`: the engine archive report.
 
 A worker records a pass at the first action where the assertion reads passed,
-whether or not the engine admits that state. The engine plans each batch from
-one random stream, and the argument of a job's first action is a raw draw from
-that stream. The position of that draw orders the jobs of a batch the way the
-engine admits them. The adapter uses this order to give each first pass its
+whether or not the engine admits that state. The engine passes each job its
+batch number and its index in the batch, which is the order the engine admits
+the batch's jobs in. The adapter uses this order to give each first pass its
 execution number (the count of engine jobs up to and including that job) and
-its exact work, and it checks at every batch end that the jobs' work adds up to
-the engine's count. A pass in a job the engine drops once the budget is
-reached does not count. `passing_jobs` counts the jobs in which the assertion
-went from not passed to passed. `first_admitted_work` is the engine work of the
-first admitted state with the scalar set. `executions_run` counts every job
-that ran, including the dropped ones.
+its exact work. At every batch end it checks that each index of the batch ran
+once and that the admitted jobs' work adds up to the engine's count. A pass in
+a job the engine drops once the budget is reached does not count.
+`passing_jobs` counts the jobs in which the assertion went from not passed to
+passed. `first_admitted_work` is the engine work of the first admitted state
+with the scalar set. `executions_run` counts every job that ran, including the
+dropped ones.
 
 ## Replay
 

@@ -2,7 +2,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use engine::target::{Action, Observation, Position, Probe, Want, Worker};
+use engine::target::{Action, JobId, Observation, Position, Probe, Want, Worker};
 use machine::{
     Machine, MachineError, Moment, StopConditions,
     nes::{ButtonChord, reproducer, with_cartridge_ram},
@@ -143,6 +143,7 @@ impl Worker for NesWorker {
 
     fn run(
         &mut self,
+        _: JobId,
         start: &[u8],
         actions: &[Action],
         probe: &mut dyn Probe,

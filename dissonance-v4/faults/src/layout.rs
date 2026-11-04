@@ -126,8 +126,15 @@ impl Layout {
                 out[bit / 8] |= 1 << (bit % 8);
             }
         }
-        out.extend_from_slice(&o.edge_digest.to_le_bytes());
-        out.extend_from_slice(&o.edge_crossings.to_le_bytes());
+        out.extend(o.state.values().map(|&v| bit_length(v)));
+    }
+}
+
+fn bit_length(v: i64) -> u8 {
+    if v <= 0 {
+        0
+    } else {
+        (64 - v.leading_zeros()) as u8
     }
 }
 
@@ -224,9 +231,15 @@ mod tests {
         assert_eq!(scalars[LIFECYCLE.len() + 3], order_preserving(-3));
         assert!(order_preserving(-3) > 0 && order_preserving(-3) < order_preserving(0));
         assert!(order_preserving(i64::MIN) < order_preserving(i64::MAX));
+        later.edge_digest = 9;
+        later.edge_crossings = 4;
+        later.state = [("n1 lag", 5), ("n0 role", 1), ("n0 lag", 0), ("n2 lag", -2)]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect();
         let mut array = Vec::new();
         layout.array(&later, &mut array);
-        assert_eq!(array[0], 0b0110);
-        assert_eq!(array.len(), 1 + 16);
+        assert_eq!(array, [0b0110, 0, 1, 3, 0]);
+        assert_eq!(bit_length(i64::MAX), 63);
     }
 }

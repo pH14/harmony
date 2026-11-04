@@ -66,6 +66,7 @@ pub struct StateRec {
     pub scalars: Vec<u64>,
     pub snapshot: Option<Arc<Vec<u8>>>,
     pub cell: u32,
+    pub job: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -455,6 +456,7 @@ mod tests {
             scalars,
             snapshot: Some(Arc::new(vec![0])),
             cell: 0,
+            job: 0,
         }
     }
 

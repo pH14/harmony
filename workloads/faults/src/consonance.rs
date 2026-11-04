@@ -2594,6 +2594,14 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
                 })
                 .sum::<usize>(),
         )
+        .saturating_add(
+            snapshot
+                .observation
+                .state
+                .keys()
+                .map(|key| size_of::<(String, i64)>() + key.len())
+                .sum::<usize>(),
+        )
         .saturating_add(snapshot.observation.check.as_ref().map_or(0, |check| {
             check
                 .points

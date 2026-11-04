@@ -27,8 +27,9 @@ be held over several steps, and a base job length in steps. An `Action` is an
 input index, a random `u64` argument the adapter uses for its own parameter
 draws, and a hold. A `Worker` restores an opaque snapshot, runs actions step
 by step, reports each step's observation to a `Probe`, and captures a snapshot
-when the probe asks for one. Work is counted in steps (emulated frames for
-NES). Restoring a snapshot costs nothing.
+when the probe asks for one. Each job carries its batch number and its index
+in the batch, which is the order jobs are admitted in. Work is counted in
+steps (emulated frames for NES). Restoring a snapshot costs nothing.
 
 ## Engine
 
@@ -81,7 +82,10 @@ NES). Restoring a snapshot costs nothing.
   much freed heap as live data in its resident set.
 
 The archive report (`cells.jsonl`, `edges.json`) lists every cell with its
-front, first discovery, choice counts and the cell it was first reached from.
+front (each holder with the job that admitted it), first discovery, choice
+counts and the cell it was first reached from. A milestone route lists its
+stretches: for each state on the route, the job that produced it, its steps,
+and the jobs run since the previous stretch's job.
 
 ## NES adapter
 

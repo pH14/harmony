@@ -14,7 +14,7 @@ use std::{
 
 use engine::{
     archive::Archive,
-    campaign::{Campaign, Config, Outcome, Stop},
+    campaign::{Campaign, Config, Outcome, Stop, Stretch},
     report,
     target::{Action, Worker},
 };
@@ -89,6 +89,8 @@ struct Route {
     start_tape_sha256: Option<String>,
     actions: Vec<[u64; 3]>,
     buttons: Vec<[u8; 2]>,
+    #[serde(default)]
+    stretches: Vec<Stretch>,
 }
 
 fn tape_chords(tape: &[u8]) -> Vec<ButtonChord> {
@@ -252,6 +254,7 @@ fn route_of(c: &Campaign, game: &Game, state: u32, tape_sha: Option<String>) -> 
             .iter()
             .map(|a| [game.buttons(a.input), a.hold.min(120) as u8])
             .collect(),
+        stretches: c.stretches(state),
     }
 }
 
@@ -572,6 +575,11 @@ fn power_on(args: &[String]) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     if let Some(state) = outcome.milestone_state {
         let route = route_of(&campaign, &s.game, state, tape_sha);
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({ "route_stretches": &route.stretches }))
+                .map_err(|e| e.to_string())?
+        );
         fs::write(
             o.out.join("route.json"),
             serde_json::to_string(&route).map_err(|e| e.to_string())?,

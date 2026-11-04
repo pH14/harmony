@@ -444,6 +444,10 @@ impl searcher::search::snapshot_codec::CheckpointSnapshot for crate::target::Fau
             budget.array::<u8>(outcome.message.capacity())?;
             budget.array::<u8>(outcome.location.capacity())?;
         }
+        for key in self.observation.state.keys() {
+            budget.map_entry::<String, i64>()?;
+            budget.array::<u8>(key.capacity())?;
+        }
         for node in self.history.nodes() {
             if !budget.shared(
                 "fault-history-node",

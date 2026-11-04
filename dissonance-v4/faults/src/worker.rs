@@ -11,10 +11,7 @@ use std::{
 };
 
 use consonance_client::{cache::CacheIndex, session::WorkerLauncher};
-use engine::{
-    rng::Rng,
-    target::{Action, Observation, Position, Probe, Want, Worker},
-};
+use engine::target::{Action, JobId, Observation, Position, Probe, Want, Worker};
 use faults_workload::{
     consonance::{FaultConfig, FaultTarget},
     target::{FaultAction, FaultObservations, FaultSnapshot},
@@ -230,23 +227,15 @@ pub struct Pass {
 struct Passes {
     first: BTreeMap<usize, Pass>,
     pending: BTreeMap<usize, Pass>,
-    jobs: Vec<(u64, u64)>,
+    jobs: Vec<(JobId, u64)>,
     batches: u64,
     executions: u64,
     work: u64,
 }
 
-pub const STREAM_SEARCH_LIMIT: u64 = 1 << 28;
-
-pub fn stream_position(seed: u64, batch: u64, arg: u64) -> Option<u64> {
-    let mut rng = Rng::new(seed, batch);
-    (0..STREAM_SEARCH_LIMIT).find(|_| rng.next_u64() == arg)
-}
-
 pub struct Shared {
     pub translator: Translator,
     pub layout: Layout,
-    seed: u64,
     table: Mutex<Vec<Arc<Entry>>>,
     pub findings: Mutex<Vec<Finding>>,
     passes: Mutex<Passes>,
@@ -256,12 +245,11 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn new(translator: Translator, layout: Layout, root: FaultSnapshot, seed: u64) -> Self {
+    pub fn new(translator: Translator, layout: Layout, root: FaultSnapshot) -> Self {
         let sometimes = layout.sometimes.len();
         Self {
             translator,
             layout,
-            seed,
             table: Mutex::new(vec![Arc::new(Entry {
                 snapshot: root,
                 parent: None,
@@ -310,13 +298,6 @@ impl Shared {
             .collect())
     }
 
-    fn job_position(&self, actions: &[Action]) -> Result<u64, String> {
-        let batch = self.passes.lock().map_err(|_| "pass lock")?.batches;
-        let first = actions.first().ok_or("a job has no actions")?;
-        stream_position(self.seed, batch, first.arg)
-            .ok_or_else(|| "a job's first action is not in its batch's random stream".into())
-    }
-
     fn wants_pass(&self, index: usize, order: (u64, u64)) -> bool {
         self.passes.lock().is_ok_and(|p| {
             !p.first.contains_key(&index)
@@ -337,12 +318,12 @@ impl Shared {
         Ok(())
     }
 
-    fn finish_job(&self, position: u64, work: u64, passed: &[usize]) -> Result<(), String> {
+    fn finish_job(&self, job: JobId, work: u64, passed: &[usize]) -> Result<(), String> {
         self.passes
             .lock()
             .map_err(|_| "pass lock")?
             .jobs
-            .push((position, work));
+            .push((job, work));
         let mut counts = self.passing_jobs.lock().map_err(|_| "pass lock")?;
         for &i in passed {
             counts[i] += 1;
@@ -352,8 +333,17 @@ impl Shared {
 
     pub fn close_batch(&self, engine_jobs: u64, engine_work: u64) -> Result<(), String> {
         let mut passes = self.passes.lock().map_err(|_| "pass lock")?;
+        let batch = passes.batches;
         let mut jobs = std::mem::take(&mut passes.jobs);
         jobs.sort_unstable();
+        if jobs.iter().enumerate().any(|(j, (id, _))| {
+            *id != JobId {
+                batch,
+                index: j as u64,
+            }
+        }) {
+            return Err(format!("batch {batch} did not run each of its jobs once"));
+        }
         let admitted = engine_jobs
             .checked_sub(passes.executions)
             .and_then(|n| usize::try_from(n).ok())
@@ -370,13 +360,13 @@ impl Shared {
                 "job order check failed: the batch's jobs add to work {work}, the engine counted {engine_work}"
             ));
         }
-        let batch = passes.batches;
         let before = passes.executions;
         let pending = std::mem::take(&mut passes.pending);
         for (index, mut pass) in pending {
-            let Ok(j) = jobs.binary_search_by_key(&pass.order.0, |(p, _)| *p) else {
+            let j = pass.order.0 as usize;
+            if j >= jobs.len() {
                 return Err("a pass names a job that did not run".into());
-            };
+            }
             if j >= admitted {
                 continue;
             }
@@ -437,12 +427,12 @@ impl FaultWorker {
     fn record_passes(
         &self,
         start: u64,
-        position: u64,
+        job: JobId,
         done: &[Action],
         newly: &mut [bool],
         at_start: &[bool],
     ) -> Result<(), String> {
-        let order = (position, done.len() as u64);
+        let order = (job.index, done.len() as u64);
         let mut prefix: Option<Vec<Action>> = None;
         for index in 0..self.shared.layout.sometimes.len() {
             if self.scalars[self.shared.layout.sometimes_index(index)] == 0 {
@@ -500,12 +490,12 @@ impl Worker for FaultWorker {
 
     fn run(
         &mut self,
+        job: JobId,
         start: &[u8],
         actions: &[Action],
         probe: &mut dyn Probe,
     ) -> Result<u64, String> {
         let start = handle(start)?;
-        let position = self.shared.job_position(actions)?;
         let entry = self.shared.entry(start)?;
         let Some(mut current) = self.actor.restore(entry)? else {
             if start == 0 {
@@ -513,7 +503,7 @@ impl Worker for FaultWorker {
             }
             self.shared.hangs.fetch_add(1, Ordering::Relaxed);
             self.shared.executions.fetch_add(1, Ordering::Relaxed);
-            self.shared.finish_job(position, 0, &[])?;
+            self.shared.finish_job(job, 0, &[])?;
             return Ok(0);
         };
         self.shared.layout.scalars(&current, &mut self.scalars);
@@ -542,7 +532,7 @@ impl Worker for FaultWorker {
                 false,
             );
             if !applied.failed && !applied.hung {
-                self.record_passes(start, position, &actions[..=i], &mut newly, &at_start)?;
+                self.record_passes(start, job, &actions[..=i], &mut newly, &at_start)?;
             }
             if want == Want::Capture
                 && !finding
@@ -578,7 +568,7 @@ impl Worker for FaultWorker {
         }
         self.shared.executions.fetch_add(1, Ordering::Relaxed);
         let passed: Vec<usize> = (0..newly.len()).filter(|&i| newly[i]).collect();
-        self.shared.finish_job(position, work, &passed)?;
+        self.shared.finish_job(job, work, &passed)?;
         Ok(work)
     }
 }
@@ -588,33 +578,15 @@ mod tests {
     use super::*;
     use engine::{
         archive::Archive,
-        campaign::{Campaign, Config, draw},
+        campaign::{Campaign, Config},
         target::{Kind, Vocabulary},
     };
 
-    #[test]
-    fn root_jobs_appear_in_their_batch_stream_in_job_order() {
-        let vocab = Vocabulary {
-            inputs: 6,
-            holds: false,
-            base_steps: 64,
-        };
-        let mut rng = Rng::new(9, 3);
-        let mut last = None;
-        for _ in 0..32 {
-            let job = draw(&mut rng, &vocab, 64);
-            let p = stream_position(9, 3, job[0].arg).expect("first action is in the stream");
-            assert!(last.is_none_or(|l| p > l));
-            last = Some(p);
-        }
-    }
-
-    type Captures = Arc<Mutex<Vec<(u64, u64, u64, u64)>>>;
+    type Captures = Arc<Mutex<Vec<(JobId, u64, u64)>>>;
 
     struct Counter {
         captures: Captures,
-        jobs: Arc<Mutex<Vec<(u64, u64, u64)>>>,
-        batch: Arc<AtomicU64>,
+        jobs: Arc<Mutex<Vec<(JobId, u64)>>>,
     }
 
     impl Worker for Counter {
@@ -628,12 +600,11 @@ mod tests {
 
         fn run(
             &mut self,
+            job: JobId,
             start: &[u8],
             actions: &[Action],
             probe: &mut dyn Probe,
         ) -> Result<u64, String> {
-            let batch = self.batch.load(Ordering::SeqCst);
-            let position = stream_position(5, batch, actions[0].arg).ok_or("not in stream")?;
             let mut v = u64::from_le_bytes(start.try_into().map_err(|_| "start")?);
             let mut work = 0;
             for (i, a) in actions.iter().enumerate() {
@@ -645,28 +616,23 @@ mod tests {
                     self.captures
                         .lock()
                         .map_err(|_| "lock")?
-                        .push((batch, position, work, v));
+                        .push((job, work, v));
                 }
             }
-            self.jobs
-                .lock()
-                .map_err(|_| "lock")?
-                .push((batch, position, work));
+            self.jobs.lock().map_err(|_| "lock")?.push((job, work));
             Ok(work)
         }
     }
 
     #[test]
-    fn stream_order_reproduces_the_engine_work_of_every_admitted_state() {
+    fn job_ids_reproduce_the_engine_work_of_every_admitted_state() {
         let captures: Captures = Arc::default();
         let jobs = Arc::new(Mutex::new(Vec::new()));
-        let batch = Arc::new(AtomicU64::new(0));
         let mut workers: Vec<Box<dyn Worker>> = (0..3)
             .map(|_| {
                 Box::new(Counter {
                     captures: captures.clone(),
                     jobs: jobs.clone(),
-                    batch: batch.clone(),
                 }) as Box<dyn Worker>
             })
             .collect();
@@ -678,42 +644,57 @@ mod tests {
         let mut campaign = Campaign::new(
             vec![Kind::Identity],
             vocab,
-            Config::new(5, 3000),
+            Config::new(5, 6000),
             0u64.to_le_bytes().to_vec(),
             vec![0],
         );
         let mut ends = vec![(0u64, 0u64)];
+        let mut seen = Vec::new();
+        let mut record = |states: &[engine::archive::StateRec]| {
+            for state in &states[seen.len()..] {
+                seen.push((state.found, state.scalars.first().copied()));
+            }
+        };
         campaign.run(&mut workers, &mut |_: &Archive| true, &mut |c| {
             ends.push((c.jobs, c.work));
-            batch.fetch_add(1, Ordering::SeqCst);
+            record(&c.archive.states);
         });
         ends.push((campaign.jobs, campaign.work));
-        let jobs = jobs.lock().expect("lock").clone();
+        record(&campaign.archive.states);
+        let mut jobs = jobs.lock().expect("lock").clone();
+        jobs.sort_unstable();
         let mut predicted = BTreeMap::new();
         for b in 0..ends.len() as u64 - 1 {
-            let mut batch_jobs: Vec<(u64, u64)> = jobs
-                .iter()
-                .filter(|j| j.0 == b)
-                .map(|j| (j.1, j.2))
-                .collect();
-            batch_jobs.sort_unstable();
+            let batch_jobs: Vec<(JobId, u64)> =
+                jobs.iter().copied().filter(|j| j.0.batch == b).collect();
+            for (j, (id, _)) in batch_jobs.iter().enumerate() {
+                assert_eq!(id.index, j as u64);
+            }
             let (jobs_before, mut work) = ends[b as usize];
             let admitted = (ends[b as usize + 1].0 - jobs_before) as usize;
             let mut starts = BTreeMap::new();
-            for (position, w) in &batch_jobs[..admitted] {
-                starts.insert(*position, work);
+            for (id, w) in &batch_jobs[..admitted] {
+                starts.insert(*id, work);
                 work += w;
             }
             assert_eq!(work, ends[b as usize + 1].1);
-            for c in captures.lock().expect("lock").iter().filter(|c| c.0 == b) {
-                if let Some(s) = starts.get(&c.1) {
-                    predicted.insert((s + c.2, c.3), ());
+            for c in captures
+                .lock()
+                .expect("lock")
+                .iter()
+                .filter(|c| c.0.batch == b)
+            {
+                if let Some(s) = starts.get(&c.0) {
+                    predicted.insert((s + c.1, c.2), ());
                 }
             }
         }
-        assert!(campaign.archive.states.len() > 50);
-        for state in &campaign.archive.states[1..] {
-            assert!(predicted.contains_key(&(state.found, state.scalars[0])));
+        assert!(campaign.batches > 16);
+        assert!(campaign.archive.states.iter().any(|s| s.scalars.is_empty()));
+        assert!(seen.len() > 50);
+        for (found, scalar) in &seen[1..] {
+            let scalar = scalar.expect("every state has its scalars when progress sees it");
+            assert!(predicted.contains_key(&(*found, scalar)));
         }
     }
 }

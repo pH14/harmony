@@ -254,6 +254,7 @@ pub struct JsonEvent {
     pub park: Option<ParkReport>,
     pub park_read: Option<ParkReport>,
     pub undecided_keys: Option<u64>,
+    pub state: Vec<(String, i64)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -271,6 +272,7 @@ struct RawEvent {
     harmony_park: Option<ParkReport>,
     harmony_park_read: Option<ParkReport>,
     harmony_check: Option<RawCheck>,
+    harmony_state: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Deserialize)]
@@ -437,6 +439,12 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
         park: raw.harmony_park,
         park_read: raw.harmony_park_read,
         undecided_keys: raw.harmony_check.map(|check| check.undecided_keys),
+        state: raw
+            .harmony_state
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(key, value)| value.as_i64().map(|v| (key, v)))
+            .collect(),
     })
 }
 
@@ -507,6 +515,17 @@ mod tests {
         .unwrap();
         assert_eq!(undecided.undecided_keys, Some(3));
         assert_eq!(undecided.pid, Some(9));
+        let state = decode_json_event(
+            br#"{"harmony_state":{"raft a role":1,"raft a max lag":-3,"raft a label":"x","raft a huge":18446744073709551615}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            state.state,
+            vec![
+                ("raft a max lag".to_owned(), -3),
+                ("raft a role".to_owned(), 1)
+            ]
+        );
     }
 
     #[test]

@@ -528,6 +528,12 @@ without a value. Integer operands subtract exactly; other numbers subtract as
 floating point and truncate toward zero; the value saturates at the `i64`
 range. Guidance appears in `FaultObservations.guidance` and does not enter the
 archive key or the violation set.
+A state record, `{"harmony_state":{"KEY":N,...}}` (the Go SDK's
+`lifecycle.SendEvent("harmony_state", ...)`), reports integer values the
+system holds but no assertion shows, such as a node's role or log lag. The
+host keeps the latest value of each key on the timeline in
+`FaultObservations.state` and ignores values that are not `i64` integers.
+State does not enter the archive key or the violation set.
 A harness check that stops checking some keys at its step budget writes
 `{"harmony_check":{"undecided_keys":N}}`. The host keeps the count from the
 process that ran the check, and the completed check's evidence carries it as

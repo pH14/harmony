@@ -2,7 +2,7 @@
 
 use crate::{
     campaign::{Campaign, Config, Stop},
-    target::{Action, Kind, Observation, Position, Probe, Vocabulary, Want, Worker},
+    target::{Action, JobId, Kind, Observation, Position, Probe, Vocabulary, Want, Worker},
 };
 
 struct Corridor;
@@ -43,6 +43,7 @@ impl Worker for Corridor {
 
     fn run(
         &mut self,
+        _: JobId,
         start: &[u8],
         actions: &[Action],
         probe: &mut dyn Probe,
@@ -103,6 +104,14 @@ fn reaches_door_by_carrying_ammo_and_stream_ignores_worker_count() {
             }
         }
         assert!(x >= 200, "route replays to x {x}");
+        let stretches = c.stretches(out.milestone_state.unwrap());
+        let frames: u64 = route.iter().map(|a| u64::from(a.hold)).sum();
+        assert_eq!(stretches.iter().map(|s| s.steps).sum::<u64>(), frames);
+        assert!(stretches.windows(2).all(|w| w[0].job < w[1].job));
+        assert_eq!(
+            stretches.iter().map(|s| s.jobs_since_previous).sum::<u64>(),
+            stretches.last().unwrap().job
+        );
         hashes.push((out.job_stream_sha256, out.work));
     }
     assert_eq!(hashes[0], hashes[1]);

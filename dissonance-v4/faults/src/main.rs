@@ -160,7 +160,6 @@ fn start(o: &Opts, workers: usize) -> Result<Started, String> {
             Translator::new(prepared.vocabulary),
             layout,
             root.snapshot,
-            o.seed,
         )),
         actors,
         root_seal: root.root_seal,
