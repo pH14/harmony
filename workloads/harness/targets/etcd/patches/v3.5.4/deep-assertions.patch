@@ -1,0 +1,212 @@
+--- a/raft/raft.go
++++ b/raft/raft.go
+@@ -314,6 +314,10 @@
+ 	// current term. Those will be handled as fast as first log is committed in
+ 	// current term.
+ 	pendingReadIndexMessages []pb.Message
++
++	ticks             uint64
++	restoredSnapshot  uint64
++	snapshotSentTicks map[uint64]uint64
+ }
+ 
+ func newRaft(c *Config) *raft {
+@@ -470,6 +474,10 @@
+ 		r.logger.Debugf("%x [firstindex: %d, commit: %d] sent snapshot[index: %d, term: %d] to %x [%s]",
+ 			r.id, r.raftLog.firstIndex(), r.raftLog.committed, sindex, sterm, to, pr)
+ 		pr.BecomeSnapshot(sindex)
++		if r.snapshotSentTicks == nil {
++			r.snapshotSentTicks = map[uint64]uint64{}
++		}
++		r.snapshotSentTicks[to] = r.ticks
+ 		r.logger.Debugf("%x paused sending replication messages to %x [%s]", r.id, to, pr)
+ 		assert.Reachable("Leader sends a snapshot to a follower that is behind its compacted log", nil)
+ 	} else {
+@@ -648,6 +656,7 @@
+ 
+ // tickElection is run by followers and candidates after r.electionTimeout.
+ func (r *raft) tickElection() {
++	r.ticks++
+ 	r.electionElapsed++
+ 
+ 	if r.promotable() && r.pastElectionTimeout() {
+@@ -658,6 +667,7 @@
+ 
+ // tickHeartbeat is run by leaders to send a MsgBeat after r.heartbeatTimeout.
+ func (r *raft) tickHeartbeat() {
++	r.ticks++
+ 	r.heartbeatElapsed++
+ 	r.electionElapsed++
+ 
+@@ -674,6 +684,13 @@
+ 
+ 	if r.state != StateLeader {
+ 		return
++	}
++	if len(r.snapshotSentTicks) > 0 {
++		r.prs.Visit(func(id uint64, pr *tracker.Progress) {
++			if sent, ok := r.snapshotSentTicks[id]; ok && pr.State == tracker.StateSnapshot {
++				assert.SometimesGreaterThan(r.ticks-sent, uint64(r.electionTimeout), "A snapshot to a follower stays in flight longer than an election timeout", nil)
++			}
++		})
+ 	}
+ 
+ 	if r.heartbeatElapsed >= r.heartbeatTimeout {
+@@ -685,6 +702,19 @@
+ func (r *raft) becomeFollower(term uint64, lead uint64) {
+ 	if r.state == StateLeader {
+ 		assert.SometimesGreaterThan(r.raftLog.lastIndex(), r.raftLog.committed, "Leader steps down while it holds uncommitted entries", nil)
++		inFlight := false
++		r.prs.Visit(func(id uint64, pr *tracker.Progress) {
++			if id != r.id && pr.State == tracker.StateSnapshot {
++				inFlight = true
++			}
++		})
++		if inFlight {
++			assert.SometimesGreaterThan(r.raftLog.lastIndex(), r.raftLog.committed, "Leader steps down with uncommitted entries while a snapshot it sent is in flight", nil)
++		}
++		if s := r.restoredSnapshot; s > 0 && r.raftLog.firstIndex() == s+1 {
++			assert.SometimesGreaterThan(r.raftLog.lastIndex(), r.raftLog.committed, "Leader steps down with uncommitted entries while its log begins at a snapshot it restored from the leader", nil)
++		}
++		r.snapshotSentTicks = nil
+ 	}
+ 	r.step = stepFollower
+ 	r.reset(term)
+@@ -738,6 +768,9 @@
+ 	// trivially in this state. Note that r.reset() has initialized this
+ 	// progress with the last index already.
+ 	r.prs.Progress[r.id].BecomeReplicate()
++	if s := r.restoredSnapshot; s > 0 && r.raftLog.firstIndex() == s+1 {
++		assert.Reachable("Member becomes leader while its log begins at a snapshot it restored from the leader", nil)
++	}
+ 
+ 	// Conservatively set the pendingConfIndex to the last index in the
+ 	// log. There may or may not be a pending config change, but it's
+@@ -1253,6 +1286,7 @@
+ 					// move to replicating state, that would only happen with
+ 					// the next round of appends (but there may not be a next
+ 					// round for a while, exposing an inconsistent RaftStatus).
++					r.assertSnapshotFlight(m.From)
+ 					pr.BecomeProbe()
+ 					pr.BecomeReplicate()
+ 				case pr.State == tracker.StateReplicate:
+@@ -1314,6 +1348,7 @@
+ 		if pr.State != tracker.StateSnapshot {
+ 			return nil
+ 		}
++		r.assertSnapshotFlight(m.From)
+ 		// TODO(tbg): this code is very similar to the snapshot handling in
+ 		// MsgAppResp above. In fact, the code there is more correct than the
+ 		// code here and should likely be updated to match (or even better, the
+@@ -1481,6 +1516,18 @@
+ 		return
+ 	}
+ 
++	if s := r.restoredSnapshot; s > 0 && r.raftLog.firstIndex() == s+1 && r.raftLog.matchTerm(m.Index, m.LogTerm) {
++		truncated := uint64(0)
++		for _, e := range m.Entries {
++			if e.Index <= r.raftLog.lastIndex() && !r.raftLog.matchTerm(e.Index, e.Term) {
++				assert.Always(e.Index > s, "Follower never truncates its log at or below a snapshot it restored", map[string]any{"conflict": e.Index, "snapshot-index": s})
++				truncated = r.raftLog.lastIndex() - e.Index + 1
++				break
++			}
++		}
++		assert.SometimesGreaterThan(truncated, 0, "Follower truncates entries that follow a snapshot it restored from the leader", nil)
++	}
++
+ 	if mlastIndex, ok := r.raftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries...); ok {
+ 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: mlastIndex})
+ 	} else {
+@@ -1519,6 +1566,7 @@
+ }
+ 
+ func (r *raft) handleSnapshot(m pb.Message) {
++	assert.Always(m.Term == r.Term, "Follower handles snapshots only from a leader of its current term", map[string]any{"message-term": m.Term, "term": r.Term})
+ 	sindex, sterm := m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term
+ 	if r.restore(m.Snapshot) {
+ 		r.logger.Infof("%x [commit: %d] restored snapshot [index: %d, term: %d]",
+@@ -1614,9 +1662,17 @@
+ 	r.logger.Infof("%x [commit: %d, lastindex: %d, lastterm: %d] restored snapshot [index: %d, term: %d]",
+ 		r.id, r.raftLog.committed, r.raftLog.lastIndex(), r.raftLog.lastTerm(), s.Metadata.Index, s.Metadata.Term)
+ 	assert.Reachable("Follower raft restores a snapshot from the leader", nil)
++	r.restoredSnapshot = s.Metadata.Index
+ 	return true
+ }
+ 
++func (r *raft) assertSnapshotFlight(to uint64) {
++	if sent, ok := r.snapshotSentTicks[to]; ok {
++		assert.SometimesGreaterThan(r.ticks-sent, uint64(r.electionTimeout), "A snapshot to a follower stays in flight longer than an election timeout", nil)
++		delete(r.snapshotSentTicks, to)
++	}
++}
++
+ // promotable indicates whether state machine can be promoted to leader,
+ // which is true when its own id is in progress list.
+ func (r *raft) promotable() bool {
+--- a/server/wal/wal.go
++++ b/server/wal/wal.go
+@@ -439,6 +439,10 @@
+ 	decoder := w.decoder
+ 
+ 	var match bool
++	var maxIndex uint64
++	var leaderStart bool
++	var leaderReplaces uint64
++	start := w.start
+ 	for err = decoder.decode(rec); err == nil; err = decoder.decode(rec) {
+ 		switch rec.Type {
+ 		case entryType:
+@@ -448,9 +452,17 @@
+ 				// prevent "panic: runtime error: slice bounds out of range [:13038096702221461992] with capacity 0"
+ 				up := e.Index - w.start.Index - 1
+ 				if up > uint64(len(ents)) {
++					assert.Unreachable("WAL replay finds a gap after the snapshot it starts from", map[string]any{
++						"index": e.Index, "snapshot-index": w.start.Index, "replayed": len(ents)})
+ 					// return error before append call causes runtime panic
+ 					return nil, state, nil, ErrSliceOutOfRange
+ 				}
++				if leaderStart {
++					assert.SometimesGreaterThan(uint64(len(ents)), up, "WAL replay replaces entries that follow a snapshot the member received from the leader", nil)
++					if up < uint64(len(ents)) {
++						leaderReplaces++
++					}
++				}
+ 				assert.SometimesGreaterThan(uint64(len(ents)), up, "WAL replay replaces uncommitted entries from an earlier leader", nil)
+ 				if up < uint64(len(ents)) {
+ 					assert.Always(e.Index > state.Commit, "WAL replay never replaces an entry at or below the recorded commit index", map[string]any{
+@@ -459,6 +471,9 @@
+ 				// The line below is potentially overriding some 'uncommitted' entries.
+ 				ents = append(ents[:up], e)
+ 			}
++			if e.Index > maxIndex {
++				maxIndex = e.Index
++			}
+ 			w.enti = e.Index
+ 
+ 		case stateType:
+@@ -490,6 +505,10 @@
+ 					return nil, state, nil, ErrSnapshotMismatch
+ 				}
+ 				match = true
++				if snap.Index > maxIndex {
++					leaderStart = true
++					assert.Reachable("Member replays its WAL from a snapshot it received from the leader", nil)
++				}
+ 			}
+ 
+ 		default:
+@@ -530,6 +549,14 @@
+ 	err = nil
+ 	if !match {
+ 		err = ErrSnapshotNotFound
++	} else {
++		if leaderStart {
++			assert.SometimesGreaterThan(leaderReplaces, 1, "WAL replay replaces entries at two points after a snapshot the member received from the leader", nil)
++		}
++		assert.Always(state.Commit >= start.Index, "WAL hard state commit is at or above the snapshot replay starts from", map[string]any{
++			"commit": state.Commit, "snapshot-index": start.Index})
++		assert.Always(state.Commit <= start.Index+uint64(len(ents)), "WAL hard state commit is within the replayed log", map[string]any{
++			"commit": state.Commit, "last-index": start.Index + uint64(len(ents))})
+ 	}
+ 
+ 	// close decoder, disable reading

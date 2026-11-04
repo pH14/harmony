@@ -1,0 +1,170 @@
+--- a/api.go
++++ b/api.go
+@@ -140,6 +140,11 @@
+ 	// on.
+ 	candidateFromLeadershipTransfer atomic.Bool
+ 
++	restoredLeaderSnapshot atomic.Bool
++
++	snapshotInstallsLock sync.Mutex
++	snapshotInstalls     map[ServerID]uint64
++
+ 	// Stores our local server ID, used to avoid sending RPCs to ourself
+ 	localID ServerID
+ 
+--- a/raft.go
++++ b/raft.go
+@@ -13,6 +13,7 @@
+ 	"sync/atomic"
+ 	"time"
+ 
++	"github.com/antithesishq/antithesis-sdk-go/assert"
+ 	"github.com/hashicorp/go-hclog"
+ 
+ 	"github.com/hashicorp/go-metrics"
+@@ -494,6 +495,9 @@
+ 	// setup leader state. This is only supposed to be accessed within the
+ 	// leaderloop.
+ 	r.setupLeaderState()
++	if r.restoredLeaderSnapshot.Load() {
++		assert.Reachable("Node that restored a snapshot from the leader becomes leader", nil)
++	}
+ 
+ 	// Run a background go-routine to emit metrics on log age
+ 	stopCh := make(chan struct{})
+@@ -501,6 +505,7 @@
+ 
+ 	// Cleanup state on step down
+ 	defer func() {
++		assert.SometimesGreaterThan(r.getLastIndex(), r.getCommitIndex(), "Leader steps down while it holds uncommitted entries", nil)
+ 		close(stopCh)
+ 
+ 		// Since we were the leader previously, we update our
+@@ -1539,6 +1544,11 @@
+ 				return
+ 			}
+ 			if entry.Term != storeEntry.Term {
++				if applied := max(r.getCommitIndex(), r.getLastApplied()); entry.Index <= applied {
++					assert.Unreachable("Follower removes a log entry it has committed or applied", map[string]any{
++						"conflict-index": entry.Index, "committed-or-applied-index": applied})
++				}
++				assert.SometimesGreaterThan(lastLogIdx+1, entry.Index, "Follower removes uncommitted entries that conflict with the leader", nil)
+ 				r.logger.Warn("clearing log suffix", "from", entry.Index, "to", lastLogIdx)
+ 				if err := r.logs.DeleteRange(entry.Index, lastLogIdx); err != nil {
+ 					r.logger.Error("failed to clear log suffix", "error", err)
+@@ -1904,6 +1914,8 @@
+ 	// because this too can take a long time.
+ 	countingRPCReader := newCountingReader(rpc.Reader)
+ 
++	appliedBefore := r.getLastApplied()
++
+ 	// Spill the remote snapshot to disk
+ 	transferMonitor := startSnapshotRestoreMonitor(r.logger, countingRPCReader, req.Size, true)
+ 	n, err := io.Copy(sink, countingRPCReader)
+@@ -1949,6 +1961,11 @@
+ 		rpcErr = err
+ 		return
+ 	}
++
++	assert.Always(req.LastLogIndex >= appliedBefore, "Follower restores a leader snapshot at or above its applied index", map[string]any{
++		"applied-index": appliedBefore, "snapshot-index": req.LastLogIndex})
++	assert.Reachable("Follower restores a snapshot received from the leader", nil)
++	r.restoredLeaderSnapshot.Store(true)
+ 
+ 	// Update the lastApplied so we don't replay old logs
+ 	r.setLastApplied(req.LastLogIndex)
+--- a/replication.go
++++ b/replication.go
+@@ -10,6 +10,7 @@
+ 	"sync/atomic"
+ 	"time"
+ 
++	"github.com/antithesishq/antithesis-sdk-go/assert"
+ 	"github.com/hashicorp/go-metrics"
+ )
+ 
+@@ -219,6 +220,17 @@
+ 	peer = s.peer
+ 	s.peerLock.RUnlock()
+ 
++	if fi, err := r.logs.FirstIndex(); err == nil && fi > 1 {
++		next := atomic.LoadUint64(&s.nextIndex)
++		assert.SometimesGreaterThan(fi, next, "Leader with a compacted log has a follower whose next index is below its first log index", nil)
++		if r.restoredLeaderSnapshot.Load() {
++			assert.SometimesGreaterThan(fi, next, "Leader that restored a snapshot from an earlier leader has a follower whose next index is below its first log index", nil)
++		}
++		if r.installedOnOtherPeer(peer.ID, s.currentTerm) {
++			assert.SometimesGreaterThan(fi, next, "Leader that installed a snapshot on one follower this term has another follower whose next index is below its first log index", nil)
++		}
++	}
++
+ 	// Setup the request
+ 	if err := r.setupAppendEntries(s, &req, atomic.LoadUint64(&s.nextIndex), lastIndex); err == ErrLogNotFound {
+ 		goto SEND_SNAP
+@@ -297,6 +309,11 @@
+ // sendLatestSnapshot is used to send the latest snapshot we have
+ // down to our follower.
+ func (r *Raft) sendLatestSnapshot(s *followerReplication) (bool, error) {
++	firstIndex, err := r.logs.FirstIndex()
++	if err != nil {
++		return false, err
++	}
++
+ 	// Get the snapshots
+ 	snapshots, err := r.snapshots.List()
+ 	if err != nil {
+@@ -318,6 +335,8 @@
+ 		return false, err
+ 	}
+ 	defer func() { _ = snapshot.Close() }()
++	assert.Always(meta.Index+1 >= firstIndex, "Leader's newest snapshot covers every entry it compacted from its log", map[string]any{
++		"first-index": firstIndex, "snapshot-index": meta.Index})
+ 
+ 	// Setup the request
+ 	req := InstallSnapshotRequest{
+@@ -366,6 +385,14 @@
+ 
+ 	// Check for success
+ 	if resp.Success {
++		assert.Reachable("Leader installs a snapshot on a follower that is behind its compacted log", nil)
++		if r.restoredLeaderSnapshot.Load() {
++			assert.Reachable("Leader installs a snapshot on a follower after it restored one from an earlier leader", nil)
++		}
++		if r.recordSnapshotInstall(peer.ID, s.currentTerm) {
++			assert.Reachable("Leader installs snapshots on two followers in one term", nil)
++		}
++
+ 		// Update the indexes
+ 		atomic.StoreUint64(&s.nextIndex, meta.Index+1)
+ 		s.commitment.match(peer.ID, meta.Index)
+@@ -662,4 +689,30 @@
+ 
+ 	// Notify still leader
+ 	s.notifyAll(true)
++}
++
++func (r *Raft) recordSnapshotInstall(id ServerID, term uint64) bool {
++	r.snapshotInstallsLock.Lock()
++	defer r.snapshotInstallsLock.Unlock()
++	if r.snapshotInstalls == nil {
++		r.snapshotInstalls = make(map[ServerID]uint64)
++	}
++	r.snapshotInstalls[id] = term
++	for other, t := range r.snapshotInstalls {
++		if other != id && t == term {
++			return true
++		}
++	}
++	return false
++}
++
++func (r *Raft) installedOnOtherPeer(id ServerID, term uint64) bool {
++	r.snapshotInstallsLock.Lock()
++	defer r.snapshotInstallsLock.Unlock()
++	for other, t := range r.snapshotInstalls {
++		if other != id && t == term {
++			return true
++		}
++	}
++	return false
+ }

@@ -89,19 +89,60 @@ RUN sdk_cache_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-g
     && grep -F -q 'linux && (amd64 || arm64) && cgo' \
        /build/antithesis-sdk-go/internal/voidstar_handler.go
 
+# Patches for a version add SDK assertions to rqlite and to the hashicorp/raft
+# module it uses. The raft module is copied out of the module cache and
+# replaced in rqlite's build, so both take the patches. The SDK copy gets a
+# go.mod with no requirements, so it adds no modules to rqlite's build list.
+# rqlite then requires the SDK, so the toolexec takes the SDK archives from
+# the rqlite build itself.
+COPY workloads/harness/targets/rqlite/patches /build/patches
+RUN patches="/build/patches/${RQLITE_VERSION}" \
+    && if [ -d "${patches}" ]; then \
+        raft_version="$(cd /build/rqlite && go list -m -f '{{.Version}}' github.com/hashicorp/raft)" \
+        && mkdir -p /build/hashicorp-raft \
+        && cp -a "$(go env GOMODCACHE)/github.com/hashicorp/raft@${raft_version}/." /build/hashicorp-raft/ \
+        && chmod -R u+w /build/hashicorp-raft \
+        && for p in "${patches}"/raft/*.patch; do \
+            patch --batch --forward --fuzz=0 -d /build/hashicorp-raft -p1 < "$p"; \
+        done \
+        && for p in "${patches}"/rqlite/*.patch; do \
+            patch --batch --forward --fuzz=0 -d /build/rqlite -p1 < "$p"; \
+        done \
+        && printf 'module github.com/antithesishq/antithesis-sdk-go\n\ngo 1.18\n' > /build/antithesis-sdk-go/go.mod \
+        && rm -f /build/antithesis-sdk-go/go.sum \
+        && for m in hashicorp-raft rqlite; do \
+            (cd "/build/${m}" && go mod edit \
+                -require="github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
+                -replace=github.com/antithesishq/antithesis-sdk-go=/build/antithesis-sdk-go); \
+        done \
+        && (cd /build/rqlite && go mod edit -replace=github.com/hashicorp/raft=/build/hashicorp-raft \
+            && go list -mod=mod -deps ./cmd/rqlited > /dev/null); \
+    fi
+
 RUN mkdir -p /out/rqlite /out/symbols /out/stdlib \
     && sdk_dir=/build/antithesis-sdk-go \
+    && sdk_module_dir="${sdk_dir}" \
+    && verbose= \
+    && if [ -d "/build/patches/${RQLITE_VERSION}" ]; then sdk_module_dir= && verbose=1; fi \
     && (cd /build/rqlite \
         && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
            bash /build/configure-instrumentation.sh "${sdk_dir}" /out/stdlib ./cmd/rqlited > /out/stdlib/instrumentation.env \
         && source /out/stdlib/instrumentation.env \
         && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
-           ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
+           ANTITHESIS_SDK_MODULE_DIR="${sdk_module_dir}" \
            ANTITHESIS_SYMBOLS_DIR=/out/symbols \
            ANTITHESIS_SYMBOL_PREFIX=rqlited \
+           ANTITHESIS_VERBOSE="${verbose}" \
            go build -toolexec=antithesis-go-toolexec -buildvcs=false \
              -ldflags="-X github.com/rqlite/rqlite/v10/cmd.Version=${RQLITE_VERSION}" \
-             -o /out/rqlite/rqlited ./cmd/rqlited) \
+             -o /out/rqlite/rqlited ./cmd/rqlited 2> /out/build.log \
+           || { cat /out/build.log >&2; exit 1; }) \
+    && if [ -n "${verbose}" ]; then \
+        grep -F 'Cataloged ' /out/build.log \
+        && for pkg in hashicorp/raft rqlite/rqlite/v10/store rqlite/rqlite/v10/snapshot; do \
+            grep -q "Cataloged github.com/${pkg}: " /out/build.log; \
+        done; \
+    fi \
     && test -x /out/rqlite/rqlited \
     && set -- /out/symbols/*.sym.tsv \
     && test -s "$1" \
@@ -160,7 +201,14 @@ LABEL org.opencontainers.image.description="upstream rqlite source built through
 ARG HARNESS_BUNDLE=bundle
 COPY workloads/harness/targets/rqlite/${HARNESS_BUNDLE} /etc/harmony/bundle
 COPY workloads/harness/targets/rqlite/setup.sh workloads/harness/targets/rqlite/node.sh /opt/harmony/
+COPY workloads/harness/targets/rqlite/flags /tmp/rqlite-flags
 
-RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh
+RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh \
+    && if [ -f "/tmp/rqlite-flags/${RQLITE_VERSION}" ]; then \
+        cp "/tmp/rqlite-flags/${RQLITE_VERSION}" /opt/rqlite/flags; \
+    else \
+        : > /opt/rqlite/flags; \
+    fi \
+    && rm -r /tmp/rqlite-flags
 
 CMD ["/opt/harmony/node.sh", "n1", "4001", "4002"]

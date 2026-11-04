@@ -1,0 +1,156 @@
+--- a/raft/raft.go
++++ b/raft/raft.go
+@@ -19,6 +19,7 @@
+ 	"errors"
+ 	"fmt"
+ 	"math"
++	"math/bits"
+ 	"math/rand"
+ 	"sort"
+ 	"strings"
+@@ -26,6 +27,7 @@
+ 	"time"
+ 
+ 	"github.com/antithesishq/antithesis-sdk-go/assert"
++	"github.com/antithesishq/antithesis-sdk-go/lifecycle"
+ 	"go.etcd.io/etcd/raft/v3/confchange"
+ 	"go.etcd.io/etcd/raft/v3/quorum"
+ 	pb "go.etcd.io/etcd/raft/v3/raftpb"
+@@ -318,6 +320,9 @@
+ 	ticks             uint64
+ 	restoredSnapshot  uint64
+ 	snapshotSentTicks map[uint64]uint64
++	stateKeys         []string
++	stateLens         [8]int
++	stateSent         bool
+ }
+ 
+ func newRaft(c *Config) *raft {
+@@ -656,6 +661,7 @@
+ 
+ // tickElection is run by followers and candidates after r.electionTimeout.
+ func (r *raft) tickElection() {
++	defer r.emitState()
+ 	r.ticks++
+ 	r.electionElapsed++
+ 
+@@ -667,6 +673,7 @@
+ 
+ // tickHeartbeat is run by leaders to send a MsgBeat after r.heartbeatTimeout.
+ func (r *raft) tickHeartbeat() {
++	defer r.emitState()
+ 	r.ticks++
+ 	r.heartbeatElapsed++
+ 	r.electionElapsed++
+@@ -722,6 +729,7 @@
+ 	r.lead = lead
+ 	r.state = StateFollower
+ 	r.logger.Infof("%x became follower at term %d", r.id, r.Term)
++	r.emitState()
+ }
+ 
+ func (r *raft) becomeCandidate() {
+@@ -735,6 +743,7 @@
+ 	r.Vote = r.id
+ 	r.state = StateCandidate
+ 	r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
++	r.emitState()
+ }
+ 
+ func (r *raft) becomePreCandidate() {
+@@ -751,6 +760,7 @@
+ 	r.lead = None
+ 	r.state = StatePreCandidate
+ 	r.logger.Infof("%x became pre-candidate at term %d", r.id, r.Term)
++	r.emitState()
+ }
+ 
+ func (r *raft) becomeLeader() {
+@@ -790,6 +800,7 @@
+ 	// usage is zero.
+ 	r.reduceUncommittedSize([]pb.Entry{emptyEnt})
+ 	r.logger.Infof("%x became leader at term %d", r.id, r.Term)
++	r.emitState()
+ }
+ 
+ func (r *raft) hup(t CampaignType) {
+@@ -1901,3 +1912,59 @@
+ 		}
+ 	}
+ }
++
++func (r *raft) emitState() {
++	if r.stateKeys == nil {
++		p := fmt.Sprintf("raft %x ", r.id)
++		r.stateKeys = []string{p + "role", p + "uncommitted", p + "apply lag", p + "since snapshot", p + "restored window", p + "snapshots in flight", p + "max lag", p + "max next below first"}
++	}
++	first := r.raftLog.firstIndex()
++	last := r.raftLog.lastIndex()
++	var vals [8]int64
++	switch r.state {
++	case StateLeader:
++		vals[0] = 1
++	case StateCandidate:
++		vals[0] = 2
++	case StatePreCandidate:
++		vals[0] = 4
++	}
++	vals[1] = int64(last) - int64(r.raftLog.committed)
++	vals[2] = int64(r.raftLog.committed) - int64(r.raftLog.applied)
++	vals[3] = int64(r.raftLog.applied) - int64(first-1)
++	if s := r.restoredSnapshot; s > 0 && first == s+1 {
++		vals[4] = 1
++	}
++	if r.state == StateLeader {
++		r.prs.Visit(func(id uint64, pr *tracker.Progress) {
++			if id == r.id {
++				return
++			}
++			if pr.State == tracker.StateSnapshot {
++				vals[5]++
++			}
++			if lag := int64(last) - int64(pr.Match); lag > vals[6] {
++				vals[6] = lag
++			}
++			if below := int64(first) - int64(pr.Next); below > vals[7] {
++				vals[7] = below
++			}
++		})
++	}
++	var lens [8]int
++	for i, v := range vals {
++		if v > 0 {
++			lens[i] = bits.Len64(uint64(v))
++		}
++	}
++	if r.stateSent && lens == r.stateLens {
++		return
++	}
++	r.stateSent = true
++	r.stateLens = lens
++	details := make(map[string]any, len(vals))
++	for i, v := range vals {
++		details[r.stateKeys[i]] = v
++	}
++	lifecycle.SendEvent("harmony_state", details)
++}
+--- a/server/etcdserver/server.go
++++ b/server/etcdserver/server.go
+@@ -32,6 +32,7 @@
+ 	"time"
+ 
+ 	"github.com/antithesishq/antithesis-sdk-go/assert"
++	"github.com/antithesishq/antithesis-sdk-go/lifecycle"
+ 	"github.com/coreos/go-semver/semver"
+ 	humanize "github.com/dustin/go-humanize"
+ 	"github.com/prometheus/client_golang/prometheus"
+@@ -1210,6 +1211,9 @@
+ 		return
+ 	}
+ 	applySnapshotInProgress.Inc()
++	applyingKey := fmt.Sprintf("etcd %s applying snapshot", s.ID())
++	lifecycle.SendEvent("harmony_state", map[string]any{applyingKey: 1})
++	defer lifecycle.SendEvent("harmony_state", map[string]any{applyingKey: 0})
+ 
+ 	lg := s.Logger()
+ 	lg.Info(

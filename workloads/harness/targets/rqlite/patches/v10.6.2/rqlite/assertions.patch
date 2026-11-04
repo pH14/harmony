@@ -1,0 +1,202 @@
+--- a/internal/rsync/multir_singlew.go
++++ b/internal/rsync/multir_singlew.go
+@@ -60,6 +60,12 @@
+ }
+ 
+ // EndRead exits the critical section as a reader.
++func (r *MultiRSW) Readers() int {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	return r.numReaders
++}
++
+ func (r *MultiRSW) EndRead() {
+ 	r.mu.Lock()
+ 	defer r.mu.Unlock()
+--- a/snapshot/store.go
++++ b/snapshot/store.go
+@@ -13,6 +13,7 @@
+ 	"sync/atomic"
+ 	"time"
+ 
++	"github.com/antithesishq/antithesis-sdk-go/assert"
+ 	"github.com/hashicorp/raft"
+ 	"github.com/rqlite/rqlite/v10/internal/fsutil"
+ 	"github.com/rqlite/rqlite/v10/internal/rsync"
+@@ -292,6 +293,9 @@
+ // Create creates a new snapshot sink for the given parameters.
+ func (s *Store) Create(version raft.SnapshotVersion, index, term uint64, configuration raft.Configuration,
+ 	configurationIndex uint64, trans raft.Transport) (retSink raft.SnapshotSink, retErr error) {
++	if s.mrsw.Readers() > 0 {
++		assert.Reachable("Node creates a snapshot while it streams an older snapshot", nil)
++	}
+ 	// Read the store under a read lock so the scan cannot race with a reap.
+ 	s.mrsw.BeginReadBlocking()
+ 	snapSet, err := s.getSnapshots()
+@@ -630,6 +634,7 @@
+ 			p.NReaped++
+ 		}
+ 	} else if len(walFiles) > 0 {
++		assert.Reachable("Snapshot store checkpoints incremental WAL files into its full snapshot", nil)
+ 		// 1. Checkpoint all WAL files into the full snapshot's DB. We do it this way
+ 		// because presumably the full snapshot DB is the largest file and it generally
+ 		// makes sense to move the WAL files to it.
+@@ -708,6 +713,11 @@
+ 
+ 	// Clean up the plan file.
+ 	fsutil.Remove(planPath)
++	if snapSet, err := s.getSnapshots(); err == nil {
++		chainErr := snapSet.ValidateIncrementalChain()
++		assert.Always(chainErr == nil, "Snapshot store holds a valid incremental chain after a reap", map[string]any{
++			"error": fmt.Sprint(chainErr)})
++	}
+ 	return p.NReaped, p.NCheckpointed, nil
+ }
+ 
+@@ -826,6 +836,9 @@
+ 			continue
+ 		}
+ 
++		if s.mrsw.Readers() > 0 {
++			assert.Reachable("Snapshot store waits for a snapshot reader to finish before it reaps", nil)
++		}
+ 		startT := time.Now()
+ 		n, c, err := func() (int, int, error) {
+ 			defer recordDuration(autoReapDuration, startT)
+@@ -890,11 +903,13 @@
+ 			return fmt.Errorf("checking reap plan completion: %w", err)
+ 		}
+ 		if !done {
++			assert.Reachable("Snapshot store resumes a reap interrupted by a crash", nil)
+ 			s.logger.Printf("re-executing interrupted reap plan at %s", s.reapPlanPath)
+ 			if _, _, err := s.executeReapPlan(p, s.reapPlanPath); err != nil {
+ 				return fmt.Errorf("executing reap plan: %w", err)
+ 			}
+ 		} else {
++			assert.Reachable("Snapshot store removes a finished reap plan left by a crash", nil)
+ 			s.logger.Printf("reap plan at %s is fully executed, removing plan", s.reapPlanPath)
+ 			fsutil.Remove(s.reapPlanPath)
+ 		}
+@@ -907,6 +922,7 @@
+ 	}
+ 	for _, e := range entries {
+ 		if e.IsDir() && isTmpName(e.Name()) {
++			assert.Reachable("Snapshot store removes a snapshot left incomplete by a crash", nil)
+ 			tmpPath := filepath.Join(s.dir, e.Name())
+ 			s.logger.Printf("removing leftover temporary directory %s", tmpPath)
+ 			if err := fsutil.RemoveAll(tmpPath); err != nil {
+@@ -1005,4 +1021,12 @@
+ 
+ func isTmpName(name string) bool {
+ 	return filepath.Ext(name) == tmpSuffix
++}
++
++func HasFullWithWALs(dir, id string) (bool, error) {
++	snap, err := (&SnapshotCatalog{}).loadSnapshot(filepath.Join(dir, id), id)
++	if err != nil {
++		return false, err
++	}
++	return snap.typ == Full && len(snap.walFiles) > 0, nil
+ }
+--- a/store/store.go
++++ b/store/store.go
+@@ -23,6 +23,7 @@
+ 	"sync/atomic"
+ 	"time"
+ 
++	"github.com/antithesishq/antithesis-sdk-go/assert"
+ 	"github.com/hashicorp/go-hclog"
+ 	"github.com/hashicorp/raft"
+ 	"github.com/rqlite/rqlite/v10/command"
+@@ -620,6 +621,7 @@
+ 
+ 		defer func() {
+ 			if removeDBFiles {
++				assert.Reachable("Node restarts and restores its database from the snapshot store", nil)
+ 				stats.Add(numRestoresStart, 1)
+ 				s.numSnapshotsStart.Add(1)
+ 				if err := fsutil.Remove(s.cleanSnapshotPath); err != nil {
+@@ -658,6 +660,10 @@
+ 			return nil
+ 		}
+ 		if !fp.ValidFor(mt, sz, li, tm) {
++			if fp.ModTime.Equal(mt) && fp.Size == sz {
++				assert.Reachable("Node restart finds its database fingerprinted at a snapshot other than the newest", map[string]any{
++					"fingerprint-index": fp.Index, "newest-snapshot-index": li})
++			}
+ 			s.logger.Printf("clean snapshot check failed, full restore needed (%s, database file mod time: %s, size: %d, newest snapshot index: %d, term: %d)",
+ 				fp, mt, sz, li, tm)
+ 			return nil
+@@ -711,6 +717,12 @@
+ 		}()
+ 
+ 		s.logger.Printf("detected successful prior snapshot operation, skipping restore")
++		assert.Reachable("Node restarts on its database file without restoring a snapshot", nil)
++		if snaps, err := snapshotStore.ListAll(); err == nil && len(snaps) > 0 {
++			if leaderSnapshot, err := snapshot.HasFullWithWALs(s.snapshotDir, snaps[0].ID); err == nil && leaderSnapshot {
++				assert.Reachable("Node restarts on its database file at a snapshot it received from the leader", nil)
++			}
++		}
+ 		raftConfig.NoSnapshotRestoreOnStart = true
+ 		removeDBFiles = false
+ 		s.fsmIdx.Store(li)
+@@ -817,6 +829,9 @@
+ 	// were created in the Raft directory, not cleaned up, and then the node was restarted with an
+ 	// explicit SQLite path set. The only way a Staging Directory should be present is if a snapshot
+ 	// operation was in progress and the node crashed.
++	if fsutil.DirExists(s.walStagingDir) {
++		assert.Reachable("Node restart removes a WAL staging directory left by an interrupted snapshot", nil)
++	}
+ 	if err := fsutil.RemoveAll(s.walStagingDir); err != nil {
+ 		return fmt.Errorf("failed to remove pre-existing WAL staging directory: %s", err.Error())
+ 	}
+@@ -2724,6 +2739,9 @@
+ 		if err := streamer.Open(); err != nil {
+ 			return nil, err
+ 		}
++		if snaps, err := s.snapshotStore.List(); err == nil && len(snaps) > 0 {
++			assert.Reachable("Node takes a full snapshot when its snapshot store already holds snapshots", nil)
++		}
+ 		fsmSnapshot = snapshot.NewStateReader(streamer)
+ 		stats.Add(numSnapshotsFull, 1)
+ 		s.numFullSnapshots++
+@@ -2747,6 +2765,9 @@
+ 			return nil, err
+ 		}
+ 		sd := snapshot.NewStagingDir(s.walStagingDir)
++		if staged, err := sd.WALFiles(); err == nil && len(staged) > 0 {
++			assert.Reachable("Incremental snapshot carries a WAL staged by an earlier snapshot that did not persist", nil)
++		}
+ 		walWriter, _, err := sd.CreateWAL()
+ 		if err != nil {
+ 			return nil, err
+@@ -2792,6 +2813,7 @@
+ 			return nil, err
+ 		}
+ 		fsmSnapshot = snapshot.NewStateReader(streamer)
++		assert.Reachable("Node takes an incremental snapshot", nil)
+ 		stats.Add(numSnapshotsIncremental, 1)
+ 	}
+ 
+@@ -2804,11 +2826,13 @@
+ 		Finalizer:   finalizer,
+ 		OnRelease: func(invoked, succeeded bool) {
+ 			if !invoked {
++				assert.Reachable("Raft releases a snapshot without persisting it", nil)
+ 				s.logger.Printf("persisting %s snapshot was not invoked on node ID %s", dueNext, s.raftID)
+ 				// The WAL staging directory, if it has anything, will not have changed, so the WAL files
+ 				// will be ready for packaging with the next snapshot. This means we can avoid performing
+ 				// a full snapshot.
+ 			} else if !succeeded {
++				assert.Reachable("Raft fails to persist a snapshot", nil)
+ 				s.logger.Printf("persisting %s snapshot did not succeed on node ID %s", dueNext, s.raftID)
+ 				// In this situation the snapshot was processed, but the processing did not succeed.
+ 				// If this happened while handling a full snapshot, then the system will automatically
+@@ -2918,6 +2942,7 @@
+ 	s.dbModifiedTime.Store(time.Now())
+ 
+ 	stats.Add(numRestores, 1)
++	assert.Reachable("Node swaps in a database restored from a snapshot", nil)
+ 	s.logger.Printf("node restored in %s", time.Since(startT))
+ 	return nil
+ }

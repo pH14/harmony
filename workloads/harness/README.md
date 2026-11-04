@@ -533,6 +533,84 @@ definite failure only on a dial error. Other write errors are indeterminate,
 and read errors are definite. The Dockerfile knows the source SHA-256 of
 `v10.6.2` (default); pass `RQLITE_SOURCE_SHA256` for other versions.
 
+Nodes use rqlite's default flags plus the words in `flags/<version>` when
+that file exists. The Dockerfile copies it to `/opt/rqlite/flags`, and
+`node.sh` places the words before the data directory argument.
+
+### Assertions in v10.6.2
+
+The Dockerfile applies the patches in `patches/<version>/` when that
+directory exists, so other versions build unchanged. Patches in `rqlite/`
+apply to rqlite. Patches in `raft/` apply to a copy of the
+`github.com/hashicorp/raft` module from the module cache, which rqlite's
+`go.mod` then replaces. The SDK copy gets a `go.mod` with no requirements, so
+the SDK adds no module to rqlite's build list. The build logs the toolexec
+catalog lines and fails unless `hashicorp/raft`, `store` and `snapshot` each
+have a catalog.
+
+`flags/v10.6.2` sets `-raft-snap=64 -raft-snap-int=1s`, far below the
+defaults of 8192 entries and 5 seconds. rqlite keeps 1.25 times the
+threshold, 80 entries, in the raft log after a snapshot. A follower that
+misses about 150 entries, a few seconds of writes, falls below the leader's
+first index and gets a snapshot.
+
+The patches cover these paths.
+
+- Snapshot install. Guidance on how far a follower's next index is below the
+  leader's first log index. Then the leader installs a snapshot, the
+  follower's raft restores it, and its store swaps in the restored database.
+  An `Always` checks that the leader's newest snapshot covers every entry it
+  compacted. Another checks that the follower restores a snapshot at or
+  above its applied index.
+- Truncation. Guidance on how many uncommitted entries a leader holds when it
+  steps down, and on how many entries a follower removes when they conflict
+  with the leader. An `Unreachable` checks that the follower never removes an
+  entry it has committed or applied.
+- Restart. `Reachable` assertions mark a restart that restores the database
+  from the snapshot store, one that keeps the database file, one that keeps
+  it at a snapshot received from the leader, a fingerprint at a snapshot
+  other than the newest, and a WAL staging directory left by an interrupted
+  snapshot.
+- Snapshot store. `Reachable` assertions mark an incremental snapshot, a
+  full snapshot when the store already holds snapshots, a staged WAL carried
+  into the next snapshot, a snapshot raft releases unpersisted or fails to
+  persist, a snapshot created while an older one streams, a reap that waits
+  for a reader, a reap that checkpoints WAL files, and the crash recovery
+  steps in the store's startup check. An `Always` checks that the store holds
+  a valid incremental chain after each reap.
+
+Two paths each need two of those events on one node or in one term. A random
+job of 64 actions rarely completes one, so each step has its own `Sometimes`.
+
+- A node restores a snapshot from the leader, becomes leader itself, and
+  installs a snapshot on a follower. raft records that the node restored a
+  leader snapshot. Guidance on how far a follower's next index is below that
+  leader's first log index.
+- One leader installs snapshots on two followers in one term. raft records
+  the term of the last install on each follower. Guidance on how far a second
+  follower's next index is below the first log index after the first install.
+
+`state.patch` makes each node send a `harmony_state` lifecycle event with
+keys `raft <node> <name>`. The values are `role` (follower 0, leader 1,
+candidate 2), `uncommitted` (last index minus commit index), `apply lag`
+(commit index minus applied index), `since snapshot` (applied index minus
+the last snapshot index) and `restored window`. `restored window` is 1 while
+the node's last snapshot is one it restored from a leader since it started.
+A leader also sends `snapshots in flight`, `max lag` (last index minus the
+lowest follower match index) and `max next below first` (first log index
+minus the lowest follower next index). The other roles send 0 for those
+three. The commit index used is at least the applied index, because raft
+starts a restarted node at commit index 0. A follower with no match index
+in the leader's term counts from its next index minus one. Every value is
+then a distance between indexes. A node sends on entering each role and at
+the follower heartbeat check, the candidate election timeout and the leader
+lease check. It sends only when the bit length of some value changes.
+
+Releases after v10.6.2 up to v10.6.6 fix inter-node authorization and the
+backup stream, HTTP error bodies, auto-backup files, node probes, database
+connections and `ATTACH`. hashicorp/raft has no fix after
+v1.8.0. None of those fixes is on a path above.
+
 ## etcd
 
 `targets/etcd` drives the `register` family through the etcd v3 JSON gateway
@@ -589,7 +667,7 @@ applied entries and keeps 100 entries behind the snapshot in its raft log. A
 follower that misses 100 to 300 entries, a few seconds of writes, falls below
 the leader's first index and gets a snapshot.
 
-The assertions cover two paths, each as a chain of steps.
+`assertions.patch` covers two paths, each as a chain of steps.
 
 - Snapshot install. Guidance on how far a follower's log ends below the commit
   index, then on how far its next index is below the leader's first index.
@@ -602,6 +680,55 @@ The assertions cover two paths, each as a chain of steps.
   they conflict with the new leader, then on how many entries WAL replay
   replaces after that member restarts. `Unreachable` and `Always` assertions
   check that no committed entry is replaced in the raft log or in the WAL.
+
+`deep-assertions.patch` adds three paths that each need two of those events
+on one member or in one term. A random job of 64 actions rarely completes
+one, so each step has its own `Sometimes`, and the search can restart from a
+state that has passed the earlier steps.
+
+- A snapshot stays in flight while its leader steps down. raft counts ticks
+  and records the tick at which the leader sends each snapshot. Guidance on
+  how many ticks a snapshot has been in flight, against the election timeout,
+  at every leader tick and when the follower answers. The send stalls while
+  the follower is paused or cut off. Then a `Sometimes` with guidance on
+  uncommitted entries when a leader steps down while a follower is still in
+  the snapshot state. An `Always` checks that a follower
+  handles a snapshot only from a leader of its current term.
+- Truncation after a snapshot restore. raft records the index of the last
+  snapshot it restored from a leader. The window lasts while the log still
+  begins at that snapshot, which ends at the member's next own snapshot or
+  restart. A `Reachable` marks the member becoming leader in that window, and
+  guidance counts its uncommitted entries when it steps down in that window.
+  Guidance on how many entries the follower truncates in that window. An
+  `Always` checks that the truncation point is above the restored snapshot.
+- WAL replay from a leader snapshot. WAL replay treats the snapshot it starts
+  from as one received from a leader when no earlier entry in the WAL reaches
+  its index. A member's own snapshots always follow the entries they cover. A
+  `Reachable` marks a replay that starts from such a snapshot, and guidance
+  counts the entries after it that replay replaces. A second guidance counts
+  the points after that snapshot where replay replaces entries, and passes at
+  two. Each point is a later leader overwriting entries this member held. The
+  member must restore the snapshot, have later entries overwritten twice, and
+  restart, all before its next own snapshot. A replay with one overwrite is
+  the earlier step. An `Unreachable` checks that replay finds no gap after
+  its starting snapshot. `Always` assertions check that the recorded commit
+  index is at or above that snapshot and within the replayed log.
+
+`state.patch` sends each member's raft state to the host as a
+`harmony_state` event. The keys are `raft <id> <suffix>`, with the raft id in
+hex. The suffixes are `role` (follower 0, leader 1, candidate 2,
+pre-candidate 4), `uncommitted` (last index minus commit index), `apply lag`
+(commit index minus applied index), `since snapshot` (applied index minus the
+index before the first log entry) and `restored window` (1 while the first
+log index is one above the last snapshot restored from a leader). A leader
+also sends `snapshots in flight` (followers in the snapshot state), `max lag`
+(the largest gap between its last index and a follower's match index) and
+`max next below first` (how far the lowest follower next index is below its
+first log index); other roles send 0 for these. raft sends the values at
+every tick and every role change, but only when the bit length of some value
+has changed, because the host keeps only the bit length. etcdserver sends
+`etcd <id> applying snapshot` as 1 when it starts applying a snapshot from
+the leader and 0 when it ends.
 
 The linearizable read loop has one `Always`: the read index is not below the
 commit index the member had before the request. It has no `Sometimes`. Read

@@ -8,6 +8,7 @@ raft_port=${3:?missing Raft port}
 index=${name#n}
 address="10.77.0.${index}"
 joins='10.77.0.1:4002,10.77.0.2:4004,10.77.0.3:4006'
+flags=$(cat /opt/rqlite/flags)
 
 exec /opt/harmony/harness-net exec "${index}" -- /opt/rqlite/rqlited \
   -node-id "${name}" \
@@ -15,5 +16,6 @@ exec /opt/harmony/harness-net exec "${index}" -- /opt/rqlite/rqlited \
   -raft-addr "${address}:${raft_port}" \
   -bootstrap-expect 3 \
   -join "${joins}" \
+  ${flags} \
   "/tmp/rqlite/${name}" \
   >>"/tmp/rqlite/${name}.log" 2>&1

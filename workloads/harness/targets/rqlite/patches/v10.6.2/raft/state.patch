@@ -1,0 +1,176 @@
+--- a/api.go
++++ b/api.go
+@@ -145,6 +145,11 @@
+ 	snapshotInstallsLock sync.Mutex
+ 	snapshotInstalls     map[ServerID]uint64
+ 
++	restoredSnapshotIndex atomic.Uint64
++	snapshotsInFlight     atomic.Int64
++	harmonyState          [8]uint64
++	harmonyStateSent      bool
++
+ 	// Stores our local server ID, used to avoid sending RPCs to ourself
+ 	localID ServerID
+ 
+--- a/harmony_state.go
++++ b/harmony_state.go
+@@ -0,0 +1,98 @@
++package raft
++
++import (
++	"math/bits"
++	"sync/atomic"
++
++	"github.com/antithesishq/antithesis-sdk-go/lifecycle"
++)
++
++var harmonyStateKeys = [8]string{
++	"role",
++	"uncommitted",
++	"apply lag",
++	"since snapshot",
++	"restored window",
++	"snapshots in flight",
++	"max lag",
++	"max next below first",
++}
++
++func (r *Raft) sendHarmonyState() {
++	var role uint64
++	switch r.getState() {
++	case Leader:
++		role = 1
++	case Candidate:
++		role = 2
++	}
++	lastIndex := r.getLastIndex()
++	lastApplied := r.getLastApplied()
++	commitIndex := max(r.getCommitIndex(), lastApplied)
++	snapshotIndex, _ := r.getLastSnapshot()
++	var restored uint64
++	if r.restoredLeaderSnapshot.Load() && snapshotIndex == r.restoredSnapshotIndex.Load() {
++		restored = 1
++	}
++	var inFlight, maxLag, maxBelowFirst uint64
++	if role == 1 {
++		if n := r.snapshotsInFlight.Load(); n > 0 {
++			inFlight = uint64(n)
++		}
++		var matches map[ServerID]uint64
++		if c := r.leaderState.commitment; c != nil {
++			c.Lock()
++			matches = make(map[ServerID]uint64, len(c.matchIndexes))
++			for id, match := range c.matchIndexes {
++				matches[id] = match
++			}
++			c.Unlock()
++		}
++		for id, s := range r.leaderState.replState {
++			match := matches[id]
++			if match == 0 {
++				match = harmonyGap(atomic.LoadUint64(&s.nextIndex), 1)
++			}
++			maxLag = max(maxLag, harmonyGap(lastIndex, match))
++		}
++		if firstIndex, err := r.logs.FirstIndex(); err == nil {
++			for _, s := range r.leaderState.replState {
++				maxBelowFirst = max(maxBelowFirst, harmonyGap(firstIndex, atomic.LoadUint64(&s.nextIndex)))
++			}
++		}
++	}
++	state := [8]uint64{
++		role,
++		harmonyGap(lastIndex, commitIndex),
++		harmonyGap(commitIndex, lastApplied),
++		harmonyGap(lastApplied, snapshotIndex),
++		restored,
++		inFlight,
++		maxLag,
++		maxBelowFirst,
++	}
++	if r.harmonyStateSent && harmonyBuckets(state) == harmonyBuckets(r.harmonyState) {
++		return
++	}
++	r.harmonyState = state
++	r.harmonyStateSent = true
++	details := make(map[string]any, len(state))
++	for i, v := range state {
++		details["raft "+string(r.localID)+" "+harmonyStateKeys[i]] = v
++	}
++	lifecycle.SendEvent("harmony_state", details)
++}
++
++func harmonyGap(a, b uint64) uint64 {
++	if a > b {
++		return a - b
++	}
++	return 0
++}
++
++func harmonyBuckets(state [8]uint64) (b [8]int) {
++	for i, v := range state {
++		b[i] = bits.Len64(v)
++	}
++	return b
++}
+--- a/raft.go
++++ b/raft.go
+@@ -163,6 +163,7 @@
+ 	r.logger.Info("entering follower state", "follower", r, "leader-address", leaderAddr, "leader-id", leaderID)
+ 	metrics.IncrCounter([]string{"raft", "state", "follower"}, 1)
+ 	heartbeatTimer := randomTimeout(r.config().HeartbeatTimeout)
++	r.sendHarmonyState()
+ 
+ 	for r.getState() == Follower {
+ 		r.mainThreadSaturation.sleeping()
+@@ -214,6 +215,7 @@
+ 
+ 		case <-heartbeatTimer:
+ 			r.mainThreadSaturation.working()
++			r.sendHarmonyState()
+ 			// Restart the heartbeat timer
+ 			hbTimeout := r.config().HeartbeatTimeout
+ 			heartbeatTimer = randomTimeout(hbTimeout)
+@@ -430,6 +432,7 @@
+ 
+ 		case <-electionTimer:
+ 			r.mainThreadSaturation.working()
++			r.sendHarmonyState()
+ 			// Election failed! Restart the election. We simply return,
+ 			// which will kick us back into runCandidate
+ 			r.logger.Warn("Election timeout reached, restarting election")
+@@ -681,6 +684,7 @@
+ 	// This is only used for the first lease check, we reload lease below
+ 	// based on the current config value.
+ 	lease := time.After(r.config().LeaderLeaseTimeout)
++	r.sendHarmonyState()
+ 
+ 	for r.getState() == Leader {
+ 		r.mainThreadSaturation.sleeping()
+@@ -939,6 +943,7 @@
+ 
+ 		case <-lease:
+ 			r.mainThreadSaturation.working()
++			r.sendHarmonyState()
+ 			// Check if we've exceeded the lease, potentially stepping down
+ 			maxDiff := r.checkLeaderLease()
+ 
+@@ -1966,6 +1971,7 @@
+ 		"applied-index": appliedBefore, "snapshot-index": req.LastLogIndex})
+ 	assert.Reachable("Follower restores a snapshot received from the leader", nil)
+ 	r.restoredLeaderSnapshot.Store(true)
++	r.restoredSnapshotIndex.Store(req.LastLogIndex)
+ 
+ 	// Update the lastApplied so we don't replay old logs
+ 	r.setLastApplied(req.LastLogIndex)
+--- a/replication.go
++++ b/replication.go
+@@ -309,6 +309,8 @@
+ // sendLatestSnapshot is used to send the latest snapshot we have
+ // down to our follower.
+ func (r *Raft) sendLatestSnapshot(s *followerReplication) (bool, error) {
++	r.snapshotsInFlight.Add(1)
++	defer r.snapshotsInFlight.Add(-1)
+ 	firstIndex, err := r.logs.FirstIndex()
+ 	if err != nil {
+ 		return false, err
