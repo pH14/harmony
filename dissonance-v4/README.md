@@ -76,7 +76,9 @@ NES). Restoring a snapshot costs nothing.
   job order, so the job stream does not depend on the worker count. The
   stream hash covers seed, kinds, every job's parent and actions, admissions
   and re-keys. The budget is read only to stop.
-- **Memory.** Snapshots are stored LZ4-compressed.
+- **Memory.** Snapshots are stored LZ4-compressed. The engine sets jemalloc
+  as the global allocator: under glibc malloc a long NES run kept about as
+  much freed heap as live data in its resident set.
 
 The archive report (`cells.jsonl`, `edges.json`) lists every cell with its
 front, first discovery, choice counts and the cell it was first reached from.

@@ -7,5 +7,8 @@ pub mod report;
 pub mod rng;
 pub mod target;
 
+#[global_allocator]
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[cfg(test)]
 mod toy;
