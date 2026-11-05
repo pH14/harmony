@@ -93,7 +93,7 @@ The CLI's shared application tests run through its library target; the reviewed
 UML profile consumer selects that same library test explicitly. Both shipped
 binary entrypoints remain separate, including under all-feature builds.
 
-`Checks / Harmony Host Compatibility` has a separate macOS-14 package job
+`Checks / Harmony Host Compatibility` has a separate macOS-15 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed
 host admission, paired frontend routing, native QuickNES routing, and CLI
@@ -107,15 +107,16 @@ PASS records for the Darwin descriptor receive-bound and frame-remainder
 qualification tests. Missing in-process feature selection, a skipped test or a
 failed test cannot satisfy this check. It does not add another Cargo build.
 
-`Checks / Harmony Host Compatibility` selects all three Linux Arm64 jobs through
-`rust_checks`. `Linux Arm64` compiles the backend and runs the portable
+`Checks / Harmony Host Compatibility` selects `macOS Arm64`, `macOS Arm64
+Qualification` and all three Linux Arm64 jobs through `rust_checks`. `Linux Arm64` compiles the backend and runs the portable
 Consonance and Harmony tests; `Linux Arm64 Dissonance` runs the portable
 Dissonance tests; `Linux Arm64 Qualification` runs the SHA-256 checks.
 Each suite enforces its own portable-test floor. Splitting the Dissonance suite
 keeps the full Arm test coverage within separate 15-minute pull-request jobs.
 The jobs use separate Rust build caches so each can save its own build artifacts
-on main. The macOS Arm64 job continues to run both portable suites and the
-qualification checks in one job; the signed-package check has its own cache.
+on main. The macOS Arm64 job runs both portable suites, and `macOS Arm64
+Qualification` runs the SHA-256 checks, so each stays within its 15-minute
+limit when main saves its cache. The signed-package check has its own cache.
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
