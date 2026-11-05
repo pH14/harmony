@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     archive::{Archive, Key, StateRec, improves},
     rng::Rng,
+    snap::Snap,
     target::{Action, JobId, Kind, Position, Probe, Vocabulary, Want, Worker},
 };
 
@@ -60,7 +61,7 @@ struct Job {
     parent: u32,
     cell: u32,
     actions: Vec<Action>,
-    start: Arc<Vec<u8>>,
+    start: Arc<Snap>,
     route: u64,
 }
 
@@ -71,6 +72,7 @@ struct Cand {
     at: Position,
     work: u64,
     snapshot: Option<Vec<u8>>,
+    stored: Option<Snap>,
 }
 
 struct JobOut {
@@ -177,6 +179,7 @@ impl Probe for JobProbe<'_> {
             at,
             work,
             snapshot: None,
+            stored: None,
         });
         Want::Capture
     }
@@ -271,7 +274,7 @@ pub struct Campaign {
     pub jobs: u64,
     pub batches: u64,
     hasher: Sha256,
-    root: Option<Arc<Vec<u8>>>,
+    root: Option<Arc<Snap>>,
     span_hist: Vec<[u64; 65]>,
     step_hist: Vec<[u64; 65]>,
     step_limits: Vec<u64>,
@@ -286,7 +289,7 @@ impl Campaign {
         root_scalars: Vec<u64>,
     ) -> Self {
         let mut archive = Archive::new(kinds.clone());
-        let root = Arc::new(lz4_flex::compress_prepend_size(&root));
+        let root = Arc::new(Snap::full(&root));
         let key = archive.key(&root_scalars);
         archive.admit(
             StateRec {
@@ -458,11 +461,10 @@ impl Campaign {
                             break;
                         }
                         let job = &jobs[j];
-                        let start = match lz4_flex::decompress_size_prepended(&job.start) {
+                        let start = match job.start.raw() {
                             Ok(s) => s,
                             Err(e) => {
-                                *slots[j].lock().expect("slot lock") =
-                                    Some(Err(format!("snapshot: {e}")));
+                                *slots[j].lock().expect("slot lock") = Some(Err(e));
                                 continue;
                             }
                         };
@@ -487,7 +489,17 @@ impl Campaign {
                                 work,
                                 spans: probe.walks.iter().map(Walk::span).collect(),
                                 steps: probe.walks.iter().map(|w| w.steps).collect(),
-                                cands: probe.cands,
+                                cands: probe
+                                    .cands
+                                    .into_iter()
+                                    .map(|mut c| {
+                                        c.stored = c
+                                            .snapshot
+                                            .take()
+                                            .map(|b| Snap::encode(&b, &job.start, &start));
+                                        c
+                                    })
+                                    .collect(),
                                 milestone: probe.milestone,
                             });
                         *slots[j].lock().expect("slot lock") = Some(result);
@@ -530,9 +542,7 @@ impl Campaign {
                 route: cand.route,
                 found: before + cand.work,
                 scalars: cand.scalars,
-                snapshot: cand
-                    .snapshot
-                    .map(|b| Arc::new(lz4_flex::compress_prepend_size(&b))),
+                snapshot: cand.stored.map(Arc::new),
                 cell: 0,
                 job: self.jobs,
             };

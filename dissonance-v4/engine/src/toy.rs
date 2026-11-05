@@ -112,6 +112,14 @@ fn reaches_door_by_carrying_ammo_and_stream_ignores_worker_count() {
             stretches.iter().map(|s| s.jobs_since_previous).sum::<u64>(),
             stretches.last().unwrap().job
         );
+        for cell in &c.archive.cells {
+            for &h in &cell.front {
+                let rec = &c.archive.states[h as usize];
+                let raw = rec.snapshot.as_ref().expect("holder snapshot").raw().unwrap();
+                let (x, a) = decode(&raw);
+                assert_eq!(scalars(x, a), rec.scalars);
+            }
+        }
         hashes.push((out.job_stream_sha256, out.work));
     }
     assert_eq!(hashes[0], hashes[1]);

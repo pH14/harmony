@@ -77,7 +77,12 @@ steps (emulated frames for NES). Restoring a snapshot costs nothing.
   job order, so the job stream does not depend on the worker count. The
   stream hash covers seed, kinds, every job's parent and actions, admissions
   and re-keys. The budget is read only to stop.
-- **Memory.** Snapshots are stored LZ4-compressed. The engine sets jemalloc
+- **Memory.** A captured state is stored as the LZ4 of its XOR against the
+  job's start snapshot and keeps a shared reference to that start snapshot. A
+  job changes little of the machine state, so on Metroid the delta is about
+  13x smaller than the compressed state. When the deltas along a chain add up
+  to more than the chain's full snapshot, the state is stored in full instead,
+  which bounds the cost of rebuilding a start state. The engine sets jemalloc
   as the global allocator: under glibc malloc a long NES run kept about as
   much freed heap as live data in its resident set.
 

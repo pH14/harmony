@@ -5,6 +5,7 @@ pub mod campaign;
 pub mod fenwick;
 pub mod report;
 pub mod rng;
+pub mod snap;
 pub mod target;
 
 #[global_allocator]

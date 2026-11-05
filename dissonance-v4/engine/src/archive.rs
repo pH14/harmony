@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::{
     fenwick::Fenwick,
+    snap::Snap,
     target::{Action, Kind},
 };
 
@@ -64,7 +65,7 @@ pub struct StateRec {
     pub route: u64,
     pub found: u64,
     pub scalars: Vec<u64>,
-    pub snapshot: Option<Arc<Vec<u8>>>,
+    pub snapshot: Option<Arc<Snap>>,
     pub cell: u32,
     pub job: u64,
 }
@@ -454,7 +455,7 @@ mod tests {
             route,
             found: route,
             scalars,
-            snapshot: Some(Arc::new(vec![0])),
+            snapshot: Some(Arc::new(Snap::full(&[0]))),
             cell: 0,
             job: 0,
         }
