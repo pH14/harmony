@@ -854,7 +854,7 @@ class HostCompatibilityTests(unittest.TestCase):
         self.assertIn("scripts/check-portable-tests.sh", commands["linux-arm64-dissonance"])
         self.assertEqual(self.data["env"]["DISSONANCE_PORTABLE_TEST_FLOOR"], 300)
         self.assertNotIn("qualify-host-sha256.py", commands["linux-arm64"])
-        self.assertNotIn("qualify-host-sha256.py", commands["macos-arm64"])
+        self.assertNotIn("qualify-", commands["macos-arm64"])
         for key in ("macos-arm64-qualification", "linux-arm64-qualification"):
             with self.subTest(job=key):
                 self.assertNotIn("cargo nextest run --workspace", commands[key])
