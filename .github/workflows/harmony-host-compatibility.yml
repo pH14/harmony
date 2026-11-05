@@ -101,6 +101,26 @@ jobs:
           test "$(uname -m)" = arm64
           sed $'s/\033\[[0-9;]*m//g' host-tests.log > copy-work-tests.log
           grep -Eq '^[[:space:]]*PASS[[:space:]]+\[[^]]+\][[:space:]]+(\([[:space:]]*[0-9]+/[0-9]+\)[[:space:]]+)?consonance-client[[:space:]]+session::live::tests::served_export_writes_once_into_the_allocated_destination$' copy-work-tests.log
+
+  macos-arm64-qualification:
+    name: macOS Arm64 Qualification
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: harmony-host-compatibility-macos-qualification
+          workspaces: |
+            . -> target
+            dissonance -> target
       - name: Compare ARM and software SHA-256 in one executable
         run: |
           cargo fetch --locked
@@ -117,6 +137,7 @@ jobs:
           python3 consonance/vmm-core/qualification/qualify-restore.py --check
           cargo fetch --locked --manifest-path dissonance/Cargo.toml
           python3 scripts/qualify-host-sha256.py --check
+
   macos-consonance-host-package:
     name: macOS Consonance Host Package
     needs: scope

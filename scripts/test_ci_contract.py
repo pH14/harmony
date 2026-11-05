@@ -770,6 +770,7 @@ class HostCompatibilityTests(unittest.TestCase):
             [job.name for job in self.workflow.jobs if not job.selects],
             [
                 "macOS Arm64",
+                "macOS Arm64 Qualification",
                 "macOS Consonance Host Package",
                 "Linux Arm64",
                 "Linux Arm64 Dissonance",
@@ -827,6 +828,7 @@ class HostCompatibilityTests(unittest.TestCase):
             runners,
             {
                 "macOS Arm64": "macos-15",
+                "macOS Arm64 Qualification": "macos-15",
                 "macOS Consonance Host Package": "macos-15",
                 "Linux Arm64": "ubuntu-24.04-arm",
                 "Linux Arm64 Dissonance": "ubuntu-24.04-arm",
@@ -852,9 +854,10 @@ class HostCompatibilityTests(unittest.TestCase):
         self.assertIn("scripts/check-portable-tests.sh", commands["linux-arm64-dissonance"])
         self.assertEqual(self.data["env"]["DISSONANCE_PORTABLE_TEST_FLOOR"], 300)
         self.assertNotIn("qualify-host-sha256.py", commands["linux-arm64"])
-        self.assertNotIn("cargo nextest run --workspace", commands["linux-arm64-qualification"])
-        for key in ("macos-arm64", "linux-arm64-qualification"):
+        self.assertNotIn("qualify-host-sha256.py", commands["macos-arm64"])
+        for key in ("macos-arm64-qualification", "linux-arm64-qualification"):
             with self.subTest(job=key):
+                self.assertNotIn("cargo nextest run --workspace", commands[key])
                 self.assertIn("scripts/qualify-host-sha256.py --check", commands[key])
                 self.assertNotIn("check --offline --json", commands[key])
         portable_cache = next(
@@ -874,6 +877,16 @@ class HostCompatibilityTests(unittest.TestCase):
         self.assertEqual(
             {key: value for key, value in portable_cache.items() if key != "shared-key"},
             {key: value for key, value in qualification_cache.items() if key != "shared-key"},
+        )
+        macos_caches = [
+            next(step["with"] for step in self.hosts[key]["steps"]
+                 if step.get("uses") == "Swatinem/rust-cache@v2")
+            for key in ("macos-arm64", "macos-arm64-qualification")
+        ]
+        self.assertEqual(len({cache["shared-key"] for cache in macos_caches}), 2)
+        self.assertEqual(
+            *({key: value for key, value in cache.items() if key != "shared-key"}
+              for cache in macos_caches)
         )
 
     def test_macos_package_job_builds_and_signs_the_strict_host(self):
