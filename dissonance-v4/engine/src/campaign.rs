@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    archive::{Archive, Key, StateRec, improves},
+    archive::{Archive, Key, Order, StateRec, compare},
     rng::Rng,
     snap::Snap,
     target::{Action, JobId, Kind, Position, Probe, Vocabulary, Want, Worker},
@@ -166,12 +166,23 @@ impl Probe for JobProbe<'_> {
         if self
             .cands
             .iter()
-            .any(|c| c.key == key && !improves(kinds, scalars, route, &c.scalars, c.route))
+            .any(|c| c.key == key && compare(kinds, scalars, &c.scalars) == Order::Worse)
         {
             return Want::Nothing;
         }
         self.cands
-            .retain(|c| c.key != key || improves(kinds, &c.scalars, c.route, scalars, route));
+            .retain(|c| c.key != key || compare(kinds, &c.scalars, scalars) != Order::Worse);
+        let equal: Vec<usize> = (0..self.cands.len())
+            .filter(|&i| {
+                self.cands[i].key == key
+                    && compare(kinds, &self.cands[i].scalars, scalars) == Order::Equal
+            })
+            .collect();
+        if equal.len() >= 2
+            && let Some(&last) = equal.iter().max_by_key(|&&i| self.cands[i].route)
+        {
+            self.cands.remove(last);
+        }
         self.cands.push(Cand {
             key,
             scalars: scalars.to_vec(),

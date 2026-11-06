@@ -48,22 +48,25 @@ steps (emulated frames for NES). Restoring a snapshot costs nothing.
   stretch, and the span is the widest stretch. Widths and step limits are
   recomputed from the job stream every 16 batches and the archive is re-keyed
   when the widths change.
-- **Retention.** Each fine cell keeps a Pareto front over the progress scalars. A
-  new state enters when no holder is at least as good on every progress
-  scalar; equal progress keeps the shorter route from the start. Dominated
-  holders drop their snapshots. Route records are kept for holders and their
-  ancestors; the rest are cleared whenever the states added since the last
+- **Retention.** Each fine cell keeps a Pareto front over the progress scalars.
+  A new state enters unless a holder dominates it. Among holders with equal
+  progress the cell keeps the shortest and the longest route from the start: a
+  hidden state the scalars cannot see (broken ice in Ice Climber) shows up as
+  more time spent, and a timer the game counts down (SMB) shows up as less.
+  Dominated holders drop their snapshots. Route records are kept for holders and
+  their ancestors; the rest are cleared whenever the states added since the last
   clearing outnumber the states it kept.
 - **Selection.** A coarse cell is drawn with weight
   `1 / (sqrt(1 + n) * (1 + r))`, then one of its fine cells with the same
-  formula over that fine cell's own counts. `n` counts the times the cell was
-  chosen since a front in it last changed; an improved arrival resets it, so
-  the improvement is explored forward and replaces downstream holders it
-  dominates. `r` is the cell's best rank over the progress scalars: for each
-  progress scalar, the number of distinct better values any holder has,
-  minimised over scalars and over the fronts in the cell. Ranks are refreshed
-  every 16 batches; a new cell is ranked on arrival. A member of the front is
-  drawn uniformly.
+  formula over that fine cell's own counts. `n` counts the times the cell was chosen since a front in it last
+  changed; an arrival that changes the front's progress values resets it, so the
+  improvement is explored forward and replaces downstream holders it dominates.
+  An arrival with the same progress as a holder leaves the count alone, so
+  swapping one route end for another does not keep an explored cell's weight up.
+  `r` is the cell's best rank over the progress scalars: for each progress
+  scalar, the number of distinct better values any holder has, minimised over
+  scalars and over the fronts in the cell. Ranks are refreshed every 16 batches;
+  a new cell is ranked on arrival. A member of the front is drawn uniformly.
 - **Jobs.** Inputs are drawn uniformly; holds are log-uniform from 1 to 63
   steps. A job from a cell runs `base * 2^L(e + 1)` steps, where `L` is the
   exponent of the Luby restart sequence (1, 1, 2, 1, 1, 2, 4, ...) and `e`

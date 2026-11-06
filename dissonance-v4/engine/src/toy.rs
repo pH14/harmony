@@ -115,7 +115,12 @@ fn reaches_door_by_carrying_ammo_and_stream_ignores_worker_count() {
         for cell in &c.archive.cells {
             for &h in &cell.front {
                 let rec = &c.archive.states[h as usize];
-                let raw = rec.snapshot.as_ref().expect("holder snapshot").raw().unwrap();
+                let raw = rec
+                    .snapshot
+                    .as_ref()
+                    .expect("holder snapshot")
+                    .raw()
+                    .unwrap();
                 let (x, a) = decode(&raw);
                 assert_eq!(scalars(x, a), rec.scalars);
             }

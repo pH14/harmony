@@ -45,20 +45,6 @@ pub fn compare(kinds: &[Kind], a: &[u64], b: &[u64]) -> Order {
     }
 }
 
-pub fn improves(
-    kinds: &[Kind],
-    scalars: &[u64],
-    route: u64,
-    holder: &[u64],
-    holder_route: u64,
-) -> bool {
-    match compare(kinds, scalars, holder) {
-        Order::Better | Order::Incomparable => true,
-        Order::Equal => route < holder_route,
-        Order::Worse => false,
-    }
-}
-
 pub struct StateRec {
     pub parent: Option<u32>,
     pub actions: Vec<Action>,
@@ -246,10 +232,63 @@ impl Archive {
         let Some(&c) = self.index.get(key) else {
             return true;
         };
-        self.cells[c as usize].front.iter().all(|&s| {
+        let mut shortest = u64::MAX;
+        let mut longest = 0;
+        let mut equal = false;
+        for &s in &self.cells[c as usize].front {
             let h = &self.states[s as usize];
-            improves(&self.kinds, scalars, route, &h.scalars, h.route)
-        })
+            match compare(&self.kinds, scalars, &h.scalars) {
+                Order::Worse => return false,
+                Order::Equal => {
+                    equal = true;
+                    shortest = shortest.min(h.route);
+                    longest = longest.max(h.route);
+                }
+                Order::Better | Order::Incomparable => {}
+            }
+        }
+        !equal || route < shortest || route > longest
+    }
+
+    fn reduce(&mut self, members: Vec<u32>) -> Vec<u32> {
+        let kinds = &self.kinds;
+        let states = &self.states;
+        let keep: Vec<bool> = members
+            .iter()
+            .map(|&m| {
+                let x = &states[m as usize];
+                let mut first = true;
+                let mut last = true;
+                for &o in &members {
+                    if o == m {
+                        continue;
+                    }
+                    let y = &states[o as usize];
+                    match compare(kinds, &y.scalars, &x.scalars) {
+                        Order::Better => return false,
+                        Order::Equal => {
+                            if (y.route, o) < (x.route, m) {
+                                first = false;
+                            }
+                            if (y.route, std::cmp::Reverse(o)) > (x.route, std::cmp::Reverse(m)) {
+                                last = false;
+                            }
+                        }
+                        Order::Worse | Order::Incomparable => {}
+                    }
+                }
+                first || last
+            })
+            .collect();
+        let mut kept = Vec::new();
+        for (m, k) in members.into_iter().zip(keep) {
+            if k {
+                kept.push(m);
+            } else {
+                self.states[m as usize].snapshot = None;
+            }
+        }
+        kept
     }
 
     fn cell_for(&mut self, key: Key, found: u64, parent_cell: Option<u32>) -> (u32, bool) {
@@ -289,35 +328,34 @@ impl Archive {
         }
         let parent_cell = rec.parent.map(|p| self.states[p as usize].cell);
         let (c, fresh) = self.cell_for(key, rec.found, parent_cell);
+        let equal = self.cells[c as usize].front.iter().any(|&h| {
+            matches!(
+                compare(&self.kinds, &self.states[h as usize].scalars, &rec.scalars),
+                Order::Equal
+            )
+        });
         let id = self.states.len() as u32;
         rec.cell = c;
-        let kinds = &self.kinds;
-        let states = &mut self.states;
+        self.states.push(rec);
+        let mut members = std::mem::take(&mut self.cells[c as usize].front);
+        members.push(id);
+        let kept = self.reduce(members);
         let cell = &mut self.cells[c as usize];
-        cell.front.retain(|&s| {
-            let h = &states[s as usize];
-            let keep = matches!(
-                compare(kinds, &h.scalars, &rec.scalars),
-                Order::Better | Order::Incomparable
-            ) || (compare(kinds, &h.scalars, &rec.scalars) == Order::Equal
-                && h.route <= rec.route);
-            if !keep {
-                states[s as usize].snapshot = None;
-            }
-            keep
-        });
-        cell.front.push(id);
-        cell.since_change = 0;
+        cell.front = kept;
+        if !equal {
+            cell.since_change = 0;
+        }
         cell.changes += 1;
         if let Some(pc) = parent_cell
             && pc != c
         {
             *self.edges.entry((pc, c)).or_insert(0) += 1;
         }
-        self.states.push(rec);
         self.cells[c as usize].rank = self.cell_rank(c as usize);
         let g = self.cells[c as usize].group as usize;
-        self.groups[g].since_change = 0;
+        if !equal {
+            self.groups[g].since_change = 0;
+        }
         self.refresh_group(g);
         Some((id, fresh))
     }
@@ -353,30 +391,14 @@ impl Archive {
             let old_cell = &old[self.states[s as usize].cell as usize];
             let (c, _) = self.cell_for(key, old_cell.found, None);
             remap.insert(self.states[s as usize].cell, c);
-            let kinds = &self.kinds;
-            let states = &mut self.states;
             let cell = &mut self.cells[c as usize];
             cell.found = cell.found.min(old_cell.found);
             cell.empty_streak = cell.empty_streak.max(old_cell.empty_streak);
-            let rec_scalars = states[s as usize].scalars.clone();
-            let rec_route = states[s as usize].route;
-            let dominated = cell.front.iter().any(|&h| {
-                let hs = &states[h as usize];
-                !improves(kinds, &rec_scalars, rec_route, &hs.scalars, hs.route)
-            });
-            if dominated {
-                states[s as usize].snapshot = None;
-                continue;
-            }
-            cell.front.retain(|&h| {
-                let hs = &states[h as usize];
-                let keep = improves(kinds, &hs.scalars, hs.route, &rec_scalars, rec_route);
-                if !keep {
-                    states[h as usize].snapshot = None;
-                }
-                keep
-            });
             cell.front.push(s);
+        }
+        for c in 0..self.cells.len() {
+            let members = std::mem::take(&mut self.cells[c].front);
+            self.cells[c].front = self.reduce(members);
         }
         for s in 0..self.states.len() {
             if self.states[s].scalars.is_empty() && !self.kinds.is_empty() {
@@ -468,16 +490,16 @@ mod tests {
         let k = a.key(&[5, 0, 0]);
         assert!(a.admit(rec(None, vec![5, 3, 3], 10), k.clone()).is_some());
         assert!(
-            a.admit(rec(Some(0), vec![5, 3, 3], 20), k.clone())
+            a.admit(rec(Some(0), vec![5, 3, 4], 20), k.clone())
                 .is_none()
         );
         assert!(a.admit(rec(Some(0), vec![5, 3, 3], 5), k.clone()).is_some());
-        assert_eq!(a.cells[0].front, vec![1]);
+        assert_eq!(a.cells[0].front, vec![0, 1]);
         assert!(
             a.admit(rec(Some(0), vec![5, 4, 4], 50), k.clone())
                 .is_some()
         );
-        assert_eq!(a.cells[0].front, vec![1, 2]);
+        assert_eq!(a.cells[0].front, vec![0, 1, 2]);
         assert!(
             a.admit(rec(Some(0), vec![5, 4, 2], 60), k.clone())
                 .is_some()
@@ -572,6 +594,24 @@ mod tests {
     }
 
     #[test]
+    fn equal_progress_arrival_keeps_the_choice_counts() {
+        let kinds = vec![Kind::Identity, Kind::Higher];
+        let mut a = Archive::new(kinds);
+        let k = a.key(&[0, 1]);
+        a.admit(rec(None, vec![0, 1], 5), k.clone()).unwrap();
+        for _ in 0..3 {
+            a.note_chosen(0);
+        }
+        a.admit(rec(Some(0), vec![0, 1], 9), k.clone()).unwrap();
+        assert_eq!(a.cells[0].front.len(), 2);
+        assert_eq!(a.cells[0].since_change, 3);
+        assert_eq!(a.groups[0].since_change, 3);
+        a.admit(rec(Some(0), vec![0, 2], 9), k).unwrap();
+        assert_eq!(a.cells[0].since_change, 0);
+        assert_eq!(a.groups[0].since_change, 0);
+    }
+
+    #[test]
     fn rank_counts_distinct_better_progress() {
         let kinds = vec![Kind::Identity, Kind::Higher, Kind::Lower];
         let mut a = Archive::new(kinds);
@@ -586,5 +626,38 @@ mod tests {
         assert_eq!(a.rank_of(&[7, 9, 9]), 0);
         let untouched = Archive::new(vec![Kind::Identity]);
         assert_eq!(untouched.rank_of(&[3]), 0);
+    }
+
+    #[test]
+    fn equal_progress_keeps_the_shortest_and_the_longest_route() {
+        let kinds = vec![Kind::Identity, Kind::Higher];
+        let mut a = Archive::new(kinds);
+        let k = a.key(&[5, 3]);
+        a.admit(rec(None, vec![5, 3], 10), k.clone()).unwrap();
+        assert!(a.would_admit(&k, &[5, 3], 20));
+        a.admit(rec(Some(0), vec![5, 3], 20), k.clone()).unwrap();
+        assert_eq!(a.cells[0].front, vec![0, 1]);
+        assert!(!a.would_admit(&k, &[5, 3], 15));
+        assert!(a.admit(rec(Some(0), vec![5, 3], 15), k.clone()).is_none());
+        a.admit(rec(Some(0), vec![5, 3], 30), k.clone()).unwrap();
+        assert_eq!(a.cells[0].front, vec![0, 2]);
+        assert!(a.states[1].snapshot.is_none());
+        a.admit(rec(Some(0), vec![5, 3], 4), k.clone()).unwrap();
+        assert_eq!(a.cells[0].front, vec![2, 3]);
+        a.admit(rec(Some(0), vec![5, 4], 50), k.clone()).unwrap();
+        assert_eq!(a.cells[0].front, vec![4]);
+        a.admit(rec(Some(0), vec![9, 1], 1), a.key(&[9, 1]))
+            .unwrap();
+        a.admit(rec(Some(0), vec![9, 1], 70), a.key(&[9, 1]))
+            .unwrap();
+        a.rekey(vec![4 + FINE_LEVELS, 0]);
+        let c = a.index[&vec![0]] as usize;
+        assert_eq!(a.cells[c].front, vec![4]);
+        a.admit(rec(Some(0), vec![9, 4], 2), a.key(&[9, 4]))
+            .unwrap();
+        a.admit(rec(Some(0), vec![9, 4], 90), a.key(&[9, 4]))
+            .unwrap();
+        assert_eq!(a.cells[c].front, vec![7, 8]);
+        assert!(a.states[4].snapshot.is_none());
     }
 }

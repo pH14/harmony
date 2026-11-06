@@ -46,8 +46,8 @@ impl Snap {
         }
         let mut links = links.into_iter().rev();
         let root = links.next().ok_or("empty snapshot chain")?;
-        let mut out =
-            lz4_flex::decompress_size_prepended(&root.bytes).map_err(|e| format!("snapshot: {e}"))?;
+        let mut out = lz4_flex::decompress_size_prepended(&root.bytes)
+            .map_err(|e| format!("snapshot: {e}"))?;
         for link in links {
             let xor = lz4_flex::decompress_size_prepended(&link.bytes)
                 .map_err(|e| format!("snapshot: {e}"))?;
@@ -75,7 +75,9 @@ mod tests {
     use super::*;
 
     fn state(seed: u8, len: usize) -> Vec<u8> {
-        (0..len).map(|i| (i as u8).wrapping_mul(31) ^ seed).collect()
+        (0..len)
+            .map(|i| (i as u8).wrapping_mul(31) ^ seed)
+            .collect()
     }
 
     #[test]
