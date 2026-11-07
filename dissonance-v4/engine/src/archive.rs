@@ -77,6 +77,7 @@ pub struct GroupRec {
     pub chosen: u64,
     pub since_change: u64,
     pub rank: u64,
+    pub rarity: f64,
 }
 
 pub struct Archive {
@@ -91,6 +92,8 @@ pub struct Archive {
     pub edges: BTreeMap<(u32, u32), u64>,
     pub ladders: Vec<Vec<u64>>,
     pub next_prune: usize,
+    pub value_counts: Vec<BTreeMap<u64, u64>>,
+    pub value_medians: Vec<u64>,
 }
 
 fn weight_of(since_change: u64, rank: u64) -> f64 {
@@ -102,7 +105,7 @@ pub fn weight(cell: &CellRec) -> f64 {
 }
 
 pub fn group_weight(group: &GroupRec) -> f64 {
-    weight_of(group.since_change, group.rank)
+    weight_of(group.since_change, group.rank) * group.rarity
 }
 
 fn fine_shift(shift: u32) -> u32 {
@@ -132,6 +135,8 @@ impl Archive {
             edges: BTreeMap::new(),
             ladders: Vec::new(),
             next_prune: 0,
+            value_counts: Vec::new(),
+            value_medians: Vec::new(),
         }
     }
 
@@ -172,11 +177,45 @@ impl Archive {
             ladders.push(ladder);
         }
         self.ladders = ladders;
+        self.refresh_rarity();
         for c in 0..self.cells.len() {
             self.cells[c].rank = self.cell_rank(c);
         }
         for g in 0..self.groups.len() {
             self.refresh_group(g);
+        }
+    }
+
+    fn rarity_of(&self, key: &Key) -> f64 {
+        key.iter()
+            .zip(&self.value_counts)
+            .zip(&self.value_medians)
+            .map(|((v, counts), &median)| {
+                let n = counts.get(v).copied().unwrap_or(0).max(1);
+                (median as f64 / n as f64).sqrt()
+            })
+            .fold(1.0, f64::max)
+    }
+
+    fn refresh_rarity(&mut self) {
+        let width = self.groups.first().map_or(0, |g| g.key.len());
+        let mut counts: Vec<BTreeMap<u64, u64>> = vec![BTreeMap::new(); width];
+        for g in &self.groups {
+            for (m, v) in counts.iter_mut().zip(&g.key) {
+                *m.entry(*v).or_insert(0) += 1;
+            }
+        }
+        self.value_medians = counts
+            .iter()
+            .map(|m| {
+                let mut n: Vec<u64> = m.values().copied().collect();
+                n.sort_unstable();
+                n.get(n.len() / 2).copied().unwrap_or(1)
+            })
+            .collect();
+        self.value_counts = counts;
+        for g in 0..self.groups.len() {
+            self.groups[g].rarity = self.rarity_of(&self.groups[g].key);
         }
     }
 
@@ -301,8 +340,13 @@ impl Archive {
             Some(&g) => g,
             None => {
                 let g = self.groups.len() as u32;
+                for (m, v) in self.value_counts.iter_mut().zip(&gk) {
+                    *m.entry(*v).or_insert(0) += 1;
+                }
+                let rarity = self.rarity_of(&gk);
                 self.groups.push(GroupRec {
                     key: gk.clone(),
+                    rarity,
                     ..GroupRec::default()
                 });
                 self.group_index.insert(gk, g);
@@ -609,6 +653,22 @@ mod tests {
         a.admit(rec(Some(0), vec![0, 2], 9), k).unwrap();
         assert_eq!(a.cells[0].since_change, 0);
         assert_eq!(a.groups[0].since_change, 0);
+    }
+
+    #[test]
+    fn rare_identity_values_raise_group_weight() {
+        let kinds = vec![Kind::Identity, Kind::Identity];
+        let mut a = Archive::new(kinds);
+        for (x, e) in [(0u64, 0u64), (1, 0), (2, 0), (3, 0), (0, 1)] {
+            let k = a.key(&[x, e]);
+            a.admit(rec(None, vec![x, e], x), k).unwrap();
+        }
+        a.refresh_ranks();
+        let g = |a: &Archive, k: Vec<u64>| a.group_index[&k] as usize;
+        assert_eq!(a.groups[g(&a, vec![0, 1])].rarity, 2.0);
+        assert_eq!(a.groups[g(&a, vec![1, 0])].rarity, 1.0);
+        assert_eq!(group_weight(&a.groups[g(&a, vec![0, 1])]), 2.0);
+        assert_eq!(group_weight(&a.groups[g(&a, vec![1, 0])]), 1.0);
     }
 
     #[test]

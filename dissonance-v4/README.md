@@ -66,7 +66,13 @@ steps (emulated frames for NES). Restoring a snapshot costs nothing.
   `r` is the cell's best rank over the progress scalars: for each progress
   scalar, the number of distinct better values any holder has, minimised over
   scalars and over the fronts in the cell. Ranks are refreshed every 16 batches;
-  a new cell is ranked on arrival. A member of the front is drawn uniformly.
+  a new cell is ranked on arrival. A coarse cell's weight is also multiplied
+  by its rarest identity value: for each identity scalar, `sqrt(median / n_v)`,
+  where `n_v` counts the coarse cells holding that value and `median` is the
+  median of those counts over the scalar's values; the factor is the largest
+  over scalars, and at least 1. A value reached by few cells (a new mountain, a
+  new item) is drawn more often than its cell count alone gives. A member of the
+  front is drawn uniformly.
 - **Jobs.** Inputs are drawn uniformly; holds are log-uniform from 1 to 63
   steps. A job from a cell runs `base * 2^L(e + 1)` steps, where `L` is the
   exponent of the Luby restart sequence (1, 1, 2, 1, 1, 2, 4, ...) and `e`
