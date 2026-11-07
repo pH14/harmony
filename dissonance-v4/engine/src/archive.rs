@@ -7,6 +7,7 @@ use serde::Serialize;
 use crate::{
     fenwick::Fenwick,
     snap::Snap,
+    strata::Strata,
     target::{Action, Kind},
 };
 
@@ -89,6 +90,7 @@ pub struct Archive {
     pub groups: Vec<GroupRec>,
     pub group_index: BTreeMap<Key, u32>,
     pub weights: Fenwick,
+    pub strata: Strata,
     pub edges: BTreeMap<(u32, u32), u64>,
     pub ladders: Vec<Vec<u64>>,
     pub next_prune: usize,
@@ -132,6 +134,7 @@ impl Archive {
             groups: Vec::new(),
             group_index: BTreeMap::new(),
             weights: Fenwick::default(),
+            strata: Strata::default(),
             edges: BTreeMap::new(),
             ladders: Vec::new(),
             next_prune: 0,
@@ -229,6 +232,14 @@ impl Archive {
         self.groups[g].rank = rank;
         let w = group_weight(&self.groups[g]);
         self.weights.set(g, w);
+        self.strata.set(g, w);
+    }
+
+    pub fn pick_group(&self, scalar: u64, unit_value: f64, unit_group: f64) -> u32 {
+        if self.strata.width() == 0 {
+            return self.weights.find(unit_value * self.weights.total()) as u32;
+        }
+        self.strata.pick(scalar as usize, unit_value, unit_group)
     }
 
     pub fn pick_cell(&self, g: u32, unit: f64) -> u32 {
@@ -349,6 +360,7 @@ impl Archive {
                     rarity,
                     ..GroupRec::default()
                 });
+                self.strata.push(&gk, 1.0);
                 self.group_index.insert(gk, g);
                 self.weights.push(1.0);
                 g
@@ -414,6 +426,7 @@ impl Archive {
         group.since_change += 1;
         let w = group_weight(group);
         self.weights.set(g, w);
+        self.strata.set(g, w);
     }
 
     pub fn rekey(&mut self, shifts: Vec<u32>) {
@@ -429,6 +442,7 @@ impl Archive {
         self.groups.clear();
         self.group_index.clear();
         self.weights = Fenwick::default();
+        self.strata.clear();
         let mut remap: BTreeMap<u32, u32> = BTreeMap::new();
         for s in held {
             let key = self.key(&self.states[s as usize].scalars);
@@ -512,6 +526,8 @@ impl Archive {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     fn rec(parent: Option<u32>, scalars: Vec<u64>, route: u64) -> StateRec {
@@ -653,6 +669,41 @@ mod tests {
         a.admit(rec(Some(0), vec![0, 2], 9), k).unwrap();
         assert_eq!(a.cells[0].since_change, 0);
         assert_eq!(a.groups[0].since_change, 0);
+    }
+
+    #[test]
+    fn group_draw_gives_each_identity_value_its_own_share() {
+        let kinds = vec![Kind::Identity, Kind::Identity];
+        let mut a = Archive::new(kinds);
+        for x in 0..9u64 {
+            let k = a.key(&[0, x]);
+            a.admit(rec(None, vec![0, x], x), k).unwrap();
+        }
+        let k = a.key(&[1, 100]);
+        a.admit(rec(None, vec![1, 100], 9), k).unwrap();
+        a.refresh_ranks();
+        let lone = a.group_index[&vec![1, 100]];
+        let share = |a: &Archive, s: u64| {
+            (0..1000)
+                .filter(|&i| a.pick_group(s, (f64::from(i) + 0.5) / 1000.0, 0.5) == lone)
+                .count()
+        };
+        assert_eq!(share(&a, 0), 750);
+        assert_eq!(share(&a, 1), 250);
+        let crowd: BTreeSet<u32> = (0..1000)
+            .map(|i| a.pick_group(0, 0.1, (f64::from(i) + 0.5) / 1000.0))
+            .collect();
+        assert_eq!(crowd.len(), 9);
+        assert!(!crowd.contains(&lone));
+        a.rekey(vec![0, 0]);
+        a.refresh_ranks();
+        let lone = a.group_index[&vec![1, 100]];
+        assert_eq!(
+            (0..1000)
+                .filter(|&i| a.pick_group(0, (f64::from(i) + 0.5) / 1000.0, 0.5) == lone)
+                .count(),
+            750
+        );
     }
 
     #[test]

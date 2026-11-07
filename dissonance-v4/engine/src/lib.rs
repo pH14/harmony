@@ -6,6 +6,7 @@ pub mod fenwick;
 pub mod report;
 pub mod rng;
 pub mod snap;
+pub mod strata;
 pub mod target;
 
 #[global_allocator]

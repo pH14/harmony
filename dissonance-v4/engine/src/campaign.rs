@@ -346,8 +346,9 @@ impl Campaign {
         let (c, parent, steps) = if self.config.root_only {
             (self.archive.states[0].cell, 0, self.vocab.base_steps)
         } else {
-            let total = self.archive.weights.total();
-            let g = self.archive.weights.find(rng.unit() * total) as u32;
+            let width = self.archive.strata.width() as u64;
+            let scalar = if width == 0 { 0 } else { rng.below(width) };
+            let g = self.archive.pick_group(scalar, rng.unit(), rng.unit());
             let c = self.archive.pick_cell(g, rng.unit());
             let cell = &self.archive.cells[c as usize];
             let parent = cell.front[rng.below(cell.front.len() as u64) as usize];

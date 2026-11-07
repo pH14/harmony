@@ -56,8 +56,12 @@ steps (emulated frames for NES). Restoring a snapshot costs nothing.
   Dominated holders drop their snapshots. Route records are kept for holders and
   their ancestors; the rest are cleared whenever the states added since the last
   clearing outnumber the states it kept.
-- **Selection.** A coarse cell is drawn with weight
-  `1 / (sqrt(1 + n) * (1 + r))`, then one of its fine cells with the same
+- **Selection.** A coarse cell is drawn in three steps: an identity scalar
+  uniformly, then one of that scalar's values with weight equal to the mean
+  weight of the coarse cells holding it, then a coarse cell holding that value
+  by its weight. A value reached by few coarse cells gets the same share of
+  draws as a value reached by many. A coarse cell's weight is
+  `1 / (sqrt(1 + n) * (1 + r))`; after it is drawn, one of its fine cells is drawn with the same
   formula over that fine cell's own counts. `n` counts the times the cell was chosen since a front in it last
   changed; an arrival that changes the front's progress values resets it, so the
   improvement is explored forward and replaces downstream holders it dominates.
