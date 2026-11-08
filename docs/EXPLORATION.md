@@ -23,11 +23,12 @@ may use several machine instances or sessions.
 
 ## Campaign loop
 
-A campaign starts from one of three origins:
+A campaign starts from one of four origins:
 
 - genesis, with the workload's empty input;
 - a snapshot root supplied by an evaluator;
-- a prior archive whose retained tree becomes the new population.
+- a prior archive whose retained tree becomes the new population;
+- a whole-search checkpoint, which resumes the saved search state.
 
 For each job, the coordinator:
 
@@ -64,7 +65,7 @@ campaign faster, but are validated against the target and campaign origin.
 ## Search archive
 
 dissonance uses a bounded quality-diversity archive. A workload maps an observed
-state to an archive key. The key names three things:
+state to an archive key. The key names four things:
 
 - a place, which with the progress value forms the cell that parent selection
   draws from;

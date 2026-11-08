@@ -269,8 +269,8 @@ small instead of forcing a full-image copy. The resulting sorted plan borrows st
 copies each selected page directly into guest RAM. Page-write validation sorts
 small address/reference records, rejects duplicates and invalid ranges before
 any write, then coalesces instruction-cache invalidation ranges in the same pass
-that copies the pages. It does not sort or allocate temporary page payloads. Portable format
-7 preserves pending SDK stops, unanswered service requests, response sequences,
+that copies the pages. It does not sort or allocate temporary page payloads. The portable format
+preserves pending SDK stops, unanswered service requests, response sequences,
 pending host effects and reseeds, the recorded input prefix, schedule failure,
 and command nonce. Replay restores these without reseeding or reapplying consumed
 inputs; an explicit branch selects a new plan and retains the command nonce.
@@ -310,7 +310,7 @@ Control-server imports require both SDK and control-state sections because every
 control snapshot captures both; missing sections are rejected before minting a
 handle. The SDK hash chunk also binds its captured event history, including
 payloads, so replayed `SdkEvents` cannot differ under the same whole-state hash.
-The version-7 envelope pins this expanded identity and rejects older versions.
+The current portable envelope pins this expanded identity and rejects older versions.
 Import reconstructs the hash suffix from validated VM-state,
 SDK, and control records. A full import checks its claimed whole-state hash
 against RAM and that suffix; a sparse import compares the reconstructed suffix
@@ -490,7 +490,7 @@ the existing diagnostic log remains available independently.
 Fresh V-time wiring resets history. Capturing/hashing a snapshot and retiring
 its diagnostic trace do not advance or reset it. Replay and branch restore the
 captured commitment before continuation, regardless of local snapshot IDs or
-restore mode. Full portable snapshots (v10) and sparse sidecars (v12) retain its
+restore mode. Full portable snapshots (v11) and sparse sidecars (v15) retain its
 presence, count and digest independently of the logical state hash. Imports
 require a live validator and check availability against its V-time model before
 creating a handle. Restore also rejects a mismatch on the actual target.

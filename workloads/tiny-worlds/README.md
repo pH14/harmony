@@ -45,8 +45,8 @@ preferences: charge first and health first. `capacity_two` keeps two holders
 per slot under the charge-first preference alone.
 
 An optional `search` object selects existing campaign policies without changing
-the world: `mixture` accepts the identifiers documented in the searcher
-README, including `energy_splice:6`, and `stop_on_objective` overrides campaign
+the world: `mixture` accepts `alphabet_only`, `biased_half`, `energy:N` or
+`energy_splice:N`, such as `energy_splice:6`, and `stop_on_objective` overrides campaign
 stopping. Omitted fields retain the
 world's normal settings. Ordinary runs stop at their first objective by default;
 scaled runs normally continue to their work budget. Calibration can set
