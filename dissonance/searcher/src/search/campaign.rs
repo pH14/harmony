@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
-    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, ContinuationAccounting, Edge, Input,
-    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SelectionOdds,
-    SelectorAccounting, SelectorDraw, SelectorPath, SnapshotRetention,
-    retention_policy_from_identifier, retention_policy_identifier,
+    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveEvent, ArchiveKey,
+    ContinuationAccounting, Edge, Input, Position, ProgressPoint, RetentionPolicy,
+    SELECTOR_IDENTIFIER, SelectionOdds, SelectorAccounting, SelectorDraw, SelectorPath,
+    SnapshotRetention, retention_policy_from_identifier, retention_policy_identifier,
 };
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, SEARCH_CHECKPOINT_FORMAT,
@@ -1021,6 +1021,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub preparation_failure: bool,
     pub actions_hash: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archive_events: Vec<ArchiveEvent>,
     pub mixture_weight: u8,
     pub splice_weight: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1100,6 +1102,8 @@ pub struct CampaignEndRecord {
     pub jobs_cancelled: u64,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub interrupted: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archive_events: Vec<ArchiveEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -5352,8 +5356,9 @@ where
                 }
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
             }
-            CampaignStreamRecord::Job(job) => {
+            CampaignStreamRecord::Job(mut job) => {
                 let recorded_summary = CampaignJobSummary::of_record(&job);
+                let recorded_events = std::mem::take(&mut job.archive_events);
                 if job.selector.path == SelectorPath::Continuation
                     && (job.mixture_weight != 0
                         || job.splice_weight != u8::MAX
@@ -5711,6 +5716,13 @@ where
                 core.archive.unpin_metadata(job.parent_id);
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
+                if core.archive.take_events() != recorded_events {
+                    return Err(format!(
+                        "replayed job {} archive events diverged from the recorded stream",
+                        job.sequence
+                    )
+                    .into());
+                }
                 for metadata_id in &replay_job_metadata[replay_job_slot] {
                     if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
                         *uses = uses.saturating_sub(1);
@@ -5909,6 +5921,12 @@ where
     }
     core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
+    let final_events = core.archive.take_events();
+    if let Some(end) = &end
+        && end.archive_events != final_events
+    {
+        return Err("campaign stream terminal archive events diverged".into());
+    }
     core.finish_curve();
 
     let origin = CampaignOriginRecord {
@@ -8436,6 +8454,50 @@ mod tests {
             let error = replay_error_after_editing_a_job(drawn, edit);
             assert!(error.contains("selection odds"), "{error}");
         }
+    }
+
+    #[test]
+    fn replay_rejects_altered_archive_events() {
+        let (_, lines) = five_job_campaign_stream();
+        let records = lines
+            .iter()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            records.iter().any(|record| record["archive_events"]
+                .as_array()
+                .is_some_and(|events| !events.is_empty())),
+            "the stream records archive events"
+        );
+        let any = |_: &serde_json::Value| true;
+        for edit in [
+            (|job: &mut serde_json::Value| {
+                job["archive_events"] =
+                    serde_json::json!([{"kind": "compacted", "cells_removed": 1}]);
+            }) as fn(&mut serde_json::Value),
+            |job| {
+                job["archive_events"] = serde_json::json!([
+                    {"kind": "cell_reset", "id": 0, "cause": "opened_cell", "draws": 1}
+                ]);
+            },
+        ] {
+            let error = replay_error_after_editing_a_job(any, edit);
+            assert!(error.contains("archive events diverged"), "{error}");
+        }
+        let (workload, mut lines) = five_job_campaign_stream();
+        let mut end: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        end["archive_events"] = serde_json::json!([
+            {"kind": "deactivated", "id": 0, "cause": "memory_budget"}
+        ]);
+        *lines.last_mut().unwrap() = serde_json::to_string(&end).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified altered terminal archive events")
+                .to_string();
+        assert!(
+            error.contains("terminal archive events diverged"),
+            "{error}"
+        );
     }
 
     #[test]

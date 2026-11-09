@@ -229,8 +229,10 @@ impl Admissions {
                 admitted += 1;
             }
             archive.maintain_memory_budget().unwrap();
+            archive.take_events();
         }
         archive.prepare_selection();
+        archive.take_events();
     }
 }
 

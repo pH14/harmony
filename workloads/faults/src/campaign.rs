@@ -1647,6 +1647,7 @@ mod tests {
                 hang: false,
                 preparation_failure: false,
                 actions_hash: 0,
+                archive_events: Vec::new(),
                 mixture_weight: 0,
                 splice_weight: 0,
                 splice: None,

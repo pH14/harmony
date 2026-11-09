@@ -390,6 +390,49 @@ pub struct SelectionOdds {
     pub holder_selected: u64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "cause", rename_all = "snake_case")]
+pub enum DeactivationCause {
+    Displaced {
+        by: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preference: Option<u8>,
+    },
+    EntryLimit,
+    MemoryBudget,
+    LivenessAnchorRetired,
+    LivenessAnchorReactivated {
+        by: u64,
+    },
+    Reranked,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CellResetCause {
+    RicherArrival,
+    OpenedCell,
+    ChildOpenedCell,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ArchiveEvent {
+    Deactivated {
+        id: u64,
+        #[serde(flatten)]
+        cause: DeactivationCause,
+    },
+    CellReset {
+        id: u64,
+        cause: CellResetCause,
+        draws: u64,
+    },
+    Compacted {
+        cells_removed: usize,
+    },
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ContinuationAccounting {
     pub edges: usize,
@@ -777,6 +820,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     cell_interval_since: u64,
     #[serde(skip)]
     cell_interval_reporting: bool,
+    #[serde(with = "crate::search::checkpoint::json_bytes")]
+    events: Vec<ArchiveEvent>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -1381,6 +1426,7 @@ where
             cell_interval: BTreeMap::new(),
             cell_interval_since: 0,
             cell_interval_reporting: false,
+            events: Vec::new(),
         }
     }
 
@@ -1491,7 +1537,7 @@ where
         if !self.active.get(index).copied().unwrap_or(false) {
             return false;
         }
-        self.deactivate(index);
+        self.deactivate_for(index, DeactivationCause::LivenessAnchorRetired);
         true
     }
 
@@ -1534,6 +1580,21 @@ where
         }
         self.index_of_id(self.keyframe_id[id])
             .is_some_and(|keyframe| self.snapshot_selectable[keyframe])
+    }
+
+    pub(crate) fn take_events(&mut self) -> Vec<ArchiveEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    fn deactivate_for(&mut self, id: usize, cause: DeactivationCause) -> bool {
+        let deactivated = self.deactivate(id);
+        if deactivated {
+            self.events.push(ArchiveEvent::Deactivated {
+                id: self.entries[id].id,
+                cause,
+            });
+        }
+        deactivated
     }
 
     fn deactivate(&mut self, id: usize) -> bool {
@@ -1638,8 +1699,10 @@ where
             && visits < MAINTENANCE_QUANTUM
             && self.active_count > 1
         {
-            let (dropped, examined) =
-                self.drop_one_entry_within(MAINTENANCE_QUANTUM.saturating_sub(visits));
+            let (dropped, examined) = self.drop_one_entry_within(
+                MAINTENANCE_QUANTUM.saturating_sub(visits),
+                DeactivationCause::MemoryBudget,
+            );
             visits = visits.saturating_add(examined);
             if !dropped {
                 break;
@@ -1665,12 +1728,12 @@ where
             ))
     }
 
-    fn drop_one_entry(&mut self) -> bool {
+    fn drop_one_entry(&mut self, cause: DeactivationCause) -> bool {
         let budget = self.entries.len().saturating_mul(2);
-        self.drop_one_entry_within(budget).0
+        self.drop_one_entry_within(budget, cause).0
     }
 
-    fn drop_one_entry_within(&mut self, budget: usize) -> (bool, usize) {
+    fn drop_one_entry_within(&mut self, budget: usize, cause: DeactivationCause) -> (bool, usize) {
         let count = self.entries.len();
         if count == 0 {
             return (false, 0);
@@ -1688,7 +1751,7 @@ where
                 self.referenced[id] = false;
                 continue;
             }
-            self.deactivate(id);
+            self.deactivate_for(id, cause);
             self.entry_drops = self.entry_drops.saturating_add(1);
             return (true, examined);
         }
@@ -1798,6 +1861,7 @@ where
             return Ok(());
         }
         self.failed_compaction = None;
+        let cells_before = self.cells.len();
 
         for (index, entry) in self.entries.iter().enumerate() {
             if keep[index] {
@@ -1908,6 +1972,9 @@ where
         self.historical_entries_dropped = self
             .historical_entries_dropped
             .saturating_add(u64::try_from(dropped).unwrap_or(u64::MAX));
+        self.events.push(ArchiveEvent::Compacted {
+            cells_removed: cells_before.saturating_sub(self.cells.len()),
+        });
 
         let selector_indexed = std::mem::take(&mut self.selector_indexed);
         self.active_ids = ActiveIds::default();
@@ -2306,7 +2373,9 @@ where
             return false;
         }
         if !self.active.get(index).copied().unwrap_or(false) {
-            if self.active_count >= self.max_entries && !self.drop_one_entry() {
+            if self.active_count >= self.max_entries
+                && !self.drop_one_entry(DeactivationCause::EntryLimit)
+            {
                 return false;
             }
             let slot_key = slot_of_key(self.entries[index].key);
@@ -2326,7 +2395,10 @@ where
                 let Some(replaced) = replaced else {
                     return false;
                 };
-                self.deactivate(replaced);
+                self.deactivate_for(
+                    replaced,
+                    DeactivationCause::LivenessAnchorReactivated { by: anchor },
+                );
             }
             self.active[index] = true;
             self.active_count = self.active_count.saturating_add(1);
@@ -2678,7 +2750,7 @@ where
             .collect();
         let mut retired = 0;
         for id in displaced {
-            if self.deactivate(id) {
+            if self.deactivate_for(id, DeactivationCause::Reranked) {
                 retired += 1;
             }
         }
@@ -2848,7 +2920,7 @@ where
             if self.active_count < self.max_entries {
                 break;
             }
-            if !self.drop_one_entry() {
+            if !self.drop_one_entry(DeactivationCause::EntryLimit) {
                 if self.active_count == 1 && self.deactivate_liveness_anchor_for_admission() {
                     continue;
                 }
@@ -2942,7 +3014,20 @@ where
         }
         for replaced in displaced {
             self.replacement_cost_displaced = self.replacement_cost_displaced.saturating_add(1);
-            self.deactivate(replaced);
+            let preference = won_preferences
+                .iter()
+                .find(|preference| {
+                    key.preference_cmp(**preference, self.entries[replaced].key)
+                        == Ordering::Greater
+                })
+                .map(|preference| u8::try_from(*preference).unwrap_or(u8::MAX));
+            self.deactivate_for(
+                replaced,
+                DeactivationCause::Displaced {
+                    by: stable_id,
+                    preference,
+                },
+            );
         }
         self.next_entry_id = next_entry_id;
         self.historical_input_actions = self.historical_input_actions.saturating_add(input_len);
@@ -3048,12 +3133,18 @@ where
             self.restart_tier_run(from);
         }
         if replacement_preferences != 0 && carried_in {
-            self.reset_cell_draws(cell_of(key));
+            self.reset_cell_draws(cell_of(key), stable_id, CellResetCause::RicherArrival);
         }
         if new_cell {
-            self.reset_cell_draws(cell_of(key));
+            self.reset_cell_draws(cell_of(key), stable_id, CellResetCause::OpenedCell);
             if let Some(parent) = parent_id {
-                self.reset_cell_draws(cell_of(self.entries[parent].key));
+                let (parent_key, parent_stable_id) =
+                    (self.entries[parent].key, self.entries[parent].id);
+                self.reset_cell_draws(
+                    cell_of(parent_key),
+                    parent_stable_id,
+                    CellResetCause::ChildOpenedCell,
+                );
             }
         }
         self.retained = self.retained.saturating_add(1);
@@ -3503,10 +3594,15 @@ where
         self.champions_slot(slot, id, preference)
     }
 
-    fn reset_cell_draws(&mut self, cell: Cell<K>) {
+    fn reset_cell_draws(&mut self, cell: Cell<K>, id: u64, cause: CellResetCause) {
         if let Some(state) = self.cells.get_mut(&cell)
             && state.draws != 0
         {
+            self.events.push(ArchiveEvent::CellReset {
+                id,
+                cause,
+                draws: state.draws,
+            });
             state.draws = 0;
             self.selector_accounting.cell_resets =
                 self.selector_accounting.cell_resets.saturating_add(1);
@@ -4311,11 +4407,12 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::{
-        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellDraws, CellIntervalRow, CellMembers,
-        CellState, DrawOdds, HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input,
-        InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectionOdds, SelectorAccounting,
-        SelectorDraw, SelectorPath, SharedAllocation, SharedSnapshotMemory, SnapshotRetention,
-        TIER_RANK_SHIFT, TierCells, WeightedSet, cell_of, tier_weight,
+        ActiveIds, Archive, ArchiveCandidate, ArchiveEvent, ArchiveKey, CellDraws, CellIntervalRow,
+        CellMembers, CellResetCause, CellState, DeactivationCause, DrawOdds,
+        HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
+        MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectionOdds, SelectorAccounting, SelectorDraw,
+        SelectorPath, SharedAllocation, SharedSnapshotMemory, SnapshotRetention, TIER_RANK_SHIFT,
+        TierCells, WeightedSet, cell_of, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -6549,9 +6646,17 @@ mod tests {
         }
         assert_eq!(archive.rerank_slot_holders(), 0);
         assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0, 1]));
+        archive.take_events();
         SECOND_ORDER_FLIPPED.set(true);
         assert_eq!(archive.rerank_slot_holders(), 1);
         SECOND_ORDER_FLIPPED.set(false);
+        assert_eq!(
+            archive.take_events(),
+            vec![ArchiveEvent::Deactivated {
+                id: 1,
+                cause: DeactivationCause::Reranked,
+            }]
+        );
         assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0]));
         assert_eq!(archive.active, vec![true, false]);
     }
@@ -7032,6 +7137,131 @@ mod tests {
         assert_eq!(archive.selector_report().cell_resets, 1);
     }
     #[test]
+    fn archive_events_name_each_deactivation_reset_and_compaction() {
+        let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
+        archive.rebuild_selector_index();
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+            fall_through: false,
+            odds: None,
+        };
+        let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
+        let beside = insert_resource(&mut archive, Some(first), 2, [2, 1, 1], 5).expect("beside");
+        assert_eq!(archive.take_events(), Vec::new());
+        for _ in 0..3 {
+            archive.record_selection(first, &draw);
+        }
+        for _ in 0..2 {
+            archive.record_selection(beside, &draw);
+        }
+        let better = insert_resource(&mut archive, Some(beside), 3, [1, 1, 1], 7).expect("better");
+        assert_eq!(
+            archive.take_events(),
+            vec![
+                ArchiveEvent::Deactivated {
+                    id: 0,
+                    cause: DeactivationCause::Displaced {
+                        by: 2,
+                        preference: Some(0),
+                    },
+                },
+                ArchiveEvent::CellReset {
+                    id: 2,
+                    cause: CellResetCause::RicherArrival,
+                    draws: 3,
+                },
+            ]
+        );
+        for _ in 0..4 {
+            archive.record_selection(better, &draw);
+        }
+        assert!(archive.deactivate(better));
+        let reopened =
+            insert_resource(&mut archive, Some(beside), 4, [1, 1, 1], 1).expect("reopened");
+        assert!(archive.opened_new_cell(reopened));
+        assert_eq!(
+            archive.take_events(),
+            vec![
+                ArchiveEvent::CellReset {
+                    id: 3,
+                    cause: CellResetCause::OpenedCell,
+                    draws: 4,
+                },
+                ArchiveEvent::CellReset {
+                    id: 1,
+                    cause: CellResetCause::ChildOpenedCell,
+                    draws: 2,
+                },
+            ]
+        );
+        archive.max_entries = 2;
+        insert_resource(&mut archive, Some(beside), 5, [3, 1, 1], 1).expect("limited");
+        let events = archive.take_events();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [ArchiveEvent::Deactivated {
+                    id: 1 | 3,
+                    cause: DeactivationCause::EntryLimit,
+                }]
+            ),
+            "{events:?}"
+        );
+        archive.compact_history(true).unwrap();
+        assert_eq!(
+            archive.take_events(),
+            vec![ArchiveEvent::Compacted { cells_removed: 1 }]
+        );
+        archive.compact_history(true).unwrap();
+        assert_eq!(
+            archive.take_events(),
+            vec![ArchiveEvent::Compacted { cells_removed: 0 }]
+        );
+    }
+    #[test]
+    fn archive_events_serialize_as_flat_tagged_objects() {
+        let events = vec![
+            ArchiveEvent::Deactivated {
+                id: 4,
+                cause: DeactivationCause::Displaced {
+                    by: 9,
+                    preference: Some(1),
+                },
+            },
+            ArchiveEvent::Deactivated {
+                id: 5,
+                cause: DeactivationCause::LivenessAnchorReactivated { by: 2 },
+            },
+            ArchiveEvent::Deactivated {
+                id: 6,
+                cause: DeactivationCause::MemoryBudget,
+            },
+            ArchiveEvent::CellReset {
+                id: 7,
+                cause: CellResetCause::ChildOpenedCell,
+                draws: 3,
+            },
+            ArchiveEvent::Compacted { cells_removed: 2 },
+        ];
+        let json = serde_json::to_string(&events).unwrap();
+        assert_eq!(
+            json,
+            concat!(
+                r#"[{"kind":"deactivated","id":4,"cause":"displaced","by":9,"preference":1},"#,
+                r#"{"kind":"deactivated","id":5,"cause":"liveness_anchor_reactivated","by":2},"#,
+                r#"{"kind":"deactivated","id":6,"cause":"memory_budget"},"#,
+                r#"{"kind":"cell_reset","id":7,"cause":"child_opened_cell","draws":3},"#,
+                r#"{"kind":"compacted","cells_removed":2}]"#
+            )
+        );
+        assert_eq!(
+            serde_json::from_str::<Vec<ArchiveEvent>>(&json).unwrap(),
+            events
+        );
+    }
+    #[test]
     fn cell_interval_counts_draw_routes_resets_and_yields_per_cell() {
         let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
         archive.report_cell_intervals(true);
@@ -7489,6 +7719,13 @@ mod tests {
         assert_eq!(archive.snapshot_evictions(), 0);
         assert_eq!(archive.entry_drops(), 1);
         assert_eq!(
+            archive.take_events(),
+            vec![ArchiveEvent::Deactivated {
+                id: 0,
+                cause: DeactivationCause::MemoryBudget,
+            }]
+        );
+        assert_eq!(
             archive.history_memory_bytes(),
             archive
                 .entry_metadata_memory_bytes()
@@ -7792,7 +8029,7 @@ mod tests {
 
         archive.referenced.fill(true);
         archive.drop_hand = 0;
-        let (dropped, examined) = archive.drop_one_entry_within(4);
+        let (dropped, examined) = archive.drop_one_entry_within(4, DeactivationCause::EntryLimit);
         assert!(!dropped);
         assert_eq!(examined, 4);
         assert_eq!(archive.drop_hand, 4);
@@ -7979,15 +8216,15 @@ mod tests {
     #[test]
     fn entry_drop_sweep_clears_reference_bits_first_and_reports_exhaustion() {
         let mut empty = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
-        assert!(!empty.drop_one_entry());
+        assert!(!empty.drop_one_entry(DeactivationCause::EntryLimit));
 
         let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
         assert!(archive.deactivate(0));
-        assert!(archive.drop_one_entry());
+        assert!(archive.drop_one_entry(DeactivationCause::EntryLimit));
         assert_eq!(archive.active_count(), 0);
         assert_eq!(archive.resident_snapshot_count(), 0);
         assert_eq!(archive.entry_drops(), 1);
-        assert!(!archive.drop_one_entry());
+        assert!(!archive.drop_one_entry(DeactivationCause::EntryLimit));
     }
 
     #[test]
@@ -8028,12 +8265,24 @@ mod tests {
         assert!(!archive.active[0]);
         assert!(archive.entries[0].snapshot.is_some());
         archive.active_ids = ActiveIds::default();
+        archive.take_events();
 
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_cafe);
         assert!(archive.select_parent(&mut rand).is_err());
         assert_eq!(archive.liveness_anchor_reactivations(), 0);
         archive.prepare_selection();
         assert_eq!(archive.liveness_anchor_reactivations(), 1);
+        let events = archive.take_events();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [ArchiveEvent::Deactivated {
+                    id: 1 | 2,
+                    cause: DeactivationCause::LivenessAnchorReactivated { by: 0 },
+                }]
+            ),
+            "{events:?}"
+        );
         archive
             .select_parent(&mut rand)
             .expect("budgeted anchor keeps selection live");
@@ -8080,6 +8329,13 @@ mod tests {
             )
             .expect("anchor yields to one-entry admission")
             .expect("retain admitted entry");
+        assert_eq!(
+            archive.take_events(),
+            vec![ArchiveEvent::Deactivated {
+                id: 0,
+                cause: DeactivationCause::LivenessAnchorRetired,
+            }]
+        );
         assert_eq!(archive.active_count(), 1);
         assert!(!archive.active[0]);
         assert!(archive.entries[0].snapshot.is_some());
@@ -8091,6 +8347,13 @@ mod tests {
         );
         archive.active_ids = ActiveIds::default();
         archive.prepare_selection();
+        assert_eq!(
+            archive.take_events(),
+            vec![ArchiveEvent::Deactivated {
+                id: 1,
+                cause: DeactivationCause::EntryLimit,
+            }]
+        );
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_cafe);
         let (selected, _) = archive
             .select_parent(&mut rand)

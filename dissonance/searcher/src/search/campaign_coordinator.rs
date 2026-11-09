@@ -836,6 +836,7 @@ where
                 executions_completed: core.sequence,
                 jobs_cancelled,
                 interrupted,
+                archive_events: core.archive.take_events(),
             }),
         )?;
         let stream_sha256 = writer.finish()?;
@@ -1116,6 +1117,7 @@ where
             hang: summary.hang,
             preparation_failure: summary.preparation_failure,
             actions_hash: summary.actions_hash,
+            archive_events: core.archive.take_events(),
             mixture_weight: pending_job.mixture_weight,
             splice_weight: pending_job.splice_weight,
             splice: pending_job.splice,

@@ -57,6 +57,34 @@ drew by luck. Replay recomputes the odds from the archive state at the
 reservation, after any skips that came before it, and rejects a draw whose odds
 differ.
 
+The archive also keeps a list of the events that change what the selector can
+draw, and each job record carries the events since the previous job record as
+`archive_events`. Events raised after the last job, including those of the final
+compaction, go on the `End` record. Each event has a `kind`:
+
+- `deactivated` names the entry's stable `id` and its `cause`: `displaced` by
+  the arrival with stable id `by`, with the first `preference` on which the
+  arrival is strictly better when there is one; `entry_limit` when the
+  population limit drops it; `memory_budget` when the memory budget drops it;
+  `liveness_anchor_retired` when a one-entry admission retires the anchor;
+  `liveness_anchor_reactivated` when the anchor `by` reclaims its slot; or
+  `reranked` when a changed preference policy retires a holder on resume.
+- `cell_reset` names the cell through an entry `id` in it, the `draws` the cell
+  had, and the `cause`: `richer_arrival` when an arrival from another cell
+  displaces a holder, `opened_cell` when an arrival reopens an empty cell that
+  still kept its count, and `child_opened_cell` when a child of an entry in the
+  cell opens a new cell. Resets of a zero count are not events.
+- `compacted` marks a history compaction pass and counts the empty cells it
+  removed in `cells_removed`. A removed cell forgets its draw count.
+
+Without these events a study sees an entry vanish from the draws and a cell's
+odds jump without the cause. Entry counts before and after a pass are left out
+because they depend on whether a worker still holds a snapshot at that moment,
+which would make the stream differ between worker counts. The archive
+checkpoints its pending events, so a resumed search writes them into the same
+record. Replay recomputes the events at each job and at the end and rejects a
+stream whose events differ.
+
 Physical assignment chooses the earliest queued planned-finish/reservation key
 first, then the best currently idle worker for that job's optional opaque
 locality key. Workloads advertise at most 64 keys per idle worker and assign a
