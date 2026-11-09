@@ -182,7 +182,9 @@ snapshot they actually restore, including a
 parent's keyframe. If retention removes that snapshot from the active population,
 its memory stays charged until the last reservation is admitted. Live execution
 and serial replay release these pins at the same recorded boundary, independent
-of worker completion timing. A memory-bounded archive keeps a liveness anchor,
+of worker completion timing. Replay also takes each reservation's pins after the
+skips recorded for that reservation, as the live search does, so skip
+maintenance sees the same pins in both. A memory-bounded archive keeps a liveness anchor,
 a resident entry that stays available as a parent. Maintenance evicts toward
 the archive's memory limit but keeps pinned snapshots, the liveness anchor, and
 fixed reserves, so a budget smaller than that working set leaves the archive

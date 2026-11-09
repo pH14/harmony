@@ -5073,6 +5073,7 @@ where
     let mut duration_admissions = VecDeque::new();
     let mut duration_work = VecDeque::from([(0, counters.bootstrap_execution_work)]);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
+    let mut replay_unpinned = BTreeSet::<usize>::new();
     let mut replay_job_snapshots =
         BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, Vec<Option<[u8; 32]>>, u64)>::new();
     let mut replay_continuations = BTreeMap::<usize, ContinuationReservation<G>>::new();
@@ -5132,17 +5133,9 @@ where
             splice.as_ref(),
         )?;
         core.start_suffix_job(*parent_id, replay_job_suffix_limits[job_slot]);
-        replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
+        replay_unpinned.insert(job_slot);
         replay_selections.insert(job_slot, (replay_planned_clock, core.sequence));
-        for metadata_id in &replay_job_metadata[job_slot] {
-            let uses = replay_metadata_uses.entry(*metadata_id).or_default();
-            *uses = uses
-                .checked_add(1)
-                .ok_or("recorded metadata use count overflow")?;
-        }
     }
-    core.archive
-        .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
 
     let mut replay_admissions = 0_usize;
     let mut replay_skips = ReplaySkipSchedule::default();
@@ -5150,6 +5143,32 @@ where
         draw_state.release_versions(&required_draw_versions, replay_record_index);
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
+        let pinned_before = match &record {
+            CampaignStreamRecord::Skip(skip) => usize::try_from(skip.reservation)?,
+            _ => usize::MAX,
+        };
+        let ready = replay_unpinned
+            .range(..pinned_before)
+            .copied()
+            .collect::<Vec<_>>();
+        for slot in &ready {
+            replay_unpinned.remove(slot);
+            let parent_index = core
+                .archive
+                .index_of_id(replay_job_parents[*slot])
+                .ok_or("replay job names a parent the archive does not hold")?;
+            replay_job_snapshots.insert(*slot, core.archive.pin_job_origin(parent_index)?);
+            for metadata_id in &replay_job_metadata[*slot] {
+                let uses = replay_metadata_uses.entry(*metadata_id).or_default();
+                *uses = uses
+                    .checked_add(1)
+                    .ok_or("recorded metadata use count overflow")?;
+            }
+        }
+        if !ready.is_empty() {
+            core.archive
+                .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
+        }
         match record {
             CampaignStreamRecord::Skip(skip) => {
                 replay_skips.accept_skip(
@@ -5273,7 +5292,7 @@ where
                 if spliced.is_none() {
                     let mut not_yet_selected = BTreeMap::<(u64, u8), u32>::new();
                     for (&slot, _) in
-                        replay_job_snapshots.range(usize::try_from(skip.reservation)?..)
+                        replay_job_tier_limits.range(usize::try_from(skip.reservation)?..)
                     {
                         if let Some(limit) = replay_job_suffix_limits[slot] {
                             let entry = not_yet_selected
@@ -5817,15 +5836,8 @@ where
                         splice.as_ref(),
                     )?;
                     core.start_suffix_job(*parent_id, replay_job_suffix_limits[next_slot]);
-                    replay_job_snapshots
-                        .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
+                    replay_unpinned.insert(next_slot);
                     replay_selections.insert(next_slot, (replay_planned_clock, core.sequence));
-                    for metadata_id in &replay_job_metadata[next_slot] {
-                        let uses = replay_metadata_uses.entry(*metadata_id).or_default();
-                        *uses = uses
-                            .checked_add(1)
-                            .ok_or("recorded metadata use count overflow")?;
-                    }
                 }
                 core.archive
                     .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
@@ -5915,7 +5927,8 @@ where
             || end.skips != counters.duplicates_skipped
             || end.executions_completed != core.sequence
             || end.jobs_cancelled != replay_cancelled
-            || !replay_job_snapshots.is_empty())
+            || !replay_job_snapshots.is_empty()
+            || !replay_unpinned.is_empty())
     {
         return Err("campaign stream terminal counts diverged".into());
     }
