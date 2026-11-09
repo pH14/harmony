@@ -181,7 +181,7 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(tail.read(), {'execution_work': 24})
         self.assertEqual(tail.read(), {'execution_work': 24})
 
-    def fake_run(self, body, require_solved=False, finish=30, disk=1):
+    def fake_run(self, body, require_solved=False, finish=30, disk=1, milestone=None):
         # Ordinary fixtures test exit semantics, not interpreter startup latency.
         # The watchdog contract supplies its own short deadline explicitly.
         binary = self.root / 'fake-eval'
@@ -190,6 +190,7 @@ class EvaluationTests(unittest.TestCase):
         jobs = eval.expand_suite(self.suite)
         job = jobs[0]
         job['case']['require_solved'] = require_solved
+        if milestone: job['case']['milestone'] = milestone
         job['request']['wall_seconds'] = 0
         out = self.root / 'runs'
         out.mkdir()
@@ -213,6 +214,25 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(result['rss_by_phase_bytes_sampled'], {'preparation': None})
         self.assertIsNone(result['io_bytes_last_sample']['read_bytes'])
         self.assertGreater(result['max_process_rss_bytes'], 0)
+
+    def test_a_cell_stops_when_its_milestone_shows(self):
+        line = '{"executions":5,"execution_work":50,"workload_diagnostics":{"named_progress":{"first_seen":{"bombs":{"execution":4}}}}}'
+        result = self.fake_run('(p/"progress.jsonl").write_text(\'' + line + '\\n\')\ntime.sleep(30)\n',
+                               milestone={'named': 'bombs'})
+        self.assertEqual(result['status'], 'milestone')
+        self.assertLess(result['elapsed_seconds'], 5)
+        self.assertEqual(result['last_progress']['execution_work'], 50)
+
+    def test_an_objective_milestone_leaves_the_cell_to_finish(self):
+        body = ('(p/"progress.jsonl").write_text(\'{"executions":5,"execution_work":50,"objectives_reached":1}\\n\')\n'
+                'time.sleep(.3)\n(p/"result.json").write_text(\'{"solved":true}\')\n')
+        result = self.fake_run(body, milestone={'objective': True})
+        self.assertEqual(result['status'], 'complete')
+
+    def test_a_malformed_milestone_is_refused_before_any_cell_runs(self):
+        self.suite['cases'][0]['milestone'] = {'bogus': 1}
+        with self.assertRaises(ValueError):
+            eval.expand_suite(self.suite)
 
     def test_watchdog_kills_only_the_run_and_retains_timeout(self):
         result = self.fake_run('(p/"progress.jsonl").write_text(\'{"executions":1}\\n\')\ntime.sleep(30)\n', finish=.1)

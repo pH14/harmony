@@ -152,6 +152,7 @@ because their stream starts at the checkpoint.
 | `metroid-long-horizon.json` | Metroid new game on three reused development seeds at 3 million executions, 4 workers and 8 GiB, with alphabet-only mutation. |
 | `metroid-long-horizon-energy-splice.json` | The same three seeds and budgets drawing through the retained-input table, against the alphabet-only arm of `metroid-long-horizon.json`. |
 | `metroid-ladder.json` | One case per Metroid chain segment, each starting from that segment's recorded `root_input`, on seeds 11–13 at 4 workers, 6 GiB and 3 million executions. Score it with `eval.py ladder`. |
+| `segments.json` | The segment panel: one case per segment, each with a milestone, on 16 seeds at one worker with a 48-reservation window and 2 GiB. Score it with `segments.py`. |
 | `throughput-checkpoint.json` | The 12-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
 | `evaluation.json` | Main-mechanism control: five seeds across SMB, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
 | `mm2-whole-game.json` | MM2 from power-on to the ending on seeds 301–303: 24 workers, 20 GiB, energy splice, checkpoints at every new milestone and every 10 million executions. |
@@ -217,6 +218,53 @@ execution. `--out` writes one JSON document per source, and `ladder` accepts
 those documents as sources in place of a matrix directory.
 `milestones.py` prints the execution at which each Metroid, MM2, Punch-Out!!, Zelda or
 Castlevania cell first reached each named milestone.
+
+## Segment panel
+
+A segment is a case with a `milestone`: a start (power-on, or a `root_input`),
+a named event, and the suite's work budget. The panel measures how much work a
+build needs to reach each milestone, over the same seeds for every build.
+
+```sh
+python3 benchmarks/search/eval.py run benchmarks/search/segments.json \
+  --assets /private/assets.json --binary /private/builds/main/nes-eval \
+  --build-info /private/builds/main/build-info.json \
+  --out /private/runs/panel-main --jobs 20 --cpus 20 --memory-capacity-mib 62000
+python3 benchmarks/search/segments.py benchmarks/search/segments.json \
+  main=/private/runs/panel-main candidate=/private/runs/panel-candidate
+```
+
+A milestone takes one of three forms. `{"named": "bombs"}` is reached when
+`named_progress.first_seen` holds that entry. `{"objective": true}` is reached
+when the campaign reaches its objective. `{"at_least": {"progress.world": 4,
+"progress.level": 0}}` is reached when the listed progress-line fields,
+compared in order, reach the listed values. The runner stops a cell as soon as
+a named or `at_least` milestone shows on its progress line, with status
+`milestone`; an objective cell ends on its own.
+
+`segments.py` times each cell at the first progress line that shows the
+milestone, in emulated frames and in tries. A cell that never shows it is
+censored at its last line: it needed more than that much work. The first arm
+named is the control. With one arm the table shows passes per segment and
+whether the budget leaves 30% to 70% of seeds passing, the range where a
+censored segment separates two builds best. With more arms each later arm
+gets a log-rank test against the control per segment and one stratified
+across segments. A verdict of `faster` or `slower` needs p below 0.05.
+`undecided` means the panel could not tell the arms apart at this seed count;
+it does not show they are equal.
+
+Every cell runs one worker with a 48-reservation window. A campaign's stream
+depends on its admission window and is the same at any worker count, so each
+cell makes the search that a 24-worker run with the reference two-reservation
+window makes, and each cell needs one core. Compare arms by work,
+because wall time varies with the core a cell lands on. Set `search.frames`
+and the wall limit so that the frame budget ends a cell first.
+
+A new segment enters the panel after the control build has run it on a
+separate set of seeds and its budget has been set from that run. A rooted
+segment starts with an empty archive, so it measures the search from that
+state. It does not reproduce the archive a power-on run carries into the
+same place.
 
 ## Evidence and resource accounting
 

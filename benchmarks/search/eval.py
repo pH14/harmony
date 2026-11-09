@@ -21,6 +21,9 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import segments  # noqa: E402
+
 SCHEMA = 'harmony-search-eval-v1'
 ALLOWED_SEARCH = {'seed','workers','executions','frames','memory_mib','window','wall_seconds','mixture','verification','stream','checkpoint_every','checkpoint_on_progress'}
 
@@ -135,6 +138,7 @@ def expand_suite(suite, selected=None):
         name=case['id']
         if not valid_id(name) or name in names: raise ValueError('invalid or duplicate case id')
         names.add(name)
+        if 'milestone' in case: segments.describe(case['milestone'])
         if selected and name not in selected: continue
         settings={**suite['search'],**case.get('search',{})}
         if 'selector' in settings: raise ValueError('case '+name+' sets search.selector; nes-eval takes no selector, so remove it from the manifest')
@@ -189,7 +193,7 @@ def run_one(job,request,args,cpus,build,host):
     if cpus: command=['taskset','-c',','.join(map(str,cpus)),*command]
     started=time.monotonic(); peak_rss=None;peak_disk=peak_allocated=0; last_frames=0;last_time=0.; last_phase=None
     phase_peaks = {}
-    timed_out=False;disk_exceeded=False
+    timed_out=False;disk_exceeded=False;milestone=job['case'].get('milestone');milestone_reached=False
     with (root/'stdout.log').open('wb') as stdout,(root/'stderr.log').open('wb') as stderr,(root/'resources.jsonl').open('w') as telemetry:
         environment = {**os.environ, 'HARMONY_COORDINATOR_PROFILE': '1'}
         process=subprocess.Popen(command,stdout=stdout,stderr=stderr,start_new_session=True,env=environment)
@@ -215,8 +219,9 @@ def run_one(job,request,args,cpus,build,host):
                 if pid:
                     process.returncode=os.waitstatus_to_exitcode(status)
                     break
-                if elapsed>deadline or disk['logical_bytes']>args.disk_limit_gib*1024**3:
-                    timed_out=elapsed>deadline;disk_exceeded=not timed_out
+                milestone_reached=bool(milestone) and not milestone.get('objective') and bool(progress) and segments.reached(milestone,progress)
+                if milestone_reached or elapsed>deadline or disk['logical_bytes']>args.disk_limit_gib*1024**3:
+                    timed_out=not milestone_reached and elapsed>deadline;disk_exceeded=not milestone_reached and not timed_out
                     os.killpg(process.pid,signal.SIGKILL)
                     _,status,usage=os.wait4(process.pid,0);process.returncode=os.waitstatus_to_exitcode(status)
                     break
@@ -226,7 +231,7 @@ def run_one(job,request,args,cpus,build,host):
                 os.killpg(process.pid,signal.SIGKILL);_,status,usage=os.wait4(process.pid,0);process.returncode=os.waitstatus_to_exitcode(status)
             raise
     result=read_json(campaign/'result.json')
-    status='timeout' if timed_out else 'disk_limit' if disk_exceeded else 'complete' if process.returncode==0 and result else 'error'
+    status='milestone' if milestone_reached else 'timeout' if timed_out else 'disk_limit' if disk_exceeded else 'complete' if process.returncode==0 and result else 'error'
     if status=='complete' and job['case'].get('require_solved',False) and not result['solved']: status='regression'
     rss_scale=1 if platform.system()=='Darwin' else 1024
     summary={'format':SCHEMA,'suite':args.suite_id,'suite_sha256':args.suite_sha256,'cell':job['id'],'case':job['case']['id'],'origin':job['case']['origin'],'status':status,'exit_code':process.returncode,'host':host,'cpu_set':cpus,'build':build,'search_request':{k:v for k,v in request.items() if k not in {'rom','core'}},'identity':read_json(campaign/'identity.json'),'result':result,'elapsed_seconds':time.monotonic()-started,'peak_process_tree_rss_bytes_sampled':peak_rss,'max_process_rss_bytes':int(usage.ru_maxrss)*rss_scale,'cpu_seconds':usage.ru_utime+usage.ru_stime,'peak_disk_logical_bytes_sampled':peak_disk,'peak_disk_allocated_bytes_sampled':peak_allocated,'final_disk':disk_usage(root),'io_bytes_last_sample':current,'last_progress':tail.read()}
@@ -293,7 +298,7 @@ def run_matrix(args):
                 # Completed cells survive later failures or an interrupted matrix.
                 write_json(args.out/'results.json',sorted(results,key=lambda x:x['cell']))
     write_json(args.out/'results.json',sorted(results,key=lambda x:x['cell']))
-    return 0 if all(x['status']=='complete' for x in results) else 1
+    return 0 if all(x['status'] in ('complete','milestone') for x in results) else 1
 
 
 def load_results(matrix, require_complete=True):
