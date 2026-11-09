@@ -366,7 +366,7 @@ mod tests {
             after: w.step(w.initial(), w.route_action(0)),
         };
         let mut record = serde_json::json!({"event":"job","sequence":1,"reservation":0,"worker":0,"parent_id":0,
-            "mutation_seed":0,"execution_work":1,"result_sha256":"","decisions":[],
+            "mutation_seed":0,"execution_work":1,"result_sha256":"","actions_run":1,"actions_hash":0,"decisions":[],
             "mixture_weight":0,"splice_weight":0,"selector":{"path":"tiers"}});
         assert!(
             summarize(
@@ -414,7 +414,7 @@ mod tests {
             after: w.initial(),
         };
         let record = serde_json::json!({"event":"job","sequence":1,"reservation":0,"worker":0,"parent_id":0,
-            "mutation_seed":0,"execution_work":1,"result_sha256":"",
+            "mutation_seed":0,"execution_work":1,"result_sha256":"","actions_run":1,"actions_hash":0,
             "decisions":[{"decision":"retained","id":1}],
             "mixture_weight":0,"splice_weight":0,"selector":{"path":"tiers"}});
         assert!(
