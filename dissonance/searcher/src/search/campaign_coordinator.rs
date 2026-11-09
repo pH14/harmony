@@ -16,18 +16,19 @@ use serde::{Deserialize, Serialize};
 use super::{
     CONSECUTIVE_SKIP_LIMIT, CampaignAdmissionDecision, CampaignCancelRecord, CampaignConfig,
     CampaignCounters, CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord,
-    CampaignJobResult, CampaignOrigin, CampaignOriginRecord, CampaignOutcome,
+    CampaignJobResult, CampaignJobSummary, CampaignOrigin, CampaignOriginRecord, CampaignOutcome,
     CampaignProgressRecord, CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader,
     CampaignStreamRecord, CampaignTypes, CompletedBuffer, CompletedJob, CoordinatorCore,
-    JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob,
-    StreamWriter, Workload, archive_entry_limit_is_valid, bootstrap_campaign, build_report,
-    completed_job_records, continuation_arrival, continuation_attempt, derive_selection_seed,
-    execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
-    mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
-    progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
-    restore_search_checkpoint, retained_archive_indexes, retained_keys, search_checkpoint_header,
-    stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
-    with_coordinator_session, write_live_progress, write_search_checkpoint,
+    JobAdmission, JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob,
+    SelectedJob, StreamWriter, Workload, archive_entry_limit_is_valid, bootstrap_campaign,
+    build_report, completed_job_records, continuation_arrival, continuation_attempt,
+    derive_selection_seed, execution_work_delta, finish_record, initial_draw_state,
+    memory_is_within_reserve, mixture_weights, planned_finish, profile_elapsed, profile_now,
+    progress_checkpoint_due, progress_record, record_compaction_elapsed, record_mixture_outcome,
+    resolve_origin, restore_search_checkpoint, retained_archive_indexes, retained_records,
+    search_checkpoint_header, stop_reservations_after_objective,
+    stop_reservations_after_work_budget, stream_header, with_coordinator_session,
+    write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
@@ -978,7 +979,13 @@ where
         core.archive
             .set_admission_wave(pending_job.continuation_wave);
         core.finish_suffix_job(pending_job.parent_id, pending_job.suffix_limit);
-        let (sequence, decisions, duration_admission) = core.admit_job_tracking(
+        let summary = CampaignJobSummary::of(&result)?;
+        let JobAdmission {
+            sequence,
+            decisions,
+            retained_actions,
+            duration: duration_admission,
+        } = core.admit_job_tracking(
             workload,
             pending_job.parent_id,
             result,
@@ -989,6 +996,8 @@ where
                 })
             },
         )?;
+        let (retained_keys, retained) =
+            retained_records::<G>(&core.archive, &decisions, &retained_actions)?;
         if duration_admission.applied {
             let draw = pending_job
                 .duration_draw
@@ -1021,7 +1030,6 @@ where
                 .record_selection(parent_index, &pending_job.selector);
         }
         let retained_ids = retained_archive_indexes(core, &decisions);
-        let retained_keys = retained_keys::<G>(&core.archive, &decisions)?;
         let new_cell_descendant = retained_ids
             .iter()
             .any(|id| core.archive.opened_new_cell(*id));
@@ -1102,6 +1110,12 @@ where
             result_sha256,
             decisions,
             retained_keys,
+            retained,
+            actions_run: summary.actions_run,
+            last_disposition: summary.last_disposition,
+            hang: summary.hang,
+            preparation_failure: summary.preparation_failure,
+            actions_hash: summary.actions_hash,
             mixture_weight: pending_job.mixture_weight,
             splice_weight: pending_job.splice_weight,
             splice: pending_job.splice,

@@ -32,6 +32,19 @@ same stream at any worker count. Worker ids appear only in run telemetry. The st
 configuration, policies, origins, jobs, admissions, skips, and progress needed
 for replay.
 
+Job records also carry the facts an offline study of selection needs, so a
+stream can be analysed without rerunning the search. Each job records
+`actions_run`, the disposition of its last action, whether it hung or failed
+preparation, and `actions_hash`, the first eight bytes of the SHA-256 of the
+postcard-encoded actions it ran, read as a little-endian `u64`. A hung job
+hashes the actions it attempted. Equal `(parent_id, actions_hash)` pairs mark
+jobs that repeated the same expansion. For every retained admission,
+`retained_keys` holds the entry's key and `retained` holds, in the same order,
+the index of the producing action among the job's actions and whether the entry
+opened a new cell or a new slot. These are computed right after admission,
+before maintenance can deactivate or compact the entry. Replay recomputes every
+one of these fields and rejects a record that differs.
+
 Physical assignment chooses the earliest queued planned-finish/reservation key
 first, then the best currently idle worker for that job's optional opaque
 locality key. Workloads advertise at most 64 keys per idle worker and assign a

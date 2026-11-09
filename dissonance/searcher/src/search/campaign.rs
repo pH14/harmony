@@ -41,6 +41,7 @@ use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParam
 pub const LONGEST_SPLICE_TAIL: usize = 128;
 use crate::search::parallel::{WorkerPoolError, with_worker_pool_routed};
 use crate::search::rand::RomuDuoJrRand;
+use crate::search::rollout::ExecutionDisposition;
 use crate::search::telemetry::{
     CampaignTelemetry, CompletedBufferTelemetry, HostTimes, Moment, TargetCounters, now,
     unix_seconds,
@@ -94,7 +95,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 15;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 16;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window; each job's planned finish is the planned finish of the admission before its \
@@ -936,6 +937,66 @@ pub enum CampaignAdmissionDecision {
     Objective,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignRetainedEntry {
+    pub action: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub opened_cell: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub opened_slot: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CampaignJobSummary {
+    actions_run: usize,
+    last_disposition: Option<ExecutionDisposition>,
+    hang: bool,
+    preparation_failure: bool,
+    actions_hash: u64,
+}
+
+impl CampaignJobSummary {
+    fn of<G: CampaignTypes + ?Sized>(
+        result: &CampaignJobResult<G>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let actions = match &result.hang {
+            Some(attempted) => postcard::to_allocvec(attempted)?,
+            None => postcard::to_allocvec(
+                &result
+                    .actions
+                    .iter()
+                    .map(|action| &action.action)
+                    .collect::<Vec<_>>(),
+            )?,
+        };
+        let digest = Sha256::digest(&actions);
+        Ok(Self {
+            actions_run: result.actions.len(),
+            last_disposition: result
+                .actions
+                .last()
+                .map(|action| action.outcome.disposition),
+            hang: result.hang.is_some(),
+            preparation_failure: result.preparation_failure.is_some(),
+            actions_hash: u64::from_le_bytes(
+                digest[..8]
+                    .try_into()
+                    .expect("a SHA-256 digest has eight bytes"),
+            ),
+        })
+    }
+
+    fn of_record<C, K>(job: &CampaignJobRecord<C, K>) -> Self {
+        Self {
+            actions_run: job.actions_run,
+            last_disposition: job.last_disposition,
+            hang: job.hang,
+            preparation_failure: job.preparation_failure,
+            actions_hash: job.actions_hash,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
 pub struct CampaignJobRecord<C, K = ()> {
@@ -950,6 +1011,16 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub decisions: Vec<CampaignAdmissionDecision>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retained_keys: Vec<K>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retained: Vec<CampaignRetainedEntry>,
+    pub actions_run: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_disposition: Option<ExecutionDisposition>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hang: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preparation_failure: bool,
+    pub actions_hash: u64,
     pub mixture_weight: u8,
     pub splice_weight: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1351,23 +1422,43 @@ fn continuation_arrival<G: Workload>(
         })
 }
 
-fn retained_keys<G: Workload>(
+type RetainedRecords<K> = (Vec<K>, Vec<CampaignRetainedEntry>);
+
+fn retained_records<G: Workload>(
     archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
     decisions: &[CampaignAdmissionDecision],
-) -> Result<Vec<G::Key>, Box<dyn Error>> {
-    decisions
+    retained_actions: &[usize],
+) -> Result<RetainedRecords<G::Key>, Box<dyn Error>> {
+    let ids = decisions
         .iter()
         .filter_map(|decision| match decision {
             CampaignAdmissionDecision::Retained { id } => Some(*id),
             _ => None,
         })
-        .map(|id| {
-            archive
+        .collect::<Vec<_>>();
+    if ids.len() != retained_actions.len() {
+        return Err("retained archive entries do not match their producing actions".into());
+    }
+    ids.into_iter()
+        .zip(retained_actions)
+        .map(|(id, action)| {
+            let index = archive
                 .index_of_id(id)
-                .and_then(|index| archive.entry_key(index))
-                .ok_or_else(|| "retained archive entry has no key".into())
+                .ok_or("retained archive entry is no longer held")?;
+            let key = archive
+                .entry_key(index)
+                .ok_or("retained archive entry has no key")?;
+            Ok((
+                key,
+                CampaignRetainedEntry {
+                    action: *action,
+                    opened_cell: archive.opened_new_cell(index),
+                    opened_slot: archive.opened_new_slot(index),
+                },
+            ))
         })
-        .collect()
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()
+        .map(|records| records.into_iter().unzip())
 }
 
 fn retained_archive_indexes<G: Workload>(
@@ -2137,9 +2228,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         parent_id: u64,
         result: CampaignJobResult<G>,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>), Box<dyn Error>> {
-        let (sequence, decisions, _) =
-            self.admit_job_tracking(workload, parent_id, result, false, |_| false)?;
-        Ok((sequence, decisions))
+        let admission = self.admit_job_tracking(workload, parent_id, result, false, |_| false)?;
+        Ok((admission.sequence, admission.decisions))
     }
 
     fn admit_job_tracking(
@@ -2149,7 +2239,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         result: CampaignJobResult<G>,
         limited: bool,
         mut tracked_action: impl FnMut(&G::Action) -> bool,
-    ) -> Result<(u64, Vec<CampaignAdmissionDecision>, DurationAdmission), Box<dyn Error>> {
+    ) -> Result<JobAdmission, Box<dyn Error>> {
         workload.verify_integrity()?;
         let CampaignJobResult {
             preparation_failure,
@@ -2182,19 +2272,20 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 input.actions.extend_from_slice(&attempted);
                 Ok(input)
             })?;
-            return Ok((sequence, Vec::new(), DurationAdmission::default()));
+            return Ok(JobAdmission::empty(sequence));
         }
         self.hang_streak = 0;
         if let Some(observations) = preparation_failure {
             self.execution_failures = self.execution_failures.saturating_add(1);
             workload.merge_preparation_failure(&mut self.evidence, &observations);
-            return Ok((sequence, Vec::new(), DurationAdmission::default()));
+            return Ok(JobAdmission::empty(sequence));
         }
         let mut current_parent = parent_index;
         let mut pending_suffix = Vec::new();
         let mut pending_certificates = Vec::new();
         let mut previous_key = None;
         let mut decisions = Vec::new();
+        let mut retained_actions = Vec::new();
         let mut duration = DurationAdmission::default();
         let actions_run = actions.len();
         let terminal = actions
@@ -2204,7 +2295,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         let retained_at_start = self.archive.retained;
         let mut left_place = false;
         let mut novel_slots = 0_usize;
-        for action in actions {
+        for (action_index, action) in actions.into_iter().enumerate() {
             let tracked = tracked_action(&action.action) && !action.outcome.disposition.is_failed();
             duration.applied |= tracked;
             let certificate = action
@@ -2289,6 +2380,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                                 .stable_id(id)
                                 .ok_or("retained archive slot is missing")?,
                         });
+                        retained_actions.push(action_index);
                         current_parent = id;
                         pending_suffix.clear();
                         pending_certificates.clear();
@@ -2327,7 +2419,12 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             self.push_curve_point();
             self.compact_progress_curve_if_needed();
         }
-        Ok((sequence, decisions, duration))
+        Ok(JobAdmission {
+            sequence,
+            decisions,
+            retained_actions,
+            duration,
+        })
     }
 
     fn push_curve_point(&mut self) {
@@ -2645,6 +2742,24 @@ fn execution_work_delta(before: u64, after: u64, scope: &str) -> Result<u64, Box
 struct DurationAdmission {
     applied: bool,
     useful: bool,
+}
+
+struct JobAdmission {
+    sequence: u64,
+    decisions: Vec<CampaignAdmissionDecision>,
+    retained_actions: Vec<usize>,
+    duration: DurationAdmission,
+}
+
+impl JobAdmission {
+    fn empty(sequence: u64) -> Self {
+        Self {
+            sequence,
+            decisions: Vec::new(),
+            retained_actions: Vec::new(),
+            duration: DurationAdmission::default(),
+        }
+    }
 }
 
 struct DurationAdmissionRecord<C> {
@@ -5190,6 +5305,7 @@ where
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
             }
             CampaignStreamRecord::Job(job) => {
+                let recorded_summary = CampaignJobSummary::of_record(&job);
                 if job.selector.path == SelectorPath::Continuation
                     && (job.mixture_weight != 0
                         || job.splice_weight != u8::MAX
@@ -5392,7 +5508,19 @@ where
                     .map_or(0, |taken| taken.wave.saturating_add(1));
                 core.archive.set_admission_wave(continuation_wave);
                 core.finish_suffix_job(job.parent_id, suffix_limit);
-                let (sequence, decisions, duration_admission) = core.admit_job_tracking(
+                if CampaignJobSummary::of(&result)? != recorded_summary {
+                    return Err(format!(
+                        "replayed job {} action summary diverged from the recorded stream",
+                        job.sequence
+                    )
+                    .into());
+                }
+                let JobAdmission {
+                    sequence,
+                    decisions,
+                    retained_actions,
+                    duration: duration_admission,
+                } = core.admit_job_tracking(
                     workload,
                     job.parent_id,
                     result,
@@ -5417,11 +5545,11 @@ where
                     )
                     .into());
                 }
-                if !job.retained_keys.is_empty()
-                    && retained_keys::<G>(&core.archive, &decisions)? != job.retained_keys
-                {
+                let (retained_keys, retained) =
+                    retained_records::<G>(&core.archive, &decisions, &retained_actions)?;
+                if retained_keys != job.retained_keys || retained != job.retained {
                     return Err(format!(
-                        "replayed job {} retained keys diverged from the recorded stream",
+                        "replayed job {} retained entries diverged from the recorded stream",
                         job.sequence
                     )
                     .into());
@@ -8140,6 +8268,113 @@ mod tests {
         assert!(error.contains("preference"), "{error}");
     }
 
+    fn replay_error_after_editing_a_job(
+        select: impl Fn(&serde_json::Value) -> bool,
+        edit: impl Fn(&mut serde_json::Value),
+    ) -> String {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let index = lines
+            .iter()
+            .position(|line| {
+                let record = serde_json::from_str::<serde_json::Value>(line).unwrap();
+                record["event"] == "job" && select(&record)
+            })
+            .expect("the stream holds a matching job");
+        let mut job: serde_json::Value = serde_json::from_str(&lines[index]).unwrap();
+        edit(&mut job);
+        lines[index] = serde_json::to_string(&job).unwrap();
+        replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+            .expect_err("replay certified an altered job record")
+            .to_string()
+    }
+
+    #[test]
+    fn replay_rejects_an_altered_job_action_summary() {
+        let any = |_: &serde_json::Value| true;
+        for edit in [
+            (|job: &mut serde_json::Value| {
+                job["actions_hash"] = serde_json::json!(job["actions_hash"].as_u64().unwrap() ^ 1);
+            }) as fn(&mut serde_json::Value),
+            |job| job["actions_run"] = serde_json::json!(job["actions_run"].as_u64().unwrap() + 1),
+            |job| job["last_disposition"] = serde_json::json!("failed"),
+            |job| job["hang"] = serde_json::json!(true),
+            |job| job["preparation_failure"] = serde_json::json!(true),
+        ] {
+            let error = replay_error_after_editing_a_job(any, edit);
+            assert!(error.contains("action summary"), "{error}");
+        }
+    }
+
+    #[test]
+    fn replay_rejects_an_altered_retained_entry() {
+        let retains = |job: &serde_json::Value| {
+            job["retained"]
+                .as_array()
+                .is_some_and(|retained| !retained.is_empty())
+        };
+        for edit in [
+            (|job: &mut serde_json::Value| {
+                let action = job["retained"][0]["action"].as_u64().unwrap();
+                job["retained"][0]["action"] = serde_json::json!(action + 1);
+            }) as fn(&mut serde_json::Value),
+            |job| {
+                let opened = job["retained"][0]["opened_cell"].as_bool().unwrap_or(false);
+                job["retained"][0]["opened_cell"] = serde_json::json!(!opened);
+            },
+            |job| {
+                let opened = job["retained"][0]["opened_slot"].as_bool().unwrap_or(false);
+                job["retained"][0]["opened_slot"] = serde_json::json!(!opened);
+            },
+            |job| {
+                job.as_object_mut().unwrap().remove("retained_keys");
+            },
+        ] {
+            let error = replay_error_after_editing_a_job(retains, edit);
+            assert!(error.contains("retained entries"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_job_record_names_the_action_behind_each_retained_entry() {
+        let (_, lines) = five_job_campaign_stream();
+        let jobs =
+            lines
+                .iter()
+                .skip(1)
+                .filter_map(|line| {
+                    match serde_json::from_str::<
+                        CampaignStreamRecord<EmpiricalStepCheckpoint, TestKey>,
+                    >(line)
+                    .unwrap()
+                    {
+                        CampaignStreamRecord::Job(job) => Some(job),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>();
+        assert!(jobs.iter().any(|job| !job.retained.is_empty()));
+        for job in jobs {
+            let retained = job
+                .decisions
+                .iter()
+                .filter(|decision| matches!(decision, CampaignAdmissionDecision::Retained { .. }))
+                .count();
+            assert_eq!(job.retained.len(), retained);
+            assert_eq!(job.retained_keys.len(), retained);
+            assert!(
+                job.retained
+                    .iter()
+                    .all(|entry| entry.action < job.actions_run)
+            );
+            assert!(
+                job.retained
+                    .windows(2)
+                    .all(|pair| pair[0].action < pair[1].action)
+            );
+            assert_eq!(job.last_disposition.is_some(), job.actions_run > 0);
+        }
+    }
+
     #[test]
     fn replay_rejects_an_impossible_recorded_suffix_limit() {
         let (workload, mut lines) = five_job_campaign_stream();
@@ -8160,7 +8395,7 @@ mod tests {
         assert!(error.contains("suffix limit"), "{error}");
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":15,"format":"campaign-v1","campaign_seed":7,
+    const RECORDED_HEADER: &str = r#"{"schema_version":16,"format":"campaign-v1","campaign_seed":7,
 "schedule_policy":"planned_finish_window_2_v6","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -8420,9 +8655,15 @@ mod tests {
                 },
             ],
         };
-        let (_, decisions, duration) = core
+        let super::JobAdmission {
+            decisions,
+            retained_actions,
+            duration,
+            ..
+        } = core
             .admit_job_tracking(&workload, 0, result, false, |action| *action == tracked)
             .expect("admit mixed novelty");
+        assert_eq!(retained_actions, vec![1]);
         assert_eq!(
             decisions,
             vec![
@@ -9291,7 +9532,8 @@ mod tests {
     #[test]
     fn a_recorded_job_keeps_its_draw_checkpoint_field_names() {
         let line = r#"{"event":"job","sequence":1,"reservation":1,"parent_id":0,"mutation_seed":9,
-"execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
+"execution_work":12,"result_sha256":"ef","decisions":[],"actions_run":2,"last_disposition":"terminal",
+"actions_hash":17,"mixture_weight":128,"splice_weight":128,
 "selector":{"path":"tiers","tier_rank":0},
 "draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
 "draw_checkpoint_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
@@ -9338,7 +9580,8 @@ mod tests {
     #[test]
     fn a_job_records_its_dispatch_time_splice_resolution() {
         let line = r#"{"event":"job","sequence":1,"reservation":1,"worker":0,"parent_id":3,"mutation_seed":9,
-"execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":85,"splice_weight":85,
+"execution_work":12,"result_sha256":"ef","decisions":[],"actions_run":0,"actions_hash":3,
+"mixture_weight":85,"splice_weight":85,
 "splice":{"outcome":"tail","donor_id":4,"leaf_id":9,"tail_postcard":[1,2]},
 "selector":{"path":"tiers","tier_rank":1}}"#
             .replace('\n', "");
