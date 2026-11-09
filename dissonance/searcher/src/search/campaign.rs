@@ -16,9 +16,9 @@ use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
     Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, ContinuationAccounting, Edge, Input,
-    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SelectorAccounting,
-    SelectorDraw, SelectorPath, SnapshotRetention, retention_policy_from_identifier,
-    retention_policy_identifier,
+    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SelectionOdds,
+    SelectorAccounting, SelectorDraw, SelectorPath, SnapshotRetention,
+    retention_policy_from_identifier, retention_policy_identifier,
 };
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, SEARCH_CHECKPOINT_FORMAT,
@@ -1472,6 +1472,30 @@ fn retained_archive_indexes<G: Workload>(
             _ => None,
         })
         .collect()
+}
+
+fn refresh_expected_odds<A, K, M, S>(
+    archive: &mut Archive<A, K, M, S>,
+    expected: &mut BTreeMap<usize, Option<SelectionOdds>>,
+    from: usize,
+    parents: &[u64],
+    selectors: &[SelectorDraw],
+) where
+    A: Clone + Debug + Eq + Ord + Serialize + DeserializeOwned,
+    K: ArchiveKey,
+    M: Clone + Copy + Debug + Eq + Serialize + DeserializeOwned,
+    S: Clone,
+{
+    let slots = expected
+        .range(from..)
+        .map(|(slot, _)| *slot)
+        .collect::<Vec<_>>();
+    for slot in slots {
+        let odds = archive
+            .index_of_id(parents[slot])
+            .and_then(|index| archive.selection_odds(index, &selectors[slot]));
+        expected.insert(slot, odds);
+    }
 }
 
 fn progress_policy_is_supported(policy: &str) -> bool {
@@ -4739,6 +4763,7 @@ where
             Option<CampaignSpliceRecord>,
         ),
     >::new();
+    let mut replay_job_selectors = BTreeMap::<u64, SelectorDraw>::new();
     let mut replay_cancelled = 0_u64;
     for (index, line) in record_lines.iter().enumerate() {
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
@@ -4763,6 +4788,7 @@ where
                 {
                     return Err("campaign stream records one reservation twice".into());
                 }
+                replay_job_selectors.insert(cancel.reservation, cancel.selector);
                 replay_cancelled = replay_cancelled.saturating_add(1);
                 None
             }
@@ -4782,6 +4808,7 @@ where
                 {
                     return Err("campaign stream admits one reservation twice".into());
                 }
+                replay_job_selectors.insert(job.reservation, job.selector);
                 job.draw_checkpoint_before
             }
             CampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
@@ -4807,6 +4834,8 @@ where
         .values()
         .map(|record| record.0)
         .collect::<Vec<_>>();
+    let replay_job_selectors = replay_job_selectors.into_values().collect::<Vec<_>>();
+    let mut replay_expected_odds = BTreeMap::<usize, Option<SelectionOdds>>::new();
     let replay_job_suffix_limits = replay_job_reservations
         .values()
         .map(|record| record.1)
@@ -5074,6 +5103,11 @@ where
             .archive
             .index_of_id(*parent_id)
             .ok_or("initial replay job names a parent the archive does not hold")?;
+        replay_expected_odds.insert(
+            job_slot,
+            core.archive
+                .selection_odds(parent_index, &replay_job_selectors[job_slot]),
+        );
         if replay_job_suffix_limits[job_slot]
             .is_some_and(|recorded| core.suffix_limit(*parent_id, parent_index) != recorded)
         {
@@ -5284,9 +5318,23 @@ where
                 verify_selector_annotation(&skip.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&skip.selector, observed_progress_tiers.len())?;
                 verify_selector_preference::<G::Key>(&skip.selector)?;
+                if core.archive.selection_odds(parent_index, &skip.selector) != skip.selector.odds {
+                    return Err(format!(
+                        "replayed skip for reservation {} selection odds diverged from the recorded stream",
+                        skip.reservation
+                    )
+                    .into());
+                }
                 core.archive.record_selection(parent_index, &skip.selector);
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
+                refresh_expected_odds(
+                    &mut core.archive,
+                    &mut replay_expected_odds,
+                    usize::try_from(skip.reservation)?,
+                    &replay_job_parents,
+                    &replay_job_selectors,
+                );
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 let draw_checkpoint_after = workload.finish_stream_record(
                     &replay_run,
@@ -5611,6 +5659,17 @@ where
                 verify_selector_annotation(&job.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&job.selector, selector_tier_limit)?;
                 verify_selector_preference::<G::Key>(&job.selector)?;
+                if replay_expected_odds
+                    .remove(&replay_job_slot)
+                    .ok_or("recorded job has no rebuilt selection odds")?
+                    != job.selector.odds
+                {
+                    return Err(format!(
+                        "replayed job {} selection odds diverged from the recorded stream",
+                        job.sequence
+                    )
+                    .into());
+                }
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
                     let new_cell_descendant = retained_archive_indexes(&core, &decisions)
@@ -5721,6 +5780,11 @@ where
                         .archive
                         .index_of_id(*parent_id)
                         .ok_or("next replay job names a parent the archive does not hold")?;
+                    replay_expected_odds.insert(
+                        next_slot,
+                        core.archive
+                            .selection_odds(parent_index, &replay_job_selectors[next_slot]),
+                    );
                     if replay_job_suffix_limits[next_slot].is_some_and(|recorded| {
                         core.suffix_limit(*parent_id, parent_index) != recorded
                     }) {
@@ -5791,6 +5855,17 @@ where
                 verify_selector_annotation(&cancel.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&cancel.selector, selector_tier_limit)?;
                 verify_selector_preference::<G::Key>(&cancel.selector)?;
+                if replay_expected_odds
+                    .remove(&slot)
+                    .ok_or("recorded cancelled job has no rebuilt selection odds")?
+                    != cancel.selector.odds
+                {
+                    return Err(format!(
+                        "replayed cancel for reservation {} selection odds diverged from the recorded stream",
+                        cancel.reservation
+                    )
+                    .into());
+                }
                 replay_selections.remove(&slot);
                 replay_continuations.remove(&slot);
                 core.finish_suffix_job(cancel.parent_id, replay_job_suffix_limits[slot]);
@@ -8335,14 +8410,42 @@ mod tests {
     }
 
     #[test]
+    fn replay_rejects_altered_selection_odds() {
+        let drawn = |job: &serde_json::Value| job["selector"]["odds"].is_object();
+        for edit in [
+            (|job: &mut serde_json::Value| {
+                let choices = job["selector"]["odds"]["tier"]["choices"].as_u64().unwrap();
+                job["selector"]["odds"]["tier"]["choices"] = serde_json::json!(choices + 1);
+            }) as fn(&mut serde_json::Value),
+            |job| {
+                let choices = job["selector"]["odds"]["cell"]["choices"].as_u64().unwrap();
+                job["selector"]["odds"]["cell"]["choices"] = serde_json::json!(choices + 1);
+            },
+            |job| {
+                let draws = job["selector"]["odds"]["cell_draws"].as_u64().unwrap();
+                job["selector"]["odds"]["cell_draws"] = serde_json::json!(draws + 1);
+            },
+            |job| {
+                let selected = job["selector"]["odds"]["holder_selected"].as_u64().unwrap();
+                job["selector"]["odds"]["holder_selected"] = serde_json::json!(selected + 1);
+            },
+            |job| {
+                job["selector"].as_object_mut().unwrap().remove("odds");
+            },
+        ] {
+            let error = replay_error_after_editing_a_job(drawn, edit);
+            assert!(error.contains("selection odds"), "{error}");
+        }
+    }
+
+    #[test]
     fn a_job_record_names_the_action_behind_each_retained_entry() {
         let (_, lines) = five_job_campaign_stream();
-        let jobs =
-            lines
-                .iter()
-                .skip(1)
-                .filter_map(|line| {
-                    match serde_json::from_str::<
+        let jobs = lines
+            .iter()
+            .skip(1)
+            .filter_map(|line| {
+                match serde_json::from_str::<
                         CampaignStreamRecord<EmpiricalStepCheckpoint, TestKey>,
                     >(line)
                     .unwrap()
@@ -8350,8 +8453,8 @@ mod tests {
                         CampaignStreamRecord::Job(job) => Some(job),
                         _ => None,
                     }
-                })
-                .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
         assert!(jobs.iter().any(|job| !job.retained.is_empty()));
         for job in jobs {
             let retained = job
@@ -9574,6 +9677,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
     }
 
@@ -11308,6 +11412,7 @@ mod tests {
                     .collect::<Vec<_>>();
                 let skip_index = records.iter().position(|record| {
                     record["event"] == "skip"
+                        && record["selector"]["path"] == "tiers"
                         && record["draw_checkpoint_before"]["records"]
                             .as_u64()
                             .unwrap()
@@ -11322,8 +11427,29 @@ mod tests {
         let before = original["draw_checkpoint_before"].clone();
         let first_record = before["records"].as_u64().unwrap();
         let mut inserted = Vec::new();
+        let odds: crate::search::archive::SelectionOdds =
+            serde_json::from_value(original["selector"]["odds"].clone()).unwrap();
+        let decayed = |count: u64, offset: u64, odds: crate::search::archive::DrawOdds| {
+            let weight = crate::search::archive::count_decay(count + offset);
+            crate::search::archive::DrawOdds {
+                weight: odds.weight.map(|_| weight),
+                total: odds
+                    .total
+                    .map(|total| total - crate::search::archive::count_decay(count) + weight),
+                ..odds
+            }
+        };
         for offset in 0..super::CONSECUTIVE_SKIP_LIMIT {
             let mut skip = original.clone();
+            skip["selector"]["odds"] =
+                serde_json::to_value(crate::search::archive::SelectionOdds {
+                    cell: decayed(odds.cell_draws, offset, odds.cell),
+                    holder: decayed(odds.holder_selected, offset, odds.holder),
+                    cell_draws: odds.cell_draws + offset,
+                    holder_selected: odds.holder_selected + offset,
+                    ..odds
+                })
+                .unwrap();
             skip["draw_checkpoint_before"]["records"] = serde_json::json!(first_record + offset);
             let after_record = first_record + offset + 1;
             skip["draw_checkpoint_after"] = if after_record.is_multiple_of(1_024) {
@@ -11544,7 +11670,15 @@ mod tests {
             .iter()
             .filter(|error| error.contains("out of planned-finish order"))
             .count();
-        assert!(3 * out_of_order > jobs.len(), "{errors:?}");
+        let moved_selection = errors
+            .iter()
+            .filter(|error| error.contains("selection odds diverged"))
+            .count();
+        assert!(out_of_order > 0, "{errors:?}");
+        assert!(
+            3 * (out_of_order + moved_selection) > jobs.len(),
+            "{errors:?}"
+        );
     }
 
     fn run_placed(placement: ThreadPlacement) -> Result<CampaignOutcome<TestWorkload>, String> {

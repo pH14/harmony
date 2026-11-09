@@ -1655,6 +1655,7 @@ mod tests {
                     tier_rank: Some(0),
                     best_preference: None,
                     fall_through: false,
+                    odds: None,
                 },
                 draw_checkpoint_before: None,
                 draw_checkpoint_after: None,

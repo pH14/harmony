@@ -45,6 +45,18 @@ opened a new cell or a new slot. These are computed right after admission,
 before maintenance can deactivate or compact the entry. Replay recomputes every
 one of these fields and rejects a record that differs.
 
+A selector draw on the `tiers` or `recent` path also carries `odds`, the
+probability the draw had of choosing this parent. For each level of the draw,
+`tier`, `cell` and `holder`, it records `choices`, the number of siblings
+offered, and for a weighted draw the chosen `weight` and the `total` weight. A
+best-holder draw records only `choices`. `cell_draws` is the chosen cell's draw
+count and `holder_selected` the parent's selection count at draw time. A
+continuation draw has no odds. A study multiplies the levels to get the chance
+each parent had, which separates a parent the selector favoured from one it
+drew by luck. Replay recomputes the odds from the archive state at the
+reservation, after any skips that came before it, and rejects a draw whose odds
+differ.
+
 Physical assignment chooses the earliest queued planned-finish/reservation key
 first, then the best currently idle worker for that job's optional opaque
 locality key. Workloads advertise at most 64 keys per idle worker and assign a

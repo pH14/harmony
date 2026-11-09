@@ -181,6 +181,8 @@ type ReplayCertificates = Vec<Option<[u8; 32]>>;
 type ReplayPath<A> = (Vec<A>, ReplayCertificates);
 pub(crate) type JobOriginParts<A, S> = (Arc<S>, Vec<A>, ReplayCertificates);
 pub(crate) type PinnedJobOriginParts<A, S> = (Arc<S>, Vec<A>, ReplayCertificates, u64);
+type PlaceDraw<K> = (<K as ArchiveKey>::Place, DrawOdds);
+type TierDraw<K> = (<K as ArchiveKey>::Progress, u8, bool, DrawOdds);
 
 #[must_use]
 pub fn cell_of<K: ArchiveKey>(key: K) -> Cell<K> {
@@ -276,7 +278,7 @@ const COUNT_DECAY_SCALE: u64 = 1 << 32;
 const BEST_HOLDER_SHARE_DENOMINATOR: usize = 4;
 
 #[must_use]
-fn count_decay(draws: u64) -> u64 {
+pub(crate) fn count_decay(draws: u64) -> u64 {
     let divisor = draws
         .saturating_add(1)
         .saturating_pow(COUNT_DECAY_EXPONENT)
@@ -289,22 +291,46 @@ fn tier_weight(rank: u8) -> u64 {
     1_u64 << (u32::from(TIER_RANK_CAP.saturating_sub(rank.min(TIER_RANK_CAP))) * TIER_RANK_SHIFT)
 }
 
+#[cfg(test)]
 fn draw_weighted(
     rand: &mut RomuDuoJrRand,
     weights: impl Iterator<Item = u64> + Clone,
 ) -> Result<usize, Box<dyn Error>> {
-    let total = weights
+    draw_weighted_odds(rand, weights).map(|(index, _)| index)
+}
+
+fn draw_weighted_odds(
+    rand: &mut RomuDuoJrRand,
+    weights: impl Iterator<Item = u64> + Clone,
+) -> Result<(usize, DrawOdds), Box<dyn Error>> {
+    let (choices, total) = weights
         .clone()
-        .fold(0_u64, |sum, weight| sum.saturating_add(weight));
+        .fold((0_usize, 0_u64), |(count, sum), weight| {
+            (count.saturating_add(1), sum.saturating_add(weight))
+        });
     let total = NonZeroU64::new(total).ok_or("weighted draw over nothing")?;
     let mut draw = rand.below_u64(total);
     for (index, weight) in weights.enumerate() {
         if draw < weight {
-            return Ok(index);
+            return Ok((index, DrawOdds::weighted(choices, weight, total.get())));
         }
         draw -= weight;
     }
     Err("weighted draw exceeded its total".into())
+}
+
+fn weighted_odds(weights: impl Iterator<Item = u64>, chosen: usize) -> Option<DrawOdds> {
+    let mut choices = 0_usize;
+    let mut total = 0_u64;
+    let mut weight = None;
+    for (index, value) in weights.enumerate() {
+        if index == chosen {
+            weight = Some(value);
+        }
+        choices = choices.saturating_add(1);
+        total = total.saturating_add(value);
+    }
+    weight.map(|weight| DrawOdds::weighted(choices, weight, total))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -324,6 +350,44 @@ pub struct SelectorDraw {
     pub best_preference: Option<u8>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fall_through: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub odds: Option<SelectionOdds>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DrawOdds {
+    pub choices: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
+
+impl DrawOdds {
+    const fn weighted(choices: usize, weight: u64, total: u64) -> Self {
+        Self {
+            choices,
+            weight: Some(weight),
+            total: Some(total),
+        }
+    }
+
+    const fn unweighted(choices: usize) -> Self {
+        Self {
+            choices,
+            weight: None,
+            total: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SelectionOdds {
+    pub tier: DrawOdds,
+    pub cell: DrawOdds,
+    pub holder: DrawOdds,
+    pub cell_draws: u64,
+    pub holder_selected: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -790,10 +854,11 @@ impl<K: ArchiveKey> Default for TierCells<K> {
 fn draw_member<T: Copy + Ord>(
     rand: &mut RomuDuoJrRand,
     set: &WeightedSet<T>,
-) -> Result<T, Box<dyn Error>> {
+) -> Result<(T, DrawOdds), Box<dyn Error>> {
     let total = NonZeroU64::new(set.total()).ok_or("weighted draw over nothing")?;
     let draw = rand.below_u64(total);
-    set.find(draw)
+    set.find_weighted(draw)
+        .map(|(member, weight)| (member, DrawOdds::weighted(set.len(), weight, total.get())))
         .ok_or_else(|| "weighted draw exceeded its total".into())
 }
 
@@ -3089,18 +3154,18 @@ where
         if self.active_ids.is_empty() {
             return Err("archive has no expandable entry".into());
         }
-        let (progress, rank, fall_through) = self.draw_tier(rand)?;
+        let (progress, rank, fall_through, tier_odds) = self.draw_tier(rand)?;
         debug_assert!(
             self.tiers
                 .get(&progress)
                 .is_some_and(|tier| self.tier_weights_current(progress, tier))
         );
         let recent = self.draw_recent_cell(rand, progress)?;
-        let place = match recent {
-            Some(place) => place,
+        let (place, cell_odds) = match recent {
+            Some(drawn) => drawn,
             None => self.draw_cell(rand, progress)?,
         };
-        let (id, best_preference) = self.draw_holder(rand, progress, place)?;
+        let (id, best_preference, holder_odds) = self.draw_holder(rand, progress, place)?;
         Ok((
             id,
             SelectorDraw {
@@ -3112,20 +3177,67 @@ where
                 tier_rank: Some(rank),
                 best_preference,
                 fall_through,
+                odds: Some(SelectionOdds {
+                    tier: tier_odds,
+                    cell: cell_odds,
+                    holder: holder_odds,
+                    cell_draws: self.cell_draws(self.entries[id].key),
+                    holder_selected: self.selected[id],
+                }),
             },
         ))
     }
 
-    fn draw_recent_cell(
-        &self,
-        rand: &mut RomuDuoJrRand,
-        progress: K::Progress,
-    ) -> Result<Option<K::Place>, Box<dyn Error>> {
-        if rand.below(NonZeroUsize::new(2).unwrap()) != 0 {
-            return Ok(None);
+    pub(crate) fn selection_odds(
+        &mut self,
+        id: usize,
+        draw: &SelectorDraw,
+    ) -> Option<SelectionOdds> {
+        if draw.path == SelectorPath::Continuation {
+            return None;
         }
-        let places: BTreeMap<_, _> = self
-            .active_ids
+        self.ensure_selector_index();
+        let key = self.entries.get(id)?.key;
+        let (progress, place) = (key.progress(), key.place());
+        let rank = usize::from(draw.tier_rank?);
+        if self.tiers.keys().rev().nth(rank) != Some(&progress) {
+            return None;
+        }
+        let (floor, halvings) = self.tier_floor();
+        let tier = weighted_odds(self.tier_draw_weights(floor, halvings), rank)?;
+        let cells = self.tiers.get(&progress)?;
+        let cell = if draw.path == SelectorPath::Recent {
+            let places = self.recent_places(progress);
+            let chosen = places.keys().position(|candidate| *candidate == place)?;
+            weighted_odds(places.values().map(|draws| count_decay(*draws)), chosen)?
+        } else {
+            DrawOdds::weighted(
+                cells.weights.len(),
+                cells.weights.weight(&place)?,
+                cells.weights.total(),
+            )
+        };
+        let members = cells.places.get(&place)?;
+        let holder = if draw.best_preference.is_some() {
+            DrawOdds::unweighted(members.ids.len())
+        } else {
+            DrawOdds::weighted(
+                members.ids.len(),
+                members.ids.weight(&id)?,
+                members.ids.total(),
+            )
+        };
+        Some(SelectionOdds {
+            tier,
+            cell,
+            holder,
+            cell_draws: self.cell_draws(key),
+            holder_selected: self.selected[id],
+        })
+    }
+
+    fn recent_places(&self, progress: K::Progress) -> BTreeMap<K::Place, u64> {
+        self.active_ids
             .ids
             .iter()
             .rev()
@@ -3135,15 +3247,27 @@ where
                 if key.progress() != progress {
                     return None;
                 }
-                let draws = self.cells.get(&cell_of(key)).map_or(0, |cell| cell.draws);
+                let draws = self.cell_draws(key);
                 (draws < 32).then_some((key.place(), draws))
             })
-            .collect();
+            .collect()
+    }
+
+    fn draw_recent_cell(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        progress: K::Progress,
+    ) -> Result<Option<PlaceDraw<K>>, Box<dyn Error>> {
+        if rand.below(NonZeroUsize::new(2).unwrap()) != 0 {
+            return Ok(None);
+        }
+        let places = self.recent_places(progress);
         if places.is_empty() {
             return Ok(None);
         }
-        let index = draw_weighted(rand, places.values().map(|draws| count_decay(*draws)))?;
-        Ok(places.into_keys().nth(index))
+        let (index, odds) =
+            draw_weighted_odds(rand, places.values().map(|draws| count_decay(*draws)))?;
+        Ok(places.into_keys().nth(index).map(|place| (place, odds)))
     }
 
     fn tier_runs(&self, progress: K::Progress) -> TierRuns {
@@ -3211,11 +3335,7 @@ where
         }
     }
 
-    fn draw_tier(
-        &self,
-        rand: &mut RomuDuoJrRand,
-    ) -> Result<(K::Progress, u8, bool), Box<dyn Error>> {
-        let tiers = self.tiers.len();
+    fn tier_floor(&self) -> (usize, u32) {
         let mut ranked = self.tiers.keys().rev().copied().peekable();
         let mut floor = 0_usize;
         let mut halvings = 0;
@@ -3226,15 +3346,23 @@ where
             }
             floor += 1;
         }
+        (floor, halvings)
+    }
+
+    fn tier_draw_weights(&self, floor: usize, halvings: u32) -> impl Iterator<Item = u64> + Clone {
         let floor_weight = (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX)) >> halvings).max(1);
-        let weights = (0..tiers).map(|rank| {
+        (0..self.tiers.len()).map(move |rank| {
             if rank <= floor {
                 floor_weight
             } else {
                 tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
             }
-        });
-        let index = draw_weighted(rand, weights)?;
+        })
+    }
+
+    fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<TierDraw<K>, Box<dyn Error>> {
+        let (floor, halvings) = self.tier_floor();
+        let (index, odds) = draw_weighted_odds(rand, self.tier_draw_weights(floor, halvings))?;
         let progress = self
             .tiers
             .keys()
@@ -3247,6 +3375,7 @@ where
             progress,
             u8::try_from(index).unwrap_or(u8::MAX),
             fall_through,
+            odds,
         ))
     }
 
@@ -3254,7 +3383,7 @@ where
         &self,
         rand: &mut RomuDuoJrRand,
         progress: K::Progress,
-    ) -> Result<K::Place, Box<dyn Error>> {
+    ) -> Result<PlaceDraw<K>, Box<dyn Error>> {
         let tier = self
             .tiers
             .get(&progress)
@@ -3324,7 +3453,7 @@ where
         rand: &mut RomuDuoJrRand,
         progress: K::Progress,
         place: K::Place,
-    ) -> Result<(usize, Option<u8>), Box<dyn Error>> {
+    ) -> Result<(usize, Option<u8>, DrawOdds), Box<dyn Error>> {
         let members = self
             .tiers
             .get(&progress)
@@ -3334,9 +3463,11 @@ where
             return Ok((
                 self.best_holder(members, preference)?,
                 Some(u8::try_from(preference)?),
+                DrawOdds::unweighted(members.ids.len()),
             ));
         }
-        Ok((draw_member(rand, &members.ids)?, None))
+        let (id, odds) = draw_member(rand, &members.ids)?;
+        Ok((id, None, odds))
     }
 
     fn champions_slot(&self, slot: &[usize], id: usize, preference: usize) -> bool {
@@ -4039,26 +4170,26 @@ where
         if self.active_ids.is_empty() {
             return Err("archive has no expandable entry".into());
         }
-        let (progress, rank, fall_through) = self.draw_tier(rand)?;
+        let (progress, rank, fall_through, _) = self.draw_tier(rand)?;
         let recent = self.draw_recent_cell(rand, progress)?;
         let place = match recent {
-            Some(place) => place,
+            Some((place, _)) => place,
             None => self.draw_cell_reference(rand, progress)?,
         };
         let (id, best_preference) = self.draw_holder_reference(rand, progress, place)?;
-        Ok((
-            id,
-            SelectorDraw {
-                path: if recent.is_some() {
-                    SelectorPath::Recent
-                } else {
-                    SelectorPath::Tiers
-                },
-                tier_rank: Some(rank),
-                best_preference,
-                fall_through,
+        let mut draw = SelectorDraw {
+            path: if recent.is_some() {
+                SelectorPath::Recent
+            } else {
+                SelectorPath::Tiers
             },
-        ))
+            tier_rank: Some(rank),
+            best_preference,
+            fall_through,
+            odds: None,
+        };
+        draw.odds = self.selection_odds(id, &draw);
+        Ok((id, draw))
     }
 
     fn draw_cell_reference(
@@ -4181,14 +4312,17 @@ mod tests {
 
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellDraws, CellIntervalRow, CellMembers,
-        CellState, HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
-        MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
-        SharedAllocation, SharedSnapshotMemory, SnapshotRetention, TIER_RANK_SHIFT, TierCells,
-        WeightedSet, tier_weight,
+        CellState, DrawOdds, HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input,
+        InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectionOdds, SelectorAccounting,
+        SelectorDraw, SelectorPath, SharedAllocation, SharedSnapshotMemory, SnapshotRetention,
+        TIER_RANK_SHIFT, TierCells, WeightedSet, cell_of, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::Arc,
+    };
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
     struct TestAction {
@@ -5795,6 +5929,7 @@ mod tests {
                         assert_eq!(
                             archive
                                 .draw_cell(&mut actual, (0, 0))
+                                .map(|(place, _)| place)
                                 .map_err(|e| e.to_string()),
                             archive
                                 .draw_cell_reference(&mut reference, (0, 0))
@@ -5807,6 +5942,7 @@ mod tests {
                         assert_eq!(
                             archive
                                 .draw_holder(&mut actual, (0, 0), 1)
+                                .map(|(id, preference, _)| (id, preference))
                                 .map_err(|e| e.to_string()),
                             archive
                                 .draw_holder_reference(&mut reference, (0, 0), 1)
@@ -5848,6 +5984,7 @@ mod tests {
                 assert_eq!(
                     archive
                         .draw_cell(&mut actual, (0, 0))
+                        .map(|(place, _)| place)
                         .map_err(|e| e.to_string()),
                     archive
                         .draw_cell_reference(&mut reference, (0, 0))
@@ -5860,6 +5997,7 @@ mod tests {
                 assert_eq!(
                     archive
                         .draw_holder(&mut actual, (0, 0), 1)
+                        .map(|(id, preference, _)| (id, preference))
                         .map_err(|e| e.to_string()),
                     archive
                         .draw_holder_reference(&mut reference, (0, 0), 1)
@@ -5917,14 +6055,16 @@ mod tests {
                         |new, rand| {
                             if holder {
                                 black_box(if new {
-                                    archive.draw_holder(rand, (0, 0), 1)
+                                    archive
+                                        .draw_holder(rand, (0, 0), 1)
+                                        .map(|(id, preference, _)| (id, preference))
                                 } else {
                                     archive.draw_holder_reference(rand, (0, 0), 1)
                                 })
                                 .unwrap();
                             } else {
                                 black_box(if new {
-                                    archive.draw_cell(rand, (0, 0))
+                                    archive.draw_cell(rand, (0, 0)).map(|(place, _)| place)
                                 } else {
                                     archive.draw_cell_reference(rand, (0, 0))
                                 })
@@ -5939,6 +6079,147 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn selection_odds_match_a_hand_computed_archive() {
+        let mut archive = TestArchive::new(|_| 1);
+        let mut insert = |minor, progress, state_fingerprint| {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![minor, progress, state_fingerprint],
+                        key: TestKey {
+                            minor,
+                            progress: u16::from(progress),
+                            state_fingerprint,
+                            ..TestKey::default()
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap()
+        };
+        insert(0, 0, 0);
+        insert(1, 1, 0);
+        let chosen = insert(1, 2, 0);
+        insert(1, 2, 1);
+        let crowded = insert(1, 3, 0);
+        archive
+            .cells
+            .get_mut(&cell_of(archive.entries[crowded].key))
+            .unwrap()
+            .draws = 32;
+        archive.selector_weighted = false;
+        let tiers_draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+            fall_through: false,
+            odds: None,
+        };
+        archive.record_selection(chosen, &tiers_draw);
+        let fresh = 1_u64 << 32;
+        let once = 1_u64 << 30;
+        let crowded_weight = 3_943_955;
+        let tier = DrawOdds::weighted(2, 1 << 24, (1 << 24) + (1 << 21));
+        let holder = DrawOdds::weighted(2, once, fresh + once);
+        let tiers_odds = SelectionOdds {
+            tier,
+            cell: DrawOdds::weighted(3, once, fresh + once + crowded_weight),
+            holder,
+            cell_draws: 1,
+            holder_selected: 1,
+        };
+        let recent_odds = SelectionOdds {
+            cell: DrawOdds::weighted(2, once, fresh + once),
+            ..tiers_odds
+        };
+        assert_eq!(
+            archive.selection_odds(chosen, &tiers_draw),
+            Some(tiers_odds)
+        );
+        let recent_draw = SelectorDraw {
+            path: SelectorPath::Recent,
+            ..tiers_draw
+        };
+        assert_eq!(
+            archive.selection_odds(chosen, &recent_draw),
+            Some(recent_odds)
+        );
+        let continuation = SelectorDraw {
+            path: SelectorPath::Continuation,
+            tier_rank: None,
+            ..tiers_draw
+        };
+        assert_eq!(archive.selection_odds(chosen, &continuation), None);
+        let wrong_tier = SelectorDraw {
+            tier_rank: Some(1),
+            ..tiers_draw
+        };
+        assert_eq!(archive.selection_odds(chosen, &wrong_tier), None);
+
+        let mut rand = RomuDuoJrRand::with_seed(29);
+        let mut seen = BTreeSet::new();
+        for _ in 0..4096 {
+            let (id, draw) = archive.select_parent(&mut rand).unwrap();
+            assert_eq!(draw.odds, archive.selection_odds(id, &draw));
+            if id == chosen {
+                let expected = match draw.path {
+                    SelectorPath::Recent => recent_odds,
+                    _ => tiers_odds,
+                };
+                assert_eq!(draw.odds, Some(expected));
+                seen.insert(draw.path == SelectorPath::Recent);
+            }
+        }
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn a_best_holder_draw_records_its_sibling_count_without_weights() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        for (slot, first, second) in [(0, 2, 1), (0, 1, 2), (1, 0, 0)] {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![slot, first, second],
+                        key: PortfolioKey {
+                            slot,
+                            first,
+                            second,
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let mut rand = RomuDuoJrRand::with_seed(5);
+        let mut best = 0;
+        for _ in 0..1024 {
+            let (id, draw) = archive.select_parent(&mut rand).unwrap();
+            let odds = draw.odds.unwrap();
+            assert_eq!(draw.odds, archive.selection_odds(id, &draw));
+            assert_eq!(odds.tier, DrawOdds::weighted(1, 1 << 24, 1 << 24));
+            assert_eq!(odds.cell.choices, 2);
+            let siblings = usize::from(archive.entries[id].key.slot == 0) + 1;
+            if draw.best_preference.is_some() {
+                best += 1;
+                assert_eq!(odds.holder, DrawOdds::unweighted(siblings));
+            } else {
+                assert_eq!(odds.holder.choices, siblings);
+                assert!(odds.holder.weight.is_some() && odds.holder.total.is_some());
+            }
+        }
+        assert!(best > 0);
     }
 
     #[test]
@@ -6031,7 +6312,7 @@ mod tests {
                     assert_eq!(
                         archive
                             .draw_tier(&mut actual)
-                            .map(|(progress, rank, _)| (progress, rank))
+                            .map(|(progress, rank, _, _)| (progress, rank))
                             .map_err(|error| error.to_string()),
                         expected
                     );
@@ -6705,6 +6986,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..5 {
             archive.record_selection(first, &draw);
@@ -6733,6 +7015,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..7 {
             archive.record_selection(first, &draw);
@@ -6759,18 +7042,21 @@ mod tests {
             tier_rank: Some(0),
             best_preference: Some(0),
             fall_through: false,
+            odds: None,
         };
         let lower = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(1),
             best_preference: None,
             fall_through: true,
+            odds: None,
         };
         let continuation = SelectorDraw {
             path: SelectorPath::Continuation,
             tier_rank: None,
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for draw in [&recent, &recent, &lower, &continuation] {
             archive.record_selection(first, draw);
@@ -6818,6 +7104,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: Some(0),
             fall_through: false,
+            odds: None,
         };
         for _ in 0..8 {
             archive.record_selection(first, &draw);
@@ -7861,6 +8148,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..4 {
             archive.record_selection(1, &draw);
@@ -8083,6 +8371,7 @@ mod tests {
                 tier_rank: Some(0),
                 best_preference: None,
                 fall_through: false,
+                odds: None,
             },
         );
         assert_eq!(archive.selected[id], 1);
@@ -8098,6 +8387,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..19 {
             archive.record_selection(0, &draw);
@@ -8698,6 +8988,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..3 {
             archive.record_selection(survivor, &draw);
@@ -9653,6 +9944,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..64 {
             archive.record_selection(0, &draw);
@@ -9672,6 +9964,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for id in [0, 1] {
             for _ in 0..64 {
@@ -9698,6 +9991,7 @@ mod tests {
                 tier_rank: Some(rank),
                 best_preference: None,
                 fall_through: false,
+                odds: None,
             };
             for _ in 0..draws {
                 archive.record_selection(id, &draw);
@@ -9711,6 +10005,7 @@ mod tests {
             tier_rank: Some(1),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         let mut key = probe_key(2, 1, 5, 0);
         key.state_fingerprint = 7;
@@ -9760,6 +10055,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..64 {
             archive.record_selection(0, &top);
@@ -9777,6 +10073,7 @@ mod tests {
             tier_rank: Some(1),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..64 {
             archive.record_selection(1, &next);
@@ -9797,6 +10094,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..64 {
             archive.record_selection(1, &top);
@@ -9811,6 +10109,7 @@ mod tests {
             tier_rank: Some(1),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..64 {
             archive.record_selection(2, &middle);
@@ -9827,6 +10126,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for id in [0, 1] {
             for _ in 0..64 {
@@ -9906,6 +10206,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..1024 {
             archive.record_selection(1, &draw);
@@ -9930,6 +10231,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..4096 {
             archive.record_selection(1, &draw);
@@ -9963,6 +10265,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..64 {
             archive.record_selection(0, &draw);
@@ -9990,6 +10293,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..64 {
             archive.record_selection(0, &draw);
@@ -10065,6 +10369,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..1000 {
             archive.record_selection(0, &draw);
@@ -10084,6 +10389,7 @@ mod tests {
             tier_rank: Some(0),
             best_preference: None,
             fall_through: false,
+            odds: None,
         };
         for _ in 0..1000 {
             archive.record_selection(0, &draw);

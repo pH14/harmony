@@ -193,7 +193,12 @@ impl<T: Copy + Ord> WeightedSet<T> {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn find(&self, draw: u64) -> Option<T> {
+        self.find_weighted(draw).map(|(key, _)| key)
+    }
+
+    pub(crate) fn find_weighted(&self, draw: u64) -> Option<(T, u64)> {
         let mut remaining = draw;
         let mut node = self.root;
         while node != NONE {
@@ -204,7 +209,7 @@ impl<T: Copy + Ord> WeightedSet<T> {
             }
             remaining -= current.left_sum;
             if remaining < current.weight {
-                return Some(current.key);
+                return Some((current.key, current.weight));
             }
             remaining -= current.weight;
             node = current.right;

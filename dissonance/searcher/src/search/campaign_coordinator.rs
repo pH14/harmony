@@ -1275,6 +1275,7 @@ where
                 tier_rank: None,
                 best_preference: None,
                 fall_through: false,
+                odds: None,
             };
             let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
             let splice = Some(CampaignSpliceRecord::Tail {
