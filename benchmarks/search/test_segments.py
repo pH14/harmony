@@ -65,6 +65,12 @@ class SegmentsTest(unittest.TestCase):
         self.assertEqual(rows[0], {"seed": 1, "work": 250, "tries": 25, "passed": True})
         self.assertEqual(rows[1], {"seed": 2, "work": 900, "tries": 90, "passed": False})
 
+    def test_a_list_of_names_is_reached_by_any_of_them(self):
+        milestone = {"named": ["ice_beam", "bombs"]}
+        self.assertTrue(segments.reached(milestone, named_line(1, True)))
+        self.assertFalse(segments.reached(milestone, named_line(1, False)))
+        self.assertEqual(segments.describe(milestone), "ice_beam or bombs")
+
     def test_progress_fields_compare_in_the_listed_order(self):
         milestone = MANIFEST["cases"][1]["milestone"]
         self.assertFalse(segments.reached(milestone, level_line(1, 1, 1)))
@@ -117,7 +123,7 @@ class SegmentsTest(unittest.TestCase):
         self.assertIn("budget too short", text)
 
     def test_a_malformed_milestone_is_refused(self):
-        for milestone in ({"bogus": 1}, {"named": 3}, {"at_least": {}}, {"named": "a", "objective": True}, "bombs"):
+        for milestone in ({"bogus": 1}, {"named": 3}, {"named": []}, {"named": ["a", 3]}, {"at_least": {}}, {"named": "a", "objective": True}, "bombs"):
             with self.assertRaises(ValueError):
                 segments.describe(milestone)
 

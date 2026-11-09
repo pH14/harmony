@@ -235,7 +235,8 @@ python3 benchmarks/search/segments.py benchmarks/search/segments.json \
 ```
 
 A milestone takes one of three forms. `{"named": "bombs"}` is reached when
-`named_progress.first_seen` holds that entry. `{"objective": true}` is reached
+`named_progress.first_seen` holds that entry; a list of names is reached by
+any of them, for a game whose runs choose their own order. `{"objective": true}` is reached
 when the campaign reaches its objective. `{"at_least": {"progress.world": 4,
 "progress.level": 0}}` is reached when the listed progress-line fields,
 compared in order, reach the listed values. The runner stops a cell as soon as

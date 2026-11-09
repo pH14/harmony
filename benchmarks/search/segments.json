@@ -51,6 +51,32 @@
    "milestone": {
     "named": "missile_capacity"
    }
+  },
+  {
+   "id": "met-bombs-next",
+   "game": "metroid",
+   "origin": "first bombs pickup of a recorded power-on run",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/search-panel/roots/metroid-s20261024/bombs.json",
+   "milestone": {
+    "named": [
+     "kraid_area",
+     "ice_beam"
+    ]
+   }
+  },
+  {
+   "id": "met-kraidarea-next",
+   "game": "metroid",
+   "origin": "first arrival in Kraid's area of a recorded power-on run",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/search-panel/roots/metroid-s20261024/kraid_area.json",
+   "milestone": {
+    "named": [
+     "ice_beam",
+     "kraid_door"
+    ]
+   }
   }
  ]
 }

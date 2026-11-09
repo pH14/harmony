@@ -7,6 +7,8 @@
 MANIFEST is the suite `eval.py run` executed. Each case names its milestone:
 
     {"named": "bombs"}             a `named_progress.first_seen` entry is set
+    {"named": ["bombs", "ice_beam"]}
+                                   any of the listed entries is set
     {"objective": true}            the campaign reached its objective
     {"at_least": {"progress.world": 4, "progress.level": 0}}
                                    the listed progress fields, compared in
@@ -47,7 +49,7 @@ def lookup(record, path):
 def reached(milestone, record):
     if "named" in milestone:
         seen = lookup(record, "workload_diagnostics.named_progress.first_seen") or {}
-        return seen.get(milestone["named"]) is not None
+        return any(seen.get(name) is not None for name in names(milestone))
     if milestone.get("objective"):
         return (record.get("objectives_reached") or 0) >= 1
     if "at_least" in milestone:
@@ -59,11 +61,17 @@ def reached(milestone, record):
     raise ValueError(f"unknown milestone: {milestone}")
 
 
+def names(milestone):
+    named = milestone["named"]
+    return [named] if isinstance(named, str) else named
+
+
 def describe(milestone):
     if not isinstance(milestone, dict) or len(milestone) != 1:
         raise ValueError(f"a milestone names exactly one of named, objective, at_least: {milestone}")
-    if isinstance(milestone.get("named"), str):
-        return milestone["named"]
+    named = milestone.get("named")
+    if isinstance(named, str) or (isinstance(named, list) and named and all(isinstance(name, str) for name in named)):
+        return " or ".join(names(milestone))
     if milestone.get("objective") is True:
         return "objective"
     wanted = milestone.get("at_least")
