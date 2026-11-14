@@ -9,7 +9,10 @@ use machine::quicknes::{QuickNesMachine, VideoFrame};
 use machine::{Machine, MachineError, SnapId, StopConditions, nes};
 use serde::{Deserialize, Serialize};
 
-use super::progress::{BossDefeats, TourianEvents};
+use super::{
+    action::{FIRE_WAIT_FRAMES, FireMissiles, MetroidAction, MetroidReading},
+    progress::{BossDefeats, TourianEvents},
+};
 #[cfg(unix)]
 use crate::nes_backend::unpack_quicknes_state;
 use crate::{
@@ -20,7 +23,7 @@ use crate::{
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 const GAME_MODE: usize = 0x1e;
-const GAME_MODE_PLAYING: u8 = 0x03;
+pub(crate) const GAME_MODE_PLAYING: u8 = 0x03;
 const SCROLL_DIRECTION: usize = 0x49;
 const SCROLL_UP: u8 = 0;
 const SCROLL_DOWN: u8 = 1;
@@ -40,7 +43,7 @@ const AREA: usize = 0x74;
 const AREA_BRINSTAR: u8 = 0x10;
 const POSE: usize = 0x300;
 const POSE_UNMOVED: u8 = 0xff;
-const POSE_STANDING: u8 = 0x00;
+pub(crate) const POSE_STANDING: u8 = 0x00;
 const POSE_RUNNING: u8 = 0x01;
 const POSE_AIRBORNE: u8 = 0x02;
 pub const POSTURE_GROUNDED: u8 = 0;
@@ -112,6 +115,12 @@ impl MetroidTerminalPolicy {
 
 pub const CARTRIDGE_RAM_BASE: u64 = 0x6000;
 const EQUIPMENT: usize = 0x878;
+const MISSILE_TOGGLE: usize = 0x10e;
+const DOOR_SLOTS: [usize; 4] = [0x380, 0x390, 0x3a0, 0x3b0];
+const DOOR_PALETTE: usize = 0x07;
+const DOOR_NAME_TABLE: usize = 0x0c;
+const DOOR_CLOSED: u8 = 2;
+const MISSILE_DOOR_PALETTES: [u8; 2] = [0, 2];
 const MISSILES: usize = 0x879;
 const MISSILE_CAPACITY: usize = 0x87a;
 const KRAID_STATUS: usize = 0x87b;
@@ -140,8 +149,10 @@ const MOTHER_BRAIN_DEFEATED_STATUSES: [u8; 7] = [3, 4, 5, 6, 7, 9, 10];
 const ENERGY_TANKS: usize = 0x877;
 
 const JOYPAD_START: u8 = 1 << 3;
+pub(crate) const JOYPAD_B: u8 = 1 << 1;
+pub(crate) const JOYPAD_SELECT: u8 = 1 << 2;
 
-pub type MetroidInput = crate::search::archive::Input<ButtonChord>;
+pub type MetroidInput = crate::search::archive::Input<MetroidAction>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct MetroidMechanicalState {
@@ -217,6 +228,64 @@ impl MetroidMechanicalState {
     pub fn in_play(self) -> bool {
         self.mode == GAME_MODE_PLAYING
     }
+}
+
+pub fn missiles_armed(wram: &[u8]) -> bool {
+    wram.get(MISSILE_TOGGLE).is_some_and(|toggle| *toggle != 0)
+}
+
+#[must_use]
+pub fn missile_door_in_room(wram: &[u8]) -> bool {
+    let Some(&samus_name_table) = wram.get(SAMUS_NAME_TABLE) else {
+        return false;
+    };
+    DOOR_SLOTS.iter().any(|&slot| {
+        wram.get(slot) == Some(&DOOR_CLOSED)
+            && wram
+                .get(slot + DOOR_PALETTE)
+                .is_some_and(|palette| MISSILE_DOOR_PALETTES.contains(palette))
+            && wram.get(slot + DOOR_NAME_TABLE) == Some(&samus_name_table)
+    })
+}
+
+#[must_use]
+pub fn missile_target_in_room(state: MetroidMechanicalState, wram: &[u8]) -> bool {
+    state.boss_health > 0 || state.zebetite_hits_left > 0 || missile_door_in_room(wram)
+}
+
+fn reading(
+    wram: &[u8],
+    cartridge: &[u8],
+    followed: Option<MetroidMechanicalState>,
+) -> Result<MetroidReading, MachineError> {
+    let state = match followed {
+        Some(state) => state,
+        None => decode_state(wram, cartridge)?,
+    };
+    Ok(MetroidReading {
+        state,
+        missiles_armed: missiles_armed(wram),
+        missile_target: missile_target_in_room(state, wram),
+    })
+}
+
+fn drive_target_action<E: From<MachineError>>(
+    action: MetroidAction,
+    start: MetroidReading,
+    mut run: impl FnMut(ButtonChord) -> Result<Option<MetroidReading>, E>,
+) -> Result<(), E> {
+    let Some(mut fire) = FireMissiles::new(action, start) else {
+        run(ButtonChord::new(0, FIRE_WAIT_FRAMES))?;
+        return Ok(());
+    };
+    let mut current = start;
+    while let Some(chord) = fire.next(current) {
+        match run(chord)? {
+            Some(next) => current = next,
+            None => return Ok(()),
+        }
+    }
+    Ok(())
 }
 
 const MISSILE_TANK_STEP: u8 = 5;
@@ -454,6 +523,13 @@ fn idle_chords(frames: u32) -> Vec<ButtonChord> {
     chords
 }
 
+fn power_on_walk_actions() -> Vec<MetroidAction> {
+    power_on_walk()
+        .into_iter()
+        .map(MetroidAction::Chord)
+        .collect()
+}
+
 #[must_use]
 pub fn power_on_walk() -> Vec<ButtonChord> {
     let mut chords = idle_chords(TITLE_SETTLE_FRAMES);
@@ -499,7 +575,7 @@ impl MetroidTarget<QuickNesMachine> {
             core_path,
             core_sha256,
             execution_sha256,
-            &power_on_walk(),
+            &power_on_walk_actions(),
             GenesisDepth::NewGame,
         )
     }
@@ -509,7 +585,7 @@ impl MetroidTarget<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
         execution_sha256: &str,
-        prefix: &[ButtonChord],
+        prefix: &[MetroidAction],
         depth: GenesisDepth,
     ) -> Result<Self, MachineError> {
         let image = nes::with_cartridge_ram(rom)?;
@@ -527,7 +603,7 @@ impl MetroidTarget<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
-        Self::from_rom_bytes_after(rom, core_path, core_sha256, &power_on_walk())
+        Self::from_rom_bytes_after(rom, core_path, core_sha256, &power_on_walk_actions())
     }
 
     pub fn from_rom_bytes_capturing(
@@ -539,7 +615,7 @@ impl MetroidTarget<QuickNesMachine> {
         let mut machine = QuickNesMachine::from_rom_bytes(&image, core_path, core_sha256)?;
         machine.set_video_capture(true);
         machine.set_audio_capture(true);
-        Self::from_machine(machine, &power_on_walk(), GenesisDepth::NewGame)
+        Self::from_machine(machine, &power_on_walk_actions(), GenesisDepth::NewGame)
     }
 
     pub fn start_capturing(&mut self) {
@@ -559,7 +635,7 @@ impl MetroidTarget<QuickNesMachine> {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
-        prefix: &[ButtonChord],
+        prefix: &[MetroidAction],
     ) -> Result<Self, MachineError> {
         Self::from_rom_bytes_rooted(rom, core_path, core_sha256, prefix, GenesisDepth::NewGame)
     }
@@ -568,7 +644,7 @@ impl MetroidTarget<QuickNesMachine> {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
-        prefix: &[ButtonChord],
+        prefix: &[MetroidAction],
         depth: GenesisDepth,
     ) -> Result<Self, MachineError> {
         let image = nes::with_cartridge_ram(rom)?;
@@ -672,22 +748,45 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidTarget<M> {
 
     pub fn from_machine(
         mut machine: M,
-        prefix: &[ButtonChord],
+        prefix: &[MetroidAction],
         depth: GenesisDepth,
     ) -> Result<Self, MachineError> {
         machine.capture_save_ram_per_frame(CARTRIDGE_FRAME_RANGE);
-        let mut genesis_prefix = prefix.to_vec();
+        let mut genesis_prefix = Vec::with_capacity(prefix.len());
         let mut frame_cartridge = vec![0; CARTRIDGE_RAM_SIZE];
         let mut followed = None;
-        for chunk in prefix.chunks(64) {
-            run_chords(&mut machine, chunk)?;
-            followed = follow_frames(
-                machine.frames(),
-                machine.save_ram_frames(),
-                &mut frame_cartridge,
-                followed,
-            )?;
+        let mut run = |machine: &mut M,
+                       chords: &[ButtonChord],
+                       followed: &mut Option<MetroidMechanicalState>|
+         -> Result<(), MachineError> {
+            for chunk in chords.chunks(64) {
+                run_chords(machine, chunk)?;
+                *followed = follow_frames(
+                    machine.frames(),
+                    machine.save_ram_frames(),
+                    &mut frame_cartridge,
+                    *followed,
+                )?;
+            }
+            Ok(())
+        };
+        let mut pending = Vec::new();
+        for action in prefix {
+            if let Some(chord) = action.chord() {
+                pending.push(chord);
+                continue;
+            }
+            run(&mut machine, &pending, &mut followed)?;
+            genesis_prefix.append(&mut pending);
+            let start = reading(&machine.read_wram()?, &machine.read_save_ram()?, followed)?;
+            drive_target_action(*action, start, |chord| {
+                run(&mut machine, &[chord], &mut followed)?;
+                genesis_prefix.push(chord);
+                reading(&machine.read_wram()?, &machine.read_save_ram()?, followed).map(Some)
+            })?;
         }
+        run(&mut machine, &pending, &mut followed)?;
+        genesis_prefix.append(&mut pending);
         let mut waited = 0;
         loop {
             let wram = machine.read_wram()?;
@@ -754,6 +853,15 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidTarget<M> {
     #[must_use]
     pub fn genesis_prefix(&self) -> &[ButtonChord] {
         &self.genesis_prefix
+    }
+
+    #[must_use]
+    pub fn genesis_actions(&self) -> Vec<MetroidAction> {
+        self.genesis_prefix
+            .iter()
+            .copied()
+            .map(MetroidAction::Chord)
+            .collect()
     }
 
     #[must_use]
@@ -855,37 +963,15 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidTarget<M> {
         self.machine.read_save_ram()
     }
 
-    fn run_action(&mut self, action: &ButtonChord) -> Option<(Vec<[u8; WRAM_SIZE]>, Vec<u8>)> {
-        let start = self.machine.snapshot().ok()?;
-        let branched = self
-            .machine
-            .branch(start, &nes::reproducer(std::slice::from_ref(action)));
-        let _ = self.machine.drop_snapshot(start);
-        branched.ok()?;
-        let run = self.machine.run(StopConditions::default(), None);
-        if !matches!(run, Ok(machine::StopReason::Quiescent { .. })) {
-            return None;
+    fn reading(&self) -> MetroidReading {
+        MetroidReading {
+            state: self.observation.decoded,
+            missiles_armed: missiles_armed(&self.current_wram),
+            missile_target: missile_target_in_room(self.observation.decoded, &self.current_wram),
         }
-        let frames = self.machine.frames().to_vec();
-        let cartridge_frames = self.machine.save_ram_frames().to_vec();
-        (!frames.is_empty()).then_some((frames, cartridge_frames))
-    }
-}
-
-impl<M: NesBackend<Vec<u8>> + NesMemory> Target for MetroidTarget<M> {
-    type Action = ButtonChord;
-    type Observations = MetroidObservations;
-    type Snapshot = MetroidSnapshot;
-
-    fn reset(&mut self) {
-        self.failed = self.machine.replay(self.genesis).is_err();
-        self.current_wram = self.genesis_wram;
-        self.observation = self.genesis_observation.clone();
-        self.action_observations = vec![self.observation.clone()];
     }
 
-    fn apply(&mut self, action: &Self::Action) {
-        self.action_observations.clear();
+    fn apply_chord(&mut self, action: &ButtonChord) {
         if self.failed || self.is_dead() {
             return;
         }
@@ -913,9 +999,52 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for MetroidTarget<M> {
                     self.observation = last.clone();
                 }
                 self.current_wram = wram;
-                self.action_observations = observations;
+                self.action_observations.extend(observations);
             }
             Err(_) => self.failed = true,
+        }
+    }
+
+    fn run_action(&mut self, action: &ButtonChord) -> Option<(Vec<[u8; WRAM_SIZE]>, Vec<u8>)> {
+        let start = self.machine.snapshot().ok()?;
+        let branched = self
+            .machine
+            .branch(start, &nes::reproducer(std::slice::from_ref(action)));
+        let _ = self.machine.drop_snapshot(start);
+        branched.ok()?;
+        let run = self.machine.run(StopConditions::default(), None);
+        if !matches!(run, Ok(machine::StopReason::Quiescent { .. })) {
+            return None;
+        }
+        let frames = self.machine.frames().to_vec();
+        let cartridge_frames = self.machine.save_ram_frames().to_vec();
+        (!frames.is_empty()).then_some((frames, cartridge_frames))
+    }
+}
+
+impl<M: NesBackend<Vec<u8>> + NesMemory> Target for MetroidTarget<M> {
+    type Action = MetroidAction;
+    type Observations = MetroidObservations;
+    type Snapshot = MetroidSnapshot;
+
+    fn reset(&mut self) {
+        self.failed = self.machine.replay(self.genesis).is_err();
+        self.current_wram = self.genesis_wram;
+        self.observation = self.genesis_observation.clone();
+        self.action_observations = vec![self.observation.clone()];
+    }
+
+    fn apply(&mut self, action: &Self::Action) {
+        self.action_observations.clear();
+        match action {
+            MetroidAction::Chord(chord) => self.apply_chord(chord),
+            MetroidAction::FireMissiles(_) => {
+                let start = self.reading();
+                let _ = drive_target_action::<MachineError>(*action, start, |chord| {
+                    self.apply_chord(&chord);
+                    Ok((!self.failed && !self.is_dead()).then(|| self.reading()))
+                });
+            }
         }
     }
 
@@ -1923,6 +2052,34 @@ mod observation_tests {
 #[cfg(test)]
 mod boss_status_tests {
     use super::*;
+
+    #[test]
+    fn a_closed_missile_door_on_samus_name_table_is_a_missile_target() {
+        let mut wram = [0u8; WRAM_SIZE];
+        wram[SAMUS_NAME_TABLE] = 1;
+        assert!(!missile_door_in_room(&wram));
+        let slot = DOOR_SLOTS[2];
+        wram[slot] = DOOR_CLOSED;
+        wram[slot + DOOR_NAME_TABLE] = 1;
+        assert!(missile_door_in_room(&wram));
+        wram[slot + DOOR_PALETTE] = 1;
+        assert!(!missile_door_in_room(&wram));
+        wram[slot + DOOR_PALETTE] = 2;
+        wram[slot + DOOR_NAME_TABLE] = 0;
+        assert!(!missile_door_in_room(&wram));
+        wram[slot + DOOR_NAME_TABLE] = 1;
+        wram[slot] = DOOR_CLOSED + 1;
+        assert!(!missile_door_in_room(&wram));
+        let kraid = MetroidMechanicalState {
+            boss_health: 10,
+            ..MetroidMechanicalState::default()
+        };
+        assert!(missile_target_in_room(kraid, &wram));
+        assert!(!missile_target_in_room(
+            MetroidMechanicalState::default(),
+            &wram
+        ));
+    }
 
     #[test]
     fn statue_room_rewrite_keeps_both_defeats() {

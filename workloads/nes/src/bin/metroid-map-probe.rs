@@ -59,8 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let root: MetroidInput = serde_json::from_slice(&fs::read(path)?)?;
             let mut prefix =
                 MetroidTarget::from_rom_bytes_headless(&rom, &core_path, &core_sha256)?
-                    .genesis_prefix()
-                    .to_vec();
+                    .genesis_actions();
             prefix.extend(root.actions.iter().copied());
             MetroidTarget::from_rom_bytes_rooted(
                 &rom,

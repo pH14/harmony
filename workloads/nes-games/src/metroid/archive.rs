@@ -5,9 +5,8 @@ use std::cmp::Ordering;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    chord::{
-        ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES, Tap,
-    },
+    chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
+    metroid::action::MetroidAction,
     metroid::target::{
         ButtonChord, MetroidInput, MetroidMechanicalState, MetroidObservations, MetroidSnapshot,
         health_cap, preference_tuple,
@@ -27,7 +26,7 @@ const AREAS: u16 = 8;
 const BOSS_DAMAGE_BUCKET: u16 = 4;
 
 pub type MetroidArchive =
-    Archive<ButtonChord, MetroidArchiveKey, MetroidMilestones, MetroidSnapshot>;
+    Archive<MetroidAction, MetroidArchiveKey, MetroidMilestones, MetroidSnapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub struct MetroidArchiveKey {
@@ -279,7 +278,7 @@ pub struct MetroidProgressWatermark {
 
 pub type MetroidArchiveProgressPoint = ProgressPoint<MetroidMilestones, MetroidProgressWatermark>;
 pub type MetroidArchiveEntryReport =
-    ArchiveEntryReport<ButtonChord, MetroidArchiveKey, MetroidMilestones>;
+    ArchiveEntryReport<MetroidAction, MetroidArchiveKey, MetroidMilestones>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MetroidArchiveReport {
@@ -354,15 +353,9 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
 
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
-const SELECT: u8 = 0x04;
-
 pub const CHORDS: ChordVocabulary = ChordVocabulary {
     held: &NES_PRESSABLE_BUTTON_MASKS,
-    tap: Some(Tap {
-        buttons: SELECT,
-        odds: 12,
-        hold_frames: (2, 7),
-    }),
+    tap: None,
     short_hold: SHORT_HOLD_FRAMES,
     long_hold: LONG_HOLD_FRAMES,
 };
@@ -492,24 +485,18 @@ mod tests {
     }
 
     #[test]
-    fn vocabulary_draws_select_taps_and_never_start_or_conflicting_directions() {
+    fn vocabulary_never_draws_start_select_or_conflicting_directions() {
         let mut rand = RomuDuoJrRand::with_seed(7);
-        let mut selects = 0;
         let mut previous = None;
         for _ in 0..1_000 {
             let chord = CHORDS
                 .draw(&mut rand, previous.as_ref())
                 .expect("draw chord");
             previous = Some(chord);
-            assert_eq!(chord.buttons & 0x08, 0);
-            if chord.buttons & SELECT != 0 {
-                assert!(chord.hold_frames <= 7);
-                selects += 1;
-            }
+            assert_eq!(chord.buttons & 0x0c, 0);
             assert_ne!(chord.buttons & 0x30, 0x30);
             assert_ne!(chord.buttons & 0xc0, 0xc0);
         }
-        assert!(selects > 0, "the vocabulary must reach missiles");
     }
 
     #[test]
@@ -789,7 +776,7 @@ mod tests {
                 parent,
                 execution,
                 ArchiveCandidate {
-                    suffix: vec![ButtonChord::new(suffix, 4)],
+                    suffix: vec![MetroidAction::Chord(ButtonChord::new(suffix, 4))],
                     key: archive_key(state),
                     milestones: MetroidMilestones::default(),
                 },
@@ -801,7 +788,7 @@ mod tests {
     #[test]
     fn a_balanced_arrival_is_held_beside_the_missile_holder() {
         for reversed in [false, true] {
-            let mut archive = MetroidArchive::new(chord_time);
+            let mut archive = MetroidArchive::new(MetroidAction::planned_frames);
             let root = held(&mut archive, None, 0, 0x00, tourian(10, 8, 300, 20, 0)).expect("root");
             let mut states = [tourian(10, 11, 534, 39, 0), tourian(10, 11, 834, 25, 0)];
             if reversed {
@@ -816,7 +803,7 @@ mod tests {
 
     #[test]
     fn a_fired_missile_that_hit_a_column_is_held_beside_the_unfired_state() {
-        let mut archive = MetroidArchive::new(chord_time);
+        let mut archive = MetroidArchive::new(MetroidAction::planned_frames);
         let unfired =
             held(&mut archive, None, 0, 0x00, tourian(4, 11, 266, 7, 32)).expect("unfired");
         let fired = held(
@@ -838,7 +825,7 @@ mod tests {
 
     #[test]
     fn a_missile_that_hit_a_zebetite_is_held_beside_the_unfired_state() {
-        let mut archive = MetroidArchive::new(chord_time);
+        let mut archive = MetroidArchive::new(MetroidAction::planned_frames);
         let mut before = tourian(4, 11, 266, 7, 0);
         before.zebetite_hits_left = 8;
         let unfired = held(&mut archive, None, 0, 0x00, before).expect("unfired");
@@ -920,7 +907,7 @@ mod tests {
 
     #[test]
     fn an_energy_arrival_less_balanced_than_the_missile_holder_is_not_held() {
-        let mut archive = MetroidArchive::new(chord_time);
+        let mut archive = MetroidArchive::new(MetroidAction::planned_frames);
         let root = held(&mut archive, None, 0, 0x00, tourian(10, 8, 300, 20, 0)).expect("root");
         let stocked = held(
             &mut archive,

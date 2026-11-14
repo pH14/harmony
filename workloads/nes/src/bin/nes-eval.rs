@@ -54,8 +54,7 @@ fn metroid_game(
     }
     let mut prefix = MetroidGame::new(rom, core_path, core_sha256, execution_sha256)
         .new_target()?
-        .genesis_prefix()
-        .to_vec();
+        .genesis_actions();
     prefix.extend(input.actions.iter().copied());
     Ok(MetroidGame::new_rooted(
         rom,
