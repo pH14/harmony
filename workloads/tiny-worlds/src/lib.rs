@@ -384,6 +384,16 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
     fn checkpoint_format(&self) -> &'static str {
         "tiny-world-checkpoint-v2"
     }
+    fn write_evidence_checkpoint(
+        evidence: &Evidence,
+        out: &mut dyn Write,
+    ) -> Result<(), Box<dyn Error>> {
+        serde_json::to_writer(out, evidence)?;
+        Ok(())
+    }
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Evidence, Box<dyn Error>> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
     fn workload_identity_sha256(&self) -> String {
         postcard_value_sha256(&(&self.config, self.broken, CAPACITY_TWO, self.scale))
             .expect("serializable config")
@@ -1320,8 +1330,9 @@ mod tests {
         }
     }
     use searcher::search::campaign::{
-        CampaignCheckpoint, SnapshotCheckpoint, SnapshotCheckpointEntry,
+        CampaignCheckpoint, SavedStates, SnapshotCheckpoint, SnapshotCheckpointEntry,
     };
+    use std::collections::BTreeMap;
 
     fn world() -> Workload {
         Workload {
@@ -1338,6 +1349,85 @@ mod tests {
             }),
             broken: false,
             scale: None,
+        }
+    }
+
+    #[test]
+    fn saved_states_resumed_under_the_same_key_keep_their_recorded_keys() {
+        let w: Workload = Workload {
+            config: World::Maze(maze::Config {
+                length: 8,
+                pattern: 0b1011_0011,
+                reverse_actions: false,
+            }),
+            broken: false,
+            scale: None,
+        };
+        let directory = std::env::temp_dir().join(format!(
+            "tiny-world-saved-states-{}-{}",
+            std::process::id(),
+            crate::test_seed()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut config = campaign_config(&w, crate::test_seed(), 5000, 1);
+        config.stop_campaign_on_objective = false;
+        let (source, _) = run_campaign_checkpointed_with_options(
+            &w,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut BoundedStream(Vec::new()),
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(searcher::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: None,
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                    max_image_bytes: 64 << 20,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .unwrap();
+        let checkpoint = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.to_string_lossy().ends_with("-final.ckpt"))
+            .unwrap();
+        let states = SavedStates::open(&w, &checkpoint).unwrap();
+        let digest = states.file_sha256().to_owned();
+        let recorded = source
+            .archive
+            .entries
+            .iter()
+            .map(|entry| (entry.input.actions.clone(), entry.key))
+            .collect::<BTreeMap<_, _>>();
+        config.execution_budget = 1;
+        let (resumed, _) = run_campaign_checkpointed_with_options(
+            &w,
+            &config,
+            &CampaignOrigin::SavedStates { states },
+            &mut BoundedStream(Vec::new()),
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(resumed.origin.kind, "saved_states");
+        assert_eq!(
+            resumed.origin.checkpoint_sha256.as_deref(),
+            Some(digest.as_str())
+        );
+        let imported = resumed
+            .archive
+            .entries
+            .iter()
+            .filter(|entry| entry.created_execution == 0 && !entry.input.actions.is_empty())
+            .collect::<Vec<_>>();
+        assert!(imported.len() > 1);
+        for entry in imported {
+            assert_eq!(recorded.get(&entry.input.actions), Some(&entry.key));
         }
     }
 

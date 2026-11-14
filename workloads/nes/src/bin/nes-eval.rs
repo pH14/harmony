@@ -85,6 +85,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.root_input.is_some()
         || request.metroid_terminal.is_some()
         || request.resume.is_some()
+        || request.resume_states.is_some()
         || !request.mixture.is_empty()
     {
         return Err(

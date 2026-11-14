@@ -91,6 +91,7 @@ struct TestArchiveReport {
 
 thread_local! {
     static TEST_EXECUTABLE_IDENTITY: std::cell::Cell<Option<Result<&'static str, &'static str>>> = const { std::cell::Cell::new(None) };
+    static TEST_GENESIS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
 struct TestWorkload;
@@ -196,7 +197,7 @@ impl TargetExecution for TestWorkload {
         Ok(TestTarget::default())
     }
     fn reset(&self, target: &mut Self::Target) {
-        target.value = 0;
+        target.value = TEST_GENESIS.with(std::cell::Cell::get);
     }
     fn restore(
         &self,
@@ -1081,6 +1082,70 @@ fn a_campaign_and_checkpoint_reject_another_loaded_executable() {
         "identity mismatch wrote a new stream"
     );
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn saved_states_from_another_executable_or_genesis_are_rebuilt_from_their_inputs() {
+    let directory = checkpoint_directory("saved-states-executable");
+    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    config.execution_budget = 8;
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Ok("build-A"))));
+    run_campaign_checkpointed_with_options(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut Vec::new(),
+        None,
+        CampaignExecutionOptions {
+            checkpoints: Some(CheckpointPlan {
+                directory: directory.clone(),
+                every: None,
+                on_marks: false,
+                on_top_progress: false,
+                checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
+            }),
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    let checkpoint = directory.join("000000000008-final.ckpt");
+    config.execution_budget = 1;
+    let import = |build: &'static str, genesis: u8| {
+        TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Ok(build))));
+        TEST_GENESIS.with(|value| value.set(genesis));
+        let states = SavedStates::open(&TestWorkload, &checkpoint).unwrap();
+        let (report, _) = run_campaign_checkpointed(
+            &TestWorkload,
+            &config,
+            &CampaignOrigin::SavedStates { states },
+            &mut Vec::new(),
+            None,
+        )
+        .unwrap();
+        let entries = report
+            .archive
+            .entries
+            .iter()
+            .filter(|entry| entry.created_execution == 0)
+            .map(|entry| entry.input.actions.clone())
+            .collect::<Vec<_>>();
+        (report.tree_import.unwrap(), entries)
+    };
+    let (same, same_entries) = import("build-A", 0);
+    let (other, other_entries) = import("build-B", 0);
+    let (moved, _) = import("build-A", 7);
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(None));
+    TEST_GENESIS.with(|value| value.set(0));
+    std::fs::remove_dir_all(directory).unwrap();
+    assert!(same.checkpointed > 0);
+    assert_eq!(other.checkpointed, 0);
+    assert_eq!(other.imported, same.imported);
+    assert_eq!(other_entries, same_entries);
+    assert_eq!(moved.checkpointed, 0);
+    assert!(moved.imported > 0);
 }
 
 #[test]

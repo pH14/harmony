@@ -310,8 +310,12 @@ default Linux x86 sessions. It does not broaden the controlled workload scope.
 and prepares the output directory. A game-specific evaluator supplies the
 workload and run policy to `eval::evaluate`. That module owns search limits,
 checkpoint/resume configuration, progress and resource phases, witness and
-milestone verification, and result export. `nes-eval` keeps the existing game
-dispatch and option validation. Dedicated workload binaries can reuse the same
+milestone verification, and result export. A request's `resume` names a
+search checkpoint to continue; `resume_states` names a search checkpoint whose
+saved states start a new search under this build's key, through
+`CampaignOrigin::SavedStates` (see the searcher README's search checkpoints
+section). The two are exclusive, and neither allows campaign verification.
+`nes-eval` keeps the existing game dispatch and option validation. Dedicated workload binaries can reuse the same
 protocol and validation machinery without copying the evaluation loop.
 
 ## Live view
@@ -355,7 +359,7 @@ file streaming limits and qualification checks are documented in the
 A request with `live` set to a loopback address such as `127.0.0.1:8790` runs
 the arcade game from genesis with its own draw mixture and a `Traced` core, as
 the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
-`resume` and `mixture`. `live_site` names a directory with the built arcade
+`resume`, `resume_states` and `mixture`. `live_site` names a directory with the built arcade
 page and its `roms` directory, which the server serves at `/`. Other campaigns
 keep their own game setup and mixture, and their view has no motion trails;
 its root is the campaign's first archived state.
