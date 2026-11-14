@@ -110,7 +110,6 @@ impl MetroidTerminalPolicy {
     }
 }
 
-pub const CARTRIDGE_RAM_BASE: u64 = 0x6000;
 const EQUIPMENT: usize = 0x878;
 const MISSILES: usize = 0x879;
 const MISSILE_CAPACITY: usize = 0x87a;
@@ -780,13 +779,6 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidTarget<M> {
     pub fn genesis_holdings(&self) -> (u8, u8) {
         let state = self.genesis_observation.decoded;
         (state.items(), state.collectibles())
-    }
-
-    #[must_use]
-    pub fn gained_an_item(&self) -> bool {
-        let (items, tanks) = self.genesis_holdings();
-        let state = self.observation.decoded;
-        state.items() > items || state.collectibles() > tanks
     }
 
     #[must_use]

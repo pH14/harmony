@@ -128,10 +128,6 @@ impl<M: Machine + NesMemory> Traced<M> {
         &self.inner
     }
 
-    pub fn inner_mut(&mut self) -> &mut M {
-        &mut self.inner
-    }
-
     fn rewind(&mut self, held: Held) {
         self.elapsed = held.elapsed;
         self.staged.clear();

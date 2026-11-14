@@ -7,12 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::{
     chord::{ChordVocabulary, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
     twin_dragons::target::{
         ButtonChord, LEVEL_COUNT, TwinDragonsInput, TwinDragonsMechanicalState,
-        TwinDragonsObservations, TwinDragonsSnapshot,
+        TwinDragonsObservations,
     },
 };
 
@@ -25,9 +24,6 @@ const SETTLING_STAGE: u8 = u8::MAX - 1;
 const GAMEPLAY_STAGE: u8 = u8::MAX;
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
-
-pub type TwinDragonsArchive =
-    Archive<ButtonChord, TwinDragonsArchiveKey, TwinDragonsMilestones, TwinDragonsSnapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TwinDragonsArchiveKey {

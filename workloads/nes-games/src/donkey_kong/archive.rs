@@ -8,11 +8,10 @@ use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
     donkey_kong::target::{
         ButtonChord, DonkeyKongInput, DonkeyKongMechanicalState, DonkeyKongObservations,
-        DonkeyKongSnapshot, GRID_SHIFT, STAGE_RIVETS, TRACKED_STAGES,
+        GRID_SHIFT, STAGE_RIVETS, TRACKED_STAGES,
     },
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
 };
 
@@ -30,9 +29,6 @@ fn height_tier(state: DonkeyKongMechanicalState) -> u8 {
         state.height() >> HEIGHT_SHIFT
     }
 }
-
-pub type DonkeyKongArchive =
-    Archive<ButtonChord, DonkeyKongArchiveKey, DonkeyKongMilestones, DonkeyKongSnapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct DonkeyKongTier {

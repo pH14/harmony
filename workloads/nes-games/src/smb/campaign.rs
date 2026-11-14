@@ -25,13 +25,11 @@ use crate::{
     },
     nes_backend::{NesBackend, SnapshotState},
     search::campaign::{
-        CampaignActionResult, CampaignCheckpoint, CampaignJobRecord, CampaignJobResult,
-        CampaignModeReport, CampaignOrigin, CampaignProgressRecord, CampaignSkipRecord,
-        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy,
-        Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+        CampaignActionResult, CampaignCheckpoint, CampaignJobResult, CampaignModeReport,
+        CampaignOrigin, CampaignProgressRecord, CampaignStreamRecord, CampaignTypes, Evaluation,
+        InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
         postcard_semantic_result_sha256,
     },
-    search::draw_tables::DrawTableHeader,
     search::empirical_steps::EmpiricalStepCheckpoint,
     search::rand::RomuDuoJrRand,
     search::rollout::{ExecutionDisposition, Outcome},
@@ -55,8 +53,6 @@ pub use crate::search::campaign::{
     RESUME_IDENTIFIER, TreeImportCounts as SmbTreeImportCounts, derive_selection_seed,
 };
 
-pub type SmbCampaignJobRecord = CampaignJobRecord<EmpiricalStepCheckpoint>;
-pub type SmbCampaignSkipRecord = CampaignSkipRecord<EmpiricalStepCheckpoint>;
 pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint>;
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v3";
@@ -236,7 +232,6 @@ pub type SmbCampaignCheckpoint<P = Vec<u8>> = CampaignCheckpoint<SmbSnapshot<P>>
 pub type SmbSnapshotCheckpoint<P = Vec<u8>> = SnapshotCheckpoint<SmbSnapshot<P>>;
 pub type SmbSnapshotCheckpointEntry<P = Vec<u8>> =
     crate::search::campaign::SnapshotCheckpointEntry<SmbSnapshot<P>>;
-pub type SmbCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type SmbCampaignModeReport = CampaignModeReport<ButtonChord, SmbArchiveReport>;
 pub type SmbCampaignProgressRecord = CampaignProgressRecord<SmbArchiveKey>;
 pub type SmbCampaignActionResult<M, P = Vec<u8>> = CampaignActionResult<SmbGame<M, P>>;

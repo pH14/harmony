@@ -7,10 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
-    stb::target::{ButtonChord, StbInput, StbMechanicalState, StbObservations, StbSnapshot},
+    stb::target::{ButtonChord, StbInput, StbMechanicalState, StbObservations},
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
@@ -18,8 +17,6 @@ pub const KEY_POLICY_IDENTIFIER: &str = "stb_local_ai_peer_places_spatial_32_pla
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 pub use crate::stb::target::INITIAL_STOCKS;
-
-pub type StbArchive = Archive<ButtonChord, StbArchiveKey, StbMilestones, StbSnapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbArchiveKey {
