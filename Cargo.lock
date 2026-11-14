@@ -678,7 +678,6 @@ version = "0.1.0"
 name = "nes-workload"
 version = "0.1.0"
 dependencies = [
- "guest-image",
  "libc",
  "lz4_flex",
  "machine",

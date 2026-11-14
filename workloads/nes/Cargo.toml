@@ -7,7 +7,6 @@ license = "AGPL-3.0-or-later"
 [workspace]
 
 [dependencies]
-guest-image = { path = "../../consonance/guest-image", version = "=0.1.0" }
 oci-support = { path = "../../consonance/oci", version = "=0.1.0" }
 searcher = { path = "../../dissonance/searcher", version = "=0.1.0" }
 machine = { path = "../nes-machine", version = "=0.1.0" }
