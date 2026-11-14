@@ -390,6 +390,7 @@ mod tests {
             every: None,
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: Some("publisher-fixture".into()),
             max_image_bytes,
             before_write: None,

@@ -454,6 +454,24 @@ pub struct ProgressPoint<M, P = ()> {
     pub execution_failures: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LeadingTier<P> {
+    pub(crate) progress: P,
+    pub(crate) yields: u64,
+    pub(crate) losing_weight: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StalledState {
+    pub id: u64,
+    pub place: String,
+    pub identity: String,
+    pub selected: u64,
+    pub productive: u64,
+    pub created_execution: u64,
+    pub input_len: usize,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EntrySelectorCounters {
     pub selected: u64,
@@ -2502,6 +2520,42 @@ where
     #[must_use]
     pub fn top_progress(&self) -> Option<K::Progress> {
         self.tiers.last_key_value().map(|(progress, _)| *progress)
+    }
+
+    pub(crate) fn leading_tier(&self) -> Option<LeadingTier<K::Progress>> {
+        let mut ranked = self.tiers.keys().rev().copied();
+        let progress = ranked.next()?;
+        Some(LeadingTier {
+            progress,
+            yields: self.tier_runs(progress).yields,
+            losing_weight: self.tier_halvings(progress, ranked.next()) > 0,
+        })
+    }
+
+    pub(crate) fn leading_tier_states(&self, limit: usize) -> Vec<StalledState> {
+        let Some((_, tier)) = self.tiers.last_key_value() else {
+            return Vec::new();
+        };
+        let mut states = tier
+            .places
+            .values()
+            .flat_map(|members| members.ids.iter())
+            .filter_map(|index| {
+                let entry = self.entries.get(index)?;
+                Some(StalledState {
+                    id: entry.id,
+                    place: format!("{:?}", entry.key.place()),
+                    identity: format!("{:?}", entry.key.identity()),
+                    selected: self.selected[index],
+                    productive: self.productive[index],
+                    created_execution: entry.created_execution,
+                    input_len: entry.input_len,
+                })
+            })
+            .collect::<Vec<_>>();
+        states.sort_by(|a, b| b.selected.cmp(&a.selected).then(a.id.cmp(&b.id)));
+        states.truncate(limit);
+        states
     }
 
     pub(crate) fn resident_snapshot_entries(&self) -> impl Iterator<Item = (u64, &S)> + Clone {

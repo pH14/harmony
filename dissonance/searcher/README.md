@@ -1009,6 +1009,20 @@ archive tier. A final checkpoint is also written after the reservation queue dra
 including for runs shorter than the periodic interval. Milestone and tier
 checkpoints are kept; only the last two interval checkpoints are kept.
 
+With `CheckpointPlan::on_stall`, the coordinator also watches the leading tier
+after each admission. When that tier starts to lose draw weight to the tier
+below it (the selector's halving condition, `tier_halvings` above zero), the
+run writes a kept checkpoint with reason `stall` and appends one line to
+`stalls.jsonl` in the checkpoint directory: the checkpoint's file name, the
+tier (the progress value, which for a staged plan is the stage and its
+objective), the tier's yield count, the execution of its last yield, the jobs
+drawn from the tier since then with the count of each action those jobs ran,
+and the tier's 16 most-selected states with their place, identity, selection
+counts and input length. The watch resets when the leading tier changes or
+yields again, so one stall writes one report. It reads the archive and changes
+nothing in selection, and a run with the report records the same stream as one
+without it.
+
 Scheduling stays on the coordinator. At a due admission boundary it joins the
 preceding publication, captures the header/body and freezes owned workload
 snapshots, then hands the image and exclusive store writer to one thread.
