@@ -72,10 +72,6 @@ impl RolloutStop {
         }
     }
 
-    pub const fn stops_on_objective(&self) -> bool {
-        self.objective
-    }
-
     #[must_use]
     pub const fn cancellation(&self) -> Option<&Arc<AtomicBool>> {
         self.cancel.as_ref()
