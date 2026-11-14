@@ -17,8 +17,6 @@ pub mod addr {
 
 pub const OPER_MODE_TITLE: u8 = 0;
 pub const OPER_MODE_GAMEPLAY: u8 = 1;
-pub const OPER_MODE_VICTORY: u8 = 2;
-pub const OPER_MODE_GAME_OVER: u8 = 3;
 
 pub const LEVELS_PER_WORLD: u64 = 4;
 
