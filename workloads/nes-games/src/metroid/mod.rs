@@ -3,5 +3,6 @@
 pub mod action;
 pub mod archive;
 pub mod campaign;
+pub mod plan;
 pub mod progress;
 pub mod target;

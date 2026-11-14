@@ -104,19 +104,59 @@ The searcher owns the suffix draw and the retained-input table.
 
 ## Archive key
 
-The progress tier is the items held and whether the lineage has damaged the
-boss of its area. Mother Brain's defeat counts as one more item: in Tourian,
-her status byte at `$98` reads 3 to 7, 9 or 10, or the high byte of the escape
-timer at `$010B` reads anything but `$ff`. The place is the area byte, the map
-cell, boss damage and the Zebetite hits still needed, so every hit on a boss or
-a Zebetite column opens a new place whose draw count starts fresh, and a state
-that has hurt either never displaces one that has not. A damaged boss lifts
-the state into the tier above its item count, so a fight in progress ranks
-above the rest of the map, while each damage level stays a separate place in
-that tier and draws spread across the levels. The holder identity is the position bucket, posture and door state.
-Tanks, missiles and health are the preferences that decide which state holds a
-slot, in two orders: missiles before health, and health before missiles. Two
-places in the same tier are peers whatever their area byte, map row or column.
+The progress tier is the pair (stage, objective) of a staged plan in
+[`nes-games/src/metroid/plan.rs`](../../../nes-games/src/metroid/plan.rs).
+The plan is an ordered list of stages from power-on to Kraid's defeat: the
+Maru Mari, energy, the first missile tank, energy, the bombs, energy, Kraid's
+door, energy, and Kraid. A state's stage is the first stage whose done test it
+fails, so an item taken out of order skips its stage when the plan reaches it.
+Each stage climbs one integer:
+
+- An item stage, and the stage to Kraid's door, climbs the index of the map
+  cell the state is in along a route of map cells to its goal. Off the route
+  the key keeps the parent key's index through `complete`, so a side room
+  keeps its parent's tier and walking back along the route lowers it. A route
+  stage with no item to take, such as Kraid's door, is done once its last cell
+  is reached, and stays done for every descendant.
+- An energy stage climbs whole energy units and stays done after a later hit.
+  The stages before the Brinstar routes are done at 64 energy: an enemy touch
+  in Brinstar costs 8 energy (`$80` at `$95CE` in the Brinstar bank), and 64
+  is one touch for each of the eight screens of the shaft at map column 11,
+  which the missile and Kraid's-door routes climb. The stage before Kraid is
+  done at 80 energy: a touch in Kraid's hideout costs 20 (`$02` at `$95CF` in
+  the Kraid bank), and 80 is four touches. Full energy for the tanks held is
+  out of reach at Kraid's door on the recorded route, so the stage asks for a
+  few touches of margin.
+- The boss stage climbs boss damage. It is done when Kraid is defeated.
+
+The routes come from the ROM's own tables, read through the
+[disassembly](https://github.com/nmikstas/metroid-disassembly/tree/4270d57f9468daebdeea485686e31e26218a780c):
+the item positions in each area's special item table, the room number of each
+map cell in `WorldMap`, each room's doors and their colour, and each room's
+tiles drawn from the area's room, structure and macro tables. Within a
+horizontally scrolling stretch Samus walks to the next map cell unless a door
+stands between them; in a vertical shaft she climbs or drops to the next cell
+where the upper room's bottom two tile rows and the lower room's top two tile
+rows are walkable (tile `$A0` or above) in two neighbouring columns, and
+leaves sideways only through a door; every door flips the scroll direction.
+Blast tiles (`$80` to `$9F`) are open going up, since Samus shoots up, and
+open going down only once the route's stage holds bombs. The missile route
+avoids red doors, since they open only to missiles. Each route is a shortest
+path in that graph. Elevators join Brinstar `(7,18)` to Kraid's hideout
+`(7,20)`.
+
+The place is the area byte, the map cell, boss damage and the Zebetite hits
+still needed, so every hit on a boss or a Zebetite column opens a new place
+whose draw count starts fresh, and a state that has hurt either never displaces
+one that has not. Each damage level stays a separate place in the boss
+stage's tier for that damage, and draws spread across the places of a tier. The
+holder identity is the position bucket, posture and door state. Tanks,
+missiles and health are the preferences that decide which state holds a slot,
+in two orders: missiles before health, and health before missiles. Two places
+in the same tier are peers whatever their area byte, map row or column. Mother
+Brain's defeat counts as one more item in the preferences: in Tourian, her
+status byte at `$98` reads 3 to 7, 9 or 10, or the high byte of the escape
+timer at `$010B` reads anything but `$ff`.
 
 Boss damage is how far a lineage has worn down the boss of its area.
 In Tourian the coordinate reads Mother Brain's remaining hits while her
@@ -155,14 +195,14 @@ remaining hit points and the highest reading over the execution's frames in
 the current area, and the lineage carries the highest reading it has seen in
 its current area. The damage is the difference between that highest and the
 remaining hit points, rounded up to buckets of four, so any hit, such as a
-one-point bomb hit on Kraid, puts the state in the engaged tier. Each area
+one-point bomb hit on Kraid, raises the boss stage's objective. Each area
 holds one boss, so the highest starts from zero when the area changes. A
 reading that goes absent keeps its last value while Samus stays in the same
 map cell outside a door transition, because a hit flashes Kraid's or Ridley's
 slot empty for a few frames. Kraid and Ridley regain full health when their
 room is re-entered. Mother Brain follows the same rule until
 she is defeated. Her hit count persists while she is off screen, but keeping her
-reading in other map cells spreads the engaged tier's draws over the Tourian
+reading in other map cells spreads the boss tier's draws over the Tourian
 corridor, where no missile reaches her. The reading also drops when the item
 count changes, because a kill adds an item. With no reading the damage is
 zero. Without the coordinate a state that has landed ten hits on
@@ -241,8 +281,9 @@ search action and never a generated witness, so a replay must record and repeat
 it. The intervention point is validated before any output file exists, and a run
 that ends before the point is reported as the unintervened run.
 
-`metroid-map-probe` replays a tape and prints the map cell and resources at each
-action endpoint. Like `metroid-film` it defaults to `death_or_ending_v2`
+`metroid-map-probe` replays a tape and prints the map cell, resources and the
+key's stage and objective at each action endpoint, each key completed from the
+one before it. Like `metroid-film` it defaults to `death_or_ending_v2`
 and takes `--terminal-policy`, so a recorded tape is not stopped early
 by a predicate it was never recorded under. A campaign report names the areas a run entered and counts the
 map cells it observed; neither says which cells a route crossed, so neither can
