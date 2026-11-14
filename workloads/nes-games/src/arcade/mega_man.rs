@@ -4,6 +4,7 @@ use std::error::Error;
 
 use crate::{
     mm2::{
+        action::Mm2Action,
         campaign::{Mm2CampaignRun, Mm2Game},
         target::{
             GAMEPLAY_BANK, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, PLAYER_STATE_STANDING,
@@ -13,10 +14,23 @@ use crate::{
     nes_backend::{NesBackend, NesMemory},
     search::draw::DrawMixture,
 };
-use machine::nes::WRAM_SIZE;
+use machine::nes::{ButtonChord, WRAM_SIZE};
 use serde::{Deserialize, Serialize};
 
-use super::{ArcadeGame, HIDDEN, Machines};
+use super::{ArcadeAction, ArcadeGame, HIDDEN, Machines};
+
+impl ArcadeAction for Mm2Action {
+    fn chord(&self) -> Option<ButtonChord> {
+        match self {
+            Self::Chord(chord) => Some(*chord),
+            Self::Switch(_) => None,
+        }
+    }
+
+    fn planned_frames(&self) -> u64 {
+        Mm2Action::planned_frames(self)
+    }
+}
 
 const ORDER: [u8; 14] = [7, 5, 6, 1, 3, 0, 2, 4, 8, 9, 10, 11, 12, 13];
 const STAGE_COUNT: u8 = 14;

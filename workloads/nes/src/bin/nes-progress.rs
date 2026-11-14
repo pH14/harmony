@@ -5,7 +5,10 @@ use nes_workload::{
         progress::{NamedProgress, area_name},
         target::{MetroidInput, MetroidTarget, MetroidTerminalPolicy},
     },
-    mm2::target::{Mm2Stage, Mm2Target},
+    mm2::{
+        action::Mm2Action,
+        target::{Mm2Stage, Mm2Target},
+    },
     target::{ExitKind, Target},
 };
 use serde_json::{Value, json};
@@ -28,7 +31,12 @@ fn replay(
             core,
             core_hash,
             execution_sha256,
-            &input.actions,
+            &input
+                .actions
+                .iter()
+                .copied()
+                .map(Mm2Action::from)
+                .collect::<Vec<_>>(),
             stage,
         )?;
         let prefix_frames: u64 = input.actions.iter().map(|a| u64::from(a.hold_frames)).sum();
