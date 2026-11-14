@@ -25,7 +25,7 @@ use super::{
     execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
     mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
     progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
-    restore_search_checkpoint, retained_archive_indexes, search_checkpoint_header,
+    restore_search_checkpoint, retained_archive_indexes, search_checkpoint_header, source_suffixes,
     stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
     with_coordinator_session, write_live_progress, write_search_checkpoint,
 };
@@ -216,7 +216,13 @@ where
             CampaignOrigin::Genesis
             | CampaignOrigin::SnapshotRoot { .. }
             | CampaignOrigin::SearchCheckpoint { .. } => None,
-            CampaignOrigin::Archive { source, .. } => Some((source.file_sha256(), source.report())),
+            CampaignOrigin::Archive { source, .. } => Some((
+                source.file_sha256(),
+                source_suffixes(workload.source_entries(source.report())),
+            )),
+            CampaignOrigin::SavedStates { states } => {
+                Some((states.file_sha256(), source_suffixes(&states.entries)))
+            }
         };
         let (mut draw_state, draw_header) = initial_draw_state(workload, &config.run, draw_origin)?;
         let mut duration_policies = DurationPolicies::<G::Key>::new();

@@ -1130,7 +1130,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 9; a checkpoint from another
+match. The search checkpoint format is version 13; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation
@@ -1152,6 +1152,33 @@ was draining the reservation queue, a larger resumed budget fills the vacant
 slots up to the recorded window before admitting another result. Workloads opt
 in through `Reporting::evidence_checkpoint` and
 `Reporting::evidence_from_checkpoint`.
+
+The body starts with a key-free record of every archive entry: its id, its
+nearest saved ancestor, the actions from that ancestor (or from the root when
+none is saved) and its milestones (`SavedStateRecord`). When history compaction
+has dropped an entry's archive parent, its nearest saved ancestor is the
+earlier saved entry with the longest input that prefixes its own, so the import
+keys it from that ancestor's key and keeps the stage latches it carries. Only the action and
+milestone types give these records their meaning, so another build of the same
+workload can read them after its key has changed. `CampaignOrigin::SavedStates`
+starts a new search from them. `SavedStates::open` requires the checkpoint's
+workload identity and reads only these records and the snapshot store. It
+keeps the stored snapshots only when the checkpoint's executable identity is
+the running one, since a target's snapshot may restore only in the executable
+that wrote it; from any other build every entry is rebuilt from its actions.
+The import also rebuilds every entry when the checkpoint's genesis snapshot
+differs from the running genesis (another root input, for example), since a
+stored snapshot then does not match the state its actions reach.
+The import shares the archive origin's loop: entries go in id order, each from its
+stored snapshot or, without one, by replaying its actions from its imported
+ancestor, and each is keyed with the current `Evaluation::current_key` and
+admitted as a new candidate. Each cell's first arrival and each slot's best
+holder under every preference survive, and the evidence, selector counts,
+duration policies and random state start fresh. The draw tables fold the
+records' actions, and the stream header names the checkpoint's path and
+SHA-256 with origin kind `saved_states`. Every header policy and executable
+identity that differs from the run is recorded in `checkpoint_policy_changes`
+instead of being refused. The resumed stream cannot be replayed.
 
 
 ## Host hashing
