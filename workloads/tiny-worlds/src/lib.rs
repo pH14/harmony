@@ -1383,6 +1383,7 @@ mod tests {
                     every: None,
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                 }),
@@ -1428,6 +1429,83 @@ mod tests {
         assert!(imported.len() > 1);
         for entry in imported {
             assert_eq!(recorded.get(&entry.input.actions), Some(&entry.key));
+        }
+    }
+
+    #[test]
+    fn a_stall_report_leaves_the_stream_unchanged_and_names_the_stalled_tier() {
+        let w: Workload = Workload {
+            config: World::Maze(maze::Config {
+                length: 4,
+                pattern: 10,
+                reverse_actions: false,
+            }),
+            broken: false,
+            scale: None,
+        };
+        let mut config = campaign_config(&w, crate::test_seed(), 2_000, 1);
+        config.stop_campaign_on_objective = false;
+        let run = |label: &str, on_stall: bool| {
+            let directory = std::env::temp_dir().join(format!(
+                "tiny-world-stall-{label}-{}-{}",
+                std::process::id(),
+                config.campaign_seed
+            ));
+            let _ = std::fs::remove_dir_all(&directory);
+            let mut stream = BoundedStream(Vec::new());
+            let mut progress = Vec::new();
+            run_campaign_checkpointed_with_options(
+                &w,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                Some(&mut progress),
+                CampaignExecutionOptions {
+                    checkpoints: Some(searcher::search::checkpoint::CheckpointPlan {
+                        directory: directory.clone(),
+                        every: None,
+                        on_marks: false,
+                        on_top_progress: false,
+                        on_stall,
+                        checkpoint_owner: None,
+                        max_image_bytes: 64 << 20,
+                    }),
+                    ..CampaignExecutionOptions::default()
+                },
+            )
+            .unwrap();
+            let stalls = std::fs::read_to_string(directory.join("stalls.jsonl")).ok();
+            let checkpoints = std::fs::read_dir(&directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            std::fs::remove_dir_all(&directory).unwrap();
+            (stream.0, stalls, checkpoints)
+        };
+        let (plain, no_stalls, _) = run("off", false);
+        let (reported, stalls, checkpoints) = run("on", true);
+        assert_eq!(plain, reported);
+        assert!(no_stalls.is_none());
+        let stalls = stalls.expect("the maze run stalls in its leading tier");
+        let mut watches = std::collections::BTreeSet::new();
+        for line in stalls.lines() {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert!(watches.insert((
+                record["tier"].to_string(),
+                record["tier_yields"].to_string()
+            )));
+            let checkpoint = record["checkpoint"].as_str().unwrap();
+            assert!(checkpoints.iter().any(|name| name == checkpoint));
+            assert!(
+                record["tier"]
+                    .as_str()
+                    .is_some_and(|tier| tier.starts_with('('))
+            );
+            assert!(
+                record["states"]
+                    .as_array()
+                    .is_some_and(|states| !states.is_empty())
+            );
         }
     }
 

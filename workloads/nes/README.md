@@ -315,6 +315,9 @@ search checkpoint to continue; `resume_states` names a search checkpoint whose
 saved states start a new search under this build's key, through
 `CampaignOrigin::SavedStates` (see the searcher README's search checkpoints
 section). The two are exclusive, and neither allows campaign verification.
+`checkpoint_on_stall` writes a checkpoint and a `stalls.jsonl` line under
+`checkpoints/` each time the leading tier starts to lose draw weight
+(`CheckpointPlan::on_stall`).
 `nes-eval` keeps the existing game dispatch and option validation. Dedicated workload binaries can reuse the same
 protocol and validation machinery without copying the evaluation loop.
 

@@ -56,6 +56,7 @@ pub struct CheckpointPlan {
     pub every: Option<NonZeroU64>,
     pub on_marks: bool,
     pub on_top_progress: bool,
+    pub on_stall: bool,
     pub checkpoint_owner: Option<String>,
     pub max_image_bytes: usize,
     #[cfg(test)]
@@ -496,6 +497,7 @@ mod tests {
             every: NonZeroU64::new(10),
             on_marks: true,
             on_top_progress: true,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
