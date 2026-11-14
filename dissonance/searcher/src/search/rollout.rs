@@ -35,9 +35,71 @@ impl ExecutionDisposition {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "WireOutcome", into = "WireOutcome")]
 pub struct Outcome {
     pub objective_reached: bool,
     pub disposition: ExecutionDisposition,
+    pub doomed: bool,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename = "ExecutionDisposition", rename_all = "snake_case")]
+enum WireDisposition {
+    Runnable,
+    Terminal,
+    Failed,
+    Doomed,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename = "Outcome")]
+struct WireOutcome {
+    objective_reached: bool,
+    disposition: WireDisposition,
+}
+
+impl From<Outcome> for WireOutcome {
+    fn from(outcome: Outcome) -> Self {
+        let disposition = match outcome.disposition {
+            ExecutionDisposition::Runnable => WireDisposition::Runnable,
+            ExecutionDisposition::Terminal if outcome.doomed => WireDisposition::Doomed,
+            ExecutionDisposition::Terminal => WireDisposition::Terminal,
+            ExecutionDisposition::Failed => WireDisposition::Failed,
+        };
+        Self {
+            objective_reached: outcome.objective_reached,
+            disposition,
+        }
+    }
+}
+
+impl From<WireOutcome> for Outcome {
+    fn from(wire: WireOutcome) -> Self {
+        let (disposition, doomed) = match wire.disposition {
+            WireDisposition::Runnable => (ExecutionDisposition::Runnable, false),
+            WireDisposition::Terminal => (ExecutionDisposition::Terminal, false),
+            WireDisposition::Failed => (ExecutionDisposition::Failed, false),
+            WireDisposition::Doomed => (ExecutionDisposition::Terminal, true),
+        };
+        Self {
+            objective_reached: wire.objective_reached,
+            disposition,
+            doomed,
+        }
+    }
+}
+
+pub fn classify<G: Workload + ?Sized>(
+    workload: &G,
+    run: &G::Run,
+    target: &G::Target,
+) -> Result<Outcome, Box<dyn Error>> {
+    let mut outcome = workload.rollout_outcome(run, target)?;
+    if outcome.disposition == ExecutionDisposition::Runnable && workload.is_doomed(target) {
+        outcome.disposition = ExecutionDisposition::Terminal;
+        outcome.doomed = true;
+    }
+    Ok(outcome)
 }
 
 impl Outcome {
@@ -134,7 +196,7 @@ impl<G: Workload + ?Sized> Rollout<G> for WorkloadRollout<'_, G> {
     }
 
     fn outcome(&self) -> Result<Outcome, Box<dyn Error>> {
-        self.workload.rollout_outcome(self.run, self.target)
+        classify(self.workload, self.run, self.target)
     }
 
     fn snapshot(&mut self) -> Result<G::Snapshot, Box<dyn Error>> {
@@ -166,11 +228,7 @@ pub fn execute_job<G: Workload + ?Sized>(
     workload.reset(target);
     workload.restore(target, origin_snapshot)?;
     let mut replay_milestones = parent_milestones;
-    if !workload
-        .rollout_outcome(run, target)?
-        .disposition
-        .is_terminal()
-    {
+    if !classify(workload, run, target)?.disposition.is_terminal() {
         for action in replay {
             if stop.cancelled() {
                 return Ok(CampaignJobResult {
@@ -181,11 +239,7 @@ pub fn execute_job<G: Workload + ?Sized>(
             }
             workload.apply_action(target, action, &mut replay_milestones)?;
             workload.verify_integrity()?;
-            if workload
-                .rollout_outcome(run, target)?
-                .disposition
-                .is_terminal()
-            {
+            if classify(workload, run, target)?.disposition.is_terminal() {
                 break;
             }
         }
@@ -227,7 +281,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
         objective_seen |= raw_outcome.objective_reached;
         let outcome = Outcome {
             objective_reached,
-            disposition: raw_outcome.disposition,
+            ..raw_outcome
         };
         let observations = target.observations();
         let candidate = if matches!(outcome.disposition, ExecutionDisposition::Runnable) {
