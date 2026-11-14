@@ -15,17 +15,18 @@ use sha2::{Digest, Sha256};
 use crate::{
     chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
     metroid::{
+        action::MetroidAction,
         archive::{
             DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MetroidArchiveKey, MetroidArchiveReport,
             MetroidMilestoneInputs, MetroidMilestoneTimes, MetroidMilestones,
             MetroidProgressWatermark, PREFERENCE_IDENTIFIER, REPLACEMENT_IDENTIFIER, archive_key,
-            chord_time, merge_milestones, merge_progress_watermark, milestone_key, milestones,
+            merge_milestones, merge_progress_watermark, milestone_key, milestones,
             progress_watermark,
         },
         progress::{FirstSeen, NamedProgress},
         target::{
-            ButtonChord, GenesisDepth, MetroidInput, MetroidObservations, MetroidSnapshot,
-            MetroidTarget, MetroidTerminalPolicy, preference_tuple,
+            GenesisDepth, MetroidInput, MetroidObservations, MetroidSnapshot, MetroidTarget,
+            MetroidTerminalPolicy, preference_tuple,
         },
     },
     nes_backend::{NesBackend, NesMemory},
@@ -54,7 +55,8 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
-const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_select_taps_no_start_v1";
+const CONTROLLER_VOCABULARY_IDENTIFIER: &str =
+    "directions9_times_ab4_no_start_no_select_fire_missiles_at_targets_1_in_12_v5";
 
 type MetroidPreference = (u8, u8, u16, u8);
 type MetroidChampionKey = (MetroidProgressWatermark, MetroidPreference);
@@ -64,7 +66,7 @@ pub type MetroidMachines<M> = Box<dyn Fn() -> Result<M, MachineError> + Send + S
 pub struct MetroidGame<M: NesBackend<Vec<u8>> + NesMemory> {
     rom_sha256: String,
     machines: MetroidMachines<M>,
-    prefix: Vec<ButtonChord>,
+    prefix: Vec<MetroidAction>,
     identity: String,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
@@ -81,7 +83,10 @@ impl MetroidGame<QuickNesMachine> {
             core_path,
             core_sha256,
             execution_sha256,
-            crate::metroid::target::power_on_walk(),
+            crate::metroid::target::power_on_walk()
+                .into_iter()
+                .map(MetroidAction::Chord)
+                .collect(),
         )
     }
 
@@ -91,7 +96,7 @@ impl MetroidGame<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
         execution_sha256: &str,
-        prefix: Vec<ButtonChord>,
+        prefix: Vec<MetroidAction>,
     ) -> Self {
         Self::new_rooted(
             rom,
@@ -109,7 +114,7 @@ impl MetroidGame<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
         execution_sha256: &str,
-        prefix: Vec<ButtonChord>,
+        prefix: Vec<MetroidAction>,
         depth: GenesisDepth,
     ) -> Self {
         let core = machine::quicknes::core_identity();
@@ -143,14 +148,11 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidGame<M> {
         rom: &[u8],
         core: &str,
         core_sha256: &str,
-        prefix: Vec<ButtonChord>,
+        prefix: Vec<MetroidAction>,
         depth: GenesisDepth,
         machines: MetroidMachines<M>,
     ) -> Self {
-        let mut prefix_digest = Sha256::new();
-        for chord in &prefix {
-            prefix_digest.update([chord.buttons, chord.hold_frames]);
-        }
+        let prefix_digest = Sha256::digest(postcard::to_allocvec(&prefix).unwrap_or_default());
         let genesis = match depth {
             GenesisDepth::NewGame => "metroid-new-game-v1",
             GenesisDepth::Rooted => "metroid-rooted-v1",
@@ -160,7 +162,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidGame<M> {
              genesis={genesis}:prefix-sha256={:x};\
              image=cartridge-ram-declared-v1;\
              result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}",
-            prefix_digest.finalize(),
+            prefix_digest,
         );
         Self {
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
@@ -240,7 +242,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidGame<M> {
     }
 
     #[must_use]
-    pub fn prefix(&self) -> &[ButtonChord] {
+    pub fn prefix(&self) -> &[MetroidAction] {
         &self.prefix
     }
 
@@ -371,7 +373,7 @@ pub type MetroidCampaignOrigin<M> = CampaignOrigin<MetroidGame<M>>;
 pub type MetroidCampaignCheckpoint = CampaignCheckpoint<MetroidSnapshot>;
 pub type MetroidSnapshotCheckpoint = SnapshotCheckpoint<MetroidSnapshot>;
 pub type MetroidCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
-pub type MetroidCampaignModeReport = CampaignModeReport<ButtonChord, MetroidArchiveReport>;
+pub type MetroidCampaignModeReport = CampaignModeReport<MetroidAction, MetroidArchiveReport>;
 pub type MetroidCampaignProgressRecord = CampaignProgressRecord<MetroidArchiveKey>;
 pub type MetroidCampaignActionResult<M> = CampaignActionResult<MetroidGame<M>>;
 pub type MetroidCampaignJobResult<M> = CampaignJobResult<MetroidGame<M>>;
@@ -405,7 +407,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     target: &mut MetroidTarget<M>,
     genesis: (u8, u8),
     parent_milestones: MetroidMilestones,
-    suffix: &[ButtonChord],
+    suffix: &[MetroidAction],
     retention: RetentionPolicy,
     stop: searcher::search::rollout::RolloutStop,
 ) -> Result<MetroidCampaignJobResult<M>, Box<dyn Error>> {
@@ -521,7 +523,7 @@ fn action_champion_key(observations: &[MetroidObservations]) -> Option<MetroidCh
 impl<M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for MetroidGame<M> {
     type JobObservation = ();
     type Target = MetroidTarget<M>;
-    type Action = ButtonChord;
+    type Action = MetroidAction;
     type Key = MetroidArchiveKey;
     type Milestones = MetroidMilestones;
     type Progress = MetroidProgressWatermark;
@@ -768,16 +770,16 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for MetroidGame<M> {
     fn sample_alphabet(
         &self,
         _run: &MetroidCampaignRun,
-        previous: Option<&ButtonChord>,
+        previous: Option<&MetroidAction>,
         rand: &mut RomuDuoJrRand,
-    ) -> Result<ButtonChord, Box<dyn Error>> {
-        crate::metroid::archive::CHORDS.draw(rand, previous)
+    ) -> Result<MetroidAction, Box<dyn Error>> {
+        MetroidAction::draw(rand, previous)
     }
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
-    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
-        chord_time
+    fn action_cost_fn(&self) -> fn(&MetroidAction) -> u64 {
+        MetroidAction::planned_frames
     }
 
     fn snapshot_memory_charge(snapshot: &MetroidSnapshot) -> usize {
@@ -810,7 +812,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
     fn apply_action(
         &self,
         target: &mut MetroidTarget<M>,
-        action: &ButtonChord,
+        action: &MetroidAction,
         aggregate: &mut MetroidMilestones,
     ) -> Result<(), Box<dyn Error>> {
         let (genesis_items, genesis_tanks) = target.genesis_holdings();
@@ -1068,15 +1070,23 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::metroid::target::ButtonChord;
 
     #[test]
     fn streamed_evidence_preserves_the_owned_reference_bytes_and_resume_fields() {
         let mut evidence = MetroidCampaignEvidence::default();
         evidence.observed_map.0[17] = 19;
-        evidence.champion_input.actions.push(ButtonChord {
-            buttons: 3,
-            hold_frames: 7,
-        });
+        evidence
+            .champion_input
+            .actions
+            .push(MetroidAction::Chord(ButtonChord {
+                buttons: 3,
+                hold_frames: 7,
+            }));
+        evidence
+            .champion_input
+            .actions
+            .push(MetroidAction::FireMissiles(9));
         evidence.best_energy.insert("ridley_area", (3, 5));
         evidence.best_missiles.insert("ridley_area", (9, 11));
         evidence
@@ -1151,7 +1161,7 @@ mod tests {
             dead: false,
         };
         let action = MetroidCampaignActionResult {
-            action: ButtonChord::new(0, 1),
+            action: MetroidAction::Chord(ButtonChord::new(0, 1)),
             observations: vec![observation],
             milestones: MetroidMilestones::default(),
             outcome: Outcome::default(),
@@ -1215,14 +1225,14 @@ mod tests {
         let action_with = |observation: MetroidObservations, actions: usize| {
             (
                 MetroidCampaignActionResult {
-                    action: ButtonChord::new(0, 1),
+                    action: MetroidAction::Chord(ButtonChord::new(0, 1)),
                     observations: vec![observation],
                     milestones: MetroidMilestones::default(),
                     outcome: Outcome::default(),
                     candidate: None,
                 },
                 MetroidInput {
-                    actions: vec![ButtonChord::new(0, 1); actions],
+                    actions: vec![MetroidAction::Chord(ButtonChord::new(0, 1)); actions],
                 },
             )
         };

@@ -4,6 +4,7 @@ use std::error::Error;
 
 use crate::{
     metroid::{
+        action::MetroidAction,
         campaign::{MetroidCampaignRun, MetroidGame},
         target::{
             BCD_BORROW_HEALTH, GenesisDepth, MetroidMechanicalState, MetroidObservations,
@@ -13,10 +14,10 @@ use crate::{
     nes_backend::{NesBackend, NesMemory},
     search::draw::DrawMixture,
 };
-use machine::nes::WRAM_SIZE;
+use machine::nes::{ButtonChord, WRAM_SIZE};
 use serde::{Deserialize, Serialize};
 
-use super::{ArcadeGame, HIDDEN, Machines};
+use super::{ArcadeAction, ArcadeGame, HIDDEN, Machines};
 
 const CARTRIDGE_BYTES: usize = 0x2000;
 const MEMORY_BYTES: usize = WRAM_SIZE + CARTRIDGE_BYTES;
@@ -105,6 +106,16 @@ fn state(memory: &[u8]) -> Result<MetroidMechanicalState, Box<dyn Error>> {
     Ok(decode_state(wram, cartridge)?)
 }
 
+impl ArcadeAction for MetroidAction {
+    fn chord(&self) -> Option<ButtonChord> {
+        MetroidAction::chord(self)
+    }
+
+    fn planned_frames(&self) -> u64 {
+        MetroidAction::planned_frames(self)
+    }
+}
+
 impl<M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for MetroidGame<M> {
     type Machine = M;
     type View = View;
@@ -116,7 +127,10 @@ impl<M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for MetroidGame<M>
             rom,
             identity,
             identity_sha256,
-            power_on_walk(),
+            power_on_walk()
+                .into_iter()
+                .map(MetroidAction::Chord)
+                .collect(),
             GenesisDepth::NewGame,
             Box::new(move || machines()),
         )

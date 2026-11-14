@@ -100,8 +100,10 @@ Tilt Bro campaign's own witness is checked.
 `nes-games/src/chord.rs` draws the controller chords for every game. An action is a chord
 held for a short hold of 2–12 frames or a long hold, with equal odds. The long
 hold is 96–120 frames for SMB and 48–120 frames for the other games. Each game
-names its held chords and at most one tap button: Select for Metroid, Start for
-Mega Man 2, none for SMB and Super Tilt Bro.
+names its held chords and at most one tap button: Start for Punch-Out!! and
+Zelda, A for Joust and none for the rest. Metroid and Mega Man 2
+reach Select and Start only through their own actions, described in their
+READMEs.
 
 A new chord changes one control of the chord before it. The controls are the
 D-pad, with nine positions, and the A and B buttons. The draw picks the D-pad,

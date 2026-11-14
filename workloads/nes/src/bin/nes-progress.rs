@@ -2,13 +2,15 @@
 
 use nes_workload::{
     metroid::{
+        action::MetroidAction,
         progress::{NamedProgress, area_name},
-        target::{MetroidInput, MetroidTarget, MetroidTerminalPolicy},
+        target::{ButtonChord, MetroidTarget, MetroidTerminalPolicy},
     },
     mm2::{
         action::Mm2Action,
         target::{Mm2Stage, Mm2Target},
     },
+    search::archive::Input,
     target::{ExitKind, Target},
 };
 use serde_json::{Value, json};
@@ -21,7 +23,7 @@ fn replay(
     rom: &[u8],
     core_hash: &str,
     execution_sha256: &str,
-    input: &MetroidInput,
+    input: &Input<ButtonChord>,
     stage: Option<Mm2Stage>,
 ) -> Result<Value, Box<dyn Error>> {
     if game == "mm2" {
@@ -75,7 +77,7 @@ fn replay(
         if target.is_dead() || target.is_victory() {
             return Err("tape continues after a terminal action".into());
         }
-        target.apply(action);
+        target.apply(&MetroidAction::Chord(*action));
         if target.exit_kind() != ExitKind::Ok {
             return Err("emulator failed".into());
         }
@@ -116,7 +118,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let core = Path::new(&args[1]);
     let rom = fs::read(&args[2])?;
     let bytes = fs::read(&args[3])?;
-    let input: MetroidInput = serde_json::from_slice(&bytes)?;
+    let input: Input<ButtonChord> = serde_json::from_slice(&bytes)?;
     let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
     let execution_sha256 = machine::quicknes::prepared_execution_sha256(core, &core_hash)?;
     let stage = args.get(4).map(|s| Mm2Stage::parse(s)).transpose()?;

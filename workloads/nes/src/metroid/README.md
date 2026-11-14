@@ -60,11 +60,49 @@ trajectory achieved their union. The count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
 or resource dominance.
 
-The adapter supplies its controller vocabulary to the shared NES chord draw in
-the [package README](../../README.md#chord-draw): the 36 chords of nine
-D-pad positions and four A/B states, with Select as the tap button, since
-Select switches to missiles. The searcher owns the suffix draw and the
-retained-input table.
+## Actions
+
+An action is a button chord or a missile volley, defined in
+[`nes-games/src/metroid/action.rs`](../../../nes-games/src/metroid/action.rs).
+Chords come from the shared NES chord draw in the
+[package README](../../README.md#chord-draw): the 36 chords of nine D-pad
+positions and four A/B states, with no tap button, so a chord never presses
+Start or Select and B from a chord always fires the beam. A red door takes
+five missiles, and a Select tap left missiles armed for every later B press,
+so random play spent its stock on whatever it faced before it reached a door.
+One draw in 12 is a volley. A volley fires only while something that takes
+missiles is in Samus's room: a closed missile door, a boss with health left
+or a Zebetite with hits left. Elsewhere it waits 12 frames, the short chord
+hold, so a volley can no longer spend missiles in rooms where they open
+nothing.
+
+The door objects sit in the object slots at `$0380`, `$0390`, `$03a0` and
+`$03b0`. A slot reads 2 while its door is closed and waiting for hits, the
+byte at offset 7 is the door palette, which sets how many hits the door takes
+(palette 0 takes 5 missiles, palette 2 takes 10, palettes 1 and 3 open to a
+beam), and the byte at offset `0x0c` is its name table. A door is in Samus's
+room when its name table matches hers at `$030c`. An opened red door is never
+loaded as closed again, so it stops counting once opened.
+
+A volley records only a random word and resolves against the decoded state
+when it runs, so a recording replays from its actions alone. The count is the
+word modulo the missiles held, plus one. The target presses Select until the
+toggle at `$010E` reads armed, presses B on every other frame until the
+missile count at cartridge `0x879` has dropped by the count or the room holds
+no missile target any more, then presses Select until the toggle reads off. A
+shot counts only when the count drops, so a shot the game refuses, such as one
+from the morph ball, is not counted. Arming and disarming give up after 8
+frames, since Select flips the toggle within one press. Firing gives up after
+64 frames without a shot: the game refuses a missile while the last one is
+still in flight, and a missile crosses the screen in under 64 frames. With no
+missiles, or outside play, a volley waits 12 frames. A volley plans 12
+frames: most volleys find no target and wait, and from room entries at the
+three Brinstar red doors a volley averaged 13 to 15 frames.
+
+The searcher owns the suffix draw and the retained-input table.
+`nes-progress` reads chord-only tapes.
+
+## Archive key
 
 The progress tier is the items held and whether the lineage has damaged the
 boss of its area. Mother Brain's defeat counts as one more item: in Tourian,
