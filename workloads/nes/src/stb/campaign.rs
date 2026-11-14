@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
+    evidence::{NesCampaignEvidence, NesEvidence},
     nes_backend::{NesBackend, SnapshotState},
     search::{
         archive::RetentionPolicy,
@@ -116,16 +117,7 @@ impl StbGame {
 #[derive(Clone, Copy, Debug)]
 pub struct StbCampaignRun;
 
-#[derive(Clone, Default)]
-pub struct StbCampaignEvidence {
-    aggregate: StbMilestones,
-    watermark: StbProgressWatermark,
-    first_reached: StbMilestoneTimes,
-    first_inputs: StbMilestoneInputs,
-    champion_input: StbInput,
-    champion_milestones: StbMilestones,
-    champion_key: Option<StbChampionKey>,
-}
+pub type StbCampaignEvidence = NesCampaignEvidence<StbGame>;
 
 pub type StbCampaignOrigin = CampaignOrigin<StbGame>;
 pub type StbCampaignCheckpoint = CampaignCheckpoint<StbSnapshot>;
@@ -337,7 +329,62 @@ impl CampaignTypes for StbGame {
     type Run = StbCampaignRun;
 }
 
+impl NesEvidence for StbGame {
+    type MilestoneTimes = StbMilestoneTimes;
+    type MilestoneInputs = StbMilestoneInputs;
+    type ChampionKey = StbChampionKey;
+    type Extras = ();
+
+    fn milestone_rank(milestones: StbMilestones) -> impl Ord {
+        milestone_key(milestones)
+    }
+    fn merge_watermark(watermark: &mut StbProgressWatermark, observations: &[StbObservations]) {
+        merge_progress_watermark(watermark, observations);
+    }
+    fn champion_key(
+        observations: &[StbObservations],
+        _milestones: StbMilestones,
+    ) -> Option<StbChampionKey> {
+        action_champion_key(observations)
+    }
+    fn record_first_reached(
+        times: &mut StbMilestoneTimes,
+        inputs: &mut StbMilestoneInputs,
+        _extras: &(),
+        milestones: StbMilestones,
+        sequence: u64,
+        input: &StbInput,
+    ) {
+        update_first_inputs(times, inputs, milestones, sequence, input);
+    }
+    fn first_reached_count(times: &StbMilestoneTimes) -> usize {
+        [
+            times.first_opponent_ko,
+            times.first_victory,
+            times.first_defeat,
+        ]
+        .into_iter()
+        .flatten()
+        .count()
+    }
+}
+
 impl Reporting for StbGame {
+    fn write_evidence_checkpoint(
+        evidence: &Self::Evidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        evidence.write_checkpoint(out)
+    }
+
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
+        NesCampaignEvidence::from_checkpoint(bytes)
+    }
+
+    fn checkpoint_marks(evidence: &Self::Evidence) -> usize {
+        evidence.checkpoint_marks()
+    }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -556,7 +603,7 @@ impl Evaluation for StbGame {
     }
 
     fn merge_origin_evidence(&self, evidence: &mut StbCampaignEvidence, source: &StbArchiveReport) {
-        evidence.watermark = evidence.watermark.max(source.progress_watermark);
+        evidence.merge_origin(source.progress_watermark);
     }
 
     fn merge_snapshot_root_evidence(
@@ -583,18 +630,7 @@ impl Evaluation for StbGame {
         value: StbMilestones,
         input: &StbInput,
     ) {
-        merge_milestones(&mut evidence.aggregate, value);
-        update_first_inputs(
-            &mut evidence.first_reached,
-            &mut evidence.first_inputs,
-            value,
-            0,
-            input,
-        );
-        if milestone_key(value) > milestone_key(evidence.champion_milestones) {
-            evidence.champion_milestones = value;
-            evidence.champion_input = input.clone();
-        }
+        evidence.merge_import(self, value, input);
     }
 
     fn merge_action_evidence<F>(
@@ -607,30 +643,7 @@ impl Evaluation for StbGame {
     where
         F: FnOnce() -> Result<StbInput, Box<dyn Error>>,
     {
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
-        merge_milestones(&mut evidence.aggregate, action.milestones);
-        let first_input_needed = (action.milestones.opponent_kos > 0
-            && evidence.first_inputs.first_opponent_ko.is_none())
-            || (action.milestones.victory && evidence.first_inputs.first_victory.is_none())
-            || (action.milestones.defeat && evidence.first_inputs.first_defeat.is_none());
-        let champion = action_champion_key(&action.observations)
-            .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() {
-            let input = input()?;
-            update_first_inputs(
-                &mut evidence.first_reached,
-                &mut evidence.first_inputs,
-                action.milestones,
-                sequence,
-                &input,
-            );
-            if let Some(key) = champion {
-                evidence.champion_key = Some(key);
-                evidence.champion_milestones = action.milestones;
-                evidence.champion_input = input;
-            }
-        }
-        Ok(())
+        evidence.merge_action(self, action, sequence, false, input, |_, _| Ok(()))
     }
 
     fn source_entries<'a>(
@@ -729,6 +742,44 @@ impl crate::film::Endpointed for StbGame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn populated_evidence_survives_a_checkpoint_and_counts_each_first_arrival() {
+        let input = StbInput {
+            actions: vec![ButtonChord::new(0x01, 4)],
+        };
+        let knockout = StbMilestones {
+            opponent_damage: 80,
+            opponent_kos: 1,
+            ..StbMilestones::default()
+        };
+        let won = StbMilestones {
+            opponent_kos: 4,
+            victory: true,
+            ..knockout
+        };
+        let mut evidence = StbCampaignEvidence::default();
+        for (sequence, milestones) in [(3, knockout), (5, knockout), (8, won)] {
+            StbGame::record_first_reached(
+                &mut evidence.first_reached,
+                &mut evidence.first_inputs,
+                &(),
+                milestones,
+                sequence,
+                &input,
+            );
+        }
+        assert_eq!(evidence.first_reached.first_opponent_ko, Some(3));
+        evidence.aggregate = won;
+        evidence.watermark = StbProgressWatermark {
+            opponent_kos: 4,
+            opponent_damage: 80,
+        };
+        evidence.champion_input = input;
+        evidence.champion_milestones = won;
+        evidence.champion_key = Some(crate::stb::archive::StbArchiveKey::default().champion_key());
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 2);
+    }
 
     fn result_with_portable(bytes: Vec<u8>) -> StbCampaignJobResult {
         let state = crate::stb::target::StbMechanicalState {

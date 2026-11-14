@@ -23,6 +23,8 @@ pub type SmbCampaignOrigin<M = QuickNesMachine, P = Vec<u8>> =
     nes_games::smb::campaign::SmbCampaignOrigin<M, P>;
 pub type SmbCampaignActionResult<M = QuickNesMachine, P = Vec<u8>> =
     nes_games::smb::campaign::SmbCampaignActionResult<M, P>;
+pub type SmbCampaignEvidence<M = QuickNesMachine, P = Vec<u8>> =
+    nes_games::smb::campaign::SmbCampaignEvidence<M, P>;
 
 pub struct SmbCampaignConfig {
     pub campaign_seed: u64,
@@ -180,11 +182,13 @@ mod tests {
         SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SmbTerminalPredicate,
         derive_selection_seed,
     };
-    use crate::search::campaign::{Evaluation, InputPolicy, TargetExecution, default_window};
+    use crate::search::campaign::{
+        Evaluation, InputPolicy, Reporting, TargetExecution, default_window,
+    };
     use crate::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawTables};
     use crate::{
         chord::CHANGE_ONE_CONTROL_IDENTIFIER,
-        smb::archive::SmbArchiveReport,
+        smb::archive::{SmbArchiveReport, milestone_key},
         smb::target::{
             ButtonChord, SmbInput, SmbMechanicalState, SmbMilestones, SmbObservations,
             SmbProgressWatermark, SmbTarget,
@@ -446,6 +450,7 @@ mod tests {
         ] {
             let mut evidence = super::SmbCampaignEvidence {
                 champion_milestones: reigning,
+                champion_key: Some(milestone_key(reigning)),
                 ..super::SmbCampaignEvidence::default()
             };
             let calls = Cell::new(0);
@@ -459,6 +464,42 @@ mod tests {
             assert_eq!(calls.get(), 1);
             assert_eq!(evidence.champion_milestones, reigning);
         }
+    }
+
+    #[test]
+    fn checkpoint_marks_count_each_first_reached_milestone() {
+        let rom = synthetic_nrom();
+        let game = test_game(&rom);
+        let mut evidence = super::SmbCampaignEvidence::default();
+        let mut milestones = SmbMilestones::default();
+        let steps: [fn(&mut SmbMilestones); 4] = [
+            |m| m.max_1_1_scroll_bucket = 1,
+            |m| m.reached_1_1_flag = true,
+            |m| m.reached_1_2 = true,
+            |m| m.reached_onward = true,
+        ];
+        assert_eq!(<SmbGame as Reporting>::checkpoint_marks(&evidence), 0);
+        for (sequence, step) in (1..).zip(steps) {
+            step(&mut milestones);
+            for repeat in [sequence, sequence + 100] {
+                game.merge_action_evidence(
+                    &mut evidence,
+                    &evidence_action(milestones),
+                    repeat,
+                    || {
+                        Ok(SmbInput {
+                            actions: vec![ButtonChord::new(0x01, 4)],
+                        })
+                    },
+                )
+                .expect("merge action evidence");
+                assert_eq!(
+                    <SmbGame as Reporting>::checkpoint_marks(&evidence),
+                    sequence as usize
+                );
+            }
+        }
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 4);
     }
 
     #[test]
@@ -1534,31 +1575,5 @@ mod tests {
             replay_smb_campaign(&rom, &with, None).expect("sidecar run replays byte-exact");
         assert_eq!(replayed.stream_sha256, observed.stream_sha256);
         assert_eq!(replayed.archive, observed.archive);
-    }
-}
-
-#[cfg(test)]
-mod evidence_checkpoint_tests {
-    use super::*;
-    use crate::{search::campaign::Reporting, smb::target::ButtonChord};
-    #[test]
-    fn evidence_round_trip_preserves_all_serialized_fields_and_rejects_truncation() {
-        let mut evidence = SmbCampaignEvidence::default();
-        evidence.aggregate.reached_1_2 = true;
-        evidence.first_reached.level_1_2 = Some(23);
-        evidence.champion_input.actions.push(ButtonChord {
-            buttons: 1,
-            hold_frames: 2,
-        });
-        evidence.champion_milestones = evidence.aggregate;
-        let bytes = <SmbGame as Reporting>::evidence_checkpoint(&evidence).unwrap();
-        let restored = <SmbGame as Reporting>::evidence_from_checkpoint(&bytes).unwrap();
-        assert_eq!(
-            serde_json::to_value(&evidence).unwrap(),
-            serde_json::to_value(&restored).unwrap()
-        );
-        assert!(
-            <SmbGame as Reporting>::evidence_from_checkpoint(&bytes[..bytes.len() - 1]).is_err()
-        );
     }
 }

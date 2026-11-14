@@ -1138,7 +1138,9 @@ may use a different worker count. If the checkpoint was taken while a budget
 was draining the reservation queue, a larger resumed budget fills the vacant
 slots up to the recorded window before admitting another result. Workloads opt
 in through `Reporting::evidence_checkpoint` and
-`Reporting::evidence_from_checkpoint`.
+`Reporting::evidence_from_checkpoint`. `search_checkpoint_evidence` returns the
+evidence bytes a checkpoint file holds, which
+`Reporting::evidence_from_checkpoint` decodes.
 
 
 ## Host hashing

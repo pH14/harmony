@@ -99,7 +99,7 @@ impl ArchiveKey for TwinDragonsArchiveKey {
     fn record(_lineage: &mut Self::Lineage, _key: Self) {}
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct TwinDragonsChampionKey {
     level: u8,
     stage: u8,

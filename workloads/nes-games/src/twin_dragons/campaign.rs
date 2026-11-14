@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
+    evidence::{NesCampaignEvidence, NesEvidence},
     nes_backend::{NesBackend, SnapshotState},
     search::{
         archive::RetentionPolicy,
@@ -124,16 +125,7 @@ impl TwinDragonsGame<QuickNesMachine> {
 #[derive(Clone, Copy, Debug)]
 pub struct TwinDragonsCampaignRun;
 
-#[derive(Clone, Default)]
-pub struct TwinDragonsCampaignEvidence {
-    aggregate: TwinDragonsMilestones,
-    watermark: TwinDragonsProgressWatermark,
-    first_reached: TwinDragonsMilestoneTimes,
-    first_inputs: TwinDragonsMilestoneInputs,
-    champion_input: TwinDragonsInput,
-    champion_milestones: TwinDragonsMilestones,
-    champion_key: Option<TwinDragonsChampionKey>,
-}
+pub type TwinDragonsCampaignEvidence<M> = NesCampaignEvidence<TwinDragonsGame<M>>;
 
 pub type TwinDragonsCampaignCheckpoint = CampaignCheckpoint<TwinDragonsSnapshot>;
 pub type TwinDragonsSnapshotCheckpoint = SnapshotCheckpoint<TwinDragonsSnapshot>;
@@ -264,34 +256,6 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
     })
 }
 
-fn update_first_inputs(
-    times: &mut TwinDragonsMilestoneTimes,
-    inputs: &mut TwinDragonsMilestoneInputs,
-    value: TwinDragonsMilestones,
-    sequence: u64,
-    input: &TwinDragonsInput,
-) {
-    for level in 0..usize::from(value.levels_cleared).min(times.first_clears.len()) {
-        if times.first_clears[level].is_none() {
-            times.first_clears[level] = Some(sequence);
-            inputs.first_clears[level] = Some(input.clone());
-        }
-    }
-    if value.death && times.first_death.is_none() {
-        times.first_death = Some(sequence);
-        inputs.first_death = Some(input.clone());
-    }
-}
-
-fn first_input_needed(inputs: &TwinDragonsMilestoneInputs, value: TwinDragonsMilestones) -> bool {
-    inputs
-        .first_clears
-        .iter()
-        .take(usize::from(value.levels_cleared))
-        .any(Option::is_none)
-        || (value.death && inputs.first_death.is_none())
-}
-
 fn action_champion_key(observations: &[TwinDragonsObservations]) -> Option<TwinDragonsChampionKey> {
     observations.last().and_then(|observation| {
         archive_key(observation.decoded).map(TwinDragonsArchiveKey::champion_key)
@@ -307,12 +271,81 @@ impl<M: NesBackend<Vec<u8>>> CampaignTypes for TwinDragonsGame<M> {
     type Progress = TwinDragonsProgressWatermark;
     type Snapshot = TwinDragonsSnapshot;
     type Observations = TwinDragonsObservations;
-    type Evidence = TwinDragonsCampaignEvidence;
+    type Evidence = TwinDragonsCampaignEvidence<M>;
     type ArchiveReport = TwinDragonsArchiveReport;
     type Run = TwinDragonsCampaignRun;
 }
 
+impl<M: NesBackend<Vec<u8>>> NesEvidence for TwinDragonsGame<M> {
+    type MilestoneTimes = TwinDragonsMilestoneTimes;
+    type MilestoneInputs = TwinDragonsMilestoneInputs;
+    type ChampionKey = TwinDragonsChampionKey;
+    type Extras = ();
+
+    fn milestone_rank(milestones: TwinDragonsMilestones) -> impl Ord {
+        milestone_key(milestones)
+    }
+
+    fn merge_watermark(
+        watermark: &mut TwinDragonsProgressWatermark,
+        observations: &[TwinDragonsObservations],
+    ) {
+        merge_progress_watermark(watermark, observations);
+    }
+
+    fn champion_key(
+        observations: &[TwinDragonsObservations],
+        _milestones: TwinDragonsMilestones,
+    ) -> Option<TwinDragonsChampionKey> {
+        action_champion_key(observations)
+    }
+
+    fn record_first_reached(
+        times: &mut TwinDragonsMilestoneTimes,
+        inputs: &mut TwinDragonsMilestoneInputs,
+        _extras: &(),
+        milestones: TwinDragonsMilestones,
+        sequence: u64,
+        input: &TwinDragonsInput,
+    ) {
+        for level in 0..usize::from(milestones.levels_cleared).min(times.first_clears.len()) {
+            if times.first_clears[level].is_none() {
+                times.first_clears[level] = Some(sequence);
+                inputs.first_clears[level] = Some(input.clone());
+            }
+        }
+        if milestones.death && times.first_death.is_none() {
+            times.first_death = Some(sequence);
+            inputs.first_death = Some(input.clone());
+        }
+    }
+
+    fn first_reached_count(times: &TwinDragonsMilestoneTimes) -> usize {
+        times
+            .first_clears
+            .iter()
+            .filter(|time| time.is_some())
+            .count()
+            + usize::from(times.first_death.is_some())
+    }
+}
+
 impl<M: NesBackend<Vec<u8>>> Reporting for TwinDragonsGame<M> {
+    fn write_evidence_checkpoint(
+        evidence: &Self::Evidence,
+        out: &mut dyn std::io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        evidence.write_checkpoint(out)
+    }
+
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
+        NesCampaignEvidence::from_checkpoint(bytes)
+    }
+
+    fn checkpoint_marks(evidence: &Self::Evidence) -> usize {
+        evidence.checkpoint_marks()
+    }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -347,7 +380,7 @@ impl<M: NesBackend<Vec<u8>>> Reporting for TwinDragonsGame<M> {
 
     fn archive_report(
         &self,
-        evidence: &TwinDragonsCampaignEvidence,
+        evidence: &TwinDragonsCampaignEvidence<M>,
         state: ArchiveReportState<Self>,
     ) -> TwinDragonsArchiveReport {
         TwinDragonsArchiveReport {
@@ -527,25 +560,27 @@ impl<M: NesBackend<Vec<u8>>> Evaluation for TwinDragonsGame<M> {
         merge_milestones(into, from);
     }
 
-    fn aggregate_milestones(evidence: &TwinDragonsCampaignEvidence) -> TwinDragonsMilestones {
+    fn aggregate_milestones(evidence: &TwinDragonsCampaignEvidence<M>) -> TwinDragonsMilestones {
         evidence.aggregate
     }
 
-    fn aggregate_progress(evidence: &TwinDragonsCampaignEvidence) -> TwinDragonsProgressWatermark {
+    fn aggregate_progress(
+        evidence: &TwinDragonsCampaignEvidence<M>,
+    ) -> TwinDragonsProgressWatermark {
         evidence.watermark
     }
 
     fn merge_origin_evidence(
         &self,
-        evidence: &mut TwinDragonsCampaignEvidence,
+        evidence: &mut TwinDragonsCampaignEvidence<M>,
         source: &TwinDragonsArchiveReport,
     ) {
-        evidence.watermark = evidence.watermark.max(source.progress_watermark);
+        evidence.merge_origin(source.progress_watermark);
     }
 
     fn merge_snapshot_root_evidence(
         &self,
-        evidence: &mut TwinDragonsCampaignEvidence,
+        evidence: &mut TwinDragonsCampaignEvidence<M>,
         target: &TwinDragonsTarget<M>,
     ) -> Result<(), Box<dyn Error>> {
         let observation = TwinDragonsObservations {
@@ -559,27 +594,16 @@ impl<M: NesBackend<Vec<u8>>> Evaluation for TwinDragonsGame<M> {
 
     fn merge_import_evidence(
         &self,
-        evidence: &mut TwinDragonsCampaignEvidence,
+        evidence: &mut TwinDragonsCampaignEvidence<M>,
         value: TwinDragonsMilestones,
         input: &TwinDragonsInput,
     ) {
-        merge_milestones(&mut evidence.aggregate, value);
-        update_first_inputs(
-            &mut evidence.first_reached,
-            &mut evidence.first_inputs,
-            value,
-            0,
-            input,
-        );
-        if milestone_key(value) > milestone_key(evidence.champion_milestones) {
-            evidence.champion_milestones = value;
-            evidence.champion_input = input.clone();
-        }
+        evidence.merge_import(self, value, input);
     }
 
     fn merge_action_evidence<F>(
         &self,
-        evidence: &mut TwinDragonsCampaignEvidence,
+        evidence: &mut TwinDragonsCampaignEvidence<M>,
         action: &TwinDragonsCampaignActionResult<M>,
         sequence: u64,
         input: F,
@@ -587,27 +611,7 @@ impl<M: NesBackend<Vec<u8>>> Evaluation for TwinDragonsGame<M> {
     where
         F: FnOnce() -> Result<TwinDragonsInput, Box<dyn Error>>,
     {
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
-        merge_milestones(&mut evidence.aggregate, action.milestones);
-        let first_input_needed = first_input_needed(&evidence.first_inputs, action.milestones);
-        let champion = action_champion_key(&action.observations)
-            .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() {
-            let input = input()?;
-            update_first_inputs(
-                &mut evidence.first_reached,
-                &mut evidence.first_inputs,
-                action.milestones,
-                sequence,
-                &input,
-            );
-            if let Some(key) = champion {
-                evidence.champion_key = Some(key);
-                evidence.champion_milestones = action.milestones;
-                evidence.champion_input = input;
-            }
-        }
-        Ok(())
+        evidence.merge_action(self, action, sequence, false, input, |_, _| Ok(()))
     }
 
     fn source_entries<'a>(
@@ -641,6 +645,45 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn populated_evidence_survives_a_checkpoint_and_counts_each_first_arrival() {
+        let input = TwinDragonsInput {
+            actions: vec![ButtonChord::new(0x01, 4)],
+        };
+        let mut evidence = TwinDragonsCampaignEvidence::<QuickNesMachine>::default();
+        for (sequence, levels_cleared, death) in [(3, 1, false), (5, 2, false), (8, 2, true)] {
+            TwinDragonsGame::<QuickNesMachine>::record_first_reached(
+                &mut evidence.first_reached,
+                &mut evidence.first_inputs,
+                &(),
+                TwinDragonsMilestones {
+                    levels_cleared,
+                    victory: false,
+                    death,
+                },
+                sequence,
+                &input,
+            );
+        }
+        assert_eq!(
+            evidence.first_reached.first_clears,
+            [Some(3), Some(5), None]
+        );
+        evidence.aggregate = TwinDragonsMilestones {
+            levels_cleared: 2,
+            victory: false,
+            death: true,
+        };
+        evidence.watermark = TwinDragonsProgressWatermark {
+            levels_cleared: 2,
+            x: 300,
+        };
+        evidence.champion_input = input;
+        evidence.champion_milestones = evidence.aggregate;
+        evidence.champion_key = Some(TwinDragonsArchiveKey::default().champion_key());
+        assert_eq!(crate::evidence::assert_checkpoint_round_trip(&evidence), 3);
+    }
 
     #[test]
     fn native_policy_rejects_a_changed_prepared_execution() {
