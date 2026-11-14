@@ -12,6 +12,7 @@ use std::{
 
 use nes_workload::{
     mm2::{
+        action::Mm2Action,
         archive::MAX_ARCHIVE_ENTRIES,
         campaign::{
             Mm2CampaignConfig, Mm2CampaignOrigin, Mm2Game, replay_mm2_campaign_checkpointed,
@@ -153,7 +154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let execution_sha256 = machine::quicknes::prepared_execution_sha256(&args.core, &core_sha256)?;
     let prefix = match &args.prefix_input {
         Some(path) => serde_json::from_slice::<Mm2Input>(&fs::read(path)?)?.actions,
-        None => power_on_walk(),
+        None => power_on_walk().into_iter().map(Mm2Action::from).collect(),
     };
     let game = Mm2Game::new_at_stage_after(
         &rom,
@@ -215,11 +216,18 @@ fn run_marketing_soak(
         .unwrap_or(&live.archive.champion_input)
         .clone();
     if let Some(victory) = live.objective_witness.as_ref() {
-        let genesis_prefix = game.new_target()?.genesis_prefix().to_vec();
+        let genesis_prefix = game
+            .new_target()?
+            .genesis_prefix()
+            .iter()
+            .copied()
+            .map(Mm2Action::from)
+            .collect::<Vec<_>>();
         let mut next = genesis_prefix.clone();
         next.extend(victory.actions.iter().copied());
         if game.route().stage().is_some_and(|stage| !stage.is_wily()) {
-            next.extend(game.walk_to_stage_select(&next)?);
+            let walk = game.walk_to_stage_select(&next)?;
+            next.extend(walk.into_iter().map(Mm2Action::from));
         }
         fs::write(
             output.join("next-prefix.json"),
