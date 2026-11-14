@@ -16,12 +16,11 @@ use crate::{
         campaign::{
             ArchiveReportState, ArchiveSource, CampaignActionResult, CampaignCandidate,
             CampaignCheckpoint, CampaignConfig, CampaignJobResult, CampaignModeReport,
-            CampaignOrigin, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
-            Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
-            postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
+            CampaignOrigin, CampaignTypes, Evaluation, InputPolicy, Reporting, SnapshotCheckpoint,
+            TargetExecution, WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
+            run_campaign_checkpointed,
         },
         draw::DrawMixture,
-        draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
@@ -130,7 +129,6 @@ pub struct StbCampaignEvidence {
 pub type StbCampaignOrigin = CampaignOrigin<StbGame>;
 pub type StbCampaignCheckpoint = CampaignCheckpoint<StbSnapshot>;
 pub type StbSnapshotCheckpoint = SnapshotCheckpoint<StbSnapshot>;
-pub type StbCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type StbCampaignModeReport = CampaignModeReport<ButtonChord, StbArchiveReport>;
 type StbCampaignActionResult = CampaignActionResult<StbGame>;
 type StbCampaignJobResult = CampaignJobResult<StbGame>;
