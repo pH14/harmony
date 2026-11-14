@@ -654,7 +654,11 @@ pub trait Evaluation: CampaignTypes {
         Ok(crate::search::rollout::Outcome {
             objective_reached: self.objective_reached(run, target)?,
             disposition: self.execution_disposition(target),
+            doomed: false,
         })
+    }
+    fn is_doomed(&self, _target: &Self::Target) -> bool {
+        false
     }
     fn merge_preparation_failure(
         &self,
@@ -732,6 +736,7 @@ pub struct ArchiveReportState<G: CampaignTypes + ?Sized> {
     pub rejected: u64,
     pub terminal_endpoints: u64,
     pub terminal_objectives: u64,
+    pub doomed_endpoints: u64,
     pub execution_failures: u64,
     pub hung_jobs: u64,
     pub selector: SelectorAccounting,
@@ -1123,6 +1128,8 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub probe_refused: u64,
     pub terminal_endpoints: u64,
     pub terminal_objectives: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub doomed_endpoints: u64,
     pub execution_failures: u64,
     #[serde(default)]
     pub hung_jobs: u64,
@@ -1627,6 +1634,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     record_progress: bool,
     terminal_endpoints: u64,
     terminal_objectives: u64,
+    doomed_endpoints: u64,
     execution_failures: u64,
     hung_jobs: u64,
     hang_streak: u64,
@@ -1669,6 +1677,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             record_progress: true,
             terminal_endpoints: 0,
             terminal_objectives: 0,
+            doomed_endpoints: 0,
             execution_failures: 0,
             hung_jobs: 0,
             hang_streak: 0,
@@ -1759,8 +1768,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 self.curve_interval,
                 self.bounded_progress_curve,
                 self.record_progress,
-                self.terminal_endpoints,
-                self.terminal_objectives,
+                (
+                    self.terminal_endpoints,
+                    self.terminal_objectives,
+                    self.doomed_endpoints,
+                ),
                 self.execution_failures,
                 self.hung_jobs,
                 self.hang_streak,
@@ -1787,6 +1799,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         self.record_progress = state.record_progress;
         self.terminal_endpoints = state.terminal_endpoints;
         self.terminal_objectives = state.terminal_objectives;
+        self.doomed_endpoints = state.doomed_endpoints;
         self.execution_failures = state.execution_failures;
         self.hung_jobs = state.hung_jobs;
         self.hang_streak = state.hang_streak;
@@ -1807,7 +1820,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         target: &mut G::Target,
     ) -> Result<(), Box<dyn Error>> {
         workload.reset(target);
-        let outcome = workload.rollout_outcome(run, target)?;
+        let outcome = crate::search::rollout::classify(workload, run, target)?;
         if outcome.disposition.is_failed() {
             return Err("campaign genesis target failed before execution".into());
         }
@@ -1850,7 +1863,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Result<(), Box<dyn Error>> {
         let snapshot = validate_snapshot_root_checkpoint(workload, checkpoint)?;
         workload.restore(target, snapshot)?;
-        let outcome = workload.rollout_outcome(run, target)?;
+        let outcome = crate::search::rollout::classify(workload, run, target)?;
         if outcome.disposition.is_failed() {
             return Err("snapshot-root checkpoint restores a failed target".into());
         }
@@ -1990,8 +2003,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 for (index, action) in suffix.iter().enumerate() {
                     captured_endpoint =
                         workload.apply_action_and_snapshot(target, action, &mut milestones)?;
-                    if workload
-                        .rollout_outcome(run, target)?
+                    if crate::search::rollout::classify(workload, run, target)?
                         .disposition
                         .is_terminal()
                     {
@@ -2040,8 +2052,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 workload.restore(target, snapshot)?;
                 milestones = merge_max(workload, milestones, entry.milestones);
                 counts.checkpointed = counts.checkpointed.saturating_add(1);
-                if workload
-                    .rollout_outcome(run, target)?
+                if crate::search::rollout::classify(workload, run, target)?
                     .disposition
                     .is_terminal()
                 {
@@ -2203,6 +2214,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 Ok(input)
             })?;
             match action.outcome.disposition {
+                crate::search::rollout::ExecutionDisposition::Terminal if action.outcome.doomed => {
+                    self.doomed_endpoints = self.doomed_endpoints.saturating_add(1);
+                }
                 crate::search::rollout::ExecutionDisposition::Terminal => {
                     self.terminal_endpoints = self.terminal_endpoints.saturating_add(1);
                     if action.outcome.objective_reached {
@@ -2408,6 +2422,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 rejected: self.archive.rejected,
                 terminal_endpoints: self.terminal_endpoints,
                 terminal_objectives: self.terminal_objectives,
+                doomed_endpoints: self.doomed_endpoints,
                 execution_failures: self.execution_failures,
                 hung_jobs: self.hung_jobs,
                 selector,
@@ -2867,6 +2882,7 @@ fn build_report<G: Workload>(
     let probe_refused = core.probe_refused;
     let terminal_endpoints = core.terminal_endpoints;
     let terminal_objectives = core.terminal_objectives;
+    let doomed_endpoints = core.doomed_endpoints;
     let execution_failures = core.execution_failures;
     let hung_jobs = core.hung_jobs;
     let hang_stop = core.hang_stop.clone();
@@ -2940,6 +2956,7 @@ fn build_report<G: Workload>(
         probe_refused,
         terminal_endpoints,
         terminal_objectives,
+        doomed_endpoints,
         execution_failures,
         hung_jobs,
         hang_stop,
@@ -3108,6 +3125,7 @@ struct CoreCheckpoint<G: Workload + ?Sized> {
     record_progress: bool,
     terminal_endpoints: u64,
     terminal_objectives: u64,
+    doomed_endpoints: u64,
     execution_failures: u64,
     hung_jobs: u64,
     hang_streak: u64,
@@ -3322,6 +3340,8 @@ pub struct CampaignProgressRecord<K> {
     pub terminal_endpoints: u64,
     #[serde(default)]
     pub terminal_objectives: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub doomed_endpoints: u64,
     #[serde(default)]
     pub execution_failures: u64,
     #[serde(default)]
@@ -3439,6 +3459,7 @@ fn progress_record<G: Workload>(
         objectives_reached: core.objectives_reached,
         terminal_endpoints: core.terminal_endpoints,
         terminal_objectives: core.terminal_objectives,
+        doomed_endpoints: core.doomed_endpoints,
         execution_failures: core.execution_failures,
         hung_jobs: core.hung_jobs,
         search_elapsed_millis: Some(telemetry_started)
@@ -5883,6 +5904,7 @@ mod tests {
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static JOB_CANCEL: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
         static JOB_INDEX: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        static DOOMED_VALUE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -6432,6 +6454,10 @@ mod tests {
             ExecutionDisposition::Runnable
         }
 
+        fn is_doomed(&self, target: &Self::Target) -> bool {
+            DOOMED_VALUE.get() == Some(target.value)
+        }
+
         fn objective_reached(
             &self,
             _run: &Self::Run,
@@ -6600,6 +6626,7 @@ mod tests {
                 ExecutionDisposition::default()
             };
             Ok(Outcome {
+                doomed: false,
                 objective_reached,
                 disposition,
             })
@@ -6782,6 +6809,84 @@ mod tests {
         .expect("failed parent is a reportable preparation failure");
         assert!(result.actions.is_empty());
         assert_eq!(result.preparation_failure, Some(vec![()]));
+    }
+
+    #[test]
+    fn a_doomed_endpoint_ends_the_job_without_a_candidate() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut target = TestTarget::default();
+        let snapshot = workload.snapshot(&mut target).expect("snapshot");
+        DOOMED_VALUE.set(Some(3));
+        let result = crate::search::rollout::execute_job(
+            &workload,
+            &(),
+            &mut target,
+            &snapshot,
+            &[],
+            (),
+            &[
+                TestAction::new(1, 1),
+                TestAction::new(2, 1),
+                TestAction::new(4, 1),
+            ],
+            RetentionPolicy::Unprobed,
+            crate::search::rollout::RolloutStop::new(false),
+        );
+        DOOMED_VALUE.set(None);
+        let result = result.expect("doomed job");
+        assert_eq!(result.actions.len(), 2);
+        assert!(result.actions[0].candidate.is_some());
+        let last = &result.actions[1];
+        assert!(last.outcome.doomed);
+        assert_eq!(last.outcome.disposition, ExecutionDisposition::Terminal);
+        assert!(last.candidate.is_none());
+        let bytes = postcard::to_allocvec(&last.outcome).expect("encode");
+        assert_eq!(
+            postcard::from_bytes::<Outcome>(&bytes).expect("decode"),
+            last.outcome
+        );
+        let text = serde_json::to_string(&last.outcome).expect("json");
+        assert_eq!(
+            serde_json::from_str::<Outcome>(&text).expect("json decode"),
+            last.outcome
+        );
+        assert_ne!(
+            bytes,
+            postcard::to_allocvec(&Outcome {
+                doomed: false,
+                ..last.outcome
+            })
+            .expect("encode")
+        );
+    }
+
+    #[test]
+    fn an_outcome_that_is_not_doomed_keeps_its_encoding() {
+        for (objective_reached, disposition, variant) in [
+            (false, ExecutionDisposition::Runnable, 0),
+            (true, ExecutionDisposition::Terminal, 1),
+            (false, ExecutionDisposition::Failed, 2),
+        ] {
+            let outcome = Outcome {
+                objective_reached,
+                disposition,
+                doomed: false,
+            };
+            assert_eq!(
+                postcard::to_allocvec(&outcome).expect("encode"),
+                [u8::from(objective_reached), variant]
+            );
+            assert_eq!(
+                serde_json::to_value(outcome).expect("json"),
+                serde_json::json!({
+                    "objective_reached": objective_reached,
+                    "disposition": serde_json::to_value(disposition).expect("json"),
+                })
+            );
+        }
     }
 
     #[test]
@@ -6996,6 +7101,7 @@ mod tests {
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome {
+                        doomed: false,
                         objective_reached: true,
                         disposition: ExecutionDisposition::Terminal,
                     },
@@ -7020,6 +7126,7 @@ mod tests {
                     observations: vec![()],
                     milestones: (),
                     outcome: Outcome {
+                        doomed: false,
                         objective_reached: false,
                         disposition: ExecutionDisposition::Failed,
                     },
@@ -7030,6 +7137,31 @@ mod tests {
         .expect("admit failed execution");
         assert_eq!(core.terminal_endpoints, 1);
         assert_eq!(core.terminal_objectives, 1);
+        assert_eq!(core.execution_failures, 1);
+
+        let doomed = TestAction::new(3, 1);
+        core.admit_job(
+            &workload,
+            0,
+            CampaignJobResult {
+                preparation_failure: None,
+                hang: None,
+                actions: vec![CampaignActionResult {
+                    action: doomed,
+                    observations: vec![()],
+                    milestones: (),
+                    outcome: Outcome {
+                        doomed: true,
+                        objective_reached: false,
+                        disposition: ExecutionDisposition::Terminal,
+                    },
+                    candidate: None,
+                }],
+            },
+        )
+        .expect("admit doomed endpoint");
+        assert_eq!(core.terminal_endpoints, 1);
+        assert_eq!(core.doomed_endpoints, 1);
         assert_eq!(core.execution_failures, 1);
     }
 
@@ -8480,6 +8612,7 @@ mod tests {
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome {
+                    doomed: false,
                     objective_reached: true,
                     disposition: ExecutionDisposition::Runnable,
                 },
@@ -11630,6 +11763,7 @@ mod tests {
             record_progress: core.record_progress,
             terminal_endpoints: core.terminal_endpoints,
             terminal_objectives: core.terminal_objectives,
+            doomed_endpoints: 0,
             execution_failures: core.execution_failures,
             hung_jobs: core.hung_jobs,
             hang_streak: core.hang_streak,

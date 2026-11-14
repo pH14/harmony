@@ -304,7 +304,7 @@ campaign and target contracts:
 | --- | --- |
 | `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for deterministic execution work. |
 | `InputPolicy` | Define the action vocabulary and the policy identifiers a recording must match. |
-| `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
+| `Evaluation` | Classify outcomes, declare doomed states, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
 An `ArchiveKey` names four things about a state, and nothing else reads a
@@ -416,6 +416,19 @@ execution receipts retain their own validation authority.
 
 The shared `search::rollout` loop owns action evidence capture, candidate
 creation, retention probe placement, and stopping; a workload provides action execution and state evaluation.
+
+`Evaluation::is_doomed` declares that a state has no future, such as a player
+falling into a pit. It reads one state and runs no frames; the default is
+`false`. `search::rollout::classify` is the one place the searcher reads it:
+a runnable state that the workload calls doomed ends the job with
+`ExecutionDisposition::Terminal`, as a death does, so it is never kept. The
+outcome serializes a doomed end as a fourth disposition, `doomed`, so a
+result that crosses a worker boundary keeps it and its hash covers it, while
+the bytes of every outcome that is not doomed, and so the result hashes and
+streams of a workload without doomed states, do not change. Reports and progress records
+count doomed endpoints as `doomed_endpoints`, apart from `terminal_endpoints`.
+A workload that runs its own job loop instead of `search::rollout` does not
+read `is_doomed`.
 
 Workload packages live in `../../workloads`. They own adapters, execution
 integration, and campaign binaries. A probe must restore candidate state before
