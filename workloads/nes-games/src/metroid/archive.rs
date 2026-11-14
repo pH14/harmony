@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
     metroid::action::MetroidAction,
+    metroid::plan,
     metroid::target::{
         ButtonChord, MetroidInput, MetroidMechanicalState, MetroidObservations, MetroidSnapshot,
         health_cap, preference_tuple,
@@ -18,7 +19,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_tier_items_boss_engaged_mother_brain_defeat_item_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up_missile_capacity_energy_tanks";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_staged_plan_v4_routes_through_walkable_room_edges_energy_64_before_brinstar_routes_current_route_cell_stage_objective_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up_missile_capacity_energy_tanks";
 pub const PREFERENCE_IDENTIFIER: &str = "items_tanks_missiles_health_then_items_tanks_balance_missiles_health_energy_first_at_zero_balance";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
@@ -30,6 +31,8 @@ pub type MetroidArchive =
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub struct MetroidArchiveKey {
+    pub stage: u8,
+    pub objective: u16,
     pub items: u8,
     pub tanks: u8,
     pub boss_damage: u8,
@@ -47,9 +50,12 @@ pub struct MetroidArchiveKey {
     pub missiles: u8,
     pub missile_capacity: u8,
     pub energy_tanks: u8,
+    pub equipment: u8,
+    pub bosses: u8,
 }
 
 type OrderedKey = (
+    (u8, u16),
     (u8, u8, u8, u16, u16, u8),
     (u8, u8, u8, u8, u8, u8),
     (u8, u16, u8),
@@ -58,6 +64,7 @@ type OrderedKey = (
 impl MetroidArchiveKey {
     fn ordered(self) -> OrderedKey {
         (
+            (self.stage, self.objective),
             (
                 self.items,
                 self.tanks,
@@ -101,7 +108,7 @@ impl Ord for MetroidArchiveKey {
 
 impl ArchiveKey for MetroidArchiveKey {
     type Place = (u8, u8, u8, u8, u8);
-    type Progress = (u8, bool);
+    type Progress = (u8, u16);
     type Identity = (u8, u8, u8, u8);
 
     fn place(self) -> Self::Place {
@@ -115,7 +122,7 @@ impl ArchiveKey for MetroidArchiveKey {
     }
 
     fn progress(self) -> Self::Progress {
-        (self.items, self.boss_damage > 0)
+        (self.stage, self.objective)
     }
 
     fn identity(self) -> Self::Identity {
@@ -140,23 +147,29 @@ impl ArchiveKey for MetroidArchiveKey {
     type Lineage = MetroidLineage;
 
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
-        if self.boss_health == 0 {
-            return Self {
-                boss_damage: 0,
-                ..self
-            };
-        }
-        let inherited = parent
-            .filter(|(_, lineage)| lineage.area == self.area)
-            .map_or(0, |(_, lineage)| lineage.boss_health_highest);
-        let highest = inherited.max(self.boss_health_seen).max(self.boss_health);
-        Self {
-            boss_damage: u8::try_from(
+        let boss_damage = if self.boss_health == 0 {
+            0
+        } else {
+            let inherited = parent
+                .filter(|(_, lineage)| lineage.area == self.area)
+                .map_or(0, |(_, lineage)| lineage.boss_health_highest);
+            let highest = inherited.max(self.boss_health_seen).max(self.boss_health);
+            u8::try_from(
                 highest
                     .saturating_sub(self.boss_health)
                     .div_ceil(BOSS_DAMAGE_BUCKET),
             )
-            .unwrap_or(u8::MAX),
+            .unwrap_or(u8::MAX)
+        };
+        let (stage, objective) = plan::locate(
+            self.state(),
+            boss_damage,
+            parent.map(|(key, _)| key.progress()),
+        );
+        Self {
+            boss_damage,
+            stage,
+            objective,
             ..self
         }
     }
@@ -185,6 +198,20 @@ impl MetroidArchiveKey {
         Self {
             boss_health_seen: boss_health_seen.max(self.boss_health),
             ..self
+        }
+    }
+
+    fn state(self) -> MetroidMechanicalState {
+        MetroidMechanicalState {
+            area: self.area,
+            map_x: self.map_x,
+            map_y: self.map_y,
+            health: self.health,
+            equipment: self.equipment,
+            missile_capacity: self.missile_capacity,
+            energy_tanks: self.energy_tanks,
+            bosses: self.bosses,
+            ..MetroidMechanicalState::default()
         }
     }
 
@@ -247,6 +274,10 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
         missiles,
         missile_capacity: state.missile_capacity,
         energy_tanks: state.energy_tanks,
+        equipment: state.equipment,
+        bosses: state.bosses,
+        stage: 0,
+        objective: 0,
     }
 }
 
@@ -471,15 +502,29 @@ mod tests {
     }
 
     #[test]
-    fn progress_is_the_items_held_and_tanks_stay_in_the_preference() {
-        let mut far = state(0, 300, 0);
-        far.map_x = 9;
-        let far = archive_key(far);
-        let equipped = archive_key(state(0, 300, 0b1));
+    fn progress_is_the_plan_stage_and_tanks_stay_in_the_preference() {
+        let start = MetroidMechanicalState {
+            area: 0x10,
+            map_x: 3,
+            map_y: 14,
+            health: 300,
+            ..MetroidMechanicalState::default()
+        };
+        let far = archive_key(MetroidMechanicalState { map_x: 2, ..start }).complete(None);
+        let equipped = archive_key(MetroidMechanicalState {
+            equipment: 0x10,
+            ..start
+        })
+        .complete(None);
+        assert_eq!(far.progress(), (0, 1));
+        assert_eq!(equipped.progress(), (1, 30));
         assert!(equipped.progress() > far.progress());
-        let mut tanked = state(0, 300, 0);
-        tanked.energy_tanks = 3;
-        let tanked = archive_key(tanked);
+        let tanked = archive_key(MetroidMechanicalState {
+            map_x: 2,
+            energy_tanks: 3,
+            ..start
+        })
+        .complete(None);
         assert_eq!(tanked.progress(), far.progress());
         assert_eq!(tanked.preference_cmp(0, far), Ordering::Greater);
     }
@@ -506,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn damaging_a_boss_moves_the_state_to_the_engaged_tier_and_a_place_per_damage_level() {
+    fn damaging_a_boss_makes_a_place_per_damage_level() {
         let lineage = MetroidLineage {
             boss_health_highest: 64,
             area: 0,
@@ -529,9 +574,9 @@ mod tests {
             ..MetroidMechanicalState::default()
         })
         .complete(Some((MetroidArchiveKey::default(), &lineage)));
-        assert_eq!(arriving.progress(), (1, false));
-        assert_eq!(hurt.progress(), (1, true));
-        assert_eq!(harder.progress(), hurt.progress());
+        assert_eq!(arriving.boss_damage, 0);
+        assert_eq!(hurt.boss_damage, 10);
+        assert_eq!(harder.boss_damage, 15);
         assert_ne!(hurt.place(), arriving.place());
         assert_ne!(harder.place(), hurt.place());
         assert_eq!(hurt.identity(), arriving.identity());
@@ -542,7 +587,6 @@ mod tests {
         })
         .complete(Some((MetroidArchiveKey::default(), &lineage)));
         assert_eq!(grazed.boss_damage, 1);
-        assert_eq!(grazed.progress(), (1, true));
     }
 
     #[test]
@@ -565,8 +609,8 @@ mod tests {
             ..state
         })
         .complete(Some((before, &lineage)));
-        assert_eq!(before.progress(), (1, true));
-        assert_eq!(after.progress(), (2, false));
+        assert_eq!(before.boss_damage, 31);
+        assert_eq!(after.items, before.items + 1);
         assert_eq!(after.boss_damage, 0);
     }
 
@@ -736,7 +780,7 @@ mod tests {
         };
         let key = MetroidArchiveKey::default().complete(Some((damaged, &lineage)));
         assert_eq!(key.boss_damage, 0);
-        assert_eq!(key.progress(), (0, false));
+        assert_eq!(key.progress(), (0, 0));
     }
 
     fn tourian(
@@ -790,7 +834,7 @@ mod tests {
         for reversed in [false, true] {
             let mut archive = MetroidArchive::new(MetroidAction::planned_frames);
             let root = held(&mut archive, None, 0, 0x00, tourian(10, 8, 300, 20, 0)).expect("root");
-            let mut states = [tourian(10, 11, 534, 39, 0), tourian(10, 11, 834, 25, 0)];
+            let mut states = [tourian(10, 11, 644, 39, 0), tourian(10, 11, 834, 25, 0)];
             if reversed {
                 states.reverse();
             }
@@ -872,6 +916,10 @@ mod tests {
             missiles: 25,
             missile_capacity: 105,
             energy_tanks: 2,
+            equipment: 0x15,
+            bosses: 1,
+            stage: 4,
+            objective: 120,
         };
         let json: MetroidArchiveKey =
             serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
@@ -914,7 +962,7 @@ mod tests {
             Some(root),
             1,
             0x10,
-            tourian(10, 11, 534, 39, 0),
+            tourian(10, 11, 644, 39, 0),
         )
         .expect("stocked");
         assert!(
