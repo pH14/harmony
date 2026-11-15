@@ -5,8 +5,9 @@ use std::{env, error::Error, fs, path::PathBuf};
 use machine::quicknes::VideoFrame;
 use nes_workload::{
     film::{FPS, Film},
-    metroid::target::{
-        ButtonChord, GenesisDepth, MetroidInput, MetroidTarget, MetroidTerminalPolicy,
+    metroid::{
+        action::MetroidAction,
+        target::{GenesisDepth, MetroidInput, MetroidTarget, MetroidTerminalPolicy},
     },
     target::{ExitKind, Target},
 };
@@ -94,13 +95,13 @@ impl Filming {
 }
 
 impl Playback for Filming {
-    type Action = ButtonChord;
+    type Action = MetroidAction;
 
     fn stopped(&self) -> bool {
         self.target.is_dead() || self.target.is_victory() || self.target.exit_kind() != ExitKind::Ok
     }
 
-    fn apply(&mut self, action: &ButtonChord) -> Result<(), Box<dyn Error>> {
+    fn apply(&mut self, action: &MetroidAction) -> Result<(), Box<dyn Error>> {
         self.target.apply(action);
         self.applied += 1;
         let frames = self.target.drain_frames();
@@ -177,8 +178,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             let mut prefix =
                 MetroidTarget::from_rom_bytes_headless(&rom, &core_path, &core_sha256)?
-                    .genesis_prefix()
-                    .to_vec();
+                    .genesis_actions();
             prefix.extend(root.actions.iter().copied());
             let mut rooted = MetroidTarget::from_rom_bytes_rooted(
                 &rom,
