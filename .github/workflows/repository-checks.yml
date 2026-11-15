@@ -187,7 +187,7 @@ jobs:
             host: Linux x86-64
           - runner: ubuntu-24.04-arm
             host: Linux Arm64
-          - runner: macos-14
+          - runner: macos-15
             host: macOS Arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15

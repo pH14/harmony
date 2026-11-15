@@ -8,7 +8,7 @@ use machine::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{ArcadeGame, snapshot_digest, trail};
+use super::{ArcadeAction, ArcadeGame, snapshot_digest, trail};
 use crate::{
     nes_backend::unpack_state_into,
     search::{
@@ -166,7 +166,7 @@ pub fn played<G: ArcadeGame>(
     game: &G,
     root: Option<&G::Snapshot>,
     genesis_actions: usize,
-    input: &[ButtonChord],
+    input: &[G::Action],
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let (played, path) = trail::record_path(|| -> Result<(), Box<dyn Error>> {
         let mut target = game.new_target()?;
@@ -197,17 +197,19 @@ pub fn played<G: ArcadeGame>(
         .to_vec())
 }
 
-pub fn archived_state<V>(
+pub fn archived_state<V, A: ArcadeAction>(
     id: u64,
     observation: V,
     prefix: &[ButtonChord],
-    input: &[ButtonChord],
+    input: &[A],
     frames_at: Option<u64>,
-    played: impl FnOnce(&[ButtonChord]) -> Result<Vec<ButtonChord>, Box<dyn Error>>,
+    played: impl FnOnce(&[A]) -> Result<Vec<ButtonChord>, Box<dyn Error>>,
 ) -> Result<State<V>, Box<dyn Error>> {
     let mut chords = prefix.to_vec();
-    chords.extend(input);
-    if frames_at.is_some_and(|frames| frames != chord_frames(&chords)) {
+    let direct = input.iter().map(A::chord).collect::<Option<Vec<_>>>();
+    let replayed = direct.is_none();
+    chords.extend(direct.unwrap_or_default());
+    if replayed || frames_at.is_some_and(|frames| frames != chord_frames(&chords)) {
         chords.truncate(prefix.len());
         chords.extend(played(input)?);
     }
@@ -227,7 +229,8 @@ pub fn run_noted<G: ArcadeGame>(
     job: &JobSpec<G>,
     run: impl FnOnce() -> Result<JobOutcome<G>, Box<dyn Error>>,
 ) -> WatchedJob<G, Note<G::View>> {
-    let (outcome, trail) = trail::record(chord_frames(&job.replay), run);
+    let replay_frames = job.replay.iter().map(ArcadeAction::planned_frames).sum();
+    let (outcome, trail) = trail::record(replay_frames, run);
     let outcome = outcome?;
     let next_level = outcome
         .result
