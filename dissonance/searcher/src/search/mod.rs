@@ -11,6 +11,7 @@ pub mod empirical_steps;
 mod executable_identity;
 mod heap;
 pub mod parallel;
+pub mod plan;
 pub mod rand;
 pub mod rollout;
 pub mod snapshot_codec;
