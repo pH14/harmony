@@ -159,6 +159,8 @@ where
     failed: bool,
     execution_work: u64,
     boot_frames: u64,
+    last_frames: u64,
+    last_level_frames: u64,
 }
 
 impl<M, P> SmbTarget<M, P>
@@ -219,12 +221,105 @@ where
             failed: false,
             execution_work: 0,
             boot_frames,
+            last_frames: 0,
+            last_level_frames: 0,
         })
     }
 
     #[must_use]
     pub fn boot_frames(&self) -> u64 {
         self.boot_frames
+    }
+
+    #[must_use]
+    pub fn frame_count(&self) -> u64 {
+        self.observation.frame_count
+    }
+
+    #[must_use]
+    pub fn last_action_frames(&self) -> u64 {
+        self.last_frames
+    }
+
+    #[must_use]
+    pub fn last_action_level_frames(&self) -> u64 {
+        self.last_level_frames
+    }
+
+    fn run_chord(&mut self, action: ButtonChord, until_control: bool) -> u64 {
+        if !self.rerun_to_stop() {
+            return 0;
+        }
+        let Ok(start) = self.machine.snapshot() else {
+            self.failed = true;
+            return 0;
+        };
+        if self
+            .machine
+            .branch(start, &nes::reproducer(std::slice::from_ref(&action)))
+            .is_err()
+        {
+            self.failed = true;
+            let _ = self.machine.drop_snapshot(start);
+            return 0;
+        }
+        if !self.run_staged() {
+            let _ = self.machine.drop_snapshot(start);
+            return 0;
+        }
+        let mut endpoint = self.wram();
+        let mut prior_bucket = smb_scroll_bucket(&endpoint);
+        let mut executed_frames = 0_u64;
+        let mut level_frames = 0_u64;
+        for wram in self
+            .machine
+            .frames()
+            .iter()
+            .take(usize::from(action.bounded_hold_frames()))
+        {
+            executed_frames = executed_frames.saturating_add(1);
+            if smb_is_inside_level(&endpoint) {
+                level_frames = level_frames.saturating_add(1);
+            }
+            endpoint = *wram;
+            let current_bucket = smb_scroll_bucket(wram);
+            self.dead = smb_player_is_dead(wram);
+            let victory = smb_is_victory(wram);
+            if current_bucket != prior_bucket || self.dead || victory {
+                prior_bucket = current_bucket;
+                self.action_observations.push(observation_from(
+                    wram,
+                    self.observation.frame_count.saturating_add(executed_frames),
+                    self.dead,
+                ));
+            }
+            if self.dead || victory || (until_control && smb_player_has_control(wram)) {
+                break;
+            }
+        }
+        if executed_frames < self.machine.frames().len() as u64 {
+            let kept = u8::try_from(executed_frames).unwrap_or(1);
+            self.machine.keep_run_capture(usize::from(kept));
+            self.stopped_at = Some((start, ButtonChord::new(action.buttons, kept)));
+        } else {
+            let _ = self.machine.drop_snapshot(start);
+        }
+        self.execution_work = self.execution_work.saturating_add(executed_frames);
+        self.last_frames = self.last_frames.saturating_add(executed_frames);
+        self.last_level_frames = self.last_level_frames.saturating_add(level_frames);
+        let endpoint_frame = self.observation.frame_count.saturating_add(executed_frames);
+        let endpoint_already_recorded = self
+            .action_observations
+            .last()
+            .is_some_and(|observation| observation.frame_count == endpoint_frame);
+        if !endpoint_already_recorded {
+            self.action_observations
+                .push(observation_from(&endpoint, endpoint_frame, self.dead));
+        }
+        if let Some(observation) = self.action_observations.last() {
+            self.observation = observation.clone();
+        }
+        executed_frames
     }
 
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
@@ -412,71 +507,27 @@ where
 
     fn apply(&mut self, action: &Self::Action) {
         self.action_observations.clear();
+        self.last_frames = 0;
+        self.last_level_frames = 0;
         if self.failed || self.dead || self.is_victory() {
             return;
         }
-        let Ok(start) = self.machine.snapshot() else {
-            self.failed = true;
-            return;
-        };
-        if self
-            .machine
-            .branch(start, &nes::reproducer(std::slice::from_ref(action)))
-            .is_err()
-        {
-            self.failed = true;
-            let _ = self.machine.drop_snapshot(start);
+        if action.hold_frames != WAIT_FOR_CONTROL_HOLD {
+            self.run_chord(*action, false);
             return;
         }
-        if !self.run_staged() {
-            let _ = self.machine.drop_snapshot(start);
-            return;
-        }
-        let mut endpoint = self.wram();
-        let mut prior_bucket = smb_scroll_bucket(&endpoint);
-        let mut executed_frames = 0_u64;
-        for wram in self
-            .machine
-            .frames()
-            .iter()
-            .take(usize::from(action.bounded_hold_frames()))
+        while self.last_frames < WAIT_FOR_CONTROL_FRAMES
+            && !self.failed
+            && !self.dead
+            && !self.is_victory()
+            && !smb_player_has_control(&self.wram())
         {
-            executed_frames = executed_frames.saturating_add(1);
-            endpoint = *wram;
-            let current_bucket = smb_scroll_bucket(wram);
-            self.dead = smb_player_is_dead(wram);
-            let victory = smb_is_victory(wram);
-            if current_bucket != prior_bucket || self.dead || victory {
-                prior_bucket = current_bucket;
-                self.action_observations.push(observation_from(
-                    wram,
-                    self.observation.frame_count.saturating_add(executed_frames),
-                    self.dead,
-                ));
-            }
-            if self.dead || victory {
+            if self.run_chord(ButtonChord::new(action.buttons, MAX_HOLD_FRAMES), true) == 0 {
                 break;
             }
         }
-        if executed_frames < self.machine.frames().len() as u64 {
-            let kept = u8::try_from(executed_frames).unwrap_or(1);
-            self.machine.keep_run_capture(usize::from(kept));
-            self.stopped_at = Some((start, ButtonChord::new(action.buttons, kept)));
-        } else {
-            let _ = self.machine.drop_snapshot(start);
-        }
-        self.execution_work = self.execution_work.saturating_add(executed_frames);
-        let endpoint_frame = self.observation.frame_count.saturating_add(executed_frames);
-        let endpoint_already_recorded = self
-            .action_observations
-            .last()
-            .is_some_and(|observation| observation.frame_count == endpoint_frame);
-        if !endpoint_already_recorded {
-            self.action_observations
-                .push(observation_from(&endpoint, endpoint_frame, self.dead));
-        }
-        if let Some(observation) = self.action_observations.last() {
-            self.observation = observation.clone();
+        if self.action_observations.is_empty() {
+            self.action_observations.push(self.observation.clone());
         }
     }
 
@@ -678,6 +729,27 @@ pub fn smb_player_is_doomed(wram: &[u8; WRAM_SIZE]) -> bool {
 const OPERATING_MODE_OFFSET: usize = 0x0770;
 const VICTORY_OPERATING_MODE: u8 = 2;
 const FINAL_WORLD_NUMBER: u8 = 7;
+pub const WAIT_FOR_CONTROL_HOLD: u8 = 0;
+const WAIT_FOR_CONTROL_FRAMES: u64 = 2_400;
+const LEVEL_END_ENGINE_STATES: [u8; 4] = [0x00, 0x04, 0x05, 0x07];
+
+#[must_use]
+pub const fn wait_for_control(buttons: u8) -> ButtonChord {
+    ButtonChord {
+        buttons,
+        hold_frames: WAIT_FOR_CONTROL_HOLD,
+    }
+}
+
+#[must_use]
+pub fn smb_player_has_control(wram: &[u8; WRAM_SIZE]) -> bool {
+    smb_is_playing(wram) && wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_CONTROL_STATE
+}
+
+#[must_use]
+pub fn smb_is_inside_level(wram: &[u8; WRAM_SIZE]) -> bool {
+    smb_is_playing(wram) && !LEVEL_END_ENGINE_STATES.contains(&wram[PLAYER_ENGINE_STATE_OFFSET])
+}
 
 #[must_use]
 pub fn smb_is_victory(wram: &[u8; WRAM_SIZE]) -> bool {

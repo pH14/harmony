@@ -14,6 +14,7 @@ pub mod parallel;
 pub mod plan;
 pub mod rand;
 pub mod rollout;
+pub mod shrink;
 pub mod snapshot_codec;
 mod snapshot_store;
 pub mod telemetry;

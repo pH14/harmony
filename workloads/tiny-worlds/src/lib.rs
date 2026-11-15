@@ -594,6 +594,8 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         })
     }
 }
+impl<const CAPACITY_TWO: bool> searcher::search::shrink::ShrinkPolicy for Workload<CAPACITY_TWO> {}
+
 impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
     fn execution_disposition(&self, _: &Target) -> ExecutionDisposition {
         ExecutionDisposition::Runnable

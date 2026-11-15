@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         target.apply(action);
         applied += 1;
-        frames += u64::from(action.bounded_hold_frames());
+        frames += target.last_action_frames();
         let wram = target.wram();
         let here = (wram[WORLD_NUMBER_OFFSET], wram[LEVEL_NUMBER_OFFSET]);
         if smb_is_playing(&wram)

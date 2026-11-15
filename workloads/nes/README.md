@@ -56,7 +56,8 @@ a Metroid route crossed, and the per-weapon Mega Man 2 meters behind the decoded
 sum. `smb-route` replays a Super Mario Bros. tape and prints its frames from
 power-on (the boot walk's frames plus the tape's), the frame each level starts
 in play, its frames, and whether it ended into the next level or through a warp
-pipe.
+pipe. `smb-shrink` runs `search::shrink` on a Super Mario Bros. tape; the
+[SMB README](src/smb/README.md#shrink) describes it.
 
 `src/film.rs` also holds the benchmark capture contract. `Endpointed` returns a
 game's decoded endpoint and frame count for a recorded input, `Filmable` adds

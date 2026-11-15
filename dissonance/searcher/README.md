@@ -1207,6 +1207,56 @@ identity that differs from the run is recorded in `checkpoint_policy_changes`
 instead of being refused. The resumed stream cannot be replayed.
 
 
+## Shrink
+
+`search::shrink` takes a tape that reached a goal and returns a cheaper tape
+that reaches the same goal, for any workload. A tape is accepted on one
+condition: it replayed and reached the goal at a lower cost. It runs its own
+batch loop beside the campaign coordinator, because the coordinator caps
+continuations at 64 actions, resets cost per progress tier and keeps the first
+objective it finds.
+
+A workload implements `ShrinkPolicy` beside its other contracts:
+
+| Method | Default | Meaning |
+|---|---|---|
+| `shrink_cost(action, target)` | `action_cost_fn`, second part 0 | Cost of the action just applied, read from the target after it ran. |
+| `simpler_actions(run, action)` | none | Replacements for one action, simplest first. |
+| `remaining_cost_bound(run, target)` | zero | A lower bound on the cost still to pay from this state. |
+
+The goal is `Evaluation::objective_reached`. `ShrinkCost` is a pair ordered
+first part first and added part by part, so a workload can rank by one measure
+and break ties by another.
+
+The incumbent is replayed once with a snapshot after every action, so each
+prefix is a kept state on a chain, keyed by `Evaluation::current_key` and
+indexed by its slot. Each batch draws its jobs from three kinds, and
+`MixtureEnergy` moves the draws toward the kind whose jobs were accepted or
+proposed a continuation:
+
+1. **Shortcut.** From a chain state, skip a window of actions, fill it with
+   each action's first simpler action (with every simpler action for a window
+   of one) or with nothing, and replay the incumbent's tail. Windows start at
+   half the tape and halve; after an acceptance the pass restarts at that
+   position, and the pass at size one repeats while it accepts.
+2. **Redraw.** From a chain state, or one time in four from a kept state,
+   draw `redraw_length` actions from `InputPolicy::sample_alphabet`.
+   An endpoint is kept when its slot has no cheaper holder on the chain or
+   among kept states and its cost plus the bound is below the incumbent's.
+3. **Continuation.** A redraw endpoint that reaches a chain slot more cheaply
+   than the chain does proposes its prefix followed by the chain's tail from
+   that slot.
+
+A job stops at the goal, at a terminal or doomed state, or once its cost plus
+the bound reaches the incumbent's. Results are admitted in batch order, so the
+same seed and configuration give the same tape at any worker count. The
+cheapest goal-reaching tape of a batch becomes the incumbent: the chain is
+rebuilt from the first changed action, its replayed cost must equal the job's,
+and kept states and pending continuations are dropped. The search stops at a
+job or work budget, when the cost reaches the lower bound of the starting
+state, or, with `until_shortcuts_exhausted`, when the shortcut passes find
+nothing more.
+
 ## Host hashing
 
 On native ARM64 Linux and macOS, SHA-256 uses runtime-detected CPU acceleration,

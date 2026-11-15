@@ -21,6 +21,15 @@ chord from that starting state up to the stop frame, so the snapshot holds the
 state Mario died or won in. A viability probe runs its frames the same way and
 then returns the machine to the state it started from.
 
+A chord with a hold of 0 waits for control: it holds its buttons, a chord of
+120 frames at a time, until the frame after which the player has control
+(`$0770` = 1, `$0772` = 3, `$0E` = 8), Mario dies, the game is won, or 2,400
+frames pass. The campaign never draws one. Shrink tapes use it at each level
+end, so that a level finished a few frames sooner still starts the next level's
+inputs at the frame the game hands back control. The target counts each
+action's frames and the frames of it spent inside a level, where the game is
+in play and `$0E` is not 0, 4, 5 or 7.
+
 A state is doomed when Mario has fallen a block below the ground line over
 open floor with no lift in play: the player has control (`$0E` = 8), he is
 jumping or falling (`$1D`), not swimming (`$0704`), on the play-area page
@@ -105,3 +114,29 @@ right after a restore, so a native snapshot keeps no copy of work RAM and a
 restore reads it from the machine. The Consonance backend serves reads only
 after a run, so a Consonance snapshot keeps a 2 KiB copy, and the archive
 charges it. A compressed native snapshot stores about 1.8 KB.
+
+## Shrink
+
+`smb::shrink` declares the `ShrinkPolicy` for `search::shrink`. The goal is the
+run's terminal predicate, the ending for a speedrun. The cost is frames, then
+frames inside a level. A simpler action is the same chord held one frame less,
+and held half as long when the hold is above 3; a wait for control has none.
+The lower bound is the distance left to the exit of a world-8 level over the
+top running speed of 2.5 pixels per frame, less a 16-pixel margin, counted only
+in the level's final area past the point where that area's route begins, and
+zero elsewhere.
+
+A level ends on a 21-frame boundary, and the random number generator and the
+frame counter carry into the next level, where some enemies read them. So a
+saving inside one boundary keeps every later level's inputs valid once each
+level end is a wait for control, and a saving that crosses a boundary changes
+the generator in every later level. `with_level_end_waits` rewrites a tape so
+that each stretch without control that ends a level is one wait for control
+holding the buttons of its last frame, and checks by replay that the tape still
+ends at the same frame. The second part of the cost lets savings inside one
+boundary be accepted until they add up to a whole boundary.
+
+`smb-shrink --input <tape.json> --out <dir>` rewrites the tape, shrinks it and
+writes `incumbent-input.json`, `best-input.json` after each improvement,
+`improvements.jsonl`, `progress.jsonl` and `outcome.json`, with frames counted
+from power-on.
