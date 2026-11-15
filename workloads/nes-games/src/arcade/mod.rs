@@ -29,8 +29,23 @@ pub const HIDDEN: u16 = u16::MAX;
 
 pub type Machines<M> = Arc<dyn Fn() -> Result<M, MachineError> + Send + Sync>;
 
+pub trait ArcadeAction {
+    fn chord(&self) -> Option<ButtonChord>;
+    fn planned_frames(&self) -> u64;
+}
+
+impl ArcadeAction for ButtonChord {
+    fn chord(&self) -> Option<ButtonChord> {
+        Some(*self)
+    }
+
+    fn planned_frames(&self) -> u64 {
+        u64::from(self.bounded_hold_frames())
+    }
+}
+
 pub trait ArcadeGame:
-    Workload<Action = ButtonChord, ArchiveReport: Serialize> + Sized + 'static
+    Workload<Action: ArcadeAction, ArchiveReport: Serialize> + Sized + 'static
 {
     type Machine;
     type View: Serialize + DeserializeOwned + Copy + Send + 'static;
