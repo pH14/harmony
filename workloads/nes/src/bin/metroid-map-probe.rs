@@ -3,7 +3,12 @@
 use std::{env, error::Error, fs, path::PathBuf};
 
 use nes_workload::{
-    metroid::target::{GenesisDepth, MetroidInput, MetroidTarget, MetroidTerminalPolicy},
+    metroid::{
+        archive::{MetroidArchiveKey, MetroidLineage, archive_key},
+        plan,
+        target::{GenesisDepth, MetroidInput, MetroidTarget, MetroidTerminalPolicy},
+    },
+    search::archive::ArchiveKey,
     target::{ExitKind, Target},
 };
 use sha2::{Digest, Sha256};
@@ -59,8 +64,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let root: MetroidInput = serde_json::from_slice(&fs::read(path)?)?;
             let mut prefix =
                 MetroidTarget::from_rom_bytes_headless(&rom, &core_path, &core_sha256)?
-                    .genesis_prefix()
-                    .to_vec();
+                    .genesis_actions();
             prefix.extend(root.actions.iter().copied());
             MetroidTarget::from_rom_bytes_rooted(
                 &rom,
@@ -78,8 +82,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("# root {}", path.display());
     }
     println!(
-        "enemy_slots action frames area map_x map_y x y mode pose health equipment missiles capacity tanks bosses boss_health"
+        "enemy_slots action frames area map_x map_y x y mode pose health equipment missiles capacity tanks bosses boss_health stage objective stage_name"
     );
+    let mut lineage = MetroidLineage::default();
+    let mut previous: Option<MetroidArchiveKey> = None;
     for (index, action) in input.actions.iter().enumerate() {
         if target.is_dead() || target.is_victory() || target.exit_kind() != ExitKind::Ok {
             break;
@@ -97,8 +103,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map(|(y, x, hp, attribs, _)| format!("{y:02x}/{x:02x}/{hp:02x}/{attribs:02x}"))
             .collect();
         print!("{} ", slots.join(","));
+        let key = archive_key(state)
+            .with_boss_health_seen(target.boss_health_seen())
+            .complete(previous.map(|key| (key, &lineage)));
+        MetroidArchiveKey::record(&mut lineage, key);
+        previous = Some(key);
         println!(
-            "{index} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{index} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             target.frames_clocked(),
             state.area,
             state.map_x,
@@ -113,7 +124,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             state.missile_capacity,
             state.energy_tanks,
             state.bosses,
-            state.boss_health
+            state.boss_health,
+            key.stage,
+            key.objective,
+            plan::stage_name(key.stage)
         );
         if let Some((start, len)) = wram_window {
             let wram = target.current_wram();

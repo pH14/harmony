@@ -54,8 +54,7 @@ fn metroid_game(
     }
     let mut prefix = MetroidGame::new(rom, core_path, core_sha256, execution_sha256)
         .new_target()?
-        .genesis_prefix()
-        .to_vec();
+        .genesis_actions();
     prefix.extend(input.actions.iter().copied());
     Ok(MetroidGame::new_rooted(
         rom,
@@ -86,6 +85,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.root_input.is_some()
         || request.metroid_terminal.is_some()
         || request.resume.is_some()
+        || request.resume_states.is_some()
         || !request.mixture.is_empty()
     {
         return Err(
