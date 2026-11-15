@@ -108,9 +108,12 @@ The searcher owns the suffix draw and the retained-input table.
 The progress tier is the pair (stage, objective) of a staged plan in
 [`nes-games/src/metroid/plan.rs`](../../../nes-games/src/metroid/plan.rs),
 declared through the searcher's `search::plan`.
-The plan is an ordered list of stages from power-on to Kraid's defeat: the
+The plan is an ordered list of stages from power-on to Ridley's defeat: the
 Maru Mari, energy, the first missile tank, energy, the bombs, energy, Kraid's
-door, energy, and Kraid. A state's stage is the first stage whose done test it
+door, energy, Kraid, energy, the Norfair elevator, energy, the elevator to
+Ridley's hideout, energy, Ridley's door, energy, and Ridley. The glitchless
+route to Ridley needs no item beyond the Maru Mari, the bombs and missiles, so
+the stages after Kraid are route, energy and boss stages only. A state's stage is the first stage whose done test it
 fails, so an item taken out of order skips its stage when the plan reaches it.
 Each stage climbs one integer:
 
@@ -128,11 +131,19 @@ Each stage climbs one integer:
   done at 80 energy: a touch in Kraid's hideout costs 20 (`$02` at `$95CF` in
   the Kraid bank), and 80 is four touches. Full energy for the tanks held is
   out of reach at Kraid's door on the recorded route, so the stage asks for a
-  few touches of margin.
-- The boss stage climbs boss damage. It is done when Kraid is defeated, read
-  from Kraid's own status byte: the key keeps the defeated bosses as bits (bit
-  0 Kraid, bit 1 Ridley), because Ridley can fall first and a boss count would
-  then complete this stage with Kraid alive.
+  few touches of margin. The stage after Kraid is done at 120 energy, six
+  touches for the six screens of the hideout shaft at map column 12 that the
+  route out climbs, which needs the energy tank in Kraid's room. A touch in
+  Norfair costs 10 (`$00` at `$95CE`, `$01` at `$95CF`), and the stage before
+  the Ridley elevator is done at 80, one touch for each of the eight screens of
+  the shaft at Norfair column 30. A touch in Ridley's hideout costs 24 (`$40`
+  at `$95CE`, `$02` at `$95CF`), and both stages there are done at 96, four
+  touches.
+- A boss stage climbs boss damage. The Kraid stage is done when Kraid is
+  defeated and the Ridley stage when Ridley is, each read from that boss's own
+  status byte (`$687B`, `$687C`): the key keeps the defeated bosses as bits
+  (bit 0 Kraid, bit 1 Ridley), because either boss can fall first and a boss
+  count would then complete a stage with its boss alive.
 
 The routes come from the ROM's own tables, read through the
 [disassembly](https://github.com/nmikstas/metroid-disassembly/tree/4270d57f9468daebdeea485686e31e26218a780c):
@@ -142,13 +153,18 @@ tiles drawn from the area's room, structure and macro tables. Within a
 horizontally scrolling stretch Samus walks to the next map cell unless a door
 stands between them; in a vertical shaft she climbs or drops to the next cell
 where the upper room's bottom two tile rows and the lower room's top two tile
-rows are walkable (tile `$A0` or above) in two neighbouring columns, and
-leaves sideways only through a door; every door flips the scroll direction.
-Blast tiles (`$80` to `$9F`) are open going up, since Samus shoots up, and
+rows are walkable in two neighbouring columns, and leaves sideways only
+through a door; every door flips the scroll direction. A tile is solid below
+`$80` in Brinstar and below `$70` elsewhere (routine `LD651`), and blast tiles
+run from that bound to `$9F` in Brinstar and `$97` elsewhere. Blast tiles are
+open going up, since Samus shoots up, and
 open going down only once the route's stage holds bombs. The missile route
 avoids red doors, since they open only to missiles. Each route is a shortest
 path in that graph. Elevators join Brinstar `(7,18)` to Kraid's hideout
-`(7,20)`.
+`(7,20)`, Brinstar `(22,11)` to Norfair `(22,13)`, and Norfair `(25,22)` to
+Ridley's hideout `(25,24)`. In the Ridley bank, room pointers 0 and 1 point to
+the same data, so rooms are read through the pointer table rather than the
+disassembly's room labels.
 
 The place is the area byte, the map cell, boss damage and the Zebetite hits
 still needed, so every hit on a boss or a Zebetite column opens a new place
