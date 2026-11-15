@@ -304,7 +304,7 @@ campaign and target contracts:
 | --- | --- |
 | `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for deterministic execution work. |
 | `InputPolicy` | Define the action vocabulary and the policy identifiers a recording must match. |
-| `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
+| `Evaluation` | Classify outcomes, declare doomed states, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
 An `ArchiveKey` names four things about a state, and nothing else reads a
@@ -316,6 +316,18 @@ key as a magnitude:
 | How far along is it? | `ArchiveKey::progress`, an `Ord` value. `()` for a workload with no progress notion. |
 | Which same-place states are distinct? | `ArchiveKey::identity`. Two entries at one place and progress with different identities hold separate slots. |
 | Which states at one slot survive? | `ArchiveKey::preference_cmp` at each of `ArchiveKey::preferences()` indices; the default declares none and compares `Ordering::Equal`. |
+
+A workload may build its progress from a staged plan in `search::plan`. A
+plan is an ordered slice of values implementing `plan::Stage`: each stage has
+a name, one integer objective computed from the state (with the parent's value
+for that stage passed in, for a state the stage cannot measure), and a done
+test. `plan::locate` returns (stage, objective) for the first stage whose done
+test fails, skipping a stage whose `latches` is true once the parent is past
+it, so a reached waypoint stays reached for every descendant.
+`ArchiveKey::progress` returns that pair, so the stage is the outer tier and
+the objective orders states within it. Place, identity and preferences remain
+the key's own; a key that wants them to differ by stage reads the stage from
+its progress. A workload without a plan keeps its own progress.
 
 A cell is a progress value paired with a place. A slot is a cell paired with
 an identity. A slot keeps the top `capacity()` entries under each preference,
@@ -416,6 +428,19 @@ execution receipts retain their own validation authority.
 
 The shared `search::rollout` loop owns action evidence capture, candidate
 creation, retention probe placement, and stopping; a workload provides action execution and state evaluation.
+
+`Evaluation::is_doomed` declares that a state has no future, such as a player
+falling into a pit. It reads one state and runs no frames; the default is
+`false`. `search::rollout::classify` is the one place the searcher reads it:
+a runnable state that the workload calls doomed ends the job with
+`ExecutionDisposition::Terminal`, as a death does, so it is never kept. The
+outcome serializes a doomed end as a fourth disposition, `doomed`, so a
+result that crosses a worker boundary keeps it and its hash covers it, while
+the bytes of every outcome that is not doomed, and so the result hashes and
+streams of a workload without doomed states, do not change. Reports and progress records
+count doomed endpoints as `doomed_endpoints`, apart from `terminal_endpoints`.
+A workload that runs its own job loop instead of `search::rollout` does not
+read `is_doomed`.
 
 Workload packages live in `../../workloads`. They own adapters, execution
 integration, and campaign binaries. A probe must restore candidate state before
@@ -996,6 +1021,20 @@ archive tier. A final checkpoint is also written after the reservation queue dra
 including for runs shorter than the periodic interval. Milestone and tier
 checkpoints are kept; only the last two interval checkpoints are kept.
 
+With `CheckpointPlan::on_stall`, the coordinator also watches the leading tier
+after each admission. When that tier starts to lose draw weight to the tier
+below it (the selector's halving condition, `tier_halvings` above zero), the
+run writes a kept checkpoint with reason `stall` and appends one line to
+`stalls.jsonl` in the checkpoint directory: the checkpoint's file name, the
+tier (the progress value, which for a staged plan is the stage and its
+objective), the tier's yield count, the execution of its last yield, the jobs
+drawn from the tier since then with the count of each action those jobs ran,
+and the tier's 16 most-selected states with their place, identity, selection
+counts and input length. The watch resets when the leading tier changes or
+yields again, so one stall writes one report. It reads the archive and changes
+nothing in selection, and a run with the report records the same stream as one
+without it.
+
 Scheduling stays on the coordinator. At a due admission boundary it joins the
 preceding publication, captures the header/body and freezes owned workload
 snapshots, then hands the image and exclusive store writer to one thread.
@@ -1117,7 +1156,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 9; a checkpoint from another
+match. The search checkpoint format is version 13; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation
@@ -1139,6 +1178,33 @@ was draining the reservation queue, a larger resumed budget fills the vacant
 slots up to the recorded window before admitting another result. Workloads opt
 in through `Reporting::evidence_checkpoint` and
 `Reporting::evidence_from_checkpoint`.
+
+The body starts with a key-free record of every archive entry: its id, its
+nearest saved ancestor, the actions from that ancestor (or from the root when
+none is saved) and its milestones (`SavedStateRecord`). When history compaction
+has dropped an entry's archive parent, its nearest saved ancestor is the
+earlier saved entry with the longest input that prefixes its own, so the import
+keys it from that ancestor's key and keeps the stage latches it carries. Only the action and
+milestone types give these records their meaning, so another build of the same
+workload can read them after its key has changed. `CampaignOrigin::SavedStates`
+starts a new search from them. `SavedStates::open` requires the checkpoint's
+workload identity and reads only these records and the snapshot store. It
+keeps the stored snapshots only when the checkpoint's executable identity is
+the running one, since a target's snapshot may restore only in the executable
+that wrote it; from any other build every entry is rebuilt from its actions.
+The import also rebuilds every entry when the checkpoint's genesis snapshot
+differs from the running genesis (another root input, for example), since a
+stored snapshot then does not match the state its actions reach.
+The import shares the archive origin's loop: entries go in id order, each from its
+stored snapshot or, without one, by replaying its actions from its imported
+ancestor, and each is keyed with the current `Evaluation::current_key` and
+admitted as a new candidate. Each cell's first arrival and each slot's best
+holder under every preference survive, and the evidence, selector counts,
+duration policies and random state start fresh. The draw tables fold the
+records' actions, and the stream header names the checkpoint's path and
+SHA-256 with origin kind `saved_states`. Every header policy and executable
+identity that differs from the run is recorded in `checkpoint_policy_changes`
+instead of being refused. The resumed stream cannot be replayed.
 
 
 ## Host hashing
