@@ -2012,12 +2012,7 @@ where
     pub(crate) fn materialize_input(&self, id: usize) -> Result<Input<A>, &'static str> {
         self.input_reconstructions
             .set(self.input_reconstructions.get().saturating_add(1));
-        let entry = self.entries.get(id).ok_or("archive input id is missing")?;
-        let actions = self
-            .input_index
-            .materialize(entry.input_node, entry.input_len)
-            .ok_or("archive input length disagrees with its prefix path")?;
-        Ok(Input { actions })
+        self.entry_input(id)
     }
 
     pub(crate) fn pin_job_origin(
@@ -2494,7 +2489,12 @@ where
     }
 
     pub fn entry_input(&self, id: usize) -> Result<Input<A>, &'static str> {
-        self.materialize_input(id)
+        let entry = self.entries.get(id).ok_or("archive input id is missing")?;
+        let actions = self
+            .input_index
+            .materialize(entry.input_node, entry.input_len)
+            .ok_or("archive input length disagrees with its prefix path")?;
+        Ok(Input { actions })
     }
 
     #[must_use]

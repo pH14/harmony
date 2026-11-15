@@ -1296,6 +1296,10 @@ cargo check --locked --manifest-path dissonance/Cargo.toml -p searcher --target 
 `Archive::entry_input` materializes an entry’s complete ancestral action tape
 for inspection or playback and rejects missing indices. A browser adapter can own
 execution snapshots outside the archive and use this read accessor for films.
+Inspection leaves campaign accounting unchanged, including the
+`input_reconstructions` counter, which counts the searcher's internal tape
+materializations. Viewer startup and playback lookups therefore do not change
+the report that campaign replay verifies.
 Weighted draws use `RomuDuoJrRand::below_u64` for 64-bit weight
 totals, so wasm32 does not truncate them through `usize`. This uses the same
 multiply-high draw as native selection and preserves its random sequence.
