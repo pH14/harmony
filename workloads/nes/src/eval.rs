@@ -63,6 +63,8 @@ pub struct Request {
     #[serde(default)]
     pub metroid_terminal: Option<String>,
     #[serde(default)]
+    pub smb_route: Option<String>,
+    #[serde(default)]
     pub root_input: Option<PathBuf>,
     #[serde(default)]
     pub checkpoint_every: Option<NonZeroU64>,

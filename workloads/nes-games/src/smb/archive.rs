@@ -2,8 +2,9 @@
 
 use std::{cmp::Ordering, error::Error};
 
-use crate::search::archive::{
-    ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix,
+use crate::search::{
+    archive::{ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix},
+    plan::StageProgress,
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
@@ -13,11 +14,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     nes_backend::{NesBackend, SnapshotState},
-    smb::target::{
-        ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
-        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_area_is_loading,
-        smb_camera_pixels, smb_mechanical_state_from_wram, smb_milestones_from_wram,
-        smb_player_position,
+    smb::{
+        plan::{self, PlanState, SmbRoute},
+        target::{
+            ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
+            SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_area_is_loading,
+            smb_camera_pixels, smb_is_victory, smb_mechanical_state_from_wram,
+            smb_milestones_from_wram, smb_player_position,
+        },
     },
     target::Target,
 };
@@ -26,9 +30,12 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-const PROGRESS_BAND: u16 = 64;
+const KEY_POLICY_BASE: &str = "frozen_area_span_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
 
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_lineage_max_unless_warped_level_band_64_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
+#[must_use]
+pub fn key_policy_identifier(route: SmbRoute) -> String {
+    format!("{KEY_POLICY_BASE}_route_{}", route.identifier())
+}
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -56,11 +63,44 @@ pub struct SmbArchiveKey {
     pub room: SmbRoomIdentity,
     #[serde(default)]
     pub lineage_band: u16,
+    #[serde(default)]
+    pub route: SmbRoute,
+    #[serde(default)]
+    pub warp_zone: u8,
+    #[serde(default)]
+    pub vine: u16,
+    #[serde(default)]
+    pub victory: bool,
+}
+
+impl SmbArchiveKey {
+    #[must_use]
+    pub fn band(self) -> u16 {
+        plan::band(self.progress.saturating_add(u16::from(self.room_x_bucket)))
+            .max(self.lineage_band)
+    }
+
+    #[must_use]
+    pub fn plan_state(self) -> PlanState {
+        PlanState {
+            world: self.world,
+            level: self.level,
+            band: self.band(),
+            warp_zone: self.warp_zone,
+            vine: self.vine,
+            victory: self.victory,
+        }
+    }
+
+    #[must_use]
+    pub fn on_route(self, route: SmbRoute) -> Self {
+        Self { route, ..self }
+    }
 }
 
 impl ArchiveKey for SmbArchiveKey {
     type Place = (SmbRoomIdentity, u16, u8, bool, u8);
-    type Progress = (u8, u8, u16);
+    type Progress = StageProgress;
     type Identity = u8;
 
     fn place(self) -> Self::Place {
@@ -74,12 +114,7 @@ impl ArchiveKey for SmbArchiveKey {
     }
 
     fn progress(self) -> Self::Progress {
-        (
-            self.world,
-            self.level,
-            (self.progress.saturating_add(u16::from(self.room_x_bucket)) / PROGRESS_BAND)
-                .max(self.lineage_band),
-        )
+        self.route.locate(&self.plan_state())
     }
 
     fn identity(self) -> Self::Identity {
@@ -114,7 +149,7 @@ impl ArchiveKey for SmbArchiveKey {
                 let same_area = parent_room[..2] == arrived_here[..2];
                 let warped = parent_key.progress >= this.progress.saturating_add(ROOM_ARRIVAL_SNAP);
                 if !same_area {
-                    (arrived_here, parent_key.progress().2)
+                    (arrived_here, parent_key.band())
                 } else if warped {
                     let room = rooms
                         .iter()
@@ -124,7 +159,7 @@ impl ArchiveKey for SmbArchiveKey {
                         .unwrap_or(arrived_here);
                     (room, 0)
                 } else {
-                    (parent_room, parent_key.progress().2)
+                    (parent_room, parent_key.band())
                 }
             }
             _ => (arrived_here, 0),
@@ -219,6 +254,10 @@ pub fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
         clock: game_clock(wram),
         room: [0; 3],
         lineage_band: 0,
+        route: SmbRoute::AllLevels,
+        warp_zone: plan::warp_zone(wram),
+        vine: plan::vine_step(wram),
+        victory: smb_is_victory(wram),
     }
 }
 
@@ -401,6 +440,10 @@ mod tests {
                 u8::try_from(progress / 16).expect("arrival page"),
             ],
             lineage_band: 0,
+            route: super::SmbRoute::AllLevels,
+            warp_zone: 0,
+            vine: 0,
+            victory: false,
         }
     }
 
@@ -551,7 +594,7 @@ mod tests {
     fn the_place_carries_the_room_and_the_tier_is_the_level_band() {
         let key = key(153, [3, 5]);
         assert_eq!(key.place(), (key.room, 153, 11, true, 0));
-        assert_eq!(key.progress(), (7, 3, 2));
+        assert_eq!(key.progress(), (31, 2));
         assert_eq!(key.identity(), 0);
         let on_screen = SmbArchiveKey {
             room_x_bucket: 6,
@@ -634,8 +677,8 @@ mod tests {
         assert_ne!(beside.place(), behind.place());
         let ahead = key(900, [0, 0]);
         assert!(ahead.progress() > beside.progress());
-        let next_level = SmbArchiveKey { level: 4, ..behind };
-        assert!(next_level.progress() > ahead.progress());
+        let previous_level = SmbArchiveKey { level: 2, ..ahead };
+        assert!(behind.progress() > previous_level.progress());
     }
 
     #[test]
@@ -651,20 +694,20 @@ mod tests {
     #[test]
     fn a_new_area_keeps_the_band_its_lineage_reached_and_a_warp_back_drops_it() {
         let castle = key(250, [3, 5]);
-        assert_eq!(castle.progress(), (7, 3, 3));
+        assert_eq!(castle.progress(), (31, 3));
         let underwater = key(10, [0, 2]).complete(Some((castle, &Vec::new())));
-        assert_eq!(underwater.progress(), (7, 3, 3));
+        assert_eq!(underwater.progress(), (31, 3));
         let back_in_the_castle = key(260, [3, 5]).complete(Some((underwater, &Vec::new())));
-        assert_eq!(back_in_the_castle.progress(), (7, 3, 4));
+        assert_eq!(back_in_the_castle.progress(), (31, 4));
         let wrong_pipe = key(20, [3, 5]).complete(Some((back_in_the_castle, &Vec::new())));
-        assert_eq!(wrong_pipe.progress(), (7, 3, 0));
+        assert_eq!(wrong_pipe.progress(), (31, 0));
         let next_level = SmbArchiveKey {
             world: 7,
             level: 0,
             ..key(10, [1, 0])
         }
         .complete(Some((SmbArchiveKey { world: 6, ..castle }, &Vec::new())));
-        assert_eq!(next_level.progress(), (7, 0, 0));
+        assert_eq!(next_level.progress(), (28, 0));
     }
 
     #[test]

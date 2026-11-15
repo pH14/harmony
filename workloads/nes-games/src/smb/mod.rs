@@ -2,5 +2,6 @@
 
 pub mod archive;
 pub mod campaign;
+pub mod plan;
 pub mod shrink;
 pub mod target;

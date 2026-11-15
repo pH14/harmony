@@ -3,7 +3,12 @@
 use std::{env, error::Error, fs, path::PathBuf};
 
 use nes_workload::{
-    smb::target::{SmbInput, SmbTarget, smb_is_playing},
+    search::archive::ArchiveKey,
+    smb::{
+        archive::{SmbArchiveKey, SmbRoomIdentity, archive_key, stamp_arrival_room},
+        plan::SmbRoute,
+        target::{SmbInput, SmbTarget, smb_is_playing},
+    },
     target::Target,
 };
 use serde::Serialize;
@@ -21,6 +26,24 @@ struct Level {
 }
 
 #[derive(Serialize)]
+struct StageVisit {
+    stage: u8,
+    name: &'static str,
+    first_action: usize,
+    frame: u64,
+    objectives: Vec<u16>,
+    doomed_actions: usize,
+}
+
+#[derive(Serialize)]
+struct Readout {
+    route: &'static str,
+    stages_in_order: bool,
+    doomed_actions: usize,
+    visits: Vec<StageVisit>,
+}
+
+#[derive(Serialize)]
 struct Route {
     boot_frames: u64,
     tape_frames: u64,
@@ -29,6 +52,8 @@ struct Route {
     victory: bool,
     dead: bool,
     levels: Vec<Level>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    readout: Option<Readout>,
 }
 
 fn label(world: u8, level: u8) -> String {
@@ -52,7 +77,17 @@ fn exit_kind(from: (u8, u8), to: (u8, u8)) -> &'static str {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
-    let input_path = PathBuf::from(args.next().ok_or("usage: smb-route <input.json>")?);
+    let input_path = PathBuf::from(
+        args.next()
+            .ok_or("usage: smb-route <input.json> [--route <identifier>]")?,
+    );
+    let route = match (args.next(), args.next()) {
+        (None, None) => None,
+        (Some(flag), Some(identifier)) if flag == "--route" => Some(SmbRoute::from_identifier(
+            identifier.to_str().ok_or("the route is not UTF-8")?,
+        )?),
+        _ => return Err("usage: smb-route <input.json> [--route <identifier>]".into()),
+    };
     if args.next().is_some() {
         return Err("unexpected extra argument".into());
     }
@@ -74,6 +109,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut applied = 0_usize;
     let wram = target.wram();
     levels.push((wram[WORLD_NUMBER_OFFSET], wram[LEVEL_NUMBER_OFFSET], 0));
+    let mut parent: Option<SmbArchiveKey> = None;
+    let mut lineage: Vec<SmbRoomIdentity> = Vec::new();
+    let mut visits: Vec<StageVisit> = Vec::new();
     for action in &input.actions {
         if target.is_dead() || target.is_victory() {
             break;
@@ -82,6 +120,30 @@ fn main() -> Result<(), Box<dyn Error>> {
         applied += 1;
         frames += target.last_action_frames();
         let wram = target.wram();
+        if let Some(route) = route {
+            let key = stamp_arrival_room(archive_key(&wram).on_route(route), &wram)?
+                .complete(parent.map(|key| (key, &lineage)));
+            SmbArchiveKey::record(&mut lineage, key);
+            parent = Some(key);
+            let (stage, objective) = key.progress();
+            let doomed = !target.is_dead() && (target.is_doomed() || route.is_doomed(&wram));
+            if visits.last().is_none_or(|visit| visit.stage != stage) {
+                visits.push(StageVisit {
+                    stage,
+                    name: route.stage_name(stage),
+                    first_action: applied,
+                    frame: target.boot_frames() + frames,
+                    objectives: Vec::new(),
+                    doomed_actions: 0,
+                });
+            }
+            if let Some(visit) = visits.last_mut() {
+                if visit.objectives.last() != Some(&objective) {
+                    visit.objectives.push(objective);
+                }
+                visit.doomed_actions += usize::from(doomed);
+            }
+        }
         let here = (wram[WORLD_NUMBER_OFFSET], wram[LEVEL_NUMBER_OFFSET]);
         if smb_is_playing(&wram)
             && levels
@@ -98,6 +160,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         actions_applied: applied,
         victory: target.is_victory(),
         dead: target.is_dead(),
+        readout: route.map(|route| Readout {
+            route: route.identifier(),
+            stages_in_order: visits
+                .windows(2)
+                .all(|pair| pair[1].stage == pair[0].stage + 1),
+            doomed_actions: visits.iter().map(|visit| visit.doomed_actions).sum(),
+            visits,
+        }),
         levels: levels
             .iter()
             .enumerate()

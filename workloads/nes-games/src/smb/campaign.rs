@@ -34,11 +34,12 @@ use crate::{
     search::rand::RomuDuoJrRand,
     search::rollout::{ExecutionDisposition, Outcome},
     smb::archive::{
-        DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, LONG_HOLD_FRAMES, REPLACEMENT_IDENTIFIER,
-        SmbArchiveKey, SmbArchiveReport, admission_is_viable, archive_key, chord_time,
+        DOWN_TEN_BUTTON_MASKS, LONG_HOLD_FRAMES, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
+        SmbArchiveReport, admission_is_viable, archive_key, chord_time, key_policy_identifier,
         merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
         stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
     },
+    smb::plan::SmbRoute,
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
         SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
@@ -93,6 +94,7 @@ where
     identity: String,
     checkpoint_format: &'static str,
     targets: SmbTargets<M, P>,
+    route: SmbRoute,
 }
 
 #[must_use]
@@ -119,6 +121,31 @@ where
             identity,
             checkpoint_format,
             targets,
+            route: SmbRoute::AllLevels,
+        }
+    }
+
+    #[must_use]
+    pub fn with_route(self, route: SmbRoute) -> Self {
+        Self { route, ..self }
+    }
+
+    #[must_use]
+    pub fn route(&self) -> SmbRoute {
+        self.route
+    }
+
+    fn key_policy(&self) -> String {
+        key_policy_identifier(self.route)
+    }
+
+    fn doomed_policy(&self) -> String {
+        match self.route {
+            SmbRoute::AllLevels => DOOMED_POLICY_IDENTIFIER.to_owned(),
+            route => format!(
+                "{DOOMED_POLICY_IDENTIFIER}_or_off_route_{}_or_vine_brick_left_of_screen",
+                route.identifier()
+            ),
         }
     }
 
@@ -464,11 +491,11 @@ where
                 CONTROLLER_VOCABULARY_FIELD,
                 button_vocabulary_identifier(run.vocabulary).to_owned(),
             ),
-            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER.to_owned()),
+            (KEY_POLICY_FIELD, self.key_policy()),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
             (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER.to_owned()),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
-            (DOOMED_POLICY_FIELD, DOOMED_POLICY_IDENTIFIER.to_owned()),
+            (DOOMED_POLICY_FIELD, self.doomed_policy()),
         ]
         .into_iter()
         .map(|(field, value)| (field.to_owned(), value))
@@ -486,11 +513,11 @@ where
     ) -> Result<SmbCampaignRun, Box<dyn Error>> {
         let recorded = |field: &str| recorded_policy(policies, field);
         let pinned = [
-            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
-            (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
-            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
-            (DOOMED_POLICY_FIELD, DOOMED_POLICY_IDENTIFIER),
+            (KEY_POLICY_FIELD, self.key_policy()),
+            (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
+            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
+            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER.to_owned()),
+            (DOOMED_POLICY_FIELD, self.doomed_policy()),
         ];
         for (field, compiled) in pinned {
             if recorded(field)? != compiled {
@@ -719,15 +746,18 @@ where
     }
 
     fn is_doomed(&self, target: &SmbTarget<M, P>) -> bool {
-        target.is_doomed()
+        target.is_doomed() || (!target.is_dead() && self.route.is_doomed(&target.wram()))
     }
 
     fn current_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        stamp_arrival_room(archive_key(&target.wram()), &target.wram())
+        stamp_arrival_room(
+            archive_key(&target.wram()).on_route(self.route),
+            &target.wram(),
+        )
     }
 
     fn rollout_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(&target.wram()))
+        Ok(archive_key(&target.wram()).on_route(self.route))
     }
 
     fn complete_candidate_key(

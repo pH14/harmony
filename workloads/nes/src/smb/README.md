@@ -54,10 +54,11 @@ of one reaches a long enough job after a few doublings.
 
 ## Archive key
 
-The progress tier is the world, the level and the level's progress in bands of
-64 sixteen-pixel columns. The searcher gives each tier an eighth of the draws
-of the tier ahead of it, so the band must not fall along the route through a
-level. The camera column restarts in each area, and in 8-4 the route passes
+The progress tier is the route plan's stage and objective (see
+[Route plans](#route-plans)). On every level stage the objective is the level's
+progress in bands of 64 sixteen-pixel columns. The searcher gives each tier an
+eighth of the draws of the tier ahead of it, so the band must not fall along the
+route through a level. The camera column restarts in each area, and in 8-4 the route passes
 through an underwater area after the castle's third band. A state therefore
 keeps the highest band its parent held in the same level. A pipe that sends
 Mario back within the same area, as 8-4's wrong pipes do, drops that inherited
@@ -93,6 +94,37 @@ scroll or Mario's position still belongs to the old area.
 Camera and player coordinates used by the key are signed 16-bit positions.
 Negative positions at the left boundary clamp to zero before conversion to
 columns, so an underflow cannot create a false deepest band.
+
+## Route plans
+
+A route is a `search::plan` list of stages in `smb::plan`, chosen with
+`SmbGame::with_route` and named in the key and doomed policies. The default
+route, `all_levels`, has one stage per level in order. A staged plan that used
+the column as each level's objective kept the front two or three columns as the
+top tiers, which took 77% to 97% of the draws, and seven of 16 seeds spent 32M
+frames in 1-3; the band keeps 64 columns in one tier.
+
+The `warps_1_2_to_4_vine_4_2_to_8` route follows the warp zones: 1-1; 1-2 to
+its warp zone (WarpZoneControl, `$06D6`, = 4) and the pipe to 4-1; 4-1; 4-2 to
+the vine, to the vine area's warp zone (`$06D6` = 6) and the pipe to 8-1; 8-1,
+8-2, 8-3; 8-4 until the ending; and the ending. Warp-zone stages use the band as
+their objective and pipe stages have one tier.
+
+4-2's underground area (room (2,1)) holds a brick with the vine at column 64,
+row 3, above hidden coin blocks at (63,6), (64,5), (65,6) and (66,7). The vine
+stage's objective is a ladder of what the player has done there: 1 once he is
+at x 960, plus one for each hidden block hit (its metatile in the block buffer
+is no longer `$5F`, read while the camera is between x 784 and 1040, where
+those pages are loaded), 6 once an enemy slot holds the vine (ID `$2F`), 7 while
+he climbs (`$1D` = 3), and 8 in the vine area. The route climbs the vine
+rather than the pipe clip of tool-assisted runs, which has no RAM signal before
+the warp.
+
+Under the warp route a state is doomed when the world and level numbers name a
+level the route omits, or when the camera in 4-2's underground area has passed
+x 1040 while the player is not climbing, since the brick is then left of the
+screen. `smb-route <tape> --route <identifier>` replays a tape and prints each
+stage it visits with its objectives and the number of doomed actions.
 
 ## Snapshots
 
