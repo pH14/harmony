@@ -91,6 +91,7 @@ struct TestArchiveReport {
 
 thread_local! {
     static TEST_EXECUTABLE_IDENTITY: std::cell::Cell<Option<Result<&'static str, &'static str>>> = const { std::cell::Cell::new(None) };
+    static TEST_GENESIS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
 struct TestWorkload;
@@ -196,7 +197,7 @@ impl TargetExecution for TestWorkload {
         Ok(TestTarget::default())
     }
     fn reset(&self, target: &mut Self::Target) {
-        target.value = 0;
+        target.value = TEST_GENESIS.with(std::cell::Cell::get);
     }
     fn restore(
         &self,
@@ -956,6 +957,7 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
                 every: NonZeroU64::new(300),
                 on_marks: true,
                 on_top_progress: true,
+                on_stall: false,
                 checkpoint_owner: None,
                 max_image_bytes: 64 << 20,
                 before_write: None,
@@ -1026,6 +1028,7 @@ fn a_campaign_and_checkpoint_reject_another_loaded_executable() {
                 every: NonZeroU64::new(1),
                 on_marks: false,
                 on_top_progress: false,
+                on_stall: false,
                 checkpoint_owner: None,
                 max_image_bytes: 64 << 20,
                 before_write: None,
@@ -1084,6 +1087,71 @@ fn a_campaign_and_checkpoint_reject_another_loaded_executable() {
 }
 
 #[test]
+fn saved_states_from_another_executable_or_genesis_are_rebuilt_from_their_inputs() {
+    let directory = checkpoint_directory("saved-states-executable");
+    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    config.execution_budget = 8;
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Ok("build-A"))));
+    run_campaign_checkpointed_with_options(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut Vec::new(),
+        None,
+        CampaignExecutionOptions {
+            checkpoints: Some(CheckpointPlan {
+                directory: directory.clone(),
+                every: None,
+                on_marks: false,
+                on_top_progress: false,
+                on_stall: false,
+                checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
+            }),
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    let checkpoint = directory.join("000000000008-final.ckpt");
+    config.execution_budget = 1;
+    let import = |build: &'static str, genesis: u8| {
+        TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Ok(build))));
+        TEST_GENESIS.with(|value| value.set(genesis));
+        let states = SavedStates::open(&TestWorkload, &checkpoint).unwrap();
+        let (report, _) = run_campaign_checkpointed(
+            &TestWorkload,
+            &config,
+            &CampaignOrigin::SavedStates { states },
+            &mut Vec::new(),
+            None,
+        )
+        .unwrap();
+        let entries = report
+            .archive
+            .entries
+            .iter()
+            .filter(|entry| entry.created_execution == 0)
+            .map(|entry| entry.input.actions.clone())
+            .collect::<Vec<_>>();
+        (report.tree_import.unwrap(), entries)
+    };
+    let (same, same_entries) = import("build-A", 0);
+    let (other, other_entries) = import("build-B", 0);
+    let (moved, _) = import("build-A", 7);
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(None));
+    TEST_GENESIS.with(|value| value.set(0));
+    std::fs::remove_dir_all(directory).unwrap();
+    assert!(same.checkpointed > 0);
+    assert_eq!(other.checkpointed, 0);
+    assert_eq!(other.imported, same.imported);
+    assert_eq!(other_entries, same_entries);
+    assert_eq!(moved.checkpointed, 0);
+    assert!(moved.imported > 0);
+}
+
+#[test]
 fn unavailable_loaded_executable_fails_before_campaign_output() {
     let directory = checkpoint_directory("unavailable-executable");
     let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
@@ -1102,6 +1170,7 @@ fn unavailable_loaded_executable_fails_before_campaign_output() {
                 every: NonZeroU64::new(1),
                 on_marks: false,
                 on_top_progress: false,
+                on_stall: false,
                 checkpoint_owner: None,
                 max_image_bytes: 64 << 20,
                 before_write: None,
@@ -1131,6 +1200,7 @@ fn a_pinned_checkpoint_refuses_a_valid_swap_after_selection() {
             every: NonZeroU64::new(100),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: Some("saved-run-a".into()),
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1235,6 +1305,7 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
             every: NonZeroU64::new(170),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1316,6 +1387,7 @@ fn a_short_campaign_finishes_with_a_checkpoint_that_can_extend_its_budget() {
             every: NonZeroU64::new(100),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1364,6 +1436,7 @@ fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1418,6 +1491,7 @@ fn a_resume_under_a_changed_search_policy_records_the_change() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1468,6 +1542,7 @@ fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1518,6 +1593,7 @@ fn a_checkpoint_with_no_jobs_in_flight_resumes_under_a_larger_budget() {
             every: NonZeroU64::new(400),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1561,6 +1637,7 @@ fn a_drain_checkpoint_refills_the_original_admission_window_on_resume() {
             every: NonZeroU64::new(2),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1580,6 +1657,7 @@ fn a_drain_checkpoint_refills_the_original_admission_window_on_resume() {
             every: NonZeroU64::new(1),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,

@@ -5,9 +5,8 @@ use std::cmp::Ordering;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    chord::{
-        ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES, Tap,
-    },
+    chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
+    mm2::action::Mm2Action,
     mm2::target::{
         BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
         MM2_WEAPONS, Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, Mm2Tier,
@@ -24,7 +23,7 @@ pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_en
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
-pub type Mm2Archive = Archive<ButtonChord, Mm2ArchiveKey, Mm2Milestones, Mm2Snapshot>;
+pub type Mm2Archive = Archive<Mm2Action, Mm2ArchiveKey, Mm2Milestones, Mm2Snapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveKey {
@@ -174,7 +173,7 @@ pub struct Mm2ProgressWatermark {
 }
 
 pub type Mm2ArchiveProgressPoint = ProgressPoint<Mm2Milestones, Mm2ProgressWatermark>;
-pub type Mm2ArchiveEntryReport = ArchiveEntryReport<ButtonChord, Mm2ArchiveKey, Mm2Milestones>;
+pub type Mm2ArchiveEntryReport = ArchiveEntryReport<Mm2Action, Mm2ArchiveKey, Mm2Milestones>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2ArchiveReport {
@@ -243,15 +242,9 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-const START: u8 = 0x08;
-
 pub const CHORDS: ChordVocabulary = ChordVocabulary {
     held: &NES_PRESSABLE_BUTTON_MASKS,
-    tap: Some(Tap {
-        buttons: START,
-        odds: 12,
-        hold_frames: (2, 7),
-    }),
+    tap: None,
     short_hold: SHORT_HOLD_FRAMES,
     long_hold: LONG_HOLD_FRAMES,
 };
@@ -441,23 +434,17 @@ mod tests {
     }
 
     #[test]
-    fn vocabulary_draws_bare_start_taps_and_never_select_or_conflicting_directions() {
+    fn vocabulary_never_draws_start_select_or_conflicting_directions() {
         let mut rand = RomuDuoJrRand::with_seed(7);
-        let mut starts = 0;
         let mut previous = None;
         for _ in 0..1_000 {
             let chord = CHORDS
                 .draw(&mut rand, previous.as_ref())
                 .expect("draw chord");
             previous = Some(chord);
-            assert_eq!(chord.buttons & 0x04, 0);
-            if chord.buttons & START != 0 {
-                assert!(chord.hold_frames <= 7);
-                starts += 1;
-            }
+            assert_eq!(chord.buttons & 0x0c, 0);
             assert_ne!(chord.buttons & 0x30, 0x30);
             assert_ne!(chord.buttons & 0xc0, 0xc0);
         }
-        assert!((40..=140).contains(&starts), "start taps: {starts}");
     }
 }

@@ -577,6 +577,7 @@ mod live {
                 every: std::num::NonZeroU64::new(100),
                 on_marks: false,
                 on_top_progress: false,
+                on_stall: false,
                 checkpoint_owner: options.checkpoint_owner.clone(),
                 max_image_bytes: 64 << 20,
             }),

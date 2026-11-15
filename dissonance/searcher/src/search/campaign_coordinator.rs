@@ -5,6 +5,7 @@ use std::{
     error::Error,
     io::Write,
     num::NonZeroU64,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -25,12 +26,12 @@ use super::{
     execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
     mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
     progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
-    restore_search_checkpoint, retained_archive_indexes, search_checkpoint_header,
+    restore_search_checkpoint, retained_archive_indexes, search_checkpoint_header, source_suffixes,
     stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
     with_coordinator_session, write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
-    Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
+    Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath, StalledState,
 };
 use crate::search::checkpoint::{CheckpointReader, publisher::CheckpointPublisher};
 use crate::search::draw::{EnergyStrategy, MixtureDraw, energy_strategy};
@@ -142,6 +143,30 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     stopped: bool,
     interrupted: bool,
     jobs_cancelled: u64,
+    stall: Option<StallWatch<<G::Key as ArchiveKey>::Progress>>,
+}
+
+const STALL_REPORT_STATES: usize = 16;
+
+struct StallWatch<P> {
+    directory: PathBuf,
+    tier: Option<(P, u64)>,
+    reported: bool,
+    since_execution: u64,
+    jobs: u64,
+    draws: BTreeMap<String, u64>,
+}
+
+#[derive(Serialize)]
+struct StallRecord<'a> {
+    executions: u64,
+    checkpoint: String,
+    tier: String,
+    tier_yields: u64,
+    since_execution: u64,
+    jobs: u64,
+    draws_by_action: &'a BTreeMap<String, u64>,
+    states: Vec<StalledState>,
 }
 
 impl<'a, G: Workload> CampaignCoordinator<'a, G>
@@ -216,7 +241,13 @@ where
             CampaignOrigin::Genesis
             | CampaignOrigin::SnapshotRoot { .. }
             | CampaignOrigin::SearchCheckpoint { .. } => None,
-            CampaignOrigin::Archive { source, .. } => Some((source.file_sha256(), source.report())),
+            CampaignOrigin::Archive { source, .. } => Some((
+                source.file_sha256(),
+                source_suffixes(workload.source_entries(source.report())),
+            )),
+            CampaignOrigin::SavedStates { states } => {
+                Some((states.file_sha256(), source_suffixes(&states.entries)))
+            }
         };
         let (mut draw_state, draw_header) = initial_draw_state(workload, &config.run, draw_origin)?;
         let mut duration_policies = DurationPolicies::<G::Key>::new();
@@ -294,6 +325,18 @@ where
             planned_clock = resume.planned_clock;
             in_flight = resume.in_flight;
         }
+        let stall = options
+            .checkpoints
+            .as_ref()
+            .filter(|plan| plan.on_stall)
+            .map(|plan| StallWatch {
+                directory: plan.directory.clone(),
+                tier: None,
+                reported: false,
+                since_execution: core.sequence,
+                jobs: 0,
+                draws: BTreeMap::new(),
+            });
         let checkpoints = options
             .checkpoints
             .map(|plan| {
@@ -352,6 +395,7 @@ where
             stopped: false,
             interrupted: false,
             jobs_cancelled: 0,
+            stall,
         };
         for job in in_flight {
             let parent_index = coordinator
@@ -892,42 +936,120 @@ where
     }
 
     fn write_due_checkpoint(&mut self) -> Result<(), Box<dyn Error>> {
-        if let Some(checkpoints) = self.checkpoints.as_mut()
-            && let Some(reason) = checkpoints.due(
+        let stalled = self.stall_due();
+        if let Some(checkpoints) = self.checkpoints.as_mut() {
+            let due = checkpoints.due(
                 self.core.sequence,
                 G::checkpoint_marks(&self.core.evidence),
                 self.core.archive.top_progress(),
-            )
-        {
-            write_search_checkpoint(
-                self.workload,
-                checkpoints,
-                reason,
-                &self.core,
-                &self.draw_state,
-                &self.duration_policies,
-                &self.rand,
-                &self.counters,
-                &self.profile,
-                self.reserved.saturating_sub(self.jobs_cancelled),
-                self.admitted,
-                self.planned_clock,
-                &self.schedule,
-                &self.pending,
-                &self.completed,
-                &self.spec_records,
-            )?;
+            );
+            if let Some(reason) = if stalled { Some("stall") } else { due } {
+                write_search_checkpoint(
+                    self.workload,
+                    checkpoints,
+                    reason,
+                    &self.core,
+                    &self.draw_state,
+                    &self.duration_policies,
+                    &self.rand,
+                    &self.counters,
+                    &self.profile,
+                    self.reserved.saturating_sub(self.jobs_cancelled),
+                    self.admitted,
+                    self.planned_clock,
+                    &self.schedule,
+                    &self.pending,
+                    &self.completed,
+                    &self.spec_records,
+                )?;
+            }
+        }
+        if stalled {
+            self.write_stall_record()?;
         }
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
+    fn stall_due(&mut self) -> bool {
+        let Some(watch) = self.stall.as_mut() else {
+            return false;
+        };
+        let Some(leading) = self.core.archive.leading_tier() else {
+            return false;
+        };
+        let tier = (leading.progress, leading.yields);
+        if watch.tier != Some(tier) {
+            watch.tier = Some(tier);
+            watch.since_execution = self.core.sequence;
+            watch.jobs = 0;
+            watch.draws.clear();
+            watch.reported = false;
+        }
+        let stalled = leading.losing_weight && !watch.reported;
+        watch.reported |= stalled;
+        stalled
+    }
+
+    fn count_stall_draws(&mut self, parent_id: u64, result: &CampaignJobResult<G>) {
+        let Some(watch) = self.stall.as_mut() else {
+            return;
+        };
+        let parent_progress = self
+            .core
+            .archive
+            .index_of_id(parent_id)
+            .map(|index| self.core.archive.entries[index].key.progress());
+        if parent_progress.is_none() || parent_progress != watch.tier.map(|(progress, _)| progress)
+        {
+            return;
+        }
+        watch.jobs = watch.jobs.saturating_add(1);
+        for action in &result.actions {
+            let count = watch
+                .draws
+                .entry(format!("{:?}", action.action))
+                .or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+
+    fn write_stall_record(&self) -> Result<(), Box<dyn Error>> {
+        let Some(watch) = self.stall.as_ref() else {
+            return Ok(());
+        };
+        let Some((progress, yields)) = watch.tier else {
+            return Ok(());
+        };
+        let record = StallRecord {
+            executions: self.core.sequence,
+            checkpoint: format!("{:012}-stall.ckpt", self.core.sequence),
+            tier: format!("{progress:?}"),
+            tier_yields: yields,
+            since_execution: watch.since_execution,
+            jobs: watch.jobs,
+            draws_by_action: &watch.draws,
+            states: self.core.archive.leading_tier_states(STALL_REPORT_STATES),
+        };
+        let mut line = serde_json::to_vec(&record)?;
+        line.push(b'\n');
+        std::fs::create_dir_all(&watch.directory)?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(watch.directory.join("stalls.jsonl"))?
+            .write_all(&line)?;
+        Ok(())
+    }
+
     fn admit_completed(
         &mut self,
         finish: u64,
         reservation: usize,
         completed_job: CompletedJob<G>,
     ) -> Result<(), Box<dyn Error>> {
+        if let Ok((result, _, _)) = &completed_job.outcome {
+            self.count_stall_draws(completed_job.pending.parent_id, result);
+        }
         let workload = self.workload;
         let config = self.config;
         let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
