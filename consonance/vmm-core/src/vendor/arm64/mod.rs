@@ -540,6 +540,10 @@ impl Vendor for Arm64 {
         vmm.next_timer_deadline_vns_arm64()
     }
 
+    fn coverage_callback_vns() -> u64 {
+        contract::virtual_time_timing().coverage_callback_vns
+    }
+
     fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)> {
         vmm.clockevent_trace_schedule_arm64()
     }

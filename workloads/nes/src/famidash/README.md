@@ -89,7 +89,7 @@ after A.
 A `Stage` names the side, the starting level and the goal level, both in one
 group. A `nes-eval` request's `stage` alone runs that one level, and the goal
 is the same level. `whole_game` runs from `stage`, or the group's first level,
-through the group's last level. The side comes from the ROM. The emulator
+through the group's last level. A live request takes `stage` as the level the campaign starts from and runs through the group's last level. The side comes from the ROM. The emulator
 identity names the side, the start and the goal.
 
 The controller vocabulary is A alone, with taps of 1 to 4 frames and holds of

@@ -683,6 +683,7 @@ mod tests {
         }
         fn outcome(&self) -> Result<Outcome, Box<dyn Error>> {
             Ok(Outcome {
+                doomed: false,
                 objective_reached: self.0.failure.is_some(),
                 disposition: self.0.disposition(),
             })
@@ -732,7 +733,7 @@ mod tests {
             0,
             &[7],
             RetentionPolicy::Unprobed,
-            true,
+            searcher::search::rollout::RolloutStop::new(true),
         )
         .unwrap();
         assert!(result.actions.is_empty());
@@ -759,7 +760,9 @@ mod tests {
                 rejected: 0,
                 terminal_endpoints: 0,
                 terminal_objectives: 0,
+                doomed_endpoints: 0,
                 execution_failures: 1,
+                hung_jobs: 0,
                 selector: Default::default(),
             },
         );

@@ -781,6 +781,8 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput], kvm: bool) -> serde_jso
     let mut devices = vec![
         json!({ "allow": true, "type": "c", "major": "HARMONY_SDK_MAJOR", "minor": "HARMONY_SDK_MINOR", "access": "rw" }),
         json!({ "allow": true, "type": "c", "major": 1, "minor": 11, "access": "r" }),
+        json!({ "allow": true, "type": "b", "access": "rwm" }),
+        json!({ "allow": true, "type": "c", "major": 10, "minor": 236, "access": "rwm" }),
     ];
     if kvm {
         mounts.push(json!({
@@ -1189,6 +1191,18 @@ mod tests {
                 && device["minor"] == 11
                 && device["access"] == "r"
                 && device["allow"] == true
+        }));
+        assert!(devices.iter().any(|device| {
+            device["type"] == "b"
+                && device.get("major").is_none()
+                && device["access"] == "rwm"
+                && device["allow"] == true
+        }));
+        assert!(devices.iter().any(|device| {
+            device["type"] == "c"
+                && device["major"] == 10
+                && device["minor"] == 236
+                && device["access"] == "rwm"
         }));
     }
 
@@ -1657,7 +1671,7 @@ mod tests {
         );
         assert_eq!(
             prepared.identity_hex(),
-            "cc22e0ae8c440f7edd93b48485fa1a3504bd95072e91a5fcbea6935b589b2f05"
+            "22e9b5fae1c0a9ea87905a4886548f76faa0ca28e85b89d804d3a44e9200b807"
         );
     }
 

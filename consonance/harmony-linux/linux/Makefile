@@ -26,13 +26,13 @@ arm64-initramfs:
 
 arm64-image: arm64-kernel arm64-initramfs
 
-# Workload-free OCI runtime artifacts. Each target requires the platform-owned
-# init and supervisor paths documented by build-oci-runtime-initramfs.sh.
-oci-runtime-image: kernel
-	./build-oci-runtime-initramfs.sh x86_64
+# Workload-free OCI runtime artifacts: the kernel, the platform init and
+# supervisor, the initramfs, the runtime fixture and the sealed manifest.
+oci-runtime-image:
+	../scripts/build-platform-runtime.sh
 
-arm64-oci-image: arm64-kernel
-	./build-oci-runtime-initramfs.sh aarch64
+arm64-oci-image:
+	../scripts/build-platform-runtime.sh
 
 # Depends on `kernel` so the documented single-command build works from a clean
 # checkout: the box check needs both bzImage and this initramfs.

@@ -52,6 +52,7 @@ pub struct KvmBackend {
     vcpu: VcpuFd,
     vm: VmFd,
     host_affinity: crate::kvm_affinity::HostAffinity,
+    affinity_watch: crate::kvm_affinity::AffinityWatch,
     run: *mut kvm_run,
     mmap_size: usize,
     xsave2_size: Option<usize>,
@@ -141,6 +142,7 @@ impl KvmBackend {
             vcpu,
             vm,
             host_affinity,
+            affinity_watch: Default::default(),
             run,
             mmap_size,
             xsave2_size,
@@ -302,7 +304,18 @@ impl KvmBackend {
     }
 
     fn ensure_host_affinity(&self) -> Result<()> {
-        crate::kvm_affinity::ensure_host_affinity(&self.host_affinity)
+        self.affinity_watch.full(
+            &self.host_affinity,
+            crate::kvm_affinity::ensure_host_affinity,
+        )
+    }
+
+    fn ensure_host_placement(&self) -> Result<()> {
+        self.affinity_watch.placement(
+            &self.host_affinity,
+            rustix::thread::sched_getcpu,
+            crate::kvm_affinity::ensure_host_affinity,
+        )
     }
 
     fn validate_host_core_class(&self, state: &VcpuState) -> Result<()> {
@@ -337,7 +350,7 @@ impl KvmBackend {
     }
 
     fn finish_staged_exit(&mut self) -> Result<Option<Exit<X86>>> {
-        self.ensure_host_affinity()?;
+        self.ensure_host_placement()?;
         self.state_mutation_guard.ensure_healthy()?;
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
@@ -396,7 +409,7 @@ impl KvmBackend {
             if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(BackendError::Internal("KVM run canceled by host"));
             }
-            self.ensure_host_affinity()?;
+            self.ensure_host_placement()?;
             match plan_irq_entry(
                 self.run_page(),
                 self.pending_irq,
@@ -1047,7 +1060,7 @@ impl Backend for KvmBackend {
     }
 
     fn inject(&mut self, event: Injection) -> Result<()> {
-        self.ensure_host_affinity()?;
+        self.ensure_host_placement()?;
         match event {
             Injection::Interrupt { vector } => {
                 self.pending_irq = Some(vector);
@@ -1058,7 +1071,7 @@ impl Backend for KvmBackend {
     }
 
     fn set_pending_irq(&mut self, vector: Option<u8>) -> Result<()> {
-        self.ensure_host_affinity()?;
+        self.ensure_host_placement()?;
         self.pending_irq = vector;
         Ok(())
     }
@@ -1068,7 +1081,7 @@ impl Backend for KvmBackend {
     }
 
     fn read_x86_regs(&mut self) -> Result<crate::VcpuRegs> {
-        self.ensure_host_affinity()?;
+        self.ensure_host_placement()?;
         self.state_mutation_guard.ensure_healthy()?;
         self.vcpu
             .get_regs()
@@ -1077,7 +1090,7 @@ impl Backend for KvmBackend {
     }
 
     fn read_x86_cpuid_state(&mut self) -> Result<crate::X86CpuidState> {
-        self.ensure_host_affinity()?;
+        self.ensure_host_placement()?;
         self.state_mutation_guard.ensure_healthy()?;
         let sregs = self.read_sregs2_guarded()?;
         let xcrs = self.vcpu.get_xcrs().map_err(kvm_err)?;
@@ -1088,7 +1101,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
-        self.ensure_host_affinity()?;
+        self.ensure_host_placement()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -1103,7 +1116,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_fault(&mut self) -> Result<()> {
-        self.ensure_host_affinity()?;
+        self.ensure_host_placement()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -1114,7 +1127,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_ok(&mut self) -> Result<()> {
-        self.ensure_host_affinity()?;
+        self.ensure_host_placement()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -1137,7 +1150,7 @@ impl Backend for KvmBackend {
     }
 
     fn finish_exit(&mut self) -> Result<Option<Exit<X86>>> {
-        self.ensure_host_affinity()?;
+        self.ensure_host_placement()?;
         if let Some(exit) = self.completion_exit.take() {
             return Ok(Some(exit));
         }
@@ -1729,7 +1742,14 @@ mod xsave_diagnostic {
             Err(BackendError::Unsupported { .. })
         ));
         backend.host_affinity = original;
-        assert_eq!(backend.save().unwrap(), before);
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Unsupported { .. })
+        ));
     }
 
     #[test]

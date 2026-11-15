@@ -1337,6 +1337,10 @@ impl StrictExecutableGuard {
         guard_work::measured(work, |_| self.check())
     }
 
+    pub fn check_code_measured(self, work: &mut GuardMeasurement) -> std::io::Result<()> {
+        self.check_measured(work)
+    }
+
     pub fn capture() -> std::io::Result<(String, Self)> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,

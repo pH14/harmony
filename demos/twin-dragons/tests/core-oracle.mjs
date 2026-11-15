@@ -16,6 +16,7 @@ const games = [
   { id: "super-mario-bros", rom: process.env.SMB_ROM || `${roms}/Super Mario Bros. (World).nes` },
   { id: "mega-man-2", rom: process.env.MM2_ROM || `${roms}/mm2.nes` },
   { id: "metroid", rom: process.env.METROID_ROM || `${roms}/Metroid (USA).nes` },
+  { id: "pac-man", rom: process.env.PAC_MAN_ROM || `${roms}/pac-man.nes` },
 ];
 const modes = [
   { name: "search", render: false, audio: false },

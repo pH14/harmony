@@ -16,7 +16,7 @@ import tarfile
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "scripts/qualification/packaged-host.json"
 FIXTURE = ROOT / "cli/tests/fixtures/packaged-host.c"
-READBACK = b"HARMONY_PACKAGED_HOST_READBACK=3cde4754b47ec325"
+READBACK = b"HARMONY_PACKAGED_HOST_READBACK=3cde4754b47ec325"  # pragma: allowlist secret
 ARCHITECTURES = {"x86_64": ("amd64", 62, "bzImage"), "aarch64": ("arm64", 183, "Image")}
 UNAVAILABLE = ("fresh-restore-equivalence", "reused-restore-equivalence", "portable-import-equivalence",
                "whole-state-equivalence", "ordered-history-equivalence", "cross-host-equivalence",
@@ -253,7 +253,7 @@ def qualify(cli_archive, runtime_archive, fixture, output):
         traces.mkdir()
         scenario = config + '[workload.options.nodes.app]\ncommand=["/app/packaged-host","node"]\n'
         current_transform = "search-worker"
-        execute([cli, "search", image, "--config-toml", scenario, "--executions", "1", "--for", "30s", "--out", output / "search"], output / "search.log", affinity, traces)
+        execute([cli, "search", image, "--config-toml", scenario, "--executions", "1", "--for", "5m", "--out", output / "search"], output / "search.log", affinity, traces)
         search = search_result(output / "search")
         search_manifest = manifest(output / "search", artifacts)
         if search_manifest["binary_identity"] != direct_manifest["binary_identity"]:

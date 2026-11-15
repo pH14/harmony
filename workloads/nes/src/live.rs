@@ -18,12 +18,12 @@ use std::{
 
 use machine::{
     MachineError,
-    nes::{ButtonChord, WRAM_SIZE, core_state, with_cartridge_ram},
+    nes::{WRAM_SIZE, core_state, with_cartridge_ram},
     quicknes::QuickNesMachine,
 };
 use nes_games::{
     arcade::{
-        ArcadeGame,
+        ArcadeGame, Machines,
         feed::{self, Batch, Feed, Note, Point, State, Stats, raw_state, run_noted},
         snapshot_digest,
         trail::Traced,
@@ -63,6 +63,7 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
     core_path: &Path,
     core_sha256: &str,
     execution_sha256: &str,
+    level: Option<u8>,
 ) -> G {
     let (machine_rom, path, sha256, execution) = (
         machine_image(rom, G::MEMORY_BYTES),
@@ -70,22 +71,23 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
         core_sha256.to_owned(),
         execution_sha256.to_owned(),
     );
-    G::arcade(
-        rom,
-        &machine::quicknes::core_identity(),
-        &native_identity_sha256(core_sha256, execution_sha256),
-        Arc::new(move || {
-            Ok(Traced::new(
-                QuickNesMachine::from_rom_bytes_with_identity(
-                    machine_rom.as_ref().map_err(Clone::clone)?,
-                    &path,
-                    &sha256,
-                    &execution,
-                )?,
-                G::probe(),
-            ))
-        }),
-    )
+    let machines: Machines<NativeMachine> = Arc::new(move || {
+        Ok(Traced::new(
+            QuickNesMachine::from_rom_bytes_with_identity(
+                machine_rom.as_ref().map_err(Clone::clone)?,
+                &path,
+                &sha256,
+                &execution,
+            )?,
+            G::probe(),
+        ))
+    });
+    let core = machine::quicknes::core_identity();
+    let identity = native_identity_sha256(core_sha256, execution_sha256);
+    match level {
+        Some(level) => G::arcade_from(rom, &core, &identity, machines, level),
+        None => G::arcade(rom, &core, &identity, machines),
+    }
 }
 
 fn machine_image(rom: &[u8], memory_bytes: usize) -> std::result::Result<Vec<u8>, MachineError> {
@@ -132,19 +134,22 @@ fn lock<V>(shared: &Mutex<Shared<V>>) -> MutexGuard<'_, Shared<V>> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-struct Found<V> {
+struct Found<V, A> {
     id: u64,
     observation: Option<V>,
     digest: Option<u64>,
     frames_at: Option<u64>,
-    input: Vec<ButtonChord>,
+    input: Vec<A>,
     packed: Option<Vec<u8>>,
 }
 
-struct Lookup<V> {
+struct Lookup<V, A> {
     ids: Vec<u64>,
-    reply: Sender<Vec<Found<V>>>,
+    reply: Sender<Vec<Found<V, A>>>,
 }
+
+type GameLookup<G> =
+    Lookup<<G as ArcadeGame>::View, <G as nes_games::search::campaign::CampaignTypes>::Action>;
 
 enum Event {
     Ready(Arc<str>),
@@ -157,7 +162,7 @@ pub struct LiveWatch<G: ArcadeGame> {
     workload: Arc<G>,
     shared: SharedFeed<G::View>,
     events: Sender<Event>,
-    lookups: Mutex<Option<Receiver<Lookup<G::View>>>>,
+    lookups: Mutex<Option<Receiver<GameLookup<G>>>>,
     pending_lookups: Arc<AtomicUsize>,
     observe: Observe<G::View>,
     game: String,
@@ -229,7 +234,7 @@ fn live_state<G: ArcadeGame>(
     workload: &G,
     id: u64,
     view: G::View,
-    input: &[ButtonChord],
+    input: &[G::Action],
     frames: Option<u64>,
     genesis: &mut Option<usize>,
 ) -> Result<State<G::View>> {
@@ -899,7 +904,7 @@ fn site_file(site: &Path, target: &str) -> Option<PathBuf> {
 
 struct Server<G: ArcadeGame> {
     events: Sender<Event>,
-    lookups: Sender<Lookup<G::View>>,
+    lookups: Sender<GameLookup<G>>,
     pending_lookups: Arc<AtomicUsize>,
     site: Option<PathBuf>,
     workload: Arc<G>,
@@ -909,7 +914,7 @@ struct Server<G: ArcadeGame> {
 }
 
 impl<G: ArcadeGame> Server<G> {
-    fn lookup(&self, ids: Vec<u64>) -> Option<Vec<Found<G::View>>> {
+    fn lookup(&self, ids: Vec<u64>) -> Option<Vec<Found<G::View, G::Action>>> {
         let (reply, answer) = mpsc::channel();
         self.pending_lookups.fetch_add(1, Ordering::Relaxed);
         if self.lookups.send(Lookup { ids, reply }).is_err() {
@@ -1178,7 +1183,13 @@ where
         view: G::memory_view,
     };
     watched.evaluate(
-        native_game::<G>(rom, &request.core, &request.core_sha256, &execution_sha256),
+        native_game::<G>(
+            rom,
+            &request.core,
+            &request.core_sha256,
+            &execution_sha256,
+            request.stage,
+        ),
         G::run(),
         |game, run, watch| evaluate(game, run, request, &execution_sha256, watch),
     )

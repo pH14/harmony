@@ -372,6 +372,7 @@ pub(crate) struct Contract {
     pub vtime_time_read_vns: i64,
     pub vtime_arch_control_vns: i64,
     pub vtime_execution_tick_vns: i64,
+    pub vtime_coverage_callback_vns: i64,
     pub vtime_clockevent_period_vns: i64,
     pub cpuid: Vec<CpuidRow>,
     pub msr: Vec<MsrRow>,
@@ -625,6 +626,10 @@ impl Contract {
                 .unwrap_or_default(),
             vtime_execution_tick_vns: c
                 .get("vtime-execution-tick-vns")
+                .map(TomlValue::as_int)
+                .unwrap_or_default(),
+            vtime_coverage_callback_vns: c
+                .get("vtime-coverage-callback-vns")
                 .map(TomlValue::as_int)
                 .unwrap_or_default(),
             vtime_clockevent_period_vns: c

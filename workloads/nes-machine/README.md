@@ -51,15 +51,32 @@ resulting mapped images satisfy that policy. The image census is intentionally
 conservative: an unrelated third-party module in the process also prevents
 native QuickNES admission.
 
-Native calls also check the loader's cumulative image additions and removals
-before and after each libretro operation. Private core loads and closes advance
-one shared approved generation only for persistent images; any other loader
-event, including a helper loaded and unloaded within one frame, rejects the
-operation and later native calls. A first core may load system dependencies
-before any worker is active, and its prepared execution identity binds those
-mapped images. This guard covers loader-managed images. Anonymous executable
-mappings and writes to executable mappings are tracked separately in
-[issue #679](https://github.com/pH14/harmony/issues/679).
+Private core loads and closes check the loader's cumulative image additions,
+removals and visible image count before and after the load or close, under one
+process-wide lock, and advance one shared approved generation only for
+persistent images; any other loader event between two of these checks rejects
+the operation and poisons the guard. Every core teardown, on normal drop or
+after a failed operation, makes the same check. Every other libretro call
+reads one atomic status word before and after the call and refuses when the
+guard is unregistered or poisoned; it takes no lock and does not walk the
+loader, because a Metroid search makes about three such calls per emulated
+frame on every worker and the earlier per-call walk through `dl_iterate_phdr`
+under glibc's loader lock cost 4% of worker CPU and most of the workers'
+context switches. The exposure window is the span between one lifecycle check
+and the next: a library loaded or unloaded through the dynamic loader after a
+worker's identity census and before its next core open, close or teardown is
+undetected while it is mapped, and frames run and snapshots taken inside that
+span are accepted. The loader's cumulative addition and removal counters
+record the event even after the library is unloaded, so the next lifecycle
+check in the process poisons the guard, every later libretro call refuses,
+and no further private core opens. `QuickNesMachine::close` runs the
+teardown and the library close and returns that failure; a machine that is
+dropped instead keeps the poisoned status and the refusal surfaces on the
+next call or open in the process. Code that enters the process without the dynamic
+loader is outside both the old and the new check and is the subject of
+[issue #679](https://github.com/pH14/harmony/issues/679). A first core may
+load system dependencies before any worker is active, and its prepared
+execution identity binds those mapped images.
 
 `scripts/build-quicknes-core.sh` patches the pinned core to skip idle loops.
 NES games spend much of each frame in a loop that waits for the next
@@ -79,6 +96,48 @@ four-screen cartridge such as Famidash saves 4 KiB of nametables, and the
 pinned reader fails on the second half of that block, so such states could not
 be restored. The patched reader reads the block in one call. States of other
 cartridges read the same bytes as before.
+
+A third patch changes how the CPU dispatches instructions. The pinned core
+dispatches every 6502 instruction through one `switch`, so the host branch
+predictor sees a single indirect jump and misses about once every four
+instructions. The patched core jumps through a table of handler addresses and
+repeats that jump at the end of every handler, so each handler has its own
+prediction history. GCC merges those copies back unless cross-jumping and GCSE
+are off, so the patched file turns both off. Operand reads from RAM and ROM
+index memory directly instead of calling the read function. Emulated state and
+timing are unchanged. The patch is about 1.08x faster on a Metroid tape built
+with gcc 11, and the core produces the same bytes on every frame.
+
+A fourth patch keeps the CPU clock in a local variable on x86, as the core
+already does on other targets, and writes it back when `run` returns. The x86
+build otherwise loads and stores the clock field on every instruction. It adds
+about 1.03x on the same tape, with identical frames.
+
+A fifth patch lets the CPU run code translated ahead of time.
+`scripts/quicknes-translate.py` turns the most executed instructions of a ROM
+into C++ blocks that are compiled into `run`. It reads them from a profile in
+`quicknes-profiles/`, which lists the ROM's SHA-256 and then one line per
+instruction: CPU address, PRG offset and execution count. The ROM itself is
+needed at build time, so `scripts/build-quicknes-core.sh` translates only the
+ROMs named in `HARMONY_QUICKNES_ROMS`. A core built without a matching ROM runs
+the interpreter alone. At run time the core picks the blocks for the loaded
+cartridge by a hash of its PRG data. The interpreter enters a block at jumps,
+calls, returns and branches. Each block checks that the bank it was translated
+from is mapped and that its instructions all start before `clock_limit`, and
+checks again after any access that can reach a mapper or an I/O register. If a
+check fails, the interpreter runs from that instruction. Instruction bodies,
+cycle counts, dummy reads and the effect count follow the interpreter, so
+frames and timing match. Interrupt-flag changes, `BRK`, `RTI`, indirect jumps
+and unofficial opcodes always run in the interpreter.
+
+To profile a ROM, build with `HARMONY_QUICKNES_PROFILE=1` and run the core with
+`HARMONY_QUICKNES_PROFILE_DIR` set. The core writes per-thread counts there.
+`scripts/quicknes-translate.py profile ROM OUT DUMP...` merges them and keeps
+the 6,000 most executed instructions. The committed profiles for Metroid,
+Punch-Out, Castlevania and Zelda come from recorded runs and short searches.
+A profile sets only speed: frames match the interpreter for any input. Compile
+time grows faster than the number of sets. One set compiles in about a minute
+with GCC 11, and three sets take about 15 minutes.
 
 Snapshots contain a format marker, the QuickNES revision, core hash, prepared
 execution hash, fixed serialized-state length, and canonicalized core state.

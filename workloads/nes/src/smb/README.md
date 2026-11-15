@@ -21,6 +21,21 @@ chord from that starting state up to the stop frame, so the snapshot holds the
 state Mario died or won in. A viability probe runs its frames the same way and
 then returns the machine to the state it started from.
 
+A state is doomed when Mario has fallen a block below the ground line over
+open floor with no lift in play: the player has control (`$0E` = 8), he is
+jumping or falling (`$1D`), not swimming (`$0704`), on the play-area page
+(`$B5` = 1), his height `$CE` is at least one 16-pixel block below the
+standing height on the floor rows (`$B0`), he is not rising (`$9F`), the two
+floor rows of the block buffer (rows 11 and 12 at `$0500` and `$05D0`) under
+both his foot columns hold no metatile his feet land on, and no active enemy
+slot (`$0F` to `$13`, IDs at `$16` to `$1A`) holds a lift (`$24` to `$2C`)
+or a jump spring (`$32`). The game lands his feet on any metatile but blank,
+the vine blank `$26`, the coins `$C2` and `$C3` and the hidden blocks `$5F`
+and `$60`, and it still lands feet a few pixels into a ledge, which is why
+the depth is a full block. Lifts move through pits and catch a falling
+Mario below the ground line. The check reads only the action's last frame. A
+doomed state ends the job like a death and is never kept.
+
 A job's length comes from its parent's earlier jobs. A parent's first job runs
 one chord, and each job that keeps no state and stays in the parent's place
 doubles the next one, up to 64 chords. SMB has stretches where the key does not

@@ -14,14 +14,30 @@ pub struct HookSpec {
     pub argv: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiskSpec {
+    pub node: u16,
+    pub path: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogSpec {
+    pub node: u16,
+    pub path: String,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Bundle {
     pub nodes: Vec<NodeSpec>,
     pub hooks: Vec<HookSpec>,
+    pub disks: Vec<DiskSpec>,
+    pub logs: Vec<LogSpec>,
     pub ready: Option<Vec<String>>,
     pub setup: Option<Vec<String>>,
     pub workload: Option<Vec<String>>,
     pub check: Option<Vec<String>>,
+    pub heal: Option<u32>,
 }
 
 impl Bundle {
@@ -31,6 +47,11 @@ impl Bundle {
             .binary_search_by_key(&id, |hook| hook.id)
             .ok()
             .map(|index| &self.hooks[index])
+    }
+
+    #[must_use]
+    pub fn disk(&self, node: u16) -> Option<&DiskSpec> {
+        self.disks.iter().find(|disk| disk.node == node)
     }
 }
 
@@ -58,6 +79,10 @@ pub enum BundleError {
     DuplicateWorkload { line: usize },
     #[error("line {line}: a second check command")]
     DuplicateCheck { line: usize },
+    #[error("line {line}: a second heal hook")]
+    DuplicateHeal { line: usize },
+    #[error("line {line}: heal names undeclared hook {id}")]
+    HealHook { line: usize, id: u32 },
     #[error("line {line}: unterminated quote")]
     UnterminatedQuote { line: usize },
     #[error("line {line}: a command word contains NUL")]
@@ -66,10 +91,32 @@ pub enum BundleError {
     TooManyNodes { line: usize },
     #[error("the bundle declares no node")]
     NoNodes,
+    #[error("line {line}: disk names undeclared node {name:?}")]
+    DiskNode { line: usize, name: String },
+    #[error("line {line}: node {name:?} already has a disk")]
+    DuplicateDisk { line: usize, name: String },
+    #[error("line {line}: disk path {path:?} is not absolute")]
+    DiskPath { line: usize, path: String },
+    #[error(
+        "line {line}: disk size {size:?} is not a multiple of 4K from 16M through {}M",
+        crate::disk::MAX_DISK_BYTES >> 20
+    )]
+    DiskSize { line: usize, size: String },
+    #[error("line {line}: more than {} disks", crate::disk::MAX_DISKS)]
+    TooManyDisks { line: usize },
+    #[error("line {line}: disk flag {word:?} is not \"checksummed\"")]
+    DiskFlag { line: usize, word: String },
+    #[error("line {line}: log names undeclared node {name:?}")]
+    LogNode { line: usize, name: String },
+    #[error("line {line}: log path {path:?} is not absolute")]
+    LogPath { line: usize, path: String },
 }
 
 pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
     let mut bundle = Bundle::default();
+    let mut disks = Vec::new();
+    let mut logs = Vec::new();
+    let mut heal = None;
     for (index, raw) in text.lines().enumerate() {
         let line = index + 1;
         let trimmed = raw.trim();
@@ -85,6 +132,35 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
         match item.as_str() {
             "node" => parse_node(&mut bundle, line, words)?,
             "hook" => parse_hook(&mut bundle, line, words)?,
+            "disk" => {
+                let mut words: Vec<String> = words.collect();
+                if words.len() > 3 {
+                    let flags = words.split_off(3);
+                    if flags != ["checksummed"] {
+                        return Err(BundleError::DiskFlag {
+                            line,
+                            word: flags.join(" "),
+                        });
+                    }
+                }
+                let [node, path, size] =
+                    <[String; 3]>::try_from(words).map_err(|words| BundleError::Incomplete {
+                        line,
+                        item: "disk",
+                        need: 3_usize.saturating_sub(words.len()),
+                    })?;
+                disks.push((line, node, path, size));
+            }
+            "log" => {
+                let words: Vec<String> = words.collect();
+                let [node, path] =
+                    <[String; 2]>::try_from(words).map_err(|words| BundleError::Incomplete {
+                        line,
+                        item: "log",
+                        need: 2_usize.saturating_sub(words.len()),
+                    })?;
+                logs.push((line, node, path));
+            }
             "ready" => {
                 let argv: Vec<String> = words.collect();
                 validate_words(line, &argv)?;
@@ -143,14 +219,84 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
                 }
                 bundle.check = Some(argv);
             }
+            "heal" => {
+                let words: Vec<String> = words.collect();
+                let [word] =
+                    <[String; 1]>::try_from(words).map_err(|_| BundleError::Incomplete {
+                        line,
+                        item: "heal",
+                        need: 1,
+                    })?;
+                let id = word
+                    .parse::<u32>()
+                    .map_err(|_| BundleError::BadHookId { line, word })?;
+                if heal.is_some() {
+                    return Err(BundleError::DuplicateHeal { line });
+                }
+                heal = Some((line, id));
+            }
             _ => return Err(BundleError::UnknownItem { line, word: item }),
         }
     }
     if bundle.nodes.is_empty() {
         return Err(BundleError::NoNodes);
     }
+    if let Some((line, id)) = heal {
+        if !bundle.hooks.iter().any(|hook| hook.id == id) {
+            return Err(BundleError::HealHook { line, id });
+        }
+        bundle.heal = Some(id);
+    }
+    for (line, name, path, size) in disks {
+        parse_disk(&mut bundle, line, name, path, size)?;
+    }
+    for (line, name, path) in logs {
+        let Some(node) = bundle
+            .nodes
+            .iter()
+            .position(|node| node.name == name)
+            .and_then(|index| u16::try_from(index).ok())
+        else {
+            return Err(BundleError::LogNode { line, name });
+        };
+        if !path.starts_with('/') || path.contains('\0') {
+            return Err(BundleError::LogPath { line, path });
+        }
+        bundle.logs.push(LogSpec { node, path });
+    }
     bundle.hooks.sort_by_key(|hook| hook.id);
     Ok(bundle)
+}
+
+fn parse_disk(
+    bundle: &mut Bundle,
+    line: usize,
+    name: String,
+    path: String,
+    size: String,
+) -> Result<(), BundleError> {
+    let Some(node) = bundle
+        .nodes
+        .iter()
+        .position(|node| node.name == name)
+        .and_then(|index| u16::try_from(index).ok())
+    else {
+        return Err(BundleError::DiskNode { line, name });
+    };
+    if bundle.disk(node).is_some() {
+        return Err(BundleError::DuplicateDisk { line, name });
+    }
+    if !path.starts_with('/') || path.contains('\0') {
+        return Err(BundleError::DiskPath { line, path });
+    }
+    let Some(bytes) = crate::disk::parse_size(&size) else {
+        return Err(BundleError::DiskSize { line, size });
+    };
+    if bundle.disks.len() == crate::disk::MAX_DISKS {
+        return Err(BundleError::TooManyDisks { line });
+    }
+    bundle.disks.push(DiskSpec { node, path, bytes });
+    Ok(())
 }
 
 fn parse_node(
@@ -304,6 +450,25 @@ ready /usr/bin/servicectl endpoint health
     }
 
     #[test]
+    fn a_heal_line_names_one_declared_hook() {
+        let bundle = parse_bundle("node a /a\nhook 1 /cut\nhook 4 /heal\nheal 4\n").unwrap();
+        assert_eq!(bundle.heal, Some(4));
+        assert_eq!(parse_bundle("node a /a\nhook 1 /cut\n").unwrap().heal, None);
+        assert_eq!(
+            parse_bundle("node a /a\nhook 1 /cut\nheal 4\n"),
+            Err(BundleError::HealHook { line: 3, id: 4 })
+        );
+        assert_eq!(
+            parse_bundle("node a /a\nhook 4 /heal\nheal 4\nheal 4\n"),
+            Err(BundleError::DuplicateHeal { line: 4 })
+        );
+        assert!(matches!(
+            parse_bundle("node a /a\nhook 4 /heal\nheal 4 5\n"),
+            Err(BundleError::Incomplete { line: 3, .. })
+        ));
+    }
+
+    #[test]
     fn a_setup_line_is_kept_whole_and_declared_once() {
         let bundle = parse_bundle(
             "setup /bin/sh -c \"mount -t tmpfs shm /dev/shm; ip link set lo up\"\nnode a /a\n",
@@ -365,6 +530,133 @@ check /bin/check --json
                 item: "check",
                 need: 1,
             })
+        );
+    }
+
+    #[test]
+    fn a_disk_line_gives_a_declared_node_its_own_filesystem() {
+        let bundle =
+            parse_bundle("node a /a\ndisk b /data/b 64M\nnode b /b\ndisk a /data/a 1G\n").unwrap();
+        assert_eq!(
+            bundle.disks,
+            [
+                DiskSpec {
+                    node: 1,
+                    path: "/data/b".to_owned(),
+                    bytes: 64 << 20,
+                },
+                DiskSpec {
+                    node: 0,
+                    path: "/data/a".to_owned(),
+                    bytes: 1 << 30,
+                },
+            ]
+        );
+        assert_eq!(bundle.disk(0).map(|disk| disk.bytes), Some(1 << 30));
+        assert_eq!(bundle.disk(2), None);
+        let error = |text: &str| parse_bundle(text).unwrap_err();
+        assert_eq!(
+            error("node a /a\ndisk z /d 64M\n"),
+            BundleError::DiskNode {
+                line: 2,
+                name: "z".to_owned(),
+            }
+        );
+        assert_eq!(
+            error("node a /a\ndisk a /d 64M\ndisk a /e 64M\n"),
+            BundleError::DuplicateDisk {
+                line: 3,
+                name: "a".to_owned(),
+            }
+        );
+        assert_eq!(
+            error("node a /a\ndisk a d 64M\n"),
+            BundleError::DiskPath {
+                line: 2,
+                path: "d".to_owned(),
+            }
+        );
+        for size in ["8M", "2G", "64", "64X", "", "65537K"] {
+            assert!(
+                matches!(
+                    parse_bundle(&format!("node a /a\ndisk a /d \"{size}\"\n")),
+                    Err(BundleError::DiskSize { line: 2, .. })
+                ),
+                "{size}"
+            );
+        }
+        assert_eq!(
+            error("node a /a\ndisk a /d\n"),
+            BundleError::Incomplete {
+                line: 2,
+                item: "disk",
+                need: 1,
+            }
+        );
+        assert_eq!(
+            parse_bundle("node a /a\ndisk a /d 16M checksummed\n")
+                .unwrap()
+                .disk(0)
+                .map(|disk| disk.bytes),
+            Some(16 << 20)
+        );
+        assert_eq!(
+            error("node a /a\ndisk a /d 16M fast\n"),
+            BundleError::DiskFlag {
+                line: 2,
+                word: "fast".to_owned(),
+            }
+        );
+        assert_eq!(
+            error("node a /a\ndisk a /d 16M checksummed extra\n"),
+            BundleError::DiskFlag {
+                line: 2,
+                word: "checksummed extra".to_owned(),
+            }
+        );
+        let mut text = String::new();
+        for index in 0..=crate::disk::MAX_DISKS {
+            text.push_str(&format!("node n{index} /x\ndisk n{index} /d{index} 16M\n"));
+        }
+        assert_eq!(
+            error(&text),
+            BundleError::TooManyDisks {
+                line: 2 * crate::disk::MAX_DISKS + 2
+            }
+        );
+    }
+
+    #[test]
+    fn log_lines_name_a_declared_node_and_an_absolute_path() {
+        let bundle = parse_bundle("log b /tmp/b.log\nnode a /a\nnode b /b\n").unwrap();
+        assert_eq!(
+            bundle.logs,
+            [LogSpec {
+                node: 1,
+                path: "/tmp/b.log".to_owned(),
+            }]
+        );
+        assert_eq!(
+            parse_bundle("node a /a\nlog c /c.log\n").unwrap_err(),
+            BundleError::LogNode {
+                line: 2,
+                name: "c".to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_bundle("node a /a\nlog a a.log\n").unwrap_err(),
+            BundleError::LogPath {
+                line: 2,
+                path: "a.log".to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_bundle("node a /a\nlog a\n").unwrap_err(),
+            BundleError::Incomplete {
+                line: 2,
+                item: "log",
+                need: 1,
+            }
         );
     }
 

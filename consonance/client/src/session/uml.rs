@@ -19,7 +19,7 @@ use uml::{Bridge, Capture, Checkpoint, Checkpoints, Launch, Stop, VerifiedProfil
 use super::{
     CachedSnapshotReceipt, SdkEvent, SearchSession, SessionError, SnapshotAttachment, UmlLaunch,
 };
-use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
+use crate::cache::extent::{encode, read_extent, resolve};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
 
 mod endpoint;
@@ -146,7 +146,6 @@ pub struct UmlSession {
     profile: Option<VerifiedProfile>,
     launch: Launch,
     host: uml::HostIdentity,
-    seed: u64,
     root_identity: [u8; 32],
     cache_domain: [u8; 32],
     progress_limit: Duration,
@@ -285,7 +284,6 @@ impl UmlSession {
             profile: Some(profile),
             launch,
             host,
-            seed: config.seed,
             root_identity,
             cache_domain: [0; 32],
             progress_limit: config.progress_limit,
@@ -599,10 +597,9 @@ impl SearchSession for UmlSession {
         let extent = self
             .checkpoints
             .full(target, |pages| -> Result<_, Box<dyn Error>> {
-                let len = extent_len(pages.len(), 0, sidecar.len())
-                    .ok_or_else(|| SessionError::Portable("root snapshot size overflows".into()))?;
-                let mut extent = index.extent(len)?;
-                write_extent(extent.bytes_mut(), pages, &[], &sidecar)?;
+                let encoded = encode(pages, &[], &sidecar)?;
+                let mut extent = index.extent(encoded.len())?;
+                encoded.write(extent.bytes_mut())?;
                 Ok(extent)
             })??;
         self.loaded_image_guard.check()?;
@@ -635,9 +632,9 @@ impl SearchSession for UmlSession {
             .snapshots
             .get(&self.setup.0)
             .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
-        let imported = self
-            .checkpoints
-            .import_full(near, &resolved.pages, sidecar, &self.factory);
+        let imported =
+            self.checkpoints
+                .import_full(near, &resolved.pages(), sidecar, &self.factory);
         self.verify_live_service_fingerprint(before.as_ref())?;
         let checkpoint = imported?;
         if target_commitment(self.root_identity, &checkpoint)? != index.target_commitment(lease)? {
@@ -740,12 +737,9 @@ impl SearchSession for UmlSession {
             parent_checkpoint,
             target_checkpoint,
             |pages, reverted| -> Result<_, Box<dyn Error>> {
-                let len =
-                    extent_len(pages.len(), reverted.len(), sidecar.len()).ok_or_else(|| {
-                        SessionError::Portable("snapshot delta size overflows".into())
-                    })?;
-                let mut extent = index.extent(len)?;
-                write_extent(extent.bytes_mut(), pages, reverted, &sidecar)?;
+                let encoded = encode(pages, reverted, &sidecar)?;
+                let mut extent = index.extent(encoded.len())?;
+                encoded.write(extent.bytes_mut())?;
                 Ok(extent)
             },
         )??;
@@ -812,7 +806,7 @@ impl SearchSession for UmlSession {
         let imported = self.checkpoints.import(
             setup,
             near,
-            &resolved.pages,
+            &resolved.pages(),
             resolved.sidecar,
             &self.factory,
         );
@@ -857,6 +851,7 @@ impl SearchSession for UmlSession {
     fn branch_with_service(
         &mut self,
         snapshot: SnapId,
+        seed: u64,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
@@ -875,7 +870,6 @@ impl SearchSession for UmlSession {
         self.verify_live_service_fingerprint(Some(&before))?;
         let handler = prepared?;
         self.restore(snapshot)?;
-        let seed = self.seed;
         self.live()?
             .branch(seed, handler, payloads, coverage_schedule)
             .map_err(|error| self.abandon(error))?;
@@ -1005,7 +999,6 @@ mod tests {
             profile: None,
             launch: Launch::new(PathBuf::new()),
             host: host(),
-            seed: 7,
             root_identity: [7; 32],
             cache_domain: [9; 32],
             progress_limit: Duration::ZERO,
@@ -1027,8 +1020,9 @@ mod tests {
         let (pending, token) = crate::endpoint::tests::pending_state();
         session.endpoint_state = pending;
         let index = LocalIndex::new(1 << 20);
-        let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
-        write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+        let encoded = encode(&[], &[], &[]).unwrap();
+        let mut extent = index.extent(encoded.len()).unwrap();
+        encoded.write(extent.bytes_mut()).unwrap();
         let lease = index
             .publish(
                 Namespace::new(&[b"pending-root"]),
@@ -1504,6 +1498,7 @@ mod tests {
         session
             .branch_with_service(
                 SnapId(1),
+                0,
                 ServiceConfig::default(),
                 Vec::new(),
                 Vec::new(),
@@ -1516,6 +1511,7 @@ mod tests {
         let error = session
             .branch_with_service(
                 SnapId(1),
+                0,
                 ServiceConfig::default(),
                 vec![vec![0; environment::channel::MAX_CHANNEL_BYTES + 1]],
                 Vec::new(),
@@ -1692,6 +1688,7 @@ mod tests {
                 });
                 session.branch_with_service(
                     SnapId(1),
+                    0,
                     ServiceConfig {
                         local_services: Vec::new(),
                         identity: b"aliased-uml-handler".to_vec(),
@@ -1745,9 +1742,9 @@ mod tests {
         } else {
             [0; 32]
         };
-        let len = extent_len(0, 0, sidecar.len()).unwrap();
-        let mut extent = index.extent(len).unwrap();
-        write_extent(extent.bytes_mut(), &[], &[], &sidecar).unwrap();
+        let encoded = encode(&[], &[], &sidecar).unwrap();
+        let mut extent = index.extent(encoded.len()).unwrap();
+        encoded.write(extent.bytes_mut()).unwrap();
         index
             .publish(Namespace::new(&[b"test"]), key, None, extent, commitment, 1)
             .unwrap()
@@ -1857,9 +1854,9 @@ while True:
         };
         let raw = cache_sidecar(session.cache_domain, b"checkpoint").unwrap();
         let sidecar = super::super::attachment::encode(&raw, [7; 32], &attachment).unwrap();
-        let len = extent_len(0, 0, sidecar.len()).unwrap();
-        let mut extent = index.extent(len).unwrap();
-        write_extent(extent.bytes_mut(), &[], &[], &sidecar).unwrap();
+        let encoded = encode(&[], &[], &sidecar).unwrap();
+        let mut extent = index.extent(encoded.len()).unwrap();
+        encoded.write(extent.bytes_mut()).unwrap();
         let lease = index
             .publish(
                 Namespace::new(&[b"test"]),

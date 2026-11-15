@@ -810,10 +810,11 @@ mod tests {
         let checkpoints = Checkpoints::new();
         let base = snapshot(&checkpoints, None, &[(0, 1)], 20);
         let mut tip = base.share();
+        let mut links = Vec::new();
         for step in 0..MAX_CHAIN_LEN {
             let gfn = 1 + u64::from(step % 3);
             let next = snapshot(&checkpoints, Some(&tip), &[(gfn, step as u8 + 2)], 20);
-            tip = next;
+            links.push(std::mem::replace(&mut tip, next));
         }
         let chain = checkpoints
             .held()

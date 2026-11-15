@@ -37,7 +37,7 @@ try {
         postMessage(data,...rest){if(data.type==='states'&&data.request>0)window.lastStateRequest=data.ids;super.postMessage(data,...rest);}
       };
     },TOUR_KEY);
-    await page.goto(`${(process.env.DEMO_URL||'http://127.0.0.1:4173').replace(/\/$/,'')}/?level=0&pace=0`);
+    await page.goto(`${(process.env.DEMO_URL||'http://127.0.0.1:4173').replace(/\/$/,'')}/?game=twin-dragons&level=0&pace=0`);
     await page.waitForFunction(()=>document.querySelector('#new-search')?.disabled===false);
     let panned=0;
     for(const level of [0,1,2]) {

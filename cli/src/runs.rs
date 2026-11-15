@@ -64,6 +64,27 @@ fn generated_name() -> Result<String> {
 }
 
 impl Destination {
+    #[cfg(feature = "frontend")]
+    pub fn pinned(&self) -> Result<Self> {
+        if self.out.is_some() || self.name.is_some() {
+            return Ok(self.clone());
+        }
+        Ok(Self {
+            name: Some(generated_name()?),
+            out: None,
+        })
+    }
+
+    #[cfg(feature = "frontend")]
+    #[must_use]
+    pub fn path(&self) -> Option<PathBuf> {
+        self.out.clone().or_else(|| {
+            self.name
+                .as_ref()
+                .map(|name| PathBuf::from(".harmony/runs").join(name))
+        })
+    }
+
     pub fn create(&self) -> Result<PathBuf> {
         let path = if let Some(path) = &self.out {
             path.clone()

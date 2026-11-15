@@ -72,7 +72,7 @@ RUN go install "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-to
 COPY workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch \
      /build/antithesis-sdk-go-v0.8.0-linux-arm64.patch
 COPY workloads/languages/go/antithesis-go-toolexec-v0.8.0-stdlib.patch /build/stdlib.patch
-COPY workloads/languages/go/configure-stdlib.sh /build/configure-stdlib.sh
+COPY workloads/languages/go/configure-instrumentation.sh /build/configure-instrumentation.sh
 
 RUN sdk_cache_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
     && test -d "${sdk_cache_dir}" \
@@ -93,7 +93,7 @@ RUN mkdir -p /out/etcd /out/symbols /out/stdlib \
     && test -d "${sdk_dir}" \
     && (cd /build/etcd/server \
         && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
-           bash /build/configure-stdlib.sh "${sdk_dir}" go.etcd.io/etcd /out/stdlib > /out/stdlib/instrumentation.env \
+           bash /build/configure-instrumentation.sh "${sdk_dir}" /out/stdlib . > /out/stdlib/instrumentation.env \
         && source /out/stdlib/instrumentation.env \
         && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
            ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \

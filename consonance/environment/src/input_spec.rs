@@ -63,7 +63,7 @@ pub fn nominal_factory() -> ServiceFactory {
         Ok(Box::new(NominalHandler))
     })
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct InputSpec {
     seed: u64,
     config: ServiceConfig,
@@ -73,12 +73,26 @@ pub struct InputSpec {
     coverage_schedule: Option<CoverageSchedule>,
     answers: BTreeMap<(u64, u16, u64), Answer>,
     request_bindings: BTreeMap<(u64, u16, u64), [u8; 32]>,
+    encoded_len: usize,
 }
+impl PartialEq for InputSpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.seed == other.seed
+            && self.config == other.config
+            && self.effects == other.effects
+            && self.reseeds == other.reseeds
+            && self.payloads == other.payloads
+            && self.coverage_schedule == other.coverage_schedule
+            && self.answers == other.answers
+            && self.request_bindings == other.request_bindings
+    }
+}
+impl Eq for InputSpec {}
 impl InputSpec {
     pub const BLOB_VERSION: u16 = 8;
     pub const MAX_REPRODUCER_BYTES: usize = MAX_RECORDED_STATE_BYTES - MAX_CHANNEL_BYTES;
     pub fn seeded(seed: u64) -> Self {
-        Self {
+        let mut spec = Self {
             seed,
             config: ServiceConfig::default(),
             effects: BTreeMap::new(),
@@ -87,7 +101,10 @@ impl InputSpec {
             coverage_schedule: None,
             answers: BTreeMap::new(),
             request_bindings: BTreeMap::new(),
-        }
+            encoded_len: 0,
+        };
+        spec.encoded_len = spec.computed_len();
+        spec
     }
     pub fn seed(&self) -> u64 {
         self.seed
@@ -96,6 +113,7 @@ impl InputSpec {
         &self.config
     }
     pub fn set_config(&mut self, config: ServiceConfig) {
+        self.encoded_len = self.encoded_len - config_len(&self.config) + config_len(&config);
         self.config = config;
     }
     pub fn effects(&self) -> &BTreeMap<u64, Effect> {
@@ -108,19 +126,28 @@ impl InputSpec {
         self.payloads.as_deref()
     }
     pub fn set_payloads(&mut self, payloads: Option<Vec<Vec<u8>>>) {
+        self.encoded_len = self.encoded_len - payloads_len(self.payloads.as_deref())
+            + payloads_len(payloads.as_deref());
         self.payloads = payloads;
     }
     pub fn coverage_schedule(&self) -> Option<&CoverageSchedule> {
         self.coverage_schedule.as_ref()
     }
     pub fn set_coverage_schedule(&mut self, schedule: Option<CoverageSchedule>) {
+        self.encoded_len = self.encoded_len - schedule_len(self.coverage_schedule.as_ref())
+            + schedule_len(schedule.as_ref());
         self.coverage_schedule = schedule;
     }
     pub fn record_reseed(&mut self, at: u64, seed: u64) {
-        self.reseeds.insert(at, seed);
+        if self.reseeds.insert(at, seed).is_none() {
+            self.encoded_len += RESEED_ENTRY_LEN;
+        }
     }
     pub fn record_effect(&mut self, at: u64, effect: Effect) {
-        self.effects.insert(at, effect);
+        self.encoded_len += effect_entry_len(&effect);
+        if let Some(previous) = self.effects.insert(at, effect) {
+            self.encoded_len -= effect_entry_len(&previous);
+        }
     }
     pub fn answers(&self) -> &BTreeMap<(u64, u16, u64), Answer> {
         &self.answers
@@ -142,8 +169,12 @@ impl InputSpec {
             return Err(ChannelError::TooLarge);
         }
         let key = (at, service, request);
-        self.answers.insert(key, answer);
-        self.request_bindings.remove(&key);
+        self.encoded_len += answer_entry_len(&answer, false);
+        let previous = self.answers.insert(key, answer);
+        let was_bound = self.request_bindings.remove(&key).is_some();
+        if let Some(previous) = previous {
+            self.encoded_len -= answer_entry_len(&previous, was_bound);
+        }
         Ok(())
     }
     pub fn record_bound_answer(
@@ -157,7 +188,66 @@ impl InputSpec {
         self.record_answer(at, service, request, answer)?;
         self.request_bindings
             .insert((at, service, request), request_sha256);
+        self.encoded_len += Sha256::output_size();
         Ok(())
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        self.encoded_len
+    }
+
+    pub fn projected_reproducer_len_with_binding_reserve(
+        &self,
+        effects: &BTreeMap<u64, Effect>,
+        reseeds: &BTreeMap<u64, u64>,
+        key: (u64, u16, u64),
+        answer: &Answer,
+    ) -> Result<usize, ChannelError> {
+        if answer
+            .payload()
+            .is_some_and(|bytes| bytes.len() > MAX_CHANNEL_BYTES)
+        {
+            return Err(ChannelError::TooLarge);
+        }
+        let mut len = self.encoded_len;
+        let mut unbound = self.answers.len() - self.request_bindings.len();
+        for (at, effect) in effects {
+            len += effect_entry_len(effect);
+            if let Some(previous) = self.effects.get(at) {
+                len -= effect_entry_len(previous);
+            }
+        }
+        len += RESEED_ENTRY_LEN
+            * reseeds
+                .keys()
+                .filter(|at| !self.reseeds.contains_key(at))
+                .count();
+        len += answer_entry_len(answer, true);
+        if let Some(previous) = self.answers.get(&key) {
+            let was_bound = self.request_bindings.contains_key(&key);
+            len -= answer_entry_len(previous, was_bound);
+            unbound -= usize::from(!was_bound);
+        }
+        Ok(len + unbound * Sha256::output_size())
+    }
+
+    fn computed_len(&self) -> usize {
+        HEADER_LEN
+            + config_len(&self.config)
+            + COUNT_LEN
+            + self.effects.values().map(effect_entry_len).sum::<usize>()
+            + COUNT_LEN
+            + RESEED_ENTRY_LEN * self.reseeds.len()
+            + payloads_len(self.payloads.as_deref())
+            + schedule_len(self.coverage_schedule.as_ref())
+            + COUNT_LEN
+            + self
+                .answers
+                .iter()
+                .map(|(key, answer)| {
+                    answer_entry_len(answer, self.request_bindings.contains_key(key))
+                })
+                .sum::<usize>()
     }
     pub fn materialize(
         &self,
@@ -351,8 +441,41 @@ impl InputSpec {
             result.answers.insert(key, answer);
         }
         r.finish()?;
+        result.encoded_len = result.computed_len();
         Ok(result)
     }
+}
+
+const HEADER_LEN: usize = 14;
+const COUNT_LEN: usize = 4;
+const RESEED_ENTRY_LEN: usize = 16;
+
+fn config_len(config: &ServiceConfig) -> usize {
+    COUNT_LEN + config.encode().len()
+}
+
+fn effect_entry_len(effect: &Effect) -> usize {
+    8 + COUNT_LEN + effect.encode().len()
+}
+
+fn payloads_len(payloads: Option<&[Vec<u8>]>) -> usize {
+    1 + payloads.map_or(0, |payloads| {
+        COUNT_LEN
+            + payloads
+                .iter()
+                .map(|payload| COUNT_LEN + payload.len())
+                .sum::<usize>()
+    })
+}
+
+fn schedule_len(schedule: Option<&CoverageSchedule>) -> usize {
+    1 + schedule.map_or(0, |schedule| COUNT_LEN + schedule.encode().len())
+}
+
+fn answer_entry_len(answer: &Answer, bound: bool) -> usize {
+    let binding = if bound { Sha256::output_size() } else { 0 };
+    let data = answer.payload().map_or(0, |bytes| COUNT_LEN + bytes.len());
+    19 + binding + data
 }
 fn put_encoded(out: &mut Vec<u8>, encode: impl FnOnce(&mut Vec<u8>)) {
     let length_at = out.len();
@@ -935,6 +1058,88 @@ mod tests {
         assert_eq!(
             InputSpec::decode(&bad_answer_tag),
             Err(ChannelError::Malformed)
+        );
+    }
+
+    #[test]
+    fn cached_length_and_projection_match_the_encoding() {
+        let mut state = 0x1f2e_u64;
+        let mut draw = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut spec = InputSpec::seeded(3);
+        let mut schedule = BTreeMap::new();
+        let mut reseeds = BTreeMap::new();
+        for step in 0..2_000_u64 {
+            let key = (draw() % 300, (draw() % 3) as u16, draw() % 4);
+            let answer = if draw() % 3 == 0 {
+                Answer::Nominal
+            } else {
+                Answer::Data(vec![7; (draw() % 40) as usize])
+            };
+            match draw() % 9 {
+                0 => spec.record_effect(
+                    draw() % 50,
+                    Effect::write_memory(draw(), vec![1; (draw() % 9) as usize]).unwrap(),
+                ),
+                1 => spec.record_reseed(draw() % 50, draw()),
+                2 => spec.set_payloads(
+                    (draw() % 2 == 0)
+                        .then(|| vec![vec![2; (draw() % 5) as usize]; (step % 4) as usize]),
+                ),
+                3 => spec.set_coverage_schedule(
+                    (draw() % 2 == 0)
+                        .then(|| CoverageSchedule::new(8, vec![(1, 5 + step, 3)]).unwrap()),
+                ),
+                4 => spec
+                    .record_answer(key.0, key.1, key.2, answer.clone())
+                    .unwrap(),
+                _ => spec
+                    .record_bound_answer(key.0, key.1, key.2, [draw() as u8; 32], answer.clone())
+                    .unwrap(),
+            }
+            if draw() % 5 == 0 {
+                schedule.insert(
+                    draw() % 60,
+                    Effect::xor_memory(draw(), vec![3; (draw() % 6) as usize]).unwrap(),
+                );
+            }
+            if draw() % 7 == 0 {
+                reseeds.insert(draw() % 60, draw());
+            }
+            assert_eq!(spec.encoded_len(), spec.encode().len());
+            let mut projected = spec.clone();
+            for (&at, effect) in &schedule {
+                projected.record_effect(at, effect.clone());
+            }
+            for (&at, &seed) in &reseeds {
+                projected.record_reseed(at, seed);
+            }
+            projected
+                .record_bound_answer(key.0, key.1, key.2, [9; 32], answer.clone())
+                .unwrap();
+            let reserve = (projected.answers.len() - projected.request_bindings.len())
+                * Sha256::output_size();
+            assert_eq!(
+                spec.projected_reproducer_len_with_binding_reserve(
+                    &schedule, &reseeds, key, &answer
+                ),
+                Ok(projected.encode().len() + reserve)
+            );
+        }
+        let decoded = InputSpec::decode_snapshot(&spec.encode()).unwrap();
+        assert_eq!(decoded, spec);
+        assert_eq!(
+            spec.projected_reproducer_len_with_binding_reserve(
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                (0, 0, 0),
+                &Answer::Data(vec![0; MAX_CHANNEL_BYTES + 1])
+            ),
+            Err(ChannelError::TooLarge)
         );
     }
 }

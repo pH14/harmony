@@ -177,7 +177,9 @@ between exits. Multiply the exit count by the cost per exit, then divide by
 guest time to get the overhead. At 2.5 µs per exit, exiting every 25 µs of
 guest work adds 10%; exiting every 2.5 µs doubles the total time. Attribute physical exits and SDK scheduling exchanges by operation before
 identifying a dominant cost. Coverage exchanges select scheduling decisions
-and the next threshold; they are distinct from logical kernel ticks. Callback
+and the next threshold; they are distinct from logical kernel ticks. With one
+runnable thread the next threshold sits just before the next guest timer
+deadline, so a busy thread exits about once per timer period at any quantum. Callback
 shape alone does not establish that register publication dominates.
 
 ## Pages
@@ -253,7 +255,13 @@ This introduces three limits to parallelism:
 Short executions leave the coordinator little time per job: with 134 ms
 executions, keeping 24 workers busy needs coordinator time under 6 ms per job.
 When execution times vary, allowing several reserved jobs and finished results
-per worker keeps workers busy while earlier results wait for admission.
+per worker keeps workers busy while earlier results wait for admission. Each
+extra reservation per worker also lengthens the critical path: a new state
+waits that many more admissions before a job can start from it. In 30-minute
+NATS fault searches with 3 workers, one reservation per worker reached a
+deepest retained state 1.5x to 2x that of sixteen per worker. The cost was
+throughput: workers waited on admission order 55% of the time against 13-18%,
+and admitted about 45% fewer jobs.
 
 ## Memory
 

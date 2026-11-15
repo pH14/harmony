@@ -124,6 +124,57 @@ impl MixtureEnergy {
     }
 }
 
+const SUFFIX_REACH_ACTION_WINDOW: u32 = 1024;
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct SuffixReach {
+    doublings: u8,
+    actions: u32,
+    novel: u32,
+}
+
+impl Default for SuffixReach {
+    fn default() -> Self {
+        Self {
+            doublings: SUFFIX_DOUBLING_LIMIT.trailing_zeros() as u8,
+            actions: 0,
+            novel: 0,
+        }
+    }
+}
+
+impl SuffixReach {
+    pub(crate) fn length(&self) -> u8 {
+        (1_u8 << self.doublings).min(SUFFIX_DOUBLING_LIMIT)
+    }
+
+    pub(crate) fn record_outcome(&mut self, actions: usize, novel: usize) {
+        if actions == 0 {
+            return;
+        }
+        self.actions = self
+            .actions
+            .saturating_add(u32::try_from(actions).unwrap_or(u32::MAX));
+        self.novel = self
+            .novel
+            .saturating_add(u32::try_from(novel.min(actions)).unwrap_or(u32::MAX));
+        while self.actions >= SUFFIX_REACH_ACTION_WINDOW {
+            self.actions /= 2;
+            self.novel /= 2;
+        }
+        if self.actions < u32::from(SUFFIX_DOUBLING_LIMIT) {
+            return;
+        }
+        if 2 * self.novel >= self.actions {
+            if self.length() < SUFFIX_DOUBLING_LIMIT {
+                self.doublings += 1;
+            }
+        } else {
+            self.doublings = self.doublings.saturating_sub(1);
+        }
+    }
+}
+
 pub(crate) fn energy_strategy(
     mutation_seed: u64,
     biased_weight: u8,
@@ -183,7 +234,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        DrawMixture, EnergyStrategy, MixtureEnergy, draw_mixture_from_identifier,
+        DrawMixture, EnergyStrategy, MixtureEnergy, SuffixReach, draw_mixture_from_identifier,
         draw_mixture_identifier, draw_suffix, energy_strategy,
     };
 
@@ -285,6 +336,72 @@ mod tests {
                 "weight {weight} chose the table {biased} times"
             );
         }
+    }
+
+    #[test]
+    fn suffix_reach_starts_at_the_longest_job_and_waits_for_one_longest_job_of_actions() {
+        let mut reach = SuffixReach::default();
+        assert_eq!(reach.length(), 64);
+        for _ in 0..63 {
+            reach.record_outcome(1, 0);
+            assert_eq!(reach.length(), 64);
+        }
+        let mut lengths = Vec::new();
+        for _ in 0..7 {
+            reach.record_outcome(1, 0);
+            lengths.push(reach.length());
+        }
+        assert_eq!(lengths, [32, 16, 8, 4, 2, 1, 1]);
+    }
+
+    #[test]
+    fn suffix_reach_falls_to_one_action_when_most_actions_open_no_novel_slot() {
+        let mut reach = SuffixReach::default();
+        for _ in 0..7 {
+            reach.record_outcome(64, 64);
+        }
+        assert_eq!(reach.length(), 64);
+        reach.record_outcome(0, 0);
+        assert_eq!(reach.length(), 64);
+        let mut lengths = Vec::new();
+        for _ in 0..19 {
+            reach.record_outcome(64, 16);
+            lengths.push(reach.length());
+        }
+        assert_eq!(
+            lengths,
+            [
+                64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 32, 16, 8, 4, 2, 1, 1, 1
+            ]
+        );
+    }
+
+    #[test]
+    fn suffix_reach_stays_at_one_action_when_a_tenth_of_actions_open_novel_slots() {
+        let mut reach = SuffixReach::default();
+        for job in 0..4096 {
+            reach.record_outcome(1, usize::from(job % 10 == 0));
+            if job >= 68 {
+                assert_eq!(reach.length(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn suffix_reach_counts_only_recent_actions() {
+        let mut reach = SuffixReach::default();
+        for _ in 0..64 {
+            reach.record_outcome(64, 0);
+        }
+        assert_eq!(reach.length(), 1);
+        let mut jobs = 0;
+        while reach.length() < 64 {
+            reach.record_outcome(64, 64);
+            jobs += 1;
+        }
+        assert!(jobs < 32, "{jobs} jobs");
+        assert!(reach.actions < 1024);
+        assert!(reach.novel <= reach.actions);
     }
 
     #[test]

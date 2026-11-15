@@ -37,8 +37,8 @@ esac
 
 # The arm64 patch stack overlaps itself (later patches modify files an earlier
 # patch creates), so build from a dedicated pristine source tree on every run.
-# apply-patch-series.sh applies the common transport before the arm64 overlay;
-# the stamp then covers the complete input series.
+# apply-patch-series.sh applies the common transport and the VM kernel series
+# before the arm64 overlay; the stamp then covers the complete input series.
 kernel_tarball=$DL_DIR/$(basename "$KERNEL_URL")
 if [ ! -f "$kernel_tarball" ]; then
     echo "FAIL: $kernel_tarball missing — run 'make -C consonance/harmony-linux fetch' first (needs network once)" >&2
@@ -56,7 +56,7 @@ tar -xf "$kernel_tarball" -C "$arm64_source_root"
 KSRC=$arm64_source_root/linux-$KERNEL_VERSION
 
 bash "$LINUX_DIR/apply-patch-series.sh" "$KSRC" \
-    "$LINUX_DIR/patches/common" "$LINUX_DIR/patches/arm64"
+    "$LINUX_DIR/patches/common" "$LINUX_DIR/patches/vm" "$LINUX_DIR/patches/arm64"
 
 mkdir -p "$arm64_object_root" "$ARM64_ART_DIR"
 
@@ -114,12 +114,19 @@ assert_off RWSEM_SPIN_ON_OWNER
 # namespace, cgroup, mount, and seccomp facilities are part of the standard
 # configuration. They are not selected by an application profile.
 assert_y BINFMT_SCRIPT PROC_FS PROC_CHILDREN FUTEX MMU SHMEM TMPFS FILE_LOCKING MULTIUSER \
-    SYSVIPC POSIX_MQUEUE NAMESPACES UTS_NS IPC_NS PID_NS NET_NS NET UNIX \
+    SYSVIPC POSIX_MQUEUE NAMESPACES UTS_NS IPC_NS PID_NS NET_NS TIME_NS NET UNIX \
     INET CGROUPS CGROUP_SCHED CGROUP_PIDS CGROUP_DEVICE CGROUP_BPF BPF_SYSCALL \
     EPOLL EVENTFD SIGNALFD \
     TIMERFD INOTIFY_USER SECCOMP SECCOMP_FILTER HARMONY_DEVICE PERF_EVENTS \
-    HAVE_HW_BREAKPOINT DEVMEM
+    HAVE_HW_BREAKPOINT DEVMEM BLOCK BLK_DEV BLK_DEV_RAM MD BLK_DEV_DM DM_LOG_WRITES \
+    DM_DELAY EXT4_FS
 assert_off STRICT_DEVMEM
+for setting in CONFIG_BLK_DEV_RAM_COUNT=16 CONFIG_BLK_DEV_RAM_SIZE=1048576; do
+    if ! grep -qxF "$setting" "$arm64_object_root/.config"; then
+        echo "FAIL: $setting is required for power-loss node disks" >&2
+        exit 1
+    fi
+done
 if ! grep -qxF 'CONFIG_NR_CPUS=2' "$arm64_object_root/.config"; then
     echo "FAIL: CONFIG_NR_CPUS must be the arm64 minimum (2)" >&2
     exit 1

@@ -64,6 +64,7 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
             directory.path().join("guests"),
         )?)),
         root: None,
+        boot_cache: None,
     };
     let mut target = FaultTarget::fresh(&[], &initramfs, &config)?;
     let root = target
@@ -90,7 +91,7 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
         &[],
         crate::archive::FaultMilestones::default(),
         &[crate::target::FaultOperation::Wait(std::num::NonZeroU16::MIN).into()],
-        false,
+        searcher::search::rollout::RolloutStop::new(false),
     );
     let error = result
         .err()

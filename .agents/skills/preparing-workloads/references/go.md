@@ -10,7 +10,7 @@ Pin `antithesis-go-toolexec` and the SDK to the same release. Build with `CGO_EN
 
 The etcd case carries an arm64 build-tag patch for the SDK. Ask before sending it upstream. Drop it once an upstream release includes the fix.
 
-The upstream wrapper skips all standard-library packages. The local wrapper patch accepts an explicit list. Run `configure-stdlib.sh SDK_DIR APP_PREFIX OUT_DIR`, save its exports to a file, and source that file before building. It selects every standard-library package except `runtime` and the packages that `runtime` and the SDK import. Instrumenting those creates import cycles or callbacks inside the callback path. Keep the selected and excluded lists in the image.
+Run `configure-instrumentation.sh SDK_DIR OUT_DIR [PACKAGE...]` in the build directory with the packages `go build` builds, save its exports to a file, and source that file before building. Do not pass a package list of your own. The script instruments every module in the build graph outside the standard library, because one uninstrumented loop that waits for another goroutine stops the single-vCPU guest. It excludes the SDK and the modules its instrumentation package imports. The upstream wrapper skips all standard-library packages; the local wrapper patch accepts an explicit list, and the script selects every standard-library package except `runtime` and the packages that `runtime` and the SDK import. Instrumenting those creates import cycles or callbacks inside the callback path. Keep the selected and excluded lists in the image.
 
 ## Known limits
 
