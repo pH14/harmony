@@ -454,6 +454,24 @@ pub struct ProgressPoint<M, P = ()> {
     pub execution_failures: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LeadingTier<P> {
+    pub(crate) progress: P,
+    pub(crate) yields: u64,
+    pub(crate) losing_weight: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StalledState {
+    pub id: u64,
+    pub place: String,
+    pub identity: String,
+    pub selected: u64,
+    pub productive: u64,
+    pub created_execution: u64,
+    pub input_len: usize,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EntrySelectorCounters {
     pub selected: u64,
@@ -593,6 +611,54 @@ pub mod entries_by_suffix {
         }
         Ok(entries)
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(bound(
+    serialize = "A: Serialize, M: Serialize",
+    deserialize = "A: DeserializeOwned, M: DeserializeOwned"
+))]
+pub struct SavedStateRecord<A, M> {
+    pub id: u64,
+    pub parent_id: Option<u64>,
+    pub created_execution: u64,
+    pub actions: Vec<A>,
+    pub milestones: M,
+}
+
+pub fn saved_state_entries<A: Clone + Ord, M>(
+    records: Vec<SavedStateRecord<A, M>>,
+) -> Result<Vec<ArchiveEntryReport<A, (), M>>, String> {
+    let mut entries: Vec<ArchiveEntryReport<A, (), M>> = Vec::with_capacity(records.len());
+    let mut index_of = BTreeMap::<u64, usize>::new();
+    for record in records {
+        if entries.last().is_some_and(|last| last.id >= record.id) {
+            return Err(format!("saved state {} is out of id order", record.id));
+        }
+        let actions = match record.parent_id {
+            None => record.actions,
+            Some(parent) => {
+                let index = index_of.get(&parent).ok_or_else(|| {
+                    format!("saved state {} names a parent that is not saved", record.id)
+                })?;
+                let mut actions = entries[*index].input.actions.clone();
+                actions.extend(record.actions);
+                actions
+            }
+        };
+        index_of.insert(record.id, entries.len());
+        entries.push(ArchiveEntryReport {
+            id: record.id,
+            parent_id: record.parent_id,
+            created_execution: record.created_execution,
+            input: Input { actions },
+            key: (),
+            milestones: record.milestones,
+            snapshot_identity_sha256: None,
+            selector: None,
+        });
+    }
+    Ok(entries)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2456,6 +2522,42 @@ where
         self.tiers.last_key_value().map(|(progress, _)| *progress)
     }
 
+    pub(crate) fn leading_tier(&self) -> Option<LeadingTier<K::Progress>> {
+        let mut ranked = self.tiers.keys().rev().copied();
+        let progress = ranked.next()?;
+        Some(LeadingTier {
+            progress,
+            yields: self.tier_runs(progress).yields,
+            losing_weight: self.tier_halvings(progress, ranked.next()) > 0,
+        })
+    }
+
+    pub(crate) fn leading_tier_states(&self, limit: usize) -> Vec<StalledState> {
+        let Some((_, tier)) = self.tiers.last_key_value() else {
+            return Vec::new();
+        };
+        let mut states = tier
+            .places
+            .values()
+            .flat_map(|members| members.ids.iter())
+            .filter_map(|index| {
+                let entry = self.entries.get(index)?;
+                Some(StalledState {
+                    id: entry.id,
+                    place: format!("{:?}", entry.key.place()),
+                    identity: format!("{:?}", entry.key.identity()),
+                    selected: self.selected[index],
+                    productive: self.productive[index],
+                    created_execution: entry.created_execution,
+                    input_len: entry.input_len,
+                })
+            })
+            .collect::<Vec<_>>();
+        states.sort_by(|a, b| b.selected.cmp(&a.selected).then(a.id.cmp(&b.id)));
+        states.truncate(limit);
+        states
+    }
+
     pub(crate) fn resident_snapshot_entries(&self) -> impl Iterator<Item = (u64, &S)> + Clone {
         self.entries.iter().filter_map(|entry| {
             entry
@@ -3920,6 +4022,64 @@ where
             });
         }
         accounting
+    }
+
+    pub(crate) fn saved_state_records(&self) -> Result<Vec<SavedStateRecord<A, M>>, &'static str> {
+        let input_len = self
+            .entries
+            .iter()
+            .map(|entry| (entry.id, entry.input_len))
+            .collect::<BTreeMap<_, _>>();
+        let mut owner_at_node = BTreeMap::<usize, u64>::new();
+        for entry in &self.entries {
+            owner_at_node
+                .entry(entry.input_node)
+                .and_modify(|id| *id = (*id).min(entry.id))
+                .or_insert(entry.id);
+        }
+        self.entries
+            .iter()
+            .map(|entry| {
+                let direct = entry.parent_id.filter(|parent| {
+                    input_len
+                        .get(parent)
+                        .map(|len| len + entry.input_suffix.len())
+                        == Some(entry.input_len)
+                });
+                let (parent_id, actions) = if direct.is_some() {
+                    (direct, entry.input_suffix.clone())
+                } else {
+                    let mut node = entry.input_node;
+                    let mut reversed = Vec::new();
+                    let mut parent_id = None;
+                    while let Some((up, action)) = self.input_index.step_back(node) {
+                        reversed.push(action.clone());
+                        node = up;
+                        if let Some(&id) = owner_at_node.get(&node)
+                            && id < entry.id
+                        {
+                            parent_id = Some(id);
+                            break;
+                        }
+                    }
+                    let prefix_len = parent_id.and_then(|id| input_len.get(&id)).copied();
+                    if prefix_len.unwrap_or(0) + reversed.len() != entry.input_len
+                        || (parent_id.is_none() && node != 0)
+                    {
+                        return Err("archive input length disagrees with its prefix path");
+                    }
+                    reversed.reverse();
+                    (parent_id, reversed)
+                };
+                Ok(SavedStateRecord {
+                    id: entry.id,
+                    parent_id,
+                    created_execution: entry.created_execution,
+                    actions,
+                    milestones: entry.milestones,
+                })
+            })
+            .collect()
     }
 
     #[allow(clippy::type_complexity)]
@@ -8628,6 +8788,47 @@ mod tests {
         assert_eq!(archive.lineage(parent), Some(&vec![1]));
         assert_eq!(archive.lineage(same), Some(&vec![1, 2]));
         assert_eq!(archive.lineage(different), Some(&vec![1, 3]));
+    }
+
+    #[test]
+    fn saved_state_records_skip_a_dropped_parent_to_its_nearest_saved_prefix() {
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let insert = |archive: &mut Archive<u8, FlatKey, (), ()>,
+                      parent: Option<usize>,
+                      suffix: Vec<u8>,
+                      rank: u16| {
+            archive
+                .insert(
+                    parent,
+                    u64::from(rank),
+                    ArchiveCandidate {
+                        suffix,
+                        key: FlatKey([rank, rank, 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert")
+                .expect("retain")
+        };
+        let first = insert(&mut archive, None, vec![1, 2], 1);
+        let middle = insert(&mut archive, Some(first), vec![3], 2);
+        let last = insert(&mut archive, Some(middle), vec![4, 5], 3);
+        let first_id = archive.entries[first].id;
+        let last_id = archive.entries[last].id;
+        archive.entries.remove(middle);
+        let records = archive.saved_state_records().expect("records");
+        let summary = records
+            .iter()
+            .map(|record| (record.id, record.parent_id, record.actions.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            vec![
+                (first_id, None, vec![1, 2]),
+                (last_id, Some(first_id), vec![3, 4, 5]),
+            ]
+        );
     }
 
     #[test]
