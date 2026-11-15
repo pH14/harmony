@@ -25,6 +25,14 @@ const DISP_VIOLATION: u8 = 1;
 const STATE_SET: u8 = 0;
 const STATE_MAX: u8 = 1;
 const ASSERT_PAYLOAD_LEN: usize = 3;
+const CATALOG_MAGIC: &[u8; 4] = b"SDKC";
+const CATALOG_VERSION: u8 = 1;
+const KIND_ALWAYS: u8 = 0;
+const KIND_SOMETIMES: u8 = 1;
+const KIND_REACHABLE: u8 = 2;
+const KIND_UNREACHABLE: u8 = 3;
+const KIND_STATE: u8 = 4;
+const KIND_BUGGIFY: u8 = 5;
 const STATE_PAYLOAD_LEN: usize = 9;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -839,27 +847,14 @@ impl SdkDecoder {
                 }
                 continue;
             }
+            if *event_id == JSON_EVENT_ID && declare_sdk_catalog(bytes, &mut capture.assertions)? {
+                continue;
+            }
             let namespace = (event_id >> NS_SHIFT) as u8;
             let local = event_id & ((1 << NS_SHIFT) - 1);
             match namespace {
                 NS_ASSERT if bytes.len() == ASSERT_PAYLOAD_LEN => {
-                    let (kind, passed) = match bytes[0] {
-                        DISP_HIT => (AssertionKind::Sometimes, true),
-                        DISP_VIOLATION => (AssertionKind::Always, false),
-                        _ => {
-                            return Err("SDK assertion event has an unknown disposition".to_owned());
-                        }
-                    };
-                    capture.assertions.record(
-                        local.to_string(),
-                        AssertionOutcome {
-                            kind,
-                            message: local.to_string(),
-                            location: String::new(),
-                            passed,
-                            failed: !passed,
-                        },
-                    );
+                    record_sdk_assertion(&mut capture.assertions, local, bytes[0])?;
                 }
                 NS_STATE if bytes.len() == STATE_PAYLOAD_LEN => {
                     let value = u64::from_le_bytes(
@@ -950,6 +945,73 @@ impl ObservationCheckpoint {
     }
 }
 
+fn declare_sdk_catalog(bytes: &[u8], assertions: &mut Assertions) -> Result<bool, String> {
+    let Some(rest) = bytes.strip_prefix(CATALOG_MAGIC) else {
+        return Ok(false);
+    };
+    let truncated = || "SDK catalog is truncated".to_owned();
+    let (&version, rest) = rest.split_first().ok_or_else(truncated)?;
+    if version != CATALOG_VERSION {
+        return Err(format!("SDK catalog has unsupported version {version}"));
+    }
+    let (count, mut rest) = rest.split_at_checked(4).ok_or_else(truncated)?;
+    let count = u32::from_le_bytes(count.try_into().map_err(|_| truncated())?);
+    for _ in 0..count {
+        let (head, tail) = rest.split_at_checked(7).ok_or_else(truncated)?;
+        let id = u32::from_le_bytes(head[1..5].try_into().map_err(|_| truncated())?);
+        let name_len = usize::from(u16::from_le_bytes([head[5], head[6]]));
+        let (name, tail) = tail.split_at_checked(name_len).ok_or_else(truncated)?;
+        rest = tail;
+        let kind = match head[0] {
+            KIND_ALWAYS => AssertionKind::Always,
+            KIND_SOMETIMES => AssertionKind::Sometimes,
+            KIND_REACHABLE => AssertionKind::Reachable,
+            KIND_UNREACHABLE => AssertionKind::Unreachable,
+            KIND_STATE | KIND_BUGGIFY => continue,
+            other => return Err(format!("SDK catalog has unknown point kind {other}")),
+        };
+        assertions.record(
+            id.to_string(),
+            AssertionOutcome {
+                kind,
+                message: String::from_utf8_lossy(name).into_owned(),
+                location: String::new(),
+                passed: false,
+                failed: false,
+            },
+        );
+    }
+    if !rest.is_empty() {
+        return Err("SDK catalog has trailing bytes".to_owned());
+    }
+    Ok(true)
+}
+
+fn record_sdk_assertion(
+    assertions: &mut Assertions,
+    local: u32,
+    disposition: u8,
+) -> Result<(), String> {
+    let id = local.to_string();
+    let declared = assertions.0.get(&id).map(|outcome| outcome.kind);
+    let (kind, passed) = match disposition {
+        DISP_HIT => (declared.unwrap_or(AssertionKind::Sometimes), true),
+        DISP_VIOLATION => (declared.unwrap_or(AssertionKind::Always), false),
+        _ => return Err("SDK assertion event has an unknown disposition".to_owned()),
+    };
+    assertions.record(
+        id.clone(),
+        AssertionOutcome {
+            kind,
+            message: id,
+            location: String::new(),
+            passed,
+            failed: !passed,
+        },
+    );
+    Ok(())
+}
+
 pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, String> {
     let mut decoder = SdkDecoder::default();
     decoder.append(events)?;
@@ -993,25 +1055,14 @@ fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapt
             }
             continue;
         }
+        if *event_id == JSON_EVENT_ID && declare_sdk_catalog(bytes, &mut capture.assertions)? {
+            continue;
+        }
         let namespace = (event_id >> NS_SHIFT) as u8;
         let local = event_id & ((1 << NS_SHIFT) - 1);
         match namespace {
             NS_ASSERT if bytes.len() == ASSERT_PAYLOAD_LEN => {
-                let (kind, passed) = match bytes[0] {
-                    DISP_HIT => (AssertionKind::Sometimes, true),
-                    DISP_VIOLATION => (AssertionKind::Always, false),
-                    _ => return Err("SDK assertion event has an unknown disposition".to_owned()),
-                };
-                capture.assertions.record(
-                    local.to_string(),
-                    AssertionOutcome {
-                        kind,
-                        message: local.to_string(),
-                        location: String::new(),
-                        passed,
-                        failed: !passed,
-                    },
-                );
+                record_sdk_assertion(&mut capture.assertions, local, bytes[0])?;
             }
             NS_STATE if bytes.len() == STATE_PAYLOAD_LEN => {
                 let value = u64::from_le_bytes(
@@ -2025,6 +2076,67 @@ mod tests {
         assert_eq!(capture.registers.get(&reg::RESTARTS), Some(&7));
     }
 
+    fn catalog_event(points: &[(u8, u32, &str)]) -> (u64, u32, Vec<u8>) {
+        let mut bytes = CATALOG_MAGIC.to_vec();
+        bytes.push(CATALOG_VERSION);
+        bytes.extend_from_slice(&u32::try_from(points.len()).unwrap().to_le_bytes());
+        for (kind, id, name) in points {
+            bytes.push(*kind);
+            bytes.extend_from_slice(&id.to_le_bytes());
+            bytes.extend_from_slice(&u16::try_from(name.len()).unwrap().to_le_bytes());
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        (0, JSON_EVENT_ID, bytes)
+    }
+
+    #[test]
+    fn catalog_declared_binary_assertions_keep_their_kind_and_report_unmet_ones() {
+        let catalog = catalog_event(&[
+            (KIND_SOMETIMES, 1, "quiet"),
+            (KIND_SOMETIMES, 2, "fired"),
+            (KIND_REACHABLE, 3, "reached"),
+            (KIND_UNREACHABLE, 4, "forbidden"),
+            (KIND_REACHABLE, 5, "missed"),
+            (KIND_BUGGIFY, 6, "coin"),
+            (KIND_STATE, 7, "counter"),
+        ]);
+        let capture = decode_sdk_events(&[
+            catalog,
+            assert_event(2, DISP_HIT),
+            assert_event(3, DISP_HIT),
+            assert_event(4, DISP_VIOLATION),
+        ])
+        .expect("decode");
+        let assertions = &capture.assertions;
+        assert_eq!(
+            assertions.never_satisfied(),
+            BTreeSet::from(["1".to_owned(), "5".to_owned()])
+        );
+        assert_eq!(assertions.0["1"].message, "quiet");
+        assert_eq!(assertions.0["3"].kind, AssertionKind::Reachable);
+        assert_eq!(assertions.0["4"].kind, AssertionKind::Unreachable);
+        assert_eq!(assertions.violations(), BTreeSet::from(["4".to_owned()]));
+        assert!(!assertions.0.contains_key("6") && !assertions.0.contains_key("7"));
+        assert_eq!(assertions.key_ids(), BTreeSet::from(["2", "3"]));
+    }
+
+    #[test]
+    fn an_undeclared_binary_assertion_takes_its_kind_from_the_disposition() {
+        let capture =
+            decode_sdk_events(&[assert_event(8, DISP_HIT), assert_event(9, DISP_VIOLATION)])
+                .expect("decode");
+        assert_eq!(capture.assertions.0["8"].kind, AssertionKind::Sometimes);
+        assert_eq!(capture.assertions.0["9"].kind, AssertionKind::Always);
+    }
+
+    #[test]
+    fn a_malformed_catalog_is_loud() {
+        let (moment, id, mut bytes) = catalog_event(&[(KIND_SOMETIMES, 1, "x")]);
+        bytes.pop();
+        assert!(decode_sdk_events(&[(moment, id, bytes)]).is_err());
+        assert!(decode_sdk_events(&[catalog_event(&[(9, 1, "x")])]).is_err());
+    }
+
     #[test]
     fn a_malformed_event_is_ignored_and_a_bad_operation_is_loud() {
         let short = decode_sdk_events(&[
@@ -2300,7 +2412,7 @@ mod tests {
             json(r#"{"antithesis_assert":{"id":"kept","assert_type":"always","must_hit":true,"hit":true,"condition":false}}"#),
             json(r#"{"antithesis_setup":{"status":"complete"}}"#),
             json("{not json}"),
-            (0, JSON_EVENT_ID, b"SDKC".to_vec()),
+            catalog_event(&[]),
         ])
         .expect("decode");
         assert!(capture.setup_complete);

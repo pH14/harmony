@@ -333,7 +333,7 @@ fn search_faults(
         Some(interrupt),
     )?;
     println!(
-        "{} executions; {} confirmed findings; {} unmet reachability assertions; {} hung jobs",
+        "{} executions; {} confirmed findings; {} unmet Sometimes or Reachable assertions; {} hung jobs",
         report.executions,
         report.bugs.iter().filter(|b| b.confirmed).count(),
         report.never_satisfied.len(),

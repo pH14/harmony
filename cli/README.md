@@ -497,9 +497,9 @@ harmony show "${RUN:?}" --json
 ```
 
 Retain stdout, stderr and each command's exit status. A faults search report
-returns `0` without confirmed bugs, unmet reachability assertions, execution
+returns `0` without confirmed bugs, unmet Sometimes or Reachable assertions, execution
 failures or hung jobs; unconfirmed hits can still appear. `1` means a
-confirmed bug or unmet reachability assertion. Failures or hung jobs take
+confirmed bug or unmet Sometimes or Reachable assertion. Failures or hung jobs take
 precedence with `2`. A hung job is a job that tripped the guest progress
 watchdog. The search records it as `hang-N.json` in the run directory and keeps
 running. It records the input of each failed execution as `failure-N.json`, which
@@ -755,7 +755,7 @@ and its fresh replay witness agree on victory. Removing a saved directory
 removes its saved evidence.
 
 Exit 0 means successful operation, including verified reproduction of a finding.
-Application search exits 1 for findings or unmet reachability assertions; a failed
+Application search exits 1 for findings or unmet Sometimes or Reachable assertions; a failed
 application command also exits 1. UML application replay records observed
 assertions and stops, but exits 2 because a canonical full-state digest is not
 available to verify exact reproduction. Exit 2 also denotes invalid input, infrastructure

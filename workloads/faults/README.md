@@ -520,6 +520,18 @@ distinct assertions a workload declares. Every process's records feed the key.
 passed is a campaign failure: it appears under `never_satisfied` in both
 `campaign-summary.json` and `report.json`, and the search prints one
 `FAIL: assertion never satisfied` line for each.
+The binary hypercall SDK (`consonance/harmony-linux/sdk`) declares its points
+once in an `SDKC` catalog event and then emits an assertion event only when a
+point is hit or violated. The host registers each catalog Always, Sometimes,
+Reachable, and Unreachable point as declared and not yet passed, keyed by its
+numeric local id with the catalog name as its message, and decodes later hits
+and violations with the catalog kind. A Sometimes or Reachable point that never
+fires is therefore reported under `never_satisfied`. Buggify and state points
+are not assertions and are not registered. An assertion event for a point the
+catalog did not declare is recorded as Sometimes when hit and Always when
+violated. A catalog with a bad version, an unknown point kind, or a truncated
+or overlong body fails the decode. The archive key uses the same numeric ids as
+before, so recorded streams still replay.
 A harness check that stops checking some keys at its step budget writes
 `{"harmony_check":{"undecided_keys":N}}`. The host keeps the count from the
 process that ran the check, and the completed check's evidence carries it as
