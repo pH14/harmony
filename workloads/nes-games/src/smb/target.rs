@@ -158,6 +158,7 @@ where
     dead: bool,
     failed: bool,
     execution_work: u64,
+    boot_frames: u64,
 }
 
 impl<M, P> SmbTarget<M, P>
@@ -176,11 +177,16 @@ where
             hold_frames: 1,
         }];
         let mut reached_play = false;
+        let mut boot_frames = BOOT_WALK
+            .iter()
+            .map(|chord| u64::from(chord.hold_frames))
+            .sum::<u64>();
         for _ in 0..BOOT_PLAY_WAIT_FRAMES {
             if smb_is_playing(&wram_array(&machine)?) {
                 reached_play = true;
                 break;
             }
+            boot_frames += 1;
             let here = machine.snapshot()?;
             machine.branch(here, &nes::reproducer(&idle))?;
             machine.run(StopConditions::default(), None)?;
@@ -212,7 +218,13 @@ where
             dead: false,
             failed: false,
             execution_work: 0,
+            boot_frames,
         })
+    }
+
+    #[must_use]
+    pub fn boot_frames(&self) -> u64 {
+        self.boot_frames
     }
 
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {

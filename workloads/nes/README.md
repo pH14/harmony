@@ -53,7 +53,10 @@ recorded run rather than a re-derivation of it, and each needs `ffmpeg` on the
 path. `metroid-map-probe` and `mm2-energy-probe` replay a tape and print one
 line per action endpoint, for state the campaign report sums away: the map cell
 a Metroid route crossed, and the per-weapon Mega Man 2 meters behind the decoded
-sum.
+sum. `smb-route` replays a Super Mario Bros. tape and prints its frames from
+power-on (the boot walk's frames plus the tape's), the frame each level starts
+in play, its frames, and whether it ended into the next level or through a warp
+pipe.
 
 `src/film.rs` also holds the benchmark capture contract. `Endpointed` returns a
 game's decoded endpoint and frame count for a recorded input, `Filmable` adds
