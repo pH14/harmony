@@ -53,8 +53,9 @@ Samus approaches the statues: bit 7 still counts as the defeat, and each raised
 statue adds one more item. The raise opens the passage beneath the statues
 without changing position, health or stock, so without that term the opened
 state is a same-key duplicate of the entry that triggered it and is never
-admitted. Item and tank counts describe discovered capabilities; no
-particular item, room, door target, or route is supplied. Coverage and pickup
+admitted. Item and tank counts describe discovered capabilities. The staged
+plan below supplies the item order, the route cells and the Kraid's door
+target; the key's other terms supply no item, room or route. Coverage and pickup
 counters are reporting evidence across explored branches, not proof that one
 trajectory achieved their union. The count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
@@ -105,7 +106,8 @@ The searcher owns the suffix draw and the retained-input table.
 ## Archive key
 
 The progress tier is the pair (stage, objective) of a staged plan in
-[`nes-games/src/metroid/plan.rs`](../../../nes-games/src/metroid/plan.rs).
+[`nes-games/src/metroid/plan.rs`](../../../nes-games/src/metroid/plan.rs),
+declared through the searcher's `search::plan`.
 The plan is an ordered list of stages from power-on to Kraid's defeat: the
 Maru Mari, energy, the first missile tank, energy, the bombs, energy, Kraid's
 door, energy, and Kraid. A state's stage is the first stage whose done test it
@@ -127,7 +129,10 @@ Each stage climbs one integer:
   the Kraid bank), and 80 is four touches. Full energy for the tanks held is
   out of reach at Kraid's door on the recorded route, so the stage asks for a
   few touches of margin.
-- The boss stage climbs boss damage. It is done when Kraid is defeated.
+- The boss stage climbs boss damage. It is done when Kraid is defeated, read
+  from Kraid's own status byte: the key keeps the defeated bosses as bits (bit
+  0 Kraid, bit 1 Ridley), because Ridley can fall first and a boss count would
+  then complete this stage with Kraid alive.
 
 The routes come from the ROM's own tables, read through the
 [disassembly](https://github.com/nmikstas/metroid-disassembly/tree/4270d57f9468daebdeea485686e31e26218a780c):

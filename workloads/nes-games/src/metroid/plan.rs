@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::metroid::target::MetroidMechanicalState;
+use crate::{
+    metroid::target::MetroidMechanicalState,
+    search::plan::{self, StageProgress},
+};
 
 const BRINSTAR: u8 = 0x10;
 const KRAID: u8 = 0x12;
@@ -22,7 +25,7 @@ pub enum Done {
     MissileCapacity,
     RouteEnd,
     Energy(u16),
-    Bosses(u8),
+    Kraid,
     Never,
 }
 
@@ -229,7 +232,7 @@ pub const PLAN: &[Stage] = &[
     },
     Stage {
         name: "kraid",
-        done: Done::Bosses(1),
+        done: Done::Kraid,
         objective: Objective::BossDamage,
     },
     Stage {
@@ -238,6 +241,11 @@ pub const PLAN: &[Stage] = &[
         objective: Objective::None,
     },
 ];
+
+pub struct PlanState {
+    pub state: MetroidMechanicalState,
+    pub boss_damage: u8,
+}
 
 fn route_index(route: &[Cell], state: MetroidMechanicalState) -> Option<u16> {
     route
@@ -254,63 +262,54 @@ fn energy_reached(state: MetroidMechanicalState, target: u16) -> bool {
     whole_energy(state.health) >= target
 }
 
-fn objective(
-    stage: Stage,
-    state: MetroidMechanicalState,
-    boss_damage: u8,
-    carried: Option<u16>,
-) -> u16 {
-    match stage.objective {
-        Objective::Route(route) => route_index(route, state).or(carried).unwrap_or(0),
-        Objective::Energy => whole_energy(state.health),
-        Objective::BossDamage => u16::from(boss_damage),
-        Objective::None => 0,
-    }
-}
+impl plan::Stage for Stage {
+    type State = PlanState;
 
-fn done(stage: Stage, state: MetroidMechanicalState, objective: u16) -> bool {
-    match stage.done {
-        Done::Equipment(bit) => state.equipment & bit != 0,
-        Done::MissileCapacity => state.missile_capacity > 0,
-        Done::RouteEnd => match stage.objective {
-            Objective::Route(route) => usize::from(objective) + 1 >= route.len(),
-            _ => false,
-        },
-        Done::Energy(target) => energy_reached(state, target),
-        Done::Bosses(count) => state.bosses >= count,
-        Done::Never => false,
+    fn name(self) -> &'static str {
+        self.name
     }
-}
 
-fn latches(stage: Stage) -> bool {
-    matches!(stage.done, Done::RouteEnd | Done::Energy(_))
+    fn objective(self, state: &PlanState, carried: Option<u16>) -> u16 {
+        match self.objective {
+            Objective::Route(route) => route_index(route, state.state).or(carried).unwrap_or(0),
+            Objective::Energy => whole_energy(state.state.health),
+            Objective::BossDamage => u16::from(state.boss_damage),
+            Objective::None => 0,
+        }
+    }
+
+    fn done(self, state: &PlanState, objective: u16) -> bool {
+        let state = state.state;
+        match self.done {
+            Done::Equipment(bit) => state.equipment & bit != 0,
+            Done::MissileCapacity => state.missile_capacity > 0,
+            Done::RouteEnd => match self.objective {
+                Objective::Route(route) => usize::from(objective) + 1 >= route.len(),
+                _ => false,
+            },
+            Done::Energy(target) => energy_reached(state, target),
+            Done::Kraid => state.kraid_defeated,
+            Done::Never => false,
+        }
+    }
+
+    fn latches(self) -> bool {
+        matches!(self.done, Done::RouteEnd | Done::Energy(_))
+    }
 }
 
 #[must_use]
 pub fn locate(
     state: MetroidMechanicalState,
     boss_damage: u8,
-    parent: Option<(u8, u16)>,
-) -> (u8, u16) {
-    for (index, stage) in PLAN.iter().enumerate() {
-        let index = u8::try_from(index).unwrap_or(u8::MAX);
-        let carried = parent.and_then(|(stage, objective)| (stage == index).then_some(objective));
-        if latches(*stage) && parent.is_some_and(|(parent_stage, _)| parent_stage > index) {
-            continue;
-        }
-        let value = objective(*stage, state, boss_damage, carried);
-        if !done(*stage, state, value) {
-            return (index, value);
-        }
-    }
-    let last = u8::try_from(PLAN.len() - 1).unwrap_or(u8::MAX);
-    (last, 0)
+    parent: Option<StageProgress>,
+) -> StageProgress {
+    plan::locate(PLAN, &PlanState { state, boss_damage }, parent)
 }
 
 #[must_use]
 pub fn stage_name(stage: u8) -> &'static str {
-    PLAN.get(usize::from(stage))
-        .map_or("unknown", |stage| stage.name)
+    plan::stage_name(PLAN, stage)
 }
 
 #[cfg(test)]
@@ -417,7 +416,13 @@ mod tests {
             ..state
         };
         assert_eq!(locate(hurt, 3, Some((8, 0))), (8, 3));
-        let won = MetroidMechanicalState { bosses: 1, ..hurt };
+        let ridley_only = MetroidMechanicalState { bosses: 1, ..hurt };
+        assert_eq!(locate(ridley_only, 3, Some((8, 3))), (8, 3));
+        let won = MetroidMechanicalState {
+            bosses: 1,
+            kraid_defeated: true,
+            ..hurt
+        };
         assert_eq!(locate(won, 0, Some((8, 3))), (9, 0));
     }
 
