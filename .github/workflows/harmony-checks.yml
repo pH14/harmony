@@ -204,6 +204,8 @@ jobs:
           run_one cargo test --locked --target x86_64-unknown-linux-musl \
             -p host-code-identity --lib sealed_static::tests::cached_guard_rejects_unexpected_executable_mapping -- --exact
           run_one cargo test --locked --target x86_64-unknown-linux-musl \
+            -p host-code-identity --lib sealed_static::tests::cached_guard_rejects_code_page_rewritten_with_its_own_bytes -- --exact
+          run_one cargo test --locked --target x86_64-unknown-linux-musl \
             -p host-code-identity --lib sealed_static::tests::measured_read_hash_and_comparison_bytes_survive_refusal -- --exact
           run_one cargo test --locked --target x86_64-unknown-linux-musl \
             -p uml --lib recording::tests::sealed_host_admits_public_recording_round_trip -- --exact

@@ -72,8 +72,7 @@ impl EndpointDriver for UmlSession {
             .into());
         }
         if branch.is_some_and(|spec| {
-            spec.seed() != self.seed
-                || !spec.effects().is_empty()
+            !spec.effects().is_empty()
                 || !spec.reseeds().is_empty()
                 || !spec.answers().is_empty()
                 || !spec.request_bindings().is_empty()
@@ -98,6 +97,7 @@ impl EndpointDriver for UmlSession {
     fn branch(&mut self, parent: SnapId, spec: &InputSpec) -> Result<(), EndpointError> {
         self.branch_with_service(
             parent,
+            spec.seed(),
             spec.config().clone(),
             spec.payloads().unwrap_or_default().to_vec(),
             Vec::new(),

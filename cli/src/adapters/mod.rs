@@ -54,7 +54,12 @@ fn dispatch_with_diagnostics(
     }
     if matches!(
         request.operation,
-        Operation::Replay | Operation::Branch | Operation::Resume | Operation::Search
+        Operation::Replay
+            | Operation::Branch
+            | Operation::Resume
+            | Operation::Search
+            | Operation::Shrink
+            | Operation::Explain
     ) && let Some(selection) = &request.selection
     {
         let source = crate::runs::locate(&selection.run)?;

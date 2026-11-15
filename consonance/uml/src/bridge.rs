@@ -390,6 +390,7 @@ impl Services {
                             thread,
                             observed,
                             ready,
+                            None,
                         )
                     });
                 Ok(reply(match decided {

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Opt-in standard-library package selection for the MIT-licensed v0.8.0 tool.
+# Opt-in standard-library package selection and module registration order
+# for the MIT-licensed v0.8.0 tool.
 --- a/tools/antithesis-go-toolexec/policy.go
 +++ b/tools/antithesis-go-toolexec/policy.go
 @@ -38 +38,2 @@
@@ -62,5 +63,68 @@
 +	}
 +	if before == after {
 +		t.Fatal("stdlib selection did not change the action cache key")
++	}
++}
+--- a/tools/antithesis-go-toolexec/compile.go
++++ b/tools/antithesis-go-toolexec/compile.go
+@@ -6,6 +6,7 @@
+ 	"go/token"
+ 	"os"
+ 	"path/filepath"
++	"slices"
+ 
+ 	"github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-instrumentor/common"
+ 	"github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-instrumentor/scanners/coverage/instrumentor"
+@@ -148,7 +149,7 @@
+ 	if err := common.WriteTextFile(registrationSource(packageName, callbackName, symbolName, edgeCount), registration); err != nil {
+ 		return nil, fmt.Errorf("writing %s: %w", registration, err)
+ 	}
+-	args = append(args, registration) // edit 2
++	args = insertBeforeSources(args, pkg, registration) // edit 2
+ 
+ 	if err := recordShard(shardDir, pkg.ImportPath, symbolName); err != nil {
+ 		return nil, err
+@@ -165,6 +166,21 @@
+ 	return args, nil
+ }
+ 
++// insertBeforeSources places the registration ahead of the package's own files.
++// Go initializes package-level variables in file order unless it sees a
++// dependency, and it cannot see one through an interface call made by another
++// package, so the handle must be declared first.
++func insertBeforeSources(args []string, pkg *Package, registration string) []string {
++	at := pkg.GoFiles[0].Index
++	for _, file := range pkg.GoFiles {
++		at = min(at, file.Index)
++	}
++	if pkg.ImportCfg >= at {
++		pkg.ImportCfg++
++	}
++	return slices.Insert(args, at, registration)
++}
++
+ // registrationSource is the file we add to the package being compiled.
+ //
+ // The variable is named for the identifier the instrumentor's call sites use, so
+--- /dev/null
++++ b/tools/antithesis-go-toolexec/harmony_init_order_test.go
+@@ -0,0 +1,19 @@
++package main
++
++import (
++	"slices"
++	"testing"
++)
++
++func TestHarmonyRegistrationPrecedesSources(t *testing.T) {
++	args := []string{"-p", "example", "-importcfg", "cfg", "-pack", "a.go", "b.go"}
++	pkg := &Package{ImportCfg: 3, GoFiles: []fileArg{{Index: 5, Path: "a.go"}, {Index: 6, Path: "b.go"}}}
++	got := insertBeforeSources(args, pkg, "antithesis_module.go")
++	want := []string{"-p", "example", "-importcfg", "cfg", "-pack", "antithesis_module.go", "a.go", "b.go"}
++	if !slices.Equal(got, want) {
++		t.Fatalf("got %v, want %v", got, want)
++	}
++	if got[pkg.ImportCfg] != "cfg" {
++		t.Fatalf("importcfg index %d points at %q", pkg.ImportCfg, got[pkg.ImportCfg])
 +	}
 +}

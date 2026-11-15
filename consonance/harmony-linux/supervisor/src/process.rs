@@ -8,12 +8,42 @@ use std::process::{Child, Command, ExitStatus};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 pub fn command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
-    command_group(spec, argv, true)
+    command_group(spec, argv, true, None)
 }
 pub fn terminal_command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
-    command_group(spec, argv, false)
+    command_group(spec, argv, false, None)
 }
-fn command_group(spec: &ExecutionSpec, argv: &[String], own_group: bool) -> io::Result<Command> {
+pub fn node_command(
+    spec: &ExecutionSpec,
+    argv: &[String],
+    clock_offset_nanos: Option<i64>,
+) -> io::Result<Command> {
+    command_group(spec, argv, true, clock_offset_nanos)
+}
+
+pub const TIME_NAMESPACE_PATH: &str = "/proc/self/ns/time";
+
+#[must_use]
+pub fn realtime_offset_line(offset_nanos: i64) -> String {
+    let seconds = offset_nanos.div_euclid(1_000_000_000);
+    let nanos = offset_nanos.rem_euclid(1_000_000_000);
+    format!("realtime {seconds} {nanos}\n")
+}
+
+#[must_use]
+pub fn reachable_realtime_offset(offset_nanos: i64, realtime_seconds: u64) -> i64 {
+    let floor = i64::try_from(realtime_seconds)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(-1_000_000_000);
+    offset_nanos.max(floor)
+}
+
+fn command_group(
+    spec: &ExecutionSpec,
+    argv: &[String],
+    own_group: bool,
+    clock_offset_nanos: Option<i64>,
+) -> io::Result<Command> {
     spec.validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     if argv.is_empty() {
@@ -57,6 +87,9 @@ fn command_group(spec: &ExecutionSpec, argv: &[String], own_group: bool) -> io::
         if own_group {
             command.process_group(0);
         }
+        if let Some(offset_nanos) = clock_offset_nanos {
+            enter_time_namespace(&mut command, offset_nanos)?;
+        }
         // SAFETY: the closure is installed before spawning and captures only
         // owned scalars and a vector; its child-side operations are the
         // credential syscalls required by the validated execution contract.
@@ -76,6 +109,46 @@ fn command_group(spec: &ExecutionSpec, argv: &[String], own_group: bool) -> io::
         }
     }
     Ok(command)
+}
+
+#[cfg(target_os = "linux")]
+fn enter_time_namespace(command: &mut Command, offset_nanos: i64) -> io::Result<()> {
+    let line = realtime_offset_line(offset_nanos).into_bytes();
+    // SAFETY: the closure captures an owned byte buffer and a scalar; the child
+    // runs only unshare, open, write and close, which are async-signal-safe.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::unshare(libc::CLONE_NEWTIME) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if offset_nanos == 0 {
+                return Ok(());
+            }
+            let fd = libc::open(
+                c"/proc/self/timens_offsets".as_ptr(),
+                libc::O_WRONLY | libc::O_CLOEXEC,
+            );
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let written = libc::write(fd, line.as_ptr().cast(), line.len());
+            let error = io::Error::last_os_error();
+            libc::close(fd);
+            if usize::try_from(written).ok() != Some(line.len()) {
+                return Err(error);
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn enter_time_namespace(_command: &mut Command, _offset_nanos: i64) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "time namespaces need Linux",
+    ))
 }
 
 #[cfg(unix)]
@@ -162,6 +235,28 @@ pub fn prepare_antithesis_output(
         Err(error) => return Err(error),
     }
     std::os::unix::fs::symlink(device, sink)
+}
+
+const PF_EXITING: u64 = 0x4;
+
+#[must_use]
+pub fn exiting(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat_exiting(&stat),
+        Err(error) => {
+            error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+        }
+    }
+}
+
+fn stat_exiting(stat: &str) -> bool {
+    let Some((_, fields)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    let mut fields = fields.split_whitespace();
+    let state = fields.next();
+    let flags = fields.nth(5).and_then(|flags| flags.parse::<u64>().ok());
+    matches!(state, Some("Z" | "X" | "x")) || flags.is_some_and(|flags| flags & PF_EXITING != 0)
 }
 
 pub fn enable_subreaper() -> io::Result<()> {
@@ -282,6 +377,22 @@ pub fn node_exit_record(violation: Option<(u16, &str)>) -> String {
     ) + "\n"
 }
 
+pub const RECOVERY_ASSERTION: &str = "workload becomes ready within 30 seconds after faults end";
+
+#[must_use]
+pub fn recovery_record(violation: Option<(u64, u64)>) -> String {
+    let (hit, details) = match violation {
+        Some((generation, quiet_nanos)) => (
+            true,
+            format!(r#"{{"recovery_generation":{generation},"quiet_nanos":{quiet_nanos}}}"#),
+        ),
+        None => (false, "{}".to_owned()),
+    };
+    format!(
+        r#"{{"antithesis_assert":{{"assert_type":"always","display_type":"AlwaysOrUnreachable","id":"{RECOVERY_ASSERTION}","message":"{RECOVERY_ASSERTION}","hit":{hit},"must_hit":false,"condition":false,"location":{{"file":"harmony-supervisor","function":"recovery","class":"","begin_line":0,"begin_column":0}},"details":{details}}}}}"#
+    ) + "\n"
+}
+
 #[cfg(unix)]
 pub fn open_record_sink(path: &std::path::Path) -> io::Result<std::fs::File> {
     std::fs::OpenOptions::new().append(true).open(path)
@@ -335,6 +446,56 @@ mod tests {
             unexpected_exit(&ExitStatus::from_raw(3 << 8)),
             Some("exit status 3".to_owned())
         );
+    }
+
+    #[test]
+    fn a_process_in_exit_or_a_zombie_is_exiting() {
+        let stat = |state: &str, flags: u64| {
+            format!("41 (nats (server)) {state} 1 41 41 0 -1 {flags} 0 0 0 0 0 0 0 0 20 0 9 0")
+        };
+        assert!(!stat_exiting(&stat("S", 0x0040_0040)));
+        assert!(!stat_exiting(&stat("D", 0x0040_0140)));
+        assert!(stat_exiting(&stat("D", 0x0040_0144)));
+        assert!(stat_exiting(&stat("R", PF_EXITING)));
+        assert!(stat_exiting(&stat("Z", 0)));
+        assert!(stat_exiting(&stat("X", 0)));
+        assert!(!stat_exiting("41 (truncated"));
+        assert!(!stat_exiting("41 (short) S 1"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_running_process_is_not_exiting_and_its_unreaped_exit_is() {
+        assert!(!exiting(std::process::id()));
+        let mut child = Command::new("/bin/true").spawn().unwrap();
+        let pid = child.id();
+        assert!(
+            (0..10_000).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                exiting(pid)
+            }),
+            "child {pid} never showed its exit"
+        );
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn a_realtime_offset_line_keeps_nanoseconds_nonnegative() {
+        assert_eq!(realtime_offset_line(0), "realtime 0 0\n");
+        assert_eq!(
+            realtime_offset_line(1_500_000_000),
+            "realtime 1 500000000\n"
+        );
+        assert_eq!(realtime_offset_line(-1), "realtime -1 999999999\n");
+        assert_eq!(realtime_offset_line(-2_000_000_000), "realtime -2 0\n");
+    }
+
+    #[test]
+    fn a_realtime_offset_never_moves_the_clock_before_the_epoch() {
+        assert_eq!(reachable_realtime_offset(-5_000_000_000, 3), -3_000_000_000);
+        assert_eq!(reachable_realtime_offset(-1_000_000_000, 3), -1_000_000_000);
+        assert_eq!(reachable_realtime_offset(7, 0), 7);
+        assert_eq!(reachable_realtime_offset(i64::MIN, u64::MAX), i64::MIN);
     }
 
     #[test]

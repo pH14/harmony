@@ -44,10 +44,6 @@ pub(super) fn loader_generation() -> Result<LoaderGeneration, MachineError> {
     Err(unavailable())
 }
 
-pub(super) fn loader_epoch() -> Result<(u64, u64), MachineError> {
-    Err(unavailable())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,7 +51,6 @@ mod tests {
     #[test]
     fn native_loader_is_unavailable_on_musl() {
         assert!(loader_generation().is_err());
-        assert!(loader_epoch().is_err());
         let attempted = crate::quicknes::loader_guard::open::<()>(|| {
             panic!("a musl host must refuse before native library loading")
         });

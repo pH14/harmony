@@ -104,9 +104,10 @@ reads the identity once before writing the stream and uses the same value for it
 checkpoints. Replay reconstructs adaptive mixture weights from each admitted
 result at the original reservation boundary and rejects job or skip weights
 that the recorded policy could not have produced. When the recorded policy
-stops the campaign on an objective, replay rejects work selected after it while allowing jobs
-already reserved in the admission window to finish. The same admission-window
-rule applies when cumulative work reaches the recorded work budget. Schema version 14
+stops the campaign on an objective, replay rejects work selected after it and
+expects the jobs reserved in the admission window at that point as `cancel`
+records. When cumulative work reaches the recorded work budget, replay allows
+the jobs already reserved in the admission window to finish. Schema version 14
 requires the loaded executable identity and records the reservation that owns each
 duplicate skip. Replay checks that skips follow
 selection order, stay within the admission window, and do not exceed the live
@@ -190,6 +191,40 @@ received results and reports the first missing planned reservation. Target
 recreation failure is an external failure, so its timing can change which
 outstanding jobs complete before the failure is reported.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
+The coordinator stops at once at the wall-time limit, after admitting the first
+objective when the policy stops the campaign on objectives, and when
+`CampaignExecutionOptions::interrupt` is set. It checks for a stop at least
+every 50 ms. It sets the cancel flag that `RolloutStop::cancelled` reads, so a
+worker ends its job at the next action boundary, and a workload with long
+actions can also end the running action. It drops every job in flight or held
+for ordered admission. A dropped job is never admitted and counts as neither an
+execution nor a finding. The stream records each dropped reservation as a
+`cancel` record, after every job and skip record, with the parent, mutation
+seed, selector draw, splice and suffix limit that replay needs to redraw it.
+The end record carries `jobs_cancelled`, and `interrupted` for an interrupt.
+Replay redraws the same selections, checks the count and admits only the
+recorded jobs, so a finding's actions come only from admitted jobs. An
+interrupted stream may end before the reservations a budget or objective stop
+would require. A hang stop and an execution or work budget still let the jobs
+in flight finish. Every
+workload searches with `default_window(workers)`, one reservation per worker.
+A wider window also makes each selection miss the results of more jobs in
+flight, which slows how fast lineages grow.
+
+A workload reports a job that hung by returning a result whose `hang` field
+holds the actions it attempted. The coordinator counts it in `hung_jobs`,
+writes a stream record with no decisions, passes the parent input plus those
+actions to `Evaluation::merge_hang_evidence`, and continues. A hung job admits
+nothing to the archive and adds no feedback. Replay reruns hung jobs like any
+other, so a hang that does not recur is a replay mismatch. The coordinator
+stops reserving jobs when the current run of consecutive hung jobs is unlikely
+at the hang rate seen before it: with `h` hangs in the `n` earlier jobs it uses
+the rate `(h + 1) / (n + 2)` and stops when `rate^(run - 1)` falls below
+1/1000. The jobs in flight finish and are admitted, and the campaign returns
+its report with `hang_stop` set to a message naming both counts. Replay accepts
+a stream that ends after the hang stop. The report, progress records and search
+checkpoint carry `hung_jobs`; the checkpoint also carries the current run
+length.
 
 `memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
 and the adaptive duration reserve are subtracted, and the archive gets the rest
@@ -269,7 +304,7 @@ campaign and target contracts:
 | --- | --- |
 | `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for deterministic execution work. |
 | `InputPolicy` | Define the action vocabulary and the policy identifiers a recording must match. |
-| `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
+| `Evaluation` | Classify outcomes, declare doomed states, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
 An `ArchiveKey` names four things about a state, and nothing else reads a
@@ -281,6 +316,18 @@ key as a magnitude:
 | How far along is it? | `ArchiveKey::progress`, an `Ord` value. `()` for a workload with no progress notion. |
 | Which same-place states are distinct? | `ArchiveKey::identity`. Two entries at one place and progress with different identities hold separate slots. |
 | Which states at one slot survive? | `ArchiveKey::preference_cmp` at each of `ArchiveKey::preferences()` indices; the default declares none and compares `Ordering::Equal`. |
+
+A workload may build its progress from a staged plan in `search::plan`. A
+plan is an ordered slice of values implementing `plan::Stage`: each stage has
+a name, one integer objective computed from the state (with the parent's value
+for that stage passed in, for a state the stage cannot measure), and a done
+test. `plan::locate` returns (stage, objective) for the first stage whose done
+test fails, skipping a stage whose `latches` is true once the parent is past
+it, so a reached waypoint stays reached for every descendant.
+`ArchiveKey::progress` returns that pair, so the stage is the outer tier and
+the objective orders states within it. Place, identity and preferences remain
+the key's own; a key that wants them to differ by stage reads the stage from
+its progress. A workload without a plan keeps its own progress.
 
 A cell is a progress value paired with a place. A slot is a cell paired with
 an identity. A slot keeps the top `capacity()` entries under each preference,
@@ -382,6 +429,19 @@ execution receipts retain their own validation authority.
 The shared `search::rollout` loop owns action evidence capture, candidate
 creation, retention probe placement, and stopping; a workload provides action execution and state evaluation.
 
+`Evaluation::is_doomed` declares that a state has no future, such as a player
+falling into a pit. It reads one state and runs no frames; the default is
+`false`. `search::rollout::classify` is the one place the searcher reads it:
+a runnable state that the workload calls doomed ends the job with
+`ExecutionDisposition::Terminal`, as a death does, so it is never kept. The
+outcome serializes a doomed end as a fourth disposition, `doomed`, so a
+result that crosses a worker boundary keeps it and its hash covers it, while
+the bytes of every outcome that is not doomed, and so the result hashes and
+streams of a workload without doomed states, do not change. Reports and progress records
+count doomed endpoints as `doomed_endpoints`, apart from `terminal_endpoints`.
+A workload that runs its own job loop instead of `search::rollout` does not
+read `is_doomed`.
+
 Workload packages live in `../../workloads`. They own adapters, execution
 integration, and campaign binaries. A probe must restore candidate state before
 returning, including adapter caches and pending input.
@@ -480,9 +540,17 @@ no preparation-failure report.
 
 Choices are powers of two from one through the greatest power of two that fits
 the requested bound. Half of draws explore scales uniformly. The other half
-selects the greatest observed useful-outcome count per unit of logical work,
-breaking ties with the seeded generator. With no useful observations both
-halves explore. The exploration share and history sizes are fixed algorithm
+continues the parent's lineage when it can: if the parent's last action carried
+a duration that fits the bound, and no job from the parent has since run
+without keeping a state or leaving its place (its suffix length is still one
+action), the draw repeats that duration. A lineage then holds one scale over
+many jobs, as swarm testing holds one configuration per test, so a schedule
+that needs a long run of slow faults is reached once instead of being redrawn
+every job. Otherwise the draw selects the greatest observed useful-outcome
+count per unit of logical work, breaking ties with the seeded generator. With
+no useful observations both halves explore. Replay reads the parent's last
+action and suffix length at the job's reservation, so it repeats the same
+choice. The exploration share and history sizes are fixed algorithm
 constants, not workload knobs. Scores use integer cross-products and logical
 work, never host timings. A maximum of one admits only a duration of one.
 Changing duration or cost units requires a new workload policy identity and
@@ -620,6 +688,35 @@ Counting portfolio holders compares every pair of holders in each slot, which
 on every line would take most of the coordinator's time. The draws of hundreds
 of thousands of cells take tens of megabytes per line.
 
+Every 32nd live progress line and the final line also carry
+`selector.cell_interval`, the per-cell draw accounting since the previous line
+that carried it. `since` is that line's execution count, `cells` the number of
+cells with any count in the interval, `totals` the sums over all of them, and
+`top` the 16 cells with the most draws in the interval, each named as `cell`.
+Each cell reports these counts:
+
+- `draws`: selections of an entry in the cell.
+- `continuation`: draws dispatched from the continuation bank, credited to the
+  cell of the entry they continue.
+- `recent`: draws whose cell came from the recent window. The other tier draws
+  chose the cell by its count-decay weight.
+- `best_holder`: draws whose holder came from the best-holder share. The other
+  draws chose the holder by its count-decay weight.
+- `top_tier`: draws whose tier was drawn at rank 0.
+- `fall_through`: draws whose tier was drawn at or above the fall-through
+  floor while `tier_halvings` had lowered those ranks' weight.
+- `resets`: resets of the cell's draw count.
+- `opened`, `novel`, `replaced`: admissions whose parent sat in the cell that
+  opened a cell holding nothing, opened a cell never seen at its tier or above
+  (the `cells` count of `tier_runs`), or displaced a slot holder.
+
+The counts are saved in search checkpoints, so a resumed run repeats the
+original lines. A run with no progress sink keeps no counts, and a stream replay
+keeps none, so neither grows the archive. The counts are left out of the archive
+memory estimate, so snapshot eviction runs on the same schedule as without
+them. A 100M-execution run writes about 350 of these reports, about 1.2 MB or
+under 3% of its `progress.jsonl`.
+
 Continuation edges copy their action tail only after the existing-cost check
 accepts the edge; equal-cost and more expensive routes leave the bank unchanged
 without allocating an action vector.
@@ -694,7 +791,36 @@ kept a state or left the place resets it to one action. A job that
 ended in a terminal state without either leaves it unchanged. The archive holds
 the length per entry, so checkpoints carry it and compaction drops it with its
 entry. Splices and continuations run their recorded tails and leave it
-unchanged. The coordinator reads the length when it dispatches the job and
+unchanged.
+
+The campaign also keeps one reach length, `SuffixReach`, shared by every
+parent. A drawn job runs the longer of its parent's length and the reach
+length. The reach length starts at 64 actions. The archive remembers every
+slot that has held a state, so a kept state that opens a slot no state has held
+before (a novel slot) differs from one that replaces a holder or refills a slot
+that memory pressure emptied. The reach counts actions run and novel slots
+opened by drawn jobs over about the last 1,024 actions. Once it has counted 64
+actions, each drawn job moves the reach length: it doubles, up to 64 actions,
+when at least half of the counted actions opened novel slots, and halves, down
+to one action, otherwise. When most actions open novel slots, every action of
+a long job adds a new state, so a long job wastes little and extends a lineage
+by many actions per draw. When few actions do, one-action jobs spread over
+many parents find the rare new state at less cost. Starting long gives the
+first jobs from the root deep lineages, and a failing start costs about 126
+actions, because each job moves the length one step. Fault actions often open
+a novel slot, because the edge bucket is part of the holder identity. In NATS
+searches with the clock and kill faults left out, 57% to 88% of drawn jobs
+ran 64 actions in four of five 30-minute searches; with every fault kind about
+20% did. Those searches found the NATS bug in 64-action jobs that ended 20 to
+160 seconds of guest time after power-on. Tiny worlds open novel slots with at most about one action in eight, so the
+reach length falls to one action within the first few jobs and the per-parent
+length decides. The fall costs those first jobs: crossing a fresh room in 16
+tiny-world layouts takes a median of 118 units of work. The reach counts and
+the slot set change only at admission. The core checkpoint carries the counts, the
+archive checkpoint carries the slot set, and the slot set counts toward the
+archive's history memory.
+
+The coordinator reads the length when it dispatches the job and
 records it as `suffix_limit` in the job or skip record. While a job of that
 length or longer from the same parent is still in flight, the next job runs one
 action instead. The job in flight already tests that length, and admission in
@@ -895,6 +1021,20 @@ archive tier. A final checkpoint is also written after the reservation queue dra
 including for runs shorter than the periodic interval. Milestone and tier
 checkpoints are kept; only the last two interval checkpoints are kept.
 
+With `CheckpointPlan::on_stall`, the coordinator also watches the leading tier
+after each admission. When that tier starts to lose draw weight to the tier
+below it (the selector's halving condition, `tier_halvings` above zero), the
+run writes a kept checkpoint with reason `stall` and appends one line to
+`stalls.jsonl` in the checkpoint directory: the checkpoint's file name, the
+tier (the progress value, which for a staged plan is the stage and its
+objective), the tier's yield count, the execution of its last yield, the jobs
+drawn from the tier since then with the count of each action those jobs ran,
+and the tier's 16 most-selected states with their place, identity, selection
+counts and input length. The watch resets when the leading tier changes or
+yields again, so one stall writes one report. It reads the archive and changes
+nothing in selection, and a run with the report records the same stream as one
+without it.
+
 Scheduling stays on the coordinator. At a due admission boundary it joins the
 preceding publication, captures the header/body and freezes owned workload
 snapshots, then hands the image and exclusive store writer to one thread.
@@ -1016,7 +1156,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 9; a checkpoint from another
+match. The search checkpoint format is version 13; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation
@@ -1038,6 +1178,33 @@ was draining the reservation queue, a larger resumed budget fills the vacant
 slots up to the recorded window before admitting another result. Workloads opt
 in through `Reporting::evidence_checkpoint` and
 `Reporting::evidence_from_checkpoint`.
+
+The body starts with a key-free record of every archive entry: its id, its
+nearest saved ancestor, the actions from that ancestor (or from the root when
+none is saved) and its milestones (`SavedStateRecord`). When history compaction
+has dropped an entry's archive parent, its nearest saved ancestor is the
+earlier saved entry with the longest input that prefixes its own, so the import
+keys it from that ancestor's key and keeps the stage latches it carries. Only the action and
+milestone types give these records their meaning, so another build of the same
+workload can read them after its key has changed. `CampaignOrigin::SavedStates`
+starts a new search from them. `SavedStates::open` requires the checkpoint's
+workload identity and reads only these records and the snapshot store. It
+keeps the stored snapshots only when the checkpoint's executable identity is
+the running one, since a target's snapshot may restore only in the executable
+that wrote it; from any other build every entry is rebuilt from its actions.
+The import also rebuilds every entry when the checkpoint's genesis snapshot
+differs from the running genesis (another root input, for example), since a
+stored snapshot then does not match the state its actions reach.
+The import shares the archive origin's loop: entries go in id order, each from its
+stored snapshot or, without one, by replaying its actions from its imported
+ancestor, and each is keyed with the current `Evaluation::current_key` and
+admitted as a new candidate. Each cell's first arrival and each slot's best
+holder under every preference survive, and the evidence, selector counts,
+duration policies and random state start fresh. The draw tables fold the
+records' actions, and the stream header names the checkpoint's path and
+SHA-256 with origin kind `saved_states`. Every header policy and executable
+identity that differs from the run is recorded in `checkpoint_policy_changes`
+instead of being refused. The resumed stream cannot be replayed.
 
 
 ## Host hashing

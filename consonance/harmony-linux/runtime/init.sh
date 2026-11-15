@@ -74,6 +74,7 @@ log "HARMONY_OCI: startup"
 
 [ -x "$BUSYBOX" ] || finish 127
 [ -x "$RUNC" ] || startup_failure 127 "missing runtime: $RUNC"
+[ ! -e /initrd.image ] || startup_failure 125 "workload image does not fit in guest memory: the kernel could not unpack the initramfs; raise runner.options.ram_mib"
 [ -d "$BUNDLE" ] || startup_failure 125 "missing bundle: $BUNDLE"
 [ -f "$BUNDLE/config.json" ] || startup_failure 125 "missing OCI configuration"
 [ -f "$BUNDLE/execution.json" ] || startup_failure 125 "missing execution specification"

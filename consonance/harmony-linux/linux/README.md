@@ -31,6 +31,13 @@ instruction-test controls, and the driver KUnit images exclude the clock at
 build time to isolate driver serialization on QEMU; neither is a deployable
 runtime profile.
 
+Both kernels build in RAM disks, device mapper with `dm-log-writes` and
+`dm-delay`, and ext4 for node disks in faults bundles. Sixteen 1 GiB `brd`
+devices allocate pages only when written. The supervisor replays the write log
+to cut a disk at a power loss, and loads `error` and `delay` tables for disk
+error and stall windows ([node disks](../supervisor/README.md#node-disks)). The
+kernel builders assert these options.
+
 The common kernel policy disables `RWSEM_SPIN_ON_OWNER` when either Harmony
 virtual clock is compiled in. Its reader-owner optimistic-spin timeout uses
 `sched_clock()`, which remains frozen during exit-free spinning. Contended
@@ -62,8 +69,14 @@ make -C consonance/harmony-linux fetch
 consonance/harmony-linux/scripts/build-platform-runtime.sh
 ```
 
+`make -C consonance/harmony-linux oci-runtime-image` (and `arm64-oci-image`
+on Arm64) runs the same builder. `harmony check` from a source checkout runs
+both commands when the checkout has no current runtime, with a per-checkout
+`GUEST_BUILD_ROOT` under the Harmony cache directory, so two checkouts on one
+machine never share a build tree.
+
 The build requires `nightly-2026-06-16` with `rust-src` and the native Linux
-musl target. It builds the matching kernel and static guest binaries, packages
+musl target, and installs them through `rustup` when they are missing. It builds the matching kernel and static guest binaries, packages
 the platform OCI fixture, and records a source and artifact manifest. The
 canonical entry point rejects `N6_TRAPS_OFF`, `TASK_PARK_PROFILE`,
 `NESTED_HOST_PROFILE`, and nondefault `ARM64_KERNEL_PROFILE`; build those

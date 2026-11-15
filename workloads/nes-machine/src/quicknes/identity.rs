@@ -132,17 +132,6 @@ pub(super) fn loader_generation() -> Result<LoaderGeneration, MachineError> {
     }
 }
 
-pub(super) fn loader_epoch() -> Result<(u64, u64), MachineError> {
-    #[cfg(target_os = "linux")]
-    {
-        linux::loader_epoch()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        macos::loader_epoch()
-    }
-}
-
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{BTreeSet, CStr, Digest, LoaderGeneration, MachineError, Sha256, c_void, refused};
@@ -418,55 +407,6 @@ mod linux {
         })
     }
 
-    struct EpochProbe {
-        epoch: Option<(u64, u64)>,
-        error: Option<MachineError>,
-    }
-
-    unsafe extern "C" fn visit_epoch(
-        info: *mut DlPhdrInfo,
-        size: usize,
-        data: *mut c_void,
-    ) -> libc::c_int {
-        // SAFETY: `data` points to the probe until the synchronous loader
-        // walk returns.
-        let probe = unsafe { &mut *(data.cast::<EpochProbe>()) };
-        if info.is_null() || size < 48 {
-            probe.error = Some(refused(
-                "glibc loaded-image generation fields are unavailable",
-            ));
-            return 1;
-        }
-        // SAFETY: the validated 48-byte glibc record includes the epoch
-        // fields and remains live for this callback.
-        let info = unsafe { &*info };
-        probe.epoch = Some((info.dlpi_adds, info.dlpi_subs));
-        1
-    }
-
-    pub(super) fn loader_epoch() -> Result<(u64, u64), MachineError> {
-        let mut probe = EpochProbe {
-            epoch: None,
-            error: None,
-        };
-        // SAFETY: `probe` remains live for this synchronous loader walk;
-        // `visit_epoch` checks the first record before reading its fields.
-        let result = unsafe { dl_iterate_phdr(visit_epoch, (&raw mut probe).cast()) };
-        if let Some(error) = probe.error {
-            return Err(error);
-        }
-        if result != 1 {
-            return Err(refused("glibc loaded-image epoch probe was interrupted"));
-        }
-        let (adds, removes) = probe
-            .epoch
-            .ok_or_else(|| refused("glibc loaded-image epoch is empty"))?;
-        if adds < removes {
-            return Err(refused("glibc loaded-image epoch is inconsistent"));
-        }
-        Ok((adds, removes))
-    }
-
     #[cfg(test)]
     mod tests {
         use super::is_system_library_path;
@@ -546,20 +486,6 @@ mod macos {
             }
         });
         IMAGE_EPOCH.load(Ordering::SeqCst)
-    }
-
-    pub(super) fn loader_epoch() -> Result<(u64, u64), MachineError> {
-        let start_epoch = image_epoch();
-        let start_active = IMAGE_CALLBACKS_ACTIVE.load(Ordering::SeqCst);
-        let adds = IMAGE_ADDS.load(Ordering::SeqCst);
-        let removes = IMAGE_REMOVES.load(Ordering::SeqCst);
-        let finish_active = IMAGE_CALLBACKS_ACTIVE.load(Ordering::SeqCst);
-        let finish_epoch = image_epoch();
-        if start_active != 0 || finish_active != 0 || start_epoch != finish_epoch || adds < removes
-        {
-            return Err(refused("macOS loaded images changed during epoch sample"));
-        }
-        Ok((adds, removes))
     }
 
     pub(super) fn loader_generation() -> Result<LoaderGeneration, MachineError> {

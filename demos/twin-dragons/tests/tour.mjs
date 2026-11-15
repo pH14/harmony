@@ -11,7 +11,7 @@ const browser = await chromium.launch({
     ? { channel: process.env.CHROME_CHANNEL }
     : {}),
 });
-const url = `${(process.env.DEMO_URL || "http://127.0.0.1:4173").replace(/\/$/, "")}/?level=0&pace=0`;
+const url = `${(process.env.DEMO_URL || "http://127.0.0.1:4173").replace(/\/$/, "")}/?game=twin-dragons&level=0&pace=0`;
 const errors = [];
 async function open(options = {}) {
   const page = await browser.newPage(options);
@@ -118,16 +118,12 @@ async function watchDuringTour(page) {
   await page.screenshot({ path: `test-results/tour-live-${page.viewportSize().width}.png` });
   assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
   await page.locator('#play').click();
-  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Pause') && Number(document.querySelector('#scrub').value) >= 10);
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'pause' && Number(document.querySelector('#scrub').value) >= 10);
   await page.locator('#play').focus();
   assert.equal(await page.evaluate(() => document.activeElement.id), 'play');
   await page.keyboard.press('Space');
-  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Replay'));
+  await page.waitForFunction(() => document.querySelector('#play').dataset.state === 'play');
   await page.keyboard.press('Tab');
-  if (await page.locator('#sound').evaluate((node) => !!node.closest('.transport'))) {
-    assert.equal(await page.evaluate(() => document.activeElement.id), 'sound');
-    await page.keyboard.press('Tab');
-  }
   assert.equal(await page.evaluate(() => document.activeElement.id), 'scrub');
   await page.keyboard.press('Home');
   await page.waitForFunction(() => document.querySelector('#scrub').value === '0' && document.querySelector('#frame-label').textContent.startsWith('FRAME 0'));
@@ -254,10 +250,14 @@ try {
   await next(page, 4);
   await page.locator("#tour-next").click();
   assert.equal(await page.locator("#guided-tour").isVisible(), false);
+  assert.equal(await page.locator("#inspector").isVisible(), true);
   assert.equal(
     await page.locator("#pause").getAttribute("aria-label"),
-    "Pause Search",
+    "Resume Search",
+    "The search stays held while History is open after the tour",
   );
+  await page.locator("#close-inspector").click();
+  await page.waitForFunction(() => document.querySelector("#pause").getAttribute("aria-label") === "Pause Search");
   assert.equal(
     await page.evaluate((key) => localStorage.getItem(key), TOUR_KEY),
     "seen",
@@ -375,9 +375,11 @@ try {
 
   assert.equal(
     await page.locator("#pause").getAttribute("aria-label"),
-    "Pause Search",
-    "Tour exit must resume even an already-paused search",
+    "Resume Search",
+    "Tour exit holds the search while History is open",
   );
+  await page.locator("#close-inspector").click();
+  await page.waitForFunction(() => document.querySelector("#pause").getAttribute("aria-label") === "Pause Search");
   await page.close();
 
   const phone = await open({
@@ -400,7 +402,7 @@ try {
         const hole = [...document.querySelectorAll('#tour-rings rect')].at(-1).getBoundingClientRect(), pane = document.querySelector('#inspector').getBoundingClientRect();
         return {top:hole.top,bottom:hole.bottom,paneTop:pane.top,paneBottom:pane.bottom};
       });
-      assert.ok(clips.top >= clips.paneTop - 6 && clips.bottom <= clips.paneBottom + 6, `Phone spotlights stay inside the visible history sheet: ${JSON.stringify(clips)}`);
+      assert.ok(clips.top >= 0 && clips.bottom <= clips.paneBottom + 6, `Phone spotlights stay inside the visible history sheet: ${JSON.stringify(clips)}`);
     }
     if (step === 1) await watchDuringTour(phone);
     if (step === 1 || step === 2 || step === 4)

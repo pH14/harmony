@@ -26,17 +26,25 @@ export function trackingGoal(held, point, points, now, progress, retreatMs = 150
   return !held.behind || now - held.behind < retreatMs ? goal : point;
 }
 
-export function followView(view, point, panel, viewport, targetZoom, seconds) {
+export function followView(view, point, panel, viewport, targetZoom, seconds, fixedZoom = false) {
   const dt = Math.max(0, Math.min(0.1, seconds));
   if (!dt) return { ...view };
+  if (fixedZoom) {
+    const zoom = view.zoom + (targetZoom - view.zoom) * (1 - Math.exp(-dt / 0.6)), ease = 1 - Math.exp(-dt / 0.25);
+    return { ...panelCenter(panel, zoom, { x: view.x + (point.x - view.x) * ease, y: view.y + (point.y - view.y) * ease }, viewport), zoom };
+  }
   const fit = Math.min(viewport.width / panel.width, viewport.height / panel.height);
-  const distance = Math.hypot((point.x - view.x) * fit / viewport.width,
-    (point.y - view.y) * fit / viewport.height);
+  const reach = panelCenter(panel, view.zoom, point, viewport);
+  const distance = Math.hypot((reach.x - view.x) * fit / viewport.width,
+    (reach.y - view.y) * fit / viewport.height);
   const framing = Math.max(1, Math.min(targetZoom, distance ? 0.4 / distance : targetZoom));
   const zoom = view.zoom + (framing - view.zoom) * (1 - Math.exp(-dt / (framing < view.zoom ? 0.15 : 0.6)));
   const ease = framing < view.zoom && distance * view.zoom > 0.5 ? 0 : 1 - Math.exp(-dt / 0.35);
+  const growth = Math.max(0, view.zoom / zoom - 1) / (2 * fit * view.zoom);
+  const anchored = (from, to, span) => from + Math.sign(to - from) * Math.min(Math.abs(to - from), growth * span);
+  const base = { x: anchored(view.x, point.x, viewport.width), y: anchored(view.y, point.y, viewport.height) };
   const center = panelCenter(panel, zoom,
-    { x: view.x + (point.x - view.x) * ease, y: view.y + (point.y - view.y) * ease }, viewport);
+    { x: base.x + (point.x - base.x) * ease, y: base.y + (point.y - base.y) * ease }, viewport);
   const oldScale = fit * view.zoom, nextScale = fit * zoom;
   let movement = 0;
   for (const x of [-0.5, 0.5]) for (const y of [-0.5, 0.5]) {

@@ -3,6 +3,8 @@
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
+use std::collections::BTreeSet;
+
 use snapshot_store::{PAGE_SIZE, SnapshotId, Store, StoreConfig, StoreError};
 
 const MEM_PAGES: u64 = 16;
@@ -16,7 +18,7 @@ struct RefSnap {
     seeds: Vec<u8>,
     vm_state: Vec<u8>,
     refcount: u64,
-    owned_pages: u64,
+    owned: BTreeSet<usize>,
     chain_len: u32,
     parent: Option<usize>,
     resident: bool,
@@ -40,25 +42,16 @@ impl RefState {
             .collect()
     }
 
-    fn owned_nonzero_contents(&self, i: usize, out: &mut std::collections::BTreeSet<u8>) {
-        let snap = &self.snaps[i];
-        match snap.parent {
-            None => out.extend(snap.seeds.iter().copied().filter(|&s| s != 0)),
-            Some(p) => {
-                let parent = &self.snaps[p].seeds;
-                for (gfn, &seed) in snap.seeds.iter().enumerate() {
-                    if seed != 0 && seed != parent[gfn] {
-                        out.insert(seed);
-                    }
-                }
-            }
-        }
-    }
-
     fn stored_unique_pages_exact(&self) -> u64 {
-        let mut contents = std::collections::BTreeSet::new();
+        let mut contents = BTreeSet::new();
         for i in self.resident_indices() {
-            self.owned_nonzero_contents(i, &mut contents);
+            let snap = &self.snaps[i];
+            contents.extend(
+                snap.owned
+                    .iter()
+                    .map(|&gfn| snap.seeds[gfn])
+                    .filter(|&s| s != 0),
+            );
         }
         contents.len() as u64
     }
@@ -74,7 +67,7 @@ impl RefState {
     }
 
     fn gc(&mut self) {
-        let mut reachable = std::collections::BTreeSet::new();
+        let mut reachable = BTreeSet::new();
         for i in 0..self.snaps.len() {
             if !self.snaps[i].resident || self.snaps[i].refcount == 0 {
                 continue;
@@ -90,6 +83,27 @@ impl RefState {
         for i in 0..self.snaps.len() {
             if self.snaps[i].resident && !reachable.contains(&i) {
                 self.snaps[i].resident = false;
+            }
+        }
+        for i in 0..self.snaps.len() {
+            if !self.snaps[i].resident || self.snaps[i].refcount > 0 {
+                continue;
+            }
+            let children: Vec<usize> = (0..self.snaps.len())
+                .filter(|&c| self.snaps[c].resident && self.snaps[c].parent == Some(i))
+                .collect();
+            if let [child] = children[..] {
+                let folded = std::mem::take(&mut self.snaps[i].owned);
+                self.snaps[child].owned.extend(folded);
+                self.snaps[child].parent = self.snaps[i].parent;
+                self.snaps[i].resident = false;
+            }
+        }
+        for i in 0..self.snaps.len() {
+            if self.snaps[i].resident {
+                self.snaps[i].chain_len = self.snaps[i]
+                    .parent
+                    .map_or(1, |p| self.snaps[p].chain_len.saturating_add(1));
             }
         }
     }
@@ -125,12 +139,14 @@ enum Transition {
     Gc,
 }
 
-fn apply_writes(parent: &[u8], writes: &[(u64, u8)]) -> (Vec<u8>, u64) {
+fn apply_writes(parent: &[u8], writes: &[(u64, u8)]) -> (Vec<u8>, BTreeSet<usize>) {
     let mut seeds = parent.to_vec();
     for &(gfn, seed) in writes {
         seeds[gfn as usize] = seed;
     }
-    let owned = (0..seeds.len()).filter(|&i| seeds[i] != parent[i]).count() as u64;
+    let owned = (0..seeds.len())
+        .filter(|&i| seeds[i] != parent[i])
+        .collect();
     (seeds, owned)
 }
 
@@ -150,7 +166,7 @@ impl ReferenceStateMachine for StoreRef {
                         seeds,
                         vm_state: b"base".to_vec(),
                         refcount: 1,
-                        owned_pages: owned,
+                        owned,
                         chain_len: 1,
                         parent: None,
                         resident: true,
@@ -198,7 +214,7 @@ impl ReferenceStateMachine for StoreRef {
                     seeds,
                     vm_state: vm_state.clone(),
                     refcount: 1,
-                    owned_pages: owned,
+                    owned,
                     chain_len,
                     parent: Some(*parent),
                     resident: true,
@@ -210,12 +226,12 @@ impl ReferenceStateMachine for StoreRef {
                 vm_state,
             } => {
                 let (seeds, _) = apply_writes(&state.snaps[*parent].seeds, writes);
-                let owned_pages = seeds.iter().filter(|&&seed| seed != 0).count() as u64;
+                let owned = (0..seeds.len()).filter(|&gfn| seeds[gfn] != 0).collect();
                 state.snaps.push(RefSnap {
                     seeds,
                     vm_state: vm_state.clone(),
                     refcount: 1,
-                    owned_pages,
+                    owned,
                     chain_len: 1,
                     parent: None,
                     resident: true,
@@ -385,7 +401,8 @@ impl StateMachineTest for StoreMachine {
             let s = sut.store.stats(id).unwrap();
             assert_eq!(s.logical_pages, MEM_PAGES);
             assert_eq!(
-                s.owned_pages, model.owned_pages,
+                s.owned_pages,
+                model.owned.len() as u64,
                 "owned_pages for id {id:?}"
             );
             assert_eq!(s.chain_len, model.chain_len, "chain_len for id {id:?}");

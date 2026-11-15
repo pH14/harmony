@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::error::Error;
+use std::{
+    error::Error,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -29,14 +35,118 @@ impl ExecutionDisposition {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "WireOutcome", into = "WireOutcome")]
 pub struct Outcome {
     pub objective_reached: bool,
     pub disposition: ExecutionDisposition,
+    pub doomed: bool,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename = "ExecutionDisposition", rename_all = "snake_case")]
+enum WireDisposition {
+    Runnable,
+    Terminal,
+    Failed,
+    Doomed,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename = "Outcome")]
+struct WireOutcome {
+    objective_reached: bool,
+    disposition: WireDisposition,
+}
+
+impl From<Outcome> for WireOutcome {
+    fn from(outcome: Outcome) -> Self {
+        let disposition = match outcome.disposition {
+            ExecutionDisposition::Runnable => WireDisposition::Runnable,
+            ExecutionDisposition::Terminal if outcome.doomed => WireDisposition::Doomed,
+            ExecutionDisposition::Terminal => WireDisposition::Terminal,
+            ExecutionDisposition::Failed => WireDisposition::Failed,
+        };
+        Self {
+            objective_reached: outcome.objective_reached,
+            disposition,
+        }
+    }
+}
+
+impl From<WireOutcome> for Outcome {
+    fn from(wire: WireOutcome) -> Self {
+        let (disposition, doomed) = match wire.disposition {
+            WireDisposition::Runnable => (ExecutionDisposition::Runnable, false),
+            WireDisposition::Terminal => (ExecutionDisposition::Terminal, false),
+            WireDisposition::Failed => (ExecutionDisposition::Failed, false),
+            WireDisposition::Doomed => (ExecutionDisposition::Terminal, true),
+        };
+        Self {
+            objective_reached: wire.objective_reached,
+            disposition,
+            doomed,
+        }
+    }
+}
+
+pub fn classify<G: Workload + ?Sized>(
+    workload: &G,
+    run: &G::Run,
+    target: &G::Target,
+) -> Result<Outcome, Box<dyn Error>> {
+    let mut outcome = workload.rollout_outcome(run, target)?;
+    if outcome.disposition == ExecutionDisposition::Runnable && workload.is_doomed(target) {
+        outcome.disposition = ExecutionDisposition::Terminal;
+        outcome.doomed = true;
+    }
+    Ok(outcome)
 }
 
 impl Outcome {
-    pub const fn should_stop(self, stop_rollout_on_objective: bool) -> bool {
-        self.disposition.is_terminal() || (stop_rollout_on_objective && self.objective_reached)
+    pub fn should_stop(self, stop: &RolloutStop) -> bool {
+        self.ends_rollout(stop) || stop.cancelled()
+    }
+
+    pub const fn ends_rollout(self, stop: &RolloutStop) -> bool {
+        self.disposition.is_terminal() || (stop.objective && self.objective_reached)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RolloutStop {
+    objective: bool,
+    cancel: Option<Arc<AtomicBool>>,
+}
+
+impl RolloutStop {
+    pub const fn new(stop_on_objective: bool) -> Self {
+        Self {
+            objective: stop_on_objective,
+            cancel: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_cancel(self, cancel: Option<Arc<AtomicBool>>) -> Self {
+        Self {
+            objective: self.objective,
+            cancel,
+        }
+    }
+
+    pub const fn stops_on_objective(&self) -> bool {
+        self.objective
+    }
+
+    #[must_use]
+    pub const fn cancellation(&self) -> Option<&Arc<AtomicBool>> {
+        self.cancel.as_ref()
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
     }
 }
 
@@ -86,7 +196,7 @@ impl<G: Workload + ?Sized> Rollout<G> for WorkloadRollout<'_, G> {
     }
 
     fn outcome(&self) -> Result<Outcome, Box<dyn Error>> {
-        self.workload.rollout_outcome(self.run, self.target)
+        classify(self.workload, self.run, self.target)
     }
 
     fn snapshot(&mut self) -> Result<G::Snapshot, Box<dyn Error>> {
@@ -112,25 +222,24 @@ pub fn execute_job<G: Workload + ?Sized>(
     parent_milestones: G::Milestones,
     suffix: &[G::Action],
     retention: RetentionPolicy,
-    stop_rollout_on_objective: bool,
+    stop: RolloutStop,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
     workload.verify_integrity()?;
     workload.reset(target);
     workload.restore(target, origin_snapshot)?;
     let mut replay_milestones = parent_milestones;
-    if !workload
-        .rollout_outcome(run, target)?
-        .disposition
-        .is_terminal()
-    {
+    if !classify(workload, run, target)?.disposition.is_terminal() {
         for action in replay {
+            if stop.cancelled() {
+                return Ok(CampaignJobResult {
+                    preparation_failure: None,
+                    hang: None,
+                    actions: Vec::new(),
+                });
+            }
             workload.apply_action(target, action, &mut replay_milestones)?;
             workload.verify_integrity()?;
-            if workload
-                .rollout_outcome(run, target)?
-                .disposition
-                .is_terminal()
-            {
+            if classify(workload, run, target)?.disposition.is_terminal() {
                 break;
             }
         }
@@ -140,7 +249,7 @@ pub fn execute_job<G: Workload + ?Sized>(
         parent_milestones,
         suffix,
         retention,
-        stop_rollout_on_objective,
+        stop,
     )
 }
 
@@ -149,7 +258,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
     parent_milestones: G::Milestones,
     suffix: &[G::Action],
     retention: RetentionPolicy,
-    stop_rollout_on_objective: bool,
+    stop: RolloutStop,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
     let mut milestones = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -161,6 +270,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
                 .disposition
                 .is_failed()
                 .then(|| target.observations()),
+            hang: None,
             actions,
         });
     }
@@ -171,7 +281,7 @@ pub fn execute_suffix<G: Workload + ?Sized>(
         objective_seen |= raw_outcome.objective_reached;
         let outcome = Outcome {
             objective_reached,
-            disposition: raw_outcome.disposition,
+            ..raw_outcome
         };
         let observations = target.observations();
         let candidate = if matches!(outcome.disposition, ExecutionDisposition::Runnable) {
@@ -196,12 +306,13 @@ pub fn execute_suffix<G: Workload + ?Sized>(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop_rollout_on_objective) {
+        if outcome.should_stop(&stop) {
             break;
         }
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }

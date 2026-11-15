@@ -61,7 +61,7 @@ try {
 
     await page.evaluate(() => window.sendTrail(200));
     await page.waitForTimeout(200);
-    await page.locator('#map').dispatchEvent('pointermove', { pointerType: 'mouse', movementX: 1, movementY: 0 });
+    await page.locator('.pan-edge').first().dispatchEvent('pointerenter', { pointerType: 'mouse' });
     await page.waitForTimeout(2400);
     await page.evaluate(() => window.sendTrail(200));
     await page.waitForTimeout(900);

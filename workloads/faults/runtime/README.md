@@ -25,7 +25,10 @@ behavior.
 The agent waits for the runtime's 16-byte hello before sending event commands.
 Commands use five little-endian `u64` words in a 40-byte frame. The runtime
 writes the acknowledgement while holding the callback lock, so an armed
-callback cannot fire before its acknowledgement has entered the channel. Kill reports
+callback cannot fire before its acknowledgement has entered the channel. A
+callback made while its own thread holds that lock or is starting the runtime,
+for example from an instrumented signal handler that interrupts the
+acknowledgement write, returns without counting. Kill reports
 use a 16-byte rarity/site frame and are sent before the requested signal. A
 report write failure leaves the caller alive, so the agent cannot credit an
 injection without runtime acknowledgement.

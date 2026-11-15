@@ -135,6 +135,7 @@ class StructureTests(unittest.TestCase):
             "client_test session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent",
             "client_test image_identity::sealed_guard_tests::unexpected_executable_mapping_revokes_a_published_lease",
             "sealed_static::tests::cached_guard_rejects_unexpected_executable_mapping -- --exact",
+            "sealed_static::tests::cached_guard_rejects_code_page_rewritten_with_its_own_bytes -- --exact",
             "sealed_static::tests::measured_read_hash_and_comparison_bytes_survive_refusal -- --exact",
             "recording::tests::sealed_host_admits_public_recording_round_trip -- --exact",
             "-p uml --test terminal_console_limit console_limit_is_settled_after_a_provisional_terminal_stop -- --exact",
@@ -788,7 +789,7 @@ class HostCompatibilityTests(unittest.TestCase):
 
     def test_arm64_host_runs_the_real_direct_export_copy_accounting_case(self):
         host = self.hosts["macos-arm64"]
-        self.assertEqual(host["runs-on"], "macos-14")
+        self.assertEqual(host["runs-on"], "macos-15")
         step = next(step for step in host["steps"]
                     if step.get("name") == "Verify direct extent export copy accounting on Arm64")
         command = step["run"]
@@ -825,8 +826,8 @@ class HostCompatibilityTests(unittest.TestCase):
         self.assertEqual(
             runners,
             {
-                "macOS Arm64": "macos-14",
-                "macOS Consonance Host Package": "macos-14",
+                "macOS Arm64": "macos-15",
+                "macOS Consonance Host Package": "macos-15",
                 "Linux Arm64": "ubuntu-24.04-arm",
                 "Linux Arm64 Dissonance": "ubuntu-24.04-arm",
                 "Linux Arm64 Qualification": "ubuntu-24.04-arm",

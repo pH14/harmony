@@ -58,7 +58,7 @@ const stripHasSprites = () => [...document.querySelectorAll(".level-overview")].
   for (let k = 0; k < data.length; k += 4) if (data[k] === 255 && data[k + 1] === 217 && data[k + 2] === 106) return true;
   return false;
 });
-const url = `${(process.env.DEMO_URL || "http://127.0.0.1:4173").replace(/\/$/, "")}/?level=0&pace=0`;
+const url = `${(process.env.DEMO_URL || "http://127.0.0.1:4173").replace(/\/$/, "")}/?game=twin-dragons&level=0&pace=0`;
 const errors = [];
 await mkdir("test-results", { recursive: true });
 try {

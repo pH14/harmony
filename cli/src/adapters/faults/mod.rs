@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pub mod config;
+pub(crate) mod explain;
 mod investigate;
 #[cfg(feature = "frontend")]
 pub(crate) mod prepare;
 mod runs;
+mod shrink;
 mod terminal;
 pub(crate) mod workflow;
 #[cfg(feature = "frontend")]
@@ -107,6 +109,8 @@ impl Package for Faults {
                 request.repeat,
             ),
             Operation::Branch => investigate::branch(request),
+            Operation::Shrink => shrink::shrink(request),
+            Operation::Explain => explain::explain(request),
             Operation::Inspect => investigate::inspect(
                 request.selection.ok_or("select a search or branch")?,
                 request.json,
@@ -178,12 +182,27 @@ pub fn execute_prepared(request: Request, mut prepared: crate::handoff::Prepared
                 .take()
                 .ok_or("missing resolved saved recording")?,
         ),
+        Operation::Shrink => shrink::shrink_saved(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        ),
+        Operation::Explain => explain::explain_saved(
+            request,
+            prepared
+                .saved
+                .take()
+                .ok_or("missing resolved saved recording")?,
+        ),
         _ => Err("unsupported guarded fault operation".into()),
     }
 }
 
 pub fn worker() -> Result<u8> {
     use faults_workload::consonance::{SESSION_SERVICE, service_factory};
+    consonance_client::termination::ignore()?;
     consonance_client::session::serve_inherited(|service| {
         (service == SESSION_SERVICE).then(service_factory)
     })?;

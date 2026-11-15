@@ -6,11 +6,11 @@
   },
   "executable": {
     "name": "linux",
-    "sha256": "fe078d6149769230fa5abc4183c445bb1f12bc56cc8ae15719952f116ccc7d2f"
+    "sha256": "dcd3e824772ae1bcbfaecfbc275e71dcb1d95ff6cd1740292fbd1f13d1b91dff"
   },
   "host_libraries": [],
   "kernel_version": "6.18.35",
-  "patch_series_sha256": "bbbea82a3b4a614849304272688cacb33c56012ce8de2dc4fdc48be1024731fb",
+  "patch_series_sha256": "981777a62909e7a617d8304f6c8a14a92b638b3bc8b0c168bf499f943db4015c",
   "rootfs": {
     "name": "initramfs.cpio.gz",
     "sha256": "9887a37a27dec6ee457e7bbadbb91791648315e47d61007302ec39cff878aa9f"

@@ -91,6 +91,7 @@ struct TestArchiveReport {
 
 thread_local! {
     static TEST_EXECUTABLE_IDENTITY: std::cell::Cell<Option<Result<&'static str, &'static str>>> = const { std::cell::Cell::new(None) };
+    static TEST_GENESIS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
 struct TestWorkload;
@@ -196,7 +197,7 @@ impl TargetExecution for TestWorkload {
         Ok(TestTarget::default())
     }
     fn reset(&self, target: &mut Self::Target) {
-        target.value = 0;
+        target.value = TEST_GENESIS.with(std::cell::Cell::get);
     }
     fn restore(
         &self,
@@ -332,7 +333,7 @@ fn continuation_config(
 
 #[test]
 fn replay_rejects_duplicate_skip_for_taken_continuation() {
-    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
     config.stop_campaign_on_objective = false;
     let mut stream = Vec::new();
     run_campaign_checkpointed(
@@ -490,7 +491,7 @@ fn replay_rejects_a_splice_weight_impossible_for_the_recorded_energy_policy() {
 
 #[test]
 fn replay_rejects_an_adaptive_weight_not_derived_from_prior_admissions() {
-    let config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
     let mut stream = Vec::new();
     run_campaign_checkpointed(
         &TestWorkload,
@@ -684,6 +685,50 @@ fn a_progress_line_reports_the_continuation_accounting() {
     assert!(accounting.energy <= 256);
 }
 
+#[test]
+fn cell_intervals_credit_continuation_dispatches_to_their_cells() {
+    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    let mut progress = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        Some(&mut progress),
+    )
+    .unwrap();
+    let records = String::from_utf8(progress)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<CampaignProgressRecord<serde_json::Value>>(line).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let final_record = records.last().expect("a final progress line");
+    let continuation_selections = final_record
+        .selector
+        .continuation_selections
+        .expect("continuation dispatches were counted");
+    assert!(continuation_selections > 0);
+    let intervals = records
+        .iter()
+        .filter_map(|record| record.selector.cell_interval.as_ref())
+        .collect::<Vec<_>>();
+    let interval_total: u64 = intervals
+        .iter()
+        .map(|interval| interval.totals.continuation)
+        .sum();
+    assert_eq!(interval_total, continuation_selections);
+    for interval in intervals {
+        if interval.cells == interval.top.len() {
+            let row_total: u64 = interval.top.iter().map(|row| row.counts.continuation).sum();
+            assert_eq!(row_total, interval.totals.continuation);
+        }
+        assert!(interval.totals.continuation <= interval.totals.draws);
+    }
+}
+
 fn replay_error(lines: &[String]) -> String {
     replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
         .expect_err("replay accepted a tampered stream")
@@ -700,7 +745,7 @@ fn with_header_field(lines: &[String], field: &str, value: &str) -> Vec<String> 
 
 #[test]
 fn replay_rejects_a_stream_whose_header_or_draw_state_was_changed() {
-    let config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
     let mut bytes = Vec::new();
     let live = run_campaign_checkpointed(
         &TestWorkload,
@@ -798,6 +843,7 @@ fn history_growth_before_maintenance_does_not_stop_the_campaign() {
     for (workers, campaign_seed) in [(1, 947), (2, 947), (2, 11), (2, 12), (4, 947)] {
         let config = CampaignConfig {
             campaign_seed,
+            execution_budget: 300,
             ..continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 8)
         };
         let mut stream = Vec::new();
@@ -825,6 +871,7 @@ fn a_budget_that_fits_the_bootstrap_state_finishes_the_campaign() {
     for (workers, campaign_seed) in [(1, 2), (1, 3), (2, 0), (2, 1), (3, 1), (4, 1)] {
         let config = CampaignConfig {
             campaign_seed,
+            execution_budget: 300,
             ..continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 7)
         };
         let mut stream = Vec::new();
@@ -910,6 +957,7 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
                 every: NonZeroU64::new(300),
                 on_marks: true,
                 on_top_progress: true,
+                on_stall: false,
                 checkpoint_owner: None,
                 max_image_bytes: 64 << 20,
                 before_write: None,
@@ -980,6 +1028,7 @@ fn a_campaign_and_checkpoint_reject_another_loaded_executable() {
                 every: NonZeroU64::new(1),
                 on_marks: false,
                 on_top_progress: false,
+                on_stall: false,
                 checkpoint_owner: None,
                 max_image_bytes: 64 << 20,
                 before_write: None,
@@ -1038,6 +1087,71 @@ fn a_campaign_and_checkpoint_reject_another_loaded_executable() {
 }
 
 #[test]
+fn saved_states_from_another_executable_or_genesis_are_rebuilt_from_their_inputs() {
+    let directory = checkpoint_directory("saved-states-executable");
+    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    config.execution_budget = 8;
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Ok("build-A"))));
+    run_campaign_checkpointed_with_options(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut Vec::new(),
+        None,
+        CampaignExecutionOptions {
+            checkpoints: Some(CheckpointPlan {
+                directory: directory.clone(),
+                every: None,
+                on_marks: false,
+                on_top_progress: false,
+                on_stall: false,
+                checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
+            }),
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    let checkpoint = directory.join("000000000008-final.ckpt");
+    config.execution_budget = 1;
+    let import = |build: &'static str, genesis: u8| {
+        TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Ok(build))));
+        TEST_GENESIS.with(|value| value.set(genesis));
+        let states = SavedStates::open(&TestWorkload, &checkpoint).unwrap();
+        let (report, _) = run_campaign_checkpointed(
+            &TestWorkload,
+            &config,
+            &CampaignOrigin::SavedStates { states },
+            &mut Vec::new(),
+            None,
+        )
+        .unwrap();
+        let entries = report
+            .archive
+            .entries
+            .iter()
+            .filter(|entry| entry.created_execution == 0)
+            .map(|entry| entry.input.actions.clone())
+            .collect::<Vec<_>>();
+        (report.tree_import.unwrap(), entries)
+    };
+    let (same, same_entries) = import("build-A", 0);
+    let (other, other_entries) = import("build-B", 0);
+    let (moved, _) = import("build-A", 7);
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(None));
+    TEST_GENESIS.with(|value| value.set(0));
+    std::fs::remove_dir_all(directory).unwrap();
+    assert!(same.checkpointed > 0);
+    assert_eq!(other.checkpointed, 0);
+    assert_eq!(other.imported, same.imported);
+    assert_eq!(other_entries, same_entries);
+    assert_eq!(moved.checkpointed, 0);
+    assert!(moved.imported > 0);
+}
+
+#[test]
 fn unavailable_loaded_executable_fails_before_campaign_output() {
     let directory = checkpoint_directory("unavailable-executable");
     let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
@@ -1056,6 +1170,7 @@ fn unavailable_loaded_executable_fails_before_campaign_output() {
                 every: NonZeroU64::new(1),
                 on_marks: false,
                 on_top_progress: false,
+                on_stall: false,
                 checkpoint_owner: None,
                 max_image_bytes: 64 << 20,
                 before_write: None,
@@ -1085,6 +1200,7 @@ fn a_pinned_checkpoint_refuses_a_valid_swap_after_selection() {
             every: NonZeroU64::new(100),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: Some("saved-run-a".into()),
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1137,8 +1253,9 @@ fn a_pinned_checkpoint_refuses_a_valid_swap_after_selection() {
 #[test]
 fn a_fixed_window_writes_the_same_stream_at_any_worker_count() {
     let streams = [1, 4, 16, 64].map(|workers| {
-        let mut config = continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 12);
+        let mut config = continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 24);
         config.window = 16;
+        config.execution_budget = 1600;
         config.stop_campaign_on_objective = false;
         let mut stream = Vec::new();
         let (report, _) = run_campaign_checkpointed_with_options(
@@ -1188,6 +1305,7 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
             every: NonZeroU64::new(170),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1269,6 +1387,7 @@ fn a_short_campaign_finishes_with_a_checkpoint_that_can_extend_its_budget() {
             every: NonZeroU64::new(100),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1317,6 +1436,7 @@ fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1371,6 +1491,7 @@ fn a_resume_under_a_changed_search_policy_records_the_change() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1410,8 +1531,9 @@ fn rewrite_checkpoint_policy(path: &std::path::Path, field: &str, value: &str) {
 #[test]
 fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
     let directory = checkpoint_directory("policy-fields");
-    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 64);
     config.stop_campaign_on_objective = false;
+    config.archive_entry_limit = 4096;
     let (_, original_progress) = run_with_checkpoints(
         &config,
         &CampaignOrigin::Genesis,
@@ -1420,6 +1542,7 @@ fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1470,6 +1593,7 @@ fn a_checkpoint_with_no_jobs_in_flight_resumes_under_a_larger_budget() {
             every: NonZeroU64::new(400),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1513,6 +1637,7 @@ fn a_drain_checkpoint_refills_the_original_admission_window_on_resume() {
             every: NonZeroU64::new(2),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1532,6 +1657,7 @@ fn a_drain_checkpoint_refills_the_original_admission_window_on_resume() {
             every: NonZeroU64::new(1),
             on_marks: false,
             on_top_progress: false,
+            on_stall: false,
             checkpoint_owner: None,
             max_image_bytes: 64 << 20,
             before_write: None,
@@ -1665,8 +1791,8 @@ fn doubled_suffix_limits_are_recorded_replayed_and_checked() {
 
 #[test]
 fn replay_rejects_forged_post_admission_skip_suffix_limits() {
-    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
-    config.execution_budget = 800;
+    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 24);
+    config.execution_budget = 1600;
     config.campaign_seed = 3;
     let mut stream = Vec::new();
     run_campaign_checkpointed(
@@ -1682,10 +1808,22 @@ fn replay_rejects_forged_post_admission_skip_suffix_limits() {
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let index = 555;
-    let mut skip: serde_json::Value = serde_json::from_str(&lines[index]).unwrap();
-    assert_eq!(skip["event"], "skip");
-    assert_eq!(skip["suffix_limit"], 1);
+    let first_job = lines
+        .iter()
+        .position(|line| line.contains("\"event\":\"job\""))
+        .unwrap();
+    let (index, mut skip) = lines
+        .iter()
+        .enumerate()
+        .skip(first_job)
+        .map(|(index, line)| {
+            (
+                index,
+                serde_json::from_str::<serde_json::Value>(line).unwrap(),
+            )
+        })
+        .find(|(_, record)| record["event"] == "skip" && record["suffix_limit"] == 1)
+        .expect("a one-action skip after the first admission");
     skip["suffix_limit"] = serde_json::json!(2);
     lines[index] = serde_json::to_string(&skip).unwrap();
     let error =
@@ -1712,30 +1850,36 @@ fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let job_at = |reservation| {
-        lines
-            .iter()
-            .enumerate()
-            .find(|(_, line)| {
-                let record: serde_json::Value = serde_json::from_str(line).unwrap();
-                record["event"] == "job" && record["reservation"] == reservation
-            })
-            .map(|(index, line)| {
-                (
-                    index,
-                    serde_json::from_str::<serde_json::Value>(line).unwrap(),
-                )
-            })
-            .unwrap()
-    };
-    let (_, sibling) = job_at(75);
-    let (index, mut selected) = job_at(79);
-    assert_eq!(sibling["parent_id"], selected["parent_id"]);
-    assert_eq!(sibling["suffix_limit"], 2);
-    assert_eq!(selected["suffix_limit"], 1);
-    assert!(75 + config.window > 79);
-    assert!(sibling["sequence"].as_u64().unwrap() > 79 - config.window as u64);
-    selected["suffix_limit"] = serde_json::json!(2);
+    let jobs = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            (
+                index,
+                serde_json::from_str::<serde_json::Value>(line).unwrap(),
+            )
+        })
+        .filter(|(_, record)| record["event"] == "job")
+        .collect::<Vec<_>>();
+    let window = config.window as u64;
+    let (index, mut selected, sibling) = jobs
+        .iter()
+        .find_map(|(index, selected)| {
+            let reservation = selected["reservation"].as_u64()?;
+            (selected["suffix_limit"] == 1).then_some(())?;
+            jobs.iter()
+                .find(|(_, sibling)| {
+                    let held = sibling["reservation"].as_u64().unwrap();
+                    sibling["parent_id"] == selected["parent_id"]
+                        && sibling["suffix_limit"].as_u64().unwrap_or(0) >= 2
+                        && held < reservation
+                        && held + window > reservation
+                        && sibling["sequence"].as_u64().unwrap() + window > reservation
+                })
+                .map(|(_, sibling)| (*index, selected.clone(), sibling.clone()))
+        })
+        .expect("a one-action job reserved while a longer sibling was in flight");
+    selected["suffix_limit"] = sibling["suffix_limit"].clone();
     lines[index] = serde_json::to_string(&selected).unwrap();
     let error =
         replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
