@@ -9901,6 +9901,75 @@ mod tests {
         assert_eq!(replayed, live);
     }
 
+    #[test]
+    fn inspecting_archive_inputs_does_not_change_campaign_replay() {
+        struct InspectInputs;
+
+        impl super::CampaignWatch<TestWorkload> for InspectInputs {
+            type Note = ();
+
+            fn run(
+                &self,
+                _job: &JobSpec<TestWorkload>,
+                run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+            ) -> super::WatchedJob<TestWorkload, ()> {
+                Ok((run()?, ()))
+            }
+
+            fn start(
+                &self,
+                campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+            ) -> Result<(), Box<dyn Error>> {
+                assert!(campaign.archive().entry_input(0)?.actions.is_empty());
+                Ok(())
+            }
+
+            fn admitted(&self, (): (), campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+                let archive = campaign.archive();
+                for index in 0..archive.entries.len() {
+                    archive.entry_input(index).expect("inspect retained input");
+                }
+                assert!(archive.entry_input(usize::MAX).is_err());
+            }
+        }
+
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let config = three_worker_config();
+        let mut plain_stream = Vec::new();
+        let plain = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut plain_stream,
+            None,
+        )
+        .expect("plain campaign");
+        let mut watched_stream = Vec::new();
+        let watched = super::run_campaign_watched(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut watched_stream,
+            None,
+            CampaignExecutionOptions::default(),
+            &InspectInputs,
+        )
+        .expect("inspected campaign");
+        let replayed = replay_campaign_checkpointed(&workload, &watched_stream, None, None)
+            .expect("replay inspected campaign");
+
+        assert_eq!(watched_stream, plain_stream);
+        assert_eq!(watched, plain);
+        assert_eq!(watched, replayed);
+        assert_eq!(
+            serde_json::to_value(&watched.0).unwrap(),
+            serde_json::to_value(&replayed.0).unwrap()
+        );
+    }
+
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum ResidencyCase {
         Initial,
