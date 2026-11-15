@@ -204,6 +204,7 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
+        doomed: false,
         objective_reached: target.exit_kind() == ExitKind::Ok && target.player_a_won(),
         disposition: if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
@@ -241,6 +242,7 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
             ExecutionDisposition::Runnable
         };
         let outcome = Outcome {
+            doomed: false,
             objective_reached,
             disposition,
         };
