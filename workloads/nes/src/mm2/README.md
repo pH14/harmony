@@ -27,6 +27,32 @@ stage clear.
 Gameplay inside a stage is searched. No route, weapon choice, obstacle target
 or boss weakness is injected.
 
+## Actions
+
+An action is a button chord or a weapon switch, defined in
+[`nes-games/src/mm2/action.rs`](../../../nes-games/src/mm2/action.rs). Chords
+hold one of nine directions with A, B, both or neither, and never press Start
+or Select. One draw in 12 is a switch, so a 16-action job holds about one
+switch and most of its frames still move and fire. A switch records only a
+random word. The target resolves it against the decoded state when it runs:
+the choices are P plus every weapon and item held with energy left, minus the
+equipped one, and the word picks one of them. The target opens the menu,
+presses Down to the weapon's row, turning the page on the NEXT row when the
+weapon is on the other page, presses Start and waits for the menu to close.
+With nothing to switch to, or outside play, a switch waits 12 frames, the
+short chord hold. Replaying the word from the same state takes the same path,
+so a recording replays from its actions alone.
+
+The menu needs care because it decodes as page × 8 + cursor row, and both
+values move while it animates. Start opens the menu after about 15 frames.
+While it opens, the row counts through every row of the page before it
+settles, and turning a page or closing the menu reads 254 for some frames.
+The target presses only once the same row has read for two frames in a row,
+and releases for one frame between presses so each press registers. A switch
+plans 40 frames, about the 39 a switch measured from a start holding three
+weapons, and gives up after 240 frames or when the menu has not opened 30
+frames after Start.
+
 ## Reading the game
 
 The decoder reads stage, screen, room, position, posture, health, the equipped
