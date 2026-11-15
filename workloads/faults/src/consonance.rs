@@ -8242,6 +8242,7 @@ mod tests {
                     observations: vec![target.observation.clone()],
                     milestones: Default::default(),
                     outcome: Outcome {
+                        doomed: false,
                         objective_reached: true,
                         disposition: ExecutionDisposition::Terminal,
                     },
